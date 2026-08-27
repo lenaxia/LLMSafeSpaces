@@ -5425,6 +5425,450 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /orgs:
+    get:
+      tags: [orgs]
+      summary: List organizations the caller can see
+      operationId: listOrgs
+      responses:
+        "200":
+          description: Organization list (bare array, unpaginated; items include the caller's userRole)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [orgs]
+      summary: Create an organization (platform admin only)
+      description: |
+        The owner is resolved by `ownerEmail` and becomes the first admin.
+        The owner must not already belong to another organization.
+      operationId: createOrg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrgRequest"
+      responses:
+        "201":
+          description: Created (memberCount = 1)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "400":
+          description: Validation failed (`details` maps field → message)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Owner not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Slug already in use, or owner already in another organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}:
+    get:
+      tags: [orgs]
+      summary: Get an organization (member scope)
+      operationId: getOrg
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Organization (includes caller's userRole and memberCount)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [orgs]
+      summary: Update organization name/slug (org admin)
+      description: Partial update — omitted fields keep existing values.
+      operationId: updateOrg
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOrgRequest"
+      responses:
+        "200":
+          description: Updated organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgResponse"
+        "400":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Slug already in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [orgs]
+      summary: Soft-delete an organization (org admin)
+      description: Workspaces become frozen; the organization is not hard-deleted.
+      operationId: deleteOrg
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/workspaces:
+    get:
+      tags: [orgs]
+      summary: List the organization's workspaces (member scope)
+      operationId: listOrgWorkspaces
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: limit
+          in: query
+          description: Page size (default 20, max 100)
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Workspace metadata page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgWorkspaceMetadata"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/members:
+    get:
+      tags: [orgs]
+      summary: List organization members (member scope)
+      operationId: listOrgMembers
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Member list (bare array, unpaginated)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgMember"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      tags: [orgs]
+      summary: Add an existing user as a member (org admin)
+      description: Identified by userId (not email). The user must not already belong to another organization.
+      operationId: addOrgMember
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddOrgMemberRequest"
+      responses:
+        "201":
+          description: Member added (empty JSON object)
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Validation failed, or role not admin/member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: User is already a member (of this or another organization)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/members/{userID}:
+    put:
+      tags: [orgs]
+      summary: Change a member's role (org admin)
+      operationId: changeOrgMemberRole
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeOrgMemberRoleRequest"
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "400":
+          description: Validation failed, or role not admin/member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "Role unchanged, self-demotion, or demoting the last org admin"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [orgs]
+      summary: Remove a member (org admin)
+      description: Fails with 409 on self-removal and on removing the last org admin.
+      operationId: removeOrgMember
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Removed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Self-removal or last-org-admin removal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/members/{userID}/verify:
+    post:
+      tags: [orgs]
+      summary: Manually verify a member's email (org admin)
+      description: Idempotent — re-verifying an already-verified member returns 200.
+      operationId: verifyOrgMember
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: userID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Member not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/billing/checkout:
+    post:
+      tags: [orgs]
+      summary: Create a Stripe Checkout session for a plan change (org admin)
+      operationId: orgBillingCheckout
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planId]
+              properties:
+                planId:
+                  type: string
+                  enum: [free, team, business, enterprise]
+      responses:
+        "200":
+          description: Checkout session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No billing customer linked to this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Billing is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/billing/portal:
+    post:
+      tags: [orgs]
+      summary: Create a Stripe billing-portal session (org admin)
+      operationId: orgBillingPortal
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Portal session URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    type: string
+                    format: uri
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: No billing customer linked to this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Billing is not configured on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /orgs/{id}/agent-roles:
     get:
       tags: [credentials]
@@ -9444,3 +9888,127 @@ components:
                 type: string
               firing:
                 type: boolean
+    # --- Org-core CRUD (#1088) ---
+    Organization:
+      type: object
+      required: [id, name, slug, createdBy, createdAt, updatedAt, status, planId, subscriptionStatus]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending_activation, active, suspended]
+        planId:
+          type: string
+          enum: [free, team, business, enterprise]
+        subscriptionStatus:
+          type: string
+          enum: [inactive, active, trialing, past_due, canceled, unpaid]
+    OrgResponse:
+      description: Organization as seen by the caller — the base fields plus the caller's role (omitted for non-members) and the member count.
+      allOf:
+        - $ref: "#/components/schemas/Organization"
+        - type: object
+          required: [memberCount]
+          properties:
+            userRole:
+              type: string
+              enum: [admin, member]
+            memberCount:
+              type: integer
+    CreateOrgRequest:
+      type: object
+      required: [name, slug, ownerEmail]
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        slug:
+          type: string
+          minLength: 2
+          maxLength: 50
+          description: Lowercase letters/digits with single interior hyphens
+        ownerEmail:
+          type: string
+          format: email
+        planId:
+          type: string
+          enum: [free, team, business, enterprise]
+          description: Defaults to enterprise (handler default)
+    UpdateOrgRequest:
+      type: object
+      description: Partial update — omitted fields keep existing values.
+      properties:
+        name:
+          type: string
+          minLength: 2
+          maxLength: 100
+        slug:
+          type: string
+          minLength: 2
+          maxLength: 50
+    AddOrgMemberRequest:
+      type: object
+      required: [userId, role]
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+    ChangeOrgMemberRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [admin, member]
+    OrgWorkspaceMetadata:
+      description: "Workspace metadata as returned by the org workspaces list (WorkspaceMetadata — note: no phase field, unlike WorkspaceListItem)."
+      type: object
+      required: [id, userId, name, runtime, storageSize, agentNeedsRefresh, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        name:
+          type: string
+        runtime:
+          type: string
+        storageSize:
+          type: string
+        imageTag:
+          type: string
+        agentVersion:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        defaultModel:
+          type: string
+        agentNeedsRefresh:
+          type: boolean
+        credentialsPendingSince:
+          type: string
+          format: date-time
+          nullable: true
+        orgId:
+          type: string
+          nullable: true

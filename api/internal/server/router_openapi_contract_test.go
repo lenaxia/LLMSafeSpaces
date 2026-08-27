@@ -361,23 +361,8 @@ var implOnlyAllowlist = map[route]bool{
 	// not a typical REST endpoint. Not documented in OpenAPI.
 	{method: "GET", path: "/api/v1/events"}: true,
 
-	// Org management routes (CRUD, members, billing) are registered by
-	// registerOrgRoutes when OrgsHandler is set. These are intentionally
-	// undocumented in OpenAPI — the public API contract covers the
-	// workspace/credential surface; org admin is a separate UX.
-	{method: "GET", path: "/api/v1/orgs"}:                             true,
-	{method: "POST", path: "/api/v1/orgs"}:                            true,
-	{method: "GET", path: "/api/v1/orgs/:id"}:                         true,
-	{method: "PUT", path: "/api/v1/orgs/:id"}:                         true,
-	{method: "DELETE", path: "/api/v1/orgs/:id"}:                      true,
-	{method: "GET", path: "/api/v1/orgs/:id/members"}:                 true,
-	{method: "POST", path: "/api/v1/orgs/:id/members"}:                true,
-	{method: "DELETE", path: "/api/v1/orgs/:id/members/:userID"}:      true,
-	{method: "PUT", path: "/api/v1/orgs/:id/members/:userID"}:         true,
-	{method: "POST", path: "/api/v1/orgs/:id/members/:userID/verify"}: true,
-	{method: "GET", path: "/api/v1/orgs/:id/workspaces"}:              true,
-	{method: "POST", path: "/api/v1/orgs/:id/billing/checkout"}:       true,
-	{method: "POST", path: "/api/v1/orgs/:id/billing/portal"}:         true,
+	// Org-core CRUD is documented in the spec since #1088 — no
+	// org-core routes remain allowlisted.
 }
 
 // -----------------------------------------------------------------------------
