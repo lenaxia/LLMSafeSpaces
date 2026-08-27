@@ -1318,11 +1318,15 @@ type queuedMessageResponse struct {
 	EnqueuedAt  string `json:"enqueued_at"`
 	// D3 (#907) outbox fields: the UI's retry button keys on status=error;
 	// attempts/lastError give the user retry context; clientMessageID is
-	// the render-dedupe key.
+	// the render-dedupe key. blockedByInFlight/inFlightFor (#1019 D)
+	// distinguish "queued behind the current turn" from "frozen behind a
+	// stale lock" — the incident's silent-no-send signal.
 	Status          string `json:"status"`
 	Attempts        int    `json:"attempts"`
 	LastError       string `json:"lastError,omitempty"`
 	ClientMessageID string `json:"clientMessageID,omitempty"`
+	BlockedInFlight bool   `json:"blockedByInFlight,omitempty"`
+	InFlightForMs   int64  `json:"inFlightForMs,omitempty"`
 }
 
 type queueListResponse struct {
@@ -1438,6 +1442,8 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 				Attempts:        e.Attempts,
 				LastError:       e.LastError,
 				ClientMessageID: e.ClientMessageID,
+				BlockedInFlight: e.BlockedByInFlight,
+				InFlightForMs:   e.InFlightFor.Milliseconds(),
 			})
 		}
 		c.JSON(http.StatusOK, queueListResponse{Messages: result})

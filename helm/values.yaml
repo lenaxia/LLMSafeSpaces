@@ -25,6 +25,12 @@ namespace:
 api:
   enabled: true
   replicaCount: 2
+  # #1019 C: pod termination grace. Must cover a worst-case in-flight
+  # outbox delivery (10m delivery + verify margin) so rolling deploys
+  # never SIGKILL a delivering worker — that leaves the session's
+  # delivery lock frozen for its 12-minute TTL. Free when idle: the
+  # container exits as soon as the process stops.
+  terminationGracePeriodSeconds: 660
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/api
     # Tag to deploy. Falls back to .Chart.AppVersion if empty.

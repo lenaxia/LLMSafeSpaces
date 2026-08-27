@@ -66,12 +66,21 @@ type Entry struct {
 	Text            string          `json:"text"`            // prompt text (already validated ≤100KB)
 	Model           json.RawMessage `json:"model,omitempty"` // per-prompt model selector (raw JSON)
 	AcceptedAt      time.Time       `json:"acceptedAt"`
-	Attempts        int             `json:"attempts"`                 // definitive failures only
-	LastAttemptAt   time.Time       `json:"lastAttemptAt,omitempty"`  // send-window start (verifier anchor)
-	VerifyAttempts  int             `json:"verifyAttempts,omitempty"` // inconclusive verification passes
-	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"`  // backoff gate (zero = now)
+	Attempts        int             `json:"attempts"`                // definitive failures only
+	LastAttemptAt   time.Time       `json:"lastAttemptAt,omitempty"` // send-window start (verifier anchor)
+	VerifyAttempts  int             `json:"verifyAttempts,omitempty"`
+	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"` // backoff gate (zero = now)
 	LastError       string          `json:"lastError,omitempty"`
 	Status          string          `json:"status"` // pending | delivering | verifying | error
+
+	// #1019 D: frozen-queue surfacing. Set by List (never persisted):
+	// pending entries whose session lock is held — by a delivering worker
+	// (healthy queueing) or a stale lock from an ungraceful kill (the
+	// residual 12-min freeze). InFlightFor approximates the hold age
+	// (LockTTL − remaining TTL), letting clients distinguish "sending…"
+	// from "frozen behind a stale lock".
+	BlockedByInFlight bool          `json:"blockedByInFlight,omitempty"`
+	InFlightFor       time.Duration `json:"inFlightFor,omitempty"`
 }
 
 // Status values.
@@ -284,16 +293,23 @@ func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, userID, cl
 
 // List returns the session's outbox entries (FIFO order): pending and
 // error entries from the main list plus any stuck in delivering.
+// Pending entries carry the frozen-queue signal (#1019 D): when the
+// session's delivery lock is held — by a live worker or a stale lock —
+// blockedByInFlight is set with the approximate hold age.
 func (s *Service) List(ctx context.Context, workspaceID, sessionID string) ([]Entry, error) {
 	vals, err := s.client.LRange(ctx, qKey(workspaceID, sessionID), 0, -1).Result()
 	if err != nil {
 		return nil, fmt.Errorf("outbox list: %w", err)
 	}
 	out := make([]Entry, 0, len(vals))
+	pending := 0
 	for _, v := range vals {
 		var e Entry
 		if json.Unmarshal([]byte(v), &e) == nil {
 			out = append(out, e)
+			if e.Status == StatusPending {
+				pending++
+			}
 		}
 	}
 	dvals, err := s.client.LRange(ctx, dKey(workspaceID, sessionID), 0, -1).Result()
@@ -306,7 +322,38 @@ func (s *Service) List(ctx context.Context, workspaceID, sessionID string) ([]En
 			}
 		}
 	}
+
+	// Frozen-queue signal only matters when something is waiting.
+	if pending > 0 {
+		if held, holdAge, lerr := s.lockHeldFor(ctx, workspaceID, sessionID); lerr == nil && held {
+			for i := range out {
+				if out[i].Status == StatusPending {
+					out[i].BlockedByInFlight = true
+					out[i].InFlightFor = holdAge
+				}
+			}
+		}
+	}
 	return out, nil
+}
+
+// lockHeldFor reports whether the session's delivery lock is currently
+// held and for how long (approximated as LockTTL − remaining TTL; the
+// lock is never renewed, so the TTL decays linearly from acquisition).
+func (s *Service) lockHeldFor(ctx context.Context, ws, ses string) (bool, time.Duration, error) {
+	ttl, err := s.client.TTL(ctx, lockKey(ws, ses)).Result()
+	if err != nil {
+		return false, 0, err
+	}
+	if ttl < 0 {
+		// -1: key without TTL (never ours); -2: absent. Either way, not
+		// a live delivery lock in the decay sense.
+		if ttl == -1 {
+			return true, LockTTL, nil
+		}
+		return false, 0, nil
+	}
+	return true, LockTTL - ttl, nil
 }
 
 // sessions discovers session keys with a non-empty main or staging list.
