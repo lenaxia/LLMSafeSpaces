@@ -27,6 +27,15 @@ type CreateWorkspaceRequest struct {
 	StorageSize string `json:"storageSize,omitempty"`
 }
 
+// FileUpload is the result of POST /workspaces/:id/uploads (Epic 67):
+// the absolute path of the stored file on the workspace PVC, its
+// sanitized name, and the stored byte count.
+type FileUpload struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
 type WorkspaceListResult struct {
 	Items      []WorkspaceListItem `json:"items"`
 	Pagination *PaginationMetadata `json:"pagination,omitempty"`

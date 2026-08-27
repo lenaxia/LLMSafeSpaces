@@ -19,6 +19,7 @@ import type {
   EnsureSessionResponse,
   CreateMcpServerRequest,
   FetchFn,
+  FileUpload,
   McpAutoApplyRule,
   McpServer,
   Message,
@@ -98,7 +99,8 @@ export class LLMSafeSpaces {
   /** Internal: make an authenticated request. */
   async request<T>(method: string, path: string, body?: unknown, timeout?: number): Promise<T> {
     const url = `${this.baseUrl}/api/v1${path}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const isForm = typeof FormData !== "undefined" && body instanceof FormData;
+    const headers: Record<string, string> = isForm ? {} : { "Content-Type": "application/json" };
 
     if (this.apiKey) {
       headers["Authorization"] = `Bearer ${this.apiKey}`;
@@ -117,7 +119,7 @@ export class LLMSafeSpaces {
       res = await this.fetchFn(url, {
         method,
         headers,
-        body: body ? JSON.stringify(body) : undefined,
+        body: body ? (isForm ? (body as FormData) : JSON.stringify(body)) : undefined,
         signal: controller.signal,
       });
     } catch (e: unknown) {
@@ -144,8 +146,12 @@ export class LLMSafeSpaces {
           throw new AuthError(msg, res.status);
         case 404:
           throw new NotFoundError(msg);
-        case 409:
-          throw new ConflictError(msg);
+        case 409: {
+          const phase = (errBody as { phase?: string }).phase;
+          const conflict = new ConflictError(msg);
+          if (phase) conflict.phase = phase;
+          throw conflict;
+        }
         case 429:
           throw new RateLimitError(msg);
         case 503: {
@@ -266,6 +272,18 @@ class WorkspacesAPI {
   getStatus(id: string) {
     return this.client.request<WorkspaceStatusResult>("GET", `/workspaces/${id}/status`);
   }
+  /**
+   * Uploads a file into the workspace (Epic 67): multipart POST with a
+   * single part named `file`; the file lands on the workspace PVC under
+   * /workspace/uploads/. The returned path feeds the `files` parameter of
+   * sessions.sendPromptAsync / sessions.enqueue. The workspace must be
+   * Active; a 409 rejects with ConflictError carrying `phase`.
+   */
+  upload(id: string, filename: string, content: Blob | string): Promise<FileUpload> {
+    const form = new FormData();
+    form.append("file", typeof content === "string" ? new Blob([content]) : content, filename);
+    return this.client.request<FileUpload>("POST", `/workspaces/${id}/uploads`, form);
+  }
   activate(id: string) {
     return this.client.request<ActivateWorkspaceResponse>("POST", `/workspaces/${id}/activate`);
   }
@@ -368,14 +386,24 @@ class SessionsAPI {
   get(workspaceId: string, sessionId: string) {
     return this.client.request<Record<string, unknown>>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}`);
   }
-  sendPromptAsync(workspaceId: string, sessionId: string, message: string) {
-    return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, { message });
+  /**
+   * Sends a prompt asynchronously (202; the reply arrives on the workspace
+   * SSE stream). Optional `files` (Epic 67) are upload-namespace paths —
+   * the API composes the v1 attachment manifest into the dispatched text.
+   */
+  sendPromptAsync(workspaceId: string, sessionId: string, message: string, files?: string[]) {
+    const body: Record<string, unknown> = { parts: [{ type: "text", text: message }] };
+    if (files && files.length > 0) body.files = files;
+    return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, body);
   }
   delete(workspaceId: string, sessionId: string) {
     return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}`);
   }
-  enqueue(workspaceId: string, sessionId: string, text: string) {
-    return this.client.request<{ messageID: string }>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`, { text });
+  /** Enqueues a message for a busy session; optional `files` as in sendPromptAsync. */
+  enqueue(workspaceId: string, sessionId: string, text: string, files?: string[]) {
+    const body: Record<string, unknown> = { text };
+    if (files && files.length > 0) body.files = files;
+    return this.client.request<{ messageID: string }>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`, body);
   }
   /**
    * @deprecated Under the V2 session-queue model (Epic 63), the queue is

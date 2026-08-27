@@ -221,8 +221,18 @@ func (s *SessionsService) Get(ctx context.Context, workspaceID, sessionID string
 	return result, err
 }
 
-func (s *SessionsService) SendPromptAsync(ctx context.Context, workspaceID, sessionID, message string) error {
-	body := map[string]string{"message": message}
+// SendPromptAsync delivers a prompt asynchronously (202; the reply arrives
+// on the workspace SSE stream). The body carries the parts shape the API
+// extracts text from. Optional files are upload-namespace paths returned by
+// WorkspacesService.UploadFile (Epic 67): the API composes the v1
+// attachment manifest into the dispatched text.
+func (s *SessionsService) SendPromptAsync(ctx context.Context, workspaceID, sessionID, message string, files ...string) error {
+	body := map[string]any{
+		"parts": []map[string]string{{"type": "text", "text": message}},
+	}
+	if len(files) > 0 {
+		body["files"] = files
+	}
 	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID), body, nil)
 }
 
@@ -230,12 +240,18 @@ func (s *SessionsService) Delete(ctx context.Context, workspaceID, sessionID str
 	return s.c.do(ctx, "DELETE", fmt.Sprintf("/workspaces/%s/sessions/%s", workspaceID, sessionID), nil, nil)
 }
 
-func (s *SessionsService) Enqueue(ctx context.Context, workspaceID, sessionID, text string) (string, error) {
+// Enqueue queues a message for a busy session and returns the queue
+// message ID. Optional files are upload-namespace paths (Epic 67) —
+// same manifest composition as the prompt route.
+func (s *SessionsService) Enqueue(ctx context.Context, workspaceID, sessionID, text string, files ...string) (string, error) {
 	var resp struct {
 		MessageID string `json:"messageID"`
 	}
-	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/queue", workspaceID, sessionID),
-		map[string]string{"text": text}, &resp)
+	body := map[string]any{"text": text}
+	if len(files) > 0 {
+		body["files"] = files
+	}
+	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/queue", workspaceID, sessionID), body, &resp)
 	return resp.MessageID, err
 }
 

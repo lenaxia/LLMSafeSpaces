@@ -138,15 +138,8 @@ func (c *Client) send(ctx context.Context, method, path string, body any) (*http
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	if c.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	} else if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	} else if c.email != "" {
-		if err := c.login(ctx); err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if err := c.authorize(ctx, req); err != nil {
+		return nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -159,6 +152,22 @@ func (c *Client) send(ctx context.Context, method, path string, body any) (*http
 		return nil, parseError(resp)
 	}
 	return resp, nil
+}
+
+// authorize applies the credential strategy to a request (API key, cached
+// token, or email/password login on first use).
+func (c *Client) authorize(ctx context.Context, req *http.Request) error {
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	} else if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	} else if c.email != "" {
+		if err := c.login(ctx); err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return nil
 }
 
 // decode reads a successful response body into result following the same
@@ -212,6 +221,7 @@ func parseError(resp *http.Response) error {
 		Message    string `json:"message"`
 		Reason     string `json:"reason"`
 		RetryAfter int    `json:"retryAfter"`
+		Phase      string `json:"phase"`
 	}
 	json.NewDecoder(resp.Body).Decode(&errResp)
 	msg := errResp.Message
@@ -226,5 +236,6 @@ func parseError(resp *http.Response) error {
 		Message:    msg,
 		Reason:     errResp.Reason,
 		RetryAfter: errResp.RetryAfter,
+		Phase:      errResp.Phase,
 	}
 }

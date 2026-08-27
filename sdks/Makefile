@@ -1,5 +1,5 @@
 # SDK generation and validation targets
-.PHONY: validate generate-all generate-ts generate-python generate-go generate-java clean contract-test contract-test-mock
+.PHONY: validate generate-all generate-ts generate-python generate-go generate-java sdk-check clean contract-test contract-test-mock
 
 SPEC := openapi.yaml
 
@@ -8,6 +8,16 @@ validate:
 	@echo "Validating OpenAPI specification..."
 	@go run ./validate/main.go $(SPEC)
 	@echo "✓ OpenAPI spec is valid"
+
+# sdk-check is the CI-enforceable core of E9 (Epic 67): everything that can
+# gate a merge without live infrastructure — spec validity, the spec's own
+# structural tests, and the bidirectional spec↔router parity contract.
+# Per-language compile + wire-level usage tests run in the sdk-contract CI
+# job (.github/workflows/ci.yml) and locally per toolchain.
+sdk-check: validate
+	@cd validate && go test -timeout 60s ./...
+	@cd .. && go test -timeout 240s -run TestOpenAPIRouterContract ./api/internal/server
+	@echo "✓ SDK surface is current (spec valid + router parity holds)"
 
 # Generate all SDKs (placeholder — implemented in US-14.3 through US-14.6)
 generate-all: validate generate-ts generate-python generate-go generate-java

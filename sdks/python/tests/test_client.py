@@ -822,3 +822,75 @@ def test_mcp_servers_admin_delete_auto_apply_variants():
     client.admin_mcp_servers.delete_auto_apply("srv-1", "all")
     client.admin_mcp_servers.delete_auto_apply("srv-1", "user", "u-1")
     assert bare.called and scoped.called
+
+
+# ── Epic 67: workspace upload + files-on-send (wire-level) ──────────────────
+
+UPLOAD_PATH = "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"
+UPLOAD_RESP = {"path": UPLOAD_PATH, "name": "notes.txt", "size": 5}
+
+
+@respx.mock
+def test_upload_file():
+    route = respx.post(f"{BASE}/workspaces/ws-1/uploads").respond(status_code=201, json=UPLOAD_RESP)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    up = client.workspaces.upload_file("ws-1", "notes.txt", b"hello")
+    assert up.path == UPLOAD_PATH
+    assert up.name == "notes.txt"
+    assert up.size == 5
+    request = route.calls[0].request
+    assert request.headers["content-type"].startswith("multipart/form-data")
+    assert b'name="file"; filename="notes.txt"' in request.content
+    assert b"hello" in request.content
+
+
+@respx.mock
+def test_upload_file_phase_surfaces_on_409():
+    respx.post(f"{BASE}/workspaces/ws-1/uploads").respond(
+        status_code=409, json={"error": "workspace not active", "phase": "Suspended"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(ConflictError) as exc_info:
+        client.workspaces.upload_file("ws-1", "f.txt", b"x")
+    assert exc_info.value.phase == "Suspended"
+
+
+@respx.mock
+def test_send_prompt_async_files():
+    route = respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/prompt").respond(status_code=202)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.send_prompt_async("ws-1", "ses_1", "review please", files=[UPLOAD_PATH])
+    import json as _json
+
+    body = _json.loads(route.calls[0].request.content)
+    assert body == {
+        "parts": [{"type": "text", "text": "review please"}],
+        "files": [UPLOAD_PATH],
+    }
+
+
+@respx.mock
+def test_send_prompt_async_parts_shape_no_dead_fields():
+    route = respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/prompt").respond(status_code=202)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.send_prompt_async("ws-1", "ses_1", "hi")
+    import json as _json
+
+    body = _json.loads(route.calls[0].request.content)
+    assert body == {"parts": [{"type": "text", "text": "hi"}]}
+    assert "message" not in body
+    assert "content" not in body
+
+
+@respx.mock
+def test_enqueue_files():
+    route = respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/queue").respond(
+        status_code=202, json={"messageID": "qm-1"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    mid = client.sessions.enqueue("ws-1", "ses_1", "later", files=[UPLOAD_PATH])
+    assert mid == "qm-1"
+    import json as _json
+
+    body = _json.loads(route.calls[0].request.content)
+    assert body == {"text": "later", "files": [UPLOAD_PATH]}

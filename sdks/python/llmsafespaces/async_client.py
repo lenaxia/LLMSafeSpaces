@@ -26,6 +26,7 @@ from .types import (
     AuthResponse,
     CreateAgentRoleRequest,
     EnsureSessionResponse,
+    FileUpload,
     HistoryPage,
     McpAutoApplyRule,
     McpServer,
@@ -132,8 +133,6 @@ class AsyncLLMSafeSpaces:
     async def _request_with_headers(
         self, method: str, path: str, *, timeout: float | None = None
     ) -> tuple[Any, httpx.Headers]:
-        """Like _request, but also returns the response headers (for
-        pagination cursors). No auth-retry: used for authenticated GETs."""
         url = f"{self._base_url}/api/v1{path}"
         resp = await self._client.request(
             method, url, headers=await self._auth_headers(), timeout=timeout or self._timeout
@@ -143,6 +142,25 @@ class AsyncLLMSafeSpaces:
         if resp.status_code == 204 or not resp.content:
             return None, resp.headers
         return resp.json(), resp.headers
+
+    async def _upload_file(
+        self, path: str, filename: str, content: bytes | str, *, timeout: float | None = None
+    ) -> Any:
+        """POST multipart/form-data with a single part named ``file``."""
+        url = f"{self._base_url}/api/v1{path}"
+        body = content.encode() if isinstance(content, str) else content
+        resp = await self._client.request(
+            "POST",
+            url,
+            headers=await self._auth_headers(),
+            files={"file": (filename, body, "application/octet-stream")},
+            timeout=timeout or self._timeout,
+        )
+        if resp.status_code >= 400:
+            self._raise_for_status(resp)
+        if resp.content:
+            return resp.json()
+        return None
 
     async def _auth_headers(self) -> dict[str, str]:
         if self._api_key:
@@ -177,7 +195,12 @@ class AsyncLLMSafeSpaces:
             case 404:
                 raise NotFoundError(msg)
             case 409:
-                raise ConflictError(msg)
+                phase = None
+                try:
+                    phase = resp.json().get("phase")
+                except Exception:
+                    pass
+                raise ConflictError(msg, phase=phase)
             case 429:
                 raise RateLimitError(msg)
             case 503:
@@ -228,6 +251,16 @@ class _AsyncWorkspacesAPI:
 
     async def get_status(self, workspace_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/workspaces/{workspace_id}/status")
+
+    async def upload_file(
+        self, workspace_id: str, filename: str, content: bytes | str
+    ) -> FileUpload:
+        """Upload a file into the workspace (Epic 67). See the sync
+        ``LLMSafeSpaces.workspaces.upload_file``."""
+        data = await self._c._upload_file(
+            f"/workspaces/{workspace_id}/uploads", filename, content
+        )
+        return FileUpload(**data)
 
     async def restart(self, workspace_id: str) -> None:
         await self._c._request("POST", f"/workspaces/{workspace_id}/restart")
@@ -336,12 +369,21 @@ class _AsyncSessionsAPI:
         return await self._c._request("GET", f"/workspaces/{workspace_id}/sessions/active")
 
     async def send_prompt_async(
-        self, workspace_id: str, session_id: str, message: str
+        self,
+        workspace_id: str,
+        session_id: str,
+        message: str,
+        files: list[str] | None = None,
     ) -> None:
+        """Send a prompt asynchronously; ``files`` are upload-namespace
+        paths (Epic 67) — the API composes the v1 attachment manifest."""
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": message}]}
+        if files:
+            body["files"] = files
         await self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/prompt",
-            json={"message": message},
+            json=body,
         )
 
     async def delete(self, workspace_id: str, session_id: str) -> None:
@@ -350,11 +392,16 @@ class _AsyncSessionsAPI:
             f"/workspaces/{workspace_id}/sessions/{session_id}",
         )
 
-    async def enqueue(self, workspace_id: str, session_id: str, text: str) -> str:
+    async def enqueue(
+        self, workspace_id: str, session_id: str, text: str, files: list[str] | None = None
+    ) -> str:
+        body: dict[str, Any] = {"text": text}
+        if files:
+            body["files"] = files
         resp = await self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
-            json={"text": text},
+            json=body,
         )
         return resp["messageID"]
 
