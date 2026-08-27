@@ -41,6 +41,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
@@ -250,6 +251,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.With("component", "wsstate"),
 		)
 		proxyHandler.SetStateStore(redisStateStore)
+
+		// #759: persist per-session cumulative usage dedup state on the
+		// shared cache so an API pod restart never re-bills a session's
+		// cumulative input tokens.
+		proxyHandler.SetTokenSeenStore(sse.NewRedisTokenSeenStore(
+			cacheSvc.GetClient(),
+			sse.DefaultTokenSeenTTL,
+		))
 
 		// D3 (design 0050 §D3, #907): the durable-prompt outbox — same
 		// Valkey instance (AOF-persisted); accepts survive client
