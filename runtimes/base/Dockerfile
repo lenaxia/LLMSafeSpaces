@@ -288,6 +288,11 @@ COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 # /etc/gitconfig is defeated by the setup-git reset (then env serves).
 # Both point at the absolute PVC-symlink path, immune to $HOME drift.
 RUN printf '[credential]\n\thelper = store --file=/home/sandbox/.git-credentials\n' > /etc/gitconfig
+# DS-0031 false positive: GIT_CONFIG_KEY_0's VALUE is the literal public
+# git config key name "credential.helper", not a secret — the *_KEY_*
+# name is mandated by git's documented env-config interface
+# (GIT_CONFIG_COUNT/KEY_n/VALUE_n, git >= 2.31).
+# trivy:ignore:DS-0031
 ENV GIT_CONFIG_COUNT=1 \
     GIT_CONFIG_KEY_0=credential.helper \
     GIT_CONFIG_VALUE_0="store --file=/home/sandbox/.git-credentials"
