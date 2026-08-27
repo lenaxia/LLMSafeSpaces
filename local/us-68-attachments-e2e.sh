@@ -55,6 +55,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Regression guard (PR #1099): the first real execution died on
+# 'invalid input syntax for type uuid' because a seed carried a
+# 9-char first group. Fail fast, at the source, before any cluster
+# interaction — postgres would otherwise reject the seed INSERT
+# minutes later.
+uuid_ok() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+for _ws in "${WS_A}" "${WS_B}"; do
+    uuid_ok "${_ws}" || die "seed ${_ws} is not a valid UUID (8-4-4-4-12 lowercase hex)"
+done
+
 kc() { kubectl --context "${CTX}" "$@"; }
 
 wait_phase() { # ws phase timeout_s
