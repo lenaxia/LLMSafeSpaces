@@ -471,10 +471,21 @@ var (
 		},
 		[]string{"event_type"},
 	)
+	quotaCheckFailedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_metering_quota_checks_failed_total",
+			Help: "Total quota gate failures (fail-closed denials) — a DB/infra outage surfacing in quota enforcement (#768)",
+		},
+		[]string{"event_type"},
+	)
 )
 
 func RecordQuotaExceeded(eventType string) {
 	quotaExceededTotal.WithLabelValues(eventType).Inc()
+}
+
+func RecordQuotaCheckFailed(eventType string) {
+	quotaCheckFailedTotal.WithLabelValues(eventType).Inc()
 }
 
 var (

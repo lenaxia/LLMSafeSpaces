@@ -392,31 +392,20 @@ func (s *Service) GetQuotaStatus(ctx context.Context, owner BillingOwner) ([]Quo
 
 func (s *Service) getQuotaUsage(ctx context.Context, owner BillingOwner, eventType, periodType string, limit int64) (used, remaining int64, resetsAt time.Time, periodKey string, err error) {
 	now := time.Now().UTC()
-	var query string
-	var args []interface{}
 	switch periodType {
 	case "daily":
 		periodKey = now.Format("2006-01-02")
 		resetsAt = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
-		query = `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
-		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
-		 AND period = $4`
-		args = []interface{}{owner.ID, string(owner.Type), eventType, periodKey}
 	case "monthly":
 		periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 		periodKey = periodStart.Format("2006-01-02")
 		resetsAt = time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
-		query = `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
-		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
-		 AND period >= $4 AND period < $5`
-		args = []interface{}{owner.ID, string(owner.Type), eventType, periodStart, resetsAt}
 	default:
 		periodKey = "lifetime"
 		resetsAt = time.Time{}
-		query = `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
-		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3`
-		args = []interface{}{owner.ID, string(owner.Type), eventType}
 	}
+
+	query, args := quotaUsageQuery(owner, eventType, periodType)
 
 	if qerr := s.db.QueryRowContext(ctx, query, args...).Scan(&used); qerr != nil {
 		s.logger.Error("Failed to query quota usage", qerr,
@@ -454,6 +443,128 @@ func (s *Service) CheckQuota(ctx context.Context, owner BillingOwner, eventType 
 		return true, 0, fmt.Errorf("check quota: %w", qerr)
 	}
 	return remaining > 0, remaining, nil
+}
+
+// quotaReservationTTL bounds how long an in-flight reservation counts
+// against the quota. It must cover a plausible request lifetime (the
+// usage event lands only after the turn completes); expired rows stop
+// counting and are reaped. The over-restriction while a reservation and
+// its landed usage event briefly coexist is momentary and in the safe
+// direction — the race this bounds (#768c) allowed unlimited overage.
+const quotaReservationTTL = 2 * time.Minute
+
+// ReserveQuota atomically checks the (owner, eventType) quota and
+// records an in-flight reservation for quantity (#768c). The whole
+// check-then-act sequence runs inside a transaction holding a
+// per-owner+type advisory lock, so concurrent requests serialize and
+// cannot both observe the last free slot. Committed usage_events plus
+// unexpired reservations count toward the limit.
+//
+// Semantics: no usage_limits row → unlimited, allowed without touching
+// the reservation machinery. quantity <= 0 → no-op allowed. Errors are
+// returned — callers fail closed (#768b).
+func (s *Service) ReserveQuota(ctx context.Context, owner BillingOwner, eventType string, quantity int64) (bool, int64, error) {
+	if quantity <= 0 {
+		return true, 0, nil
+	}
+
+	var maxQty int64
+	var periodType string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT max_quantity, period_type FROM usage_limits
+		WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
+		ORDER BY period_type LIMIT 1`, owner.ID, string(owner.Type), eventType,
+	).Scan(&maxQty, &periodType)
+	if err == sql.ErrNoRows {
+		return true, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("reserve quota: read limit: %w", err)
+	}
+
+	usageQuery, baseArgs := quotaUsageQuery(owner, eventType, periodType)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("reserve quota: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Serialize concurrent reservations for the same owner+event type.
+	// The xact form releases automatically at commit/rollback.
+	lockKey := owner.ID + "|" + eventType
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return false, 0, fmt.Errorf("reserve quota: lock: %w", err)
+	}
+
+	var used int64
+	if err := tx.QueryRowContext(ctx, usageQuery, baseArgs...).Scan(&used); err != nil {
+		return false, 0, fmt.Errorf("reserve quota: usage sum: %w", err)
+	}
+
+	var reserved int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(quantity), 0) FROM usage_quota_reservations
+		WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
+		AND expires_at > now()`, owner.ID, string(owner.Type), eventType,
+	).Scan(&reserved); err != nil {
+		return false, 0, fmt.Errorf("reserve quota: reservation sum: %w", err)
+	}
+
+	remaining := maxQty - used - reserved
+	if remaining < 0 {
+		remaining = 0
+	}
+	if remaining < quantity {
+		return false, remaining, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO usage_quota_reservations (owner_id, owner_type, event_type, quantity, expires_at)
+		VALUES ($1, $2, $3, $4, now() + $5::interval)`,
+		owner.ID, string(owner.Type), eventType, quantity, fmt.Sprintf("%d seconds", int(quotaReservationTTL.Seconds())),
+	); err != nil {
+		return false, 0, fmt.Errorf("reserve quota: insert: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, 0, fmt.Errorf("reserve quota: commit: %w", err)
+	}
+	return true, remaining - quantity, nil
+}
+
+// quotaUsageQuery returns the period-scoped usage SUM query for the
+// owner+event type, shared by getQuotaUsage and ReserveQuota.
+func quotaUsageQuery(owner BillingOwner, eventType, periodType string) (string, []interface{}) {
+	now := time.Now().UTC()
+	switch periodType {
+	case "daily":
+		return `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
+		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
+		 AND period = $4`,
+			[]interface{}{owner.ID, string(owner.Type), eventType, now.Format("2006-01-02")}
+	case "monthly":
+		periodStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+		periodEnd := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		return `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
+		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3
+		 AND period >= $4 AND period < $5`,
+			[]interface{}{owner.ID, string(owner.Type), eventType, periodStart, periodEnd}
+	default:
+		return `SELECT COALESCE(SUM(quantity), 0) FROM usage_events
+		 WHERE owner_id = $1 AND owner_type = $2 AND event_type = $3`,
+			[]interface{}{owner.ID, string(owner.Type), eventType}
+	}
+}
+
+// reapExpiredReservations deletes expired quota reservations. Called
+// from the DLQ reaper cadence; the active-window filter in ReserveQuota
+// makes reaping a size optimization, not a correctness dependency.
+func (s *Service) reapExpiredReservations(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM usage_quota_reservations WHERE expires_at < now()`); err != nil {
+		return fmt.Errorf("reap expired quota reservations: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) ExportUsage(ctx context.Context) (int, error) {
@@ -754,6 +865,9 @@ func (s *Service) dlqReaperLoop() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			if err := s.reapDLQ(ctx); err != nil {
 				s.logger.Error("DLQ reaper run failed", err)
+			}
+			if err := s.reapExpiredReservations(ctx); err != nil {
+				s.logger.Error("Quota reservation reaper run failed", err)
 			}
 			cancel()
 		}

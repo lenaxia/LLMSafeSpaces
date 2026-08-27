@@ -191,6 +191,7 @@ type MeteringService interface {
 	GetUsageByWorkspace(ctx context.Context, owner types.BillingOwner, workspaceID string, from, to time.Time) (*types.UsageReport, error)
 	GetQuotaStatus(ctx context.Context, owner types.BillingOwner) ([]types.QuotaStatus, error)
 	CheckQuota(ctx context.Context, owner types.BillingOwner, eventType string) (allowed bool, remaining int64, err error)
+	ReserveQuota(ctx context.Context, owner types.BillingOwner, eventType string, quantity int64) (allowed bool, remaining int64, err error)
 	ExportUsage(ctx context.Context) (int, error)
 	Start() error
 	Stop() error
