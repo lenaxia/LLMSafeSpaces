@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -150,6 +151,33 @@ func (s *e2eImageFactoryStore) GetInFlightOrSuccessfulBuild(ctx context.Context,
 		}
 	}
 	return nil, nil
+}
+func (s *e2eImageFactoryStore) ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error) {
+	res := imagefactory.HashResolution{Hash: hash, Versions: []string{}}
+	seen := map[string]bool{}
+	for _, b := range s.e2eBuilds {
+		if b.Hash != hash {
+			continue
+		}
+		if b.Status != imagefactory.BuildSucceeded && b.Status != imagefactory.BuildDispatched {
+			continue
+		}
+		if res.BaseName == "" {
+			res.BaseName = b.BaseName
+			res.Selection = b.ResolvedValues.Selection()
+		}
+		if !seen[b.BaseVersion] {
+			seen[b.BaseVersion] = true
+			res.Versions = append(res.Versions, b.BaseVersion)
+		}
+	}
+	if res.BaseName == "" {
+		return imagefactory.HashResolution{}, database.ErrNotFound
+	}
+	sort.Slice(res.Versions, func(i, j int) bool {
+		return imagefactory.CompareVersions(res.Versions[i], res.Versions[j]) > 0
+	})
+	return res, nil
 }
 func (s *e2eImageFactoryStore) SetConfigStatus(ctx context.Context, id string, status imagefactory.ConfigStatus) error {
 	if c, ok := s.e2eConfigs[id]; ok {

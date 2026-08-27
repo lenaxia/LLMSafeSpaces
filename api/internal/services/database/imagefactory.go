@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 
@@ -74,6 +75,12 @@ type ImageFactoryStore interface {
 	// ── Builds ───────────────────────────────────────────────────────
 	GetBuild(ctx context.Context, id string) (imagefactory.Build, error)
 	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
+	// ResolveHash is the public content-address lookup: the selection a
+	// schematic hash names plus every base version built under it.
+	// Scope-agnostic by design — builds coalesce across scopes and a
+	// hash reveals only public catalog extension IDs. Returns
+	// ErrNotFound when no succeeded/in-flight build carries the hash.
+	ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error)
 	GetBuildByGHRunID(ctx context.Context, ghRunID int64) (imagefactory.Build, error)
 	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 	MarkBuildSucceeded(ctx context.Context, id, imageRef, digest string) error
@@ -807,6 +814,57 @@ func (s *Service) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVe
 		return nil, fmt.Errorf("get in-flight-or-successful build: %w", err)
 	}
 	return &b, nil
+}
+
+// ResolveHash implements the public content-address lookup: the selection
+// a schematic hash names (recovered from the preferred build's frozen
+// resolved_values — builds do not store the selection list) plus every
+// base version with a succeeded or in-flight build under that hash,
+// newest first. Failed builds contribute nothing: a failed combination's
+// selection may have been the failure cause, and versions without a
+// usable image should not be offered for re-selection.
+func (s *Service) ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT base_name, base_version, resolved_values FROM image_factory_builds
+		 WHERE hash = $1 AND status IN ('succeeded', 'dispatched')
+		 ORDER BY (CASE status WHEN 'succeeded' THEN 0 ELSE 1 END), started_at DESC`,
+		hash)
+	if err != nil {
+		return imagefactory.HashResolution{}, fmt.Errorf("resolve hash: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	res := imagefactory.HashResolution{Hash: hash, Versions: []string{}}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var baseName, baseVersion string
+		var rvJSON []byte
+		if err := rows.Scan(&baseName, &baseVersion, &rvJSON); err != nil {
+			return imagefactory.HashResolution{}, fmt.Errorf("resolve hash: scan: %w", err)
+		}
+		if res.BaseName == "" {
+			res.BaseName = baseName
+			var rv imagefactory.ResolvedValues
+			if err := json.Unmarshal(rvJSON, &rv); err != nil {
+				return imagefactory.HashResolution{}, fmt.Errorf("resolve hash: unmarshal resolved_values: %w", err)
+			}
+			res.Selection = rv.Selection()
+		}
+		if !seen[baseVersion] {
+			seen[baseVersion] = true
+			res.Versions = append(res.Versions, baseVersion)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return imagefactory.HashResolution{}, fmt.Errorf("resolve hash: %w", err)
+	}
+	if res.BaseName == "" {
+		return imagefactory.HashResolution{}, ErrNotFound
+	}
+	sort.Slice(res.Versions, func(i, j int) bool {
+		return imagefactory.CompareVersions(res.Versions[i], res.Versions[j]) > 0
+	})
+	return res, nil
 }
 
 func (s *Service) GetBuildByGHRunID(ctx context.Context, ghRunID int64) (imagefactory.Build, error) {

@@ -35,6 +35,7 @@ type imageFactoryStore interface {
 
 	// Build reads + writes.
 	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
+	ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error)
 	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 }
 

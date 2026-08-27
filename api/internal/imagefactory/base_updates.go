@@ -57,7 +57,7 @@ func ComputeBaseUpdates(c Config, bases []Base) *BaseUpdates {
 		b := &bases[i]
 		if b.Name == c.BaseName {
 			known = true
-			if compareVersions(b.Version, latestSame) > 0 {
+			if CompareVersions(b.Version, latestSame) > 0 {
 				latestSame = b.Version
 			}
 		}
@@ -81,18 +81,18 @@ func ComputeBaseUpdates(c Config, bases []Base) *BaseUpdates {
 		u.DefaultBaseVersion = def.Version
 		return u
 	}
-	if compareVersions(latestSame, c.BaseVersion) > 0 {
+	if CompareVersions(latestSame, c.BaseVersion) > 0 {
 		u.Kind = BaseUpdateVersionBump
 		return u
 	}
 	return nil
 }
 
-// compareVersions orders dot-separated numeric version strings
+// CompareVersions orders dot-separated numeric version strings
 // ("0.10.0" > "0.9.0"). Non-numeric segments compare lexically; a
 // longer prefix of equal segments is greater. Tolerates arbitrary
 // segment counts.
-func compareVersions(a, b string) int {
+func CompareVersions(a, b string) int {
 	as, bs := splitDots(a), splitDots(b)
 	n := len(as)
 	if len(bs) < n {

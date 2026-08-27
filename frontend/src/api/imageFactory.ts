@@ -68,6 +68,17 @@ export interface BaseUpdates {
   defaultBaseVersion?: string;
 }
 
+// Content-address lookup for a schematic hash: the selection it names
+// plus every base version built under it (newest first). Any
+// authenticated user may resolve any hash — images are platform-wide
+// artifacts and a hash reveals only catalog extension IDs.
+export interface HashResolution {
+  hash: string;
+  selection: string[];
+  baseName: string;
+  versions: string[];
+}
+
 export const imageFactoryApi = {
   getCatalog: () => api.get<Catalog>("/image-factory/catalog"),
 
@@ -77,6 +88,8 @@ export const imageFactoryApi = {
   },
 
   getConfig: (hash: string) => api.get<Config>(`/image-factory/configs/${hash}`),
+
+  resolveHash: (hash: string) => api.get<HashResolution>(`/image-factory/resolve/${hash}`),
 
   createConfig: (req: {
     name: string;

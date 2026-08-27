@@ -144,6 +144,21 @@ type KnownFailure struct {
 	Retriable     bool      `json:"retriable"`
 }
 
+// HashResolution is the public content-address lookup for a schematic
+// hash: the selection it names and every base version built under it.
+// A hash is a content address over public catalog extension IDs — it is
+// not scope-sensitive (builds coalesce scope-agnostically; images are
+// platform-wide artifacts), so any authenticated user may resolve one
+// to re-select the same options.
+type HashResolution struct {
+	Hash      string    `json:"hash"`
+	Selection Selection `json:"selection"`
+	BaseName  string    `json:"baseName"`
+	// Versions are the distinct base versions with a succeeded or
+	// in-flight build under this hash, newest first.
+	Versions []string `json:"versions"`
+}
+
 // BuildStatus enumerates the build lifecycle.
 type BuildStatus string
 

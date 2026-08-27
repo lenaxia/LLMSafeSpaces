@@ -17,6 +17,14 @@ import (
 // entries, not user free text, but a typo'd ID must fail loudly.
 var extIDRe = regexp.MustCompile(`^[a-z0-9@._-]+$`)
 
+// hashRe matches the HashSelection output shape: "s-" + 16 hex chars.
+var hashRe = regexp.MustCompile(`^s-[0-9a-f]{16}$`)
+
+// IsValidHash reports whether s is a well-formed schematic hash.
+func IsValidHash(s string) bool {
+	return hashRe.MatchString(s)
+}
+
 // ValidateSelection checks that the selection is non-empty and every ID
 // matches the extension ID charset. It does NOT check existence in the
 // catalog — that is the store's concern (ResolveSelection does it).

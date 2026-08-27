@@ -244,11 +244,13 @@ describe("WorkspaceImagesTab delete confirm + base version", () => {
     await waitFor(() => expect(screen.getByText("Delete")).toBeInTheDocument());
     fireEvent.click(screen.getByText("Delete"));
 
-    // ConfirmDialog opens — verify it shows the friendly name, not the hash.
-    // The dialog title contains the name; the list item also shows it,
-    // so check that the hash does NOT appear anywhere in the dialog.
+    // ConfirmDialog opens — verify it shows the friendly name, not the
+    // hash. The expanded CARD legitimately shows the hash now (hash
+    // display feature); scope the check to the dialog content itself.
     await waitFor(() => {
-      expect(screen.queryByText(/s-cryptic/)).not.toBeInTheDocument();
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toHaveTextContent("My ML Stack");
+      expect(dialog).not.toHaveTextContent(/s-cryptic/);
     });
   });
 

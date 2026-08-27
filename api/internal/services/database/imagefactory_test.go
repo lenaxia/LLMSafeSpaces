@@ -314,6 +314,71 @@ func TestGetBuildByGHRunID_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
+// ── ResolveHash ─────────────────────────────────────────────────────────
+
+func TestResolveHash_AggregatesVersionsAndRecoversSelection(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{
+		"ffmpeg":      {Type: "apt", Value: "ffmpeg"},
+		"python-3.13": {Type: "mise", Value: "python@3.13"},
+	})
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.21.2", rvJSON).
+		AddRow("bookworm", "0.23.0", rvJSON)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+
+	res, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.NoError(t, err)
+	assert.Equal(t, "s-abc123def4567890", res.Hash)
+	assert.Equal(t, "bookworm", res.BaseName)
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.13"}, res.Selection)
+	// Newest first, regardless of row order.
+	assert.Equal(t, []string{"0.23.0", "0.21.2"}, res.Versions)
+}
+
+func TestResolveHash_DedupesVersions(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{"ffmpeg": {Type: "apt", Value: "ffmpeg"}})
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.23.0", rvJSON).
+		AddRow("bookworm", "0.23.0", rvJSON)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+
+	res, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0.23.0"}, res.Versions)
+}
+
+func TestResolveHash_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").
+		WillReturnRows(sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}))
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestResolveHash_QueryError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnError(errors.New("db down"))
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.Error(t, err)
+}
+
+func TestResolveHash_CorruptResolvedValues(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.23.0", []byte(`{not json`))
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal resolved_values")
+}
+
 func TestListRejectedConfigsForFailure(t *testing.T) {
 	t.Parallel()
 	svc, mock := newMockService(t)

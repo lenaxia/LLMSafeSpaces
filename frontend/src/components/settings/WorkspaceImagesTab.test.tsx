@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 const mockGetCatalog = vi.fn();
 const mockListConfigs = vi.fn();
 const mockCreateConfig = vi.fn();
+const mockResolveHash = vi.fn();
 
 vi.mock("../../api/imageFactory", () => ({
   imageFactoryApi: {
@@ -11,6 +12,7 @@ vi.mock("../../api/imageFactory", () => ({
     listConfigs: (...a: unknown[]) => mockListConfigs(...a),
     getConfig: vi.fn(),
     createConfig: (...a: unknown[]) => mockCreateConfig(...a),
+    resolveHash: (...a: unknown[]) => mockResolveHash(...a),
   },
 }));
 
@@ -265,7 +267,7 @@ describe("base-update pill (#928)", () => {
     ]);
     render(<WorkspaceImagesTab />);
     await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
-    expect(screen.getByText("base 0.9.0 available")).toBeInTheDocument();
+    expect(screen.getByText("platform 0.9.0 available")).toBeInTheDocument();
   });
 
   it("renders no pill when fresh (field absent)", async () => {
@@ -463,5 +465,87 @@ describe("base-update pill (#928)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Create Personal Image & Build/i }));
     // Save succeeded → the select returns to the default (bookworm).
     await waitFor(() => expect(baseSelect.value).toBe("bookworm/0.6.0"));
+  });
+
+  it("expanded config shows the schematic hash and platform-labeled base version", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    // The expanded meta line labels the version as the platform release
+    // (not bookworm's own version) and surfaces the schematic hash.
+    expect(await screen.findByText(
+      (_, el) => el?.textContent === "Base: bookworm (platform 0.6.0) · 1 extensions · s-a",
+    )).toBeInTheDocument();
+  });
+
+  it("base picker labels versions as platform releases", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ffmpeg")).toBeInTheDocument());
+    const baseSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    const option = baseSelect.options[0] as HTMLOptionElement;
+    expect(option.textContent).toBe("bookworm — platform 0.6.0");
+  });
+
+  it("load-from-hash prefills selection and newest built version", async () => {
+    mockGetCatalog.mockResolvedValue({
+      ...defaultCatalog,
+      bases: [
+        ...defaultCatalog.bases,
+        { name: "bookworm", version: "0.21.2", image: "img", tag: "0.21.2" },
+      ],
+    });
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    mockResolveHash.mockResolvedValue({
+      hash: "s-abcdef0123456789",
+      selection: ["ffmpeg", "python313"],
+      baseName: "bookworm",
+      versions: ["0.21.2", "0.6.0"],
+    });
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ffmpeg")).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/paste an image's schematic hash/i), { target: { value: "s-abcdef0123456789" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Load$/ }));
+    await waitFor(() => expect(mockResolveHash).toHaveBeenCalledWith("s-abcdef0123456789"));
+    // Both extensions checked; base select pre-targeted at newest version.
+    const ffmpegLabel = screen.getAllByText("ffmpeg")[0]!.closest("label");
+    expect((ffmpegLabel?.querySelector("input") as HTMLInputElement).checked).toBe(true);
+    const baseSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(baseSelect.value).toBe("bookworm/0.21.2");
+    expect(mockToast).toHaveBeenCalledWith(expect.stringMatching(/Loaded s-abcdef0123456789: 2 extensions on bookworm/), "success");
+  });
+
+  it("load-from-hash drops retired extensions and errors when all are retired", async () => {
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    mockResolveHash.mockResolvedValue({
+      hash: "s-abcdef0123456789",
+      selection: ["ffmpeg"],
+      baseName: "bookworm",
+      versions: ["0.6.0"],
+    });
+    const gone = {
+      ...defaultCatalog,
+      extensions: defaultCatalog.extensions.filter((e: { id: string }) => e.id !== "ffmpeg"),
+    };
+    mockGetCatalog.mockResolvedValue(gone);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("python313")).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/paste an image's schematic hash/i), { target: { value: "s-abcdef0123456789" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Load$/ }));
+    await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.stringMatching(/Every extension.*retired/), "error"));
+  });
+
+  it("load-from-hash surfaces resolve failures as error toasts", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    mockResolveHash.mockRejectedValue(new Error("no image built with that hash"));
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ffmpeg")).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/paste an image's schematic hash/i), { target: { value: "s-abcdef0123456789" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Load$/ }));
+    await waitFor(() => expect(mockToast).toHaveBeenCalledWith("no image built with that hash", "error"));
   });
 });
