@@ -300,10 +300,22 @@ RUN mkdir -p /etc/mise \
         mise install --system "$tool" \
         || echo "WARN: $tool failed on $ARCH, skipping (will be available via mise at runtime)"; \
     done \
-    && printf '[tools]\npython = "3.12.13"\nnode = "lts"\nrust = "stable"\ngo = "1.26.6"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml \
-    && mise reshim
+    && printf '[tools]\npython = "3.12.13"\nnode = "lts"\nrust = "stable"\ngo = "1.26.6"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml
 
-RUN /usr/local/bin/smoke-test.sh
+# Rebuild shims into the SYSTEM data dir (/usr/local/share/mise/shims):
+# baked into the image layer, on the runtime PATH (ENV below), and —
+# unlike MISE_DATA_DIR under /workspace — NEVER shadowed by the PVC
+# mount. The install-time `mise reshim` above ran before MISE_DATA_DIR
+# was set, i.e. as root with the default data dir (~root/.local/share/
+# mise/shims): dead weight, which is why both runtime shims dirs were
+# historically empty and toolchains never resolved in non-interactive
+# shells. Runtime user installs are re-shimmed to $MISE_DATA_DIR/shims
+# at boot (entrypoint-common.sh legacy mode; ensureMiseShims sidecar
+# mode) — PVC tools win via PATH precedence, this dir is the floor.
+# Smoke test runs with the system shims on PATH so `command -v`
+# verifies real resolution, not just `mise which` discoverability.
+RUN MISE_DATA_DIR=/usr/local/share/mise mise reshim \
+    && PATH="/usr/local/share/mise/shims:$PATH" /usr/local/bin/smoke-test.sh
 
 # --- Runtime environment variables ---
 #
