@@ -187,6 +187,13 @@ func (s *Service) getPlatformPrompt(ctx context.Context) (string, error) {
 	var prompt string
 	if setting != nil {
 		_ = json.Unmarshal(setting.Value, &prompt)
+	} else {
+		// Fresh install: no sys_prompt_platform row (migration 000002
+		// creates the schema, no seed). Fall back to the compiled-in
+		// default so the platform tier is never silently empty — same
+		// posture as DefaultJWTIssuer. A saved row, including an
+		// explicitly empty one, always wins (admin's deliberate choice).
+		prompt = types.DefaultPlatformPrompt
 	}
 
 	if s.cache != nil {

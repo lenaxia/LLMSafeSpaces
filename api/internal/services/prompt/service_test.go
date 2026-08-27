@@ -266,6 +266,53 @@ func TestGetPlatformPrompt_CacheMiss_ConsultsStore(t *testing.T) {
 	store.AssertCalled(t, "GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform)
 }
 
+// Fresh install: the platform_settings table has no sys_prompt_platform row
+// (migration 000002 creates the schema, no seed). The platform tier must
+// fall back to the compiled-in default — mirrors the DefaultJWTIssuer
+// posture (defaults keep out-of-the-box deploys working).
+func TestGetPlatformPrompt_SettingAbsent_ReturnsDefault(t *testing.T) {
+	store := new(mockPromptStore)
+	store.On("GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform).Return((*types.PlatformSetting)(nil), nil)
+
+	svc := New(store, missCache{})
+	prompt, err := svc.getPlatformPrompt(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, types.DefaultPlatformPrompt, prompt)
+}
+
+// A saved row holding an empty string is an admin's explicit "cleared"
+// choice — the default must NOT be re-applied over it.
+func TestGetPlatformPrompt_SettingEmptyString_RespectsExplicitClear(t *testing.T) {
+	store := new(mockPromptStore)
+	store.On("GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform).Return(&types.PlatformSetting{
+		Value: []byte(`""`),
+	}, nil)
+
+	svc := New(store, missCache{})
+	prompt, err := svc.getPlatformPrompt(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "", prompt)
+}
+
+// End-to-end through ResolveEffective on a fresh install: Resolved must
+// carry the default platform text (and the default must respect the
+// 10k per-tier cap so an admin can always round-trip it through the UI).
+func TestResolveEffective_FreshInstall_PlatformTierCarriesDefault(t *testing.T) {
+	store := new(mockPromptStore)
+	store.On("GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform).Return((*types.PlatformSetting)(nil), nil)
+	store.On("GetWorkspaceOrgID", mock.Anything, "ws-1").Return("org-1", nil)
+	store.On("GetOrgPolicies", mock.Anything, "org-1").Return([]*types.OrgPolicy{}, nil)
+	store.On("GetWorkspacePrompt", mock.Anything, "ws-1").Return((*types.WorkspacePrompt)(nil), nil)
+
+	svc := New(store, missCache{})
+	eff, err := svc.ResolveEffective(context.Background(), "ws-1")
+	assert.NoError(t, err)
+	assert.Equal(t, types.DefaultPlatformPrompt, eff.PlatformPrompt)
+	assert.Equal(t, types.DefaultPlatformPrompt, eff.Resolved)
+	assert.LessOrEqual(t, len(types.DefaultPlatformPrompt), types.MaxPromptPerLevel(),
+		"default platform prompt must fit the per-tier cap")
+}
+
 // TestResolveRoleSystemPrompt_InheritsFromParent: when the leaf role has no
 // system prompt but a parent it extends does, the parent's prompt is delivered
 // (the extends chain is walked, not just the leaf).
