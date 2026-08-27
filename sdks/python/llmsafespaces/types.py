@@ -268,3 +268,49 @@ class UpdateAgentRoleRequest:
     extends: str | None = None
     isDefault: bool | None = None
     config: dict[str, Any] | None = None
+
+
+class McpServer(TypedDict, total=False):
+    """External MCP server registration (Epic 53). Secrets (env/headers)
+    are write-only — responses carry hasSecret only."""
+
+    id: str
+    name: str
+    transport: str
+    url: str
+    command: str
+    args: list[str]
+    timeoutMs: int
+    hasSecret: bool
+    enabled: bool
+    createdAt: str
+    updatedAt: str
+
+
+class CreateMcpServerRequest(TypedDict, total=False):
+    name: str
+    transport: str
+    url: str
+    command: str
+    args: list[str]
+    timeoutMs: int
+    enabled: bool
+    env: dict[str, str]
+    headers: dict[str, str]
+    autoApply: dict[str, str]
+
+
+class UpdateMcpServerRequest(TypedDict, total=False):
+    name: str
+    url: str
+    command: str
+    args: list[str]
+    timeoutMs: int
+    enabled: bool
+    env: dict[str, str]
+    headers: dict[str, str]
+
+
+class McpAutoApplyRule(TypedDict, total=False):
+    targetType: str
+    targetId: str

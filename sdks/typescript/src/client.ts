@@ -17,7 +17,10 @@ import type {
   CreateSecretRequest,
   CreateWorkspaceRequest,
   EnsureSessionResponse,
+  CreateMcpServerRequest,
   FetchFn,
+  McpAutoApplyRule,
+  McpServer,
   Message,
   ProviderCredential,
   QueuedMessage,
@@ -25,6 +28,7 @@ import type {
   SessionListItem,
   TerminalTicket,
   UpdateProviderCredentialRequest,
+  UpdateMcpServerRequest,
   User,
   Workspace,
   WorkspaceListResult,
@@ -59,6 +63,9 @@ export class LLMSafeSpaces {
   public readonly agentRoles: AgentRolesAPI;
   public readonly workflows: WorkflowsAPI;
   public readonly triggers: TriggersAPI;
+  public readonly mcpServers: McpServersAPI;
+  public readonly adminMcpServers: AdminMcpServersAPI;
+  public readonly orgMcpServers: OrgMcpServersAPI;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -83,6 +90,9 @@ export class LLMSafeSpaces {
     this.agentRoles = new AgentRolesAPI(this);
     this.workflows = new WorkflowsAPI(this);
     this.triggers = new TriggersAPI(this);
+    this.mcpServers = new McpServersAPI(this);
+    this.adminMcpServers = new AdminMcpServersAPI(this);
+    this.orgMcpServers = new OrgMcpServersAPI(this);
   }
 
   /** Internal: make an authenticated request. */
@@ -757,5 +767,121 @@ class TriggersAPI {
 
   delete(id: string) {
     return this.client.request<void>("DELETE", `/me/triggers/${id}`);
+  }
+}
+
+/** MCP servers owned by the caller (/me/mcp-servers, Epic 53). */
+class McpServersAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client
+      .request<{ servers?: McpServer[] } | McpServer[]>("GET", "/me/mcp-servers")
+      .then((r) => (Array.isArray(r) ? r : (r.servers ?? [])));
+  }
+  get(id: string) {
+    return this.client.request<McpServer>("GET", `/me/mcp-servers/${id}`);
+  }
+  create(req: CreateMcpServerRequest) {
+    return this.client.request<McpServer>("POST", "/me/mcp-servers", req);
+  }
+  update(id: string, req: UpdateMcpServerRequest) {
+    return this.client.request<McpServer>("PUT", `/me/mcp-servers/${id}`, req);
+  }
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/me/mcp-servers/${id}`);
+  }
+  bind(id: string, workspaceId: string) {
+    return this.client.request<void>("POST", `/me/mcp-servers/${id}/bindings`, { workspaceId });
+  }
+  unbind(id: string, workspaceId: string) {
+    return this.client.request<void>("DELETE", `/me/mcp-servers/${id}/bindings/${workspaceId}`);
+  }
+  createAutoApply(id: string, targetType: string, targetId?: string) {
+    return this.client.request<void>("POST", `/me/mcp-servers/${id}/auto-apply`, { targetType, targetId });
+  }
+  listAutoApply(id: string) {
+    return this.client
+      .request<{ rules?: McpAutoApplyRule[] } | McpAutoApplyRule[]>("GET", `/me/mcp-servers/${id}/auto-apply`)
+      .then((r) => (Array.isArray(r) ? r : (r.rules ?? [])));
+  }
+}
+
+/** Platform MCP servers (/admin/mcp-servers; admin scope). */
+class AdminMcpServersAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client
+      .request<{ servers?: McpServer[] } | McpServer[]>("GET", "/admin/mcp-servers")
+      .then((r) => (Array.isArray(r) ? r : (r.servers ?? [])));
+  }
+  get(id: string) {
+    return this.client.request<McpServer>("GET", `/admin/mcp-servers/${id}`);
+  }
+  create(req: CreateMcpServerRequest) {
+    return this.client.request<McpServer>("POST", "/admin/mcp-servers", req);
+  }
+  update(id: string, req: UpdateMcpServerRequest) {
+    return this.client.request<McpServer>("PUT", `/admin/mcp-servers/${id}`, req);
+  }
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/admin/mcp-servers/${id}`);
+  }
+  bind(id: string, workspaceId: string) {
+    return this.client.request<void>("POST", `/admin/mcp-servers/${id}/bindings`, { workspaceId });
+  }
+  unbind(id: string, workspaceId: string) {
+    return this.client.request<void>("DELETE", `/admin/mcp-servers/${id}/bindings/${workspaceId}`);
+  }
+  createAutoApply(id: string, targetType: string, targetId?: string) {
+    return this.client.request<void>("POST", `/admin/mcp-servers/${id}/auto-apply`, { targetType, targetId });
+  }
+  listAutoApply(id: string) {
+    return this.client
+      .request<{ rules?: McpAutoApplyRule[] } | McpAutoApplyRule[]>("GET", `/admin/mcp-servers/${id}/auto-apply`)
+      .then((r) => (Array.isArray(r) ? r : (r.rules ?? [])));
+  }
+  /** targetId omitted → removes every rule of the targetType. */
+  deleteAutoApply(id: string, targetType: string, targetId?: string) {
+    const suffix = targetId ? `/${targetId}` : "";
+    return this.client.request<void>("DELETE", `/admin/mcp-servers/${id}/auto-apply/${targetType}${suffix}`);
+  }
+}
+
+/** Organization MCP servers (/orgs/{orgId}/mcp-servers; org-admin scope). */
+class OrgMcpServersAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list(orgId: string) {
+    return this.client
+      .request<{ servers?: McpServer[] } | McpServer[]>("GET", `/orgs/${orgId}/mcp-servers`)
+      .then((r) => (Array.isArray(r) ? r : (r.servers ?? [])));
+  }
+  get(orgId: string, id: string) {
+    return this.client.request<McpServer>("GET", `/orgs/${orgId}/mcp-servers/${id}`);
+  }
+  create(orgId: string, req: CreateMcpServerRequest) {
+    return this.client.request<McpServer>("POST", `/orgs/${orgId}/mcp-servers`, req);
+  }
+  update(orgId: string, id: string, req: UpdateMcpServerRequest) {
+    return this.client.request<McpServer>("PUT", `/orgs/${orgId}/mcp-servers/${id}`, req);
+  }
+  delete(orgId: string, id: string) {
+    return this.client.request<void>("DELETE", `/orgs/${orgId}/mcp-servers/${id}`);
+  }
+  bind(orgId: string, id: string, workspaceId: string) {
+    return this.client.request<void>("POST", `/orgs/${orgId}/mcp-servers/${id}/bindings`, { workspaceId });
+  }
+  unbind(orgId: string, id: string, workspaceId: string) {
+    return this.client.request<void>("DELETE", `/orgs/${orgId}/mcp-servers/${id}/bindings/${workspaceId}`);
+  }
+  createAutoApply(orgId: string, id: string, targetType: string, targetId?: string) {
+    return this.client.request<void>("POST", `/orgs/${orgId}/mcp-servers/${id}/auto-apply`, { targetType, targetId });
+  }
+  listAutoApply(orgId: string, id: string) {
+    return this.client
+      .request<{ rules?: McpAutoApplyRule[] } | McpAutoApplyRule[]>("GET", `/orgs/${orgId}/mcp-servers/${id}/auto-apply`)
+      .then((r) => (Array.isArray(r) ? r : (r.rules ?? [])));
   }
 }

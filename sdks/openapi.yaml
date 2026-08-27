@@ -2219,7 +2219,7 @@ paths:
         "200":
           description: Bound
         "409":
-          description: Quota exceeded
+          $ref: "#/components/responses/Conflict"
   /admin/mcp-servers/{id}/auto-apply:
     get:
       tags: [mcp]
@@ -2273,6 +2273,16 @@ paths:
       responses:
         "200":
           description: MCP server list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/McpServer"
     post:
       tags: [mcp]
       summary: Create an org-scoped MCP server
@@ -2292,6 +2302,10 @@ paths:
       responses:
         "201":
           description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
   /orgs/{id}/mcp-servers/{serverId}:
     get:
       tags: [mcp]
@@ -2309,6 +2323,10 @@ paths:
       responses:
         "200":
           description: MCP server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
     put:
       tags: [mcp]
       summary: Update an org-scoped MCP server
@@ -2331,6 +2349,10 @@ paths:
       responses:
         "200":
           description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
     delete:
       tags: [mcp]
       summary: Delete an org-scoped MCP server
@@ -2347,6 +2369,13 @@ paths:
       responses:
         "200":
           description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
   /me/mcp-servers:
     get:
       tags: [mcp]
@@ -2355,6 +2384,16 @@ paths:
       responses:
         "200":
           description: MCP server list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/McpServer"
     post:
       tags: [mcp]
       summary: Create a personal MCP server
@@ -2368,12 +2407,16 @@ paths:
       responses:
         "201":
           description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
         "402":
           description: Feature not enabled
         "403":
           description: Org member blocked or session required
         "409":
-          description: Quota exceeded
+          $ref: "#/components/responses/Conflict"
   /me/mcp-servers/{id}:
     get:
       tags: [mcp]
@@ -2387,6 +2430,10 @@ paths:
       responses:
         "200":
           description: MCP server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
     put:
       tags: [mcp]
       summary: Update a personal MCP server
@@ -2405,6 +2452,10 @@ paths:
       responses:
         "200":
           description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
     delete:
       tags: [mcp]
       summary: Delete a personal MCP server
@@ -2417,6 +2468,13 @@ paths:
       responses:
         "200":
           description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
   /admin/mcp-servers/{id}/bindings/{workspaceId}:
     delete:
       tags: [mcp]
@@ -2536,6 +2594,21 @@ paths:
       responses:
         "200":
           description: Auto-apply rules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules]
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        targetType:
+                          type: string
+                        targetId:
+                          type: string
     post:
       tags: [mcp]
       summary: Create an auto-apply rule for an org MCP server
@@ -2549,6 +2622,19 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetType]
+              properties:
+                targetType:
+                  type: string
+                  enum: [all, org, user]
+                targetId:
+                  type: string
       responses:
         "201":
           description: Created
@@ -2604,6 +2690,21 @@ paths:
       responses:
         "200":
           description: Auto-apply rules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules]
+                properties:
+                  rules:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        targetType:
+                          type: string
+                        targetId:
+                          type: string
     post:
       tags: [mcp]
       summary: Create an auto-apply rule for a personal MCP server
@@ -2613,6 +2714,19 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetType]
+              properties:
+                targetType:
+                  type: string
+                  enum: [all, org, user]
+                targetId:
+                  type: string
       responses:
         "201":
           description: Created
@@ -7948,6 +8062,14 @@ components:
           description: Present when the credential was created but its auto-bind failed
     McpServer:
       type: object
+      required: [id, name, transport, hasSecret, enabled]
+      example:
+        id: 3f9d2b1e-47aa-9c31-9d1100000001
+        name: github-tools
+        transport: http
+        url: https://mcp.example.com/mcp
+        hasSecret: false
+        enabled: true
       properties:
         id:
           type: string

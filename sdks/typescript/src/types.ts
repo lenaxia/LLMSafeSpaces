@@ -308,3 +308,48 @@ export interface QueuedMessage {
   enqueued_at: string;
   retry_count: number;
 }
+
+// MCP server management (Epic 53). Secrets (env/headers) are write-only —
+// responses carry hasSecret only.
+export interface McpServer {
+  id: string;
+  name: string;
+  transport: "http" | "sse" | "stdio";
+  url?: string;
+  command?: string;
+  args?: string[];
+  timeoutMs?: number;
+  hasSecret: boolean;
+  enabled: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateMcpServerRequest {
+  name: string;
+  transport: "http" | "sse" | "stdio";
+  url?: string;
+  command?: string;
+  args?: string[];
+  timeoutMs?: number;
+  enabled?: boolean;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+  autoApply?: { targetType: string; targetId?: string };
+}
+
+export interface UpdateMcpServerRequest {
+  name?: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  timeoutMs?: number;
+  enabled?: boolean;
+  env?: Record<string, string>;
+  headers?: Record<string, string>;
+}
+
+export interface McpAutoApplyRule {
+  targetType: string;
+  targetId?: string;
+}

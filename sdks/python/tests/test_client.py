@@ -724,3 +724,101 @@ def test_get_history_page_defaults_empty_cursor():
     assert "?" not in str(route.calls.last.request.url)
     assert page["nextCursor"] == ""
     assert page["messages"] == []
+
+
+@respx.mock
+def test_mcp_servers_user_scope_crud():
+    create_route = respx.post(f"{BASE}/me/mcp-servers").respond(
+        status_code=201,
+        json={"id": "srv-1", "name": "n", "transport": "http", "hasSecret": True, "enabled": True},
+    )
+    list_route = respx.get(f"{BASE}/me/mcp-servers").respond(
+        json={"servers": [{"id": "srv-1", "name": "n", "transport": "stdio", "hasSecret": False, "enabled": True}]}
+    )
+    update_route = respx.put(f"{BASE}/me/mcp-servers/srv-1").respond(
+        json={"id": "srv-1", "name": "renamed", "transport": "http", "hasSecret": False, "enabled": True}
+    )
+    delete_route = respx.delete(f"{BASE}/me/mcp-servers/srv-1").respond(status_code=200, json={"deleted": True})
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    srv = client.mcp_servers.create({"name": "n", "transport": "http", "url": "https://m.example"})
+    assert srv["id"] == "srv-1"
+    assert create_route.called
+
+    listed = client.mcp_servers.list()
+    assert listed[0]["transport"] == "stdio"
+
+    updated = client.mcp_servers.update("srv-1", {"name": "renamed"})
+    assert updated["name"] == "renamed"
+    import json as _json
+    assert _json.loads(update_route.calls.last.request.content) == {"name": "renamed"}
+
+    client.mcp_servers.delete("srv-1")
+    assert delete_route.called
+
+
+@respx.mock
+def test_mcp_servers_bind_and_auto_apply():
+    bind_route = respx.post(f"{BASE}/me/mcp-servers/srv-1/bindings").respond(status_code=200, json={"bound": True})
+    aa_route = respx.post(f"{BASE}/me/mcp-servers/srv-1/auto-apply").respond(
+        status_code=201, json={"created": True}
+    )
+    list_aa_route = respx.get(f"{BASE}/me/mcp-servers/srv-1/auto-apply").respond(
+        json={"rules": [{"targetType": "all"}]}
+    )
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.mcp_servers.bind("srv-1", "ws-1")
+    import json as _json
+    assert _json.loads(bind_route.calls.last.request.content) == {"workspaceId": "ws-1"}
+
+    client.mcp_servers.create_auto_apply("srv-1", "user", "u-1")
+    assert _json.loads(aa_route.calls.last.request.content) == {"targetType": "user", "targetId": "u-1"}
+
+    rules = client.mcp_servers.list_auto_apply("srv-1")
+    assert rules == [{"targetType": "all"}]
+    assert list_aa_route.called
+
+
+@respx.mock
+def test_mcp_servers_admin_and_org_scopes():
+    admin_route = respx.get(f"{BASE}/admin/mcp-servers").respond(json={"servers": []})
+    org_route = respx.get(f"{BASE}/orgs/org-9/mcp-servers").respond(json={"servers": []})
+    del_aa_route = respx.delete(f"{BASE}/admin/mcp-servers/srv-1/auto-apply/user").respond(status_code=204)
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    assert client.admin_mcp_servers.list() == []
+    assert client.org_mcp_servers.list("org-9") == []
+    client.admin_mcp_servers.delete_auto_apply("srv-1", "user")
+    assert admin_route.called and org_route.called and del_aa_route.called
+
+
+@respx.mock
+def test_mcp_servers_unhappy_paths():
+    respx.get(f"{BASE}/me/mcp-servers/missing").respond(
+        status_code=404, json={"error": "mcp server not found"}
+    )
+    respx.post(f"{BASE}/me/mcp-servers").respond(
+        status_code=409, json={"error": "name already in use"}
+    )
+    respx.get(f"{BASE}/me/mcp-servers").respond(json={"servers": []})
+    respx.get(f"{BASE}/me/mcp-servers/srv-1/auto-apply").respond(json={"rules": []})
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.mcp_servers.get("missing")
+    with pytest.raises(ConflictError):
+        client.mcp_servers.create({"name": "dup", "transport": "http"})
+    assert client.mcp_servers.list() == []
+    assert client.mcp_servers.list_auto_apply("srv-1") == []
+
+
+@respx.mock
+def test_mcp_servers_admin_delete_auto_apply_variants():
+    bare = respx.delete(f"{BASE}/admin/mcp-servers/srv-1/auto-apply/all").respond(status_code=204)
+    scoped = respx.delete(f"{BASE}/admin/mcp-servers/srv-1/auto-apply/user/u-1").respond(status_code=204)
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.admin_mcp_servers.delete_auto_apply("srv-1", "all")
+    client.admin_mcp_servers.delete_auto_apply("srv-1", "user", "u-1")
+    assert bare.called and scoped.called

@@ -428,3 +428,35 @@ async def test_get_history_page_async():
     assert route.called
     assert page["nextCursor"] == "msg_7"
     assert page["messages"][0]["id"] == "m1"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_mcp_servers_async_crud():
+    create_route = respx.post(f"{BASE}/api/v1/me/mcp-servers").respond(
+        status_code=201,
+        json={"id": "srv-1", "name": "n", "transport": "http", "hasSecret": True, "enabled": True},
+    )
+    list_route = respx.get(f"{BASE}/api/v1/me/mcp-servers").respond(
+        json={"servers": [{"id": "srv-1", "name": "n", "transport": "http", "hasSecret": False, "enabled": True}]}
+    )
+    bind_route = respx.post(f"{BASE}/api/v1/me/mcp-servers/srv-1/bindings").respond(status_code=200, json={"bound": True})
+
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
+        srv = await client.mcp_servers.create({"name": "n", "transport": "http"})
+        assert srv["id"] == "srv-1"
+        listed = await client.mcp_servers.list()
+        assert listed[0]["id"] == "srv-1"
+        await client.mcp_servers.bind("srv-1", "ws-1")
+    assert create_route.called and list_route.called and bind_route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_mcp_servers_async_unhappy_path():
+    respx.get(f"{BASE}/api/v1/me/mcp-servers/missing").respond(
+        status_code=404, json={"error": "mcp server not found"}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
+        with pytest.raises(NotFoundError):
+            await client.mcp_servers.get("missing")

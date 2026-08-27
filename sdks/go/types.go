@@ -341,3 +341,59 @@ type QueuedMessage struct {
 	EnqueuedAt  string `json:"enqueued_at"`
 	RetryCount  int    `json:"retry_count"`
 }
+
+// McpServer is an external MCP server registration (Epic 53). Secrets
+// (env/headers) are write-only — the response carries HasSecret only.
+type McpServer struct {
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"`
+	URL       string   `json:"url,omitempty"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	TimeoutMs *int     `json:"timeoutMs,omitempty"`
+	HasSecret bool     `json:"hasSecret"`
+	Enabled   bool     `json:"enabled"`
+	CreatedAt string   `json:"createdAt,omitempty"`
+	UpdatedAt string   `json:"updatedAt,omitempty"`
+}
+
+// CreateMcpServerRequest registers an MCP server. Exactly one of URL
+// (http/sse transports) or Command (stdio) describes the endpoint.
+type CreateMcpServerRequest struct {
+	Name      string              `json:"name"`
+	Transport string              `json:"transport"`
+	URL       string              `json:"url,omitempty"`
+	Command   string              `json:"command,omitempty"`
+	Args      []string            `json:"args,omitempty"`
+	TimeoutMs *int                `json:"timeoutMs,omitempty"`
+	Enabled   *bool               `json:"enabled,omitempty"`
+	Env       map[string]string   `json:"env,omitempty"`
+	Headers   map[string]string   `json:"headers,omitempty"`
+	AutoApply *McpAutoApplyTarget `json:"autoApply,omitempty"`
+}
+
+// UpdateMcpServerRequest is a partial update — nil fields keep existing
+// values. Transport is immutable after create.
+type UpdateMcpServerRequest struct {
+	Name      *string           `json:"name,omitempty"`
+	URL       *string           `json:"url,omitempty"`
+	Command   *string           `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	TimeoutMs *int              `json:"timeoutMs,omitempty"`
+	Enabled   *bool             `json:"enabled,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+// McpAutoApplyTarget selects who receives the server automatically.
+type McpAutoApplyTarget struct {
+	TargetType string  `json:"targetType"`
+	TargetID   *string `json:"targetId,omitempty"`
+}
+
+// McpAutoApplyRule is one persisted auto-apply rule.
+type McpAutoApplyRule struct {
+	TargetType string  `json:"targetType"`
+	TargetID   *string `json:"targetId,omitempty"`
+}
