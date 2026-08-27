@@ -56,6 +56,11 @@ func (m *MockMeteringService) CheckQuota(ctx context.Context, owner types.Billin
 	return args.Bool(0), args.Get(1).(int64), args.Error(2)
 }
 
+func (m *MockMeteringService) ReserveQuota(ctx context.Context, owner types.BillingOwner, eventType string, quantity int64) (bool, int64, error) {
+	args := m.Called(ctx, owner, eventType, quantity)
+	return args.Bool(0), args.Get(1).(int64), args.Error(2)
+}
+
 func (m *MockMeteringService) ExportUsage(ctx context.Context) (int, error) {
 	args := m.Called(ctx)
 	return args.Int(0), args.Error(1)

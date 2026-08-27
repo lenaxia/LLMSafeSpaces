@@ -56,7 +56,8 @@ func TestCheckProxyQuota_CanaryWorkspace_Bypassed(t *testing.T) {
 func TestCheckProxyQuota_QuotaAllowed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ms := new(mocks.MockMeteringService)
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	h := &ProxyHandler{logger: &testLogger{}, meteringSvc: ms}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -67,29 +68,35 @@ func TestCheckProxyQuota_QuotaAllowed(t *testing.T) {
 	ms.AssertExpectations(t)
 }
 
-func TestCheckProxyQuota_QuotaExceeded_Returns429(t *testing.T) {
+func TestCheckProxyQuota_RequestReservationDenied_Returns429(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ms := new(mocks.MockMeteringService)
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(false, int64(0), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
 	h := &ProxyHandler{logger: &testLogger{}, meteringSvc: ms}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Set("userID", "user-123")
 
-	assert.False(t, h.checkProxyQuota(c, &v1.Workspace{}), "exceeded quota should return false")
+	assert.False(t, h.checkProxyQuota(c, &v1.Workspace{}), "denied reservation should return false")
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 }
 
-func TestCheckProxyQuota_CheckQuotaError_FailOpen(t *testing.T) {
+// #768b: quota enforcement fails CLOSED. The pre-fix behavior (fail-open
+// on DB error — a transient outage silently disabled quota entirely) is
+// the bug; this test is the inverted pin.
+func TestCheckProxyQuota_CheckQuotaError_FailsClosed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ms := new(mocks.MockMeteringService)
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(0), context.DeadlineExceeded)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(0), context.DeadlineExceeded)
 	h := &ProxyHandler{logger: &testLogger{}, meteringSvc: ms}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Set("userID", "user-123")
 
-	assert.True(t, h.checkProxyQuota(c, &v1.Workspace{}), "DB error should fail-open (allow request)")
+	assert.False(t, h.checkProxyQuota(c, &v1.Workspace{}),
+		"DB error must fail closed — enforcement unavailable, not disabled (#768b)")
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
