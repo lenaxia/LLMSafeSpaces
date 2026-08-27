@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-08-27
+
+### Added
+
+- **D6 — unattended escalation for hung sessions (#998, design 0050
+  §D6)**: sessions that are busy beyond 15 minutes with no progress
+  (hung-and-alive — suppressed-forever by design D1) are now surfaced
+  instead of sitting silent. agentd statusz reports
+  `oldest_busy_seconds` + per-session `busy_ages`; the API escalation
+  sweep (60s reconciler tick, 30min per-workspace cooldown,
+  panic-isolated, notify-only — nothing is ever restarted or killed)
+  publishes `workspace.alert`/`session_hung` SSE events, persists each
+  escalation to the new `session_alerts` table (migration 000026,
+  24h retention), and exposes `GET /workspaces/{id}/alerts`. The
+  frontend shows an amber banner (auto-clears on idle) and a sidebar
+  badge (replaces the busy dot), recovers hung state from persisted
+  alerts on (re)connect, and the workflows page flags runs whose
+  workspace has a persisted hung alert.
+
+### Fixed
+
+- **Billing metering integrity (#1065)**: lossless metering, held
+  export cursor, persistent token dedup.
+- **MCP wire drift (#1052)**: four P0 client↔router wire bugs repaired
+  plus an integration gate.
+
+### Changed
+
+- **OpenAPI (#1055)**: documented Epic 64 workflows/triggers, passkeys,
+  and history pagination (`#1039 #1040 #1041`).
+
 ## [0.21.4] - 2026-08-26
 
 ### Fixed
