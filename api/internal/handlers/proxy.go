@@ -777,11 +777,21 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 	return nil
 }
 
-// checkProxyQuota verifies the caller has not exceeded their LLM request
-// quota. Returns true if the request should proceed, false if it was
-// rejected (quota exceeded — 429 already written to the response).
-// Quota check failures (DB errors) are logged and the request is allowed
-// (fail-open) so a transient DB issue doesn't block all traffic.
+// checkProxyQuota gates a proxied request on the caller's quotas.
+// Returns true if the request should proceed, false if it was rejected
+// (429 quota exceeded or 503 check unavailable — already written to the
+// response).
+//
+// Two gates (#768):
+//   - llm_tokens: deny new requests once the period's accumulated token
+//     usage is at the limit. Absence of a token limit row means
+//     unlimited — deployments that never configured one are unaffected.
+//   - llm_request: atomic slot reservation (advisory-locked
+//     check-then-insert) — concurrent requests cannot both claim the
+//     last free slot.
+//
+// Quota check failures fail CLOSED (503): a transient DB outage must
+// not silently disable enforcement — that was the fail-open gap.
 func (h *ProxyHandler) checkProxyQuota(c *gin.Context, workspace *v1.Workspace) bool {
 	if h.meteringSvc == nil {
 		return true
@@ -794,10 +804,20 @@ func (h *ProxyHandler) checkProxyQuota(c *gin.Context, workspace *v1.Workspace) 
 		return true
 	}
 	owner := types.BillingOwner{ID: userID, Type: types.OwnerTypeUser}
-	allowed, _, qerr := h.meteringSvc.CheckQuota(c.Request.Context(), owner, "llm_request")
-	if qerr != nil {
-		h.logger.Warn("Quota check failed, allowing request", "error", qerr, "user_id", userID)
-		return true
+
+	tokensAllowed, _, tokErr := h.meteringSvc.CheckQuota(c.Request.Context(), owner, "llm_tokens")
+	if tokErr != nil {
+		return h.quotaCheckFailed(c, tokErr, userID, "llm_tokens")
+	}
+	if !tokensAllowed {
+		metrics.RecordQuotaExceeded("llm_tokens")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "quota exceeded", "event_type": "llm_tokens"})
+		return false
+	}
+
+	allowed, _, rerr := h.meteringSvc.ReserveQuota(c.Request.Context(), owner, "llm_request", 1)
+	if rerr != nil {
+		return h.quotaCheckFailed(c, rerr, userID, "llm_request")
 	}
 	if !allowed {
 		metrics.RecordQuotaExceeded("llm_request")
@@ -805,4 +825,16 @@ func (h *ProxyHandler) checkProxyQuota(c *gin.Context, workspace *v1.Workspace) 
 		return false
 	}
 	return true
+}
+
+// quotaCheckFailed writes the fail-closed response for a quota gate
+// that could not reach its data (#768b). 503 — not 429 — so clients and
+// operators can distinguish "quota exhausted" from "enforcement
+// unavailable".
+func (h *ProxyHandler) quotaCheckFailed(c *gin.Context, err error, userID, eventType string) bool {
+	metrics.RecordQuotaCheckFailed(eventType)
+	h.logger.Error("Quota check failed, denying request (fail-closed)", err,
+		"user_id", userID, "event_type", eventType)
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quota check unavailable, please retry"})
+	return false
 }

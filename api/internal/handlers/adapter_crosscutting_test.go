@@ -84,7 +84,8 @@ func TestAdapterPath_SendMessage_QuotaExceeded_Returns429(t *testing.T) {
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(false, int64(0), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
 	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
@@ -113,7 +114,8 @@ func TestAdapterPath_SendMessage_HappyPath_Returns200(t *testing.T) {
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	ms.On("Record", mock.Anything).Return()
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
@@ -143,7 +145,8 @@ func TestAdapterPath_SendMessage_AdapterError_CleansActiveSession(t *testing.T) 
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
 	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-err", "ses_cleanup", 5)
@@ -204,7 +207,8 @@ func TestAdapterPath_SendPromptAsync_QuotaExceeded_Returns429(t *testing.T) {
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(false, int64(0), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
 	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
@@ -233,7 +237,8 @@ func TestAdapterPath_SendPromptAsync_HappyPath_Returns200(t *testing.T) {
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	ms.On("Record", mock.Anything).Return()
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
@@ -263,7 +268,8 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 		},
 	}
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
 	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-async-err", "ses_cleanup", 5)
@@ -413,7 +419,8 @@ func TestAdapterPath_SendPromptAsync_PolicyDenied_ReleasesSessionSlot(t *testing
 		AllowedModels: &[]string{"glm-5.3"},
 	}})
 
-	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	env.handler.activityTracker = newTestTracker(env.wsMock)
 
 	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-pol-403", "ses_cleanup", 5)

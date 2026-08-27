@@ -595,6 +595,38 @@ type NoopBillingProvider struct{}
 | Controller restart (Prometheus counter reset) | Reconciliation cron detects gap (no recent `compute_seconds` events) | Catch-up events fill the gap |
 | Billing export fails | `llmsafespace_metering_export_lag_seconds` rising | Retry from cursor on next tick (export is idempotent) |
 
+### Decision: refunds are provider-side, the local ledger is append-only (#767)
+
+The `usage_events` constraints — `CHECK (quantity >= 0)` and the
+`event_type` enum — are **deliberate**, not emergent. They encode the
+Build/Buy split above ("Credits / refunds | Buy"): `usage_events` is an
+append-only raw-consumption ledger for disputes, reconciliation, and
+quota; reversals and credits are accounting and belong to the billing
+provider. Stripe's metered `usagerecord` accepts negative quantities,
+so the reversal primitive exists on the provider side once a non-noop
+provider is live (the default `NoopBillingProvider` charges nobody and
+cannot refund).
+
+Consequences of this decision:
+
+- A turn that fails after partial token consumption (pod OOM, agent
+  crash mid-stream) IS billed for the tokens the provider consumed.
+  The platform was itself charged for them; the local ledger records
+  consumption, not satisfaction.
+- An admin correcting a wrong charge issues the credit in the billing
+  provider's dashboard (the "Wrong token count" row above). The local
+  ledger keeps the original event; disputes are resolved against it,
+  not edited through it.
+
+**Deferred until billing goes live** (tracked in #767): the
+turn-failure → negative-quantity `ReportUsage` trigger — correlating
+"tokens billed" with "response never delivered" requires turn-boundary
+tracking that does not exist yet, and it is only meaningful with a real
+provider attached. If product later decides pod-crash failures should
+be refunded by the platform absorbing the cost, that is a NEW decision
+overriding this one — it would need schema changes (both CHECKs) and a
+net-vs-gross distinction in every `SUM(quantity)` consumer.
+
 ---
 
 ## User Stories
