@@ -31,6 +31,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 )
 
 // TestSelfVerifyDecision pins the pure decision logic for every pin
@@ -132,4 +133,44 @@ func TestSuperviseOpencode_SelfVerifyMismatch_Exit81(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(out), "AgentdVerificationFailed: expected=")
 	require.Contains(t, string(out), "got=")
+}
+
+// --- ensureMiseShims (sidecar-mode mise PATH fix) ----------------------------
+
+// TestEnsureMiseShims_InvokedAndNonFatal covers the sidecar-mode boot path:
+// the supervisor (PID 1 of the workspace container, post step-2 migration —
+// the baked entrypoint is bypassed) must rebuild mise shims before spawning
+// opencode, and must survive mise being broken or absent.
+func TestEnsureMiseShims_InvokedAndNonFatal(t *testing.T) {
+	t.Run("reshim invoked", func(t *testing.T) {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "reshim.ran")
+		writeAgentdTestScript(t, dir, "mise", "echo \"$@\" > "+marker+" 2>/dev/null || echo \"$@\" > "+marker)
+		t.Setenv("PATH", dir+":"+"${PATH}")
+		ensureMiseShims(zap.NewNop())
+		b, err := os.ReadFile(marker)
+		require.NoError(t, err, "mise was never invoked — shims never rebuild in sidecar mode (pre-fix)")
+		require.Contains(t, string(b), "reshim")
+	})
+
+	t.Run("mise failing is non-fatal", func(t *testing.T) {
+		dir := t.TempDir()
+		writeAgentdTestScript(t, dir, "mise", "echo boom >&2; exit 1")
+		t.Setenv("PATH", dir+":")
+		// Must not panic and must not return an error path — the function
+		// has no error return; this executing at all is the assertion.
+		ensureMiseShims(zap.NewNop())
+	})
+
+	t.Run("mise absent is non-fatal", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir()) // empty dir: no mise anywhere
+		ensureMiseShims(zap.NewNop())
+	})
+}
+
+// writeAgentdTestScript creates an executable helper for PATH-injected mocks.
+func writeAgentdTestScript(t *testing.T, dir, name, body string) {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755))
 }

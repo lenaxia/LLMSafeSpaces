@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # US-2 integration level L3 (design 0051) — kind-cluster execution of the
-# K1–K13 checks specified in docs/testing/0051-us2-integration-test-plan.md.
+# K1–K14 checks (K14: docs/testing/0051-us2-integration-test-plan.md; mise shims,
+# added 2026-08-27).
 #
 # What this level uniquely proves (everything below needs a real kubelet):
 #   K1 native-sidecar start ordering (platform-init → agentd → main)
@@ -618,6 +619,48 @@ if [ -n "$POD2" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$POD2" --t
 else
   fail K13 "workspace on degraded base never became Ready (platform code still base-dependent)"
   kubectl -n "$NS" describe pod "$POD2" 2>/dev/null | tail -30 || true
+fi
+
+# --- K14: mise toolchains resolve in a NON-interactive shell (real pod) -------
+# 2026-08-27 regression: build-time `mise reshim` wrote shims to
+# MISE_DATA_DIR which the /workspace PVC mount shadows at runtime — fresh
+# PVC ⇒ empty shims dirs ⇒ `command not found` for go/python3/node in
+# every non-interactive shell (harness tool shells; the sidecar-mode PID 1
+# runs `mise activate` nowhere). Fixed by reshim at supervisor boot
+# (ensureMiseShims) + entrypoint-common.sh (legacy mode) + MISE_DATA_DIR
+# shims on the image PATH. `kubectl exec ... -- sh -c` IS the
+# non-interactive shell of record here — if this passes, the bug class is
+# closed in the production topology (sidecar mode, fresh PVC, real kubelet).
+WS3_NAME="$WORKSPACE_NAME-shimcheck"
+kubectl -n "$NS" apply -f - <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $WS3_NAME
+spec:
+  owner:
+    userID: us2-int
+  runtime: $REG/llmsafespaces/runtime-base:ci
+  storage:
+    size: 1Gi
+EOF
+POD3=""
+for i in $(seq 1 60); do
+  POD3=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS3_NAME" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$POD3" ] && break
+  sleep 2
+done
+if [ -n "$POD3" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$POD3" --timeout=300s >/dev/null 2>&1; then
+  SHIM_OK=$(kubectl -n "$NS" exec "$POD3" -c workspace -- \
+    sh -c 'command -v go >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && echo ok' 2>/dev/null || echo no)
+  if [ "$SHIM_OK" = "ok" ]; then
+    pass K14 "go/python3/node resolve on PATH in a non-interactive shell (mise shims rebuilt at boot)"
+  else
+    fail K14 "toolchains unresolvable via sh -c in pod — fresh-PVC shim bug regressed (check ensureMiseShims + image PATH)"
+  fi
+else
+  fail K14 "shimcheck workspace never became Ready"
 fi
 
 log "all checks executed"
