@@ -44,8 +44,8 @@ USER_A="e2e-att-user-a"
 USER_B="e2e-att-user-b"
 KEY_A="lsp_e2eattusera0000000000000000000001"
 KEY_B="lsp_e2eattuserb0000000000000000000002"
-WS_A="e2ea00000-0000-0000-0000-0000000000a1"
-WS_B="e2eb00000-0000-0000-0000-0000000000b2"
+WS_A="e2e0a000-0000-0000-0000-0000000000a1"
+WS_B="e2e0b000-0000-0000-0000-0000000000b2"
 
 cleanup() {
     if [[ -n "${PF_PID:-}" ]]; then
@@ -54,6 +54,16 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+# Regression guard (PR #1099): the first real execution died on
+# 'invalid input syntax for type uuid' because a seed carried a
+# 9-char first group. Fail fast, at the source, before any cluster
+# interaction — postgres would otherwise reject the seed INSERT
+# minutes later.
+uuid_ok() { [[ "$1" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; }
+for _ws in "${WS_A}" "${WS_B}"; do
+    uuid_ok "${_ws}" || die "seed ${_ws} is not a valid UUID (8-4-4-4-12 lowercase hex)"
+done
 
 kc() { kubectl --context "${CTX}" "$@"; }
 
