@@ -16,8 +16,9 @@
 # sidecar's /workspace mount is read-only, so uploads fail cleanly with
 # 5xx by design. When sidecar mode is detected this script asserts that
 # clean-fail behavior and SKIPS E2/E10/E11 with an explicit message
-# instead of failing — the rows require single-container mode (e.g.
-# `controller.agentdSidecar.enabled=false`).
+# instead of failing — the rows require single-container mode
+# (`controller.agentdSidecar.enabled=false`; executed weekly + on dispatch
+# by .github/workflows/e2e-attachments-single-container.yml).
 #
 # Environment (same as local/test.sh):
 #   CLUSTER_NAME  - kind cluster name (default llmsafespaces)
@@ -177,7 +178,7 @@ if [[ "${SIDECAR_CONTAINERS}" == *"agentd"* ]]; then
     [[ -z "${FILES}" ]] || die "sidecar-mode upload wrote files despite RO mount: ${FILES}"
     ok "no files written in sidecar mode"
     warn "SKIPPED E2/E10/E11: these rows require single-container mode"
-    warn "(helm: --set controller.agentdSidecar.enabled=false) — tracked follow-up for the nightly config"
+    warn "(helm: --set controller.agentdSidecar.enabled=false; runs weekly via e2e-attachments-single-container.yml)"
     exit 0
 fi
 ok "single-container mode confirmed (containers: ${SIDECAR_CONTAINERS})"
