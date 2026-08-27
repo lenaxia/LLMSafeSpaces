@@ -212,7 +212,7 @@ class LLMSafeSpaces:
 
     def _request_with_headers(
         self, method: str, path: str, *, timeout: float | None = None
-    ) -> tuple[Any, dict[str, str]]:
+    ) -> tuple[Any, httpx.Headers]:
         """Like _request, but also returns the response headers (for
         pagination cursors). No auth-retry: used for authenticated GETs."""
         url = f"{self._base_url}/api/v1{path}"
@@ -222,8 +222,8 @@ class LLMSafeSpaces:
         if resp.status_code >= 400:
             self._raise_for_status(resp)
         if resp.status_code == 204 or not resp.content:
-            return None, dict(resp.headers)
-        return resp.json(), dict(resp.headers)
+            return None, resp.headers
+        return resp.json(), resp.headers
 
     def _auth_headers(self) -> dict[str, str]:
         if self._api_key:

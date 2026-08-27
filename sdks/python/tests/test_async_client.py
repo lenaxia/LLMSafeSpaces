@@ -423,8 +423,8 @@ async def test_get_history_page_async():
         json=[{"id": "m1", "type": "user", "text": "hi"}],
         headers={"X-Next-Cursor": "msg_7"},
     )
-    client = AsyncLLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    page = await client.sessions.get_history_page("ws-1", "sess-1", limit=10)
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
+        page = await client.sessions.get_history_page("ws-1", "sess-1", limit=10)
     assert route.called
     assert page["nextCursor"] == "msg_7"
     assert page["messages"][0]["id"] == "m1"
