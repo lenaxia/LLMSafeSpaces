@@ -175,6 +175,12 @@ go test -race ./api/internal/server/... \
 
 These validate: bcrypt hashing, email enumeration prevention, password-never-in-response, API key secrets stripped on list, body size limits, sanitized binding errors, and the Turnstile CAPTCHA on `/register`.
 
+The org-core CRUD surface has the same live-API e2e script pattern (`local/test-orgs.sh`) covering the guard and error contracts reachable by a regular user — member/admin guard 403s, platform-admin-gated create, validation bodies, and the billing unconfigured contract. Org create/update/delete happy paths need a platform admin (and Stripe) and are covered by the router wire gate (`api/internal/server/router_orgs_wire_test.go`) plus the spec contract tests (`sdks/tests/contract/orgs.hurl`).
+
+```bash
+./local/test-orgs.sh http://localhost:8080
+```
+
 ## Test helpers and fakes
 
 | Helper | Purpose |
