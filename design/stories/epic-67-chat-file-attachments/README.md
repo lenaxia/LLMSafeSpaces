@@ -90,8 +90,8 @@ MCP tool        ── base64 ────┘        streaming, caps, phase+disk
 
 ## Design Decisions
 
-### D1 — agentd-mediated ingest (port 4098), not exec, not API-direct, not opencode
-The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes over 4098 behind Basic auth.
+### D1 — agentd-mediated ingest (user mux, validated as-built), not exec, not API-direct, not opencode
+The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes behind Basic auth. **Correction (US-67.1 validation):** reload-secrets serves on the agentd **user mux (:4097)**, not the admin port 4098 as originally sketched — `cmd/workspace-agentd/server.go:356`. `PUT /v1/files` follows the validated user-mux pattern. Sidecar mode clean-fails (5xx): the sidecar's `/workspace` is read-only.
 
 ### D2 — Flat `/workspace/uploads/<uuid>-<name>`, workspace-scoped
 Sessions are lazy (files may precede any session); uploads reusable across sessions; visible to terminal/git/agent tools like any workspace file. Cleanup is the user's/agent's — same as any workspace file.
@@ -109,7 +109,7 @@ Terminal-gate style; disk ratio reuses `proxy_disk_pressure.go` helper semantics
 V1 handler proxies the body verbatim — it must not gain rewriting logic; silent drop is worse than explicit rejection.
 
 ### D7 — Manifest is API contract, composed by exactly one function
-`ComposeAttachmentManifest` in one package (`pkg/session/attachments/`), called at acceptance (compose-once; retries must not double-append). Format v1, golden-fixture tested, additive-only changes; any format change = new version marker + v1 parser support. Three client transports + the frontend history renderer consume it.
+`ComposeAttachmentManifest` in one package (`pkg/session/attachments/`), called at acceptance (compose-once; retries must not double-append). Format v1, golden-fixture tested, additive-only changes; any format change = new version marker + v1 parser support. Three client transports + the frontend history renderer consume it. **As-built (US-67.3):** v1 lines carry `path` + `name` only — no `bytes` attribute. Rationale: D8 makes send-time validation shape-only (no stat), so the composer cannot know file sizes; the illustrative `bytes=` sketch in the original architecture diagram is superseded by the golden fixtures in `pkg/session/attachments/testdata/`. Also as-built: the interaction locked by U1.4.6 is that `/prompt` never receives disk-pressure injection (existing V2 gap, README-LLM §Disk-pressure) — disk gating is upload-side (D5). The "notice first, manifest after" ordering becomes assertable only if that gap is ever closed.
 
 ### D8 — Send-time validation is a shape check, not an existence probe
 `^/workspace/uploads/<uuid>-`. Deleted file ⇒ agent gets "not found" from its tools — same as any workspace path. No TOCTOU machinery.
