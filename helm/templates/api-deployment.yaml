@@ -25,6 +25,13 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "llmsafespaces.api.serviceAccountName" . }}
+      # #1019 C: grace must cover a worst-case in-flight outbox delivery
+      # (DeliveryTimeout 10m + verify margin). SIGTERM joins delivery
+      # workers and releases their locks; SIGKILL after the grace period
+      # would leave the per-session lock to its 12-minute TTL — the
+      # frozen-queue incident window. Costs nothing when idle: the
+      # container exits as soon as the process does.
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       {{- with .Values.api.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
