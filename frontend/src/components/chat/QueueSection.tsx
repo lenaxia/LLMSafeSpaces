@@ -57,9 +57,7 @@ export function QueueSection({ messages, onRetry, onDismiss, isMobile }: Props) 
                     "max-w-[90%] sm:max-w-[80%] rounded-lg px-4 py-2.5 min-w-0 overflow-hidden break-words",
                     m.status === "error"
                       ? "bg-destructive/20 text-destructive dark:bg-destructive/30"
-                      : m.status === "verifying" || m.status === "delivering"
-                        ? "bg-muted text-muted-foreground border border-border"
-                        : "bg-primary text-primary-foreground dark:bg-slate-600 dark:text-slate-100 dark:border dark:border-slate-500",
+                      : "bg-primary text-primary-foreground dark:bg-slate-600 dark:text-slate-100 dark:border dark:border-slate-500",
                   )}
                 >
                   {m.status === "error" ? (
@@ -75,23 +73,6 @@ export function QueueSection({ messages, onRetry, onDismiss, isMobile }: Props) 
                         >
                           Retry
                         </button>
-                        <button
-                          type="button"
-                          aria-label="Dismiss"
-                          className="text-xs font-medium underline hover:no-underline"
-                          onClick={() => onDismiss(m.id)}
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </>
-                  ) : m.status === "verifying" || m.status === "delivering" ? (
-                    <>
-                      <p className="text-sm opacity-80">{m.text}</p>
-                      <p className="text-xs mt-1 opacity-70">
-                        {m.status === "verifying" ? "Sent — confirming delivery…" : "Sending…"}
-                      </p>
-                      <div className="flex gap-2 mt-1.5">
                         <button
                           type="button"
                           aria-label="Dismiss"

@@ -220,23 +220,47 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
   });
 });
 
-  it("maps server verifying/delivering statuses through (#987)", async () => {
+  it("hides server verifying/delivering entries; unknown statuses degrade to pending (#987 display contract)", async () => {
+    // In-flight entries are server-side durability plumbing, not queue
+    // display state: an entry delivering for a whole multi-minute turn
+    // must not render as "queued" (TUI parity — once the agent owns the
+    // message it is in the conversation). Failures resurface as error
+    // pills when delivery ultimately fails.
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "msg_v", text: "sent unconfirmed", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "verifying" },
         { id: "msg_d", text: "in flight", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "delivering" },
         { id: "msg_u", text: "unknown future status", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "teleported" },
+        { id: "msg_e", text: "parked failure", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "error", lastError: "agent unreachable" },
       ],
     });
 
     const { result } = render();
 
     await waitFor(() => {
-      expect(result.current.queuedMessages).toHaveLength(3);
+      expect(result.current.queuedMessages).toHaveLength(2);
     });
-    expect(result.current.queuedMessages[0]!.status).toBe("verifying");
-    expect(result.current.queuedMessages[1]!.status).toBe("delivering");
-    expect(result.current.queuedMessages[2]!.status).toBe("pending"); // unknown server statuses degrade to pending
+    expect(result.current.queuedMessages.map((m) => m.id)).toEqual(["msg_u", "msg_e"]);
+    expect(result.current.queuedMessages[0]!.status).toBe("pending"); // unknown server statuses degrade to pending
+    expect(result.current.queuedMessages[1]!.status).toBe("error");
+  });
+
+  it("a local pending pill is dropped once its server entry goes delivering", async () => {
+    // The mid-turn staleness bug: the worker stages the entry out (POST
+    // in flight for the whole turn) yet GET /queue still reports it —
+    // the refresh must not RETAIN the local pill for a now-invisible id.
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [{ id: "msg_d", text: "in flight", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "pending" }],
+    });
+    const { result } = render();
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
+
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [{ id: "msg_d", text: "in flight", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "delivering" }],
+    });
+    await act(async () => { await result.current.refreshQueue(); });
+
+    expect(result.current.queuedMessages).toHaveLength(0);
   });
 
 describe("useMessageQueue files (Epic 67 U1.6.8)", () => {

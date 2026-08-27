@@ -84,6 +84,7 @@ func (h *ProxyHandler) Start() error {
 			if h.adapter != nil {
 				h.outbox.SetVerifier(h.outboxVerify)
 				h.outbox.SetOnDelivered(h.outboxOnDelivered)
+				h.outbox.SetOnStaged(h.outboxOnStaged)
 			}
 			wctx, wcancel := context.WithCancel(context.Background())
 			h.outboxCancel = wcancel
@@ -402,6 +403,18 @@ func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID 
 func (h *ProxyHandler) outboxOnDelivered(workspaceID, sessionID string, e outbox.Entry) {
 	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
 	h.publishQueueEvent(workspaceID, sessionID, "sent", e.ID, "")
+}
+
+// outboxOnStaged publishes the picked-up signal: the entry left the
+// visible queue and its delivery POST is in flight. The delivery send
+// is synchronous turn-to-completion (the V2 admit-and-schedule path is
+// dormant on the pinned opencode, #755), so without this event the pill
+// renders "Sending…" for the whole multi-minute turn. Frontends clear
+// the pill here — TUI parity: once the agent owns the message it is in
+// the conversation, not the queue. The authoritative cleanup remains
+// queue.update/sent at confirmed delivery (outboxOnDelivered).
+func (h *ProxyHandler) outboxOnStaged(workspaceID, sessionID string, e outbox.Entry) {
+	h.publishQueueEvent(workspaceID, sessionID, "delivering", e.ID, "")
 }
 
 // postOutboxDeliverSuccess mirrors postAdapterSuccess for the detached

@@ -404,6 +404,13 @@ export function ChatPage() {
     isReconnectMode.current = false;
     hasAutoAbortedRef.current = false;
     knownLivePartIds.current.clear();
+    // Queued-text echo tracking is per-session: entries in another
+    // session's outbox deliver there, and their echoes must never strip
+    // this session's stream. Deliberately NOT cleared on reconcile — a
+    // mid-turn SSE reconnect between enqueue and late delivery must not
+    // lose the strip (the reconnect boundary gate only covers parts
+    // already in history at refetch time).
+    pendingQueuedTextsRef.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
     setAgentDiedMessage(null);
@@ -609,10 +616,47 @@ export function ChatPage() {
   // the SSE stream. Opencode echoes the user's message as the first
   // message.part.updated event(s) before the assistant response begins.
   const sentTextRef = useRef<string>("");
+  // Texts enqueued through the D3 queue that have not been observed in
+  // the stream yet, with multiplicity (duplicate texts queue as
+  // separate entries and each gets its own echo). The queue path skips
+  // doSendNow (which primes sentTextRef), so without this map the
+  // user-echo of a late-delivered queued message falls through to the
+  // assistant stream buffer and renders the user's own text as an agent
+  // bubble (suspend/resume casualty: entries park while the agent is
+  // unreachable, then drain after resume). Matching an echo also clears
+  // the pending pill — the agent owns the message now, it is in the
+  // conversation, not the queue (TUI parity).
+  const pendingQueuedTextsRef = useRef<Map<string, number>>(new Map());
   // Tracks which buffer to route message.part.delta events to.
   const activePartTypeRef = useRef<"user-echo" | "reasoning" | "text" | null>(null);
   const currentThinkingIdxRef = useRef<number>(-1);
   const currentTextIdxRef = useRef<number>(-1);
+
+  // Returns the queued text this echo matches — exact, or composed with
+  // a pure attachment manifest (Epic 67: echoes of sends with files come
+  // back as prose + manifest) — decrementing its multiplicity; undefined
+  // when the echo belongs to no pending queued message.
+  const matchQueuedEcho = useCallback((echoText: string): string | undefined => {
+    const pending = pendingQueuedTextsRef.current;
+    if (pending.size === 0 || !echoText) return undefined;
+    const take = (text: string) => {
+      const n = pending.get(text) ?? 0;
+      if (n <= 1) pending.delete(text);
+      else pending.set(text, n - 1);
+      return text;
+    };
+    if (pending.has(echoText)) return take(echoText);
+    for (const t of pending.keys()) {
+      if (echoText.startsWith(t)) {
+        const remainder = echoText.slice(t.length);
+        const parsedRemainder = parseAttachments(remainder);
+        if (parsedRemainder.attachments !== null && parsedRemainder.text === "") {
+          return take(t);
+        }
+      }
+    }
+    return undefined;
+  }, []);
 
   // handleContractEvent renders one CONTRACT event (US-65.8: clients
   // consume pkg/session shapes only — the agent's wire names, envelopes,
@@ -677,7 +721,14 @@ export function ChatPage() {
         }
       } else if (part.type === "text") {
         const text = part.text ?? "";
-        if (sentTextRef.current && text === sentTextRef.current) {
+        // Queued-path echo: the user's own message landing in the
+        // stream after outbox delivery. Strip it from the assistant
+        // buffer AND clear its pending pill — the agent owns it now.
+        const queuedEchoText = matchQueuedEcho(text);
+        if (queuedEchoText !== undefined) {
+          activePartTypeRef.current = "user-echo";
+          queue.removeFirstByText(queuedEchoText);
+        } else if (sentTextRef.current && text === sentTextRef.current) {
           activePartTypeRef.current = "user-echo";
         } else if (sentTextRef.current && text.startsWith(sentTextRef.current)) {
           // Epic 67 D11: with attached files the user echo comes back as the
@@ -763,7 +814,7 @@ export function ChatPage() {
       // file-change / custom parts: rendered from history on reconcile;
       // no live streaming treatment.
     }
-  }, []);
+  }, [queue, matchQueuedEcho]);
 
   const handleSSEEvent = useCallback((data: unknown) => {
     const event = data as WorkspaceStreamEvent;
@@ -810,7 +861,17 @@ export function ChatPage() {
       }
     } else if (event.type === "queue.update" && workspaceId) {
       const qe = (event.data ?? {}) as { event?: string; messageID?: string; error?: string };
-      if (qe.event === "sent" || qe.event === "enqueued") {
+      if (qe.event === "sent") {
+        // Targeted removal first (instant), then the refresh as
+        // authoritative catch-up — the GET can transiently race the
+        // server-side LRem.
+        if (qe.messageID) queue.removeById(qe.messageID);
+        void queue.refreshQueue();
+      } else if (qe.event === "enqueued" || qe.event === "delivering") {
+        // delivering = the worker picked the entry up (POST in flight).
+        // The refresh drops it from display: the turn may run for
+        // minutes and the message is already owned by the agent — it
+        // must not render as "queued" for that whole window.
         void queue.refreshQueue();
       } else if (qe.event === "error" && qe.messageID) {
         queue.markError(qe.messageID, qe.error ?? "Send failed");
@@ -995,12 +1056,24 @@ export function ChatPage() {
     // next reload selectChronological (sort by createdAt) places the
     // queued message AFTER the direct send — out of FIFO order.
     //
+    // Only PENDING entries hold the gate: a parked error pill is not
+    // in flight — holding every future send hostage to a manual
+    // Retry/Dismiss would permanently reroute sends through the queue
+    // path (which skips the direct-send echo strip).
+    //
     // Residual: there is still a small window between the queue emptying
     // client-side and opencode finishing persistence of the drained
     // message; a direct send in that window can still race. Closing it
     // requires a server-side check in SendPromptAsync — out of scope for
     // this fix.
-    if (isSessionBusy || streaming || queue.queuedMessages.length > 0) {
+    if (isSessionBusy || streaming || queue.queuedMessages.some((m) => m.status === "pending")) {
+      // Track the text so the user echo of the LATE delivery is
+      // stripped (and its pill cleared) instead of rendering the
+      // user's own words as an agent bubble.
+      pendingQueuedTextsRef.current.set(
+        text,
+        (pendingQueuedTextsRef.current.get(text) ?? 0) + 1,
+      );
       queue.enqueue(text, files);
       composerAttachments.clearAttached();
       return;

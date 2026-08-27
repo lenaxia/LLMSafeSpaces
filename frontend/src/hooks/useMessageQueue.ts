@@ -4,7 +4,13 @@ import { messagesApi } from "../api/messages";
 export type QueuedMessage = {
   id: string;
   text: string;
-  status: "pending" | "delivering" | "verifying" | "error";
+  /** Display state. Delivering/verifying are server-side durability
+   * plumbing (POST in flight / ambiguous outcome being resolved) and are
+   * deliberately NOT displayed: an entry delivering for a whole
+   * multi-minute turn must not render as "queued" — once the agent owns
+   * the message it is in the conversation, not the queue (TUI parity).
+   * Failures resurface here as error pills. */
+  status: "pending" | "error";
   error?: string;
   sessionId: string;
   /** Epic 67: upload paths attached to the queued entry (local re-enqueue only). */
@@ -27,25 +33,35 @@ export function useMessageQueue(
     try {
       const res = await messagesApi.getQueue(workspaceId, sessionId);
       setQueuedMessages((prev) => {
-        const redisIds = new Set(res.messages.map((m) => m.id));
+        // Only pending and error entries are displayed. A server-side
+        // delivering/verifying entry must neither add a pill nor RETAIN
+        // a local pending pill for the same id (the mid-turn staleness
+        // bug: the GET races the turn, and an entry staged for delivery
+        // is no longer "queued" from the user's perspective).
+        // Only the known in-flight states are hidden; anything else —
+        // missing, "pending", "error", or a future unknown status —
+        // displays (degraded to pending), so a server newer than this
+        // client never silently vanishes entries.
+        const displayed = res.messages.filter((m) => {
+          const st = m.status ?? "";
+          return st !== "delivering" && st !== "verifying";
+        });
+        const redisIds = new Set(displayed.map((m) => m.id));
         const kept = prev.filter((m) =>
           m.status === "error" ||
           redisIds.has(m.id) ||
           m.sessionId !== sessionId,
         );
         const existingIds = new Set(kept.map((m) => m.id));
-        const added: QueuedMessage[] = res.messages
+        const added: QueuedMessage[] = displayed
           .filter((m) => !existingIds.has(m.id))
           .map((m) => ({
             id: m.id,
             text: m.text,
-            // Server statuses map 1:1 (#987): error = retryable,
-            // verifying = sent, outcome being confirmed (never
-            // re-sent blindly), delivering = in flight. Unknown
-            // statuses degrade to pending.
-            status: (["error", "verifying", "delivering"].includes(m.status ?? "")
-              ? m.status
-              : "pending") as QueuedMessage["status"],
+            // Unknown/missing statuses degrade to pending (a server that
+            // predates the status field still reports plain queued
+            // entries — they must stay visible).
+            status: (m.status === "error" ? "error" : "pending") as QueuedMessage["status"],
             error: m.lastError,
             sessionId: m.session_id,
           }));
@@ -87,6 +103,21 @@ export function useMessageQueue(
   const removeById = useCallback((id: string) => {
     setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
+
+  // Echo-based pill clear (TUI parity): when the user's own message
+  // lands in the stream, the matching pending pill is no longer
+  // "queued" — the agent has admitted it. FIFO: with duplicate texts
+  // queued as separate entries, the first pending match goes (each echo
+  // consumes exactly one).
+  const removeFirstByText = useCallback((text: string) => {
+    setQueuedMessages((prev) => {
+      const idx = prev.findIndex(
+        (m) => m.sessionId === sessionId && m.status === "pending" && m.text === text,
+      );
+      if (idx < 0) return prev;
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, [sessionId]);
 
   const retry = useCallback(async (id: string) => {
     if (!workspaceId || !sessionId) return;
@@ -145,6 +176,7 @@ export function useMessageQueue(
     refreshQueue,
     markError,
     removeById,
+    removeFirstByText,
     retry,
     dismiss,
     clearAll,

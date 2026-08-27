@@ -188,6 +188,16 @@ type Verifier func(ctx context.Context, workspaceID, sessionID string, e Entry) 
 // queue.update/sent, metering, and session-index recording ride it.
 type DeliveredHook func(workspaceID, sessionID string, e Entry)
 
+// StagedHook fires when a pending entry is staged out for delivery —
+// the POST is starting and the entry has left the visible queue. SSE
+// queue.update/delivering rides it: the frontend's pill-clearing signal
+// for in-flight delivery. Without it, a multi-minute turn (the V1 sync
+// send blocks until the assistant completes) keeps the entry rendering
+// as "queued" long after the agent owns the message — the TUI-parity
+// gap: once admitted, a prompt is in the conversation, not the queue.
+// Confirmed-delivery bookkeeping still rides DeliveredHook at turn end.
+type StagedHook func(workspaceID, sessionID string, e Entry)
+
 // Deliverer delivers one entry. The worker calls it with a detached,
 // timeout-bounded context — it must not reference the accepting request.
 type Deliverer func(ctx context.Context, workspaceID, sessionID string, e Entry) error
@@ -202,6 +212,9 @@ type Service struct {
 	verifier Verifier
 	// onDelivered fires once per confirmed delivery (nil = no-op).
 	onDelivered DeliveredHook
+	// onStaged fires when an entry is staged out for delivery
+	// (nil = no-op). See StagedHook.
+	onStaged StagedHook
 }
 
 // New returns a Service backed by client, or nil if client is nil
@@ -218,6 +231,64 @@ func (s *Service) SetVerifier(v Verifier) { s.verifier = v }
 
 // SetOnDelivered wires the confirmed-delivery hook. Call before Run.
 func (s *Service) SetOnDelivered(h DeliveredHook) { s.onDelivered = h }
+
+// SetOnStaged wires the picked-up-for-delivery hook. Call before Run.
+func (s *Service) SetOnStaged(h StagedHook) { s.onStaged = h }
+
+// lastErrUnverifiable marks entries parked after MaxVerifyAttempts of
+// inconclusive verification while the agent was unreachable — the
+// suspend/resume casualty class. SweepWorkspaceUnverifiable re-arms
+// exactly these.
+const lastErrUnverifiable = "delivery unverifiable: agent unreachable"
+
+// SweepWorkspaceUnverifiable re-arms parked unverifiable error entries
+// for one workspace's sessions: StatusError → StatusVerifying with a
+// fresh verify window (VerifyAttempts reset, due immediately). The
+// verify-first path (#987) then either confirms delivery (entry removed,
+// no duplicate send) or resumes bounded verification. Entries parked for
+// any other reason stay parked. Returns the number of re-armed entries.
+//
+// Called on the Active phase transition (proxy onPhaseChange): a resume
+// is precisely when an agent that was unreachable becomes reachable, so
+// the stranded-entry class self-heals instead of waiting for manual
+// Retry. Safe to call repeatedly (idempotent on already-swept state).
+func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID string) (int, error) {
+	pairs := s.sessions(ctx)
+	swept := 0
+	now := time.Now().UTC()
+	for _, p := range pairs {
+		ws, ses := p[0], p[1]
+		if ws != workspaceID {
+			continue
+		}
+		qk := qKey(ws, ses)
+		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
+		if err != nil {
+			continue // best-effort sweep; the next transition retries
+		}
+		for i, v := range vals {
+			var e Entry
+			if json.Unmarshal([]byte(v), &e) != nil {
+				continue
+			}
+			if e.Status != StatusError || e.LastError != lastErrUnverifiable {
+				continue
+			}
+			e.Status = StatusVerifying
+			e.VerifyAttempts = 0
+			e.NextAttemptAt = now
+			raw, err := json.Marshal(e)
+			if err != nil {
+				continue
+			}
+			if err := s.client.LSet(ctx, qk, int64(i), string(raw)).Err(); err != nil {
+				continue
+			}
+			swept++
+		}
+	}
+	return swept, nil
+}
 
 func qKey(ws, ses string) string { return "outboxq:" + ws + ":" + ses }
 func dKey(ws, ses string) string { return "outboxd:" + ws + ":" + ses }
@@ -496,6 +567,11 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
 	e.LastAttemptAt = now
+	// Picked-up signal, fired while the entry is staged and the POST is
+	// about to start: frontends clear the queue pill here rather than at
+	// turn-end delivery. Fire-and-forget by contract (the hook must not
+	// slow the delivery path).
+	s.fireOnStaged(ws, ses, e)
 	derr := deliverDetached(ctx, d, ws, ses, e)
 	// Bookkeeping context: minted AFTER delivery, detached from driver
 	// cancellation (Run abandons in-flight workers on ctx.Done; a detached
@@ -577,7 +653,7 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 		e.VerifyAttempts++
 		if e.VerifyAttempts >= MaxVerifyAttempts {
 			e.Status = StatusError
-			e.LastError = "delivery unverifiable: agent unreachable"
+			e.LastError = lastErrUnverifiable
 		} else {
 			e.NextAttemptAt = now.Add(verifyBackoffFor(e.VerifyAttempts))
 		}
@@ -606,6 +682,12 @@ func (s *Service) restoreStaged(ctx context.Context, qk, dk string, idx int, sta
 func (s *Service) fireOnDelivered(ws, ses string, e Entry) {
 	if s.onDelivered != nil {
 		s.onDelivered(ws, ses, e)
+	}
+}
+
+func (s *Service) fireOnStaged(ws, ses string, e Entry) {
+	if s.onStaged != nil {
+		s.onStaged(ws, ses, e)
 	}
 }
 

@@ -670,3 +670,119 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 		t.Fatal("fast session starved behind the slow session's long turn")
 	}
 }
+
+func TestSweepWorkspaceUnverifiable_OnlyParkedUnverifiable(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Three entries on the target workspace's session:
+	//  1. parked unverifiable (the suspend/resume casualty) → must sweep
+	//  2. parked with a DIFFERENT error → must stay
+	//  3. pending → untouched
+	_, err := s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-1", "m1", nil)
+	require.NoError(t, err)
+	_, err = s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-2", "m2", nil)
+	require.NoError(t, err)
+	_, err = s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-3", "m3", nil)
+	require.NoError(t, err)
+	// An unverifiable entry on ANOTHER workspace → must not be touched.
+	_, err = s.Accept(ctx, "ws-b", "ses-9", "u-2", "cm-4", "m4", nil)
+	require.NoError(t, err)
+
+	// Mutate entries in place via the service client (same primitive the worker uses).
+	fix := func(ws, ses, cmid, status, lastErr string) {
+		qk := qKey(ws, ses)
+		vals, _ := s.client.LRange(ctx, qk, 0, -1).Result()
+		for i, v := range vals {
+			var cand Entry
+			if json.Unmarshal([]byte(v), &cand) == nil && cand.ClientMessageID == cmid {
+				cand.Status = status
+				cand.LastError = lastErr
+				cand.VerifyAttempts = 5
+				cand.NextAttemptAt = time.Now().UTC().Add(time.Hour)
+				raw, _ := json.Marshal(cand)
+				s.client.LSet(ctx, qk, int64(i), string(raw))
+			}
+		}
+	}
+	fix("ws-a", "ses-1", "cm-1", StatusError, lastErrUnverifiable)
+	fix("ws-a", "ses-1", "cm-2", StatusError, "delivery confirmed absent; retry bound reached")
+	fix("ws-b", "ses-9", "cm-4", StatusError, lastErrUnverifiable)
+	n, err := s.SweepWorkspaceUnverifiable(ctx, "ws-a")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	entries, err := s.List(ctx, "ws-a", "ses-1")
+	require.NoError(t, err)
+	byCMID := map[string]Entry{}
+	for _, e := range entries {
+		byCMID[e.ClientMessageID] = e
+	}
+	assert.Equal(t, StatusVerifying, byCMID["cm-1"].Status)
+	assert.Zero(t, byCMID["cm-1"].VerifyAttempts, "verify attempts must reset so the sweep grants a full fresh window")
+	assert.True(t, !byCMID["cm-1"].NextAttemptAt.After(time.Now().UTC().Add(time.Minute)), "swept entry must be due immediately, not backoff-gated an hour out")
+	assert.Equal(t, StatusError, byCMID["cm-2"].Status, "non-unverifiable errors must stay parked")
+	assert.Equal(t, StatusPending, byCMID["cm-3"].Status)
+
+	foreignEntries, err := s.List(ctx, "ws-b", "ses-9")
+	require.NoError(t, err)
+	assert.Equal(t, StatusError, foreignEntries[0].Status, "other workspaces must not be swept")
+}
+
+func TestDeliverOne_FiresOnStaged(t *testing.T) {
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-1", "m1", nil)
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var stagedIDs []string
+	s.SetOnStaged(func(ws, ses string, e Entry) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ws == "ws-a" && ses == "ses-1" {
+			stagedIDs = append(stagedIDs, e.ID)
+		}
+	})
+
+	ok := s.DeliverOnce(ctx, "ws-a", "ses-1", func(ctx context.Context, ws, ses string, e Entry) error {
+		return nil
+	})
+	require.True(t, ok)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, stagedIDs, 1, "onStaged must fire exactly once when the entry is picked up")
+}
+
+func TestDeliverOnce_OnStagedFiresBeforeDelivererReturns(t *testing.T) {
+	// The signal's whole purpose is clearing the pill DURING a long
+	// turn: the hook must fire at staging (before the deliverer blocks),
+	// not at completion alongside onDelivered.
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws-a", "ses-1", "u-1", "cm-1", "m1", nil)
+	require.NoError(t, err)
+
+	staged := make(chan struct{}, 1)
+	release := make(chan struct{})
+	s.SetOnStaged(func(ws, ses string, e Entry) { staged <- struct{}{} })
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- s.DeliverOnce(ctx, "ws-a", "ses-1", func(ctx context.Context, ws, ses string, e Entry) error {
+			// Hold the "turn" open until the test has observed the
+			// staged signal — simulates the multi-minute sync send.
+			<-release
+			return nil
+		})
+	}()
+
+	select {
+	case <-staged:
+		close(release)
+		require.True(t, <-done)
+	case <-time.After(2 * time.Second):
+		t.Fatal("onStaged did not fire while the deliverer was still running")
+	}
+}
