@@ -80,15 +80,31 @@ wait_phase() { # ws phase timeout_s
 
 pod_of() { kc -n "${NS}" get workspace "$1" -o jsonpath='{.status.podName}'; }
 
-upload() { # ws key filename localfile -> echoes response body; status via UPLOAD_STATUS
+upload() { # ws key filename localfile -> echoes "<http-status>TAB<body>"
+    # Status+body travel together: callers capture via $(upload ...) and a
+    # command substitution is a SUBSHELL — an UPLOAD_STATUS side-assignment
+    # would never reach the parent (set -u then kills the run; found by the
+    # first real single-container execution, run 33117487609).
     local ws="$1" key="$2" filename="$3" localfile="$4" extra="${5:-}"
-    local out="${UPLOAD_OUT:-/tmp/us67-upload-resp.json}"
-    UPLOAD_STATUS=$(curl -sm 60 ${extra} -X POST \
+    local out status
+    out="$(mktemp)"
+    status=$(curl -sm 60 ${extra} -X POST \
         -H "Authorization: Bearer ${key}" \
         -F "file=@${localfile};filename=${filename}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/uploads" \
         -o "${out}" -w "%{http_code}" || true)
+    printf '%s\t' "${status}"
     cat "${out}" 2>/dev/null || true
+    rm -f "${out}"
+}
+
+# upload_do captures upload() output and splits it into UPLOAD_STATUS/BODY.
+upload_do() { # same args as upload
+    local captured
+    captured="$(upload "$@")"
+    UPLOAD_STATUS="${captured%%$'\t'*}"
+    BODY="${captured#*$'\t'}"
+    [[ -n "${UPLOAD_STATUS}" ]]
 }
 
 exec_ws() { # ws cmd...
@@ -175,7 +191,7 @@ if [[ "${SIDECAR_CONTAINERS}" == *"agentd"* ]]; then
     warn "agentd SIDECAR mode detected — /workspace is read-only in the sidecar (design epic-68 D1 as-built)."
     log "Sidecar clean-fail assertion: upload must fail 5xx and write nothing"
     printf 'sidecar mode: uploads unavailable\n' > /tmp/us67-sidecar.txt
-    BODY=$(upload "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt)
+    upload_do "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt
     case "${UPLOAD_STATUS}" in
         5*)
             ok "upload rejected cleanly with ${UPLOAD_STATUS} in sidecar mode"
@@ -200,7 +216,7 @@ log "E2 — upload → suspend → resume → file persists on the PVC"
 printf 'e2 persistence payload — epic 67\n' > /tmp/us67-e2.txt
 E2_SUM=$(sha256sum /tmp/us67-e2.txt | cut -d' ' -f1)
 
-BODY=$(upload "${WS_A}" "${KEY_A}" "notes-e2.txt" /tmp/us67-e2.txt)
+upload_do "${WS_A}" "${KEY_A}" "notes-e2.txt" /tmp/us67-e2.txt
 [[ "${UPLOAD_STATUS}" == "201" ]] || die "E2 upload returned ${UPLOAD_STATUS}: ${BODY}"
 E2_PATH=$(printf '%s' "${BODY}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
 [[ "${E2_PATH}" == /workspace/uploads/* ]] || die "E2 upload path unexpected: ${E2_PATH}"
@@ -229,26 +245,27 @@ log "E10 — two users, two workspaces, simultaneous uploads"
 printf 'tenant A payload\n' > /tmp/us67-a.txt
 printf 'tenant B payload\n' > /tmp/us67-b.txt
 
-# Simultaneous uploads (concurrency exercise): distinct output files so
-# the two in-flight responses cannot race. Statuses asserted after join.
-UPLOAD_OUT=/tmp/us67-e10-a.json upload "${WS_A}" "${KEY_A}" "tenant-a.txt" /tmp/us67-a.txt >/dev/null &
+# Simultaneous uploads (concurrency exercise). Each upload() call mktemps
+# its own response file, so the in-flight calls cannot race; the assertions
+# come from the sequential re-issues below (which also capture the paths).
+upload "${WS_A}" "${KEY_A}" "tenant-a.txt" /tmp/us67-a.txt >/dev/null &
 UP_A_PID=$!
-UPLOAD_OUT=/tmp/us67-e10-b.json upload "${WS_B}" "${KEY_B}" "tenant-b.txt" /tmp/us67-b.txt >/dev/null &
+upload "${WS_B}" "${KEY_B}" "tenant-b.txt" /tmp/us67-b.txt >/dev/null &
 UP_B_PID=$!
 wait "${UP_A_PID}" || true
 wait "${UP_B_PID}" || true
 
 # Sequential re-issues pin the per-tenant statuses and capture the paths.
-BODY_A=$(upload "${WS_A}" "${KEY_A}" "tenant-a.txt" /tmp/us67-a.txt)
-[[ "${UPLOAD_STATUS}" == "201" ]] || die "E10: user A upload returned ${UPLOAD_STATUS}: ${BODY_A}"
-PATH_A=$(printf '%s' "${BODY_A}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
-BODY_B=$(upload "${WS_B}" "${KEY_B}" "tenant-b.txt" /tmp/us67-b.txt)
-[[ "${UPLOAD_STATUS}" == "201" ]] || die "E10: user B upload returned ${UPLOAD_STATUS}: ${BODY_B}"
-PATH_B=$(printf '%s' "${BODY_B}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
+upload_do "${WS_A}" "${KEY_A}" "tenant-a.txt" /tmp/us67-a.txt
+[[ "${UPLOAD_STATUS}" == "201" ]] || die "E10: user A upload returned ${UPLOAD_STATUS}: ${BODY}"
+PATH_A=$(printf '%s' "${BODY}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
+upload_do "${WS_B}" "${KEY_B}" "tenant-b.txt" /tmp/us67-b.txt
+[[ "${UPLOAD_STATUS}" == "201" ]] || die "E10: user B upload returned ${UPLOAD_STATUS}: ${BODY}"
+PATH_B=$(printf '%s' "${BODY}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])' 2>/dev/null || true)
 ok "both tenants uploaded (${PATH_A}, ${PATH_B})"
 
-BODY_X=$(upload "${WS_B}" "${KEY_A}" "evil.txt" /tmp/us67-a.txt)
-[[ "${UPLOAD_STATUS}" == "404" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 404): ${BODY_X}"
+upload_do "${WS_B}" "${KEY_A}" "evil.txt" /tmp/us67-a.txt
+[[ "${UPLOAD_STATUS}" == "404" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 404): ${BODY}"
 ok "cross-user upload denied (404)"
 
 LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a || true")
@@ -290,8 +307,8 @@ esac
 wait_phase "${WS_A}" Active 300 || die "workspace pod never came back after kill"
 ok "pod restarted and workspace Active again"
 
-BODY_R=$(upload "${WS_A}" "${KEY_A}" "chaos.bin" /tmp/us67-chaos.bin)
-[[ "${UPLOAD_STATUS}" == "201" ]] || die "E11: retry upload returned ${UPLOAD_STATUS}: ${BODY_R}"
+upload_do "${WS_A}" "${KEY_A}" "chaos.bin" /tmp/us67-chaos.bin
+[[ "${UPLOAD_STATUS}" == "201" ]] || die "E11: retry upload returned ${UPLOAD_STATUS}: ${BODY}"
 ok "retry succeeded after restart"
 
 TMP_FILES=$(exec_ws "${WS_A}" sh -c 'ls /workspace/uploads/*.tmp 2>/dev/null || true')
