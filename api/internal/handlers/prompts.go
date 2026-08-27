@@ -54,6 +54,11 @@ func (h *PromptHandler) GetPlatform(c *gin.Context) {
 	var promptText string
 	if setting != nil {
 		_ = json.Unmarshal(setting.Value, &promptText)
+	} else {
+		// Fresh install: surface the effective default the platform tier
+		// delivers, so admins can see and edit-from what workspaces
+		// actually receive (an explicitly-cleared saved row still wins).
+		promptText = types.DefaultPlatformPrompt
 	}
 	c.JSON(http.StatusOK, platformPromptResponse{Prompt: promptText})
 }

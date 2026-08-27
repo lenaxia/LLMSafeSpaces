@@ -132,11 +132,32 @@ func TestGetPlatform_ReturnsStoredPrompt(t *testing.T) {
 	assert.Equal(t, "Be concise and secure.", resp.Prompt)
 }
 
-func TestGetPlatform_NotSet_ReturnsEmpty(t *testing.T) {
+func TestGetPlatform_NotSet_ReturnsDefaultPlatformPrompt(t *testing.T) {
 	store := new(mockPromptHandlerStore)
 	h := newPromptHandlerTest(store, "admin-1", nil)
 
+	// Fresh install: no sys_prompt_platform row. GET must surface the
+	// effective default the platform tier actually delivers, not "" —
+	// otherwise admins cannot see or edit-from what workspaces receive.
 	store.On("GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform).Return((*types.PlatformSetting)(nil), nil)
+
+	rr := doRoleRequest(t, http.MethodGet, "/admin/prompt", "/admin/prompt", h.GetPlatform, nil)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	var resp platformPromptResponse
+	assert.NoError(t, json.Unmarshal(rr.Body.Bytes(), &resp))
+	assert.Equal(t, types.DefaultPlatformPrompt, resp.Prompt)
+}
+
+func TestGetPlatform_ExplicitlyCleared_ReturnsEmpty(t *testing.T) {
+	store := new(mockPromptHandlerStore)
+	h := newPromptHandlerTest(store, "admin-1", nil)
+
+	// A saved-empty row is an admin's deliberate choice — it must NOT be
+	// papered over with the default.
+	store.On("GetPlatformSetting", mock.Anything, types.SettingSysPromptPlatform).Return(&types.PlatformSetting{
+		Value: json.RawMessage(`""`),
+	}, nil)
 
 	rr := doRoleRequest(t, http.MethodGet, "/admin/prompt", "/admin/prompt", h.GetPlatform, nil)
 
