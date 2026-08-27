@@ -175,7 +175,7 @@ type ProxyHandler struct {
 	// SetAdapter.
 	modelPolicyChecker OrgPolicyChecker
 
-	// Epic 67 US-67.2 upload overrides. Zero → env-derived defaults
+	// Epic 68 US-68.2 upload overrides. Zero → env-derived defaults
 	// (UPLOAD_MAX_BYTES / UPLOAD_TIMEOUT_MS); set via SetUploadLimitsForTest.
 	// Written only before Start (test wiring), read on the upload path.
 	uploadMaxBytesOverride      int64

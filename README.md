@@ -121,7 +121,7 @@ All endpoints are JSON. Authentication is via `Authorization: Bearer <jwt-or-api
 | `POST` | `/api/v1/workspaces/:id/restart` | Restart the workspace pod |
 | `GET` | `/api/v1/workspaces/:id/status` | Get phase + conditions + credential state + agent health |
 | `POST` | `/api/v1/workspaces/:id/agent/reload` | Hot-reload agent credentials without pod restart |
-| `POST` | `/api/v1/workspaces/:id/uploads` | Upload a file to the workspace PVC (`multipart/form-data`, field `file`; 25 MiB cap; returns `{path, name, size}` — see [File Attachments](#file-attachments-epic-67) in README-LLM) |
+| `POST` | `/api/v1/workspaces/:id/uploads` | Upload a file to the workspace PVC (`multipart/form-data`, field `file`; 25 MiB cap; returns `{path, name, size}` — see [File Attachments](#file-attachments-epic-68) in README-LLM) |
 
 ### Session Management
 

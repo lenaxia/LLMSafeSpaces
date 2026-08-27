@@ -1,4 +1,4 @@
-# Epic 67 (proposal): Port-in-Subdomain Preview Origins
+# Epic 68 (proposal): Port-in-Subdomain Preview Origins
 
 **Status:** Proposal (follow-up to epic-66 redesign-2026-08-19, which is completed and implemented)
 **Created:** 2026-08-21

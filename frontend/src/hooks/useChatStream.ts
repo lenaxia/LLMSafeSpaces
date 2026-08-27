@@ -85,7 +85,7 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // D3 (#907): one clientMessageID per user message, stable across
         // retries — the API's outbox dedupes on it, so a retried POST can
         // never double-send.
-        // Epic 67 (D11): files ride as a top-level field; the backend
+        // Epic 68 (D11): files ride as a top-level field; the backend
         // composes the manifest. The text is never mutated client-side.
         const clientMessageID = crypto.randomUUID();
         for (let attempt = 0; attempt <= SEND_MAX_503_RETRIES; attempt++) {

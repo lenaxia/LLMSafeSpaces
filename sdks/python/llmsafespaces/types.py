@@ -193,7 +193,7 @@ class AuthResponse:
 
 @dataclass
 class FileUpload:
-    """Result of a workspace file upload (Epic 67): absolute path of the
+    """Result of a workspace file upload (Epic 68): absolute path of the
     stored file on the workspace PVC, its sanitized name, byte count."""
 
     path: str

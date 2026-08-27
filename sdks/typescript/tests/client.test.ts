@@ -588,8 +588,8 @@ describe("mcpServers (unhappy paths)", () => {
   });
 });
 
-// Epic 67: workspace upload + files-on-send surface (wire-level)
-describe("attachments (Epic 67)", () => {
+// Epic 68: workspace upload + files-on-send surface (wire-level)
+describe("attachments (Epic 68)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

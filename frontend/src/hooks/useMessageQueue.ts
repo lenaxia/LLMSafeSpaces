@@ -7,7 +7,7 @@ export type QueuedMessage = {
   status: "pending" | "delivering" | "verifying" | "error";
   error?: string;
   sessionId: string;
-  /** Epic 67: upload paths attached to the queued entry (local re-enqueue only). */
+  /** Epic 68: upload paths attached to the queued entry (local re-enqueue only). */
   files?: string[];
 };
 

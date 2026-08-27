@@ -12,7 +12,7 @@ import (
 	"net/http"
 )
 
-// Epic 67: workspace file upload + attachment references on send.
+// Epic 68: workspace file upload + attachment references on send.
 //
 // UploadFile streams the body as multipart/form-data to
 // POST /workspaces/{id}/uploads; the file lands on the workspace PVC
@@ -24,7 +24,7 @@ import (
 // UploadFile uploads a file into the workspace. The content is streamed
 // (multipart writer over the request body), never buffered whole. The
 // workspace must be Active; rejections surface as *APIError with the
-// phase on 409s (Phase field) per Epic 67 D5.
+// phase on 409s (Phase field) per Epic 68 D5.
 func (s *WorkspacesService) UploadFile(ctx context.Context, workspaceID, filename string, content io.Reader) (*FileUpload, error) {
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)

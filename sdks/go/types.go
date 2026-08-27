@@ -27,7 +27,7 @@ type CreateWorkspaceRequest struct {
 	StorageSize string `json:"storageSize,omitempty"`
 }
 
-// FileUpload is the result of POST /workspaces/:id/uploads (Epic 67):
+// FileUpload is the result of POST /workspaces/:id/uploads (Epic 68):
 // the absolute path of the stored file on the workspace PVC, its
 // sanitized name, and the stored byte count.
 type FileUpload struct {

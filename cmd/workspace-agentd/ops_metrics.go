@@ -39,13 +39,13 @@ type opsMetrics struct {
 	// growth points at a tool population being orphaned mid-execution
 	// (the #892 stuck-running correlation).
 	orphansReaped *prometheus.CounterVec
-	// fileUploads counts PUT /v1/files outcomes (Epic 67 US-67.1):
+	// fileUploads counts PUT /v1/files outcomes (Epic 68 US-68.1):
 	// accepted, rejected_name, rejected_cap, write_error, unauthorized —
 	// the design doc's agentd-side observability (cap hits + write
 	// failures) plus the rejection reasons the API cannot see.
 	fileUploads *prometheus.CounterVec
 	// uploadScrubRemoved counts stale uploads/*.tmp files removed by the
-	// boot scrub (design epic-67 D3).
+	// boot scrub (design epic-68 D3).
 	uploadScrubRemoved *prometheus.CounterVec
 }
 
@@ -98,12 +98,12 @@ func newOpsMetrics() *opsMetrics {
 
 		fileUploads: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_agentd_file_uploads_total",
-			Help: "PUT /v1/files outcomes by reason (accepted, rejected_name, rejected_cap, write_error, unauthorized) — Epic 67 US-67.1",
+			Help: "PUT /v1/files outcomes by reason (accepted, rejected_name, rejected_cap, write_error, unauthorized) — Epic 68 US-68.1",
 		}, []string{"workspace_id", "outcome"}),
 
 		uploadScrubRemoved: promauto.NewCounterVec(prometheus.CounterOpts{
 			Name: "workspace_agentd_upload_scrub_removed_total",
-			Help: "Stale uploads/*.tmp files removed by the agentd boot scrub (Epic 67 D3 atomic-or-absent contract)",
+			Help: "Stale uploads/*.tmp files removed by the agentd boot scrub (Epic 68 D3 atomic-or-absent contract)",
 		}, []string{"workspace_id"}),
 	}
 }
@@ -151,7 +151,7 @@ func (m *opsMetrics) RecordOrphanReap(workspaceID string) {
 }
 
 // RecordUploadOutcome counts one PUT /v1/files request resolution
-// (Epic 67 US-67.1 observability).
+// (Epic 68 US-68.1 observability).
 func (m *opsMetrics) RecordUploadOutcome(workspaceID string, outcome uploadOutcome) {
 	if workspaceID == "" {
 		workspaceID = "unknown"

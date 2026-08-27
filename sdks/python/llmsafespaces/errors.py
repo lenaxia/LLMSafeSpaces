@@ -28,7 +28,7 @@ class ConflictError(LLMSafeSpacesError):
     """Conflict state (409).
 
     ``phase`` carries the current workspace phase when the 409 body has
-    one (upload phase gate, Epic 67 D5).
+    one (upload phase gate, Epic 68 D5).
     """
 
     def __init__(self, message: str = "Conflict", phase: str | None = None):

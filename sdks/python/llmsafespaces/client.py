@@ -343,7 +343,7 @@ class _WorkspacesAPI:
         return self._c._request("GET", f"/workspaces/{workspace_id}/status")
 
     def upload_file(self, workspace_id: str, filename: str, content: bytes | str) -> FileUpload:
-        """Upload a file into the workspace (Epic 67): multipart POST with a
+        """Upload a file into the workspace (Epic 68): multipart POST with a
         single part named ``file``; the file lands on the workspace PVC under
         /workspace/uploads/. The returned path feeds the ``files`` parameter
         of ``sessions.send_prompt_async`` / ``sessions.enqueue``."""
@@ -489,7 +489,7 @@ class _SessionsAPI:
     ) -> None:
         """Send a prompt asynchronously (202; the reply arrives on the
         workspace SSE stream). ``files`` are upload-namespace paths
-        (Epic 67) — the API composes the v1 attachment manifest into the
+        (Epic 68) — the API composes the v1 attachment manifest into the
         dispatched text."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": message}]}
         if files:
@@ -510,7 +510,7 @@ class _SessionsAPI:
         self, workspace_id: str, session_id: str, text: str, files: list[str] | None = None
     ) -> str:
         """Enqueue a message for a busy session; ``files`` as in
-        send_prompt_async (Epic 67)."""
+        send_prompt_async (Epic 68)."""
         body: dict[str, Any] = {"text": text}
         if files:
             body["files"] = files

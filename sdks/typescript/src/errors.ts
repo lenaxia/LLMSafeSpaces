@@ -25,7 +25,7 @@ export class NotFoundError extends LLMSafeSpacesError {
 }
 
 export class ConflictError extends LLMSafeSpacesError {
-  /** Current workspace phase, when the 409 body carries one (upload phase gate, Epic 67 D5). */
+  /** Current workspace phase, when the 409 body carries one (upload phase gate, Epic 68 D5). */
   public phase?: string;
 
   constructor(message: string) {

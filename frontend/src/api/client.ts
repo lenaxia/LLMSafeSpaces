@@ -84,7 +84,7 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body !== undefined ? JSON.stringify(body) : undefined }),
-  // Multipart upload (Epic 67): the browser sets the Content-Type boundary.
+  // Multipart upload (Epic 68): the browser sets the Content-Type boundary.
   upload: <T>(path: string, form: FormData) =>
     request<T>(path, { method: "POST", body: form }),
 };

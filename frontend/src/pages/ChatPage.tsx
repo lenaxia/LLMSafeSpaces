@@ -55,7 +55,7 @@ const AUTO_ABORT_DWELL_MS = 1_500;
 // ids) and `createdAt` (server messages may omit it — see transformHistory), so
 // neither is a reliable match key. (role, text) is the simplest key that
 // recognises the same user message on both sides of the wire. User text is
-// manifest-stripped before keying (Epic 67 D11): the optimistic bubble carries
+// manifest-stripped before keying (Epic 68 D11): the optimistic bubble carries
 // the raw prose while server history carries the composed text — both must key
 // identically or the optimistic bubble lingers beside the history bubble.
 // Known limitation: two consecutive identical messages collide on this key
@@ -321,7 +321,7 @@ export function ChatPage() {
 
   const queue = useMessageQueue(activeWorkspaceId, sessionId);
 
-  // Epic 67 D12/D17: workspace-scoped attachment chips. Persist across
+  // Epic 68 D12/D17: workspace-scoped attachment chips. Persist across
   // session switches inside the workspace; cleared on workspace switch
   // (inside the hook). Uploads target the workspace uploads route.
   const composerAttachments = useComposerAttachments(workspaceId);
@@ -680,7 +680,7 @@ export function ChatPage() {
         if (sentTextRef.current && text === sentTextRef.current) {
           activePartTypeRef.current = "user-echo";
         } else if (sentTextRef.current && text.startsWith(sentTextRef.current)) {
-          // Epic 67 D11: with attached files the user echo comes back as the
+          // Epic 68 D11: with attached files the user echo comes back as the
           // composed text (prose + manifest). A remainder that is ONLY a
           // manifest block is still the user echo — never streamed as
           // assistant content.

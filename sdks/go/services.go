@@ -224,7 +224,7 @@ func (s *SessionsService) Get(ctx context.Context, workspaceID, sessionID string
 // SendPromptAsync delivers a prompt asynchronously (202; the reply arrives
 // on the workspace SSE stream). The body carries the parts shape the API
 // extracts text from. Optional files are upload-namespace paths returned by
-// WorkspacesService.UploadFile (Epic 67): the API composes the v1
+// WorkspacesService.UploadFile (Epic 68): the API composes the v1
 // attachment manifest into the dispatched text.
 func (s *SessionsService) SendPromptAsync(ctx context.Context, workspaceID, sessionID, message string, files ...string) error {
 	body := map[string]any{
@@ -241,7 +241,7 @@ func (s *SessionsService) Delete(ctx context.Context, workspaceID, sessionID str
 }
 
 // Enqueue queues a message for a busy session and returns the queue
-// message ID. Optional files are upload-namespace paths (Epic 67) —
+// message ID. Optional files are upload-namespace paths (Epic 68) —
 // same manifest composition as the prompt route.
 func (s *SessionsService) Enqueue(ctx context.Context, workspaceID, sessionID, text string, files ...string) (string, error) {
 	var resp struct {

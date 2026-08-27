@@ -11,7 +11,7 @@ import (
 )
 
 // TestSanitizeFilename_HostileTable pins the shared two-layer upload filename
-// sanitizer (design epic-67 D9). The table mirrors the agentd-side table in
+// sanitizer (design epic-68 D9). The table mirrors the agentd-side table in
 // cmd/workspace-agentd/uploads_test.go byte-for-byte: both layers consume this
 // one implementation, so the tables must agree.
 func TestSanitizeFilename_HostileTable(t *testing.T) {

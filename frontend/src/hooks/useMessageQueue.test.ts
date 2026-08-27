@@ -239,7 +239,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages[2]!.status).toBe("pending"); // unknown server statuses degrade to pending
   });
 
-describe("useMessageQueue files (Epic 67 U1.6.8)", () => {
+describe("useMessageQueue files (Epic 68 U1.6.8)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_test_1" });

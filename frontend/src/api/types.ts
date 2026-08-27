@@ -178,7 +178,7 @@ export interface SendMessageRequest {
   // accept and returns the original acceptance for a duplicate.
   clientMessageID?: string;
   /**
-   * Epic 67 (D11): workspace upload paths to attach. The BACKEND composes
+   * Epic 68 (D11): workspace upload paths to attach. The BACKEND composes
    * the attachment manifest into the dispatched text — the client never
    * mutates the text itself.
    */
@@ -207,7 +207,7 @@ export interface ApiError {
   code?: string;
   /**
    * Current workspace phase on upload 409s (the workspace must be Active
-   * to accept uploads, Epic 67 D5) — surfaced in the composer chip error.
+   * to accept uploads, Epic 68 D5) — surfaced in the composer chip error.
    */
   phase?: string;
   /**

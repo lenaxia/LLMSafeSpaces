@@ -273,7 +273,7 @@ class WorkspacesAPI {
     return this.client.request<WorkspaceStatusResult>("GET", `/workspaces/${id}/status`);
   }
   /**
-   * Uploads a file into the workspace (Epic 67): multipart POST with a
+   * Uploads a file into the workspace (Epic 68): multipart POST with a
    * single part named `file`; the file lands on the workspace PVC under
    * /workspace/uploads/. The returned path feeds the `files` parameter of
    * sessions.sendPromptAsync / sessions.enqueue. The workspace must be
@@ -388,7 +388,7 @@ class SessionsAPI {
   }
   /**
    * Sends a prompt asynchronously (202; the reply arrives on the workspace
-   * SSE stream). Optional `files` (Epic 67) are upload-namespace paths —
+   * SSE stream). Optional `files` (Epic 68) are upload-namespace paths —
    * the API composes the v1 attachment manifest into the dispatched text.
    */
   sendPromptAsync(workspaceId: string, sessionId: string, message: string, files?: string[]) {

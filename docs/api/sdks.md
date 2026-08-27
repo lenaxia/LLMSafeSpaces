@@ -22,7 +22,7 @@ All four language SDKs are hand-written against a single **OpenAPI 3.0.3 specifi
 ```bash
 cd sdks
 
-# Validate the spec structurally + spec↔router parity contract (Epic 67 E9)
+# Validate the spec structurally + spec↔router parity contract (Epic 68 E9)
 make sdk-check
 
 # Validate the spec alone (Go-based validator, no npm required)
@@ -31,7 +31,7 @@ make validate
 
 The validator checks OpenAPI 3.0.3 structure, resolves all `$ref` targets, and confirms security schemes and at least one path are defined. Route parity between the spec and the production router is enforced bidirectionally by `TestOpenAPIRouterContract` (api/internal/server) — a route added to the router without the spec (or vice versa) fails CI. Per-language compile + wire-level tests run in the `sdk-contract` CI job.
 
-### File attachments (Epic 67)
+### File attachments (Epic 68)
 
 All four SDKs expose the upload + files surface:
 

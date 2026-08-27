@@ -64,9 +64,9 @@ const (
 	// The controller stamps it into LLMSAFESPACES_RESTART_MARKER_PATH on
 	// BOTH containers; env unset keeps the single-container default.
 	SidecarRestartMarkerPath = "/sandbox-runtime/last-restart-reason.json"
-	// UploadsPath is the Epic 67 file-ingest root on the workspace PVC:
+	// UploadsPath is the Epic 68 file-ingest root on the workspace PVC:
 	// every PUT /v1/files upload lands here as <uuid>-<sanitized-name>
-	// (atomic tmp+rename, design epic-67 D2/D3). Override via
+	// (atomic tmp+rename, design epic-68 D2/D3). Override via
 	// LLMSAFESPACES_UPLOADS_PATH (tests, dev relocatability).
 	UploadsPath = "/workspace/uploads"
 )
@@ -141,7 +141,7 @@ type ReadyzResponse struct {
 	RelayInjected bool `json:"relay_injected"`
 }
 
-// FileUploadResponse is the response for PUT /v1/files (Epic 67 US-67.1).
+// FileUploadResponse is the response for PUT /v1/files (Epic 68 US-68.1).
 // Path is the absolute final location (/workspace/uploads/<uuid>-<name> in
 // production); Name is the sanitized filename; Size the byte count on disk.
 // Error responses never echo .tmp or internal paths (design U1.1.20).

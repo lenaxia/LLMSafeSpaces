@@ -1,5 +1,5 @@
 // TypeScript port of the v1 attachment-manifest parser
-// (pkg/session/attachments/attachments.go, Epic 67 D7/D11). The manifest
+// (pkg/session/attachments/attachments.go, Epic 68 D7/D11). The manifest
 // format is a stable API contract locked by the golden fixtures in the Go
 // package's testdata/ — this port is verified against those same fixtures.
 //

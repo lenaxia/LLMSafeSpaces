@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package attachments implements the v1 attachment manifest contract
-// (Epic 67, design decisions D7/D8/D15): prompt text carrying file
+// (Epic 68, design decisions D7/D8/D15): prompt text carrying file
 // references the agent reads with its own tools.
 //
 // Manifest format v1 — one line per file, appended after the user text

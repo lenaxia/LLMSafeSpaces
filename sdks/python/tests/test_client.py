@@ -824,7 +824,7 @@ def test_mcp_servers_admin_delete_auto_apply_variants():
     assert bare.called and scoped.called
 
 
-# ── Epic 67: workspace upload + files-on-send (wire-level) ──────────────────
+# ── Epic 68: workspace upload + files-on-send (wire-level) ──────────────────
 
 UPLOAD_PATH = "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"
 UPLOAD_RESP = {"path": UPLOAD_PATH, "name": "notes.txt", "size": 5}

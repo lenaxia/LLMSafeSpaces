@@ -281,7 +281,7 @@ func TestSendOnEnterDefaultFalse(t *testing.T) {
 }
 
 // TestComposerDrawerOpenEnum pins the composer options-drawer preference
-// (Epic 67 D12). The frontend reads it via useUserSetting("composerDrawerOpen", "auto"):
+// (Epic 68 D12). The frontend reads it via useUserSetting("composerDrawerOpen", "auto"):
 // "auto" expands on desktop and collapses on mobile (media-query-aware default),
 // "open"/"collapsed" are the persisted explicit overrides. The enum keeps the
 // unset state distinguishable from an explicit choice, which a bool cannot.

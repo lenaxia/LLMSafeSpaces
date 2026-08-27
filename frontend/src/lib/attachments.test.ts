@@ -7,7 +7,7 @@ import { parseAttachments } from "./attachments";
 // static imports — the frontend Docker context is frontend/ only, and
 // Vite rewrites new-URL patterns into asset requests its fs.allow
 // would deny). Reading from the source of truth keeps TS/Go parser
-// drift structurally impossible (design epic-67 D7). Anchored on cwd
+// drift structurally impossible (design epic-68 D7). Anchored on cwd
 // (vitest runs with cwd=frontend/); falls back to a repo-root cwd.
 const testdataDir = resolve(
   process.cwd().endsWith("frontend") ? ".." : ".",

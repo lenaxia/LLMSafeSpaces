@@ -722,11 +722,11 @@ func RecordMCPBinding(sourceType string) {
 	mcpBindingsTotal.WithLabelValues(sourceType).Inc()
 }
 
-// --- Epic 67 US-67.2: workspace upload route metrics ---
+// --- Epic 68 US-68.2: workspace upload route metrics ---
 
 var (
 	// uploadsTotal counts POST /workspaces/:id/uploads resolutions by
-	// outcome reason (design epic-67 Observability; U1.2.21). Reasons are
+	// outcome reason (design epic-68 Observability; U1.2.21). Reasons are
 	// exhaustively enumerated: "success", "cap", "phase", "disk",
 	// "agentd_error". Auth rejections are counted by the auth layer's own
 	// metrics (they occur in middleware, before the upload handler runs);

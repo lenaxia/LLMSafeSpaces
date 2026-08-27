@@ -743,7 +743,7 @@ describe("useChatStream", () => {
   });
 });
 
-describe("useChatStream files (Epic 67 U1.6.7/U1.6.8)", () => {
+describe("useChatStream files (Epic 68 U1.6.7/U1.6.8)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

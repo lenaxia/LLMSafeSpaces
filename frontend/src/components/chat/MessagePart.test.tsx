@@ -712,7 +712,7 @@ describe("DevPreviewOutput via MessagePart", () => {
   });
 });
 
-describe("MessagePart user attachments (Epic 67 D11)", () => {
+describe("MessagePart user attachments (Epic 68 D11)", () => {
   const manifestLine = (name: string, uuid = "11111111-2222-3333-4444-555555555555") =>
     `[llmsafespaces:attachment path="/workspace/uploads/${uuid}-${name}" name="${name}"]`;
 

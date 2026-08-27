@@ -49,7 +49,7 @@ public class WorkspacesService {
     }
 
     /**
-     * Uploads a file into the workspace (Epic 67): multipart POST with a
+     * Uploads a file into the workspace (Epic 68): multipart POST with a
      * single part named {@code file}; the file lands on the workspace PVC
      * under /workspace/uploads/. The returned path feeds the {@code files}
      * parameter of {@code sessions.sendPromptAsync}/{@code sessions.enqueue}.

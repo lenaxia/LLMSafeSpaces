@@ -1,5 +1,5 @@
 /**
- * Epic 67 US-67.5 — composer attachments e2e (fully mocked, no live backend).
+ * Epic 68 US-68.5 — composer attachments e2e (fully mocked, no live backend).
  *
  * Covers the three browser-only scenarios from the epic test plan:
  *   - E1 happy path: attach → chip → send → prompt payload asserted via stub
@@ -9,7 +9,7 @@
  *   - E6 chip removed before send → no files[] in the prompt payload
  *
  * Mirrors the stub strategy of composer.spec.ts (auth/workspace/history/SSE
- * route mocks) plus the Epic 67 upload route stub.
+ * route mocks) plus the Epic 68 upload route stub.
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
 
@@ -152,7 +152,7 @@ async function gotoChat(page: Page) {
   await expect(page.getByPlaceholder("Type a message...")).toBeEnabled({ timeout: 10_000 });
 }
 
-test.describe("Composer attachments (Epic 67)", () => {
+test.describe("Composer attachments (Epic 68)", () => {
   test("E1 happy path: attach → chip → send → payload carries files[], text unmutated", async ({ page }) => {
     const uploaded: string[] = [];
     const prompts: Array<Record<string, unknown>> = [];
@@ -273,7 +273,7 @@ test.describe("Composer attachments (Epic 67)", () => {
   });
 
   // E4: upload against a suspended workspace → the 409 is surfaced in the
-  // composer with the phase hint (Epic 67 D5).
+  // composer with the phase hint (Epic 68 D5).
   test("E4 suspended workspace: upload 409 surfaced with phase hint", async ({ page }) => {
     const uploaded: string[] = [];
     await mockAuthAndWorkspace(page);

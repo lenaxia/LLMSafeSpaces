@@ -255,7 +255,7 @@ class _AsyncWorkspacesAPI:
     async def upload_file(
         self, workspace_id: str, filename: str, content: bytes | str
     ) -> FileUpload:
-        """Upload a file into the workspace (Epic 67). See the sync
+        """Upload a file into the workspace (Epic 68). See the sync
         ``LLMSafeSpaces.workspaces.upload_file``."""
         data = await self._c._upload_file(
             f"/workspaces/{workspace_id}/uploads", filename, content
@@ -376,7 +376,7 @@ class _AsyncSessionsAPI:
         files: list[str] | None = None,
     ) -> None:
         """Send a prompt asynchronously; ``files`` are upload-namespace
-        paths (Epic 67) — the API composes the v1 attachment manifest."""
+        paths (Epic 68) — the API composes the v1 attachment manifest."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": message}]}
         if files:
             body["files"] = files

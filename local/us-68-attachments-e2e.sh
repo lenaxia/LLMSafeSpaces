@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Epic 67 US-67.6 — cluster-level attachment e2e rows (E2, E10, E11).
+# Epic 68 US-68.6 — cluster-level attachment e2e rows (E2, E10, E11).
 #
 # Complements local/test.sh (same harness conventions: kind cluster,
 # port-forwarded API, postgres-seeded users/API keys, kubectl exec into
@@ -128,7 +128,7 @@ ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, user_id=EXCLUDED.user_id;
 # -----------------------------------------------------------------------------
 # Setup: probes, port-forward, users, workspaces
 # -----------------------------------------------------------------------------
-log "Epic 67 attachments e2e — API probes via port-forward"
+log "Epic 68 attachments e2e — API probes via port-forward"
 
 kc -n "${NS}" port-forward svc/llmsafespaces-api "${PORTFWD_PORT}:8080" >/dev/null 2>&1 &
 PF_PID=$!
@@ -161,7 +161,7 @@ POD_A=$(pod_of "${WS_A}")
 # -----------------------------------------------------------------------------
 SIDECAR_CONTAINERS=$(kc -n "${NS}" get pod "${POD_A}" -o jsonpath='{.spec.containers[*].name}')
 if [[ "${SIDECAR_CONTAINERS}" == *"agentd"* ]]; then
-    warn "agentd SIDECAR mode detected — /workspace is read-only in the sidecar (design epic-67 D1 as-built)."
+    warn "agentd SIDECAR mode detected — /workspace is read-only in the sidecar (design epic-68 D1 as-built)."
     log "Sidecar clean-fail assertion: upload must fail 5xx and write nothing"
     printf 'sidecar mode: uploads unavailable\n' > /tmp/us67-sidecar.txt
     BODY=$(upload "${WS_A}" "${KEY_A}" "sidecar.txt" /tmp/us67-sidecar.txt)

@@ -55,7 +55,7 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
-| 2026-08-27 | opencode (US-67.5) | Epic 67 frontend composer: options drawer (D12, settings-persisted), "+" attach + upload chips (D11/D17), files[] send wiring, TS manifest parser (golden-fixture port), dead MessagePart.files removed (D13); +84 vitest tests, 5 Playwright specs, schema v14 (+composerDrawerOpen enum, canary twins) | (this branch) |
+| 2026-08-27 | opencode (US-68.5) | Epic 68 frontend composer: options drawer (D12, settings-persisted), "+" attach + upload chips (D11/D17), files[] send wiring, TS manifest parser (golden-fixture port), dead MessagePart.files removed (D13); +84 vitest tests, 5 Playwright specs, schema v14 (+composerDrawerOpen enum, canary twins) | (this branch) |
 | 2026-08-15 | opencode (false-banner fix) | PR #852 MERGED (squash `0c445521`): false "Session was interrupted" auto-abort fixes F1-F5 + 9 review rounds (adapter ok-semantics, flight IDs, session-aware relay kill, injector retry, N4). Sole CI fail at merge: pre-existing S-RATE-LIMIT canary (documented). | `0c445521` |
 | 2026-07-11 | opencode (g-batch) | Code-fixable batch — G6/G41, G21, G42, G44, G46, G47 (PR [#543](https://github.com/lenaxia/LLMSafeSpaces/pull/543), pending review) | (pending) |
 | 2026-07-11 | opencode (g28) | G28 — reclassify as Accepted + invariant test (PR [#541](https://github.com/lenaxia/LLMSafeSpaces/pull/541), pending review) | `7518ecf1` |

@@ -244,7 +244,7 @@ describe("transformHistory tool start time (#892 D5)", () => {
   });
 });
 
-describe("queueMessage files (Epic 67 U1.6.8)", () => {
+describe("queueMessage files (Epic 68 U1.6.8)", () => {
   it("omits files from the request body when none are attached", async () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ messageID: "m1" }), { status: 200 }),

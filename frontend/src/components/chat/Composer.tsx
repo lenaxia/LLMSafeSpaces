@@ -114,7 +114,7 @@ function ComposerChip({ chip, onRemove, onRetry }: {
  * (packages/tui/src/prompt/history.tsx + component/prompt/index.tsx),
  * adapted to a DOM textarea via getCursorLineInfo.
  *
- * Attachments (Epic 67): the "+" button is always visible in the input
+ * Attachments (Epic 68): the "+" button is always visible in the input
  * row; chips render between the options drawer and the textarea; send
  * is blocked while any chip is uploading (D17) and carries only settled
  * paths — the text is never mutated client-side (D11). The options

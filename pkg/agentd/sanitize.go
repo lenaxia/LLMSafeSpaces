@@ -12,7 +12,7 @@ import (
 
 // MaxFilenameBytes is the sanitized-filename byte cap applied by both upload
 // layers (agentd PUT /v1/files authoritative, API defense-in-depth — design
-// epic-67 D9). Truncation lands on a rune boundary.
+// epic-68 D9). Truncation lands on a rune boundary.
 const MaxFilenameBytes = 200
 
 // SanitizeFilename flattens an untrusted filename to a safe base name. It is

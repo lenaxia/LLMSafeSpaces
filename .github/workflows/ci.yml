@@ -120,7 +120,7 @@ jobs:
         with:
           # Pinned (was `latest`): a gosec taint-analysis release between
           # PR #1075 and #1083 flagged pre-existing code mid-flight and
-          # broke CI (worklog US-67.2). Bump deliberately, with a
+          # broke CI (worklog US-68.2). Bump deliberately, with a
           # full-repo lint run in the same PR.
           version: v2.13.1
           args: --timeout=5m

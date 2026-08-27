@@ -27,10 +27,10 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// Epic 67 US-67.2 — POST /api/v1/workspaces/:id/uploads.
+// Epic 68 US-68.2 — POST /api/v1/workspaces/:id/uploads.
 //
 // Streaming multipart upload that forwards the single "file" part to the
-// workspace pod's agentd user-mux endpoint (PUT /v1/files on :4097, US-67.1)
+// workspace pod's agentd user-mux endpoint (PUT /v1/files on :4097, US-68.1)
 // under Basic auth. Gate order is the D16 contract: auth/access (middleware)
 // → phase (Active only) → disk (critical ratio) → cap. The file part is
 // NEVER buffered: it is piped from the client's multipart stream straight
@@ -330,7 +330,7 @@ func rejectExtraUploadFileParts(mr *multipart.Reader) error {
 // goroutine reading the (cap+1-limited) file part; over-cap truncation and
 // mid-stream client failures close the pipe with an error, aborting the
 // agentd request so no partial file survives (agentd removes its .tmp on
-// any body error — US-67.1 D3).
+// any body error — US-68.1 D3).
 func (h *ProxyHandler) forwardUploadToAgentd(
 	ctx context.Context,
 	podIP, filename, password string,

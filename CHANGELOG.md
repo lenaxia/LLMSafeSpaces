@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Epic 67 — port-in-subdomain preview origins (#1069, design
-  epic-67-port-in-subdomain-preview-origins)**: dev-preview hosts move to
+- **Epic 68 — port-in-subdomain preview origins (#1069, design
+  epic-68-port-in-subdomain-preview-origins)**: dev-preview hosts move to
   `https://<port>-<uuid>-preview.<baseDomain>/<app-path>`, fixing the
   root-absolute-URL breakage class (apps emitting `303 Location: /login`
   lost the port prefix and died with an indistinguishable 502 — the
@@ -55,8 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   suspend/resume continuity) and negative scope.
   `TestMCPHandler_ToolDescriptionGuidance` pins the guidance as
   contract.
-- **US-67.1 (#1074)**: agentd file-ingest endpoint `PUT /v1/files`.
-- **US-67.3 (#1075)**: attachment manifest v1 contract + `files[]`
+- **US-68.1 (#1074)**: agentd file-ingest endpoint `PUT /v1/files`.
+- **US-68.3 (#1075)**: attachment manifest v1 contract + `files[]`
   send-path integration.
 - **SDKs (#1068)**: cursor-paginated session history in Go/TS/Python/Java.
 - **OpenAPI (#1064)**: org/admin/image-factory surface documented; every

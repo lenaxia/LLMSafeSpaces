@@ -531,7 +531,7 @@ class LLMSafeSpacesClientTest {
         }
     }
 
-    // ── Epic 67: workspace upload + files-on-send (wire-level) ──────────────
+    // ── Epic 68: workspace upload + files-on-send (wire-level) ──────────────
 
     private static final String UPLOAD_PATH =
             "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt";
