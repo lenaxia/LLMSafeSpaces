@@ -263,7 +263,7 @@ function DevPreviewOutput({ output }: { output: string }) {
       <p className="text-xs text-muted-foreground leading-relaxed">
         {explanation}
         {origin && (
-          <>{" "}Served from <code className="rounded bg-muted px-1 py-0.5">{"<workspace>"}-preview.{origin}</code>.</>
+          <>{" "}Served from <code className="rounded bg-muted px-1 py-0.5">:{port}-{"<workspace>"}-preview.{origin}</code>.</>
         )}
       </p>
     </div>

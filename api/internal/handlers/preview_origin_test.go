@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +20,10 @@ import (
 	"github.com/gin-gonic/gin"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
 
 // --- fixtures ---
 
@@ -70,7 +75,6 @@ func newPreviewOriginFixture(t *testing.T, backend *httptest.Server) (*PreviewOr
 		TokenSecret: []byte("test-secret-key"),
 	}, &fakePVCache{}, nil)
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(pv.Middleware())
 	// A stand-in for the API surface: proves non-preview hosts pass through
@@ -82,7 +86,16 @@ func newPreviewOriginFixture(t *testing.T, backend *httptest.Server) (*PreviewOr
 }
 
 // mintBootstrap runs the owner bootstrap endpoint and returns the Location.
+// Epic 67: bootstrap now redirects to the port-host shape — delegate to the
+// port-host minter (same endpoint, stricter prefix check).
 func mintBootstrap(t *testing.T, r *gin.Engine, port string) string {
+	t.Helper()
+	return mintPortHostBootstrap(t, r, port)
+}
+
+// mintPortHostBootstrap runs the owner bootstrap endpoint and returns the Location
+// for Epic 67 port-host format (the new primary format).
+func mintPortHostBootstrap(t *testing.T, r *gin.Engine, port string) string {
 	t.Helper()
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+pvWS+"/dev-preview-bootstrap/"+port, nil)
 	req.Host = "api." + pvDomain
@@ -92,16 +105,39 @@ func mintBootstrap(t *testing.T, r *gin.Engine, port string) string {
 		t.Fatalf("bootstrap: expected 302, got %d body=%s", w.Code, w.Body.String())
 	}
 	loc := w.Header().Get("Location")
-	if !strings.HasPrefix(loc, "https://"+pvHost+"/") {
-		t.Fatalf("bootstrap: location not on preview host: %q", loc)
+	expectedPrefix := "https://" + port + "-" + pvWS + "-preview." + pvDomain
+	if !strings.HasPrefix(loc, expectedPrefix) {
+		t.Fatalf("bootstrap: location not on port-host preview origin: expected prefix %q, got %q", expectedPrefix, loc)
 	}
 	return loc
 }
 
+// legacyRedeemFromLoc converts a minted port-host location into the legacy
+// host's redemption request (path, host). Epic 67 made bootstrap emit the
+// port-host shape; the token itself is host-shape-agnostic, so Epic 66
+// legacy-surface tests redeem via the legacy path unchanged.
+func legacyRedeemFromLoc(t *testing.T, loc string) (string, string) {
+	t.Helper()
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("malformed location %q: %v", loc, err)
+	}
+	port := u.Host[:strings.Index(u.Host, "-")]
+	return "/" + port + "/?t=" + url.QueryEscape(u.Query().Get("t")), pvHost
+}
+
 func cookieFromRedemption(t *testing.T, r *gin.Engine, loc string) string {
 	t.Helper()
-	u := strings.TrimPrefix(loc, "https://"+pvHost)
-	req := httptest.NewRequest("GET", u, nil)
+	// Epic 67: loc is port-host shaped (https://<port>-<uuid>-preview.<base>/?t=…).
+	// The token binds (ws, port) and redeems on EITHER host shape; redeem on
+	// the LEGACY host so the Epic 66 legacy-surface tests below keep their
+	// /<port>/… request paths unchanged.
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("redemption: malformed location %q: %v", loc, err)
+	}
+	port := u.Host[:strings.Index(u.Host, "-")]
+	req := httptest.NewRequest("GET", "/"+port+"/?t="+url.QueryEscape(u.Query().Get("t")), nil)
 	req.Host = pvHost
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -136,7 +172,7 @@ func TestPreviewOrigin_HostParsing(t *testing.T) {
 		{pvWS + "-example." + pvDomain, "", false},
 	}
 	for _, tc := range cases {
-		ws, ok := pv.PreviewHost(tc.host)
+		ws, _, _, ok := pv.PreviewHost(tc.host)
 		if ok != tc.wantOK || ws != tc.wantWS {
 			t.Errorf("PreviewHost(%q) = (%q,%v), want (%q,%v)", tc.host, ws, ok, tc.wantWS, tc.wantOK)
 		}
@@ -266,11 +302,11 @@ func TestPreviewOrigin_TokenReplay_Rejected(t *testing.T) {
 	_, r, _ := newPreviewOriginFixture(t, backend)
 
 	loc := mintBootstrap(t, r, "5173")
-	u := strings.TrimPrefix(loc, "https://"+pvHost)
+	u, redeemHost := legacyRedeemFromLoc(t, loc)
 
 	for i, expect := range []int{http.StatusSeeOther, http.StatusUnauthorized} {
 		req := httptest.NewRequest("GET", u, nil)
-		req.Host = pvHost
+		req.Host = redeemHost
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != expect {
@@ -285,12 +321,12 @@ func TestPreviewOrigin_TokenTamperAndMismatch_Rejected(t *testing.T) {
 	_, r, _ := newPreviewOriginFixture(t, backend)
 
 	loc := mintBootstrap(t, r, "5173")
-	u := strings.TrimPrefix(loc, "https://"+pvHost)
+	u, redeemHost := legacyRedeemFromLoc(t, loc)
 
 	// Tampered signature.
 	bad := u[:strings.LastIndex(u, ".")] + "AAAA"
 	req := httptest.NewRequest("GET", bad, nil)
-	req.Host = pvHost
+	req.Host = redeemHost
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -300,7 +336,7 @@ func TestPreviewOrigin_TokenTamperAndMismatch_Rejected(t *testing.T) {
 	// Right signature, wrong host (token bound to pvWS; attacker replays on
 	// a different workspace's preview host — host check must fail).
 	otherWS := "11111111-2222-4333-8444-555566667777"
-	req = httptest.NewRequest("GET", strings.Replace(u, "/5173/", "/5173/", 1), nil)
+	req = httptest.NewRequest("GET", u, nil)
 	req.Host = otherWS + "-preview." + pvDomain
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -316,10 +352,10 @@ func TestPreviewOrigin_ExpiredToken_Rejected(t *testing.T) {
 
 	pv.cfg.TokenTTL = -time.Minute // mint already-expired
 	loc := mintBootstrap(t, r, "5173")
-	u := strings.TrimPrefix(loc, "https://"+pvHost)
+	u, redeemHost := legacyRedeemFromLoc(t, loc)
 
 	req := httptest.NewRequest("GET", u, nil)
-	req.Host = pvHost
+	req.Host = redeemHost
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -656,9 +692,9 @@ func TestPreviewOrigin_Token_Precedence_Over_Landing(t *testing.T) {
 	_, r, _ := newPreviewOriginFixture(t, backend)
 
 	loc := mintBootstrap(t, r, "5173")
-	u := strings.TrimPrefix(loc, "https://"+pvHost)
+	u, redeemHost := legacyRedeemFromLoc(t, loc)
 	req := httptest.NewRequest("GET", u, nil)
-	req.Host = pvHost
+	req.Host = redeemHost
 	req.Header.Set("Sec-Fetch-Mode", "navigate")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -679,8 +715,8 @@ func TestPreviewOrigin_Bootstrap_QueryPortForm(t *testing.T) {
 	req.Host = "api." + pvDomain
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
-	if w.Code != http.StatusFound || !strings.HasPrefix(w.Header().Get("Location"), "https://"+pvHost+"/5173/") {
-		t.Fatalf("query-form bootstrap: expected 302 to preview host, got %d %q", w.Code, w.Header().Get("Location"))
+	if w.Code != http.StatusFound || !strings.HasPrefix(w.Header().Get("Location"), "https://5173-"+pvWS+"-preview."+pvDomain) {
+		t.Fatalf("query-form bootstrap: expected 302 to port-host preview origin, got %d %q", w.Code, w.Header().Get("Location"))
 	}
 
 	// Invalid ports rejected exactly like the path form.
@@ -836,5 +872,208 @@ func TestDevPreviewHandler_PathRouteInjectsNoCSP(t *testing.T) {
 	resp.Body.Close()
 	if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
 		t.Errorf("path-based proxy must not inject CSP; got: %q", csp)
+	}
+}
+
+// Epic 67 integration test: Validate port-host format end-to-end
+func TestEpic67PortHostBootstrapAndRedemption(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Echo back the request path for validation
+		io.WriteString(w, "OK: "+r.URL.Path)
+	}))
+	defer backend.Close()
+
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	// 1. Bootstrap to port-host format
+	port := "8080"
+	loc := mintPortHostBootstrap(t, r, port)
+	t.Logf("Bootstrap location: %s", loc)
+
+	// 2. Validate location format
+	expectedPrefix := "https://" + port + "-" + pvWS + "-preview." + pvDomain
+	if !strings.HasPrefix(loc, expectedPrefix) {
+		t.Fatalf("expected location to start with %q, got %q", expectedPrefix, loc)
+	}
+
+	// 3. Parse token from location
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("failed to parse location: %v", err)
+	}
+	token := u.Query().Get("t")
+	if token == "" {
+		t.Fatalf("location missing token: %q", loc)
+	}
+
+	// 4. Redeem token on port-host
+	portHost := u.Host
+	reqURL := "/?t=" + url.QueryEscape(token)
+	req := httptest.NewRequest("GET", reqURL, nil)
+	req.Host = portHost
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("token redemption: expected 303, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	sc := w.Header().Get("Set-Cookie")
+	if sc == "" {
+		t.Fatal("redemption: no Set-Cookie")
+	}
+
+	// 5. Validate cookie
+	if !strings.Contains(sc, "__Host-pv=") {
+		t.Errorf("missing __Host-pv cookie: %q", sc)
+	}
+	cookieValue := cookieValueOnly(sc)
+
+	// 6. Test authenticated request to port-host via REAL server
+	// (ReverseProxy needs CloseNotifier support).
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+	req2, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req2.Host = portHost
+	req2.Header.Set("Cookie", "__Host-pv="+cookieValue)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("cookie proxy: %v", err)
+	}
+	defer resp2.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp2.Body)
+
+	// Should proxy to backend successfully
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated request: expected 200, got %d body=%s", resp2.StatusCode, bodyBytes)
+	}
+
+	body := string(bodyBytes)
+	if !strings.Contains(body, "OK: /v1/dev-preview/"+port+"/") {
+		t.Errorf("expected agentd path /v1/dev-preview/%s/, got response body: %q", port, body)
+	}
+}
+
+// Epic 67 test: Validate root requests work correctly on port-hosts
+func TestEpic67PortHostRootRequest(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Stand-in for agentd: root of the preview tunnel.
+		if r.URL.Path == "/v1/dev-preview/3000/" {
+			io.WriteString(w, "Root page")
+		} else {
+			io.WriteString(w, "Other page: "+r.URL.Path)
+		}
+	}))
+	defer backend.Close()
+
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	// Bootstrap and get cookie
+	port := "3000"
+	loc := mintPortHostBootstrap(t, r, port)
+	u, _ := url.Parse(loc)
+	token := u.Query().Get("t")
+
+	portHost := u.Host
+
+	// Redeem token
+	req := httptest.NewRequest("GET", "/?t="+url.QueryEscape(token), nil)
+	req.Host = portHost
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	sc := w.Header().Get("Set-Cookie")
+	cookieValue := cookieValueOnly(sc)
+
+	// Test root request on port-host (should go directly to app, not landing
+	// page). REAL server: ReverseProxy needs CloseNotifier support.
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+	req2, _ := http.NewRequest("GET", ts.URL+"/", nil)
+	req2.Host = portHost
+	req2.Header.Set("Cookie", "__Host-pv="+cookieValue)
+	req2.Header.Set("Sec-Fetch-Mode", "navigate")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("port-host root request: %v", err)
+	}
+	defer resp2.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp2.Body)
+
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("port-host root request: expected 200, got %d body=%s", resp2.StatusCode, bodyBytes)
+	}
+
+	body := string(bodyBytes)
+	if !strings.Contains(body, "Root page") {
+		t.Errorf("port-host root should return app root, got: %q", body)
+	}
+}
+
+// Epic 67 test: Validate path preservation on port-hosts
+func TestEpic67PortHostPathPreservation(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "Path: "+r.URL.Path)
+	}))
+	defer backend.Close()
+
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	port := "5173"
+	loc := mintPortHostBootstrap(t, r, port)
+	u, _ := url.Parse(loc)
+	token := u.Query().Get("t")
+	portHost := u.Host
+
+	// Redeem token
+	req := httptest.NewRequest("GET", "/?t="+url.QueryEscape(token), nil)
+	req.Host = portHost
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	sc := w.Header().Get("Set-Cookie")
+	cookieValue := cookieValueOnly(sc)
+
+	// Test various paths on port-host. Proxy-reaching requests go through
+	// a REAL server — ReverseProxy needs CloseNotifier support a bare
+	// ResponseRecorder lacks.
+	testPaths := []string{
+		"/app",
+		"/app/dashboard",
+		"/api/v1/users",
+		"/static/style.css",
+	}
+
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	for _, path := range testPaths {
+		reqPath, _ := http.NewRequest("GET", ts.URL+path, nil)
+		reqPath.Host = portHost
+		reqPath.Header.Set("Cookie", "__Host-pv="+cookieValue)
+		respPath, err := http.DefaultClient.Do(reqPath)
+		if err != nil {
+			t.Errorf("path %s: request failed: %v", path, err)
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(respPath.Body)
+		respPath.Body.Close()
+
+		if respPath.StatusCode != http.StatusOK {
+			t.Errorf("path %s: expected 200, got %d", path, respPath.StatusCode)
+			continue
+		}
+
+		body := string(bodyBytes)
+		expectedPath := "/v1/dev-preview/" + port + path
+		if !strings.Contains(body, "Path: "+expectedPath) {
+			t.Errorf("path %s: expected agentd to see %s, got: %q", path, expectedPath, body)
+		}
 	}
 }

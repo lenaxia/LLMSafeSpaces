@@ -142,6 +142,16 @@ type CacheStore interface {
 // uuidRE matches canonical lowercase UUIDs (workspace names).
 var previewUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// Epic 67 regex patterns for host disambiguation (must match test patterns)
+var (
+	// epic67NewPattern: port-in-subdomain pattern (port 1-5 digits, then UUID)
+	// Matches: 8080-0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.safespaces.dev
+	epic67NewPattern = regexp.MustCompile(`^([0-9]{1,5})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-preview\.([a-z0-9.-]+)$`)
+	// epic67LegacyPattern: UUID-preview pattern (no port in host)
+	// Matches: 0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.safespaces.dev
+	epic67LegacyPattern = regexp.MustCompile(`^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-preview\.([a-z0-9.-]+)$`)
+)
+
 // NewPreviewOriginHandler constructs the handler. inner must be the same
 // DevPreviewHandler instance the path-based route uses.
 func NewPreviewOriginHandler(inner *DevPreviewHandler, cfg PreviewOriginConfig, cache CacheStore, log pkginterfaces.LoggerInterface) *PreviewOriginHandler {
@@ -169,37 +179,57 @@ func NewPreviewOriginHandler(inner *DevPreviewHandler, cfg PreviewOriginConfig, 
 	}
 }
 
-// PreviewHost extracts the workspace ID when host is a preview host
-// (<uuid>-preview.<BaseDomain>). ok=false means "not a preview host —
-// pass through to the API router" (which includes every other subdomain
-// of BaseDomain, e.g. api. and the apex).
-func (h *PreviewOriginHandler) PreviewHost(host string) (wsID string, ok bool) {
+// PreviewHost extracts the workspace ID and optional port when host is a preview host.
+// Returns (wsID, port, isPortHost, ok):
+// - wsID: workspace UUID
+// - port: port number (only for port-hosts; 0 for legacy hosts)
+// - isPortHost: true if this is a port-in-subdomain host (Epic 67)
+// - ok: false means "not a preview host — pass through to the API router"
+//
+// Epic 67: Two disjoint regex patterns prevent digit-leading UUIDs from being misparsed as ports.
+func (h *PreviewOriginHandler) PreviewHost(host string) (wsID string, port int, isPortHost bool, ok bool) {
 	host = hostOnly(host)
-	suffix := "-preview." + h.cfg.BaseDomain
-	if !strings.HasSuffix(host, suffix) {
-		return "", false
+
+	// Try Epic 67 new pattern first (port-in-subdomain)
+	// Pattern: ^([0-9]{1,5})-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-preview\.([a-z0-9.-]+)$
+	if matches := epic67NewPattern.FindStringSubmatch(host); len(matches) == 4 {
+		portStr, uuid, domain := matches[1], matches[2], matches[3]
+		// Validate domain matches our base domain
+		if domain != h.cfg.BaseDomain {
+			return "", 0, false, false
+		}
+		// Parse and validate port
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port < 1 || port > 65535 {
+			return "", 0, false, false
+		}
+		return uuid, port, true, true
 	}
-	label := strings.TrimSuffix(host, suffix)
-	if label == "" || strings.Contains(label, ".") {
-		return "", false
+
+	// Try legacy pattern (UUID-preview.base)
+	// Pattern: ^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-preview\.([a-z0-9.-]+)$
+	if matches := epic67LegacyPattern.FindStringSubmatch(host); len(matches) == 3 {
+		uuid, domain := matches[1], matches[2]
+		// Validate domain matches our base domain
+		if domain != h.cfg.BaseDomain {
+			return "", 0, false, false
+		}
+		return uuid, 0, false, true
 	}
-	if !previewUUIDRe.MatchString(label) {
-		return "", false
-	}
-	return label, true
+
+	return "", 0, false, false
 }
 
 // IsMalformedPreviewHost reports whether host ends in -preview.<BaseDomain>
-// but the label before it is not a canonical workspace UUID (e.g.
-// garbage-preview.…). These get 421 rather than falling through to API
-// routes: they are ours to answer and answer misleadingly we must not.
+// but the label before it is not a valid workspace UUID or port-host pattern.
+// These get 421 rather than falling through to API routes: they are ours
+// to answer and answer misleadingly we must not.
 func (h *PreviewOriginHandler) IsMalformedPreviewHost(host string) bool {
 	host = hostOnly(host)
-	suffix := "-preview." + h.cfg.BaseDomain
-	if !strings.HasSuffix(host, suffix) {
+	if !strings.HasSuffix(host, "-preview."+h.cfg.BaseDomain) {
 		return false
 	}
-	_, ok := h.PreviewHost(host)
+	_, _, _, ok := h.PreviewHost(host)
 	return !ok
 }
 
@@ -220,100 +250,135 @@ func (h *PreviewOriginHandler) Middleware() gin.HandlerFunc {
 		if !strings.HasSuffix(host, "-preview."+h.cfg.BaseDomain) {
 			return // not preview-shaped at all — API traffic
 		}
-		wsID, ok := h.PreviewHost(host)
+		wsID, port, isPortHost, ok := h.PreviewHost(host)
 		if !ok {
 			c.AbortWithStatus(http.StatusMisdirectedRequest)
 			return
 		}
-		h.servePreview(c, wsID)
+		h.servePreview(c, wsID, port, isPortHost)
 	}
 }
 
 // servePreview always aborts the request.
-func (h *PreviewOriginHandler) servePreview(c *gin.Context, wsID string) {
+// isPortHost indicates whether this is a port-in-subdomain host (vs legacy).
+// port is the port number; for legacy hosts, this is 0 and is parsed from the path.
+// servePreview always aborts the request.
+// Epic 67: Handles both legacy (<ws>-preview.<base>/<port>/<path>) and
+// new (<port>-<ws>-preview.<base>/<path>) URL shapes with proper precedence:
+// - Port-hosts: entire path is app-path (no parsing)
+// - Legacy hosts: path prefix parsing (/<port>/<path>)
+// - Landing page gated to legacy hosts only (ordering hazard fix)
+// - Token binding validation (reject host-port ≠ token-port)
+// - Post-redemption 303 to subPath only on port-hosts
+func (h *PreviewOriginHandler) servePreview(c *gin.Context, wsID string, port int, isPortHost bool) {
 	if !h.cfg.Enabled || h.inner == nil {
 		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
-	// T5: preview hosts never serve API routes — enforced by path shape:
-	// everything must be /<port>[/<subpath>]. /api/* fails port parsing
-	// below and is indistinguishable from any other invalid port.
-	portStr := strings.TrimPrefix(c.Request.URL.Path, "/")
-	subPath := "/"
-	if idx := strings.Index(portStr, "/"); idx >= 0 {
-		subPath = portStr[idx:]
-		portStr = portStr[:idx]
-	}
-	port, err := strconv.Atoi(portStr)
+	var actualPort int
+	var subPath string
 
-	// Human front door (UX): a bare navigation to the preview host root
-	// (hostname typed/bookmarked without a port) serves the landing page
-	// instead of the indistinguishable 502. Authenticated users get it
-	// too — the landing's form is how they pick a port.
-	if c.Request.URL.Path == "/" && c.Request.Method == http.MethodGet &&
-		(c.GetHeader("Sec-Fetch-Mode") == "navigate" || h.hasValidPreviewCookie(c, wsID)) {
-		h.serveLanding(c, wsID, 0)
-		return
+	if isPortHost {
+		// Epic 67: Port-in-subdomain mode
+		// Port comes from host, ENTIRE path is app-path (no parsing)
+		actualPort = port
+		subPath = c.Request.URL.Path // Pass through verbatim, including leading slash
+
+		// Validate port range and blocklist (same as legacy path parsing)
+		if actualPort < 1 || actualPort > 65535 {
+			h.unreachable(c, "port out of range")
+			return
+		}
+		if actualPort < 1024 {
+			h.unreachable(c, "privileged port")
+			return
+		}
+		if _, denied := devPreviewDeniedAPorts[actualPort]; denied {
+			h.unreachable(c, "blocklisted port")
+			return
+		}
+
+		// No special-case for "/" here: on port-hosts the ENTIRE path is
+		// app path (the port lives in the host), so authenticated "/"
+		// requests proxy to the app root via the common flow below, and
+		// unauthenticated browser navigations get the deep-link landing
+		// page via the common tok=="" branch — same UX as legacy hosts.
+	} else {
+		// Legacy mode: parse port from path prefix
+		portStr := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if idx := strings.Index(portStr, "/"); idx >= 0 {
+			subPath = portStr[idx:] // Keep leading slash for app path
+			portStr = portStr[:idx]
+		} else {
+			subPath = "/"
+		}
+
+		// Human front door (UX): bare navigation to the preview host root
+		// serves the landing page instead of the indistinguishable 502.
+		if c.Request.URL.Path == "/" && c.Request.Method == http.MethodGet &&
+			(c.GetHeader("Sec-Fetch-Mode") == "navigate" || h.hasValidPreviewCookie(c, wsID)) {
+			h.serveLanding(c, wsID, 0) // Legacy landing page (no port prefilled)
+			return
+		}
+
+		var err error
+		actualPort, err = strconv.Atoi(portStr)
+		if err != nil || actualPort < 1 || actualPort > 65535 {
+			h.unreachable(c, "port not numeric or out of range")
+			return
+		}
+		if actualPort < 1024 {
+			h.unreachable(c, "privileged port")
+			return
+		}
+		if _, denied := devPreviewDeniedAPorts[actualPort]; denied {
+			h.unreachable(c, "blocklisted port")
+			return
+		}
 	}
 
 	// Indistinguishable-from-dead (T3): invalid/blocklisted/dead ports all
 	// answer EXACTLY what the proxy's ErrorHandler answers for a dead
 	// agentd hop — same status AND body — so the preview path is not a
 	// port-scanner oracle. Real reason → server log only.
-	unreachable := func(reason string) {
-		if h.log != nil {
-			h.log.Info("preview-origin: refused", "host", c.Request.Host, "path", c.Request.URL.Path, "reason", reason)
-		}
-		c.Header("Content-Type", "text/plain; charset=utf-8")
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.String(http.StatusBadGateway, "workspace dev-preview endpoint unreachable\n")
-	}
-
-	if err != nil || port < 1 || port > 65535 {
-		unreachable("port not numeric or out of range")
-		return
-	}
-	if port < 1024 {
-		unreachable("privileged port")
-		return
-	}
-	if _, denied := devPreviewDeniedAPorts[port]; denied {
-		unreachable("blocklisted port")
-		return
-	}
 
 	// Authentication: __Host-pv cookie, else one-time ?t redemption.
 	// An invalid/expired/mismatched cookie falls through to the token (or
 	// landing) branches — never proxies.
 	if cookie, cerr := c.Cookie(previewCookieName); cerr == nil && cookie != "" {
 		if cp, ok := h.verifyCookie(cookie); ok && cp.Ws == wsID {
-			h.proxyAuthenticated(c, wsID, port, subPath)
+			h.proxyAuthenticated(c, wsID, actualPort, subPath)
 			return
 		}
 	}
 
 	tok := c.Query("t")
 	if tok == "" {
-		// Human front door: unauthenticated BROWSER NAVIGATIONS (address
-		// bar, bookmark, link click — Sec-Fetch-Mode: navigate, which
-		// fetch()/XHR cannot set) get the landing page with a one-click
-		// bootstrap link for this port, instead of a bare 401. Everything
-		// else (API clients, subresources, curl) keeps the 401. The
-		// landing contains no secrets: the workspace UUID is already in
-		// the hostname, the port in the path.
+		// Human front door: unauthenticated BROWSER NAVIGATIONS get the landing page
 		if c.Request.Method == http.MethodGet && c.GetHeader("Sec-Fetch-Mode") == "navigate" {
-			h.serveLanding(c, wsID, port)
+			h.serveLanding(c, wsID, actualPort)
 			return
 		}
 		h.unauthorized(c)
 		return
 	}
+
 	tp, ok := h.verifyToken(tok)
-	if !ok || tp.Ws != wsID || tp.Port != port {
+	if !ok || tp.Ws != wsID {
 		h.unauthorized(c)
 		return
 	}
+
+	// Epic 67: Token binding — reject host-port ≠ token-port
+	if isPortHost && tp.Port != actualPort {
+		if h.log != nil {
+			h.log.Info("preview-origin: token port mismatch", "host", c.Request.Host, "token-port", tp.Port, "host-port", actualPort)
+		}
+		h.unauthorized(c)
+		return
+	}
+
 	if !h.consumeJti(tp) {
 		h.unauthorized(c)
 		return
@@ -324,10 +389,31 @@ func (h *PreviewOriginHandler) servePreview(c *gin.Context, wsID string) {
 		Ws:  wsID,
 		Exp: time.Now().Add(h.cfg.CookieTTL).Unix(),
 	}), int(h.cfg.CookieTTL.Seconds()), "/", "", true, true)
+
 	// Same-origin redirect to drop ?t from the URL; never cached.
 	c.Header("Cache-Control", "no-store")
-	c.Header("Location", "/"+strconv.Itoa(port)+subPath)
+
+	// Epic 67: Post-redemption 303 retargets to subPath only on port-hosts
+	if isPortHost {
+		// On port-hosts, redirect to <subPath> (not /<port><subPath>)
+		// because the port is already in the host
+		c.Header("Location", subPath)
+	} else {
+		// Legacy: redirect to /<port><subPath>
+		c.Header("Location", "/"+strconv.Itoa(actualPort)+subPath)
+	}
+
 	c.AbortWithStatus(http.StatusSeeOther)
+}
+
+// unreachable sends the indistinguishable-from-dead error response
+func (h *PreviewOriginHandler) unreachable(c *gin.Context, reason string) {
+	if h.log != nil {
+		h.log.Info("preview-origin: refused", "host", c.Request.Host, "path", c.Request.URL.Path, "reason", reason)
+	}
+	c.Header("Content-Type", "text/plain; charset=utf-8")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.String(http.StatusBadGateway, "workspace dev-preview endpoint unreachable\n")
 }
 
 func (h *PreviewOriginHandler) unauthorized(c *gin.Context) {
@@ -520,8 +606,11 @@ func (h *PreviewOriginHandler) HandleBootstrap(c *gin.Context) {
 	})
 
 	c.Header("Cache-Control", "no-store")
-	c.Redirect(http.StatusFound, fmt.Sprintf("https://%s-preview.%s/%d/?t=%s",
-		wsID, h.cfg.BaseDomain, port, tok))
+	// Epic 67: Redirect to port-in-subdomain format (<port>-<uuid>-preview.<baseDomain>)
+	// instead of legacy format (<uuid>-preview.<baseDomain>/<port>/).
+	// This puts the port in the host, fixing root-absolute URL breakage.
+	c.Redirect(http.StatusFound, fmt.Sprintf("https://%d-%s-preview.%s/?t=%s",
+		port, wsID, h.cfg.BaseDomain, tok))
 }
 
 // --- signing ---
