@@ -106,4 +106,4 @@ None.
 - `pkg/agentd/secrets/symlink_lifecycle_test.go` — llm-provider fixture `apiKey` correction.
 - `README-LLM.md` — "Git credential consumption (#1087)" paragraph in the relay-config subsystem section.
 - `CHANGELOG.md` — Unreleased entries.
-- `worklogs/NNNN_2026-08-27_git-credential-store-hardening.md` — this worklog.
+- `worklogs/0850_2026-08-27_git-credential-store-hardening.md` — this worklog.
