@@ -103,6 +103,18 @@ verify python3-shim sh -c "command -v python3"
 verify node-shim    sh -c "command -v node"
 verify go-shim      sh -c "command -v go"
 
+# Git credential consumption (#1087): the image must ship BOTH config
+# layers that point git's credential store helper at the materialized
+# /home/sandbox/.git-credentials — the system /etc/gitconfig layer AND
+# the env layer (GIT_CONFIG_KEY_0) that survives a PVC-persisted
+# `gh auth setup-git` helper reset. Gates the wiring end to end: if
+# either layer is dropped from the Dockerfile, the build fails here.
+# The env check greps the "command line:" ORIGIN (how git labels
+# GIT_CONFIG_KEY_* entries) — the plain effective query would pass via
+# the /etc/gitconfig layer alone and prove nothing about the env layer.
+verify git-credential-store-system sh -c "git config --file /etc/gitconfig --get-all credential.helper | grep -q 'store --file=/home/sandbox/.git-credentials'"
+verify git-credential-store-env    sh -c "git config --show-origin --get-all credential.helper | grep -q '^command line:.*store --file=/home/sandbox/.git-credentials'"
+
 # JVM tools are SOFT (best-effort pre-install; available via mise at runtime).
 for t in java mvn gradle; do
 	if mise which "$t" >/dev/null 2>&1; then

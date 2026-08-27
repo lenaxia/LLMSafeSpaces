@@ -263,6 +263,40 @@ COPY --chmod=755 runtimes/base/tools/entrypoints/entrypoint-opencode.sh /usr/loc
 
 COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 
+# --- Git credential consumption (#1087) ---
+#
+# The agentd materializer writes bound git-credential secrets to
+# /sandbox-runtime/rt/git-credentials on EVERY pod boot (tmpfs, wiped on
+# pod death), with $HOME/.git-credentials as the PVC-side symlink
+# (cmd/workspace-agentd/init_fs.go symlink farm). Two layers make git
+# CONSUME that file directly, decoupling git auth from `gh` and from
+# session-harness env injection (GH_TOKEN) that suspend/resume does not
+# replay:
+#
+#   1. /etc/gitconfig (system level) — the visible, standard layer.
+#   2. GIT_CONFIG_COUNT/KEY_0/VALUE_0 (env level) — git applies env
+#      config AFTER the user's ~/.gitconfig, so a `gh auth setup-git`
+#      block persisted in the PVC (empty `helper =` reset + gh shim for
+#      github.com) cannot clear this entry: the failing shim is skipped
+#      and the store helper still supplies the materialized token.
+#      Validated against git 2.39 (bookworm): a system-level helper
+#      alone IS cleared by the setup-git reset; the env layer is what
+#      survives it.
+#
+# Defense in depth — each layer covers the other's failure mode: env can
+# be scrubbed or clobbered by user tooling (then /etc/gitconfig serves);
+# /etc/gitconfig is defeated by the setup-git reset (then env serves).
+# Both point at the absolute PVC-symlink path, immune to $HOME drift.
+RUN printf '[credential]\n\thelper = store --file=/home/sandbox/.git-credentials\n' > /etc/gitconfig
+# DS-0031 false positive: GIT_CONFIG_KEY_0's VALUE is the literal public
+# git config key name "credential.helper", not a secret — the *_KEY_*
+# name is mandated by git's documented env-config interface
+# (GIT_CONFIG_COUNT/KEY_n/VALUE_n, git >= 2.31).
+# trivy:ignore:DS-0031
+ENV GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=credential.helper \
+    GIT_CONFIG_VALUE_0="store --file=/home/sandbox/.git-credentials"
+
 # Pre-install runtimes into the system mise data dir so they are baked into
 # the image layer and always available regardless of PVC state.
 #
