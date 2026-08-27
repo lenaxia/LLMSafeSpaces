@@ -150,6 +150,27 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return ctrl.Result{RequeueAfter: requeueCreating}, nil
 	}
 
+	// #935 Gap 3: a restartGeneration bump in Creating deletes the existing
+	// pod so the create branch below rebuilds from the CURRENT spec
+	// (including re-resolving spec.runtime for non-pinned refs) — parity
+	// with handleActive's bump path. Without this, RestartWorkspace and
+	// RefreshWorkspaceCompute (whose contract promises a pod rebuild) were
+	// silent no-ops in the one phase where workspaces get stuck: the bump
+	// cleared counters while the existing — possibly crash-looping — pod
+	// was left alone, and the create branch never ran because the pod
+	// existed. This is the operator escape hatch of last resort for any
+	// future unknown-poison scenario.
+	if restartGenBumped {
+		logger.Info("RestartGeneration bumped in Creating; deleting pod for rebuild",
+			"pod", existingPod.Name)
+		r.deletePodByName(ctx, existingPod.Name, existingPod.Namespace)
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_gen_bump_rebuild", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueCreating}, nil
+	}
+
 	if existingPod.Status.Phase == corev1.PodRunning && existingPod.Status.PodIP != "" && allContainersReady(existingPod) {
 		now := metav1.Now()
 
@@ -261,6 +282,32 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 	}
 	r.markBootReady(existingPod, workspace)
 
+	// #935 Gap 1 (FN3c): init-container crashloop recovery. An init
+	// container that runs and crash-loops leaves the pod Pending with
+	// Waiting/CrashLoopBackOff — matching NONE of the branches above
+	// (PodFailed never happens for CrashLoopBackOff pods; FN3b requires
+	// that no container ever started, and a crashing init HAS started),
+	// so the fall-through used to be a silent 2s hot-requeue: no event,
+	// no condition, no backoff, indefinitely (the 8- and 12-day wedges).
+	// handleActive already recovers this exact signal; this is the
+	// missing Creating call site. Deliberately placed AFTER the agentd
+	// verify and platform-boot detectors: those failures are surfaced,
+	// not recovered (deleting the pod cannot fix a platform bug); this
+	// path catches everything else — with the #935 overlay fix, pod
+	// recreation re-pulls current agentd, so recreation heals exactly
+	// this incident class. Generic classification, no exit-code
+	// special-casing.
+	if existingPod.Status.Phase == corev1.PodPending &&
+		initContainerCrashLooping(existingPod) &&
+		!existingPod.CreationTimestamp.IsZero() &&
+		time.Since(existingPod.CreationTimestamp.Time) > stuckScheduledPendingTimeout {
+		logger.Info("Init container crash-looping beyond timeout; entering recovery",
+			"pod", existingPod.Name,
+			"age", time.Since(existingPod.CreationTimestamp.Time).Round(time.Second))
+		r.deletePodByName(ctx, existingPod.Name, existingPod.Namespace)
+		return r.enterRecovery(ctx, workspace, FailureClassProcess)
+	}
+
 	// Persist any status changes (e.g. ObservedRestartGeneration bump) that
 	// were applied above but didn't fall into a branch that already calls
 	// Status().Update. Without this, the in-memory status is lost on the next
@@ -275,6 +322,19 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 	}
 
 	return ctrl.Result{RequeueAfter: requeueCreating}, nil
+}
+
+// initContainerCrashLooping reports whether any init container is
+// currently waiting in CrashLoopBackOff — it has run and crashed
+// repeatedly (kubelet backs off between restarts). The incident signal
+// for #935 FN3c.
+func initContainerCrashLooping(pod *corev1.Pod) bool {
+	for i := range pod.Status.InitContainerStatuses {
+		if w := pod.Status.InitContainerStatuses[i].State.Waiting; w != nil && w.Reason == "CrashLoopBackOff" {
+			return true
+		}
+	}
+	return false
 }
 
 // recordStartupMetrics fires once when a workspace pod first reaches Running.
