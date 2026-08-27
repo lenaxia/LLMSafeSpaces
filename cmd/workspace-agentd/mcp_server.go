@@ -250,9 +250,9 @@ func mcpDevPreviewURL(port int, path string) string {
 			apiURL = "https://api." + base
 		}
 		apiURL = strings.TrimSuffix(apiURL, "/")
-		// Epic 67: Use port-in-subdomain format (<port>-<uuid>-preview.<baseDomain>)
+		// Epic 68: Use port-in-subdomain format (<port>-<uuid>-preview.<baseDomain>)
 		// instead of legacy format (<uuid>-preview.<baseDomain>/<port>/).
-		// This fixes root-absolute URL breakage (the primary Epic 67 motivation).
+		// This fixes root-absolute URL breakage (the primary Epic 68 motivation).
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
 		return fmt.Sprintf(
 			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",

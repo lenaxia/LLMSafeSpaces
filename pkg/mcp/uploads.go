@@ -20,11 +20,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
-// Epic 67 US-67.4 — workspace_file_upload tool + HTTPClient.UploadFile.
+// Epic 68 US-68.4 — workspace_file_upload tool + HTTPClient.UploadFile.
 //
 // The MCP server is a client of the REST API (cmd/mcp wires an HTTPClient),
 // so the upload seam is the same POST /api/v1/workspaces/:id/uploads route
-// the web/SDK clients use: the phase/disk/cap gates of US-67.2 apply
+// the web/SDK clients use: the phase/disk/cap gates of US-68.2 apply
 // unchanged. Caps here are MCP-specific on top (D4): base64 transport through
 // stdio is hostile to large payloads, so the tool accepts at most 5 MiB
 // decoded, rejects encoded input over 7 MiB before decoding (DoS guard,
@@ -150,7 +150,7 @@ func uploadToolErrorMessage(err error) string {
 }
 
 // UploadFile uploads content to the workspace via the REST upload route
-// (US-67.2). The filename must already be sanitized (the handler applies
+// (US-68.2). The filename must already be sanitized (the handler applies
 // agentd.SanitizeFilename; the API re-sanitizes — D9 defense-in-depth).
 func (c *HTTPClient) UploadFile(ctx context.Context, workspaceID, filename string, content []byte) (*UploadResp, error) {
 	if err := validateID(workspaceID, "workspace_id"); err != nil {

@@ -14,7 +14,7 @@ https://<port>-<workspace-id>-preview.<platform-domain>/
 
 in your browser and see your dev server's output, **including hot-module replacement (HMR)** — file changes in your workspace update the browser without a manual reload.
 
-### New URL Format (Epic 67)
+### New URL Format (Epic 68)
 
 **Port-in-subdomain format:** `https://5173-<workspace-id>-preview.<platform-domain>/`
 
@@ -119,7 +119,7 @@ Both produce a public HTTPS URL that you can share. The workspace egress Network
 
 Browsers resolve `localhost` to `::1` (IPv6) first. The platform's API ingress must serve both A and AAAA records (or bind dual-stack). If your browser reports `ECONNREFUSED ::1`, contact your operator — the ingress binding needs to support IPv6. The in-pod agentd listener is already dual-stack-safe (`0.0.0.0`).
 
-## URL format details (Epic 67)
+## URL format details (Epic 68)
 
 ### Host disambiguation
 

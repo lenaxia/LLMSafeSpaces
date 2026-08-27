@@ -11,7 +11,7 @@ import { parseAttachments } from "./attachments";
  * defensively so a malformed or future-shaped message cannot corrupt
  * the history list.
  *
- * Trailing attachment-manifest blocks are stripped (Epic 67 D11):
+ * Trailing attachment-manifest blocks are stripped (Epic 68 D11):
  * history candidates are the user's prose, never the composed manifest
  * lines. Manifest-only messages have empty prose and are dropped.
  *

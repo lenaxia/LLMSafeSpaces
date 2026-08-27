@@ -65,7 +65,7 @@ targets from US-14.3–14.6 never shipped; the placeholder targets remain
 only as no-ops). Sync is enforced by tests, not codegen:
 
 ```bash
-# Spec validity + spec↔router parity contract (Epic 67 E9 core)
+# Spec validity + spec↔router parity contract (Epic 68 E9 core)
 make sdk-check
 
 # Validate the spec structurally alone

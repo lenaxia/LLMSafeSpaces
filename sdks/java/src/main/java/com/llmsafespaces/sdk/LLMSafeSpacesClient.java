@@ -287,7 +287,7 @@ public class LLMSafeSpacesClient {
 
     /**
      * POST multipart/form-data with a single part named {@code file}
-     * (Epic 67 upload route) and decode the JSON response into {@code type}.
+     * (Epic 68 upload route) and decode the JSON response into {@code type}.
      */
     public <T> T requestMultipart(String path, String filename, byte[] content, Class<T> type) {
         String boundary = "----llmsafespaces-java-" + java.util.UUID.randomUUID();

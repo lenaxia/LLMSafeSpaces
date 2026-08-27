@@ -61,7 +61,7 @@ interface Props {
   /** Workspace scope for the composer drawer selectors and attachments. */
   workspaceId?: string;
   orgId?: string;
-  /** Workspace-scoped pending attachment chips (Epic 67 D12/D17). */
+  /** Workspace-scoped pending attachment chips (Epic 68 D12/D17). */
   attachments?: PendingAttachment[];
   capViolation?: boolean;
   onAddFiles?: (files: File[]) => void;

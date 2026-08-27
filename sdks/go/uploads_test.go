@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// Epic 67: workspace upload + files-on-send surface. Wire-level tests —
+// Epic 68: workspace upload + files-on-send surface. Wire-level tests —
 // paths, methods, multipart framing, and body shapes against a mock API.
 
 func TestWorkspacesService_UploadFile(t *testing.T) {

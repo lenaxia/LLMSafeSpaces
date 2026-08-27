@@ -88,7 +88,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		Env: append([]corev1.EnvVar{
 			{Name: "WORKSPACE_ID", Value: workspace.Name},
 			{Name: "WORKSPACE_DIR", Value: agentd.WorkspacePath},
-			// Epic 67 prerequisite fix: LLMSAFESPACE_API_URL must be set in the
+			// Epic 68 prerequisite fix: LLMSAFESPACE_API_URL must be set in the
 			// main container so agentd's mcpDevPreviewURL can emit absolute
 			// bootstrap links. Previously only set in the credential-setup init
 			// container, causing relative links when agentd runs in the main
@@ -256,7 +256,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		mainContainer.Env = append(mainContainer.Env,
 			corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain},
 		)
-		// Epic 67 prerequisite: the main container also needs LLMSAFESPACE_API_URL
+		// Epic 68 prerequisite: the main container also needs LLMSAFESPACE_API_URL
 		// for agentd's mcpDevPreviewURL tool to construct absolute bootstrap links.
 		// The value must be the externally reachable API origin (not the in-cluster
 		// svc URL the init container gets). Derive using the same convention as

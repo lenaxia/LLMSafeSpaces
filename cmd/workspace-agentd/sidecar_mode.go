@@ -152,7 +152,7 @@ func runSidecarCommand(_ []string) int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// Epic 67 US-67.1: boot scrub, sidecar edition. The sidecar's
+	// Epic 68 US-68.1: boot scrub, sidecar edition. The sidecar's
 	// /workspace mount is read-only, so removals fail per-file and are
 	// skipped (best-effort by design); the scrub stays wired so a future
 	// writable uploads mount needs no boot-path change.

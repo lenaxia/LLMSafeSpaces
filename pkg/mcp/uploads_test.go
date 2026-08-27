@@ -42,7 +42,7 @@ func resultText(t *testing.T, result *mcp.CallToolResult) string {
 	return result.Content[0].(mcp.TextContent).Text
 }
 
-// ===== workspace_file_upload: tool schema (US-67.4 C) =====
+// ===== workspace_file_upload: tool schema (US-68.4 C) =====
 
 func TestWorkspaceFileUpload_ToolSchema(t *testing.T) {
 	require.Contains(t, workspaceFileUploadTool.InputSchema.Required, "workspace_id")

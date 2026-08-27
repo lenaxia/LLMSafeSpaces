@@ -67,7 +67,7 @@ public class SessionsService {
 
     /**
      * Enqueues a message for a busy session; optional {@code files} are
-     * upload-namespace paths (Epic 67) — the API composes the v1
+     * upload-namespace paths (Epic 68) — the API composes the v1
      * attachment manifest into the enqueued text.
      */
     public String enqueue(String workspaceId, String sessionId, String text, List<String> files) {
@@ -103,7 +103,7 @@ public class SessionsService {
     /**
      * Sends a prompt asynchronously (202; the reply arrives on the workspace
      * SSE stream) in the parts shape the API extracts text from. Optional
-     * {@code files} are upload-namespace paths (Epic 67) — the API composes
+     * {@code files} are upload-namespace paths (Epic 68) — the API composes
      * the v1 attachment manifest into the dispatched text.
      */
     public void sendPromptAsync(String workspaceId, String sessionId, String message, List<String> files) {

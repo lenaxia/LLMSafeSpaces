@@ -19,7 +19,7 @@ export interface PendingAttachment {
 }
 
 /**
- * Workspace-scoped composer attachment state (Epic 67 US-67.5, D17/U1.6.17).
+ * Workspace-scoped composer attachment state (Epic 68 US-68.5, D17/U1.6.17).
  *
  * Chips persist across session switches inside a workspace and clear on
  * workspace switch. Send is gated on `uploading` (D17): the caller disables
@@ -145,7 +145,7 @@ export function useComposerAttachments(workspaceId: string | undefined) {
 }
 
 // Upload-failure chip text: the API's message, with the workspace phase
-// appended when the 409 body carries one (Epic 67 D5 — the user sees WHY
+// appended when the 409 body carries one (Epic 68 D5 — the user sees WHY
 // the workspace is not accepting uploads, e.g. "(phase: Suspended)").
 function uploadErrorMessage(err: unknown): string {
   if (err instanceof ApiClientError) {

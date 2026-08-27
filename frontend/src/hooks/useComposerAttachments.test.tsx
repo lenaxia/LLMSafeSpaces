@@ -53,7 +53,7 @@ describe("useComposerAttachments", () => {
     expect(result.current.chips).toHaveLength(0);
   });
 
-  it("surfaces the workspace phase in the chip error on a 409 (Epic 67 D5/E4)", async () => {
+  it("surfaces the workspace phase in the chip error on a 409 (Epic 68 D5/E4)", async () => {
     const { ApiClientError } = await import("../api/client");
     uploadMock.mockRejectedValue(
       new ApiClientError(409, { error: "workspace not active", phase: "Suspended" }),

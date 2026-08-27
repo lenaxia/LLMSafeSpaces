@@ -173,7 +173,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-// TestIntegration_UploadThenMessageWithFiles exercises the Epic 67 MCP flow
+// TestIntegration_UploadThenMessageWithFiles exercises the Epic 68 MCP flow
 // (integration scenario I10): workspace_file_upload → session_message(files)
 // through a real in-process MCP client, with the manifest composed by the
 // shared attachments.Compose (single block dispatched — D7/D15).
@@ -236,7 +236,7 @@ func TestIntegration_UploadThenMessageWithFiles(t *testing.T) {
 }
 
 // TestIntegration_ExternalStdioClient_UploadAndMessageWithFiles is e2e
-// row E8 (Epic 67): a REAL external MCP client over the stdio transport —
+// row E8 (Epic 68): a REAL external MCP client over the stdio transport —
 // the compiled cmd/mcp binary as a subprocess — against a fake REST API.
 // The wire assertions live in the fake API: multipart upload framing with
 // auth, and the v1 attachment manifest composed into the dispatched

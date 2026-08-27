@@ -1,8 +1,17 @@
-# Epic 67: Chat File Attachments — Upload, PVC Ingest, and Prompt Reference
+# Epic 68: Chat File Attachments — Upload, PVC Ingest, and Prompt Reference
 
-**Status:** Shipped — as-built (US-67.1…US-67.6 merged)
+**Status:** Shipped — as-built (US-68.1…US-68.6 merged)
 **Created:** 2026-08-26
-**Tracking:** GitHub issues (epic + US-67.1…US-67.6); this document is the authoritative design and as-built record. Execution status lives only on GitHub — do not duplicate here.
+**Tracking:** GitHub issues (epic + US-68.1…US-68.6); this document is the authoritative design and as-built record. Execution status lives only on GitHub — do not duplicate here.
+
+> **Renumbered 67 → 68 (2026-08-27).** Two earlier claimants of "Epic 67" exist: the
+> workspace security-review epic (issues #819–850, `[epic-67]` tags) and the dev-preview
+> line's code comments (`api/internal/handlers/preview_origin.go`). This epic was numbered
+> from `design/stories/` max (66) without cross-checking GitHub issue titles; the collision
+> was caught at closure. Living records (this doc, README-LLM, issues #1056–1062, code
+> comments, `local/us-68-attachments-e2e.sh`) carry the corrected number. Immutable history
+> — merged PR titles, commit messages, and bot-numbered worklog filenames — still says 67
+> and is left untouched (worklogs are append-only). Grep accordingly.
 
 ---
 
@@ -91,7 +100,7 @@ MCP tool        ── base64 ────┘        streaming, caps, phase+disk
 ## Design Decisions
 
 ### D1 — agentd-mediated ingest (user mux, validated as-built), not exec, not API-direct, not opencode
-The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes behind Basic auth. **Correction (US-67.1 validation):** reload-secrets serves on the agentd **user mux (:4097)**, not the admin port 4098 as originally sketched — `cmd/workspace-agentd/server.go:356`. `PUT /v1/files` follows the validated user-mux pattern. Sidecar mode clean-fails (5xx): the sidecar's `/workspace` is read-only.
+The API has no PVC filesystem access. agentd is the platform's own code in the pod; symmetric with `reload-secrets`, which already pushes bytes behind Basic auth. **Correction (US-68.1 validation):** reload-secrets serves on the agentd **user mux (:4097)**, not the admin port 4098 as originally sketched — `cmd/workspace-agentd/server.go:356`. `PUT /v1/files` follows the validated user-mux pattern. Sidecar mode clean-fails (5xx): the sidecar's `/workspace` is read-only.
 
 ### D2 — Flat `/workspace/uploads/<uuid>-<name>`, workspace-scoped
 Sessions are lazy (files may precede any session); uploads reusable across sessions; visible to terminal/git/agent tools like any workspace file. Cleanup is the user's/agent's — same as any workspace file.
@@ -109,7 +118,7 @@ Terminal-gate style; disk ratio reuses `proxy_disk_pressure.go` helper semantics
 V1 handler proxies the body verbatim — it must not gain rewriting logic; silent drop is worse than explicit rejection.
 
 ### D7 — Manifest is API contract, composed by exactly one function
-`ComposeAttachmentManifest` in one package (`pkg/session/attachments/`), called at acceptance (compose-once; retries must not double-append). Format v1, golden-fixture tested, additive-only changes; any format change = new version marker + v1 parser support. Three client transports + the frontend history renderer consume it. **As-built (US-67.3):** v1 lines carry `path` + `name` only — no `bytes` attribute. Rationale: D8 makes send-time validation shape-only (no stat), so the composer cannot know file sizes; the illustrative `bytes=` sketch in the original architecture diagram is superseded by the golden fixtures in `pkg/session/attachments/testdata/`. Also as-built: the interaction locked by U1.4.6 is that `/prompt` never receives disk-pressure injection (existing V2 gap, README-LLM §Disk-pressure) — disk gating is upload-side (D5). The "notice first, manifest after" ordering becomes assertable only if that gap is ever closed.
+`ComposeAttachmentManifest` in one package (`pkg/session/attachments/`), called at acceptance (compose-once; retries must not double-append). Format v1, golden-fixture tested, additive-only changes; any format change = new version marker + v1 parser support. Three client transports + the frontend history renderer consume it. **As-built (US-68.3):** v1 lines carry `path` + `name` only — no `bytes` attribute. Rationale: D8 makes send-time validation shape-only (no stat), so the composer cannot know file sizes; the illustrative `bytes=` sketch in the original architecture diagram is superseded by the golden fixtures in `pkg/session/attachments/testdata/`. Also as-built: the interaction locked by U1.4.6 is that `/prompt` never receives disk-pressure injection (existing V2 gap, README-LLM §Disk-pressure) — disk gating is upload-side (D5). The "notice first, manifest after" ordering becomes assertable only if that gap is ever closed.
 
 ### D8 — Send-time validation is a shape check, not an existence probe
 `^/workspace/uploads/<uuid>-`. Deleted file ⇒ agent gets "not found" from its tools — same as any workspace path. No TOCTOU machinery.
@@ -188,26 +197,26 @@ If agentd crashes between rename and response, the file exists but the client se
 
 ## Stories
 
-Execution status lives on GitHub (epic issue + US-67.x sub-issues). Story list with scope and acceptance criteria is maintained there; this section records the split for the as-built record:
+Execution status lives on GitHub (epic issue + US-68.x sub-issues). Story list with scope and acceptance criteria is maintained there; this section records the split for the as-built record:
 
-- **US-67.1** — agentd file-ingest endpoint (`PUT /v1/files`)
-- **US-67.2** — API upload route (streaming multipart + gates)
-- **US-67.3** — Attachment manifest contract + send-path integration
-- **US-67.4** — MCP upload tool + `session_message` files param
-- **US-67.5** — Frontend composer drawer + upload UX + manifest strip
-- **US-67.6** — Specs, SDKs, docs, and e2e completion
+- **US-68.1** — agentd file-ingest endpoint (`PUT /v1/files`)
+- **US-68.2** — API upload route (streaming multipart + gates)
+- **US-68.3** — Attachment manifest contract + send-path integration
+- **US-68.4** — MCP upload tool + `session_message` files param
+- **US-68.5** — Frontend composer drawer + upload UX + manifest strip
+- **US-68.6** — Specs, SDKs, docs, and e2e completion
 
 ## Dependency Graph
 
 ```
-US-67.1 ──► US-67.2 ──► US-67.4
+US-68.1 ──► US-68.2 ──► US-68.4
    │           │
-   │           └────────► US-67.5 (needs US-67.3 format locked)
-   └──► US-67.3 ──► US-67.4, US-67.5
-US-67.1..67.5 ──► US-67.6
+   │           └────────► US-68.5 (needs US-68.3 format locked)
+   └──► US-68.3 ──► US-68.4, US-68.5
+US-68.1..67.5 ──► US-68.6
 ```
 
-US-67.1 and US-67.3 can start in parallel; US-67.2 needs 67.1; US-67.5 needs 67.3's format locked before the TS parser is written.
+US-68.1 and US-68.3 can start in parallel; US-68.2 needs 67.1; US-68.5 needs 67.3's format locked before the TS parser is written.
 
 ---
 
@@ -221,22 +230,22 @@ are already folded into the decision text above):
    architecture diagram. **Sidecar mode clean-fails (5xx):** the sidecar's
    `/workspace` mount is read-only (`controller/internal/workspace/agentd_sidecar.go`);
    uploads are supported in single-container mode. A control-socket write
-   op for sidecar mode is a tracked follow-up. `local/us-67-attachments-e2e.sh`
+   op for sidecar mode is a tracked follow-up. `local/us-68-attachments-e2e.sh`
    gates on this and asserts the clean-fail when sidecar mode is detected.
 2. **Manifest attributes (D7):** v1 lines carry `path` + `name` only — the
    illustrative `bytes=` sketch was dropped because send-time validation is
    shape-only (D8). The golden fixtures in `pkg/session/attachments/testdata/`
    are the authoritative format.
-3. **SDK shape correction (US-67.6):** reconciling the spec surfaced that all
+3. **SDK shape correction (US-68.6):** reconciling the spec surfaced that all
    four SDKs sent dead prompt fields (`message`/`content`) — the live handler
-   extracts text from `parts`. US-67.6 fixed the SDKs and the spec to the
+   extracts text from `parts`. US-68.6 fixed the SDKs and the spec to the
    as-built `{parts, files, clientMessageID, model}` body.
 
 **E2E coverage as-built:** E1/E5/E6 (browser), E3/E4 (browser, stubbed
 backend — the pod-side half of E3 is covered by the U1.1/U1.2 Go suites),
 E7 (golden prompt bytes), E8 (external stdio MCP client), E9 (SDK wire
 tests + `make sdk-check` + sdk-contract CI), E12 (README/golden fixture
-consistency) run in CI. E2/E10/E11 are cluster-only (`local/us-67-attachments-e2e.sh`,
+consistency) run in CI. E2/E10/E11 are cluster-only (`local/us-68-attachments-e2e.sh`,
 wired into e2e-nightly; rows execute fully only in single-container mode —
 see deviation 1).
 
@@ -248,7 +257,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 
 ### 1. Unit tests
 
-#### 1.1 agentd file endpoint — `PUT /v1/files` (US-67.1)
+#### 1.1 agentd file endpoint — `PUT /v1/files` (US-68.1)
 
 | # | Scenario | Expect |
 |---|----------|--------|
@@ -274,7 +283,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.1.20 | Response leaks only final path — no `.tmp` path, no internal paths, in success or error bodies | verified |
 | U1.1.21 | fsync failure injection (failing writer on Sync) | error; `.tmp` removed; no final file |
 
-#### 1.2 API upload handler (US-67.2)
+#### 1.2 API upload handler (US-68.2)
 
 | # | Scenario | Expect |
 |---|----------|--------|
@@ -301,7 +310,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.2.21 | Metrics: counters emitted per rejection reason (auth/phase/disk/cap/agentd-error) and per success | asserted via test registry |
 | U1.2.22 | Route participates in existing rate-limiting middleware stack | asserted |
 
-#### 1.3 Attachment manifest composer + path validation (US-67.3)
+#### 1.3 Attachment manifest composer + path validation (US-68.3)
 
 | # | Scenario | Expect |
 |---|----------|--------|
@@ -326,7 +335,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.3.19 | Parser: block with unknown/newer version marker or unknown attributes | treated as plain text (forward compatibility) |
 | U1.3.20 | Unicode filenames round-trip through compose → parse | exact |
 
-#### 1.4 Send-path service wiring (US-67.3)
+#### 1.4 Send-path service wiring (US-68.3)
 
 | # | Scenario | Expect |
 |---|----------|--------|
@@ -337,7 +346,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.4.5 | `files[]` + `clientMessageID` idempotency retry | same composed text (deterministic) |
 | U1.4.6 | `files[]` + disk-pressure notice both active | both appended; order: disk notice first, manifest after — fixture-locked |
 
-#### 1.5 MCP tools (US-67.4)
+#### 1.5 MCP tools (US-68.4)
 
 | # | Scenario | Expect |
 |---|----------|--------|
@@ -355,7 +364,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.5.12 | Concurrent MCP `workspace_file_upload` calls (4 parallel) | all succeed; distinct uuid paths |
 | U1.5.13 | Huge non-base64 arg (e.g. 6 MB of `z`) | tool error before decode (cap checked on input length); no server OOM |
 
-#### 1.6 Frontend unit/component — vitest (US-67.5)
+#### 1.6 Frontend unit/component — vitest (US-68.5)
 
 | # | Scenario | Expect |
 |---|----------|--------|

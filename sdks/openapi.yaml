@@ -772,7 +772,7 @@ paths:
                 $ref: "#/components/schemas/Message"
         "400":
           description: |
-            Invalid request — including a `files` array (Epic 67): this
+            Invalid request — including a `files` array (Epic 68): this
             synchronous route proxies the body verbatim and rejects file
             references explicitly with
             `{"error": "files not supported on this route; use /prompt"}`.
@@ -849,7 +849,7 @@ paths:
       description: |
         Accepts a prompt composed of text parts and returns immediately
         (202); the agent's reply arrives on the workspace SSE stream.
-        Optional `files` (Epic 67) references previously uploaded files:
+        Optional `files` (Epic 68) references previously uploaded files:
         the API validates each path against the upload namespace
         (`/workspace/uploads/<uuid>-…`, max 10, no duplicates) and
         appends the v1 attachment manifest to the dispatched text — the
@@ -1007,7 +1007,7 @@ paths:
                   maxItems: 10
                   description: |
                     Paths returned by the upload endpoint
-                    (`POST /workspaces/{id}/uploads`, Epic 67). The API
+                    (`POST /workspaces/{id}/uploads`, Epic 68). The API
                     composes the v1 attachment manifest into the enqueued
                     text once (compose-once; retries never double-append).
                     Same validation as the prompt route: duplicates, empty
@@ -7656,7 +7656,7 @@ components:
     FileUploadResponse:
       type: object
       description: |
-        Result of a successful workspace file upload (Epic 67). `path` is
+        Result of a successful workspace file upload (Epic 68). `path` is
         the absolute final location on the workspace PVC
         (`/workspace/uploads/<uuid>-<name>`); `name` is the sanitized
         filename; `size` is the byte count stored.

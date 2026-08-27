@@ -3,7 +3,7 @@
 
 package main
 
-// uploads.go — Epic 67 US-67.1: the agentd file-ingest endpoint.
+// uploads.go — Epic 68 US-68.1: the agentd file-ingest endpoint.
 //
 // PUT /v1/files?filename=<name> — streamed request body lands on the
 // workspace PVC as /workspace/uploads/<uuid>-<sanitized-name> via the
@@ -12,7 +12,7 @@ package main
 // caller, authenticating with the control-plane Basic credential set
 // (design 0051 §D1/D6.1 — checkBasicAuthAny, same as reload-secrets).
 //
-// Design epic-67 D14: the in-pod adversary is the agent itself (uid
+// Design epic-68 D14: the in-pod adversary is the agent itself (uid
 // 1000 owns /workspace), so the .tmp is created O_CREATE|O_EXCL (never
 // follows a pre-planted symlink) and an EEXIST retries with a fresh
 // uuid — the agent cannot race 128 bits of randomness.
@@ -52,7 +52,7 @@ const (
 	uploadTimeoutEnvFloorMs  = 1000
 )
 
-// uploadOutcome labels the /v1/files Prometheus counter (design epic-67
+// uploadOutcome labels the /v1/files Prometheus counter (design epic-68
 // Observability: agentd counts write failures, cap hits, and bad names).
 type uploadOutcome string
 
@@ -87,7 +87,7 @@ type fileUploadConfig struct {
 }
 
 func openUploadTmpFile(path string) (uploadSink, error) {
-	//nolint:gosec // G302: 0644 is the design contract (epic-67 U1.1.11) — uploads are ordinary agent-readable workspace files
+	//nolint:gosec // G302: 0644 is the design contract (epic-68 U1.1.11) — uploads are ordinary agent-readable workspace files
 	return os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 }
 
@@ -118,9 +118,9 @@ func uploadConfigFromEnv() fileUploadConfig {
 }
 
 // sanitizeUploadFilename delegates to agentd.SanitizeFilename — the single
-// shared implementation (design epic-67 D9) consumed by both upload layers:
+// shared implementation (design epic-68 D9) consumed by both upload layers:
 // this authoritative agentd endpoint and the API's defense-in-depth proxy.
-// Behavior identical to the original local implementation (US-67.1), pinned
+// Behavior identical to the original local implementation (US-68.1), pinned
 // by the hostile table in uploads_test.go.
 func sanitizeUploadFilename(raw string) (string, bool) {
 	return agentd.SanitizeFilename(raw)
@@ -160,7 +160,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 			return
 		}
 
-		//nolint:gosec // G301: 0755 is the design contract (epic-67 U1.1.11) — the uploads dir is traversable like /workspace itself
+		//nolint:gosec // G301: 0755 is the design contract (epic-68 U1.1.11) — the uploads dir is traversable like /workspace itself
 		if err := os.MkdirAll(cfg.uploadsDir, 0o755); err != nil {
 			logger.Warn("upload: cannot create uploads dir", zap.String("dir", cfg.uploadsDir), zap.Error(err))
 			pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeWriteError)
@@ -249,7 +249,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 }
 
 // abortUploadTmp closes the sink and removes the .tmp — the atomic-or-
-// absent contract (design epic-67 D3): any mid-write error leaves no
+// absent contract (design epic-68 D3): any mid-write error leaves no
 // partial file behind.
 func abortUploadTmp(sink uploadSink, tmpPath string) {
 	_ = sink.Close()
@@ -258,7 +258,7 @@ func abortUploadTmp(sink uploadSink, tmpPath string) {
 }
 
 // uploadCopyErrorStatus maps body-write failures to response codes:
-// ENOSPC → 507 (disk full — design epic-67 resource-exhaustion guard),
+// ENOSPC → 507 (disk full — design epic-68 resource-exhaustion guard),
 // read-deadline/timeout → 504 (slowloris), anything else → 500.
 func uploadCopyErrorStatus(err error) int {
 	if errors.Is(err, syscall.ENOSPC) {
@@ -271,7 +271,7 @@ func uploadCopyErrorStatus(err error) int {
 }
 
 // scrubUploadTmpFiles removes stale uploads/*.tmp left by a crash
-// mid-upload (design epic-67 D3 boot scrub). Best-effort per file; the
+// mid-upload (design epic-68 D3 boot scrub). Best-effort per file; the
 // count is the number actually removed.
 func scrubUploadTmpFiles(uploadsDir string) (int, error) {
 	matches, err := filepath.Glob(filepath.Join(uploadsDir, "*.tmp"))

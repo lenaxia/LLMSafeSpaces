@@ -3,7 +3,7 @@ package com.llmsafespaces.sdk.models;
 import com.google.gson.annotations.SerializedName;
 
 /**
- * Result of a workspace file upload (Epic 67): the absolute path of the
+ * Result of a workspace file upload (Epic 68): the absolute path of the
  * stored file on the workspace PVC (/workspace/uploads/&lt;uuid&gt;-&lt;name&gt;),
  * its sanitized name, and the stored byte count.
  */

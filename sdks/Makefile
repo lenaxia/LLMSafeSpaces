@@ -9,7 +9,7 @@ validate:
 	@go run ./validate/main.go $(SPEC)
 	@echo "✓ OpenAPI spec is valid"
 
-# sdk-check is the CI-enforceable core of E9 (Epic 67): everything that can
+# sdk-check is the CI-enforceable core of E9 (Epic 68): everything that can
 # gate a merge without live infrastructure — spec validity, the spec's own
 # structural tests, and the bidirectional spec↔router parity contract.
 # Per-language compile + wire-level usage tests run in the sdk-contract CI

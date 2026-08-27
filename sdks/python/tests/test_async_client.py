@@ -462,7 +462,7 @@ async def test_mcp_servers_async_unhappy_path():
             await client.mcp_servers.get("missing")
 
 
-# ── Epic 67: workspace upload + files-on-send (wire-level, async) ────────────
+# ── Epic 68: workspace upload + files-on-send (wire-level, async) ────────────
 
 UPLOAD_PATH = "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"
 UPLOAD_RESP = {"path": UPLOAD_PATH, "name": "notes.txt", "size": 5}

@@ -209,7 +209,7 @@ describe("getCursorLineInfo", () => {
   // which is itself a source of bugs. See the function doc for details.
 });
 
-describe("extractUserMessageTexts — attachment manifests (Epic 67 D11)", () => {
+describe("extractUserMessageTexts — attachment manifests (Epic 68 D11)", () => {
   const manifest = (name: string) =>
     `[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-${name}" name="${name}"]`;
 

@@ -144,7 +144,7 @@ func main() {
 	// supervisor. No-op when no marker is present (clean boot).
 	logRestartReason(markerPathFromEnv(), log.Core())
 
-	// Epic 67 US-67.1: boot scrub — uploads interrupted by a crash leave
+	// Epic 68 US-68.1: boot scrub — uploads interrupted by a crash leave
 	// .tmp residue; the atomic-or-absent contract (D3) removes them once
 	// at startup. Best-effort: a failed scrub never blocks boot.
 	scrubUploadsAtBoot(log, uploadsPathFromEnv())

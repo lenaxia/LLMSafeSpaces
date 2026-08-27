@@ -1,7 +1,7 @@
 import { api } from "./client";
 
 // UploadResponse mirrors agentd's FileUploadResponse as forwarded by the
-// API upload route (Epic 67 US-67.2): POST /workspaces/:id/uploads with a
+// API upload route (Epic 68 US-68.2): POST /workspaces/:id/uploads with a
 // single multipart part named "file" → 201 {path, name, size}.
 export interface UploadResponse {
   path: string;

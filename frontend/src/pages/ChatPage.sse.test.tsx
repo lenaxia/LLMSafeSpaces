@@ -556,7 +556,7 @@ describe("ChatPage SSE event handler", () => {
       });
     });
 
-    it("treats a user echo carrying an attachment manifest as echo, not assistant text (Epic 67 D11)", async () => {
+    it("treats a user echo carrying an attachment manifest as echo, not assistant text (Epic 68 D11)", async () => {
       const user = userEvent.setup();
       (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
       (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);

@@ -55,7 +55,7 @@ package settings
 // enable-flag. Now "Enable Dev Preview" with explicit ON/OFF semantics.
 // Admin UI schema caches must refresh to show the new copy.
 // Bumped to 14 (2026-08-27): added user setting composerDrawerOpen (TypeEnum,
-// Epic 67 D12) — the composer options-drawer preference. New key; frontend and
+// Epic 68 D12) — the composer options-drawer preference. New key; frontend and
 // admin schema caches must refresh. Canary twins updated in lockstep
 // (TestCanary_SchemaVersion_TwinParity).
 const SchemaVersion = 14
@@ -203,7 +203,7 @@ func UserSettings() []SettingDef {
 		{Key: "codeBlockWordWrap", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Code Word Wrap", Description: "Wrap long lines in code blocks"},
 		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)"},
 		{Key: "preferredModel", Tier: 3, Type: TypeString, Default: "", Category: "Chat", Label: "Preferred Model", Description: "Default model ID"},
-		// Epic 67 D12: composer options-drawer state. "auto" is the
+		// Epic 68 D12: composer options-drawer state. "auto" is the
 		// media-query-aware default (open on desktop, collapsed on mobile);
 		// "open"/"collapsed" are the persisted explicit overrides. The enum
 		// keeps unset distinguishable from an explicit choice — a bool cannot.

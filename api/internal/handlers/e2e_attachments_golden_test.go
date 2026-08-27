@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestE2E_PromptFilesGoldenBytes is e2e row E7 (Epic 67): the prompt
+// TestE2E_PromptFilesGoldenBytes is e2e row E7 (Epic 68): the prompt
 // dispatched to the workspace agent must byte-match the authoritative
 // golden fixtures in pkg/session/attachments/testdata/ — the wire-level
 // lock on manifest format v1 across releases. The stub agent (httptest

@@ -301,7 +301,7 @@ func requireBearerToken(token string, h http.Handler) http.Handler {
 // buildUserMux assembles the user-mux (port 4097) routes — the
 // control-plane surface the API server calls (reload-secrets, agent
 // reload, workflow dispatch, MCP proxy, dev-preview tunnel, and the
-// Epic 67 file-ingest endpoint). Extracted from wireHTTPServers so the
+// Epic 68 file-ingest endpoint). Extracted from wireHTTPServers so the
 // registration path itself is testable without binding real ports.
 func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) *http.ServeMux {
 	userMux := http.NewServeMux()
@@ -349,8 +349,8 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	}))
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
-	// Epic 67 US-67.1: file-ingest endpoint. Control-plane route on the
-	// user mux, symmetric with reload-secrets (design epic-67 D1) — the
+	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
+	// user mux, symmetric with reload-secrets (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
 	userMux.HandleFunc("/v1/files", uploadFilesHandler(log, uploadConfigFromEnv(), deps.password, deps.controlPlanePassword))
 

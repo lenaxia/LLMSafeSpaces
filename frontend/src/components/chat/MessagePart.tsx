@@ -355,7 +355,7 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
 
   if (part.type === "text" && part.text) {
     if (isUser) {
-      // Epic 67 D11: user bubbles strip the trailing attachment manifest
+      // Epic 68 D11: user bubbles strip the trailing attachment manifest
       // block and render chips instead. Interior forged lines stay text.
       const { text: stripped, attachments } = parseAttachments(part.text);
       return (
