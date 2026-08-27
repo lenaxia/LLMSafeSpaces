@@ -1783,45 +1783,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vs-code-extension" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VS Code extension
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="VS Code extension">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Features
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Getting started
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#contract-testing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2541,45 +2502,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#vs-code-extension" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        VS Code extension
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="VS Code extension">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#features" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Features
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#getting-started" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Getting started
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#contract-testing" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2662,13 +2584,6 @@
 <td><code>com.llmsafespaces:sdk</code></td>
 <td>Java 17+</td>
 <td>API key</td>
-</tr>
-<tr>
-<td><strong>VS Code</strong></td>
-<td><code>sdks/vscode-llmsafespaces/</code></td>
-<td>extension</td>
-<td>VS Code 1.95+</td>
-<td>API key (stored in OS keychain)</td>
 </tr>
 </tbody>
 </table>
@@ -2913,24 +2828,6 @@
 </span></code></pre></div>
 <p>The Java SDK exposes generic <code>get</code>, <code>post</code>, and <code>delete</code> methods plus a static <code>extractTextContent(JsonObject)</code> helper for pulling text out of opencode response parts. Errors throw <code>LLMSafeSpacesException</code> with a status code and message.</p>
 <hr />
-<h2 id="vs-code-extension">VS Code extension<a class="headerlink" href="#vs-code-extension" title="Permanent link">&para;</a></h2>
-<p>The VS Code extension (<code>sdks/vscode-llmsafespaces/</code>) wraps the API into the editor: a workspace sidebar, a WebSocket terminal, and a Copilot Chat participant.</p>
-<h3 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h3>
-<ul>
-<li><strong>Workspace sidebar</strong> — browse and manage sandboxes from the activity bar, with color-coded status (active / suspended / terminated).</li>
-<li><strong>Terminal access</strong> — open a secure terminal connected to any active workspace. Traffic flows through the API's WebSocket proxy — no SSH keys or port-forwarding needed.</li>
-<li><strong>Chat participant</strong> — type <code>@llmsafespaces</code> in Copilot Chat to route prompts directly to your sandbox agent. The agent has full access to the workspace filesystem and tools.</li>
-<li><strong>Commands</strong> — Create Workspace, Suspend/Resume, Activate, Open Terminal, Configure.</li>
-</ul>
-<h3 id="getting-started">Getting started<a class="headerlink" href="#getting-started" title="Permanent link">&para;</a></h3>
-<ol>
-<li>Install the extension.</li>
-<li>Open the Command Palette and run <code>LLMSafeSpaces: Configure</code>.</li>
-<li>Enter your API URL and API key (<code>lsp_...</code>).</li>
-<li>Your workspaces appear in the sidebar.</li>
-</ol>
-<p>API keys are stored in VS Code's <code>SecretStorage</code> (the OS keychain). The extension communicates only with the LLMSafeSpaces instance you configure — no telemetry, no third-party data.</p>
-<hr />
 <h2 id="contract-testing">Contract testing<a class="headerlink" href="#contract-testing" title="Permanent link">&para;</a></h2>
 <p>The SDKs are validated against the spec and the live API with <a href="https://hurl.dev/">Hurl</a> contract tests under <code>sdks/tests/contract/</code>.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1"># Against a running API instance</span>
@@ -2968,7 +2865,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 06:21:26 UTC"><span class="timeago" datetime="2026-08-27T06:21:26+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 06:21:26 UTC">2026-08-27</span>
   </span>
 
     
