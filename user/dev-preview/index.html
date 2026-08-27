@@ -1930,6 +1930,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="How it works">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-url-format-epic-67" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        New URL Format (Epic 67)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1951,6 +1968,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Opening the preview">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#manual-url-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Manual URL construction
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2009,6 +2043,56 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#url-format-details-epic-67" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        URL format details (Epic 67)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="URL format details (Epic 67)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#host-disambiguation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host disambiguation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cookie-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cookie behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#path-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -2034,9 +2118,14 @@
 <hr />
 <h2 id="how-it-works">How it works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h2>
 <p>When Dev Preview is enabled on a workspace, you can open a URL like:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>https://&lt;platform-origin&gt;/api/v1/workspaces/&lt;workspace-id&gt;/dev-preview/5173/
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>https://&lt;port&gt;-&lt;workspace-id&gt;-preview.&lt;platform-domain&gt;/
 </span></code></pre></div>
 <p>in your browser and see your dev server's output, <strong>including hot-module replacement (HMR)</strong> — file changes in your workspace update the browser without a manual reload.</p>
+<h3 id="new-url-format-epic-67">New URL Format (Epic 67)<a class="headerlink" href="#new-url-format-epic-67" title="Permanent link">&para;</a></h3>
+<p><strong>Port-in-subdomain format:</strong> <code>https://5173-&lt;workspace-id&gt;-preview.&lt;platform-domain&gt;/</code></p>
+<p>The port is now in the hostname, not the path. This fixes a critical issue where apps that emit root-absolute URLs (like <code>303 Location: /login</code>) would break — they now resolve correctly relative to the preview origin instead of losing the port.</p>
+<p><strong>Legacy format (still supported):</strong> <code>https://&lt;platform-origin&gt;/api/v1/workspaces/&lt;workspace-id&gt;/dev-preview/5173/</code></p>
+<p>The legacy format continues to work for backward compatibility, but new requests use the port-in-subdomain format.</p>
 <p>The preview URL is <strong>authenticated to you only</strong> — it uses the same login session as the rest of the platform. No one else can view your preview (not other tenants, not unauthenticated viewers). Do not confuse this with a public shareable URL — there is no such feature in v1.</p>
 <h2 id="enabling-dev-preview">Enabling Dev Preview<a class="headerlink" href="#enabling-dev-preview" title="Permanent link">&para;</a></h2>
 <ol>
@@ -2053,13 +2142,17 @@
 <p>With Dev Preview enabled and your workspace <strong>Active</strong>:</p>
 <ol>
 <li>Start a dev server in your workspace terminal, e.g.:
-   <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>npm<span class="w"> </span>run<span class="w"> </span>dev<span class="w"> </span>--<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">5173</span>
+    <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>npm<span class="w"> </span>run<span class="w"> </span>dev<span class="w"> </span>--<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">5173</span>
 </span></code></pre></div></li>
 <li>In the Settings drawer, enter the port (default 5173) and click <strong>Open preview</strong>. A new browser tab opens at the preview URL.</li>
 <li>Edit a source file. The browser updates automatically via HMR.</li>
 </ol>
-<p>You can also construct the URL manually:
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>/api/v1/workspaces/&lt;id&gt;/dev-preview/&lt;port&gt;/
+<h3 id="manual-url-construction">Manual URL construction<a class="headerlink" href="#manual-url-construction" title="Permanent link">&para;</a></h3>
+<p><strong>New format:</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>https://5173-&lt;workspace-id&gt;-preview.&lt;platform-domain&gt;/
+</span></code></pre></div></p>
+<p><strong>Legacy format:</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>https://&lt;platform-origin&gt;/api/v1/workspaces/&lt;workspace-id&gt;/dev-preview/5173/
 </span></code></pre></div></p>
 <h2 id="per-framework-configuration">Per-framework configuration<a class="headerlink" href="#per-framework-configuration" title="Permanent link">&para;</a></h2>
 <p>The platform rewrites the <code>Host</code> header to <code>localhost:&lt;port&gt;</code> on every request, so most dev servers work with no additional configuration.</p>
@@ -2108,14 +2201,15 @@
 <li><strong>Ports 4096, 4097, 4098 are blocked.</strong> These are the platform's internal agentd/opencode ports.</li>
 <li><strong>Privileged ports (&lt;1024) are blocked.</strong> Use ports ≥1024 for your dev server.</li>
 <li><strong>WebSocket support:</strong> HMR (Vite, Next, webpack) works. The proxy forwards WS upgrades natively.</li>
+<li><strong>Cookie scope:</strong> Each distinct port (e.g., 5173 vs 3000) on the same workspace requires its own preview session bootstrap. This is because preview origins are distinct browser origins; cross-port <code>fetch()</code> calls require CORS configuration in your app.</li>
 </ul>
 <h2 id="sharing-your-app-with-others">Sharing your app with others<a class="headerlink" href="#sharing-your-app-with-others" title="Permanent link">&para;</a></h2>
 <p>Dev Preview URLs are <strong>not shareable</strong> — they require your authenticated session. If you need to share a running app with a teammate or the public, run a tunnel provider inside your workspace:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Cloudflare (free, no account for quick tunnels):</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>cloudflared<span class="w"> </span>tunnel<span class="w"> </span>--url<span class="w"> </span>http://localhost:5173
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># ngrok:</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>ngrok<span class="w"> </span>http<span class="w"> </span><span class="m">5173</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Cloudflare (free, no account for quick tunnels):</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>cloudflared<span class="w"> </span>tunnel<span class="w"> </span>--url<span class="w"> </span>http://localhost:5173
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># ngrok:</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>ngrok<span class="w"> </span>http<span class="w"> </span><span class="m">5173</span>
 </span></code></pre></div>
 <p>Both produce a public HTTPS URL that you can share. The workspace egress NetworkPolicy already allows outbound HTTPS to public internet, so no platform configuration is needed. <strong>The platform does not provide public shareable URLs in v1.</strong></p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
@@ -2168,10 +2262,33 @@
 <td>Dev server is checking <code>Host</code> against an allowlist</td>
 <td>Platform already rewrites Host to <code>localhost:&lt;port&gt;</code>; if your framework overrides this, remove the override</td>
 </tr>
+<tr>
+<td>Login redirects break app</td>
+<td>App emits root-absolute URLs that lose the port</td>
+<td>Use the new port-in-subdomain format — the port is in the hostname, so redirects preserve it automatically</td>
+</tr>
 </tbody>
 </table>
 <h2 id="ipv6-localhost-note">IPv6 / <code>localhost</code> note<a class="headerlink" href="#ipv6-localhost-note" title="Permanent link">&para;</a></h2>
 <p>Browsers resolve <code>localhost</code> to <code>::1</code> (IPv6) first. The platform's API ingress must serve both A and AAAA records (or bind dual-stack). If your browser reports <code>ECONNREFUSED ::1</code>, contact your operator — the ingress binding needs to support IPv6. The in-pod agentd listener is already dual-stack-safe (<code>0.0.0.0</code>).</p>
+<h2 id="url-format-details-epic-67">URL format details (Epic 67)<a class="headerlink" href="#url-format-details-epic-67" title="Permanent link">&para;</a></h2>
+<h3 id="host-disambiguation">Host disambiguation<a class="headerlink" href="#host-disambiguation" title="Permanent link">&para;</a></h3>
+<p>The platform distinguishes between two preview host formats:</p>
+<ul>
+<li><strong>Legacy:</strong> <code>&lt;uuid&gt;-preview.&lt;baseDomain&gt;</code> (e.g., <code>a1b2c3d4-preview.safespaces.dev</code>)</li>
+<li><strong>New:</strong> <code>&lt;port&gt;-&lt;uuid&gt;-preview.&lt;baseDomain&gt;</code> (e.g., <code>5173-a1b2c3d4-preview.safespaces.dev</code>)</li>
+</ul>
+<p>These formats are mathematically disjoint — no host can match both patterns simultaneously. This prevents ambiguity with digit-leading UUIDs (e.g., <code>1044f4f2-...</code>), ensuring port parsing is always correct.</p>
+<h3 id="cookie-behavior">Cookie behavior<a class="headerlink" href="#cookie-behavior" title="Permanent link">&para;</a></h3>
+<p>Each port-host gets its own <code>__Host-pv</code> cookie because preview origins are distinct browser origins. This means:
+- Switching ports requires re-authentication (one-click bootstrap)
+- Cross-port <code>fetch()</code> calls require CORS configuration in your app
+- Sessions are scoped to the workspace, not the port</p>
+<h3 id="path-behavior">Path behavior<a class="headerlink" href="#path-behavior" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Legacy format:</strong> The entire path <code>/5173/app/path</code> is stripped to <code>/app/path</code> (port from path)</li>
+<li><strong>New format:</strong> The entire path <code>/app/path</code> goes to the app verbatim (port from host)</li>
+</ul>
 
 
 
@@ -2194,7 +2311,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 11, 2026 01:48:27 UTC"><span class="timeago" datetime="2026-08-11T01:48:27+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 11, 2026 01:48:27 UTC">2026-08-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 03:27:05 UTC"><span class="timeago" datetime="2026-08-27T03:27:05+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 03:27:05 UTC">2026-08-27</span>
   </span>
 
     
