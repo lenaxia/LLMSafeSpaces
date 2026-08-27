@@ -465,7 +465,7 @@ class LLMSafeSpacesClientTest {
             paths.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
             byte[] body = exchange.getRequestURI().getPath().endsWith("auto-apply")
                     && "GET".equals(exchange.getRequestMethod())
-                    ? "{"rules":[{"targetType":"all"}]}".getBytes()
+                    ? "{\"rules\":[{\"targetType\":\"all\"}]}".getBytes()
                     : "{}".getBytes();
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
@@ -496,7 +496,7 @@ class LLMSafeSpacesClientTest {
 
     @org.junit.jupiter.api.Test
     void mcpServers_unhappyPaths() throws Exception {
-        var server = startMockServer(404, "{"error":"mcp server not found"}");
+        var server = startMockServer(404, "{\"error\":\"mcp server not found\"}");
         try {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
