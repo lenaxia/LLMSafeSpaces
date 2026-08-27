@@ -3,6 +3,7 @@ package com.llmsafespaces.sdk.services;
 import com.google.gson.JsonObject;
 import com.llmsafespaces.sdk.LLMSafeSpacesClient;
 import com.llmsafespaces.sdk.models.EnsureSessionResponse;
+import com.llmsafespaces.sdk.models.HistoryPage;
 import com.llmsafespaces.sdk.models.Message;
 
 import java.util.Map;
