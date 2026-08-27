@@ -776,6 +776,65 @@ func (s *KeyService) tryUnwrapRowWithKnownKeys(ctx context.Context, row *JWTSess
 // clearly outside our known keys and further rows won't help.
 const jwtSessionUserLookupLimit = 5
 
+// serverSideDEKCacheTTL bounds the synthetic cache handle GetDEKServerSide
+// writes. The handle only needs to outlive one request chain (bootstrap
+// or push: unwrap → InjectSecrets → decryptBinding's GetDEK); five
+// minutes is generous margin while keeping stray handles short-lived.
+// The synthetic jti has no jwt_sessions row, so an expired handle can
+// never be rehydrated — single-use by design.
+const serverSideDEKCacheTTL = 5 * time.Minute
+
+// GetDEKServerSide unwraps the user's DEK directly from the user_keys
+// record via the master RootKeyProvider — no session, no jwt_sessions
+// walk, no signing-key retention window.
+//
+// This is the pod-delivery accessor under the "if the pod exists, it
+// has its secrets" contract: the server-KEK-only model made every user
+// DEK server-recoverable at rest, so pod delivery no longer gates on an
+// active session. Suspend/resume, expired jwt_sessions, and logged-out
+// owners all still receive their bound secrets.
+//
+// Returns (dek, jti, error). The jti is a fresh UUID referencing the
+// Redis cache entry this method populates; callers pass it as the
+// sessionID to InjectSecrets so the downstream GetDEK(jti) call hits
+// the cache — the same handoff pattern GetDEKForUser established.
+//
+// Failure semantics (each degrades the caller to sessionless):
+//
+//   - rootKeyProvider unwired  → ErrServerKEKUnavailable
+//   - no user_keys record      → ErrDEKUnavailable (the user never
+//     created secrets; the sessionless payload already contains
+//     everything that exists for them)
+//   - store/unwrap failure     → wrapped error (infra)
+//   - cache write failure      → error (without the handle,
+//     InjectSecrets cannot reach the DEK; one clean degrade beats
+//     per-binding audit noise)
+func (s *KeyService) GetDEKServerSide(ctx context.Context, userID string) (dek []byte, jti string, err error) {
+	if s.rootKeyProvider == nil {
+		return nil, "", ErrServerKEKUnavailable
+	}
+	record, err := s.store.GetUserKey(ctx, userID)
+	if err != nil {
+		return nil, "", fmt.Errorf("get user key: %w", err)
+	}
+	if record == nil {
+		return nil, "", ErrDEKUnavailable
+	}
+	dek, err = s.rootKeyProvider.Decrypt(ctx, record.WrappedDEK)
+	if err != nil {
+		return nil, "", fmt.Errorf("server-kek unwrap DEK: %w", err)
+	}
+	jti = uuid.NewString()
+	if cErr := s.cache.CacheDEK(ctx, jti, dek, serverSideDEKCacheTTL); cErr != nil {
+		if s.logger != nil {
+			s.logger.Warn("GetDEKServerSide: cache handle write failed; degrading",
+				"userID", userID, "error", cErr.Error())
+		}
+		return nil, "", fmt.Errorf("cache dek handle: %w", cErr)
+	}
+	return dek, jti, nil
+}
+
 // HasKeys checks if a user has key material initialized.
 func (s *KeyService) HasKeys(ctx context.Context, userID string) (bool, error) {
 	record, err := s.store.GetUserKey(ctx, userID)
