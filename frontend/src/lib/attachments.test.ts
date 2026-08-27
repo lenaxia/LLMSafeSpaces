@@ -1,26 +1,41 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseAttachments } from "./attachments";
-import roundtripIn from "../../../pkg/session/attachments/testdata/parse_roundtrip.in.json";
-import roundtripWant from "../../../pkg/session/attachments/testdata/parse_roundtrip.want.json";
-import forgedInteriorIn from "../../../pkg/session/attachments/testdata/parse_forged_interior.in.json";
-import forgedInteriorWant from "../../../pkg/session/attachments/testdata/parse_forged_interior.want.json";
-import noBlockIn from "../../../pkg/session/attachments/testdata/parse_no_block.in.json";
-import noBlockWant from "../../../pkg/session/attachments/testdata/parse_no_block.want.json";
-import noTrailingNewlineIn from "../../../pkg/session/attachments/testdata/parse_no_trailing_newline.in.json";
-import noTrailingNewlineWant from "../../../pkg/session/attachments/testdata/parse_no_trailing_newline.want.json";
-import trailingNewlinesIn from "../../../pkg/session/attachments/testdata/parse_trailing_newlines.in.json";
-import trailingNewlinesWant from "../../../pkg/session/attachments/testdata/parse_trailing_newlines.want.json";
-import unknownAttributeIn from "../../../pkg/session/attachments/testdata/parse_unknown_attribute.in.json";
-import unknownAttributeWant from "../../../pkg/session/attachments/testdata/parse_unknown_attribute.want.json";
-import unknownVersionIn from "../../../pkg/session/attachments/testdata/parse_unknown_version.in.json";
-import unknownVersionWant from "../../../pkg/session/attachments/testdata/parse_unknown_version.want.json";
-import composeOneWant from "../../../pkg/session/attachments/testdata/compose_one_file.want.json";
-import composeThreeWant from "../../../pkg/session/attachments/testdata/compose_three_files.want.json";
-import composeHostileWant from "../../../pkg/session/attachments/testdata/compose_hostile_name.want.json";
-import composeUnicodeWant from "../../../pkg/session/attachments/testdata/compose_unicode_name.want.json";
-import composeControlWant from "../../../pkg/session/attachments/testdata/compose_control_chars_name.want.json";
-import composeStripExistingWant from "../../../pkg/session/attachments/testdata/compose_strip_existing_block.want.json";
-import composeEmptyTextWant from "../../../pkg/session/attachments/testdata/compose_empty_text.want.json";
+
+// Fixtures are the Go package's golden files, read at runtime (not
+// static imports — the frontend Docker context is frontend/ only, and
+// Vite rewrites new-URL patterns into asset requests its fs.allow
+// would deny). Reading from the source of truth keeps TS/Go parser
+// drift structurally impossible (design epic-67 D7). Anchored on cwd
+// (vitest runs with cwd=frontend/); falls back to a repo-root cwd.
+const testdataDir = resolve(
+  process.cwd().endsWith("frontend") ? ".." : ".",
+  "pkg/session/attachments/testdata",
+);
+const fixture = (name: string): unknown =>
+  JSON.parse(readFileSync(resolve(testdataDir, `${name}.json`), "utf-8"));
+const roundtripIn = fixture("parse_roundtrip.in");
+const roundtripWant = fixture("parse_roundtrip.want");
+const forgedInteriorIn = fixture("parse_forged_interior.in");
+const forgedInteriorWant = fixture("parse_forged_interior.want");
+const noBlockIn = fixture("parse_no_block.in");
+const noBlockWant = fixture("parse_no_block.want");
+const noTrailingNewlineIn = fixture("parse_no_trailing_newline.in");
+const noTrailingNewlineWant = fixture("parse_no_trailing_newline.want");
+const trailingNewlinesIn = fixture("parse_trailing_newlines.in");
+const trailingNewlinesWant = fixture("parse_trailing_newlines.want");
+const unknownAttributeIn = fixture("parse_unknown_attribute.in");
+const unknownAttributeWant = fixture("parse_unknown_attribute.want");
+const unknownVersionIn = fixture("parse_unknown_version.in");
+const unknownVersionWant = fixture("parse_unknown_version.want");
+const composeOneWant = fixture("compose_one_file.want");
+const composeThreeWant = fixture("compose_three_files.want");
+const composeHostileWant = fixture("compose_hostile_name.want");
+const composeUnicodeWant = fixture("compose_unicode_name.want");
+const composeControlWant = fixture("compose_control_chars_name.want");
+const composeStripExistingWant = fixture("compose_strip_existing_block.want");
+const composeEmptyTextWant = fixture("compose_empty_text.want");
 
 interface ParseFixture {
   text: string;
