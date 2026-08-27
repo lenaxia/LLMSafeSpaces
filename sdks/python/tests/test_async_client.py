@@ -416,7 +416,7 @@ async def test_async_secret_response_full_payload_round_trip(client: AsyncLLMSaf
     assert s.metadata == {"var_name": "CANARY_VAR"}
 
 
-.mock
+@respx.mock
 @pytest.mark.asyncio
 async def test_get_history_page_async():
     route = respx.get(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/message").respond(
