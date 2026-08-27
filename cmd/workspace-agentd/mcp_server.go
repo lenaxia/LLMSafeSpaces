@@ -77,7 +77,7 @@ func mcpHandler(password string) http.HandlerFunc {
 				"tools": []mcpTool{
 					{
 						Name:        "session_list",
-						Description: "List opencode sessions in this workspace",
+						Description: "List past agent sessions (conversations) in this workspace. Use to find prior work before redoing it or asking the user to re-explain: what was built, tried, or decided earlier lives in these sessions.",
 						InputSchema: map[string]any{
 							"type":       "object",
 							"properties": map[string]any{},
@@ -85,11 +85,11 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "session_read",
-						Description: "Read message history from an opencode session",
+						Description: "Read the message history of a past session in this workspace — context recovery for what was previously built, tried, or decided.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"session_id": map[string]any{"type": "string", "description": "The session ID to read"},
+								"session_id": map[string]any{"type": "string", "description": "The session ID to read (from session_list)"},
 								"limit":      map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
 							},
 							"required": []string{"session_id"},
@@ -97,11 +97,11 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the chat UI renders as an open-preview button (fall back to relaying the URL as a markdown link in your reply). No API call is made — the URL is deterministic. Port defaults to 5173 when omitted. Refuses ports below 1024 and platform-reserved ports.",
+						Description: "Get the preview URL for a web app running in this workspace, and give it to the user. USE PROACTIVELY: whenever you start, run, or build a web app (npm run dev, flask run, http.server, ...), call this and share the link — do not wait to be asked. The chat UI renders the returned URL as an open-preview button; if it does not render, relay the URL as a markdown link in your reply. Requirements: the app must be listening on the given localhost port, and the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — if the preview does not work, point the user there. No API call is made — the URL is deterministic. Port defaults to 5173; ports below 1024 and platform-reserved ports (4096-4098) are refused.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next). Defaults to 5173. Must be >= 1024; platform-reserved ports are refused."},
+								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next/Express). Defaults to 5173. Must be >= 1024; ports 4096-4098 are refused."},
 								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /). Carried through on path-based preview URLs; on per-workspace-origin deployments the preview opens at the app root"},
 							},
 							"required": []string{},
