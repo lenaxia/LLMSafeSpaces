@@ -318,7 +318,7 @@ ENV MISE_DATA_DIR=/workspace/.local/share/mise \
     GOPATH=/workspace/.local/share/go \
     NPM_CONFIG_PREFIX=/workspace/.local \
     PYTHONUSERBASE=/workspace/.local \
-    PATH=/workspace/.local/bin:/workspace/.local/share/go/bin:/workspace/.local/share/cargo/bin:/usr/local/share/mise/shims:$PATH
+    PATH=/workspace/.local/bin:/workspace/.local/share/mise/shims:/workspace/.local/share/go/bin:/workspace/.local/share/cargo/bin:/usr/local/share/mise/shims:$PATH
 
 RUN useradd -u 1000 -m -s /bin/bash sandbox
 

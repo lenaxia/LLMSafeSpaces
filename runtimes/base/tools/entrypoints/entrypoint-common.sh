@@ -109,4 +109,20 @@ verify_and_select_agentd() {
 verify_and_select_agentd
 export AGENTD_BIN
 
+# Regenerate mise shims into $MISE_DATA_DIR/shims (PVC-backed).
+#
+# Why at every boot: build-time `mise reshim` wrote shims to
+# MISE_DATA_DIR=/workspace/.local/share/mise/shims, but /workspace is a
+# PVC mount that SHADOWS the image layer — on a fresh PVC the baked
+# shims are gone and BOTH shims dirs are empty, so go/python/node do
+# not resolve in any non-interactive shell (harness tool shells miss
+# `mise activate`). This run is idempotent (~100ms), repairs fresh
+# PVCs, and re-shims system-installed toolchains into the data dir so
+# the PATH entry in the Dockerfile ENV resolves from first boot. It
+# never fails boot: a broken mise setup degrades to the documented
+# "check mise which" fallback, it must not kill the pod.
+if ! mise reshim >/dev/null 2>&1; then
+    echo "entrypoint-common: mise reshim failed (non-fatal); toolchains resolve via 'mise which <cmd>'" >&2
+fi
+
 "${AGENTD_BIN}" materialize
