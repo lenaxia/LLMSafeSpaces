@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
 )
 
 // TestIntegration_FullWorkflow tests the complete MCP flow:
@@ -64,10 +67,11 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	_, err = mcpClient.Initialize(ctx, initReq)
 	require.NoError(t, err)
 
-	// 1. List tools - verify all are registered (12 + 1 run_resolve + 11 Epic 64 = 24).
+	// 1. List tools - verify all are registered (12 + 1 run_resolve + 11 Epic 64
+	// + 1 workspace_file_upload = 25).
 	toolsResp, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
 	require.NoError(t, err)
-	assert.Len(t, toolsResp.Tools, 24)
+	assert.Len(t, toolsResp.Tools, 25)
 
 	toolNames := make(map[string]bool)
 	toolSchemas := make(map[string]mcp.Tool)
@@ -91,6 +95,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	assert.True(t, toolNames["session_message"])
 	assert.True(t, toolNames["session_history"])
 	assert.True(t, toolNames["run_resolve"])
+	assert.True(t, toolNames["workspace_file_upload"])
 
 	// 2. workspace_create
 	result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
@@ -156,6 +161,68 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, result.IsError)
+
+	mockClient.AssertExpectations(t)
+}
+
+// TestIntegration_UploadThenMessageWithFiles exercises the Epic 67 MCP flow
+// (integration scenario I10): workspace_file_upload → session_message(files)
+// through a real in-process MCP client, with the manifest composed by the
+// shared attachments.Compose (single block dispatched — D7/D15).
+func TestIntegration_UploadThenMessageWithFiles(t *testing.T) {
+	mockClient := &MockAPIClient{}
+	srv := NewServer(mockClient, 30*time.Second)
+
+	content := []byte("quarterly numbers inside")
+	mockClient.On("UploadFile", mock.Anything, "ws-1", "notes.txt", content).
+		Return(&UploadResp{Path: uploadPathA, Name: "notes.txt", Size: int64(len(content))}, nil)
+
+	wantComposed, cerr := attachments.Compose("read the attached notes and quote the first line", []string{uploadPathA})
+	require.NoError(t, cerr)
+	mockClient.On("SendMessage", mock.Anything, "ws-1", "sess-1", wantComposed, 30*time.Second).
+		Return("first line: quarterly numbers inside", nil)
+
+	mcpClient, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer mcpClient.Close()
+
+	ctx := context.Background()
+	require.NoError(t, mcpClient.Start(ctx))
+
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "test", Version: "1.0"}
+	_, err = mcpClient.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "workspace_file_upload",
+			Arguments: map[string]any{
+				"workspace_id": "ws-1",
+				"filename":     "notes.txt",
+				"content_b64":  base64.StdEncoding.EncodeToString(content),
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, uploadPathA)
+
+	result, err = mcpClient.CallTool(ctx, mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Name: "session_message",
+			Arguments: map[string]any{
+				"workspace_id": "ws-1",
+				"session_id":   "sess-1",
+				"message":      "read the attached notes and quote the first line",
+				"files":        []string{uploadPathA},
+			},
+		},
+	})
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "quarterly numbers inside")
 
 	mockClient.AssertExpectations(t)
 }

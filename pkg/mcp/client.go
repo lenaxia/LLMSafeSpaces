@@ -55,6 +55,7 @@ type APIClient interface {
 	CreateSession(ctx context.Context, workspaceID string) (*SessionResp, error)
 	GetHistory(ctx context.Context, workspaceID, sessionID string) ([]Message, error)
 	SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error)
+	UploadFile(ctx context.Context, workspaceID, filename string, content []byte) (*UploadResp, error)
 
 	// Agent input — question & permission replies (Epic 16 US-16.6)
 	QuestionReply(ctx context.Context, workspaceID, requestID string, answers [][]string) error
