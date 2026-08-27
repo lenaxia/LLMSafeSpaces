@@ -7,21 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-08-27
+
+### Added
+
+- **Image factory: automatic release-train tracking (#1094)**: the
+  catalog default base now follows the deployed platform release
+  without operator action. When the API's build version outstrips the
+  default base row, a boot + hourly reconciler digest-resolves
+  `base:<version>` from the registry — doubling as the existence gate,
+  so unpublished tags never enter the catalog — then upserts the row
+  and moves the default in one transaction (#950 semantics). Existing
+  builds/configs are immutable; pinned configs keep their pin and
+  migrate via the base-update pill as before. Root cause: the
+  2026-08-27 investigation found the default at bookworm 0.21.2, five
+  releases stale, because nothing reconciled the catalog — the same
+  class as the 2026-08-25 incident (worklog 0821).
+- **Image factory: hash display + hash-based re-selection (#1094)**:
+  every image config now shows its schematic hash, and
+  `GET /image-factory/resolve/:hash` recovers the selection a hash
+  names plus every base version built under it (newest first; failed
+  builds excluded). Any authenticated user may resolve any hash — a
+  hash is a content address over public catalog extension IDs, and
+  builds already coalesce across scopes. The create form's "Build from
+  hash" input prefills the selection (retired extensions dropped with
+  a notice — parity with the #928 refresh prefill) and pre-targets the
+  newest built version.
+- **OpenAPI (#1090)**: org-core CRUD documented; the last org
+  spec-only allowlist block dropped — the SDK contract now covers the
+  full org surface.
+
 ### Fixed
 
-- **Git auth survives suspend/resume; decoupled from `gh`/`GH_TOKEN` (#1087)**:
-  the runtime image now points git's `credential.helper` at the
-  materialized `/home/sandbox/.git-credentials` via two layers —
-  `/etc/gitconfig` and `GIT_CONFIG_*` image ENV (the env layer survives a
-  PVC-persisted `gh auth setup-git` helper reset; validated against git
-  2.39). Cold-boot materialization from a bound `git-credential` secret is
+- **Git auth survives suspend/resume; decoupled from `gh`/`GH_TOKEN`
+  (#1087, #1096)**: the runtime image now points git's
+  `credential.helper` at the materialized
+  `/home/sandbox/.git-credentials` via two layers — `/etc/gitconfig`
+  and `GIT_CONFIG_*` image ENV (the env layer survives a PVC-persisted
+  `gh auth setup-git` helper reset; validated against git 2.39).
+  Cold-boot materialization from a bound `git-credential` secret is
   regression-gated by `cmd/workspace-agentd/git_creds_boot_test.go`
   (suspend/resume cycle) and the image-build smoke test.
 - **Bare `workspace-agentd` invocation no longer nil-panics**: the
-  admin-token assignment on the (nil, by design) server-only process was
-  the one unguarded deref (`main.go`); now guarded. Also repaired the
-  stale `local/test-entrypoint.sh` harness (sed-patched bash-materializer
-  era) to drive the real subcommands — 7/7 green.
+  admin-token assignment on the (nil, by design) server-only process
+  was the one unguarded deref (`main.go`); now guarded. Also repaired
+  the stale `local/test-entrypoint.sh` harness (sed-patched
+  bash-materializer era) to drive the real subcommands — 7/7 green.
+
+### Changed
+
+- **UI version semantics (#1094)**: image-factory versions are
+  platform releases, not Debian suite versions — cards, the base
+  picker, and update pills now read `bookworm — platform 0.25.0`
+  instead of the ambiguous `bookworm 0.25.0`.
+- **CI (#1095)**: Epic 68 attachment rows E2/E10/E11 execute in a
+  weekly single-container kind workflow.
 
 ## [0.24.0] - 2026-08-27
 
