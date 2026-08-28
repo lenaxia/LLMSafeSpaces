@@ -35,7 +35,11 @@ import (
 // platform init chain in one shot.
 func TestEnvtestPlatformInit_SpecAdmitted(t *testing.T) {
 	cfg := startEnvtest(t)
-	dyn, err := client.New(cfg, client.Options{})
+	// The client must carry the llmsafespaces scheme: client.New with
+	// empty Options gets only the client-go default scheme, which cannot
+	// marshal v1.Workspace (pre-fix: "no kind is registered for the type
+	// v1.Workspace"). testScheme registers v1 + corev1 + storagev1.
+	dyn, err := client.New(cfg, client.Options{Scheme: testScheme(t)})
 	require.NoError(t, err)
 
 	for _, tc := range []struct {
@@ -47,6 +51,16 @@ func TestEnvtestPlatformInit_SpecAdmitted(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ws := newWorkspaceForSecurity(t)
+			// buildPod derives the pod name from ws.Name + ws.UID; the
+			// fixture never passes through an API server, so its UID is
+			// empty and podName renders a trailing dash ("ws-sec-regression-")
+			// that the real API server rejects as invalid RFC 1123. Unique
+			// per subtest: both variants share the fixture name.
+			if tc.sidecar {
+				ws.UID = "11112222-3333-4444-5555-666677778888"
+			} else {
+				ws.UID = "aaaabbbb-cccc-dddd-eeee-ffffgggghhhh"
+			}
 			r := reconcilerWithAgentd(t)
 			if tc.sidecar {
 				r.AgentdSidecarEnabled = true
@@ -85,20 +99,35 @@ func TestEnvtestPlatformInit_SpecAdmitted(t *testing.T) {
 // no reason) reports as a queryable condition.
 func TestEnvtestPlatformInit_BootFailureConditionPersists(t *testing.T) {
 	cfg := startEnvtest(t)
-	dyn, err := client.New(cfg, client.Options{})
+	dyn, err := client.New(cfg, client.Options{Scheme: testScheme(t)})
 	require.NoError(t, err)
 	r := reconcilerWithAgentdSidecar(t)
 
-	ws := newWorkspaceForSecurity(t)
+	// The Workspace is created through the real API server, so it must
+	// satisfy the CRD schema (required: owner, runtime, storage) —
+	// makeWorkspace carries all three; newWorkspaceForSecurity does not.
+	ws := makeWorkspace("ws-envtest-bootfailure", "default", v1.WorkspacePhaseCreating)
+	ws.Spec.Runtime = "ghcr.io/lenaxia/llmsafespaces/runtimes/base:test"
 	require.NoError(t, dyn.Create(context.Background(), ws))
 
 	pod := makeSidecarModePod(ws, "platform-init", 1,
 		"init-fs: password source: read /mnt/secrets/password/password: no such file")
 	pod.Namespace = "default"
+	// The hand-built fixture leaves the workspace container imageless;
+	// the real API server requires an image on every container.
+	pod.Spec.Containers[0].Image = "ghcr.io/lenaxia/llmsafespaces/runtimes/base:test"
+	// Create strips the status (pods have a status subresource; envtest
+	// has no kubelet to write it) — persist the crash-loop observation
+	// through the REAL pod status subresource, as kubelet would.
+	status := pod.Status
 	require.NoError(t, dyn.Create(context.Background(), pod))
+	pod.Status = status
+	require.NoError(t, dyn.Status().Update(context.Background(), pod))
 
 	require.True(t, r.detectPlatformBootFailure(context.Background(), ws, pod))
-	require.NoError(t, r.Status().Update(context.Background(), ws))
+	// Persist through the REAL status subresource (the fake reconciler
+	// client cannot serve this test's purpose: dyn.Get reads envtest).
+	require.NoError(t, dyn.Status().Update(context.Background(), ws))
 
 	fetched := &v1.Workspace{}
 	require.NoError(t, dyn.Get(context.Background(), client.ObjectKey{Name: ws.Name, Namespace: ws.Namespace}, fetched))

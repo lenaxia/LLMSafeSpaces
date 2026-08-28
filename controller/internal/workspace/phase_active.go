@@ -197,6 +197,18 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
 	}
 
+	// Design 0053 §4.2: opencode integrity check — same semantics as the
+	// agentd detector above; exit codes 83/84 are disjoint from agentd's
+	// 81/82, so a dual-overlay pod's failure attribution never crosses
+	// artifacts.
+	if r.detectOpencodeVerificationFailure(ctx, workspace, pod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleActive_opencode_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: opencodeVerifyFailureRequeue}, nil
+	}
+
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
 			obs := observePod(pod)
@@ -215,6 +227,8 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 	// #863: overlay-mode pod observed running clean — publish the
 	// positive verification condition (idempotent).
 	r.markAgentdVerified(pod, workspace)
+	// Design 0053 §4.2: same for the opencode overlay.
+	r.markOpencodeVerified(pod, workspace)
 
 	// Pod running — check timeout.
 	if workspace.Spec.Timeout > 0 && workspace.Status.StartTime != nil {

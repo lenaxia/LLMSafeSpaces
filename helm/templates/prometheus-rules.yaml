@@ -245,6 +245,27 @@ spec:
               an observed digest matching a known agentd version indicates rollout
               drift, an unknown digest indicates tampering or corruption.
 
+        # Design 0053 §4.2: page-on-any, same semantics as the agentd
+        # counter above — one increment means a workspace supervisor
+        # refused to spawn the pinned opencode binary (rollout drift,
+        # node corruption, or tampering).
+        - alert: LLMSafeSpacesOpencodeVerificationFailed
+          expr: |
+            sum by (outcome) (increase(llmsafespaces_workspace_opencode_verify_failures_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: critical
+            component: controller
+          annotations:
+            summary: "LLMSafeSpaces opencode binary verification failed"
+            description: >-
+              {{ `{{ $labels.outcome }}` }}: a workspace supervisor refused to spawn the
+              pinned opencode binary (sha256 mismatch or missing overlay). This is a
+              should-never-fire signal. Check the workspace's OpencodeVerified condition
+              and the OpencodeVerificationFailed event (expected vs observed digest);
+              an observed digest matching a known opencode version indicates rollout
+              drift, an unknown digest indicates tampering or corruption.
+
         - alert: LLMSafeSpacesReconciliationErrors
           expr: |
             sum(rate(llmsafespaces_reconciliation_errors_total{job=~"{{ $ctrlJob }}"}[10m])) > 0.01

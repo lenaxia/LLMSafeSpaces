@@ -138,6 +138,19 @@ rules:
     resources: ["configmaps"]
     verbs: ["create"]
 {{- end }}
+{{- if .Values.controller.opencodeDelivery.image }}
+  # Design 0053 §4.2: the opencode-pins cache ConfigMap — same
+  # least-privilege shape as the agentd-pins grant above (scoped
+  # get/update + unscoped create), separate ConfigMap per artifact.
+  # Guarded by helm/opencode_delivery_chart_test.go.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["llmsafespaces-opencode-pins"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+{{- end }}
 {{- if .Values.controller.inferenceRelay.enabled }}
   # ConfigMaps + Secrets for relay router peers and WG keys
   - apiGroups: [""]

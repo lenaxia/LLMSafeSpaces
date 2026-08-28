@@ -166,6 +166,21 @@ func main() {
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
 			"supervise-opencode PID 1 in the workspace container. Requires --agentd-image. "+
 			"Default false (single-container mode, unchanged).")
+	var opencodeImage string
+	flag.StringVar(&opencodeImage, "opencode-image", "",
+		"Design 0053 §4.2: digest-pinned opencode image (ghcr.io/.../opencode@sha256:...) delivered to "+
+			"workspace pods via a read-only image volume mounted at /opencode (workspace container only). "+
+			"Empty (default) = baked-in mode (opencode stays in runtimes/base; S1 is opt-in). "+
+			"Must be digest-pinned; the supervisor verifies the binary's sha256 against the pins before spawn.")
+	var opencodeBinarySHA256AMD64 string
+	flag.StringVar(&opencodeBinarySHA256AMD64, "opencode-binary-sha256-amd64", "",
+		"Design 0053 §4.2: OPTIONAL per-image override — sha256 (64 hex) of the amd64 opencode "+
+			"binary inside --opencode-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	var opencodeBinarySHA256ARM64 string
+	flag.StringVar(&opencodeBinarySHA256ARM64, "opencode-binary-sha256-arm64", "",
+		"Design 0053 §4.2: OPTIONAL per-image override — sha256 (64 hex) of the arm64 opencode "+
+			"binary inside --opencode-image. Set BOTH hashes or NEITHER.")
 	flag.Parse()
 
 	// US-43.19 / D20: the shared secret authenticating controller→API internal
@@ -216,6 +231,32 @@ func main() {
 	if err := workspace.ValidateAgentdSidecar(agentdSidecarEnabled, agentdImage); err != nil {
 		setupLog.Error(err, "invalid agentd sidecar configuration")
 		os.Exit(1)
+	}
+
+	// Design 0053 §4.2: opencode overlay delivery — validate the same
+	// contract shape and resolve pins the same way as agentd above
+	// (independent pin and cadence by design; both artifacts on one pod
+	// must not cross-attribute verify failures — exit 83/84 vs 81/82).
+	if err := workspace.ValidateOpencodeDelivery(opencodeImage, opencodeBinarySHA256AMD64, opencodeBinarySHA256ARM64); err != nil {
+		setupLog.Error(err, "invalid opencode delivery configuration")
+		os.Exit(1)
+	}
+	if opencodeImage != "" && (opencodeBinarySHA256AMD64 == "" || opencodeBinarySHA256ARM64 == "") {
+		pinCtx, pinCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pins, err := workspace.ResolveOpencodePinsWithCache(pinCtx, opencodeImage, opencodeBinarySHA256AMD64, opencodeBinarySHA256ARM64)
+		pinCancel()
+		if err != nil {
+			if errors.Is(err, workspace.ErrOpencodePinsUnavailable) {
+				setupLog.Error(err, "opencode delivery: registry unreachable and no usable pin cache — either restore registry access or pin hashes manually via --opencode-binary-sha256-amd64/-arm64 (both)")
+			} else {
+				setupLog.Error(err, "opencode delivery: unable to resolve binary pins from image index (annotations missing or malformed) — the image is not opencode-delivery compatible, or pin hashes manually to override")
+			}
+			os.Exit(1)
+		}
+		opencodeBinarySHA256AMD64 = pins.SHA256AMD64
+		opencodeBinarySHA256ARM64 = pins.SHA256ARM64
+		setupLog.Info("opencode delivery: binary pins resolved from image index annotations",
+			"image", opencodeImage, "sha256Amd64", opencodeBinarySHA256AMD64, "sha256Arm64", opencodeBinarySHA256ARM64)
 	}
 
 	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
@@ -320,6 +361,10 @@ func main() {
 		Image:             agentdImage,
 		BinarySHA256AMD64: agentdBinarySHA256AMD64,
 		BinarySHA256ARM64: agentdBinarySHA256ARM64,
+	}, controller.OpencodeDelivery{
+		Image:             opencodeImage,
+		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
+		BinarySHA256ARM64: opencodeBinarySHA256ARM64,
 	}, agentdSidecarEnabled); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)

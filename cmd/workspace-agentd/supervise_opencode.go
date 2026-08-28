@@ -49,7 +49,7 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	//nolint:errcheck // selfExe read failure → empty hash → pin mismatch → 81
 	if err := runSupervisorSelfVerify("/proc/self/exe"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0o644) //nolint:gosec // best-effort, same as the bash log_fail
+		_ = writeTerminationLog(err.Error())
 		return supervisorExitVerifyFailed
 	}
 
@@ -70,9 +70,8 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	proc := newSupervisorProcess()
+	proc, adapter := newSupervisorProcess()
 	proc.start()
-	adapter := &managedProcAdapter{p: proc}
 
 	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
 	// (Appendix A.0) and production never sets the override — it exists
@@ -98,9 +97,10 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	return 0
 }
 
-// newSupervisorProcess builds the supervisor's managedProcess with
-// supervisor-mode flags. Extracted from runSuperviseOpencodeCommand so the
-// configuration is pinnable by test (the command itself never returns).
+// newSupervisorProcess builds the supervisor's managedProcess and its
+// control-socket adapter with supervisor-mode flags. Extracted from
+// runSuperviseOpencodeCommand so the configuration is pinnable by test
+// (the command itself never returns).
 //
 //   - onChildStarted nil: no session tracker in supervisor mode (the
 //     sidecar owns policy).
@@ -108,11 +108,19 @@ func runSuperviseOpencodeCommand(_ []string) int {
 //     readyz, and the supervisor never holds that token (D1 keeps it out
 //     of uid-1000 space). The sidecar's watchdog + the pod probes own
 //     health semantics in the split topology.
-func newSupervisorProcess() *managedProcess {
-	proc := &managedProcess{}
+//
+// Design 0053 S1: the opencode spawn base (overlay verify + binary
+// resolution) is resolved ONCE here — before the socket, before any
+// child — and shared by the process and the adapter, so a socket spawn-env
+// push wraps the SAME verified factory instead of re-resolving or
+// regressing to the PATH-lookup default. Verify failure exits 83/84 from
+// opencodeSpawnBaseFactory before this function returns.
+func newSupervisorProcess() (*managedProcess, *managedProcAdapter) {
+	base := opencodeSpawnBaseFactory()
+	proc := &managedProcess{cmdFactory: base}
 	proc.onChildStarted = nil
 	proc.skipHealthProbe = true
-	return proc
+	return proc, &managedProcAdapter{p: proc, baseCmdFactory: base}
 }
 
 // newSupervisorControlServer builds the supervisor's control socket with
@@ -135,11 +143,14 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter) (*cont
 type managedProcAdapter struct {
 	p *managedProcess
 	// baseCmdFactory builds the child the spawn-env wrapper composes on
-	// top of. Nil resolves to defaultOpencodeCmdFactory at first use
-	// (production); tests inject the fake-opencode factory so the
-	// wrapper does not silently switch the child to the production
-	// `opencode` binary (absent on CI runners — the wrapper then
-	// crash-loops a failing Start and restart blocks on upCh forever).
+	// top of. Nil resolves to the overlay-aware production base at first
+	// use (opencodeSpawnBaseFactory — legacy PATH lookup, or the
+	// sha256-verified overlay binary when OPENCODE_IMAGE_VOLUME=1);
+	// tests inject the fake-opencode factory so the wrapper does not
+	// silently switch the child to the production `opencode` binary
+	// (absent on CI runners — the wrapper then crash-loops a failing
+	// Start and restart blocks on upCh forever). Production
+	// (newSupervisorProcess) always sets it to the once-resolved base.
 	baseCmdFactory func() *exec.Cmd
 	// spawnEnv is the US-0.2(a) IPC-handed env delta: memory-only,
 	// write-only, last-write-wins. MERGED onto the base factory's env at
@@ -153,7 +164,7 @@ func (a *managedProcAdapter) factory() func() *exec.Cmd {
 	if a.baseCmdFactory != nil {
 		return a.baseCmdFactory
 	}
-	return defaultOpencodeCmdFactory
+	return opencodeSpawnBaseFactory()
 }
 
 // Restart maps the reason-enum restart onto managedProcess. In-progress-

@@ -80,6 +80,18 @@ type WorkspaceReconciler struct {
 	AgentdBinarySHA256AMD64 string
 	AgentdBinarySHA256ARM64 string
 
+	// Design 0053 §4.2 opencode overlay delivery. When OpencodeImage is
+	// set, buildPod pins a digest-addressed image volume into every
+	// workspace pod (RO mount at /opencode on the workspace container
+	// only) and the supervisor verifies the binary's sha256 against the
+	// per-arch pins before spawn. All three fields must be set together
+	// (validated at startup by validateOpencodeDeliveryConfig). Empty
+	// OpencodeImage = baked-in mode (opencode stays in runtimes/base; S1
+	// default — the feature is opt-in and inert until the base strip).
+	OpencodeImage             string
+	OpencodeBinarySHA256AMD64 string
+	OpencodeBinarySHA256ARM64 string
+
 	// AgentdSidecarEnabled (design 0051 US-2, chart-gated, default
 	// false): when true, buildPod appends the native agentd sidecar and
 	// switches the main container to supervise-opencode mode. Requires

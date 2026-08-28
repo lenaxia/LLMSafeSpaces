@@ -311,6 +311,10 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// No-op in legacy mode (AgentdImage empty).
 	r.wireAgentdOverlay(&mainContainer, &volumes)
 
+	// Design 0053 §4.2: pin the opencode image volume + RO mount + verify
+	// env pins (workspace container only). No-op when unset (S1 default).
+	r.wireOpencodeOverlay(&mainContainer, &volumes)
+
 	// Epic 51 S51.1: Runtime class resolution. Per-workspace opt-out
 	// (spec.runtimeClass) takes precedence; otherwise use the controller's
 	// DefaultRuntimeClass (typically "gvisor" in production multi-tenant).

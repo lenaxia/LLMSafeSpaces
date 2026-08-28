@@ -21,6 +21,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,9 +39,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Build the workspace-agentd binary once per test process; subsequent
-// subcommand invocations re-execute it as a real subprocess so the
-// CLI surface (flag parsing, exit codes) is exercised end-to-end.
+// The built binary is shared across every caller in the test process:
+// 39+ subcommand tests each re-linking the same sources cost ~140s of
+// wall time per suite run. Same sources ⇒ same artifact within one `go
+// test` invocation, so a single build is behaviorally identical.
+var (
+	agentdBinaryOnce sync.Once
+	agentdBinaryPath string
+
+	// agentdBinaryDirMu guards agentdBinaryDir, the one MkdirTemp dir
+	// backing the shared binary. TestMain drains it after m.Run() so the
+	// build-once optimization does not leak a directory per test process
+	// (the sharing itself is unchanged — still one build, one path).
+	agentdBinaryDirMu sync.Mutex
+	agentdBinaryDir   string
+)
+
+// cleanupAgentdTestBinary removes the shared test-binary temp dir. Called
+// from TestMain after all tests finish; a no-op when the binary was never
+// built (short mode, windows skips).
+func cleanupAgentdTestBinary() {
+	agentdBinaryDirMu.Lock()
+	defer agentdBinaryDirMu.Unlock()
+	if agentdBinaryDir != "" {
+		_ = os.RemoveAll(agentdBinaryDir)
+		agentdBinaryDir = ""
+	}
+}
+
+// Build the workspace-agentd binary once per test process; subcommand
+// invocations re-execute it as a real subprocess so the CLI surface
+// (flag parsing, exit codes) is exercised end-to-end.
 func buildAgentdBinary(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
@@ -49,12 +78,26 @@ func buildAgentdBinary(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		t.Skip("subprocess test assumes unix")
 	}
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "workspace-agentd")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
-	cmd.Stderr = os.Stderr
-	require.NoError(t, cmd.Run(), "go build failed")
-	return bin
+	agentdBinaryOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "workspace-agentd-testbin-*")
+		if err != nil {
+			panic(fmt.Sprintf("temp dir for shared test binary: %v", err))
+		}
+		agentdBinaryDirMu.Lock()
+		agentdBinaryDir = dir
+		agentdBinaryDirMu.Unlock()
+		bin := filepath.Join(dir, "workspace-agentd")
+		cmd := exec.Command("go", "build", "-o", bin, ".")
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			// Panic, not t.Fatalf: the Once must not be left consumed
+			// with an empty path for the other 38 callers, and every
+			// subprocess test is equally dead without the artifact.
+			panic(fmt.Sprintf("go build failed: %v", err))
+		}
+		agentdBinaryPath = bin
+	})
+	return agentdBinaryPath
 }
 
 // runMaterializeSubcommand runs `workspace-agentd materialize --from <path>`

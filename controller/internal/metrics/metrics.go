@@ -66,6 +66,14 @@ var (
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_agentd_verify_failures_total", Help: "Entrypoint agentd binary verification failures by outcome/node/agentd digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
 		[]string{"outcome", "node", "agentd"},
 	)
+	// Design 0053 §4.2: supervisor opencode sha256 verification
+	// failures. Same should-never-fire semantics as the agentd counter —
+	// one increment is rollout drift, corruption, or tampering with the
+	// delivered opencode binary.
+	WorkspaceOpencodeVerifyFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_opencode_verify_failures_total", Help: "Supervisor opencode binary verification failures by outcome/node/opencode digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
+		[]string{"outcome", "node", "opencode"},
+	)
 	// Design 0051 sidecar migration step 1: platform boot-phase failures
 	// (init-fs operational failure, bootstrap/materialize non-zero exit in
 	// the sidecar's boot phase or the legacy platform init containers).
@@ -207,6 +215,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
 		WorkspaceAgentdVerifyFailuresTotal,
+		WorkspaceOpencodeVerifyFailuresTotal,
 		WorkspacePlatformBootFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,

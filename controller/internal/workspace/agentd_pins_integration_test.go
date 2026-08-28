@@ -48,7 +48,7 @@ func TestFetchIndexAnnotations_LocalRegistry(t *testing.T) {
 	require.NoError(t, err)
 	ref := repoName + "@" + head.Digest.String()
 
-	ann, err := fetchIndexAnnotations(context.Background(), ref)
+	ann, err := fetchIndexAnnotations(context.Background(), agentdPinSource, ref)
 	require.NoError(t, err)
 	require.Equal(t, amd64, ann[annotationKeyAMD64])
 	require.Equal(t, arm64, ann[annotationKeyARM64])
@@ -56,12 +56,12 @@ func TestFetchIndexAnnotations_LocalRegistry(t *testing.T) {
 }
 
 func TestFetchIndexAnnotations_Unreachable(t *testing.T) {
-	_, err := fetchIndexAnnotations(context.Background(), "ghcr.invalid/agentd/x@sha256:"+repeatChars("0", 64))
+	_, err := fetchIndexAnnotations(context.Background(), agentdPinSource, "ghcr.invalid/agentd/x@sha256:"+repeatChars("0", 64))
 	require.Error(t, err)
 }
 
 func TestFetchIndexAnnotations_TagOnlyRefRejected(t *testing.T) {
-	_, err := fetchIndexAnnotations(context.Background(), "ghcr.io/lenaxia/llmsafespaces/agentd:dev")
+	_, err := fetchIndexAnnotations(context.Background(), agentdPinSource, "ghcr.io/lenaxia/llmsafespaces/agentd:dev")
 	require.Error(t, err, "annotation resolution requires a digest-pinned reference")
 	require.Contains(t, err.Error(), "digest-pinned")
 }
@@ -126,7 +126,7 @@ func TestFetchIndexAnnotations_TagPlusDigestForm(t *testing.T) {
 	require.NoError(t, err)
 	ref := repoName + ":dev@" + head.Digest.String()
 
-	ann, err := fetchIndexAnnotations(context.Background(), ref)
+	ann, err := fetchIndexAnnotations(context.Background(), agentdPinSource, ref)
 	require.NoError(t, err)
 	require.Equal(t, amd64, ann[annotationKeyAMD64])
 }

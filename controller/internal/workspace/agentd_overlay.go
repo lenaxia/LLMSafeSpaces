@@ -99,7 +99,7 @@ func (r *WorkspaceReconciler) wireAgentdOverlay(mainContainer *corev1.Container,
 		ReadOnly:  true,
 	})
 	mainContainer.Env = append(mainContainer.Env,
-		corev1.EnvVar{Name: "AGENTD_IMAGE_VOLUME", Value: "1"},
+		corev1.EnvVar{Name: agentdOverlayEnvKey, Value: "1"},
 		corev1.EnvVar{Name: "LLMSAFESPACES_AGENTD_BINARY", Value: agentdMountPath + agentdBinaryRelPath},
 		corev1.EnvVar{Name: "LLMSAFESPACES_AGENTD_SHA256_AMD64", Value: r.AgentdBinarySHA256AMD64},
 		corev1.EnvVar{Name: "LLMSAFESPACES_AGENTD_SHA256_ARM64", Value: r.AgentdBinarySHA256ARM64},
@@ -195,7 +195,7 @@ func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Contex
 	r.setCondition(ws, v1.WorkspaceConditionAgentdVerified, "False", string(reason), msg)
 
 	if !alreadyReported {
-		metricsAgentdVerifyFailures.WithLabelValues(outcome, pod.Spec.NodeName, agentdVersionLabel(r.AgentdImage)).Inc()
+		metricsAgentdVerifyFailures.WithLabelValues(outcome, pod.Spec.NodeName, digestVersionLabel(r.AgentdImage)).Inc()
 		if r.Recorder != nil {
 			r.Recorder.Eventf(ws, corev1.EventTypeWarning, string(reason),
 				"agentd verification failure (node %s, image %s, restart #%d): %s", pod.Spec.NodeName, r.AgentdImage, termToRestartCount(pod, term), msg)
@@ -226,6 +226,15 @@ func (r *WorkspaceReconciler) markAgentdVerified(pod *corev1.Pod, ws *v1.Workspa
 		"agentd binary verified against pod-spec digest pin")
 }
 
+// latestTerminatedState returns the first container status carrying a
+// terminated state. Deliberate single-attribution semantics: one
+// terminated state = one exit code = one overlay-artifact attribution
+// per failure episode. On a dual-overlay pod with two failed containers
+// in one episode, only the first is attributed — dual simultaneous
+// failure is one root cause (e.g. a node or registry outage), and the
+// second artifact's failure surfaces on the next episode after the
+// first is fixed. Do not "fix" this into a fan-out without redesigning
+// the one-condition-per-episode contract.
 func latestTerminatedState(pod *corev1.Pod) *corev1.ContainerStateTerminated {
 	for i := range pod.Status.ContainerStatuses {
 		cs := &pod.Status.ContainerStatuses[i]
@@ -258,10 +267,10 @@ func conditionOfTypeLocal(ws *v1.Workspace, ct v1.WorkspaceConditionType) *v1.Wo
 	return nil
 }
 
-// agentdVersionLabel derives a stable, low-cardinality version identity
-// from the digest-pinned image ref (the 12 hex after "sha256:"). Used as
-// a metric label so failures can be grouped per rollout.
-func agentdVersionLabel(image string) string {
+// digestVersionLabel derives a stable, low-cardinality version identity
+// from a digest-pinned image ref (the 12 hex after "sha256:"). Used as a
+// metric label so failures can be grouped per rollout.
+func digestVersionLabel(image string) string {
 	i := strings.LastIndex(image, "sha256:")
 	if i < 0 || len(image)-i-7 < 12 {
 		return "unknown"

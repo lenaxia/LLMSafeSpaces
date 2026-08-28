@@ -110,7 +110,11 @@ func TestSuperviseOpencode_SelfVerifyMismatch_Exit81(t *testing.T) {
 	emptyHash := sha256Hex(nil)
 
 	cmd := exec.Command(bin, "supervise-opencode")
-	cmd.Env = append(os.Environ(),
+	// Filtered, not raw os.Environ(): this dev workspace itself can run
+	// under an overlay (AGENTD_IMAGE_VOLUME + stale pins inherited via
+	// os.Environ() would shadow the pins under test). Same pattern as
+	// opencode_overlay_test.go's runSuperviseSubprocess.
+	cmd.Env = append(filteredEnviron(overlayEnvKeys()...),
 		"AGENTD_IMAGE_VOLUME=1",
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64="+emptyHash,
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64="+emptyHash,

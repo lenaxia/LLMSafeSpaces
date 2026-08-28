@@ -169,6 +169,32 @@ spec:
             - --agentd-binary-sha256-arm64={{ . }}
             {{- end }}
             {{- end }}
+            {{- /* Design 0053 §4.2: opencode overlay delivery (image
+                    volume). Same guards as agentdDelivery: hashes are
+                    per-image overrides (both or neither — one-sided
+                    renders fail below; hashes without an image fail).
+                    NO sidecar-style requires-image guard:
+                    opencodeDelivery does not gate agentdSidecar —
+                    independent artifacts on independent cadences.
+                    Empty-everything renders nothing (S1 opt-in). */}}
+            {{- if and (not .Values.controller.opencodeDelivery.image) (or .Values.controller.opencodeDelivery.binarySHA256Amd64 .Values.controller.opencodeDelivery.binarySHA256Arm64) }}
+            {{- fail "controller.opencodeDelivery.image is required when binarySHA256* values are set (they are per-image overrides)" }}
+            {{- end }}
+            {{- if and .Values.controller.opencodeDelivery.image (ne (len .Values.controller.opencodeDelivery.binarySHA256Amd64) 0) (eq (len .Values.controller.opencodeDelivery.binarySHA256Arm64) 0) }}
+            {{- fail "controller.opencodeDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
+            {{- end }}
+            {{- if and .Values.controller.opencodeDelivery.image (ne (len .Values.controller.opencodeDelivery.binarySHA256Arm64) 0) (eq (len .Values.controller.opencodeDelivery.binarySHA256Amd64) 0) }}
+            {{- fail "controller.opencodeDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
+            {{- end }}
+            {{- with .Values.controller.opencodeDelivery.image }}
+            - --opencode-image={{ . }}
+            {{- with $.Values.controller.opencodeDelivery.binarySHA256Amd64 }}
+            - --opencode-binary-sha256-amd64={{ . }}
+            {{- end }}
+            {{- with $.Values.controller.opencodeDelivery.binarySHA256Arm64 }}
+            - --opencode-binary-sha256-arm64={{ . }}
+            {{- end }}
+            {{- end }}
             {{- /* Epic 51 S51.2: per-tenant resource quotas. Only wired when
                     any limit is > 0; the webhook registration is conditional
                     in main.go (disabled when all are 0). */}}

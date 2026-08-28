@@ -268,6 +268,19 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
 	}
 
+	// Design 0053 §4.2: opencode integrity check in Creating as well —
+	// same first-boot/resume rationale as the agentd detector above (a
+	// bad pin exits 83/84 before the container is ever Ready). Exit
+	// codes are disjoint from agentd's, so attribution stays clean on a
+	// dual-overlay pod.
+	if r.detectOpencodeVerificationFailure(ctx, workspace, existingPod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_opencode_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: opencodeVerifyFailureRequeue}, nil
+	}
+
 	// Design 0051 sidecar migration step 1: platform boot-phase failure
 	// visibility. A crash-looping platform container (init-fs/bootstrap/
 	// materialize/sidecar boot) never becomes Ready — surface the reason
