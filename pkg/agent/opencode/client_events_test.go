@@ -93,3 +93,73 @@ func TestClientEventsFromNextTextStarted_PrimesStreamingBuffer(t *testing.T) {
 	assert.Equal(t, session.PartText, evs[0].Part.Type)
 	assert.Empty(t, evs[0].Part.Text, "empty text — the priming shape the part.end handler's empty branch expects")
 }
+
+// Unhappy paths: malformed input must degrade to nil, never panic or
+// half-emit (the tracker dispatches every raw event through here).
+func TestClientEventsFromNextTextStarted_UnhappyPaths(t *testing.T) {
+	a := NewAdapter(nil, nil, nil)
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"malformed json", `{"id":"e","type":"session.next.text.started","propert`},
+		{"empty properties", `{"id":"e","type":"session.next.text.started","properties":{}}`},
+		{"missing sessionID", `{"id":"e","type":"session.next.text.started","properties":{"assistantMessageID":"msg_2","textID":"text-0"}}`},
+		{"missing assistantMessageID", `{"id":"e","type":"session.next.text.started","properties":{"sessionID":"ses_1","textID":"text-0"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Nil(t, a.ClientEventsFromEvent("session.next.text.started", tc.raw))
+		})
+	}
+}
+
+// TestV2TurnSequence_LiveStreamingOrder pins the ordering property the
+// fix exists for: within one V2 text block the priming part.end
+// (text.started) precedes the deltas carrying the same PartID, so the
+// frontend's mode routing (user-echo → discard) flips to "text" BEFORE
+// any delta arrives. This is the regression shape of the #1110
+// post-merge gap: prompted → delta with no priming between them.
+func TestV2TurnSequence_LiveStreamingOrder(t *testing.T) {
+	a := NewAdapter(nil, nil, nil)
+
+	prompted := `{"id":"e1","type":"session.next.prompted","properties":{"sessionID":"ses_1","messageID":"msg_u","prompt":{"text":"queued hello"}}}`
+	started := `{"id":"e2","type":"session.next.text.started","properties":{"sessionID":"ses_1","assistantMessageID":"msg_a","textID":"text-0"}}`
+	delta1 := `{"id":"e3","type":"session.next.text.delta","properties":{"sessionID":"ses_1","assistantMessageID":"msg_a","textID":"text-0","delta":"Hello "}}`
+	delta2 := `{"id":"e4","type":"session.next.text.delta","properties":{"sessionID":"ses_1","assistantMessageID":"msg_a","textID":"text-0","delta":"world"}}`
+	ended := `{"id":"e5","type":"session.next.text.ended","properties":{"sessionID":"ses_1","assistantMessageID":"msg_a","textID":"text-0","text":"Hello world"}}`
+
+	type step struct {
+		typ    session.EventType
+		partID string
+		delta  string
+	}
+	var seq []step
+	for _, tc := range []struct {
+		eventType string
+		raw       string
+	}{
+		{"session.next.prompted", prompted},
+		{"session.next.text.started", started},
+		{"session.next.text.delta", delta1},
+		{"session.next.text.delta", delta2},
+		{"session.next.text.ended", ended},
+	} {
+		for _, ev := range a.ClientEventsFromEvent(tc.eventType, tc.raw) {
+			seq = append(seq, step{typ: ev.Type, partID: ev.PartID, delta: ev.Delta})
+		}
+	}
+
+	require.Len(t, seq, 5)
+	// 1: user echo; 2: priming part.end (empty text, assistant slot);
+	// 3-4: deltas on the SAME slot; 5: final snapshot.
+	assert.Equal(t, session.EventPartEnd, seq[0].typ, "the prompted user echo")
+	assert.Equal(t, session.EventPartEnd, seq[1].typ, "the priming event is a part.end")
+	assert.Equal(t, "text-0", seq[1].partID)
+	assert.Equal(t, session.EventPartDelta, seq[2].typ)
+	assert.Equal(t, "text-0", seq[2].partID, "deltas route to the primed slot")
+	assert.Equal(t, "Hello ", seq[2].delta)
+	assert.Equal(t, session.EventPartDelta, seq[3].typ)
+	assert.Equal(t, session.EventPartEnd, seq[4].typ)
+	assert.Equal(t, "text-0", seq[4].partID)
+}

@@ -267,8 +267,8 @@ func clientEventsFromNextTextStarted(rawData string) []session.Event {
 		AssistantMessageID string `json:"assistantMessageID"`
 		TextID             string `json:"textID"`
 	}
-	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" {
-		return nil
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" || p.AssistantMessageID == "" {
+		return nil // without the assistant message there is nothing to prime
 	}
 	return []session.Event{{
 		Type:      session.EventPartEnd,
