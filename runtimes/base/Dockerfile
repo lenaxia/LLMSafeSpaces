@@ -45,16 +45,24 @@ FROM debian:bookworm-slim
 ARG TARGETARCH
 
 # Override to use a different release: --build-arg OPENCODE_VERSION=<version>
-# Pinned to 1.18.10 (July 2026) — validated against the proxy code in
-# api/internal/handlers/proxy.go and session_tracker.go. The v1.15.12→v1.18.10
+# Pinned to 1.18.15 (Aug 2026) — validated against the proxy code in
+# api/internal/handlers/proxy.go and session_tracker.go. The 1.18.10→1.18.15
 # upgrade preserves every legacy/v1 HTTP route, auth scheme, SSE envelope, and
 # config-schema shape LLMSafeSpaces depends on (verified by upstream source
-# diff at both tags). See worklog 0657 for the full impact analysis.
-# Notable upstream changes since 1.15.12: new "current/V2" HTTP API served
-# alongside legacy (additive, not breaking), MCP hardening (v1.18.8/1.18.9),
-# per-session event stream, server-managed integration/credential store,
-# published OpenAPI spec at packages/sdk/openapi.json.
-ARG OPENCODE_VERSION=1.18.10
+# diff at both tags: packages/schema and packages/opencode/src/config have
+# ZERO commits in the range; V1 routes untouched).
+# Why 1.18.15: it is the first release containing the upstream V2 queue-drain
+# fixes (#40990 order legacy message loop by time / #40991 chronological
+# message boundaries) — the root cause of our #755 (V2 queue admits but never
+# drains correctly; on 1.18.10 the loop re-answers a stale prior message).
+# Empirically re-verified 2026-08-27 against both binaries with a local mock
+# provider: 1.18.10 mis-binds queued turns, 1.18.15 drains FIFO with correct
+# texts. V1-only wiring is byte-identical in behavior.
+# DO NOT bump into v1.18.16–v1.18.18: that window contains a projector/DB
+# change that breaks v1-format session databases (fixed only in v1.18.19 by
+# upstream #42444) — existing pod session volumes would traverse the broken
+# migration. Jump .15 → .19+ in one hop if a later bump is ever needed.
+ARG OPENCODE_VERSION=1.18.15
 
 ARG MISE_VERSION=2026.5.15
 

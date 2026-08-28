@@ -1176,7 +1176,12 @@ func TestAdapterContextUsageFromEvent(t *testing.T) {
 	})
 
 	t.Run("golden fixture step-finish events all decode", func(t *testing.T) {
-		for _, fixture := range []string{"testdata/sse_events_1_18_10_live.jsonl", "testdata/event_store_1_18_10.jsonl"} {
+		for _, fixture := range []string{
+			"testdata/sse_events_1_18_10_live.jsonl",
+			"testdata/event_store_1_18_10.jsonl",
+			"testdata/sse_events_1_18_15_live.jsonl",
+			"testdata/event_store_1_18_15.jsonl",
+		} {
 			data, err := os.ReadFile(fixture)
 			require.NoError(t, err)
 			decoded, total := 0, 0
