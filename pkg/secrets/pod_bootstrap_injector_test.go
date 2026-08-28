@@ -3,24 +3,29 @@
 
 package secrets
 
-// pod_bootstrap_injector_test.go — unit tests for InjectSecretsForPodBootstrap
-// (design/0045_2026-07-06_boot-time-user-dek-delivery.md Change 1).
+// pod_bootstrap_injector_test.go — unit tests for InjectSecretsForPodBootstrap.
 //
-// The method attempts a best-effort user-DEK unwrap via GetDEKForUser and,
-// on success, delegates to InjectSecrets so user-DEK bindings are included
-// in the payload. On failure it degrades to InjectSessionlessSecrets.
+// Contract under test ("if the pod exists, it has its secrets"): the
+// bootstrap payload includes user-DEK bindings whenever the master
+// RootKeyProvider can unwrap the owner's user_keys record — with NO
+// dependence on jwt_sessions state. The former GetDEKForUser session
+// walk is no longer consulted by this path at all.
 //
 // Test coverage:
 //
-//   - nil KeyService                              → degrades to sessionless
-//   - KeyService with no jwt_sessions store       → degrades to sessionless
-//   - KeyService + empty jwt_sessions table       → degrades to sessionless
-//   - KeyService + valid jwt_sessions row          → delivers user-DEK secrets
-//   - KeyService + valid row but wrong signing key → degrades (unwrap fails)
-//   - KeyService + expired jwt_sessions row       → degrades (row filtered)
+//   - nil KeyService                        → degrades to sessionless
+//   - KeyService without RootKeyProvider    → degrades to sessionless
+//   - no user_keys record                   → degrades to sessionless
+//     (owner has no DEK-encrypted secrets; nothing is missing)
+//   - no jwt_sessions store wired           → DELIVERS user secrets
+//   - empty jwt_sessions table              → DELIVERS user secrets
+//   - only unwrappable jwt_sessions rows    → DELIVERS user secrets
+//     (rotated-out signing keys are irrelevant to the server unwrap)
+//   - happy path                            → DELIVERS user secrets
 //
-// The tests exercise the exact composition InjectSecretsForPodBootstrap
-// makes: GetDEKForUser(userID) → InjectSecrets(userID, jti, nil, workspaceID).
+// The session-independence rows are the #1087 regression gates: a
+// suspend/resume that outlives every jwt_sessions row must not strip
+// the workspace's bound credentials.
 
 import (
 	"context"
@@ -32,153 +37,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless
-// asserts that when the SecretService was constructed with keys=nil (a
-// legitimate test wiring), the pod-bootstrap path does not panic and
-// returns the same payload InjectSessionlessSecrets would.
-func TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless(t *testing.T) {
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(nil, secretStore)
-
+// bindGHTokenEnvSecret creates and binds a user-DEK env-secret (the
+// exact class of secret that vanished on resume in the #1087 incident)
+// to workspace ws-1 for user-1, using the authenticated session the
+// fixture established.
+func bindGHTokenEnvSecret(t *testing.T, svc *SecretService, sessionID string) {
+	t.Helper()
 	ctx := context.Background()
-	data, err := svc.InjectSecretsForPodBootstrap(ctx, "user-1", "ws-1")
-	require.NoError(t, err,
-		"nil KeyService must degrade cleanly to sessionless behavior, not panic")
-
-	// Same payload as InjectSessionlessSecrets would produce for an
-	// empty workspace: an empty secrets array.
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
-	assert.Empty(t, injected,
-		"empty workspace with nil KeyService yields no secrets")
-}
-
-// TestInjectSecretsForPodBootstrap_NoJWTSessions_DegradesToSessionless
-// asserts that a KeyService without a wired JWTSessionStore (pre-Epic-56
-// deploys, some test paths) degrades cleanly. GetDEKForUser returns
-// ErrDEKUnavailable in this case (key_service.go:643).
-func TestInjectSecretsForPodBootstrap_NoJWTSessions_DegradesToSessionless(t *testing.T) {
-	keyStore := newMockKeyStore()
-	dekCache := newMockDEKCache()
-	keySvc := NewKeyService(keyStore, dekCache) // no SetJWTSessionStore
-	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
-
-	ctx := context.Background()
-	data, err := svc.InjectSecretsForPodBootstrap(ctx, "user-1", "ws-1")
-	require.NoError(t, err,
-		"unwired JWTSessionStore must not fail the bootstrap call — degrades to sessionless")
-
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
-	assert.Empty(t, injected)
-}
-
-// TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DegradesToSessionless
-// asserts the "user has no active sessions" case: JWTSessionStore is wired
-// but returns zero rows for the user. GetDEKForUser returns
-// ErrDEKUnavailable (key_service.go:652).
-func TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DegradesToSessionless(t *testing.T) {
-	keyStore := newMockKeyStore()
-	dekCache := newMockDEKCache()
-	keySvc := NewKeyService(keyStore, dekCache)
-	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
-	keySvc.SetJWTSessionStore(newMockJWTSessionStore()) // empty
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
-
-	// SecretService also needs SigningKeyEnumerator for GetDEKForUser to
-	// exercise the unwrap loop; without it, GetDEKForUser returns
-	// ErrDEKUnavailable at the guard (key_service.go:643).
-	keySvc.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("test-key")}})
-
-	ctx := context.Background()
-	data, err := svc.InjectSecretsForPodBootstrap(ctx, "user-1", "ws-1")
-	require.NoError(t, err,
-		"empty jwt_sessions rows must degrade to sessionless")
-
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
-	assert.Empty(t, injected)
-}
-
-// TestInjectSecretsForPodBootstrap_UnwrappableRow_DegradesToSessionless
-// asserts that a jwt_sessions row wrapped under a signing key NOT in the
-// enumerator's list degrades cleanly. This exercises the
-// tryUnwrapRowWithKnownKeys failure path (key_service.go:676) — every
-// row iterated, none unwrappable → ErrDEKUnavailable.
-func TestInjectSecretsForPodBootstrap_UnwrappableRow_DegradesToSessionless(t *testing.T) {
-	fixture := newGetDEKForUserFixture(t)
-	// Row wrapped under a key the enumerator doesn't know about.
-	fixture.addSession(t, []byte("original-signing-key"), fixture.baseTs, fixture.baseTs.Add(time.Hour))
-
-	// Enumerator returns a different key.
-	fixture.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("different-signing-key")}}
-
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(fixture.svc, secretStore)
-
-	ctx := context.Background()
-	data, err := svc.InjectSecretsForPodBootstrap(ctx, fixture.userID, "ws-1")
-	require.NoError(t, err,
-		"unwrappable jwt_sessions rows must degrade to sessionless — a rotated-out signing key must not fail pod boot")
-
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
-	assert.Empty(t, injected)
-}
-
-// TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets
-// is the positive test: a valid jwt_sessions row + matching signing key +
-// bound user-DEK secret. The method must unwrap successfully and include
-// the user secret in the payload — the whole point of the design 0045 fix.
-func TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets(t *testing.T) {
-	// Use the full setup fixture so we have a real SecretService with a
-	// user, session, and password already established.
-	svc, _, sessionID := setupSecretService(t)
-	ctx := context.Background()
-
-	// Bind a user-DEK env-secret to the workspace. This is the class of
-	// secret that was permanently missing on cold-boot before design 0045.
 	s, err := svc.CreateSecret(ctx, "user-1", sessionID, nil, CreateSecretRequest{
 		Name:     "gh-token",
 		Type:     SecretTypeEnvSecret,
 		Value:    "ghp_test_token_value",
 		Metadata: json.RawMessage(`{"var_name":"GH_TOKEN"}`),
 	})
-	require.NoError(t, err)
+	require.NoError(t, err, "CreateSecret must succeed under the fixture session")
 	_, err = svc.SetBindings(ctx, "user-1", "ws-1", []string{s.ID})
-	require.NoError(t, err)
+	require.NoError(t, err, "SetBindings must bind the env-secret to ws-1")
+}
 
-	// Now write a jwt_sessions row for user-1 so GetDEKForUser can find
-	// and unwrap it. This mirrors what a real login would do.
-	//
-	// setupSecretService uses UnlockDEK (no jwt_sessions write). We need
-	// UnlockDEKWithSigningKey to persist a row. Do that now.
-	jwtStore := newMockJWTSessionStore()
-	svc.keys.SetJWTSessionStore(jwtStore)
-	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("test-signing-key")}})
-
-	// Use a UUID for the sessionID so UnlockDEKWithSigningKey persists to jwt_sessions.
-	uuidSessionID := "550e8400-e29b-41d4-a716-446655440000"
-	err = svc.keys.UnlockDEKWithSigningKey(ctx, "user-1", []byte("test-password"), uuidSessionID, time.Hour, []byte("test-signing-key"))
-	require.NoError(t, err, "UnlockDEKWithSigningKey must succeed to seed the jwt_sessions row")
-	require.NotZero(t, jwtStore.WriteCount, "jwt_sessions row must have been persisted")
-
-	// Clear the Redis cache under the original sessionID so
-	// InjectSecretsForPodBootstrap has to do the actual unwrap via
-	// GetDEKForUser (not hit the cache from setupSecretService's
-	// UnlockDEK). This isolates the test to the bootstrap unwrap path.
-	require.NoError(t, svc.keys.cache.EvictDEK(ctx, sessionID))
-
-	// Call the method under test.
-	data, err := svc.InjectSecretsForPodBootstrap(ctx, "user-1", "ws-1")
-	require.NoError(t, err,
-		"InjectSecretsForPodBootstrap must succeed when jwt_sessions has an unwrappable row")
-
-	// The user-DEK env-secret MUST be in the payload — the whole design
-	// 0045 fix.
+// assertGHTokenDelivered asserts the payload contains the env-secret
+// with its plaintext intact — the round-trip proof through the
+// server-side DEK unwrap.
+func assertGHTokenDelivered(t *testing.T, data []byte) {
+	t.Helper()
 	var injected []InjectedSecret
 	require.NoError(t, json.Unmarshal(data, &injected))
 
@@ -191,5 +72,121 @@ func TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSec
 		}
 	}
 	assert.True(t, found,
-		"user-DEK env-secret MUST appear in bootstrap payload after design 0045 Change 1 — this is the entire point of the fix")
+		"user-DEK env-secret MUST appear in bootstrap payload — a pod that exists has its secrets")
+}
+
+// assertSessionlessEmpty asserts the degrade shape: no error, empty
+// payload for an empty workspace.
+func assertSessionlessEmpty(t *testing.T, data []byte, err error) {
+	t.Helper()
+	require.NoError(t, err, "bootstrap degrade must never fail the call")
+	var injected []InjectedSecret
+	require.NoError(t, json.Unmarshal(data, &injected))
+	assert.Empty(t, injected)
+}
+
+// TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless
+// asserts that when the SecretService was constructed with keys=nil (a
+// legitimate test wiring), the pod-bootstrap path does not panic and
+// returns the same payload InjectSessionlessSecrets would.
+func TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless(t *testing.T) {
+	secretStore := newMockSecretStore()
+	svc := NewSecretService(nil, secretStore)
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	assertSessionlessEmpty(t, data, err)
+}
+
+// TestInjectSecretsForPodBootstrap_NoRootProvider_DegradesToSessionless
+// asserts the wiring guard: a KeyService whose RootKeyProvider was never
+// set cannot unwrap server-side, so the call degrades cleanly instead of
+// panicking or failing the boot.
+func TestInjectSecretsForPodBootstrap_NoRootProvider_DegradesToSessionless(t *testing.T) {
+	keySvc := NewKeyService(newMockKeyStore(), newMockDEKCache()) // no SetAPIKeyStore
+	secretStore := newMockSecretStore()
+	svc := NewSecretService(keySvc, secretStore)
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	assertSessionlessEmpty(t, data, err)
+}
+
+// TestInjectSecretsForPodBootstrap_NoUserKeyRecord_DegradesToSessionless
+// asserts the "owner never created secrets" case: no user_keys row means
+// no DEK-encrypted bindings exist, so the sessionless payload is already
+// complete — the degrade is a no-op in content terms.
+func TestInjectSecretsForPodBootstrap_NoUserKeyRecord_DegradesToSessionless(t *testing.T) {
+	keySvc := NewKeyService(newMockKeyStore(), newMockDEKCache())
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{}) // rootKeyProvider wired, but no InitializeUserKeysServerKEK
+	secretStore := newMockSecretStore()
+	svc := NewSecretService(keySvc, secretStore)
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	assertSessionlessEmpty(t, data, err)
+}
+
+// TestInjectSecretsForPodBootstrap_NoJWTSessions_DeliversUserSecrets is
+// the core #1087 regression gate: no JWTSessionStore wired at all
+// (pre-Epic-56 shape, or a resume where every session row expired) —
+// the bound env-secret still delivers via the server-side unwrap.
+func TestInjectSecretsForPodBootstrap_NoJWTSessions_DeliversUserSecrets(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+	// Deliberately NO SetJWTSessionStore / SetSigningKeyEnumerator.
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assertGHTokenDelivered(t, data)
+}
+
+// TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DeliversUserSecrets
+// asserts delivery when the jwt_sessions table is wired but has zero
+// rows for the user — the exact state a suspend/resume leaves when the
+// owner's sessions TTL'd out mid-suspend.
+func TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DeliversUserSecrets(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+	svc.keys.SetJWTSessionStore(newMockJWTSessionStore()) // wired, empty
+	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("test-signing-key")}})
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assertGHTokenDelivered(t, data)
+}
+
+// TestInjectSecretsForPodBootstrap_UnwrappableRows_DeliversUserSecrets
+// asserts delivery when the only jwt_sessions rows are wrapped under
+// signing keys outside the enumerator's retention window — under the old
+// GetDEKForUser path this degraded to sessionless; the server-side
+// unwrap must not care.
+func TestInjectSecretsForPodBootstrap_UnwrappableRows_DeliversUserSecrets(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+
+	jwtStore := newMockJWTSessionStore()
+	svc.keys.SetJWTSessionStore(jwtStore)
+	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("enumerator-knows-this")}})
+
+	// Seed a durable row wrapped under a signing key the enumerator
+	// does NOT know — hostile session state by construction.
+	err := svc.keys.UnlockDEKWithSigningKey(context.Background(), "user-1", nil,
+		"550e8400-e29b-41d4-a716-446655440001", time.Hour, []byte("rotated-out-signing-key"))
+	require.NoError(t, err, "seeding the hostile jwt_sessions row must succeed")
+	require.NotZero(t, jwtStore.WriteCount, "hostile jwt_sessions row must exist")
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assertGHTokenDelivered(t, data)
+}
+
+// TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets
+// is the plain positive path: keys initialized, secret bound, no session
+// machinery involved whatsoever.
+func TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+
+	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err,
+		"InjectSecretsForPodBootstrap must succeed via the server-side unwrap")
+	assertGHTokenDelivered(t, data)
 }
