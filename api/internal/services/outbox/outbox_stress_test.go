@@ -66,7 +66,15 @@ func shrinkStormTimers(t *testing.T) {
 	MaxVerifyBackoff = time.Millisecond
 	RetryBackoff = time.Millisecond
 	MaxBackoff = time.Millisecond
-	LockTTL = 50 * time.Millisecond // must still exceed DeliveryTimeout
+	// Must exceed not just DeliveryTimeout but the WHOLE deliverOne
+	// critical section under scheduler noise — staging + deliver +
+	// bookkeeping + (same lock hold) verify. 50ms was enough on quiet
+	// dev machines but CI runners routinely stall goroutines past it:
+	// the lock expires mid-iteration, the second replica's worker
+	// acquires it, and the same entry double-fires OnDelivered (observed
+	// on the 1.18.15 bump PR's race-detector run). 50× the delivery
+	// bound mirrors production's generous LockTTL/DeliveryTimeout ratio.
+	LockTTL = 500 * time.Millisecond
 	t.Cleanup(func() {
 		DeliveryTimeout, VerifyDelay, VerifyBackoff, MaxVerifyBackoff = orig[0], orig[1], orig[2], orig[3]
 		RetryBackoff, MaxBackoff, LockTTL = orig[4], orig[5], orig[6]
