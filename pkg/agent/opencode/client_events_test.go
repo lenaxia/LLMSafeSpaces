@@ -73,9 +73,23 @@ func TestClientEventsFromNextIgnoredTypes(t *testing.T) {
 	for _, et := range []string{
 		"session.next.prompt.admitted",
 		"session.next.step.started",
-		"session.next.text.started",
 	} {
 		assert.Nil(t, a.ClientEventsFromEvent(et, `{"id":"e","type":"`+et+`","properties":{"sessionID":"s"}}`),
 			"%s carries no client-facing signal", et)
 	}
+}
+
+// The prompted echo leaves the frontend buffer in "user-echo" (discard
+// deltas); text.started must flip it back to "text" via an empty-text
+// part.end, or a V2 turn's content appears only at text.ended.
+func TestClientEventsFromNextTextStarted_PrimesStreamingBuffer(t *testing.T) {
+	a := NewAdapter(nil, nil, nil)
+	raw := `{"id":"evt_5","type":"session.next.text.started","properties":{"sessionID":"ses_1","assistantMessageID":"msg_2","timestamp":"2026-08-27T23:38:05.048Z","textID":"text-0"}}`
+	evs := a.ClientEventsFromEvent("session.next.text.started", raw)
+	require.Len(t, evs, 1)
+	assert.Equal(t, session.EventPartEnd, evs[0].Type)
+	assert.Equal(t, "msg_2", evs[0].MessageID)
+	require.NotNil(t, evs[0].Part)
+	assert.Equal(t, session.PartText, evs[0].Part.Type)
+	assert.Empty(t, evs[0].Part.Text, "empty text — the priming shape the part.end handler's empty branch expects")
 }

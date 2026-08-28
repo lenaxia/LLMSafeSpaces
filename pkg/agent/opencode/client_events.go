@@ -55,6 +55,8 @@ func (a *Adapter) ClientEventsFromEvent(eventType string, rawData string) []sess
 		return clientEventsFromError(eventType, rawData)
 	case eventType == "session.next.text.delta":
 		return clientEventsFromNextTextDelta(rawData)
+	case eventType == "session.next.text.started":
+		return clientEventsFromNextTextStarted(rawData)
 	case eventType == "session.next.text.ended":
 		return clientEventsFromNextTextEnded(rawData)
 	case eventType == "session.next.prompted":
@@ -243,6 +245,38 @@ func clientEventsFromError(eventType string, rawData string) []session.Event {
 		Timestamp: time.Now().UTC(),
 		SessionID: p.SessionID,
 		Error:     &session.Error{Code: code, Message: msg},
+	}}
+}
+
+// clientEventsFromNextTextStarted translates the V2 text-block start
+// into a MODE-FLIPPING part.end: the frontend routes part.delta events
+// by the mode the last part.end set, and the preceding prompted echo
+// leaves it in "user-echo" (discard). An empty assistant text part.end
+// primes the streaming buffer ("text" mode + the part slot), so the
+// following deltas append live — without this, a V2 turn's text would
+// appear only at text.ended. The empty-text branch of the part.end
+// handler exists for exactly this priming shape (it appends an empty
+// text part and records the slot index).
+func clientEventsFromNextTextStarted(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID          string `json:"sessionID"`
+		AssistantMessageID string `json:"assistantMessageID"`
+		TextID             string `json:"textID"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" {
+		return nil
+	}
+	return []session.Event{{
+		Type:      session.EventPartEnd,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		MessageID: p.AssistantMessageID,
+		PartID:    p.TextID,
+		Part:      &session.Part{Type: session.PartText, ID: p.TextID, Text: ""},
 	}}
 }
 
