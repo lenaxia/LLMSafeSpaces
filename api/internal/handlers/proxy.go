@@ -126,6 +126,12 @@ type ProxyHandler struct {
 	// under V2). Set via SetV2QueueShadow before Start().
 	v2Shadow *V2QueueShadow
 
+	// v2Delivery routes outbox delivery through the V2 admit-and-return
+	// prompt endpoint (design 0052, OPENCODE_V2_DELIVERY). When on, the
+	// adapter MUST also read the V2 store (WithV2Store) — delivery
+	// completes at admission instead of turn completion.
+	v2Delivery bool
+
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
 	requestBuffer *requestBuffer

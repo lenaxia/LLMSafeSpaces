@@ -41,6 +41,9 @@ type fakeAgentBackend struct {
 		created time.Time
 	}
 	posts int
+	// admits counts POST /api/session/:sid/prompt hits (the V2
+	// admit-and-return path, design 0052).
+	admits int
 	// stall makes each POST /message sleep past the (test-shrunk)
 	// DeliveryTimeout before responding 200 — the send outcome goes
 	// ambiguous while the message IS persisted up front (opencode's
@@ -57,6 +60,25 @@ type fakeAgentBackend struct {
 }
 
 func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// V2 admit-and-return (design 0052): persist immediately, answer
+	// with the admission envelope — no turn blocking.
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/prompt") {
+		var body struct {
+			Prompt struct {
+				Text string `json:"text"`
+			} `json:"prompt"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.admits++
+		seq := f.admits
+		f.persist(body.Prompt.Text)
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":{"admittedSeq":%d,"id":"msg_v2_%d","sessionID":"ses_1","prompt":{"text":%s},"delivery":"queue","timeCreated":%d}}`,
+			seq, seq, quoteJSON(body.Prompt.Text), time.Now().UnixMilli())
+		return
+	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message") {
 		var body struct {
 			Parts []struct {
@@ -303,3 +325,35 @@ func TestOutboxVerify_HTTPRejectionIsDefinitive(t *testing.T) {
 }
 
 var _ = context.Background // keep context import if unused by future edits
+
+// TestOutboxDeliver_V2AdmissionCompletesAtPickup (design 0052): with
+// SetV2Delivery on, one worker pass admits via the V2 prompt endpoint
+// and the entry completes IMMEDIATELY — no verifying round, no V1 sync
+// POST, queue.update/sent fired at pickup instead of at turn end.
+func TestOutboxDeliver_V2AdmissionCompletesAtPickup(t *testing.T) {
+	shrinkOutboxTimers(t)
+	backend := &fakeAgentBackend{persistFirst: true}
+	env := newVerifyEnv(t, backend)
+	env.handler.SetV2Delivery(true)
+	events := subscribeQueueUpdates(t, env)
+
+	w := postPrompt(t, env, `{"clientMessageID":"cm-v2","parts":[{"type":"text","text":"v2 admission"}]}`)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	assert.Empty(t, listOutbox(t, env), "V2 admission completes the entry in one pass — no verifying round")
+
+	backend.mu.Lock()
+	admits, posts := backend.admits, backend.posts
+	backend.mu.Unlock()
+	assert.Equal(t, 1, admits, "exactly one V2 admission POST")
+	assert.Zero(t, posts, "the V1 turn-blocking sync send must NOT be used in V2 mode")
+
+	select {
+	case e := <-events:
+		data, _ := json.Marshal(e.Data)
+		assert.Contains(t, string(data), `"sent"`, "queue.update/sent fires at pickup on the V2 path")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no queue.update/sent emitted on V2 admission")
+	}
+}
