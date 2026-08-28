@@ -149,6 +149,50 @@ Three lessons, all architectural:
    while it still exists), re-wrap at the active version, audit the heal;
    rows that recover from nothing are surfaced as alerts with per-user
    "key unwrappable" state — never silently labeled.
+   **Blast-radius safety (fleet-wide key corruption is the worst outcome
+   this program can produce; a bad re-wrap loses the DEK and every secret
+   encrypted under it):**
+   - **Verify-after-write**: decrypt the new wrap with the target provider
+     BEFORE replacing the old one; a wrap that does not round-trip is never
+     committed.
+   - **Retain the previous wrap**: the old `wrapped_dek` is preserved
+     (audit row / shadow column, time-boxed, e.g. 30 days) so a bad heal
+     is reversible, not a lockout.
+   - **Staged rollout**: reconcile in batches (oldest rows first — they are
+     the highest-risk), with a convergence metric; a spike in
+     verify-after-write failures halts further batches.
+   - **Source agreement**: when the recovery DEK comes from a session
+     source (K1/K2), verify it decrypts at least one existing secret for
+     that user before re-wrapping the row — defense against a corrupt
+     cache poisoning the durable row.
+6. **Revocation** (force-delete everywhere). A revoked secret is unbound
+   from every workspace server-side (a single secret-level operation, not
+   N per-workspace unbinds) and the revision bumps; live pods re-pull a
+   batch that no longer contains it; **offline/suspended workspaces need
+   no tombstone** — materialization is rebuild-from-server on every boot
+   (`reset()` wipes tmpfs, the fresh batch simply omits the secret) and
+   US-35.7 guarantees no PVC residue. Absence IS the delete. The only
+   latency is "until the pod next pulls" (notify for live, boot for
+   suspended) — which is the same eventual-consistency envelope as every
+   other change in this design.
+7. **agentd MCP tool: `secrets_resync`** — lets the in-workspace agent (or
+   an operator via the session) trigger a re-materialization on demand.
+   Tonight's incident is the motivating case: the agent noticed missing
+   credentials and had to ask a human to unbind/rebind in a settings UI,
+   while the fix (re-pull) was one authenticated call away. Contract:
+   - Inputs: none. **No batch body is ever accepted** — the tool triggers
+     a pull through agentd's own SA-token/pod-bootstrap channel; it cannot
+     inject or synthesize credential material (the 0050 finding-3
+     integrity rule, preserved).
+   - Output: materialization outcome + current revision stamp.
+   - Rate-limited with backoff+jitter (shares the pull budget with
+     notify-reconciliation; a loop-spamming agent must not self-DDoS the
+     API).
+   - Prerequisite: agentd holds a readable projected SA token for the
+     pod's lifetime (kubelet rotates the 600s audience token in place;
+     agentd reads it fresh per pull) — today the token volume is wired to
+     the bootstrap init container only; Phase 3 must extend the mount to
+     the agentd sidecar/container.
 
 ## 5. Sequencing (each phase independently shippable)
 
@@ -174,10 +218,15 @@ incident class immediately)
 - Bind/unbind/rotate → revision bump + agentd notify; agentd re-pull via SA
   token (read fresh per pull, §4.3). Delete `last-reload-secrets.json` and
   the reload handoff machinery it supported.
+- Extend the projected SA token mount from the bootstrap init container to
+  the agentd runtime (§4.7 prerequisite); land the `secrets_resync` MCP
+  tool and the secret-level force-revoke (unbind-everywhere) operation.
 - Acceptance: rebind round-trip with no push payload; container restart
   re-materializes by pull (regression: the #443 scenario, now by design);
   a pull against an expired audience token recovers (kubelet rotation
-  re-read), verified by a delayed-pull test.
+  re-read), verified by a delayed-pull test; revoke → live pod drops the
+  secret without restart, suspended pod boots without it; `secrets_resync`
+  round-trips from an in-workspace agent with no human in the loop.
 
 **Phase 4 — demolition**
 - Delete K2 (`rehydrateDEKFromJWTSession`), K3 (`GetDEKForUser` walk — after
