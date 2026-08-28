@@ -126,11 +126,23 @@ Three lessons, all architectural:
    bump a server-side revision and notify the pod's agentd (existing
    authenticated channel), which re-pulls. D1-as-push, D4 cache, and D5
    autopush die together: a pod that can always re-pull from the source of
-   truth needs no replay cache and no presence heuristics.
-4. **Revision stamps.** Every build carries a content hash; agentd stamps the
-   materialized revision (observable in status/healthz). "Is the pod current?"
-   becomes a comparison, replacing `UserCredsPresent`'s cache-file existence
-   check.
+   truth needs no replay cache and no presence heuristics. The re-pull MUST
+   read the projected SA token file fresh on every pull — the bootstrap
+   token is audience-scoped with a short TTL (600s) that the kubelet rotates
+   in place; caching it at boot would make notify-pull fail hours later.
+4. **Revision stamps + live-pod reconciliation** (D5's replacement — the
+   self-heal loop). Every build carries a content hash computed over a
+   CANONICAL serialization (sorted keys — map iteration order must not
+   manufacture phantom revisions); agentd stamps the materialized revision
+   and reports it in healthz. The server tracks the expected revision per
+   workspace; a controller/API scrape-and-compare (the existing
+   scrape-and-mirror pattern) re-notifies on mismatch. This closes the
+   transient-degrade hole: a live pod whose pull failed mid-flight (API
+   500, Redis outage) with no subsequent binding change would otherwise
+   stay degraded forever — nothing would ever notify it again once D5 is
+   demolished. Reconciliation makes retry unconditional on mismatch, not
+   contingent on user action. `UserCredsPresent`'s cache-file existence
+   heuristic dies here, replaced by the revision comparison.
 5. **Re-wrap reconciler** (login-independent): startup + periodic walk of
    `user_keys`; unwrap each row with the current provider; on failure, attempt
    recovery from any available source (session cache K1, jwt_sessions K2
@@ -143,12 +155,13 @@ Three lessons, all architectural:
 **Phase 1 — convergence + observability** (unblocks everything; heals the
 incident class immediately)
 - Re-wrap reconciler as above.
-- Degrade observability: `InjectSecretsForPodBootstrap` (and the collapsed
-  builder later) audits + error-logs every non-"owner-has-no-secrets"
-  degrade with the underlying error (the 2026-08-28 lesson).
+- Degrade observability, as a BINDING contract not a prose aspiration: any
+  non-"owner-has-no-secrets" degrade in the bootstrap path produces (a) an
+  audit row naming the workspace and underlying error, and (b) an error-level
+  log line. A degrade that is silent fails Phase 1 review by definition.
 - Acceptance: mike-class row converges without login; a forced unwrap
-  failure produces an audit row naming the workspace and cause; full suite
-  + e2e green.
+  failure in `GetDEKServerSide` produces the audit row + error log and the
+  sessionless batch — never silently; full suite + e2e green.
 
 **Phase 2 — builder collapse**
 - `BuildWorkspaceBatch` with the three call sites migrated (bind push,
@@ -159,10 +172,12 @@ incident class immediately)
 
 **Phase 3 — notify-pull**
 - Bind/unbind/rotate → revision bump + agentd notify; agentd re-pull via SA
-  token. Delete `last-reload-secrets.json` and the reload handoff machinery
-  it supported.
+  token (read fresh per pull, §4.3). Delete `last-reload-secrets.json` and
+  the reload handoff machinery it supported.
 - Acceptance: rebind round-trip with no push payload; container restart
-  re-materializes by pull (regression: the #443 scenario, now by design).
+  re-materializes by pull (regression: the #443 scenario, now by design);
+  a pull against an expired audience token recovers (kubelet rotation
+  re-read), verified by a delayed-pull test.
 
 **Phase 4 — demolition**
 - Delete K2 (`rehydrateDEKFromJWTSession`), K3 (`GetDEKForUser` walk — after
@@ -170,10 +185,20 @@ incident class immediately)
   service + watcher callback), `UserCredsPresent` CRD field + controller
   scrape + `hasUserCreds`; retire W1 multi-version window once `user_keys`
   v1 rows read zero.
+- The CRD schema change (dropping the `UserCredsPresent` status field)
+  follows the out-of-band CRD application path — Helm does not upgrade
+  `crds/` (install.crds: Skip convention); apply the new CRD manually in
+  the same release that ships the field's last reader's removal.
+- The live-pod revision reconciliation (§4.4) MUST land in this phase at
+  the latest — it is the stated replacement for D5's self-heal; Phase 4
+  cannot merge without it.
 - Agentd gains the revision stamp (Phase 2/3 groundwork) surfaced in healthz.
 - Acceptance: grep-clean for removed symbols; kind suspend/resume gate
   (bind env-secret → suspend → resume → var present, no session, no
-  re-injection — the original #1087 acceptance, now by construction).
+  re-injection — the original #1087 acceptance, now by construction);
+  injected transient API failure on a live pod → revision mismatch →
+  re-notify → convergence with no user action (the stress case D5 used to
+  cover).
 
 ## 6. What deliberately does NOT change
 
@@ -192,8 +217,10 @@ incident class immediately)
   remaining protections are pod identity + uid separation + tmpfs lifetime.
   Recorded here so the decision is discoverable, not implicit.
 - **Notify requires a reachable pod.** A pod mid-restart misses a notify;
-  the revision comparison on next pull covers it (eventual consistency by
-  construction, which is also why D4/D5 become redundant).
+  the revision comparison on next pull covers it. The harder case — a LIVE
+  pod whose pull failed transiently with no subsequent binding change —
+  is covered only by the reconciliation loop (§4.4); that loop is therefore
+  a load-bearing Phase 3/4 component, not an optimization.
 - **Reconciler re-wrap races a concurrent login write.** Both write the same
   derived wrap under the same active version; last-write-wins is idempotent
   (identical plaintext DEK, same key version). Guarded by the existing
