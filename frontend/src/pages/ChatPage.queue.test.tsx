@@ -556,3 +556,58 @@ describe("queue-path regressions (suspend/resume casualties)", () => {
     expect(screen.queryByText("Sending…")).not.toBeInTheDocument();
   });
 });
+
+describe("V2 delivery: live streaming through the session.next sequence (#1112)", () => {
+  beforeEach(() => {
+    capturedSSEHandler = null;
+    mockBusyState.reset();
+    vi.clearAllMocks();
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it("streams assistant text incrementally — not only at block end", async () => {
+    // Regression for the #1110 post-merge gap: the prompted user echo
+    // leaves the delta buffer in "user-echo" (discard) mode; without
+    // the text.started priming part.end, deltas were dropped and the
+    // text appeared only at text.ended.
+    const user = userEvent.setup();
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    await user.type(document.querySelector("textarea")!, "stream me live");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(messagesApi.queueMessage).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
+
+    const agentBubbleText = () =>
+      Array.from(document.querySelectorAll(".justify-start")).map((el) => el.textContent ?? "").join("\n");
+
+    // The translated V2 sequence: user echo → priming (empty part.end)
+    // → deltas → final snapshot. All as session.event contract events.
+    const ce = (data: unknown) =>
+      sendSSE({ type: "session.event", session_id: "ses_1", data });
+
+    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_u", part: { type: "text", text: "stream me live" } });
+    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", part: { id: "text-0", type: "text", text: "" } });
+
+    ce({ type: "part.delta", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", delta: "Hello " });
+    await waitFor(() => expect(agentBubbleText()).toContain("Hello"));
+
+    ce({ type: "part.delta", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", delta: "world" });
+    await waitFor(() => expect(agentBubbleText()).toContain("Hello world"));
+
+    // The final snapshot replaces the buffer without duplicating.
+    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", part: { id: "text-0", type: "text", text: "Hello world" } });
+    await waitFor(() => expect(agentBubbleText().match(/Hello world/g)?.length).toBe(1));
+
+    // The user echo never renders agent-side, and the pill cleared.
+    expect(agentBubbleText()).not.toContain("stream me live");
+    await waitFor(() => expect(screen.queryByText("1 message queued")).not.toBeInTheDocument());
+  });
+});
