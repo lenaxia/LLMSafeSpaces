@@ -159,16 +159,48 @@ func (s *e2eSecretStore) QueryAudit(_ context.Context, _ string, _ secrets.Audit
 	panic("unexpected QueryAudit in bootstrap e2e")
 }
 
-// e2eKeyStore is a no-op KeyStore. The injection path never touches user
-// key records (admin/org use RootKeyProviders; user uses the DEK cache).
-type e2eKeyStore struct{}
-
-func (e2eKeyStore) GetUserKey(_ context.Context, _ string) (*secrets.UserKeyRecord, error) {
-	return nil, nil
+// e2eKeyStore serves a single user_keys record so the pod-bootstrap
+// server-side DEK unwrap (GetDEKServerSide: master RootKeyProvider over
+// the user_keys row) has real material to work with. Built by
+// newE2EKeyService, which pairs the record with the matching provider.
+type e2eKeyStore struct {
+	record *secrets.UserKeyRecord
 }
-func (e2eKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord) error { return nil }
-func (e2eKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
+
+func (s *e2eKeyStore) GetUserKey(_ context.Context, _ string) (*secrets.UserKeyRecord, error) {
+	if s.record == nil {
+		return nil, nil
+	}
+	cp := *s.record
+	return &cp, nil
+}
+func (s *e2eKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord) error { return nil }
+func (s *e2eKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
 	return nil
+}
+
+// newE2EKeyService builds the production-shaped KeyService for bootstrap
+// e2e: a user_keys record wrapping userDEK under a static master
+// RootKeyProvider (key 0x05), so InjectSecretsForPodBootstrap's
+// server-side unwrap delivers user-DEK bindings with no session state —
+// the "pod exists ⟹ secrets" contract.
+func newE2EKeyService(t *testing.T, userDEK []byte) *secrets.KeyService {
+	t.Helper()
+	rootProv, err := secrets.NewStaticKeyProvider(deterministicKey(0x05))
+	require.NoError(t, err)
+	wrapped, err := rootProv.Encrypt(context.Background(), userDEK)
+	require.NoError(t, err, "e2e: wrapping the user DEK under the master provider must succeed")
+	keySvc := secrets.NewKeyService(
+		&e2eKeyStore{record: &secrets.UserKeyRecord{
+			UserID:     "user-e2e",
+			KeyVersion: 1,
+			WrappedDEK: wrapped,
+			DEKSource:  "server_kek",
+		}},
+		&e2eDEKCache{dek: userDEK},
+	)
+	keySvc.SetAPIKeyStore(nil, rootProv) // wires rootKeyProvider
+	return keySvc
 }
 
 // e2eDEKCache serves the user DEK for the test session ID.
@@ -447,11 +479,9 @@ type bootstrapE2EConfig struct {
 	// workspaceNil makes the lookup return a nil workspace (404 path).
 	workspaceNil bool
 	// wireJWTSessions, when true, plumbs a JWTSessionStore + SigningKeyEnumerator
-	// into the KeyService so InjectSecretsForPodBootstrap can find an unwrappable
-	// jwt_sessions row and deliver user-DEK secrets (design 0045 Change 1
-	// happy path). Zero value = false → GetDEKForUser returns ErrDEKUnavailable
-	// and InjectSecretsForPodBootstrap degrades to sessionless (the historical
-	// Epic-35 behavior for offline users).
+	// into the KeyService. Post-"pod exists ⟹ secrets" this is redundant for
+	// delivery (the server-side unwrap needs no session) but keeps proving the
+	// jwt plumbing never interferes with the bootstrap path.
 	wireJWTSessions bool
 }
 
@@ -481,14 +511,12 @@ func runBootstrapMaterializeE2EWith(t *testing.T, cfg bootstrapE2EConfig) (agent
 	dir := t.TempDir()
 
 	userDEK := deterministicKey(0x03)
-	keySvc := secrets.NewKeyService(e2eKeyStore{}, &e2eDEKCache{dek: userDEK})
+	keySvc := newE2EKeyService(t, userDEK)
 
-	// Design 0045 Change 1: when wireJWTSessions is set, seed a valid
-	// jwt_sessions row wrapping the same userDEK under a test signing key.
-	// GetDEKForUser (called by InjectSecretsForPodBootstrap) will find and
-	// unwrap this row, enabling user-DEK bindings to decrypt via the
-	// normal (dek, jti) → decryptBinding path. Without this wiring the
-	// harness exercises the sessionless-degrade path (user offline).
+	// wireJWTSessions seeds a jwt_sessions row wrapping the same userDEK
+	// under a test signing key. The bootstrap path no longer consults it
+	// (server-side unwrap), but hostile/redundant session state must not
+	// break delivery — so the flag stays as an interference guard.
 	if cfg.wireJWTSessions {
 		signingKey := deterministicKey(0x04)
 		row := seedJWTSession(t, "user-e2e", userDEK, signingKey, time.Now().Add(time.Hour))
@@ -592,19 +620,18 @@ func readAgentConfig(t *testing.T, path string) struct {
 	return cfg
 }
 
-// TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline is the
-// central regression guard for the org-provider-not-materializing bug, in
-// the user-DEK-unavailable case. It seeds one credential per ownerType
-// (org, admin, user), runs the full boot chain WITHOUT wiring a
-// JWTSessionStore, and asserts:
+// TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_NoActiveSession is
+// the central regression guard for the org-provider-not-materializing bug,
+// in the no-active-session case — which under the "pod exists ⟹ secrets"
+// contract is NO LONGER a degrade: the server-side DEK unwrap delivers
+// user-owned bindings without any jwt_sessions state. It seeds one
+// credential per ownerType (org, admin, user), runs the full boot chain
+// WITHOUT wiring a JWTSessionStore, and asserts all three materialize.
 //
-//   - server-KEK credentials (admin, org) materialize;
-//   - user-DEK credentials do NOT (unwrap fails → degrade to sessionless).
-//
-// This is the pre-design-0045 behavior, still relevant post-fix as the
-// degrade path when the workspace owner is offline past the jwt_session TTL.
-// The happy-path counterpart is
-// TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider.
+// The openai assertion is the #1087 regression gate: pre-fix, a
+// suspend/resume that outlived every jwt_sessions row stripped the
+// workspace's user-owned credentials at boot, and the auto-push
+// UserCredsPresent skip prevented any later recovery.
 //
 // A break at any seam fails this test:
 //   - SecretService not wired with SetOrgProvider → org provider missing
@@ -613,7 +640,7 @@ func readAgentConfig(t *testing.T, path string) struct {
 //   - decryptFnFor returns nil for a configured provider → that provider missing
 //   - User-owned bindings crash the entire prep instead of degrading
 //     (regression from the 2026-06-24 bootstrap-path-error incident)
-func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline(t *testing.T) {
+func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_NoActiveSession(t *testing.T) {
 	agentCfgPath, bootstrapExit, materializeExit, bootstrapStderr, materializeStderr :=
 		runBootstrapMaterializeE2E(t,
 			[]e2eProviderBinding{
@@ -637,14 +664,11 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline(t *testi
 	assert.Contains(t, cfg.Provider, "opencode",
 		"admin-owned provider must materialize")
 
-	// User-DEK encrypted creds must NOT materialize on the offline-degrade
-	// path: no JWTSessionStore is wired, so GetDEKForUser returns
-	// ErrDEKUnavailable and InjectSecretsForPodBootstrap falls back to
-	// InjectSessionlessSecrets (user-DEK bindings audited-and-skipped).
-	// The reload-secrets flow will still deliver them when the user next
-	// logs in.
-	assert.NotContains(t, cfg.Provider, "openai",
-		"on user-offline degrade path, user-owned provider must NOT materialize at boot — delivered later via reload-secrets")
+	// User-DEK encrypted creds MUST materialize with no active session:
+	// the server-side unwrap (GetDEKServerSide) replaces the old
+	// jwt_sessions walk. A miss here is the #1087 incident recurring.
+	assert.Contains(t, cfg.Provider, "openai",
+		"user-owned provider MUST materialize at boot with no active session — a pod that exists has its secrets")
 
 	// Verify the org apiKey round-tripped end-to-end (decrypt → re-marshal).
 	var anthropicEntry struct {
@@ -656,6 +680,17 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline(t *testi
 	assert.Equal(t, "sk-org", anthropicEntry.Options.APIKey,
 		"org provider apiKey must survive decrypt → bootstrap → materialize")
 
+	// ... and the user apiKey too (user-KEK encrypt → server-side DEK
+	// unwrap → bootstrap wire → materialize).
+	var openaiEntry struct {
+		Options struct {
+			APIKey string `json:"apiKey"`
+		} `json:"options"`
+	}
+	require.NoError(t, json.Unmarshal(cfg.Provider["openai"], &openaiEntry))
+	assert.Equal(t, "sk-user", openaiEntry.Options.APIKey,
+		"user provider apiKey must survive the sessionless round-trip")
+
 	// Default model from workspace-config.json must be present (separate
 	// handoff that also broke historically).
 	assert.Equal(t, "anthropic/claude-sonnet-4-5", cfg.Model,
@@ -663,24 +698,21 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline(t *testi
 }
 
 // TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider
-// is the design-0045 Change 1 happy-path e2e test. It wires a
-// JWTSessionStore with an unwrappable row so InjectSecretsForPodBootstrap
-// finds the user's DEK via GetDEKForUser and delivers user-DEK secrets
-// alongside server-KEK secrets — the entire point of the fix.
+// pins delivery in the presence of jwt_sessions state: an unwrappable row
+// is wired alongside the server-side unwrap path, proving session
+// machinery never interferes with bootstrap delivery. Pre-design-0045,
+// user-DEK content never reached the pod at boot; post-"pod exists ⟹
+// secrets", it reaches it regardless — this test is now the
+// redundant-session-state interference guard.
 //
-// This test would FAIL against pre-PR code: the pod-bootstrap handler
-// used InjectSessionlessSecrets, which unconditionally skips user-DEK
-// bindings. It ALSO fails against the design-0045 code path if any of:
-//   - InjectSecretsForPodBootstrap regresses the sessionless fallback into
-//     the actual unwrap path (would break the offline test above);
-//   - GetDEKForUser stops writing back to Redis under the returned jti;
+// It fails if any of:
+//   - InjectSecretsForPodBootstrap stops unwrapping the DEK server-side;
+//   - the synthetic Redis handle handoff (GetDEKServerSide → GetDEK(jti))
+//     breaks;
 //   - the bootstrap→materialize handoff drops user-DEK entries from the
 //     secrets.json wire format;
 //   - materialize refuses to write user-DEK content to agent-config.json
 //     even when secrets.json contains it.
-//
-// The offline-degrade counterpart is
-// TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_UserOffline.
 func TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider(t *testing.T) {
 	agentCfgPath, bootstrapExit, materializeExit, bootstrapStderr, materializeStderr :=
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
@@ -704,11 +736,10 @@ func TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider(t 
 	assert.Contains(t, cfg.Provider, "opencode",
 		"admin-owned provider must materialize on the happy path too")
 
-	// User-DEK cred MUST materialize on the happy path — this is the
-	// design 0045 Change 1 fix.
+	// User-DEK cred MUST materialize — the server-side unwrap delivers it
+	// (jwt row present is incidental; see the NoActiveSession test).
 	require.Contains(t, cfg.Provider, "openai",
-		"user-owned provider MUST materialize at boot when jwt_sessions unwraps "+
-			"(design 0045 Change 1). If this fails, the PR's core behavior change is broken.")
+		"user-owned provider MUST materialize at boot — the pod exists, so it has its secrets")
 
 	// The user apiKey plaintext must survive the full round-trip:
 	// user-KEK encrypt → DB → GetDEKForUser unwrap → InjectSecrets decrypt
@@ -897,7 +928,7 @@ func TestE2E_BootstrapMaterialize_PartialFailure_DoesNotBlockGoodProviders(t *te
 func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 	dir := t.TempDir()
 	userDEK := deterministicKey(0x03)
-	keySvc := secrets.NewKeyService(e2eKeyStore{}, &e2eDEKCache{dek: userDEK})
+	keySvc := newE2EKeyService(t, userDEK)
 
 	// Seed user + org bindings (the "before reset" state).
 	credBindings := []secrets.CredentialBinding{
@@ -958,20 +989,15 @@ func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 		return cfg.Provider
 	}
 
-	// Before reset: org provider materializes at boot (server-KEK).
-	// User provider does NOT materialize at boot on this test's degrade
-	// path: no JWTSessionStore is wired into the KeyService, so
-	// GetDEKForUser returns ErrDEKUnavailable and
-	// InjectSecretsForPodBootstrap falls back to InjectSessionlessSecrets
-	// (user-DEK bindings audited-and-skipped). The design-0045 happy path
-	// is exercised separately by
-	// TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider.
-	// The "no resurrection" property this test guards remains meaningful
-	// for the reload path — see TestE2E_PurgedUserCredsDoNotResurrectInReload
-	// below.
+	// Before reset: ALL provider classes materialize at boot — org and
+	// admin via server-KEK, user via the server-side DEK unwrap (no
+	// jwt_sessions wired; the pod exists, so it has its secrets). The
+	// "no resurrection" property this test guards is about the purge
+	// below — see TestE2E_PurgedUserCredsDoNotResurrectInReload for the
+	// reload-path counterpart.
 	before := runOneBoot("before")
-	assert.NotContains(t, before, "openai",
-		"before reset: user provider must NOT materialize on the offline-degrade path (no jwt_sessions wired)")
+	assert.Contains(t, before, "openai",
+		"before reset: user provider must materialize (server-side unwrap, no session needed)")
 	assert.Contains(t, before, "anthropic", "before reset: org provider must be present")
 
 	// RESET: purge the user-owned bindings (PurgeUserSecrets deletes
@@ -994,7 +1020,7 @@ func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 func TestE2E_PasswordReset_FullPurgeThenBoot_NoProviders(t *testing.T) {
 	dir := t.TempDir()
 	userDEK := deterministicKey(0x03)
-	keySvc := secrets.NewKeyService(e2eKeyStore{}, &e2eDEKCache{dek: userDEK})
+	keySvc := newE2EKeyService(t, userDEK)
 
 	store := &e2eSecretStore{bindings: []secrets.CredentialBinding{
 		encryptE2EBinding(t, e2eProviderBinding{ownerType: "user", ownerID: "user-e2e", provider: "openai", apiKey: "sk-user"}),
