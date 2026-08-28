@@ -30,8 +30,28 @@ session model; then V2 queue prompts via `POST /api/session/:sid/prompt`.
 | V2 queue admission | 200 + admittedSeq | 200 + admittedSeq |
 | V2 queue drain | **broken**: loop re-persists and re-answers the stale prior message; queued texts never land | **correct**: FIFO, exact texts, turns complete |
 | SSE on V1 `/event` | `message.*`/`session.*` | identical type strings + new `step-start`/`step-finish` (harmless superset) |
-| `packages/schema` diff | — | **zero commits** v1.18.10..v1.18.15 (config + event contracts frozen) |
+| `packages/schema` diff | — | **zero commits** v1.18.10..v1.18.15 (event + config contracts frozen) |
 | V1 HTTP routes diff | — | untouched (only web-UI blob/5xx-logging fixes) |
+
+## Full-range commit triage (all 114, v1.18.10..v1.18.15)
+
+Every commit enumerated and classified; 106 are opencode.ai
+website/console, desktop/web app UI (RTL/i18n/diff-viewer), TUI, docs,
+website model content, tests, and `chore: generate` — zero platform
+surface. The 8 platform-relevant commits:
+
+| Commit | Change | Platform impact |
+|---|---|---|
+| #40990 | loop orders by `time.created`, structural exit predicate | **the #755 drain fix** |
+| #40991 | chronological boundaries in session/revert | same family; correctness |
+| #40987 | truncation cleanup by file mtime (not ID-timestamp parse) | internal housekeeping; robustness (same ID-ordering family) |
+| #40800 | serialize orphaned compaction history | `/compact` correctness; no wire change |
+| #40718 | patch: @ai-sdk/openai-compatible preserves stream errors | relay/custom openai-compatible providers surface stream errors instead of swallowing — **the platform relay benefits** |
+| #40707 + #40694 | broadened retryable-error patterns (rate/5xx/network/timeout regexes) | fewer failed turns on transient provider errors; retry budget respected. **Relay path benefits directly** |
+| #39556 | provider config: wider interleaved-reasoning field + regenerated SDK openapi/types | additive optional config; configwriter unaffected. **Precision note: `packages/sdk/openapi.json` DID change (additively) — the "schema frozen" claim is scoped to `packages/schema` event contracts** |
+| #39697 | patch: MCP SDK stops SSE reconnect loops | MCP transport stability (platform's llmsafespaces MCP server) |
+
+No blocking findings; two precision notes folded into this worklog.
 
 ## The hazard window: v1.18.16–v1.18.18 must be skipped
 
