@@ -6,6 +6,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -217,6 +218,18 @@ func (s *SecretService) InjectSecretsForPodBootstrap(ctx context.Context, userID
 
 	_, jti, err := s.keys.GetDEKServerSide(ctx, userID)
 	if err != nil || jti == "" {
+		// Surface the failure. The 2026-08-28 v0.25.1 incident: a legacy
+		// user_keys wrap failed the master-provider unwrap here, the
+		// degrade was silent, and the only breadcrumb was a cryptic
+		// `_system decrypt:api-keys success=false` audit row three
+		// queries deep. ErrDEKUnavailable alone means "owner owns no
+		// DEK-encrypted secrets" — expected, not audited. Everything
+		// else gets an audit row tying the degrade to this workspace
+		// with the underlying error string.
+		if err != nil && !errors.Is(err, ErrDEKUnavailable) {
+			s.audit(ctx, userID, "pod_bootstrap_dek_failed", nil, &workspaceID,
+				map[string]string{"error": err.Error()})
+		}
 		return s.InjectSessionlessSecrets(ctx, userID, workspaceID)
 	}
 

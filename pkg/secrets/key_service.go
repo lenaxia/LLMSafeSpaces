@@ -4,6 +4,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"runtime"
@@ -794,6 +795,18 @@ const serverSideDEKCacheTTL = 5 * time.Minute
 // active session. Suspend/resume, expired jwt_sessions, and logged-out
 // owners all still receive their bound secrets.
 //
+// Self-heal (legacy rows): when the master provider cannot unwrap
+// record.WrappedDEK — a pre-US-57.1 un-prefixed blob, or a wrap from a
+// key version the provider no longer derives — the method falls back to
+// GetDEKForUser (warm session cache / jwt_sessions unwrap) for the DEK
+// material and opportunistically re-wraps the row at the provider's
+// active version via UpdateWrappedDEK. The heal is login-independent:
+// any background path touching the row converges it to current format,
+// which is exactly the gap that stranded pre-rotation users (their last
+// login predated the re-wrap window, so a login-gated migration could
+// never reach them). A failed heal write is logged, not returned — the
+// DEK is still delivered this boot; the next attempt retries.
+//
 // Returns (dek, jti, error). The jti is a fresh UUID referencing the
 // Redis cache entry this method populates; callers pass it as the
 // sessionID to InjectSecrets so the downstream GetDEK(jti) call hits
@@ -805,7 +818,9 @@ const serverSideDEKCacheTTL = 5 * time.Minute
 //   - no user_keys record      → ErrDEKUnavailable (the user never
 //     created secrets; the sessionless payload already contains
 //     everything that exists for them)
-//   - store/unwrap failure     → wrapped error (infra)
+//   - store/unwrap failure     → wrapped error (infra); includes the
+//     session-fallback error when the self-heal path also found no
+//     session DEK
 //   - cache write failure      → error (without the handle,
 //     InjectSecrets cannot reach the DEK; one clean degrade beats
 //     per-binding audit noise)
@@ -820,9 +835,13 @@ func (s *KeyService) GetDEKServerSide(ctx context.Context, userID string) (dek [
 	if record == nil {
 		return nil, "", ErrDEKUnavailable
 	}
-	dek, err = s.rootKeyProvider.Decrypt(ctx, record.WrappedDEK)
-	if err != nil {
-		return nil, "", fmt.Errorf("server-kek unwrap DEK: %w", err)
+	dek, derr := s.rootKeyProvider.Decrypt(ctx, record.WrappedDEK)
+	if derr != nil {
+		recovered, _, serr := s.healLegacyDEK(ctx, userID, derr)
+		if serr != nil {
+			return nil, "", fmt.Errorf("server-kek unwrap DEK: %w (session fallback: %v)", derr, serr)
+		}
+		dek = recovered
 	}
 	jti = uuid.NewString()
 	if cErr := s.cache.CacheDEK(ctx, jti, dek, serverSideDEKCacheTTL); cErr != nil {
@@ -833,6 +852,48 @@ func (s *KeyService) GetDEKServerSide(ctx context.Context, userID string) (dek [
 		return nil, "", fmt.Errorf("cache dek handle: %w", cErr)
 	}
 	return dek, jti, nil
+}
+
+// healLegacyDEK recovers the DEK for an unwrappable user_keys row from
+// the session path and re-wraps the row at the provider's active
+// version. Returns the recovered DEK, or the session-path error when no
+// session DEK exists either (caller degrades). The re-wrap is
+// best-effort: a write failure is logged and the DEK is still returned.
+func (s *KeyService) healLegacyDEK(ctx context.Context, userID string, unwrapErr error) ([]byte, string, error) {
+	dek, _, err := s.GetDEKForUser(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	newWrap, werr := s.rootKeyProvider.Encrypt(ctx, dek)
+	if werr != nil {
+		if s.logger != nil {
+			s.logger.Warn("GetDEKServerSide: legacy DEK row heal re-wrap failed (DEK still delivered)",
+				"userID", userID, "error", werr.Error())
+		}
+		return dek, "", nil
+	}
+	// Verify-after-write (design 0052 §4.5): never commit a wrap that does
+	// not round-trip under the provider that produced it. A corrupt wrap
+	// here would lose the DEK — and every secret under it — permanently.
+	if v, verr := s.rootKeyProvider.Decrypt(ctx, newWrap); verr != nil || !bytes.Equal(v, dek) {
+		if s.logger != nil {
+			s.logger.Warn("GetDEKServerSide: legacy DEK row heal verify-after-write failed (row untouched, DEK still delivered)",
+				"userID", userID, "decryptError", fmt.Sprintf("%v", verr))
+		}
+		return dek, "", nil
+	}
+	if uerr := s.store.UpdateWrappedDEK(ctx, userID, newWrap, nil, ActiveVersionOf(s.rootKeyProvider)); uerr != nil {
+		if s.logger != nil {
+			s.logger.Warn("GetDEKServerSide: legacy DEK row heal write failed (DEK still delivered)",
+				"userID", userID, "error", uerr.Error())
+		}
+		return dek, "", nil
+	}
+	if s.logger != nil {
+		s.logger.Info("GetDEKServerSide: healed legacy user_keys DEK row (re-wrapped at active version)",
+			"userID", userID, "keyVersion", ActiveVersionOf(s.rootKeyProvider), "unwrapError", unwrapErr.Error())
+	}
+	return dek, "", nil
 }
 
 // HasKeys checks if a user has key material initialized.
