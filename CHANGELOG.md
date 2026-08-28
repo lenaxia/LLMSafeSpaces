@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-08-28
+
+### Fixed
+
+- **Bootstrap DEK failures are loud; legacy `user_keys` rows heal
+  opportunistically (#1114, 0052 Phase 1 precursor, 2026-08-28
+  incident)**: `InjectSecretsForPodBootstrap` audits every
+  non-"owner-has-no-secrets" degrade as `pod_bootstrap_dek_failed`
+  with the workspace and underlying error — the incident's silent
+  sessionless degrade (six-hour forensic diagnosis) now leaves a
+  breadcrumb at the failure site. `GetDEKServerSide` self-heals
+  unwrappable rows: when the master provider cannot decrypt the stored
+  wrap (June-era un-prefixed blob), the DEK is recovered from the
+  session source (warm login cache / `jwt_sessions`), the row is
+  re-wrapped at the active version with verify-after-write (the new
+  wrap must round-trip before the row is replaced), and the secrets
+  deliver. Incident-class rows converge on their next resume while a
+  30-day login cache still exists; the login-independent reconciler
+  follows in design 0052 Phase 1. Regression-gated: the heal is
+  asserted one-shot (second boot unwraps directly) and the no-session
+  degrade is asserted non-silent.
+
 ## [0.25.1] - 2026-08-27
 
 ### Fixed
