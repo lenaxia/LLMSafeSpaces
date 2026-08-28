@@ -28,6 +28,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
 // fakeAgentBackend is a stateful opencode stand-in: it records prompts,
@@ -44,6 +45,16 @@ type fakeAgentBackend struct {
 	// admits counts POST /api/session/:sid/prompt hits (the V2
 	// admit-and-return path, design 0052).
 	admits int
+	// admitStatus, when non-zero, answers the V2 admission POST with
+	// that HTTP status (a definitive agent rejection).
+	admitStatus int
+	// admitReset, when true, hijacks and closes the admission
+	// connection mid-flight — a transport cut whose outcome is unknown.
+	admitReset bool
+	// v2StoreStatus/v2StoreBody override the V2 history read (the
+	// verification source under V2 delivery).
+	v2StoreStatus int
+	v2StoreBody   string
 	// stall makes each POST /message sleep past the (test-shrunk)
 	// DeliveryTimeout before responding 200 — the send outcome goes
 	// ambiguous while the message IS persisted up front (opencode's
@@ -73,10 +84,56 @@ func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.admits++
 		seq := f.admits
 		f.persist(body.Prompt.Text)
+		admitStatus, admitReset := f.admitStatus, f.admitReset
 		f.mu.Unlock()
+		if admitReset {
+			if hj, ok := w.(http.Hijacker); ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		if admitStatus != 0 {
+			w.WriteHeader(admitStatus)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{"data":{"admittedSeq":%d,"id":"msg_v2_%d","sessionID":"ses_1","prompt":{"text":%s},"delivery":"queue","timeCreated":%d}}`,
 			seq, seq, quoteJSON(body.Prompt.Text), time.Now().UnixMilli())
+		return
+	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/message") {
+		f.mu.Lock()
+		status, body := f.v2StoreStatus, f.v2StoreBody
+		texts := make([]struct {
+			text    string
+			created time.Time
+		}, len(f.userTexts))
+		copy(texts, f.userTexts)
+		f.mu.Unlock()
+		if status != 0 {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		// Serve the persisted texts in the V2 envelope, NEWEST-first
+		// (the real endpoint's ordering contract).
+		var b strings.Builder
+		b.WriteString(`{"data":[`)
+		for i := len(texts) - 1; i >= 0; i-- {
+			if i < len(texts)-1 {
+				b.WriteString(",")
+			}
+			fmt.Fprintf(&b, `{"id":"msg_%d","type":"user","text":%s,"time":{"created":%d}}`,
+				i, quoteJSON(texts[i].text), texts[i].created.UnixMilli())
+		}
+		b.WriteString(`]}`)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(b.String()))
 		return
 	}
 	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message") {
@@ -165,9 +222,27 @@ func shrinkOutboxTimers(t *testing.T) {
 
 // newVerifyEnv wires the e2e env + outbox with the PRODUCTION hook
 // wiring (the same funcs Start installs): verifier + OnDelivered.
-func newVerifyEnv(t *testing.T, backend *fakeAgentBackend) *e2eEnv {
+// newVerifyEnv wires the e2e env + outbox with the PRODUCTION hook
+// wiring (the same funcs Start installs): verifier + OnDelivered.
+// With v2 true, the adapter is rebuilt with WithV2Store — the env the
+// production wiring produces when OPENCODE_V2_DELIVERY is on (delivery
+// and verification share the store; a V1-mode verifier against V2
+// delivery reports false absence — the #987 duplicate class).
+func newVerifyEnv(t *testing.T, backend *fakeAgentBackend, v2 ...bool) *e2eEnv {
 	t.Helper()
-	env := newE2EEnv(t, httptest.NewServer(backend))
+	srv := httptest.NewServer(backend)
+	env := newE2EEnv(t, srv)
+	if len(v2) > 0 && v2[0] {
+		handler := env.handler
+		handler.SetAdapter(opencode.NewAdapter(
+			handler.AdapterPasswordResolver(),
+			handler.AdapterPodIPResolver(),
+			nil,
+			opencode.WithAdapterHTTPClient(srv.Client()),
+			opencode.WithAdapterPort(extractPort(t, srv.URL)),
+			opencode.WithV2Store(true),
+		))
+	}
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	mr := miniredis.RunT(t)
 	ob := outbox.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
@@ -356,4 +431,88 @@ func TestOutboxDeliver_V2AdmissionCompletesAtPickup(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("no queue.update/sent emitted on V2 admission")
 	}
+}
+
+// TestOutboxDeliver_V2UnhappyPaths (design 0052): the failure
+// classification contract under V2 delivery.
+func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
+	shrinkOutboxTimers(t)
+
+	t.Run("admission 5xx is definitive — backoff retry, never error-parked or ambiguous", func(t *testing.T) {
+		backend := &fakeAgentBackend{admitStatus: http.StatusServiceUnavailable}
+		env := newVerifyEnv(t, backend, true)
+		env.handler.SetV2Delivery(true)
+
+		w := postPrompt(t, env, `{"clientMessageID":"cm-5xx","parts":[{"type":"text","text":"five oh three"}]}`)
+		require.Equal(t, http.StatusAccepted, w.Code)
+
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		entries := listOutbox(t, env)
+		require.Len(t, entries, 1)
+		assert.Equal(t, outbox.StatusPending, entries[0].Status,
+			"an HTTP-status rejection is definitive: bounded retry with backoff, not the verifying round-trip")
+		assert.Equal(t, 1, entries[0].Attempts)
+	})
+
+	t.Run("admission transport cut is ambiguous — verifying, never blind-retried", func(t *testing.T) {
+		backend := &fakeAgentBackend{admitReset: true, persistFirst: true}
+		env := newVerifyEnv(t, backend, true)
+		env.handler.SetV2Delivery(true)
+
+		w := postPrompt(t, env, `{"clientMessageID":"cm-cut","parts":[{"type":"text","text":"connection cut"}]}`)
+		require.Equal(t, http.StatusAccepted, w.Code)
+
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		entries := listOutbox(t, env)
+		require.Len(t, entries, 1)
+		assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
+			"unknown-outcome transport cut must verify, never re-send blindly (#987)")
+
+		backend.mu.Lock()
+		admits := backend.admits
+		backend.mu.Unlock()
+		assert.Equal(t, 1, admits, "exactly one admission attempt so far")
+
+		// The store read confirms delivery (persistFirst modeled the
+		// cut AFTER admission landed) — entry resolves and leaves.
+		time.Sleep(15 * time.Millisecond)
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		assert.Empty(t, listOutbox(t, env))
+	})
+
+	t.Run("V2 store 5xx during verify is inconclusive — stays verifying, absent is never claimed", func(t *testing.T) {
+		backend := &fakeAgentBackend{admitReset: true, persistFirst: false,
+			v2StoreStatus: http.StatusServiceUnavailable, v2StoreBody: `agent starting`}
+		env := newVerifyEnv(t, backend, true)
+		env.handler.SetV2Delivery(true)
+
+		w := postPrompt(t, env, `{"clientMessageID":"cm-s5","parts":[{"type":"text","text":"store down"}]}`)
+		require.Equal(t, http.StatusAccepted, w.Code)
+
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		time.Sleep(15 * time.Millisecond)
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		entries := listOutbox(t, env)
+		require.Len(t, entries, 1)
+		assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
+			"an unreachable store is inconclusive — it must never be read as definitive absence (which would re-send and duplicate)")
+	})
+
+	t.Run("V2 store malformed body during verify is inconclusive", func(t *testing.T) {
+		backend := &fakeAgentBackend{admitReset: true, persistFirst: false,
+			v2StoreStatus: http.StatusOK, v2StoreBody: `<html>not json</html>`}
+		env := newVerifyEnv(t, backend, true)
+		env.handler.SetV2Delivery(true)
+
+		w := postPrompt(t, env, `{"clientMessageID":"cm-mal","parts":[{"type":"text","text":"garbage store"}]}`)
+		require.Equal(t, http.StatusAccepted, w.Code)
+
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		time.Sleep(15 * time.Millisecond)
+		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+		entries := listOutbox(t, env)
+		require.Len(t, entries, 1)
+		assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
+			"a decode failure is inconclusive, never definitive absence")
+	})
 }

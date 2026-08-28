@@ -109,14 +109,18 @@ func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, 
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusConflict {
-		return nil, fmt.Errorf("%w: session %s: HTTP 409", ErrV2PromptConflict, sessionID)
+		// Multi-wrap: ErrHTTPStatus keeps the outbox's definitive-
+		// rejection classification (agent PROCESSED the request); the
+		// specific sentinel stays addressable for callers that branch
+		// on it.
+		return nil, fmt.Errorf("%w: %w: session %s: HTTP 409", agent.ErrHTTPStatus, ErrV2PromptConflict, sessionID)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: session %s: HTTP 404", ErrV2SessionNotFound, sessionID)
+		return nil, fmt.Errorf("%w: %w: session %s: HTTP 404", agent.ErrHTTPStatus, ErrV2SessionNotFound, sessionID)
 	}
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("POST /api/session/%s/prompt returned %d: %s", sessionID, resp.StatusCode, string(errBody))
+		return nil, fmt.Errorf("%w: POST /api/session/%s/prompt returned %d: %s", agent.ErrHTTPStatus, sessionID, resp.StatusCode, string(errBody))
 	}
 
 	var envelope struct {
