@@ -210,3 +210,67 @@ func TestVerifyDelivery_LimitParamSent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, strconv.Itoa(verifyPageSize), gotLimit, "the verifier pages with the tuned page size")
 }
+
+// --- V2 store branch (design 0052) ---
+
+// newV2VerifyServer serves GET /api/session/:sid/message with the
+// {data:[...]} V2 envelope from a canned body.
+func newV2VerifyServer(t *testing.T, body string, hits *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/session/") || !strings.HasSuffix(r.URL.Path, "/message") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		*hits = append(*hits, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func v2User(ts time.Time, text string) string {
+	return fmt.Sprintf(`{"id":"msg_%d","type":"user","text":%q,"time":{"created":%d}}`, ts.UnixMilli(), text, ts.UnixMilli())
+}
+
+func TestVerifyDelivery_V2StoreBranch(t *testing.T) {
+	since := time.Now().Add(-1 * time.Hour)
+
+	t.Run("present proves delivered", func(t *testing.T) {
+		var hits []string
+		srv := newV2VerifyServer(t,
+			`{"data":[`+v2User(since.Add(2*time.Minute), "the queued text")+`]}`, &hits)
+		a := newTestAdapter(t, srv)
+		a.v2Store = true
+
+		delivered, definitive, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "the queued text", since)
+		require.NoError(t, err)
+		assert.True(t, delivered)
+		assert.True(t, definitive)
+		require.Len(t, hits, 1)
+		assert.Contains(t, hits[0], "/api/session/ses_1/message", "must read the V2 endpoint")
+	})
+
+	t.Run("below-window proves absent", func(t *testing.T) {
+		var hits []string
+		srv := newV2VerifyServer(t,
+			`{"data":[`+v2User(since.Add(-30*time.Minute), "older message")+`]}`, &hits)
+		a := newTestAdapter(t, srv)
+		a.v2Store = true
+
+		delivered, definitive, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "never landed", since)
+		require.NoError(t, err)
+		assert.False(t, delivered)
+		assert.True(t, definitive, "newest-first list fully below the floor: absence is proven")
+	})
+
+	t.Run("off-flag reads the V1 endpoint", func(t *testing.T) {
+		var hits []string
+		srv := newV2VerifyServer(t, `{"data":[]}`, &hits)
+		a := newTestAdapter(t, srv)
+
+		_, _, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "x", since)
+		require.Error(t, err, "the fake server only serves the V2 path — the V1 read must fail, proving the branch")
+	})
+}

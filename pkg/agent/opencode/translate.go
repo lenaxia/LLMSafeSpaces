@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -815,4 +816,110 @@ func ParseSessionWire(body []byte, workspaceID string) (*session.Session, error)
 	}
 	s := translateSession(bare, workspaceID)
 	return &s, nil
+}
+
+// translateV2Message converts one V2-store message (design 0052) into
+// the contract Message. Reuses translatePart's semantics per content
+// item; unknown content types ride the Custom pressure-relief valve
+// exactly like unknown V1 part types.
+func translateV2Message(m V2Message) session.Message {
+	sm := session.Message{ID: m.ID}
+	switch m.Type {
+	case "user":
+		sm.Type = session.MessageUser
+		if m.Text != "" {
+			sm.Parts = []session.Part{{Type: session.PartText, Text: m.Text}}
+		}
+	case "assistant":
+		sm.Type = session.MessageAssistant
+	default:
+		sm.Type = session.MessageSystem
+	}
+	if m.Time.Created > 0 {
+		t := time.UnixMilli(m.Time.Created).UTC()
+		sm.CreatedAt = &t
+	}
+	if m.Model != nil {
+		sm.Model = &session.ModelRef{ID: m.Model.ID, Provider: m.Model.ProviderID}
+	}
+	if m.Tokens != nil || m.Cost != 0 {
+		c := &session.Cost{CostUSD: m.Cost}
+		if m.Tokens != nil {
+			c.InputTokens = m.Tokens.Input
+			c.OutputTokens = m.Tokens.Output
+			c.ReasoningTokens = m.Tokens.Reason
+			c.CacheReadTokens = m.Tokens.Cache.Read
+			c.CacheWriteTokens = m.Tokens.Cache.Write
+			c.TotalTokens = c.InputTokens + c.OutputTokens + c.ReasoningTokens + c.CacheReadTokens + c.CacheWriteTokens
+		}
+		sm.Cost = c
+	}
+	for _, cp := range m.Content {
+		switch cp.Type {
+		case "text":
+			sm.Parts = append(sm.Parts, session.Part{Type: session.PartText, ID: cp.ID, Text: cp.Text})
+		case "tool":
+			if tp := translateV2Tool(cp); tp != nil {
+				sm.Parts = append(sm.Parts, session.Part{Type: session.PartTool, ID: cp.ID, Tool: tp})
+			}
+		case "step-start", "step-finish":
+			// dropped — turn boundaries carry no renderable content
+			// (mirrors translatePart's treatment of the V1 shapes)
+		default:
+			if cp.Type != "" {
+				sm.Parts = append(sm.Parts, session.Part{
+					Type:   session.PartCustom,
+					ID:     cp.ID,
+					Custom: &session.CustomPart{Kind: cp.Type, Data: cp.Raw},
+				})
+			}
+		}
+	}
+	return sm
+}
+
+// translateV2Tool maps a V2 content tool part onto the contract
+// ToolPart. Output prefers the joined content texts (what the V1 flat
+// shape carried as state.output); the structured payload (exit codes
+// and the like) is preserved as a secondary JSON object so the UI keeps
+// the signal without a contract change.
+func translateV2Tool(cp V2ContentPart) *session.ToolPart {
+	tp := &session.ToolPart{
+		CallID: cp.ID,
+		Name:   cp.Name,
+		State:  session.ToolState{Status: session.ToolStatusPending},
+	}
+	if cp.State != nil {
+		tp.Input = cp.State.Input
+		if len(cp.State.Content) > 0 {
+			texts := make([]string, 0, len(cp.State.Content))
+			for _, c := range cp.State.Content {
+				if t := strings.TrimRight(c.Text, "\n"); t != "" {
+					texts = append(texts, t)
+				}
+			}
+			if len(texts) > 0 {
+				if raw, err := json.Marshal(strings.Join(texts, "\n")); err == nil {
+					tp.Output = raw
+				}
+			}
+		} else if len(cp.State.Structured) > 0 {
+			tp.Output = cp.State.Structured
+		}
+		tp.State.Status = translateToolStatus(cp.State.Status)
+		if cp.State.Time != nil {
+			if cp.State.Time.Ran > 0 {
+				t := time.UnixMilli(cp.State.Time.Ran).UTC()
+				tp.State.StartedAt = &t
+			}
+			if cp.State.Time.Completed > 0 {
+				t := time.UnixMilli(cp.State.Time.Completed).UTC()
+				tp.State.CompletedAt = &t
+			}
+		}
+	}
+	if tp.Name == "" && tp.CallID == "" {
+		return nil
+	}
+	return tp
 }

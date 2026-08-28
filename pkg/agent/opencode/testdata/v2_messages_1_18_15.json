@@ -1,0 +1,216 @@
+{
+ "data": [
+  {
+   "id": "msg0000000000000000000001",
+   "time": {
+    "created": 1787880252384,
+    "completed": 1787880253137
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mockprov"
+   },
+   "content": [
+    {
+     "type": "text",
+     "id": "text-0",
+     "text": "mock-reply-10: the fixture capture reply"
+    }
+   ],
+   "finish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 130,
+    "output": 40,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg0000000000000000000002",
+   "time": {
+    "created": 1787880250323,
+    "completed": 1787880250349
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mockprov"
+   },
+   "content": [
+    {
+     "type": "text",
+     "id": "text-0",
+     "text": "checking the file first"
+    },
+    {
+     "type": "tool",
+     "id": "call0000000000000000000001",
+     "name": "bash",
+     "provider": {
+      "executed": false
+     },
+     "state": {
+      "status": "completed",
+      "input": {
+       "command": "echo fixture-tool-marker"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "fixture-tool-marker\n"
+       },
+       {
+        "type": "text",
+        "text": "Command exited with code 0."
+       }
+      ],
+      "outputPaths": [],
+      "structured": {
+       "exit": 0,
+       "truncated": false
+      }
+     },
+     "time": {
+      "created": 1787880250328,
+      "ran": 1787880250334,
+      "completed": 1787880250345
+     }
+    }
+   ],
+   "finish": "tool-calls",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg0000000000000000000003",
+   "time": {
+    "created": 1787880245185
+   },
+   "text": "v2 fixture message two",
+   "type": "user"
+  },
+  {
+   "id": "msg0000000000000000000004",
+   "time": {
+    "created": 1787880247471,
+    "completed": 1787880248238
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mockprov"
+   },
+   "content": [
+    {
+     "type": "text",
+     "id": "text-0",
+     "text": "mock-reply-8: the fixture capture reply"
+    }
+   ],
+   "finish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 128,
+    "output": 38,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg0000000000000000000005",
+   "time": {
+    "created": 1787880245324,
+    "completed": 1787880245433
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mockprov"
+   },
+   "content": [
+    {
+     "type": "text",
+     "id": "text-0",
+     "text": "checking the file first"
+    },
+    {
+     "type": "tool",
+     "id": "call0000000000000000000002",
+     "name": "bash",
+     "provider": {
+      "executed": false
+     },
+     "state": {
+      "status": "completed",
+      "input": {
+       "command": "echo fixture-tool-marker"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "fixture-tool-marker\n"
+       },
+       {
+        "type": "text",
+        "text": "Command exited with code 0."
+       }
+      ],
+      "outputPaths": [],
+      "structured": {
+       "exit": 0,
+       "truncated": false
+      }
+     },
+     "time": {
+      "created": 1787880245342,
+      "ran": 1787880245353,
+      "completed": 1787880245428
+     }
+    }
+   ],
+   "finish": "tool-calls",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg0000000000000000000006",
+   "time": {
+    "created": 1787880243128
+   },
+   "text": "v2 fixture message one",
+   "type": "user"
+  }
+ ],
+ "cursor": {
+  "previous": "eyJpZCI6Im1zZ18wNDVmN2EzZTAwMDFuaDlPNXc3M0lJVGlzSSIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6InByZXZpb3VzIn0",
+  "next": "eyJpZCI6Im1zZ18wNDVmNzdmYjcwMDFYUlIzQUFYS2o5WVhXUyIsIm9yZGVyIjoiZGVzYyIsImRpcmVjdGlvbiI6Im5leHQifQ"
+ }
+}

@@ -72,6 +72,11 @@ type Adapter struct {
 	port    int
 	differ  *filediff.Producer // nil on the API side; set by agentd-side construction
 	runtime *OpenCodeAgent     // delegates Type/ValidateCredentials/FormatProviderConfig
+	// v2Store routes history reads and delivery verification through
+	// the V2 store (design 0052: OPENCODE_V2_DELIVERY). V2-queue
+	// messages persist ONLY there — a verify against the wrong store
+	// reports false absence and re-sends (the #987 duplicate class).
+	v2Store bool
 }
 
 // AdapterOption configures an Adapter at construction.
@@ -105,6 +110,17 @@ func WithFileDiffProducer(p *filediff.Producer) AdapterOption {
 func WithAdapterPort(port int) AdapterOption {
 	return func(a *Adapter) { a.port = port }
 }
+
+// WithV2Store routes history reads (GetHistory/GetHistoryPage) and
+// delivery verification through the V2 store (design 0052). Pair with
+// the proxy's V2 delivery flag — the adapter and the outbox deliverer
+// MUST agree on the store, or verification reports false absence.
+func WithV2Store(enabled bool) AdapterOption {
+	return func(a *Adapter) { a.v2Store = enabled }
+}
+
+// V2Store reports whether the adapter reads the V2 store.
+func (a *Adapter) V2Store() bool { return a.v2Store }
 
 // NewAdapter constructs an opencode Adapter that resolves workspace →
 // podIP + password on each call. The httpCli is shared across all
@@ -400,6 +416,9 @@ func (a *Adapter) getHistory(ctx context.Context, userID, workspaceID, sessionID
 	if err != nil {
 		return nil, err
 	}
+	if a.v2Store {
+		return a.getHistoryV2(ctx, c, sessionID, limit)
+	}
 	url := "/session/" + sessionID + "/message"
 	if limit > 0 {
 		url += "?limit=" + strconv.Itoa(limit)
@@ -439,6 +458,28 @@ func (a *Adapter) getHistory(ctx context.Context, userID, workspaceID, sessionID
 				msgs[i].Parts = append(msgs[i].Parts, a.fileChangeParts(ctx, files)...)
 			}
 		}
+	}
+	return msgs, nil
+}
+
+// getHistoryV2 serves history from the V2 store (design 0052). The
+// endpoint returns the full list (newest-first, no paging on 1.18.15);
+// the limit is applied client-side by slicing the newest N, preserving
+// the V1 contract's "newest limit, oldest-first within the page"
+// semantics. The full fetch is acceptable: sessions are per-workspace
+// and bounded, and the fetch streams with a 64MB cap like the V1 path.
+func (a *Adapter) getHistoryV2(ctx context.Context, c *Client, sessionID string, limit int) ([]session.Message, error) {
+	raw, err := c.MessagesV2(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	// raw is newest-first; reverse into chronological order.
+	msgs := make([]session.Message, 0, len(raw))
+	for i := len(raw) - 1; i >= 0; i-- {
+		msgs = append(msgs, translateV2Message(raw[i]))
+	}
+	if limit > 0 && len(msgs) > limit {
+		msgs = msgs[len(msgs)-limit:]
 	}
 	return msgs, nil
 }

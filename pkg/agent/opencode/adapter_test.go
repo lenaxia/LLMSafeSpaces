@@ -1396,3 +1396,47 @@ func TestAdapterRetryFromEvent(t *testing.T) {
 		assert.False(t, ok)
 	})
 }
+
+// --- V2 store history (design 0052) ---
+
+func TestGetHistory_V2StoreBranch(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/v2_messages_1_18_15.json")
+	require.NoError(t, err)
+
+	var served bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.True(t, strings.HasPrefix(r.URL.Path, "/api/session/"), "V2 branch must read the V2 endpoint, got %s", r.URL.Path)
+		served = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fixture)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := srv.URL[len("http://"):]
+	parts := strings.SplitN(hostPort, ":", 2)
+	port, err := strconv.Atoi(parts[1])
+	require.NoError(t, err)
+	pw, ip := staticResolver(parts[0], testPassword)
+	a := NewAdapter(pw, ip, zap.NewNop(),
+		WithAdapterHTTPClient(srv.Client()),
+		WithAdapterPort(port),
+		WithV2Store(true),
+	)
+	assert.True(t, a.V2Store())
+
+	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.True(t, served)
+	require.Len(t, msgs, 6, "fixture carries 6 messages")
+
+	// Chronological: first is the OLDEST (user), last the newest.
+	assert.Equal(t, session.MessageUser, msgs[0].Type)
+	assert.Equal(t, "v2 fixture message one", msgs[0].Parts[0].Text)
+	assert.Equal(t, session.MessageAssistant, msgs[len(msgs)-1].Type)
+
+	// Limit slices the NEWEST N (V1 GetHistoryPage semantics).
+	paged, err := a.GetHistoryPage(context.Background(), "u-1", "ws-1", "ses_1", 2)
+	require.NoError(t, err)
+	require.Len(t, paged, 2)
+	assert.Equal(t, session.MessageAssistant, paged[0].Type, "oldest-first within the newest-2 page")
+}
