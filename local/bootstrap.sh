@@ -16,7 +16,7 @@
 # Environment overrides (sane defaults):
 #   CLUSTER_NAME      - kind cluster name (default: llmsafespaces)
 #   IMAGE_TAG         - tag used for built images (default: dev)
-#   OPENCODE_VERSION  - opencode version baked into runtime image (default: 1.18.10)
+#   OPENCODE_VERSION  - opencode version baked into runtime image (default: 1.18.15)
 #   GOPROXY           - Go proxy for module downloads in builds (default: $(go env GOPROXY))
 #   SKIP_BUILD        - set to 1 to skip docker build / load (re-use existing)
 #   SKIP_CERT_MANAGER - set to 1 if cert-manager is already installed
@@ -45,7 +45,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-llmsafespaces}"
 IMAGE_TAG="${IMAGE_TAG:-dev}"
-OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.10}"
+OPENCODE_VERSION="${OPENCODE_VERSION:-1.18.15}"
 GOPROXY_BUILD="${GOPROXY:-$(go env GOPROXY 2>/dev/null || echo direct)}"
 NS="llmsafespaces"
 RELEASE_NAME="llmsafespaces"
