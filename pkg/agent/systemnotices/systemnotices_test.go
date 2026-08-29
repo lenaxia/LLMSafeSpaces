@@ -64,7 +64,7 @@ func (f *fakeAdapter) SendAsync(ctx context.Context, userID, workspaceID, sessio
 	return "msg_1", nil
 }
 
-func (r *fakeAdapter) SetSessionModel(_ context.Context, _, _, _ string, _ *session.ModelRef) error {
+func (f *fakeAdapter) SetSessionModel(_ context.Context, _, _, _ string, _ *session.ModelRef) error {
 	return nil
 }
 func (f *fakeAdapter) VerifyDelivery(_ context.Context, _, _, _, _ string, _ time.Time) (bool, bool, error) {
