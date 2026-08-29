@@ -255,13 +255,21 @@ func TestUS4B_Disabled_NoRelocations(t *testing.T) {
 func TestUS4B_Disabled_CredScriptKeepsDefaultModes(t *testing.T) {
 	script := credSetupScriptFor(t, false)
 
-	// The guarded branch may exist in the generated text, but the default
-	// path must keep 0700 rt dirs (uid-1000-only writers) and the bare
-	// bootstrap invocation. exec-level behavior pins live in
-	// us4b_cred_script_exec_test.go.
+	// The guarded branch may exist in the generated text; the default
+	// path keeps 0700 rt dirs, and since 2026-08-29 BOTH branches arm the
+	// cross-uid FILE modes (the single-container init is uid 2000 and
+	// uid-1000 opencode reads the materialized auth store — the
+	// fleet-wide ModelUnavailableError fix). exec-level behavior pins
+	// live in us4b_cred_script_exec_test.go.
 	require.Contains(t, script, "chmod 700 /sandbox-runtime/rt/ssh /sandbox-runtime/rt/secrets",
 		"single-container mode keeps rt dirs 0700")
 	require.Contains(t, script,
-		"else\n  workspace-agentd bootstrap --workspace-id \"$WORKSPACE_ID\" --api-url \"$LLMSAFESPACE_API_URL\"\nfi",
-		"the default (non-sidecar) bootstrap branch stays the bare, unchanged invocation")
+		"else\n  # Single-container mode: the SAME uid split exists",
+		"the default branch documents the uid split it materializes under")
+	require.Contains(t, script,
+		"LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd bootstrap",
+		"the single-container bootstrap arms cross-uid file modes (auth store must be uid-1000 readable)")
+	require.Contains(t, script,
+		"LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize",
+		"materialize arms cross-uid file modes in every mode")
 }
