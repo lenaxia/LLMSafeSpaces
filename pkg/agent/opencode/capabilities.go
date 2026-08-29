@@ -145,12 +145,9 @@ type modelRefID struct {
 // Indeterminate probes default to the pinned runtime floor (1.18.15,
 // id-key shape) — the platform's runbook floor — and the incomplete probe
 // was already warned about in Capabilities().
-func (c *Client) modelRefWire(ctx context.Context, m *V2ModelRef) (any, error) {
-	return c.modelRefWireFor(ctx, "", m)
-}
-
-// modelRefWireFor is modelRefWire with the caller's real session ID so
-// the shape probe reaches payload validation on existence-first binaries.
+// modelRefWireFor serializes the override for the caller's real session:
+// the shape probe must reach payload validation on existence-first
+// binaries (synthetic session IDs 404 before the schema is observable).
 func (c *Client) modelRefWireFor(ctx context.Context, sessionID string, m *V2ModelRef) (any, error) {
 	if m == nil {
 		return nil, nil
