@@ -165,7 +165,7 @@ func TestV2BusySessionsLifecycle(t *testing.T) {
 
 // Review follow-ups: boundary and multi-session semantics.
 func TestV2BusySessionsBoundary(t *testing.T) {
-	v := v2BusySessions{}
+	v := v2BusySessions{entries: map[string]time.Time{}}
 	v.mu.Lock()
 	// Strictly-future deadlines must NOT expire; strictly-past ones MUST.
 	// (now.After is strict; an exact-equality deadline is untestable
@@ -183,7 +183,7 @@ func TestV2BusySessionsBoundary(t *testing.T) {
 }
 
 func TestV2BusySessionsMultiExpire(t *testing.T) {
-	v := v2BusySessions{}
+	v := v2BusySessions{entries: map[string]time.Time{}}
 	v.mu.Lock()
 	for _, s := range []string{"a", "b", "c"} {
 		v.entries["w|"+s] = time.Now().Add(-time.Minute)
