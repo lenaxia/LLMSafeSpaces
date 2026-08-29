@@ -69,6 +69,14 @@ type fakeAgentBackend struct {
 	// which the timed-out sender never sees).
 	persistFirst bool
 
+	// modelSets counts POST /api/session/:sid/model hits; callOrder
+	// records model-vs-admit ordering (R4: model BEFORE admission);
+	// modelSetStatus overrides the model-set response (failure paths).
+	modelSets      int
+	callOrder      []string
+	modelSetStatus int
+	reqLog         []string
+
 	// V2 promotion controls (#1119 contract): the user text persists at
 	// PROMOTION, not at admission. promoteDelay == 0 promotes
 	// immediately after the admission response (the healthy path);
@@ -79,6 +87,30 @@ type fakeAgentBackend struct {
 }
 
 func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Session model-set (design 0054 R4): records call order relative to
+	// admissions — the outbox must set the model BEFORE the prompt.
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/model") {
+		var mb struct {
+			Model struct {
+				ID string `json:"id"`
+			} `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&mb)
+		f.mu.Lock()
+		f.reqLog = append(f.reqLog, "MODEL")
+		if mb.Model.ID != "" {
+			// Real set — capability probes POST {"model":{}} (empty id).
+			f.modelSets++
+			f.callOrder = append(f.callOrder, "model")
+		}
+		f.mu.Unlock()
+		if f.modelSetStatus != 0 {
+			w.WriteHeader(f.modelSetStatus)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// V2 admit-and-return (design 0052): persist immediately, answer
 	// with the admission envelope — no turn blocking.
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/session/") && strings.HasSuffix(r.URL.Path, "/prompt") {
@@ -89,7 +121,12 @@ func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
-		f.admits++
+		f.reqLog = append(f.reqLog, "PROMPT")
+		if body.Prompt.Text != "" {
+			// Real admission — capability probes POST {} (empty text).
+			f.admits++
+			f.callOrder = append(f.callOrder, "admit")
+		}
 		seq := f.admits
 		promoteDelay := f.promoteDelay
 		admitStatus, admitReset := f.admitStatus, f.admitReset
@@ -285,6 +322,24 @@ func newVerifyEnv(t *testing.T, backend *fakeAgentBackend, v2 ...bool) *e2eEnv {
 	ob.SetOnDelivered(env.handler.outboxOnDelivered)
 	env.handler.SetOutboxForTest(ob)
 	return env
+}
+
+// subscribeStatusEvents captures session.status events for ws-1 (the
+// R5 bridge's derived turn lifecycle).
+func subscribeStatusEvents(t *testing.T, env *e2eEnv) <-chan apitypes.WorkspaceSSEEvent {
+	t.Helper()
+	sub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	t.Cleanup(func() { env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub) })
+	out := make(chan apitypes.WorkspaceSSEEvent, 16)
+	go func() {
+		for e := range sub.Ch {
+			if e.Type == "session.status" {
+				out <- e
+			}
+		}
+	}()
+	return out
 }
 
 // subscribeQueueUpdates captures queue.update events for ws-1.
