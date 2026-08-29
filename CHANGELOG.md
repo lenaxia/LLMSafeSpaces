@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5] - 2026-08-29
+
+### Fixed
+
+- **The delivery-verify oracle works through production adapter
+  composition (#1119 follow-up, #1127)**: `systemnotices.Wrap` embeds
+  the `agent.Adapter` interface, and the handlers' local
+  `deliveryVerifier` type assertion failed silently against the wrapper
+  — every verification returned inconclusive instantly (no network
+  call, no log line). V1 masked it (blocking send completes without the
+  oracle); under V2 every delivery parked as "delivery unverifiable:
+  agent unreachable" against healthy agents — a total outage.
+  `VerifyDelivery` is promoted to `agent.Adapter` (the wrapper was the
+  "second consumer" the seam's own comment said would fund the
+  promotion), the assertion-failure branch now logs at Error level with
+  the adapter type, and a wiring-level regression test composes the
+  production wrapper stack and asserts the seam — the 2026-08-29
+  outage passed every unit test because test environments wire the raw
+  adapter.
+
+### Added
+
+- **Outbox observability (design 0054 I6, #1127)**:
+  `llmsafespaces_outbox_entries{status}` and
+  `llmsafespaces_outbox_oldest_nonterminal_age_seconds` — the depth and
+  stranding signals the 2026-08-28 incident grepped for and did not
+  find. Refreshed on a bounded cadence from the delivery worker.
+
 ## [0.25.4] - 2026-08-29
 
 ### Fixed
