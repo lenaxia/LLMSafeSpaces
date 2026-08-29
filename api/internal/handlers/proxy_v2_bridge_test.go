@@ -256,6 +256,7 @@ func TestV2Bridge_ReapOnceProcessesAllDespiteDroppedPublishes(t *testing.T) {
 	// No subscriber on ws-1's channel for this test → publishWorkspaceEvent
 	// drops silently; the reaper must still process every expired session.
 	h.v2Busy.mu.Lock()
+	h.v2Busy.entries = map[string]time.Time{}
 	for _, s := range []string{"s1", "s2", "s3"} {
 		h.v2Busy.entries["ws-1|"+s] = time.Now().Add(-time.Minute)
 	}
