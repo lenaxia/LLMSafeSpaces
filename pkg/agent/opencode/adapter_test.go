@@ -383,8 +383,13 @@ func TestAdapter_SendAsync_ModelReferenceForm(t *testing.T) {
 		prompt, ok := sent["prompt"].(map[string]any)
 		require.True(t, ok, "V2 body nests fields under prompt")
 		m, ok := prompt["model"].(map[string]any)
-		require.True(t, ok, "V2 model must be the OBJECT wire form, matching V1 (opencode 1.18.10 schema)")
-		assert.Equal(t, "glm-5.3", m["modelID"])
+		require.True(t, ok, "V2 model must be the OBJECT wire form")
+		// The fake serves no /api/session/:sid/model probe route, so the
+		// capability probe is indeterminate and the adapter defaults to
+		// the pinned runtime floor: opencode 1.18.15's {id, providerID}
+		// (the 2026-08-29 regression: indeterminate used to fall back to
+		// the legacy modelID shape and overrides were silently dropped).
+		assert.Equal(t, "glm-5.3", m["id"])
 		assert.Equal(t, "thekaocloud", m["providerID"])
 	})
 

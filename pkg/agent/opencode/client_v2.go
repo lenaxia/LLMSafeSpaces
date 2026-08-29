@@ -89,7 +89,7 @@ func (c *Client) PromptV2(ctx context.Context, sessionID, text string, delivery 
 // PromptV2WithModel is PromptV2 with an optional per-prompt model override
 // in object form (nil = session default).
 func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, delivery V2Delivery, model *V2ModelRef) (*V2PromptResponse, error) {
-	wire, err := c.modelRefWire(ctx, model)
+	wire, err := c.modelRefWireFor(ctx, sessionID, model)
 	if err != nil {
 		return nil, err
 	}
