@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.3] - 2026-08-29
+
+### Fixed
+
+- **V2 delivery can no longer silently drop messages — the outbox entry
+  completes at PROMOTION, not admission (#1119, #1121, 2026-08-28
+  incident)**: with `OPENCODE_V2_DELIVERY=1`, the deliverer previously
+  fired `queue.update/sent` the moment the V2 prompt endpoint admitted
+  the row. But the user text persists at promotion, and a defect-class
+  death (model-resolve failure, park race — observed live when a LiteLLM
+  config roll churned the model catalog) consumes or strands the
+  admitted row with no signal: no assistant, no retry, no trace in the
+  serving read mode. The deliverer now polls the promotion oracle
+  (`VerifyDelivery` anchored at admission time) for up to 30s
+  (production observations: persist lands <1s, including dying
+  promotions); an unobserved window expires ambiguous into the existing
+  #987 verifying machinery — late promotion completes,
+  absent-after-window re-admits (bounded nudge). Regression-gated by
+  the inverted pickup-completion test plus never-promotes and
+  slow-promotion contract tests against a fake that models
+  persist-at-promotion.
+
+- **opencode wire-shape drift is detected, not assumed (#1119, #1120)**:
+  the adapter now probes the live binary's capabilities (V2 prompt
+  route presence; `Model.Ref` key shape — upstream changed
+  `{modelID,providerID}` → `{id,providerID}` by 1.18.15, silently
+  breaking per-prompt model overrides) and serializes accordingly, with
+  goldens captured from live 1.18.15 traffic. New bump-gate
+  `local/opencode-binary-contract.sh` (B1–B5) validates candidate
+  binaries behaviorally before a runtime bump; validated end-to-end
+  against pristine upstream 1.18.15.
+
 ## [0.25.2] - 2026-08-28
 
 ### Fixed
