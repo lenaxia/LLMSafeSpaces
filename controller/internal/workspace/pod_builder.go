@@ -669,9 +669,18 @@ if [ "${AGENTD_SIDECAR_MODE:-}" = "1" ]; then
     --admin-prompt-out /agentd-secrets/admin-prompt.md \
     --allowed-dirs-out /agentd-config/allowed-dirs.json
 else
-  workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
+  # Single-container mode: the SAME uid split exists — this init
+  # (uid 2000) materializes the rt/* stores that uid-1000 opencode
+  # consumes (auth.json via the ~/.local/opencode symlink is
+  # load-bearing: provider init reads it; unreadable = every custom
+  # provider unresolvable, the 2026-08-29 fleet-wide
+  # ModelUnavailableError). Arm the cross-uid file modes exactly as the
+  # sidecar does (0640 via the shared gid 1000). Platform-owned writes
+  # still route through agentd; opencode's own auth-store WRITES remain
+  # best-effort (0640 is read-only for gid 1000 — US-4b T2 ruling).
+  LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
 fi
-workspace-agentd materialize
+LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize
 `
 	pwVolume := corev1.Volume{
 		Name: "pw-secret",
