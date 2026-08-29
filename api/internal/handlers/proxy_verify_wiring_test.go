@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 )
 
@@ -25,7 +24,7 @@ import (
 // agent.Adapter interface, or the wrapper stops embedding it, this fails
 // at exactly the point production would break.
 func TestComposedAdapterSatisfiesDeliveryVerifier(t *testing.T) {
-	var composed agent.Adapter = systemnotices.Wrap(&mockAdapter{}, nil)
+	composed := systemnotices.Wrap(&mockAdapter{}, nil) // agent.Adapter-typed by Wrap's signature
 	v, ok := composed.(deliveryVerifier)
 	require.True(t, ok,
 		"the PRODUCTION adapter composition must satisfy deliveryVerifier — this exact assertion failed silently on 2026-08-29 and broke all V2 delivery")
