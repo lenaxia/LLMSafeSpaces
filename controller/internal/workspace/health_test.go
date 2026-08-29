@@ -578,7 +578,10 @@ func TestInitContainerScript_NoElseBranch(t *testing.T) {
 	// applies). Installed after, the read fails on every boot and the
 	// entry is stamped disabled.
 	pwIdx := strings.Index(script, "\ninstall -m 0600 /mnt/secrets/password/password")
-	matIdx := strings.Index(script, "\nworkspace-agentd materialize")
+	// 2026-08-29: materialize is invoked with the cross-uid file modes
+	// armed (single-container init runs as uid 2000; uid-1000 opencode
+	// reads the materialized auth store — see pod_builder.go).
+	matIdx := strings.Index(script, "workspace-agentd materialize")
 	require.GreaterOrEqual(t, pwIdx, 0, "password install command line must exist")
 	require.GreaterOrEqual(t, matIdx, 0, "materialize command line must exist")
 	assert.Less(t, pwIdx, matIdx,
