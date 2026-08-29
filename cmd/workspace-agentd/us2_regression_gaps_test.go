@@ -135,13 +135,16 @@ func TestManagedProcess_SkipHealthProbeSuppressesPostRestartProbe(t *testing.T) 
 }
 
 // TestNewSupervisorProcess_SupervisorModeFlags pins the supervisor
-// command's process construction: probe skipped, no session-tracker hook.
+// command's process construction: probe skipped, no session-tracker hook,
+// adapter pre-wired to the resolved spawn base.
 func TestNewSupervisorProcess_SupervisorModeFlags(t *testing.T) {
-	proc := newSupervisorProcess()
+	proc, adapter := newSupervisorProcess()
 	require.True(t, proc.skipHealthProbe,
 		"the supervisor must not run the post-restart health probe (bearer-gated sidecar readyz; D1 token boundary)")
 	require.Nil(t, proc.onChildStarted,
 		"no session tracker in supervisor mode — policy lives in the sidecar")
+	require.NotNil(t, adapter.baseCmdFactory,
+		"the adapter must carry the resolved spawn base (design 0053 S1) so socket spawn-env pushes wrap it")
 }
 
 // --- Gap 3: supervisor metrics wiring ---------------------------------------

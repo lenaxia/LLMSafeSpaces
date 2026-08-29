@@ -34,7 +34,15 @@ const orgStatusCacheTTL = 30 * time.Second
 // contract at startup.
 type AgentdDelivery = workspace.AgentdDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, agentdSidecarEnabled bool) error {
+// OpencodeDelivery is the design 0053 §4.2 image-volume opencode
+// delivery configuration. Zero value (empty Image) = baked-in mode (S1
+// default, opt-in). When set, every workspace pod gets a digest-pinned
+// image volume + RO mount (workspace container only) + sha256 verify
+// pins; validateOpencodeDeliveryConfig enforces the all-or-nothing
+// contract at startup.
+type OpencodeDelivery = workspace.OpencodeDeliveryConfig
+
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -51,18 +59,21 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 	}
 
 	if err := (&workspace.WorkspaceReconciler{
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		InferenceRelayURL:       inferenceRelayURL,
-		OrgStatusClient:         orgStatusClient,
-		DefaultRuntimeClass:     defaultRuntimeClass,
-		APIServiceURL:           apiServiceURL,
-		PreviewOriginBaseDomain: previewOriginBaseDomain,
-		AgentdImage:             agentdDelivery.Image,
-		AgentdBinarySHA256AMD64: agentdDelivery.BinarySHA256AMD64,
-		AgentdBinarySHA256ARM64: agentdDelivery.BinarySHA256ARM64,
-		AgentdSidecarEnabled:    agentdSidecarEnabled,
-		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		InferenceRelayURL:         inferenceRelayURL,
+		OrgStatusClient:           orgStatusClient,
+		DefaultRuntimeClass:       defaultRuntimeClass,
+		APIServiceURL:             apiServiceURL,
+		PreviewOriginBaseDomain:   previewOriginBaseDomain,
+		AgentdImage:               agentdDelivery.Image,
+		AgentdBinarySHA256AMD64:   agentdDelivery.BinarySHA256AMD64,
+		AgentdBinarySHA256ARM64:   agentdDelivery.BinarySHA256ARM64,
+		OpencodeImage:             opencodeDelivery.Image,
+		OpencodeBinarySHA256AMD64: opencodeDelivery.BinarySHA256AMD64,
+		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
+		AgentdSidecarEnabled:      agentdSidecarEnabled,
+		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
 		return err

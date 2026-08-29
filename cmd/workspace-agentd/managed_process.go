@@ -61,10 +61,12 @@ type managedProcess struct {
 	adminToken string
 
 	// cmdFactory builds a fresh *exec.Cmd for each (re)start.
-	// Production wires `opencode serve …`; tests inject a fake.
-	// Set lazily by start() if nil at call time, so production code
-	// can construct managedProcess{} with no arguments and tests can
-	// pre-populate the field before calling start().
+	// Production wires `opencode serve …` — PATH-lookup legacy or the
+	// sha256-verified overlay binary (opencodeSpawnBaseFactory, design
+	// 0053 S1); tests inject a fake. Set lazily by start() if nil at call
+	// time, so production code can construct managedProcess{} with no
+	// arguments and tests can pre-populate the field before calling
+	// start().
 	cmdFactory func() *exec.Cmd
 
 	// healthCheckURL is the URL polled after restart() to verify the
@@ -141,7 +143,7 @@ func (p *managedProcess) start() {
 		return
 	}
 	if p.cmdFactory == nil {
-		p.cmdFactory = defaultOpencodeCmdFactory
+		p.cmdFactory = opencodeSpawnBaseFactory()
 	}
 	if p.healthCheckURL == "" {
 		p.healthCheckURL = healthCheckURL
@@ -487,16 +489,29 @@ func (p *managedProcess) healthProbeAfterRestart() {
 	log.Warn("opencode did not become healthy within 10s after restart")
 }
 
-// defaultOpencodeCmdFactory builds the production *exec.Cmd that runs
-// `opencode serve` on the well-known port. Pulled out so tests can
-// substitute a fake without touching this function.
+// defaultOpencodeCmdFactory builds the production *exec.Cmd for the legacy
+// baked binary: `opencode serve` resolved via PATH lookup (through the mise
+// shims). The overlay-verified direct-exec variant lives in
+// opencode_overlay.go; both share opencodeServeCmd so argv, stdio, and env
+// construction cannot drift apart.
 func defaultOpencodeCmdFactory() *exec.Cmd {
+	return opencodeServeCmd("opencode")
+}
+
+// opencodeServeCmd builds the opencode serve child for the given binary
+// path. Single construction point for both the PATH-lookup legacy spawn
+// and the overlay direct-exec spawn (design 0053 S1): only argv[0]
+// differs — args, stdout/stderr wiring, and the secrets-env-merged
+// environment are identical by construction.
+func opencodeServeCmd(bin string) *exec.Cmd {
 	// G204: argument list is fixed at compile time; agentd.AgentPort
-	// is a typed int constant. The only "variable" here is
-	// fmt.Sprintf converting that constant to a string. noctx:
-	// opencode is a long-running daemon, no per-call deadline.
+	// is a typed int constant. The only "variable" here is fmt.Sprintf
+	// converting that constant to a string, plus bin — either the
+	// compile-time PATH-lookup name or the sha256-verified overlay path
+	// resolved by opencodeSpawnBaseFactory. noctx: opencode is a
+	// long-running daemon, no per-call deadline.
 	//nolint:gosec,noctx // G204/noctx: fixed argv, daemon process
-	cmd := exec.Command("opencode", "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", agentd.AgentPort))
+	cmd := exec.Command(bin, "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", agentd.AgentPort))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = buildEnvFrom(agentd.SecretsEnvPath)

@@ -258,6 +258,51 @@ controller:
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
 
+  # Design 0053 §4.2: opencode overlay delivery — the SAME mechanism as
+  # agentdDelivery above, for the opencode binary: digest-pinned image
+  # volume mounted read-only at /opencode on the workspace container
+  # (the supervisor spawns opencode from there and verifies its sha256
+  # against the per-arch pins before exec; exit 83/84 → OpencodeVerified
+  # condition + critical alert). SEPARATE pin from agentdDelivery by
+  # design: opencode moves only after an upstream release AND a
+  # worklog-0657-style validation pass, agentd with every platform
+  # release — bundling them would couple every agentd rollback to an
+  # opencode rollforward and hide the validated opencode version inside
+  # whichever platform tag built the bundle (design 0053 §5).
+  #
+  # NAMING NOTE: this is unrelated to the API-side OPENCODE_V2_DELIVERY
+  # flag (api.extraEnv above, design 0052 inboard delivery) — a
+  # coincidental name, different subsystem.
+  #
+  # RENOVATE-FRIENDLY PIN (the normal form): set ONLY the image, in the
+  # canonical tag+digest form dependency bots manage natively:
+  #
+  #   image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:<manifest-digest>
+  #
+  # The per-arch BINARY sha256s are stamped onto the image index as OCI
+  # annotations by CI and resolved by the controller at startup (cached
+  # in the llmsafespaces-opencode-pins ConfigMap for registry outages) —
+  # they can never desync from the digest.
+  #
+  # CAVEAT: the standalone opencode artifact + its CI annotation
+  # stamping land in the #1116 S1 follow-up — until then no opencode
+  # index carries the annotations, so image-only is a valid Helm render
+  # but the controller fails startup at pin resolution ("missing valid
+  # pin annotations"); until the follow-up lands, also set the
+  # break-glass binarySHA256* pair (both or neither) since there is no
+  # annotated index to resolve yet. If the pinned index lacks the
+  # annotations (now or after the follow-up), set the break-glass pair.
+  #
+  # binarySHA256* are optional per-image overrides (break-glass): set
+  # BOTH or NEITHER. Hashes without an image, or a one-sided pair, fail
+  # the Helm render. Leave everything empty (default) to keep opencode
+  # baked into runtimes/base — S1 is opt-in and inert until the base
+  # strip (S3) makes the pin mandatory.
+  opencodeDelivery:
+    image: ""
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+
   # Design 0051 (agentd uid separation): split agentd into a native
   # sidecar container (uid 2000/gid 1000, policy half: muxes, watchdog,
   # SSE tracking, relay injector, credential boot phase) plus a same-uid

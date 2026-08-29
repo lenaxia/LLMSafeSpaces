@@ -46,7 +46,7 @@ const (
 )
 
 func fakeIndexFetcher(ann map[string]string, err error) remoteIndexFetcher {
-	return func(_ context.Context, _ string) (ociAnnotations, error) {
+	return func(_ context.Context, _ overlayPinSource, _ string) (ociAnnotations, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +66,7 @@ func TestCachedPinResolver_ExtractsAnnotations(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(goodAnnotations(), nil)}
+	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", source: agentdPinSource, fetch: fakeIndexFetcher(goodAnnotations(), nil)}
 	pins, err := r.Resolve(context.Background(), pinImage)
 	require.NoError(t, err)
 	require.Equal(t, pinAMD64, pins.SHA256AMD64)
@@ -77,7 +77,7 @@ func TestCachedPinResolver_MissingAnnotationsFails(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(map[string]string{}, nil)}
+	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", source: agentdPinSource, fetch: fakeIndexFetcher(map[string]string{}, nil)}
 	_, err := r.Resolve(context.Background(), pinImage)
 	require.Error(t, err, "an index without pin annotations is a broken pipeline — fail closed, never launch unverifiable pods")
 	require.Contains(t, err.Error(), "annotation")
@@ -88,6 +88,7 @@ func TestCachedPinResolver_SuccessWritesCache(t *testing.T) {
 	require.NoError(t, corev1.AddToScheme(scheme))
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	res := &cachedPinResolver{
+		source:    agentdPinSource,
 		Client:    c,
 		Namespace: "llmsafespaces",
 		fetch:     fakeIndexFetcher(goodAnnotations(), nil),
@@ -115,6 +116,7 @@ func TestCachedPinResolver_FetchFailureFallsBackToCache(t *testing.T) {
 		},
 	}).Build()
 	res := &cachedPinResolver{
+		source:    agentdPinSource,
 		Client:    c,
 		Namespace: "llmsafespaces",
 		fetch:     fakeIndexFetcher(nil, errFetchUnavailable),
@@ -136,6 +138,7 @@ func TestCachedPinResolver_StaleCacheRejected(t *testing.T) {
 		},
 	}).Build()
 	res := &cachedPinResolver{
+		source:    agentdPinSource,
 		Client:    c,
 		Namespace: "llmsafespaces",
 		fetch:     fakeIndexFetcher(nil, errFetchUnavailable),
@@ -152,7 +155,7 @@ func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
 
 	// No cache at all → sentinel.
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", source: agentdPinSource, fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
 	_, err := res.Resolve(context.Background(), pinImage)
 	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "first-boot outage must carry the sentinel for the manual-pin hint")
 
@@ -165,7 +168,7 @@ func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
 			"sha256-arm64": pinARM64,
 		},
 	}).Build()
-	res3 := &cachedPinResolver{Client: c3, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	res3 := &cachedPinResolver{source: agentdPinSource, Client: c3, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
 	_, err = res3.Resolve(context.Background(), pinImage)
 	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "malformed-cache refusal must carry the sentinel")
 
@@ -175,7 +178,7 @@ func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
 			return apierrors.NewForbidden(schema.GroupResource{Group: "", Resource: "configmaps"}, key.Name, errors.New("denied"))
 		},
 	}).Build()
-	res4 := &cachedPinResolver{Client: c4, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	res4 := &cachedPinResolver{source: agentdPinSource, Client: c4, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
 	_, err = res4.Resolve(context.Background(), pinImage)
 	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "RBAC-denied cache read must carry the sentinel")
 	require.Contains(t, err.Error(), AgentdPinsConfigMapName, "the RBAC hint must name the ConfigMap")
@@ -189,7 +192,7 @@ func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
 			"sha256-arm64": pinARM64,
 		},
 	}).Build()
-	res2 := &cachedPinResolver{Client: c2, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	res2 := &cachedPinResolver{source: agentdPinSource, Client: c2, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
 	_, err = res2.Resolve(context.Background(), pinImage)
 	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "stale-cache refusal must carry the sentinel")
 }
@@ -205,7 +208,7 @@ func TestCachedPinResolver_MalformedCacheRejected(t *testing.T) {
 			"sha256-arm64": pinARM64,
 		},
 	}).Build()
-	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errFetchUnavailable)}
+	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", source: agentdPinSource, fetch: fakeIndexFetcher(nil, errFetchUnavailable)}
 	_, err := res.Resolve(context.Background(), pinImage)
 	require.Error(t, err, "a malformed cache entry must not satisfy the pin")
 	require.Contains(t, err.Error(), "malformed")
@@ -251,7 +254,7 @@ func TestResolvePinsFromCluster_ConfigErrorSurfaces(t *testing.T) {
 	// (agentd_pins_envtest_test.go) — a unit test here cannot prove it.
 	_, err := resolvePinsFromCluster(context.Background(),
 		func() (*rest.Config, error) { return nil, errors.New("no kubeconfig") },
-		"", fakeIndexFetcher(goodAnnotations(), nil), pinImage)
+		"", fakeIndexFetcher(goodAnnotations(), nil), agentdPinSource, pinImage)
 	require.ErrorContains(t, err, "kubeconfig")
 }
 
@@ -286,6 +289,7 @@ func TestCachedPinResolver_RetaggedSameDigestServesDuringOutage(t *testing.T) {
 		},
 	}).Build()
 	res := &cachedPinResolver{
+		source:    agentdPinSource,
 		Client:    c,
 		Namespace: "llmsafespaces",
 		fetch:     fakeIndexFetcher(nil, errFetchUnavailable),

@@ -62,7 +62,7 @@ func TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches(t *testing.T) {
 	origLoad := loadConfig
 	loadConfig = func() (*rest.Config, error) { return cfg, nil }
 	origFetch := prodFetchIndexAnnotations
-	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+	prodFetchIndexAnnotations = func(context.Context, overlayPinSource, string) (ociAnnotations, error) {
 		calls++
 		return goodAnnotations(), nil
 	}
@@ -105,7 +105,7 @@ func TestEnvtestAgentdPins_NamespaceFallbackProven(t *testing.T) {
 	origLoad := loadConfig
 	loadConfig = func() (*rest.Config, error) { return cfg, nil }
 	origFetch := prodFetchIndexAnnotations
-	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+	prodFetchIndexAnnotations = func(context.Context, overlayPinSource, string) (ociAnnotations, error) {
 		return goodAnnotations(), nil
 	}
 	t.Cleanup(func() {
@@ -137,7 +137,7 @@ func TestEnvtestAgentdPins_OutageFallsBackToCache(t *testing.T) {
 	origLoad := loadConfig
 	loadConfig = func() (*rest.Config, error) { return cfg, nil }
 	origFetch := prodFetchIndexAnnotations
-	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+	prodFetchIndexAnnotations = func(context.Context, overlayPinSource, string) (ociAnnotations, error) {
 		return goodAnnotations(), nil
 	}
 	t.Cleanup(func() {
@@ -150,7 +150,7 @@ func TestEnvtestAgentdPins_OutageFallsBackToCache(t *testing.T) {
 	require.Equal(t, pinAMD64, pins.SHA256AMD64)
 
 	// Registry goes down; the same digest must still resolve from cache.
-	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+	prodFetchIndexAnnotations = func(context.Context, overlayPinSource, string) (ociAnnotations, error) {
 		return nil, errFetchUnavailable
 	}
 	pins, err = ResolvePinsWithCache(context.Background(), pinImage, "", "")

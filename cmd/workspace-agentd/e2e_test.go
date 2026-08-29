@@ -24,7 +24,12 @@ import (
 
 func TestMain(m *testing.M) {
 	log = zap.NewNop()
-	os.Exit(m.Run())
+	code := m.Run()
+	// Drain the shared test-binary temp dir recorded by buildAgentdBinary
+	// (secrets_test.go). Runs after all tests so the once-per-process
+	// sharing is unchanged; os.Exit would skip a plain defer.
+	cleanupAgentdTestBinary()
+	os.Exit(code)
 }
 
 // TestE2E_SSEToStatusz exercises the full flow:

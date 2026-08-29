@@ -274,6 +274,11 @@ const (
 	// image-volume-delivered workspace-agentd binary (#863). Only set when
 	// agentd overlay delivery is enabled; absent in legacy baked-in mode.
 	WorkspaceConditionAgentdVerified WorkspaceConditionType = "AgentdVerified"
+	// WorkspaceConditionOpencodeVerified reports the integrity state of
+	// the image-volume-delivered opencode binary (design 0053 §4.2).
+	// Only set when opencode overlay delivery is enabled; absent when
+	// the binary stays baked into runtimes/base.
+	WorkspaceConditionOpencodeVerified WorkspaceConditionType = "OpencodeVerified"
 	// WorkspaceConditionBootReady reports the platform boot phase
 	// (design 0051 sidecar migration, step 1): init-fs, bootstrap, and
 	// materialize as executed by the platform containers. False with
@@ -305,6 +310,12 @@ const (
 	ReasonAgentdVerificationFailed = "AgentdVerificationFailed"
 	ReasonAgentdOverlayMissing     = "AgentdOverlayMissing"
 	ReasonAgentdVerified           = "AgentdVerified"
+	// Design 0053 §4.2 opencode overlay delivery: supervisor sha256
+	// verification outcomes (exit codes 83/84, distinct from agentd's
+	// 81/82 so a dual-overlay pod's failure attribution never crosses).
+	ReasonOpencodeVerificationFailed = "OpencodeVerificationFailed"
+	ReasonOpencodeOverlayMissing     = "OpencodeOverlayMissing"
+	ReasonOpencodeVerified           = "OpencodeVerified"
 	// Design 0051 sidecar migration step 1: platform boot-phase outcomes
 	// (init-fs / bootstrap / materialize in the platform containers).
 	ReasonPlatformBootFailed = "PlatformBootFailed"

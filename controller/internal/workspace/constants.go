@@ -49,6 +49,11 @@ const pendingPhaseTimeout = 5 * time.Minute
 // tampering); reconciling faster only re-reads the same terminal state.
 const agentdVerifyFailureRequeue = 5 * time.Minute
 
+// opencodeVerifyFailureRequeue (design 0053 §4.2): the same cadence for
+// opencode verify failures (exit 83/84) — same operator-action-only
+// semantics as the agentd constant above.
+const opencodeVerifyFailureRequeue = 5 * time.Minute
+
 // stuckScheduledPendingTimeout is how long a pod can remain Pending
 // despite being scheduled (PodScheduled=True) before the controller
 // declares it stuck and enters recovery. This catches node-level
