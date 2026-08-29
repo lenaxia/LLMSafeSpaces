@@ -17,6 +17,8 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+
+	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 )
 
 // V2SessionClient is re-exported from pkg/agent (the canonical location).
@@ -284,7 +286,73 @@ func (h *ProxyHandler) onV2RawEvent(workspaceID, eventType, rawData string) {
 		h.bridgeV2Admitted(workspaceID, rawData)
 	case v2EventPrompted:
 		h.bridgeV2Prompted(workspaceID, rawData)
+		h.bridgeV2Status(workspaceID, rawData, "busy")
+	case v2EventStepEnded:
+		h.bridgeV2TurnEnd(workspaceID, rawData)
+	case v2EventStepFailed:
+		h.bridgeV2Failed(workspaceID, rawData)
 	}
+}
+
+// bridgeV2Status publishes the platform session.status SSE event for a
+// V2 turn state change. V2 turns never emit the V1 session.status events
+// the frontend's turn lifecycle rides (design 0054 R5): busy arrives
+// with the promotion (the turn is running), idle with the terminal step.
+// Dual-published (workspace + user channel) exactly like the tracker's
+// onSessionActive/onSessionIdle emitters these mirror.
+func (h *ProxyHandler) bridgeV2Status(workspaceID, rawData, status string) {
+	if h.userBroker == nil {
+		return
+	}
+	var props struct {
+		Properties struct {
+			SessionID string `json:"sessionID"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rawData), &props); err != nil || props.Properties.SessionID == "" {
+		return
+	}
+	h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+		Type:      "session.status",
+		SessionID: props.Properties.SessionID,
+		Status:    status,
+	})
+	if userID := h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
+		h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+			Type:        "session.status",
+			WorkspaceID: workspaceID,
+			SessionID:   props.Properties.SessionID,
+			Status:      status,
+		})
+	}
+}
+
+// bridgeV2TurnEnd derives idle from the terminal step: finish "stop" (or
+// end_turn variants) marks the turn's last step. Intermediate tool steps
+// carry other finish values and must NOT idle the session.
+func (h *ProxyHandler) bridgeV2TurnEnd(workspaceID, rawData string) {
+	var props struct {
+		Properties struct {
+			SessionID string `json:"sessionID"`
+			Finish    string `json:"finish"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rawData), &props); err != nil {
+		return
+	}
+	switch props.Properties.Finish {
+	case "stop", "end_turn", "":
+		// "" treated as terminal: observed captures show tool steps
+		// carrying explicit tool finishes; refine on evidence.
+		h.bridgeV2Status(workspaceID, rawData, "idle")
+	}
+}
+
+// bridgeV2Failed: a failed step terminates the turn (error assistant is
+// persisted agent-side) — idle plus the contract error event, which the
+// adapter's ClientEventsFromEvent already emits from step.failed.
+func (h *ProxyHandler) bridgeV2Failed(workspaceID, rawData string) {
+	h.bridgeV2Status(workspaceID, rawData, "idle")
 }
 
 func (h *ProxyHandler) bridgeV2Admitted(workspaceID, rawData string) {
@@ -336,6 +404,11 @@ func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
 // ---------------------------------------------------------------------------
 // US-63.9: Stranded-Input Recovery — wake on reconnect
 // ---------------------------------------------------------------------------
+
+const (
+	v2EventStepEnded  = "session.next.step.ended"
+	v2EventStepFailed = "session.next.step.failed"
+)
 
 // wakeStrandedV2Sessions sends a minimal delivery:"queue" prompt to each
 // idle session that has pending V2 input. This triggers opencode's
