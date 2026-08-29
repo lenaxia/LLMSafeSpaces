@@ -27,10 +27,13 @@ const goldenProbeMissingKeyID = `{"_tag":"InvalidRequestError","message":"Missin
 const goldenProbeMissingKeyModelID = `{"_tag":"InvalidRequestError","message":"Missing key\n  at [\"model\"][\"modelID\"]","kind":"Payload"}`
 
 // goldenAdmittedEvent / goldenPromptedEvent are captured from the durable
-// per-session event log (seq 4168/4169, ses_fbaaf78, production).
-const goldenAdmittedEvent = `{"type":"session.next.prompt.admitted","durable":{"aggregateID":"ses_fb9563987ffeu4b0f6fJro8XNE","seq":4168,"version":1},"data":{"sessionID":"ses_fb9563987ffeu4b0f6fJro8XNE","messageID":"msg_047e6b3f0001mOoyzQEaZXP00S","prompt":{"text":"Summarize."},"delivery":"queue"}}`
+// per-session event log (real capture, stress workspace ses_fb70a654,
+// 2026-08-28). NOTE the load-bearing detail: prompted carries the USER
+// messageID — the same id the admission returns — which is the correlation
+// key for the #1119 delivery-acknowledgment seam.
+const goldenAdmittedEvent = `{"id":"evt_048f59c17002smP7EYvhLnuk2LkZ","type":"session.next.prompt.admitted","durable":{"aggregateID":"ses_fb70a6547ffefMTRGKDBfJs2RD","seq":1,"version":1},"data":{"timestamp":1787930450967,"sessionID":"ses_fb70a6547ffefMTRGKDBfJs2RD","messageID":"msg_048f59c170013F1qt8QPxNVLaS","prompt":{"text":"reply with exactly: NODELIVERY_TEST_1"},"delivery":"steer"}}`
 
-const goldenPromptedEvent = `{"type":"session.next.prompted","durable":{"aggregateID":"ses_fb9563987ffeu4b0f6fJro8XNE","seq":4169,"version":1},"data":{"sessionID":"ses_fb9563987ffeu4b0f6fJro8XNE","assistantMessageID":"msg_047e6b3f0001zz"}}`
+const goldenPromptedEvent = `{"id":"evt_048f59daf001wOFaOFX6V9lhPr","type":"session.next.prompted","durable":{"aggregateID":"ses_fb70a6547ffefMTRGKDBfJs2RD","seq":2,"version":1},"data":{"timestamp":1787930450967,"sessionID":"ses_fb70a6547ffefMTRGKDBfJs2RD","messageID":"msg_048f59c170013F1qt8QPxNVLaS","prompt":{"text":"reply with exactly: NODELIVERY_TEST_1"},"delivery":"steer"}}`
 
 func newContractClient(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.Server) {
 	t.Helper()
