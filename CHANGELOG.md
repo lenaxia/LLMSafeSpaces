@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.7] - 2026-08-29
+
+### Fixed
+
+- **Single-container pods materialize cross-uid readable credential
+  stores (#1119 follow-up, #1131)**: the uid-2000 init wrote rt/* files
+  with owner-only modes — opencode (uid 1000) could never read its
+  auth store, so every custom provider failed init and every
+  their-model turn died at resolve (fleet-wide
+  `ModelUnavailableError` on 2026-08-29 while the relay served the
+  models and the generated config listed them; `PUT /auth` 500s with
+  EACCES on the same file). The single-container bootstrap and
+  materialize now arm `LLMSAFESPACES_CROSS_UID_FILES` exactly as the
+  sidecar path always has (files 0640 via the shared gid 1000).
+  Existing pods need recreation to land the fixed modes.
+
 ## [0.25.6] - 2026-08-29
 
 ### Fixed
