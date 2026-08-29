@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.6] - 2026-08-29
+
+### Fixed
+
+- **Model fidelity under V2 delivery (#1119 follow-up, #1129)**: the
+  V2 prompt endpoint strips per-prompt model overrides entirely
+  (verified live: a prompt carrying a bogus model admitted cleanly and
+  ran on the session default — the field is not in the endpoint's
+  schema). Entries carrying a model selection now apply it to the
+  SESSION via the /model route before admission — the same mechanism
+  the SPA uses. `SetSessionModel` sits on `agent.Adapter` (wrappers
+  inherit; the #1127 lesson). Regression-gated: model-set-before-admit
+  ordering, model VALUE arrival, 5xx-without-admission, and the
+  no-model no-op.
+
+- **V2 turn lifecycle + session indexing — first R5 bridge slice
+  (design 0054 Mechanism 3, #1129)**: V2 turns emit session.next.*
+  only; the frontend's turn lifecycle (session.status busy/idle) and
+  the sidebar index rode V1 events that never fire. Live symptoms:
+  every turn timed out as "Response interrupted" (useChatStream waits
+  for session.status=idle) and new sessions never reached the sidebar
+  (agent listed 3, API served 2). busy now derives from
+  session.next.prompted; idle from the terminal step (finish stop /
+  end_turn; failed steps idle too; tool finishes ignored); sessions
+  are indexed AT CREATION — the platform owns session CRUD.
+
 ## [0.25.5] - 2026-08-29
 
 ### Fixed
