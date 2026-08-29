@@ -56,6 +56,12 @@ func (a *Adapter) VerifyDelivery(ctx context.Context, userID, workspaceID, sessi
 	if err != nil {
 		return false, false, err
 	}
+	// #1119 follow-up 2: verify runs on its own bounded, keep-alive-free
+	// client (copy, not mutation — the resolved Client's pooled transport
+	// stays shared for Send/admissions). One wedged agent connection can
+	// then cost at most a single bounded verify pass, never the pool or
+	// the promotion-await budget.
+	c = a.withVerifyClient(c)
 	if a.v2Store {
 		return a.verifyDeliveryV2(ctx, c, sessionID, text, since)
 	}

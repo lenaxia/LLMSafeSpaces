@@ -313,13 +313,21 @@ var outboxTick = 1 * time.Second
 // V2 promotion-await tunables (#1119). Production observations on
 // opencode 1.18.15: `session.next.prompted` (and the user-text persist)
 // land within ~1s of admission — including for defect-class deaths, which
-// ALSO promote-then-die; a promotion unobserved for v2PromotionWait is a
+// ALSO promote-then-die; a promotion unobserved for V2PromotionWait is a
 // genuinely stranded row (park race), and the ambiguous→verifying→re-admit
 // path is the bounded nudge. Vars for tests.
 var (
-	v2PromotionWait = 30 * time.Second
+	// V2PromotionWait bounds the admission→promotion await (#1119).
+	// Exported read via V2PromotionAwaitBudget so app wiring can size
+	// outbox.DeliveryTimeout around it (the wait runs INSIDE the
+	// deliverer's detached context).
+	V2PromotionWait = 30 * time.Second
 	v2PromotionPoll = 2 * time.Second
 )
+
+// V2PromotionAwaitBudget reports the current promotion-await window
+// (app wiring sizes the V2 delivery budget = window + margin).
+func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
@@ -380,7 +388,7 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 		}
 		_ = msgID // correlation key for the events-based fast path (follow-up)
 		verifier, hasVerifier := h.adapter.(deliveryVerifier)
-		deadline := time.Now().UTC().Add(v2PromotionWait)
+		deadline := time.Now().UTC().Add(V2PromotionWait)
 		for {
 			if hasVerifier {
 				if delivered, _, verr := verifier.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, admittedAt); verr == nil && delivered {
@@ -388,7 +396,7 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 				}
 			}
 			if !time.Now().UTC().Before(deadline) {
-				return outbox.Ambiguous(fmt.Errorf("v2 promotion not observed within %s (admission msg %q)", v2PromotionWait, msgID))
+				return outbox.Ambiguous(fmt.Errorf("v2 promotion not observed within %s (admission msg %q)", V2PromotionWait, msgID))
 			}
 			select {
 			case <-ctx.Done():
@@ -448,6 +456,14 @@ func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID 
 	delivered, definitive, err := v.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, since)
 	switch {
 	case err != nil:
+		// #1119 follow-up 2: verify errors were silent in the first
+		// live-traffic incident — seven inconclusive passes against a
+		// healthy agent left no log line. Surface them: an unreachable
+		// or wedged verify path is ops signal, not noise (cadence is
+		// bounded by the verify backoff ladder).
+		h.logger.Warn("outbox verify inconclusive: transport error",
+			"workspaceID", workspaceID, "sessionID", sessionID,
+			"entryID", e.ID, "error", err)
 		return outbox.VerdictInconclusive
 	case delivered:
 		return outbox.VerdictDelivered

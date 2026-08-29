@@ -50,8 +50,11 @@ func TestCapabilityProbeModelRefShapes(t *testing.T) {
 		wantProbed bool
 	}{
 		{"1.18.15 id-key shape", goldenProbeMissingKeyID, true, true},
-		{"1.18.14 modelID-key shape", goldenProbeMissingKeyModelID, false, true},
-		{"404 first (existence pre-check) — indeterminate", `{"error":"not found"}`, false, true},
+		{"1.18.14 modelID-key shape (positive legacy probe)", goldenProbeMissingKeyModelID, false, true},
+		// Indeterminate (existence-first 404 / unknown body) defaults to
+		// the pinned floor: id-key. The 2026-08-29 regression was this
+		// case falling back to legacy and dropping every override.
+		{"404 first (existence pre-check) — indeterminate → floor", `{"error":"not found"}`, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,9 +70,11 @@ func TestCapabilityProbeModelRefShapes(t *testing.T) {
 					w.WriteHeader(http.StatusNotFound)
 				}
 			})
-			caps, err := c.Capabilities(context.Background())
+			// Session-aware probe: the shape probe only runs with a real
+			// session (existence-first binaries 404 synthetic IDs).
+			caps, err := c.capabilitiesFor(context.Background(), "ses_probe")
 			if err != nil {
-				t.Fatalf("Capabilities: %v", err)
+				t.Fatalf("capabilitiesFor: %v", err)
 			}
 			if !caps.Probed {
 				t.Fatal("Probed must be true after probe")

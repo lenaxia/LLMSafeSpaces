@@ -42,6 +42,16 @@ type Client struct {
 	// so the adapter detects instead of assuming.
 	capsOnce sync.Once
 	cached   Capabilities
+	// capsSource, when set (by the adapter at send time), consults the
+	// adapter-scoped positive-only cache instead of this per-client
+	// probe — clients are constructed per resolve, so a per-client cache
+	// would re-probe every message.
+	capsSource func(ctx context.Context, sessionID string) (Capabilities, error)
+}
+
+// setCapabilitySource injects the adapter-scoped capability source.
+func (c *Client) setCapabilitySource(fn func(ctx context.Context, sessionID string) (Capabilities, error)) {
+	c.capsSource = fn
 }
 
 type nonRetryableError struct {

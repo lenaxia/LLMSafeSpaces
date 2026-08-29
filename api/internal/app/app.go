@@ -307,9 +307,17 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// Design 0052: admission-scale delivery windows. The V1
 			// sync send blocks turn-to-completion (hence 10-minute
 			// bounds); the V2 admit-and-return POST completes in
-			// milliseconds, so the bounds shrink to admission scale.
-			// Set once here, before Start() spawns the worker.
-			outbox.DeliveryTimeout = 30 * time.Second
+			// milliseconds, so the bounds shrink to admission scale —
+			// but the delivery attempt ALSO carries the #1119
+			// promotion-await loop, whose window must fit INSIDE the
+			// budget with margin for the admission POST, the final
+			// verify poll, and bookkeeping. First live traffic
+			// (2026-08-29) showed the hazard of budget == window: the
+			// detached ctx expires mid-loop and surfaces as
+			// "ambiguous: context deadline exceeded" instead of the
+			// promotion-window ambiguity. Set once here, before
+			// Start() spawns the worker.
+			outbox.DeliveryTimeout = handlers.V2PromotionAwaitBudget() + 20*time.Second
 			outbox.LockTTL = 2 * time.Minute
 		}
 	} else {

@@ -30,6 +30,11 @@ type Capabilities struct {
 	// override is silently rejected when the wrong shape is sent (#1119
 	// stress finding 5) — this probe is what prevents a repeat.
 	ModelRefIDKey bool
+	// ModelRefLegacy is true ONLY on a positive legacy probe (the 400
+	// named ["model"]["modelID"]). It distinguishes "probed legacy" from
+	// "indeterminate" — the latter defaults to the pinned floor's
+	// id-key shape (see probeCapabilities).
+	ModelRefLegacy bool
 	// Probed is true once a probe completed (successfully or not); callers
 	// can distinguish "not yet probed" from "probed, route absent".
 	Probed bool
@@ -46,7 +51,17 @@ var missingKeyRe = regexp.MustCompile(`\[\\?"model\\?"\]\[\\?"(id|modelID)\\?"\]
 // probe sends a payload that CANNOT be accepted (empty model object; empty
 // prompt body), so no session state is ever mutated — responses are
 // validation errors whose shape carries the information.
-func (c *Client) probeCapabilities(ctx context.Context) Capabilities {
+//
+// sessionID is the REAL session the caller is about to use: some binaries
+// validate session existence BEFORE payload shape (observed live: a 1.18.15
+// answering `{"message":"Invalid session ID"}` for a synthetic ID), which
+// makes a bogus-session probe indeterminate — the 2026-08-29 regression:
+// indeterminate fell back to the legacy modelID wire shape, 1.18.15
+// silently dropped every per-prompt override, and all production messages
+// ran on the workspace default model. The real session makes payload
+// validation observable; the indeterminate fallback is now the pinned
+// runtime floor (id-key shape).
+func (c *Client) probeCapabilities(ctx context.Context, sessionID string) Capabilities {
 	caps := Capabilities{Probed: true}
 
 	// Route existence: POST /api/session/:sid/prompt with an invalid body.
@@ -61,14 +76,22 @@ func (c *Client) probeCapabilities(ctx context.Context) Capabilities {
 	// object. The 400 names the first missing required key:
 	//   >= 1.18.15: Missing key ["model"]["id"]
 	//   <= 1.18.14: Missing key ["model"]["modelID"]
-	// The target session is nonexistent; payload validation firing (400
-	// before 404) is itself part of the observed contract. If the server
-	// checks existence first (404), the probe is indeterminate and the
-	// adapter falls back to the pinned-floor shape with a warning.
-	if code, body := c.postRaw(ctx, "/api/session/00000000000000000000000000/model", map[string]any{"model": map[string]any{}}); code == 400 {
-		if m := missingKeyRe.FindSubmatch(body); m != nil {
-			caps.ModelRefIDKey = string(m[1]) == "id"
+	if sid := sessionID; sid != "" {
+		if code, body := c.postRaw(ctx, "/api/session/"+sid+"/model", map[string]any{"model": map[string]any{}}); code == 400 {
+			if m := missingKeyRe.FindSubmatch(body); m != nil {
+				caps.ModelRefIDKey = string(m[1]) == "id"
+				caps.ModelRefLegacy = string(m[1]) == "modelID"
+			}
 		}
+	}
+	// Indeterminate probe (validation ordering, transport, unknown body):
+	// default to the pinned runtime floor — opencode 1.18.15's id-key
+	// shape (the runbook floor since #1106). The legacy modelID shape is
+	// only used on a POSITIVE legacy probe, never as a fallback.
+	if caps.ModelRefIDKey {
+		// positive id probe
+	} else if !caps.ModelRefLegacy {
+		caps.ModelRefIDKey = true
 	}
 	return caps
 }
@@ -77,6 +100,15 @@ func (c *Client) probeCapabilities(ctx context.Context) Capabilities {
 // On transport failure it returns the zero value with Probed=true and the
 // adapter must treat the run as degraded (log loudly, use floor defaults).
 func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
+	return c.capabilitiesFor(ctx, "")
+}
+
+// capabilitiesFor probes with an optional real session ID for
+// existence-checked binaries (see probeCapabilities).
+func (c *Client) capabilitiesFor(ctx context.Context, sessionID string) (Capabilities, error) {
+	if c.capsSource != nil {
+		return c.capsSource(ctx, sessionID)
+	}
 	c.capsOnce.Do(func() {
 		if c.baseURL == "" {
 			c.cached = Capabilities{Probed: true}
@@ -84,7 +116,7 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 		}
 		pctx, cancel := context.WithTimeout(ctx, probeTimeout)
 		defer cancel()
-		c.cached = c.probeCapabilities(pctx)
+		c.cached = c.probeCapabilities(pctx, sessionID)
 		if c.logger != nil && (!c.cached.V2PromptRoute || !c.cached.ModelRefIDKey) {
 			// Indeterminate probes (transport error vs genuinely absent
 			// route) degrade to the pinned-floor shapes; a missing prompt
@@ -116,11 +148,14 @@ type modelRefID struct {
 // Indeterminate probes default to the pinned runtime floor (1.18.15,
 // id-key shape) — the platform's runbook floor — and the incomplete probe
 // was already warned about in Capabilities().
-func (c *Client) modelRefWire(ctx context.Context, m *V2ModelRef) (any, error) {
+// modelRefWireFor serializes the override for the caller's real session:
+// the shape probe must reach payload validation on existence-first
+// binaries (synthetic session IDs 404 before the schema is observable).
+func (c *Client) modelRefWireFor(ctx context.Context, sessionID string, m *V2ModelRef) (any, error) {
 	if m == nil {
 		return nil, nil
 	}
-	caps, err := c.Capabilities(ctx)
+	caps, err := c.capabilitiesFor(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("probe capabilities for model ref: %w", err)
 	}
@@ -152,4 +187,26 @@ func (c *Client) postRaw(ctx context.Context, path string, body any) (int, []byt
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // probe path
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	return resp.StatusCode, b
+}
+
+// adapterCapabilities resolves the wire-shape classification for a
+// workspace endpoint with an ADAPTER-scoped, positive-only cache.
+//
+// Two defects of the earlier per-Client cache motivated this scope
+// (#1119 review, 2026-08-29): (1) resolveWorkspaceClient constructs a
+// fresh Client per call, so a per-Client cache re-probed (2 extra POSTs)
+// on every message; (2) a transient probe failure cached an
+// indeterminate — and therefore floor-defaulted — classification for
+// the client's lifetime. Indeterminate results are never cached here.
+func (a *Adapter) adapterCapabilities(ctx context.Context, c *Client, sessionID string) (Capabilities, error) {
+	if v, ok := a.capsCache.Load(c.baseURL); ok {
+		return v.(Capabilities), nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	caps := c.probeCapabilities(pctx, sessionID)
+	if caps.V2PromptRoute && (caps.ModelRefIDKey || caps.ModelRefLegacy) {
+		a.capsCache.Store(c.baseURL, caps)
+	}
+	return caps, nil
 }
