@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.4] - 2026-08-29
+
+### Fixed
+
+- **V2 per-prompt model overrides honor the picked model (#1119
+  follow-up, #1123)**: the wire-shape capability probe now targets the
+  caller's real session (existence-first binaries answered "Invalid
+  session ID" for synthetic IDs, leaving the shape indeterminate), and
+  indeterminate probes default to the pinned runtime floor (1.18.15
+  `{id, providerID}`) — the legacy `{modelID}` shape is used only on a
+  positive legacy probe. The 2026-08-29 regression (all messages forced
+  onto the workspace default model) is pinned as a contract test. The
+  positive-only capability cache is adapter-scoped: one probe per
+  workspace endpoint per process, and a transient probe failure can no
+  longer freeze a floor-defaulted classification.
+
+- **The delivery-verify oracle is wedge-immune and visible (#1119
+  follow-up, #1123)**: verification runs on a dedicated no-keep-alives
+  client with hard per-request bounds — one wedged agent connection
+  costs a single bounded pass instead of the shared pool and the whole
+  promotion-await budget (first-live-traffic incident: seven
+  inconclusive passes against a healthy agent, zero log lines). Verify
+  transport errors now WARN with workspace/session/entry context.
+
+- **V2 delivery budget sized around the promotion-await window
+  (#1123)**: `outbox.DeliveryTimeout` = window + 20 s margin, so the
+  detached context cannot expire inside the await loop and masquerade as
+  a transport ambiguity.
+
 ## [0.25.3] - 2026-08-29
 
 ### Fixed
