@@ -252,9 +252,14 @@ func updateAuthJSONForRelay(authJSONPath string) error {
 	// provider failed init (#1119). WriteFile's perm applies only on
 	// CREATE, so an existing 0600 file keeps its mode through rewrites —
 	// the explicit Chmod repairs legacy files on the next pass.
+	// #nosec G306 -- 0640 is deliberate: cross-uid read via the pod's
+	// shared gid 1000 (design 0051 §D1/T2, the AgentConfigWriteMode
+	// exception); the plaintext exposure set is exactly gid 1000.
 	if err := os.WriteFile(authJSONPath, updated, 0o640); err != nil {
 		return fmt.Errorf("write auth.json: %w", err)
 	}
+	// #nosec G302 -- same ruling as above; repairs legacy 0600-created
+	// files whose mode WriteFile cannot change on rewrite.
 	if err := os.Chmod(authJSONPath, 0o640); err != nil {
 		return fmt.Errorf("chmod auth.json: %w", err)
 	}
