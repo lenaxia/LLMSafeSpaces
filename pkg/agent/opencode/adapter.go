@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -72,6 +73,11 @@ type Adapter struct {
 	port    int
 	differ  *filediff.Producer // nil on the API side; set by agentd-side construction
 	runtime *OpenCodeAgent     // delegates Type/ValidateCredentials/FormatProviderConfig
+	// verifyOnce lazily builds the dedicated delivery-verify HTTP
+	// client (#1119 follow-up 2): fresh connections per request and
+	// hard per-request bounds, immune to shared-pool wedges.
+	verifyOnce    sync.Once
+	verifyHTTPCli *http.Client
 	// v2Store routes history reads and delivery verification through
 	// the V2 store (design 0052: OPENCODE_V2_DELIVERY). V2-queue
 	// messages persist ONLY there — a verify against the wrong store

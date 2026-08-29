@@ -456,6 +456,14 @@ func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID 
 	delivered, definitive, err := v.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, since)
 	switch {
 	case err != nil:
+		// #1119 follow-up 2: verify errors were silent in the first
+		// live-traffic incident — seven inconclusive passes against a
+		// healthy agent left no log line. Surface them: an unreachable
+		// or wedged verify path is ops signal, not noise (cadence is
+		// bounded by the verify backoff ladder).
+		h.logger.Warn("outbox verify inconclusive: transport error",
+			"workspaceID", workspaceID, "sessionID", sessionID,
+			"entryID", e.ID, "error", err)
 		return outbox.VerdictInconclusive
 	case delivered:
 		return outbox.VerdictDelivered
