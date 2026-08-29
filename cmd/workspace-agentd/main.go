@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/redact"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
@@ -110,6 +113,16 @@ func main() {
 	// init container. Never blocks pod boot — degrades to empty on failure.
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
 		os.Exit(runBootstrapCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
+
+	// Design 0053 — platform overlay delivery: redact folds into
+	// the agentd binary as a subcommand. The standalone cmd/redact
+	// is deleted; the supervisor provides a /sandbox-runtime/bin/redact
+	// PATH wrapper so the documented "some-command | redact" UX is
+	// preserved with zero bytes of a second executable in the
+	// trusted artifact.
+	if len(os.Args) > 1 && os.Args[1] == "redact" {
+		os.Exit(runRedactCommand(os.Args[2:]))
 	}
 
 	supervise := len(os.Args) > 1 && os.Args[1] == "--supervise"
@@ -250,6 +263,44 @@ func readAgentPasswordFromPath(path string) (string, error) {
 		return "", fmt.Errorf("password file %s is empty", path)
 	}
 	return trimmed, nil
+}
+
+// runRedactCommand implements the `redact` subcommand (design 0053).
+// Folds cmd/redact into the agentd binary; the standalone cmd/redact
+// is deleted. Reads stdin, applies the redact pattern set from
+// --config (default /sandbox-cfg/redact-patterns.json), writes to
+// stdout. Exit 1 on any failure.
+func runRedactCommand(args []string) int {
+	log = newLogger()
+	defer func() { _ = log.Sync() }()
+
+	fs := flag.NewFlagSet("redact", flag.ExitOnError)
+	configPath := fs.String("config", "/sandbox-cfg/redact-patterns.json", "path to extra patterns JSON file")
+	fs.Parse(args)
+
+	r, err := redact.NewRedactorFromFile(*configPath)
+	if err != nil {
+		log.Error("redact: failed to load patterns", zap.Error(err))
+		return 1
+	}
+
+	input, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		log.Error("redact: failed to read stdin", zap.Error(err))
+		return 1
+	}
+
+	result, err := r.Redact(string(input))
+	if err != nil {
+		log.Error("redact: failed", zap.Error(err))
+		return 1
+	}
+
+	if _, err := fmt.Fprint(os.Stdout, result); err != nil {
+		log.Error("redact: failed to write stdout", zap.Error(err))
+		return 1
+	}
+	return 0
 }
 
 // startManagedProcess builds and starts the opencode supervisor when
