@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
@@ -39,6 +40,11 @@ func (f *fakeAdapter) Send(_ context.Context, _, _, _, _ string, _ session.SendO
 func (f *fakeAdapter) SendAsync(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
 	return "msg_fake", nil
 }
+
+func (f *fakeAdapter) VerifyDelivery(_ context.Context, _, _, _, _ string, _ time.Time) (bool, bool, error) {
+	return false, false, nil // inconclusive: test fake without transcript verification
+}
+
 func (f *fakeAdapter) Abort(_ context.Context, _, _, _ string) error { return nil }
 func (f *fakeAdapter) GetHistory(_ context.Context, _, _, _ string) ([]session.Message, error) {
 	return nil, nil

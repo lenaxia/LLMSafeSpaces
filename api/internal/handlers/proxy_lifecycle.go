@@ -425,12 +425,12 @@ func (h *ProxyHandler) SetV2Delivery(enabled bool) {
 	h.v2Delivery = enabled
 }
 
-// deliveryVerifier is the consumer-defined seam for #987 ambiguity
-// resolution. Deliberately NOT on agent.Adapter (single consumer — no
-// premature abstraction): the opencode implementation (persist-first
-// transcript check) satisfies it structurally; a future second agent
-// either implements it or the outbox keeps its documented legacy
-// fallback. Promote to agent.Adapter when a second consumer is funded.
+// deliveryVerifier is the #987/#1119 ambiguity oracle. Now ALSO on
+// agent.Adapter (promoted 2026-08-29: production adapters are wrapped by
+// systemnotices.Wrap, and this local assertion silently failed against
+// the wrapper — every verification returned inconclusive without
+// touching the network, breaking all V2 delivery for hours). The local
+// interface stays as the compile-time shape contract at the call sites.
 type deliveryVerifier interface {
 	VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (delivered, definitive bool, err error)
 }
@@ -445,6 +445,12 @@ type deliveryVerifier interface {
 func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) outbox.Verdict {
 	v, ok := h.adapter.(deliveryVerifier)
 	if !ok {
+		// Unreachable since VerifyDelivery moved onto agent.Adapter
+		// (wrappers inherit it via embedding) — but the 2026-08-29
+		// incident showed this branch failing SILENTLY for hours, so
+		// it screams if it ever happens again.
+		h.logger.Error("outbox verify: adapter does not implement deliveryVerifier — all verification is inconclusive",
+			fmt.Errorf("adapter %T lacks VerifyDelivery", h.adapter))
 		return outbox.VerdictInconclusive
 	}
 	since := e.LastAttemptAt
