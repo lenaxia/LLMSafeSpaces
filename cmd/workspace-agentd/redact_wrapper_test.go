@@ -21,7 +21,7 @@ func TestWriteRedactWrapper_CreatesExecutableScript(t *testing.T) {
 
 	path := filepath.Join(dir, "redact")
 	info, err := os.Stat(path)
-		if err != nil {
+	if err != nil {
 		t.Fatalf("wrapper not created: %v", err)
 	}
 	if info.Mode().Perm()&0o111 == 0 {

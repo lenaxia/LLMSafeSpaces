@@ -1,21 +1,5 @@
 ARG TARGETARCH
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS redact-builder
-
-ARG TARGETARCH
-
-WORKDIR /src
-
-ARG GOPROXY=https://proxy.golang.org,direct
-ENV GOPROXY=${GOPROXY}
-
-COPY go.mod go.sum ./
-RUN go mod download
-COPY cmd/ ./cmd/
-COPY pkg/ ./pkg/
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -trimpath -o /out/redact ./cmd/redact
-
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS agentd-builder
 
 ARG TARGETARCH
@@ -263,7 +247,9 @@ RUN set -eux; \
     rm -rf /tmp/aws /tmp/awscliv2.zip /tmp/awscliv2.zip.sig /tmp/aws-cli-team.pgp "${GNUPGHOME}"; \
     aws --version
 
-COPY --from=redact-builder --chmod=755 /out/redact /usr/local/bin/redact
+# Design 0053 S2: redact is an agentd subcommand — the wrapper (not a
+# second binary) keeps /usr/local/bin/redact on PATH until the S3 strip.
+COPY --chmod=755 runtimes/base/tools/redact-wrapper.sh /usr/local/bin/redact
 COPY --from=agentd-builder --chmod=755 /out/workspace-agentd /usr/local/bin/workspace-agentd
 
 COPY --chmod=755 runtimes/base/tools/entrypoints/entrypoint-common.sh  /usr/local/bin/entrypoint-common.sh

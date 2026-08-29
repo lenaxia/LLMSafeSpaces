@@ -162,6 +162,13 @@ func main() {
 	// at startup. Best-effort: a failed scrub never blocks boot.
 	scrubUploadsAtBoot(log, uploadsPathFromEnv())
 
+	// Design 0053 S2: install the redact PATH wrapper before any opencode
+	// spawn can inherit the child env. Best-effort (see redact_wrapper.go);
+	// unreachable for the subcommands dispatched above and for --sidecar
+	// (which exits earlier — the wrapper belongs to uid-1000 space, not
+	// the sidecar container's mounts).
+	ensureRedactWrapper(log)
+
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
 	// its first read sees the completed config regardless of which

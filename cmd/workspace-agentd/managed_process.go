@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -514,6 +515,8 @@ func opencodeServeCmd(bin string) *exec.Cmd {
 	cmd := exec.Command(bin, "serve", "--hostname", "0.0.0.0", "--port", fmt.Sprintf("%d", agentd.AgentPort))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = buildEnvFrom(agentd.SecretsEnvPath)
+	// Design 0053 S2: /sandbox-runtime/bin leads PATH so the supervisor-
+	// installed redact wrapper resolves ahead of any baked binary.
+	cmd.Env = prependPathEnv(buildEnvFrom(agentd.SecretsEnvPath), filepath.Dir(redactWrapperPath()))
 	return cmd
 }

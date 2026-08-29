@@ -67,6 +67,12 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// must never block boot).
 	ensureMiseShims(log)
 
+	// Design 0053 S2: same relocated-entrypoint-work precedent as
+	// ensureMiseShims — install the redact PATH wrapper before the first
+	// child spawn. Best-effort: a failed install degrades to the PATH
+	// fallback and never blocks boot.
+	ensureRedactWrapper(log)
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
