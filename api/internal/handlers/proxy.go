@@ -53,6 +53,10 @@ type ProxyHandler struct {
 	namespace         string
 	dialect           agent.Dialect
 	agentStateChecker AgentStateChecker
+	// v2Busy tracks bridge-derived busy states for the G2 reaper
+	// (design 0054: a busy whose terminal event is lost must decay to
+	// idle in bounded time, not hang the indicator forever).
+	v2Busy v2BusySessions
 
 	// stateStore holds the per-workspace state that was previously kept
 	// in process-local maps on ProxyHandler (activeSess, deletedSessions,

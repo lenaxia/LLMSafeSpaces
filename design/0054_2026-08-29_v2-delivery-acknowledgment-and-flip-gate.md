@@ -137,6 +137,35 @@ classified events from first traffic have never been inventoried;
 (2) map + implement; (3) V2-mode e2e asserting R5's ACs; (4) I7 requires
 steady-state zero `unknown`.
 
+## Amendments (2026-08-29, post-audit)
+
+- **Model semantics under V2 are SESSION-scoped, not per-message.** The
+  V2 endpoint strips per-prompt overrides, so a message's model selection
+  applies to the session and sticks for subsequent no-override messages
+  (matching the SPA's own UX). Two consequences accepted for test mode:
+  (a) this is a product behavior change vs V1 — surfaced here rather
+  than implicit; (b) mid-conversation model switching races: a turn
+  admitted before a later SetSessionModel may execute after it and run
+  on the later model. Rare, bounded to rapid-switch usage; reopen if it
+  bites. Upstream ask (per-prompt model in the V2 schema) remains the
+  clean fix.
+- **G2 closed** (busy-reaper): bridge-derived busy states carry a
+  deadline (10 min, delivery-scale); expired ones publish idle with a
+  warning. Lost terminal events decay in bounded time.
+- **Turn-lifecycle has two sources today** (V1: tracker activity
+  machinery; V2: event derivation in onV2RawEvent). They can disagree
+  (tracker idle-timeout vs bridge idle). Unification — one lifecycle
+  derivation fed by both dialects — is an open item before the
+  production gate; until then the bridge is authoritative for V2 turns.
+- **Composition-testing discipline**: every handler-side adapter seam
+  gets a pass-through assertion on the COMPOSED production stack
+  (proxy_verify_wiring_test.go) — the #1127 outage passed every unit
+  test because tests see the raw adapter. New seams extend that test.
+- **Cross-uid coverage**: #1131 closed the single-container materialize
+  gap (auth store 0640). A systematic audit of every uid-2000-writer →
+  uid-1000-reader path is an open hardening item — three incidents in
+  two days came from per-path patches.
+
 ## Corner-case matrix (2026-08-29 adversarial review)
 
 Verified covered:

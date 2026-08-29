@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -300,6 +301,12 @@ func (h *ProxyHandler) onV2RawEvent(workspaceID, eventType, rawData string) {
 // with the promotion (the turn is running), idle with the terminal step.
 // Dual-published (workspace + user channel) exactly like the tracker's
 // onSessionActive/onSessionIdle emitters these mirror.
+//
+// G2 (design 0054): a busy whose terminal event is lost (agent restart
+// mid-turn) must not stay busy forever — busy registrations carry a
+// deadline, and v2BusyReap publishes idle for expired ones. The reaper
+// is idempotent with real terminal events (first idle wins; the map
+// entry is the coordination point).
 func (h *ProxyHandler) bridgeV2Status(workspaceID, rawData, status string) {
 	if h.userBroker == nil {
 		return
@@ -311,6 +318,11 @@ func (h *ProxyHandler) bridgeV2Status(workspaceID, rawData, status string) {
 	}
 	if err := json.Unmarshal([]byte(rawData), &props); err != nil || props.Properties.SessionID == "" {
 		return
+	}
+	if status == "busy" {
+		h.v2Busy.remember(workspaceID, props.Properties.SessionID)
+	} else {
+		h.v2Busy.clear(workspaceID, props.Properties.SessionID)
 	}
 	h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 		Type:      "session.status",
@@ -324,6 +336,83 @@ func (h *ProxyHandler) bridgeV2Status(workspaceID, rawData, status string) {
 			SessionID:   props.Properties.SessionID,
 			Status:      status,
 		})
+	}
+}
+
+// v2BusyTimeout bounds how long a bridge-derived busy survives without a
+// terminal event. Long enough for the longest legitimate turn (10-min
+// delivery-scale, matching outbox bounds), short enough that a lost
+// terminal step recovers in bounded time. Var for tests.
+var v2BusyTimeout = 10 * time.Minute
+
+// v2BusySessions tracks bridge-derived busy states for the G2 reaper.
+type v2BusySessions struct {
+	mu      sync.Mutex
+	entries map[string]time.Time // key ws+ses -> busy deadline
+}
+
+func (v *v2BusySessions) remember(ws, ses string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.entries == nil {
+		v.entries = map[string]time.Time{}
+	}
+	v.entries[ws+"|"+ses] = time.Now().Add(v2BusyTimeout)
+}
+
+func (v *v2BusySessions) clear(ws, ses string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.entries, ws+"|"+ses)
+}
+
+// expired returns sessions whose busy deadline passed, removing them.
+func (v *v2BusySessions) expired() []struct{ WS, Ses string } {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	var out []struct{ WS, Ses string }
+	now := time.Now()
+	for k, dl := range v.entries {
+		if now.After(dl) {
+			ws, ses, _ := strings.Cut(k, "|")
+			out = append(out, struct{ WS, Ses string }{ws, ses})
+			delete(v.entries, k)
+		}
+	}
+	return out
+}
+
+// v2BusyReap is the G2 reaper loop: publishes idle for busy states whose
+// terminal event never arrived (agent restart mid-turn, dropped event
+// stream). Bounded staleness for the turn-lifecycle indicator.
+func (h *ProxyHandler) v2BusyReap(ctx context.Context) {
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, e := range h.v2Busy.expired() {
+				h.logger.Warn("V2 bridge: busy deadline expired without a terminal event — reaping to idle",
+					"workspaceID", e.WS, "sessionID", e.Ses)
+				h.publishWorkspaceEvent(e.WS, apitypes.WorkspaceSSEEvent{
+					Type:      "session.status",
+					SessionID: e.Ses,
+					Status:    "idle",
+				})
+				if h.userBroker != nil {
+					if userID := h.userBroker.WorkspaceOwner(e.WS); userID != "" {
+						h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+							Type:        "session.status",
+							WorkspaceID: e.WS,
+							SessionID:   e.Ses,
+							Status:      "idle",
+						})
+					}
+				}
+			}
+		}
 	}
 }
 

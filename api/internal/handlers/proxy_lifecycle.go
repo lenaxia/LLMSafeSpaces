@@ -92,6 +92,10 @@ func (h *ProxyHandler) Start() error {
 				<-h.stopCh
 				wcancel()
 			}()
+			// G2 (design 0054): decay bridge-derived busy states whose
+			// terminal event never arrived. Rides the outbox worker's
+			// lifecycle (same lifetime, same stop signal).
+			go h.v2BusyReap(wctx)
 			go h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
 		}
 	})
