@@ -68,6 +68,14 @@ type fakeAgentBackend struct {
 	// nothing ever reached the agent (persist only after the stall —
 	// which the timed-out sender never sees).
 	persistFirst bool
+
+	// V2 promotion controls (#1119 contract): the user text persists at
+	// PROMOTION, not at admission. promoteDelay == 0 promotes
+	// immediately after the admission response (the healthy path);
+	// promoteDelay > 0 promotes after that delay (slow drain); < 0 never
+	// promotes (defect-class death: model-resolve dies pre-persist, or
+	// the row parks — the 10:24Z production anatomy).
+	promoteDelay time.Duration
 }
 
 func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -83,9 +91,20 @@ func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.admits++
 		seq := f.admits
-		f.persist(body.Prompt.Text)
+		promoteDelay := f.promoteDelay
 		admitStatus, admitReset := f.admitStatus, f.admitReset
 		f.mu.Unlock()
+		// #1119: persist at PROMOTION (async), never at admission.
+		if promoteDelay >= 0 {
+			go func() {
+				if promoteDelay > 0 {
+					time.Sleep(promoteDelay)
+				}
+				f.mu.Lock()
+				f.persist(body.Prompt.Text)
+				f.mu.Unlock()
+			}()
+		}
 		if admitReset {
 			if hj, ok := w.(http.Hijacker); ok {
 				conn, _, err := hj.Hijack()
@@ -206,6 +225,22 @@ func quoteJSON(s string) string {
 
 // shrinkOutboxTimers compresses delivery/verify timing for tests and
 // restores on cleanup.
+// shrinkV2PromotionTimers shrinks the #1119 promotion-await window so the
+// delivery path exercises in test time. The await runs INSIDE the
+// deliverer's detached context, whose budget is outbox.DeliveryTimeout
+// (40ms after shrinkOutboxTimers) — raise it above the shrunk window so
+// the await path, not the transport budget, is what the tests exercise.
+func shrinkV2PromotionTimers(t *testing.T) {
+	t.Helper()
+	outbox.DeliveryTimeout = 2 * time.Second
+	v2PromotionWait = 400 * time.Millisecond
+	v2PromotionPoll = 40 * time.Millisecond
+	t.Cleanup(func() {
+		v2PromotionWait = 30 * time.Second
+		v2PromotionPoll = 2 * time.Second
+	})
+}
+
 func shrinkOutboxTimers(t *testing.T) {
 	t.Helper()
 	origTimeout, origVD, origVB, origMVB := outbox.DeliveryTimeout, outbox.VerifyDelay, outbox.VerifyBackoff, outbox.MaxVerifyBackoff
@@ -401,13 +436,19 @@ func TestOutboxVerify_HTTPRejectionIsDefinitive(t *testing.T) {
 
 var _ = context.Background // keep context import if unused by future edits
 
-// TestOutboxDeliver_V2AdmissionCompletesAtPickup (design 0052): with
-// SetV2Delivery on, one worker pass admits via the V2 prompt endpoint
-// and the entry completes IMMEDIATELY — no verifying round, no V1 sync
-// POST, queue.update/sent fired at pickup instead of at turn end.
-func TestOutboxDeliver_V2AdmissionCompletesAtPickup(t *testing.T) {
+// TestOutboxDeliver_V2CompletesAtPromotion (#1119 fix): with SetV2Delivery
+// on, admission alone must NOT complete the entry — the user text persists
+// at PROMOTION, and a defect-class death (model-resolve, park) consumes or
+// strands the admitted row with no signal (the 10:24Z production anatomy:
+// sent fired at admission, the turn died pre-persist, the message
+// vanished). The deliverer now waits for promotion — proven by the
+// persisted text, the same oracle the #987 verifier uses — and completes
+// only then. Happy path: promotion lands within the window, entry
+// completes in one worker pass, queue.update/sent fires at real delivery.
+func TestOutboxDeliver_V2CompletesAtPromotion(t *testing.T) {
 	shrinkOutboxTimers(t)
-	backend := &fakeAgentBackend{persistFirst: true}
+	shrinkV2PromotionTimers(t)
+	backend := &fakeAgentBackend{persistFirst: true, promoteDelay: 0}
 	env := newVerifyEnv(t, backend)
 	env.handler.SetV2Delivery(true)
 	events := subscribeQueueUpdates(t, env)
@@ -416,7 +457,7 @@ func TestOutboxDeliver_V2AdmissionCompletesAtPickup(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, w.Code)
 
 	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
-	assert.Empty(t, listOutbox(t, env), "V2 admission completes the entry in one pass — no verifying round")
+	assert.Empty(t, listOutbox(t, env), "promoted admission completes the entry in one pass")
 
 	backend.mu.Lock()
 	admits, posts := backend.admits, backend.posts
@@ -427,10 +468,74 @@ func TestOutboxDeliver_V2AdmissionCompletesAtPickup(t *testing.T) {
 	select {
 	case e := <-events:
 		data, _ := json.Marshal(e.Data)
-		assert.Contains(t, string(data), `"sent"`, "queue.update/sent fires at pickup on the V2 path")
+		assert.Contains(t, string(data), `"sent"`, "queue.update/sent fires at real delivery (promotion), not at admission")
 	case <-time.After(2 * time.Second):
-		t.Fatal("no queue.update/sent emitted on V2 admission")
+		t.Fatal("no queue.update/sent emitted on V2 promotion")
 	}
+}
+
+// TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes (#1119): an
+// admission whose row never promotes (defect-class death) must NOT
+// complete — the entry goes ambiguous→verifying, the verifier's
+// absent-after-window verdict re-admits (the nudge), bounded by
+// Attempts. The sent-at-admission silent drop is impossible.
+func TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes(t *testing.T) {
+	shrinkOutboxTimers(t)
+	shrinkV2PromotionTimers(t)
+	backend := &fakeAgentBackend{promoteDelay: -1} // never promotes
+	env := newVerifyEnv(t, backend)
+	env.handler.SetV2Delivery(true)
+
+	w := postPrompt(t, env, `{"clientMessageID":"cm-dead","parts":[{"type":"text","text":"dead row"}]}`)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	entries := listOutbox(t, env)
+	require.Len(t, entries, 1, "a never-promoted admission must NOT complete at pickup")
+	assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
+		"unobserved promotion is outcome-unknown: verify, never blind-complete (#987)")
+	assert.Contains(t, entries[0].LastError, "promotion", "the await-window expiry is the ambiguity cause")
+
+	// Pass 2 (verifying round): resolves absent — nothing ever
+	// persisted — and flips the entry to pending-with-backoff for a
+	// re-admit. Pass 3 executes the nudge: a second admission, which
+	// again awaits promotion (still none → verifying again, bounded by
+	// Attempts). No silent completion anywhere in the sequence.
+	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	entries = listOutbox(t, env)
+	require.Len(t, entries, 1)
+	assert.Equal(t, outbox.StatusPending, entries[0].Status, "absent-after-window verdict schedules the re-admit nudge")
+
+	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	entries = listOutbox(t, env)
+	require.Len(t, entries, 1)
+	assert.NotEqual(t, outbox.StatusError, entries[0].Status, "first nudge is a re-admit, not an error park")
+	backend.mu.Lock()
+	admits := backend.admits
+	backend.mu.Unlock()
+	assert.GreaterOrEqual(t, admits, 2, "the nudge re-admits after the window")
+}
+
+// TestOutboxDeliver_V2SlowPromotionCompletesInWindow (#1119): promotion
+// that lands inside the await window completes without any verifying
+// round — the poll observes it.
+func TestOutboxDeliver_V2SlowPromotionCompletesInWindow(t *testing.T) {
+	shrinkOutboxTimers(t)
+	shrinkV2PromotionTimers(t)
+	backend := &fakeAgentBackend{promoteDelay: 3 * v2PromotionPoll}
+	env := newVerifyEnv(t, backend)
+	env.handler.SetV2Delivery(true)
+
+	w := postPrompt(t, env, `{"clientMessageID":"cm-slow","parts":[{"type":"text","text":"slow promotion"}]}`)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	assert.Empty(t, listOutbox(t, env), "promotion inside the window completes the entry — no verifying round")
+
+	backend.mu.Lock()
+	admits := backend.admits
+	backend.mu.Unlock()
+	assert.Equal(t, 1, admits, "no nudge: the single admission eventually promoted")
 }
 
 // TestOutboxDeliver_V2UnhappyPaths (design 0052): the failure

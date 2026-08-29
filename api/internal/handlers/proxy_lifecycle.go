@@ -310,6 +310,17 @@ func (h *ProxyHandler) newSSETracker() *sse.Tracker {
 // outboxTick is the outbox delivery scan interval. Var for tests.
 var outboxTick = 1 * time.Second
 
+// V2 promotion-await tunables (#1119). Production observations on
+// opencode 1.18.15: `session.next.prompted` (and the user-text persist)
+// land within ~1s of admission — including for defect-class deaths, which
+// ALSO promote-then-die; a promotion unobserved for v2PromotionWait is a
+// genuinely stranded row (park race), and the ambiguous→verifying→re-admit
+// path is the bounded nudge. Vars for tests.
+var (
+	v2PromotionWait = 30 * time.Second
+	v2PromotionPoll = 2 * time.Second
+)
+
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
 // the raw selector JSON). Confirmed delivery completes via the outbox's
@@ -348,17 +359,43 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	opts := session.SendOpts{Model: model}
 	if h.v2Delivery {
 		// V2 mode (design 0052, OPENCODE_V2_DELIVERY): admission
-		// returns in milliseconds — the entry completes at pickup and
-		// queue.update/sent fires near-instantly. Same failure
-		// classification: the admission POST is still an HTTP call
-		// whose transport failure is ambiguous.
-		if _, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts); err != nil {
+		// returns in milliseconds. But admission ≠ delivery (#1119):
+		// the user text persists at PROMOTION, and a defect-class
+		// death (model-resolve failure, park race) consumes or strands
+		// the admitted row with no signal — completing at pickup was
+		// the silent-drop bug (production 10:24Z). The deliverer now
+		// waits for promotion, proven by the persisted text via the
+		// same oracle the #987 verifier uses, before completing. If
+		// the window expires unobserved, the outcome is unknown →
+		// ambiguous → the verifying machinery resolves it: text
+		// present (late promotion) completes; absent-after-window
+		// re-admits (the bounded nudge) — never a blind complete.
+		admittedAt := time.Now().UTC()
+		msgID, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts)
+		if err != nil {
 			if errors.Is(err, agent.ErrHTTPStatus) {
 				return err
 			}
 			return outbox.Ambiguous(err)
 		}
-		return nil
+		_ = msgID // correlation key for the events-based fast path (follow-up)
+		verifier, hasVerifier := h.adapter.(deliveryVerifier)
+		deadline := time.Now().UTC().Add(v2PromotionWait)
+		for {
+			if hasVerifier {
+				if delivered, _, verr := verifier.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, admittedAt); verr == nil && delivered {
+					return nil // promotion observed — real delivery
+				}
+			}
+			if !time.Now().UTC().Before(deadline) {
+				return outbox.Ambiguous(fmt.Errorf("v2 promotion not observed within %s (admission msg %q)", v2PromotionWait, msgID))
+			}
+			select {
+			case <-ctx.Done():
+				return outbox.Ambiguous(ctx.Err())
+			case <-time.After(v2PromotionPoll):
+			}
+		}
 	}
 	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, opts)
 	if err != nil {
