@@ -393,24 +393,33 @@ func (h *ProxyHandler) v2BusyReap(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, e := range h.v2Busy.expired() {
-				h.logger.Warn("V2 bridge: busy deadline expired without a terminal event — reaping to idle",
-					"workspaceID", e.WS, "sessionID", e.Ses)
-				h.publishWorkspaceEvent(e.WS, apitypes.WorkspaceSSEEvent{
-					Type:      "session.status",
-					SessionID: e.Ses,
-					Status:    "idle",
+			h.reapOnce()
+		}
+	}
+}
+
+// reapOnce processes one reaper pass: every expired busy state gets an
+// idle publish, independent of the others (a publish that drops — e.g.
+// no subscribers, or the broker swallows an error — must not strand the
+// remaining sessions or leave the entry to double-reap later: expired()
+// already removed them, so the publish is the last chance by design).
+func (h *ProxyHandler) reapOnce() {
+	for _, e := range h.v2Busy.expired() {
+		h.logger.Warn("V2 bridge: busy deadline expired without a terminal event — reaping to idle",
+			"workspaceID", e.WS, "sessionID", e.Ses)
+		h.publishWorkspaceEvent(e.WS, apitypes.WorkspaceSSEEvent{
+			Type:      "session.status",
+			SessionID: e.Ses,
+			Status:    "idle",
+		})
+		if h.userBroker != nil {
+			if userID := h.userBroker.WorkspaceOwner(e.WS); userID != "" {
+				h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+					Type:        "session.status",
+					WorkspaceID: e.WS,
+					SessionID:   e.Ses,
+					Status:      "idle",
 				})
-				if h.userBroker != nil {
-					if userID := h.userBroker.WorkspaceOwner(e.WS); userID != "" {
-						h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
-							Type:        "session.status",
-							WorkspaceID: e.WS,
-							SessionID:   e.Ses,
-							Status:      "idle",
-						})
-					}
-				}
 			}
 		}
 	}

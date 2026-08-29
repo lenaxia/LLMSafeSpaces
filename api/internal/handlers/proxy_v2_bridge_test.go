@@ -246,3 +246,26 @@ func TestV2Bridge_BusyDecaysWithoutTerminalEvent(t *testing.T) {
 	assert.Equal(t, "ses_1", reaped[0].Ses)
 	assert.Empty(t, h.v2Busy.expired(), "reaping is single-shot — no double idle")
 }
+
+// reapOnce resilience (review follow-up): publishes that drop (no
+// subscribers — the broker swallows it) must not strand later sessions,
+// and nothing double-reaps.
+func TestV2Bridge_ReapOnceProcessesAllDespiteDroppedPublishes(t *testing.T) {
+	env := newVerifyEnv(t, &fakeAgentBackend{persistFirst: true})
+	h := env.handler
+	// No subscriber on ws-1's channel for this test → publishWorkspaceEvent
+	// drops silently; the reaper must still process every expired session.
+	h.v2Busy.mu.Lock()
+	for _, s := range []string{"s1", "s2", "s3"} {
+		h.v2Busy.entries["ws-1|"+s] = time.Now().Add(-time.Minute)
+	}
+	h.v2Busy.mu.Unlock()
+
+	h.reapOnce() // must not panic; must clear ALL expired entries
+
+	h.v2Busy.mu.Lock()
+	n := len(h.v2Busy.entries)
+	h.v2Busy.mu.Unlock()
+	assert.Zero(t, n, "every expired entry is processed in one pass despite dropped publishes")
+	assert.Empty(t, h.v2Busy.expired(), "nothing left to double-reap")
+}
