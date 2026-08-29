@@ -137,6 +137,54 @@ classified events from first traffic have never been inventoried;
 (2) map + implement; (3) V2-mode e2e asserting R5's ACs; (4) I7 requires
 steady-state zero `unknown`.
 
+## Corner-case matrix (2026-08-29 adversarial review)
+
+Verified covered:
+
+- **API crash mid-promotion-wait** — `Recover` restores staged entries as
+  `StatusVerifying` (outbox.go:738): verify-first, never a blind re-admit.
+  The exactly-once property holds across crashes by construction.
+- **Agent restart mid-window** (the MHcs1C case) — late promotion lands;
+  window expiry → ambiguous; verify backoff outlives the restart; oracle
+  confirms delivered. Observed live, resolved correctly.
+- **Turn longer than the window** — completion is at promotion, not turn
+  end; no interaction with turn duration.
+- **Two replicas** — shared Redis state + per-session lock; oracle client
+  is adapter-scoped.
+- **Identical legitimate texts in one session** — the `since` floor +
+  clock-skew margin separates windows; only sub-skew interleavings can
+  cross-match (bounded by `verifyClockSkew`).
+- **Re-admit nudge safety** — re-admission only after a *definitive
+  absence* verdict; residual TOCTOU (promotion lands after the absence
+  check) can duplicate one turn in a rare race — accepted residual,
+  bounded, surfaced by attempts counters.
+
+Gaps found (this review — must close before re-flip):
+
+- **G1 Rollback mode-coherence (I5 violation on flag-off).** Flipping
+  V2→V1 with in-flight V2-verifying entries switches the verifier to the
+  V1 store: V2-window text reads absent → definitive absence → V1
+  re-send → duplicate turn. The 2026-08-29 rollback avoided it only
+  because the single stuck entry had been manually reaped minutes
+  earlier. **Flip procedure addition: drain before mode change** — pause
+  accepts, let verifying entries resolve or park them with an explicit
+  `mode_transition` reason (visible + dismissable, never auto-re-sent),
+  then flip. Mechanical, not runbook-prose.
+- **G2 Bridge busy-reaper.** The event bridge must not create a
+  busy-forever class when a turn-end event is lost (agent restart
+  mid-turn): busy state needs a timeout/reaper derived from the same
+  events that set it. Bridge-design requirement, not implementation
+  detail.
+
+Documented limitations (explicit, not silent):
+
+- **Custom pre-V2 runtimes under the global flag** — a BYO 1.18.14 image
+  (admit-without-drain) chronically fails the window and parks as
+  failed-with-reason: safe (I2 holds) but permanently non-functional.
+  The provenance predicate should surface a per-workspace warning.
+- **Verify cost on very long sessions** — `MessagesV2` is a single
+  unbounded fetch (64 MB bound); pagination is a scale follow-up.
+
 ## Known accepted exception — R6
 
 The global history read switch hides pre-flip transcripts while V2 is on
