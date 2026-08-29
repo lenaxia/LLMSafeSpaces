@@ -80,6 +80,9 @@ func (m *mockAdapter) SendAsync(ctx context.Context, uid, wid, sid, text string,
 	panic("mockAdapter.SendAsync not configured")
 }
 
+func (m *mockAdapter) SetSessionModel(_ context.Context, _, _, _ string, _ *session.ModelRef) error {
+	return nil
+}
 func (m *mockAdapter) VerifyDelivery(_ context.Context, _, _, _, _ string, _ time.Time) (bool, bool, error) {
 	return false, false, nil // inconclusive: test fake without transcript verification
 }

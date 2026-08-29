@@ -291,3 +291,29 @@ func (c *Client) MessagesV2(ctx context.Context, sessionID string) ([]V2Message,
 	}
 	return envelope.Data, nil
 }
+
+// postModel sets the session's default model (POST /api/session/:sid/model,
+// body {"model": <Model.Ref>} in the capability-selected wire shape).
+func (c *Client) postModel(ctx context.Context, sessionID string, wire any) error {
+	payload, err := json.Marshal(map[string]any{"model": wire})
+	if err != nil {
+		return fmt.Errorf("marshal model-set body: %w", err)
+	}
+	url := fmt.Sprintf("%s/api/session/%s/model", c.baseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build model-set request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST /api/session/%s/model: %w", sessionID, err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("%w: POST /api/session/%s/model returned %d: %s", agent.ErrHTTPStatus, sessionID, resp.StatusCode, string(errBody))
+	}
+	return nil
+}

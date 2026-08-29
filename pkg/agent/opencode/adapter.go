@@ -367,6 +367,49 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 	return &msg, nil
 }
 
+// SetSessionModel sets the session's default model via the V2 /model
+// route. This is the ONLY model-selection mechanism under V2 delivery:
+// the V2 prompt endpoint strips per-prompt model overrides entirely
+// (verified live 2026-08-29: a prompt carrying model {id:"totally-bogus-
+// model"} admitted cleanly and ran on the session default — the field is
+// not in the endpoint's schema). The platform therefore applies a
+// message's model selection to the SESSION before admission, matching
+// the SPA's own UX (pick a model → session default changes).
+func (a *Adapter) SetSessionModel(ctx context.Context, userID, workspaceID, sessionID string, m *session.ModelRef) error {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	if m == nil || m.ID == "" {
+		return nil
+	}
+	mid, prov, ok := modelOverride(m)
+	if !ok {
+		return fmt.Errorf("session model for %s: unexpressible model ref", sessionID)
+	}
+	c.setCapabilitySource(func(ctx context.Context, sid string) (Capabilities, error) {
+		return a.adapterCapabilities(ctx, c, sid)
+	})
+	vc := &v2ModelSetter{c: c, mid: mid, prov: prov}
+	return vc.set(ctx, sessionID)
+}
+
+// v2ModelSetter carries the split ref through the capability-shaped
+// serialization (adapter-scoped probe cache; id-key on the 1.18.15 floor).
+type v2ModelSetter struct {
+	c    *Client
+	mid  string
+	prov string
+}
+
+func (v *v2ModelSetter) set(ctx context.Context, sessionID string) error {
+	wire, err := v.c.modelRefWireFor(ctx, sessionID, &V2ModelRef{ModelID: v.mid, ProviderID: v.prov})
+	if err != nil {
+		return err
+	}
+	return v.c.postModel(ctx, sessionID, wire)
+}
+
 func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (string, error) {
 	// SendAsync uses opencode's V2 prompt endpoint with delivery:queue
 	// (Epic 63). The response is admit-and-schedule; we return the

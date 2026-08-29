@@ -44,6 +44,15 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
 			return
 		}
+		// Index at creation (design 0054 R5): the session index is
+		// otherwise event-fed, and V2-mode sessions don't emit the V1
+		// session lifecycle events the indexer consumes — new sessions
+		// never reached the sidebar (2026-08-29: agent listed 3, API
+		// served 2). The platform OWNS session CRUD; index where it
+		// happens instead of hoping an event follows.
+		if s != nil && h.sessionIndex != nil {
+			h.persistSessionMeta(context.Background(), wid, s.ID, s.Title, s.ParentID)
+		}
 		c.JSON(http.StatusOK, s)
 		return
 	}
