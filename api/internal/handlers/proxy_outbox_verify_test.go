@@ -233,10 +233,10 @@ func quoteJSON(s string) string {
 func shrinkV2PromotionTimers(t *testing.T) {
 	t.Helper()
 	outbox.DeliveryTimeout = 2 * time.Second
-	v2PromotionWait = 400 * time.Millisecond
+	V2PromotionWait = 400 * time.Millisecond
 	v2PromotionPoll = 40 * time.Millisecond
 	t.Cleanup(func() {
-		v2PromotionWait = 30 * time.Second
+		V2PromotionWait = 30 * time.Second
 		v2PromotionPoll = 2 * time.Second
 	})
 }
