@@ -129,7 +129,15 @@ func TestParseStepUsageMalformed(t *testing.T) {
 // If either test fails on main without a seam change, opencode drifted —
 // re-capture the fixture before touching the parser.
 func TestGoldenFixtureTaxonomy_LiveWire(t *testing.T) {
-	data, err := os.ReadFile("../testdata/sse_events_1_18_10_live.jsonl")
+	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl"} {
+		t.Run(fixture, func(t *testing.T) {
+			taxonomyLiveWireFixture(t, fixture)
+		})
+	}
+}
+
+func taxonomyLiveWireFixture(t *testing.T, fixture string) {
+	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -196,7 +204,15 @@ func TestGoldenFixtureTaxonomy_LiveWire(t *testing.T) {
 }
 
 func TestGoldenFixtureTaxonomy_EventStore(t *testing.T) {
-	data, err := os.ReadFile("../testdata/event_store_1_18_10.jsonl")
+	for _, fixture := range []string{"../testdata/event_store_1_18_10.jsonl", "../testdata/event_store_1_18_15.jsonl"} {
+		t.Run(fixture, func(t *testing.T) {
+			taxonomyEventStoreFixture(t, fixture)
+		})
+	}
+}
+
+func taxonomyEventStoreFixture(t *testing.T, fixture string) {
+	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -321,11 +337,19 @@ func TestParseSessionUpdatedNotUsageOrIncomplete(t *testing.T) {
 	}
 }
 
-// The live fixture's session.updated events (19) must all decode through
+// The live fixtures' session.updated events must all decode through
 // the metering path — billing verified against verbatim wire, not just
-// hand-written shapes.
+// hand-written shapes. Runs against every pinned live capture.
 func TestGoldenFixture_SessionUpdatedAllDecode(t *testing.T) {
-	data, err := os.ReadFile("../testdata/sse_events_1_18_10_live.jsonl")
+	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/sse_events_1_18_15_live.jsonl"} {
+		t.Run(fixture, func(t *testing.T) {
+			sessionUpdatedAllDecode(t, fixture)
+		})
+	}
+}
+
+func sessionUpdatedAllDecode(t *testing.T, fixture string) {
+	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -382,12 +406,27 @@ func TestParseSessionUpdatedMalformedCostFlags(t *testing.T) {
 	}
 }
 
-// Store-surface session.updated rows (suffixed, 81 in the fixture) must
-// decode through the metering path — the two-projection (wire vs store)
-// drift concern is exactly what #939 exists to close; counting them in
-// the taxonomy test is not enough.
+// Store-surface session.updated rows (suffixed) must decode through
+// the metering path — the two-projection (wire vs store) drift concern
+// is exactly what #939 exists to close; counting them in the taxonomy
+// test is not enough. Exact counts are pinned per fixture: composition
+// changes must be conscious (refresh per REFRESH.md), not silent drift.
 func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
-	data, err := os.ReadFile("../testdata/event_store_1_18_10.jsonl")
+	for _, tc := range []struct {
+		fixture string
+		pinned  int
+	}{
+		{"../testdata/event_store_1_18_10.jsonl", 81},
+		{"../testdata/event_store_1_18_15.jsonl", 5},
+	} {
+		t.Run(tc.fixture, func(t *testing.T) {
+			eventStoreSessionUpdatedAllDecode(t, tc.fixture, tc.pinned)
+		})
+	}
+}
+
+func eventStoreSessionUpdatedAllDecode(t *testing.T, fixture string, pinned int) {
+	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
@@ -413,8 +452,8 @@ func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
 	}
 	// Exact count pinned: fixture composition changes must be conscious
 	// (refresh per REFRESH.md), not silent drift.
-	if decoded != 81 {
-		t.Fatalf("store fixture session.updated decode count changed: got %d, pinned 81 — fixture refreshed?", decoded)
+	if decoded != pinned {
+		t.Fatalf("store fixture session.updated decode count changed: got %d, pinned %d — fixture refreshed?", decoded, pinned)
 	}
 	t.Logf("%d golden store session.updated rows decoded with attribution", decoded)
 }
@@ -457,7 +496,12 @@ func TestIsKnownEventType(t *testing.T) {
 // fixtures are the pinned truth; a fixture refresh that introduces a new
 // type must extend the taxonomy in the same change (this test forces it).
 func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
-	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/event_store_1_18_10.jsonl"} {
+	for _, fixture := range []string{
+		"../testdata/sse_events_1_18_10_live.jsonl",
+		"../testdata/event_store_1_18_10.jsonl",
+		"../testdata/sse_events_1_18_15_live.jsonl",
+		"../testdata/event_store_1_18_15.jsonl",
+	} {
 		data, err := os.ReadFile(fixture)
 		if err != nil {
 			t.Fatalf("read fixture: %v", err)

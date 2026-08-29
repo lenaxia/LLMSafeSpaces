@@ -41,12 +41,26 @@ Opencode's schema has four `$ref` targets pointing at `https://models.dev/model-
 
 # SSE event fixtures — refresh procedure
 
-Two fixtures pin the opencode 1.18.10 event surfaces. They exist because wire-shape drift was the root cause of issue #739 (context usage silently NULL for weeks):
+Two fixture PAIRS pin the opencode event surfaces (1.18.10 + 1.18.15).
+They exist because wire-shape drift was the root cause of issue #739
+(context usage silently NULL for weeks):
 
 | Fixture | Surface | Type names | How captured |
 |---|---|---|---|
-| `sse_events_1_18_10_live.jsonl` | `/event` SSE stream (what the API tracker + agentd consume) | **unsuffixed** (`message.part.updated`) | verbatim `curl -N /event` capture through a full LLM turn; IDs redacted to synthetic sequences, >120-char strings trimmed, `message.part.delta` subsampled 1-in-50 (homogeneous streaming fragments) |
+| `sse_events_1_18_10_live.jsonl` | `/event` SSE stream (what the API tracker + agentd consume) | **unsuffixed** (`message.part.updated`) | verbatim `curl -N /event` capture through a full LLM turn on a live pod; IDs redacted to synthetic sequences, >120-char strings trimmed, `message.part.delta` subsampled 1-in-50 (homogeneous streaming fragments) |
 | `event_store_1_18_10.jsonl` | persisted `event` table in `opencode.db` | **version-suffixed** (`message.part.updated.1`) | rows read from a live pod's `opencode.db`, reconstructed into the `/event` envelope shape (cross-checked against the live capture) |
+| `sse_events_1_18_15_live.jsonl` | same `/event` surface, opencode 1.18.15 | **unsuffixed** | local `opencode serve` (1.18.15) + OpenAI-compatible mock provider (tool-call round + terminal usage chunk); same redaction, deltas NOT subsampled (only 2 — the subsample rule is volume-driven) |
+| `event_store_1_18_15.jsonl` | same store surface, opencode 1.18.15 | **version-suffixed** | rows read from the local serve's `opencode.db` `event` table for the captured session |
+
+**1.18.15 fixture limitations (deliberate, documented):** captured
+against the ai-sdk provider runtime (openai-compatible mock), which on
+1.18.15 emits `step-start`/`step-finish` PART types but produced no
+`tool` parts in this environment. The 1.18.10 pod capture REMAINS the
+tool-part lifecycle pin until a staging-pod re-capture on 1.18.15+;
+both pairs stay in the tree and every fixture test runs against both.
+New in the 1.18.15 live capture: `session.created` on the live stream
+(already in the taxonomy), `step-finish` parts with terminal-usage
+tokens.
 
 The same logical event type carries different names on the two surfaces — that is why `wire.IsPartUpdated` is suffix-tolerant, not as hedging. `session.status` events exist ONLY on the live SSE stream (never persisted) — agentd's busy/idle tracker depends on that.
 

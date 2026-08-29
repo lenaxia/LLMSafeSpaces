@@ -109,14 +109,18 @@ func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, 
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusConflict {
-		return nil, fmt.Errorf("%w: session %s: HTTP 409", ErrV2PromptConflict, sessionID)
+		// Multi-wrap: ErrHTTPStatus keeps the outbox's definitive-
+		// rejection classification (agent PROCESSED the request); the
+		// specific sentinel stays addressable for callers that branch
+		// on it.
+		return nil, fmt.Errorf("%w: %w: session %s: HTTP 409", agent.ErrHTTPStatus, ErrV2PromptConflict, sessionID)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: session %s: HTTP 404", ErrV2SessionNotFound, sessionID)
+		return nil, fmt.Errorf("%w: %w: session %s: HTTP 404", agent.ErrHTTPStatus, ErrV2SessionNotFound, sessionID)
 	}
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("POST /api/session/%s/prompt returned %d: %s", sessionID, resp.StatusCode, string(errBody))
+		return nil, fmt.Errorf("%w: POST /api/session/%s/prompt returned %d: %s", agent.ErrHTTPStatus, sessionID, resp.StatusCode, string(errBody))
 	}
 
 	var envelope struct {
@@ -156,4 +160,127 @@ func (c *Client) InterruptV2(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("POST /api/session/%s/interrupt returned %d: %s", sessionID, resp.StatusCode, string(errBody))
 	}
 	return nil
+}
+
+// V2Message is one message from the V2 store's history view
+// (GET /api/session/:sid/message → {data:[...]}). Captured live against
+// opencode 1.18.15 (design 0052); differs from the V1 shape in three
+// load-bearing ways:
+//
+//   - role discriminates on top-level `type` (user/assistant/system),
+//     not info.role
+//   - user prompt text is a top-level `text` string (no parts)
+//   - assistant content lives in `content[]` where a tool part carries
+//     name/id at the top level and input/output/times inside `state`
+//     (closer to the legacy nested shape than 1.18.10's flat V1 shape)
+type V2Message struct {
+	ID   string `json:"id"`
+	Type string `json:"type"` // user | assistant | system
+	Time struct {
+		Created   int64 `json:"created"`
+		Completed int64 `json:"completed,omitempty"`
+	} `json:"time"`
+
+	// user
+	Text string `json:"text,omitempty"`
+
+	// assistant
+	Agent   string            `json:"agent,omitempty"`
+	Model   *V2ModelInMessage `json:"model,omitempty"`
+	Content []V2ContentPart   `json:"content,omitempty"`
+	Finish  string            `json:"finish,omitempty"`
+	Cost    float64           `json:"cost,omitempty"`
+	Tokens  *V2Tokens         `json:"tokens,omitempty"`
+}
+
+// V2ModelInMessage is the model attribution on a V2 assistant message.
+type V2ModelInMessage struct {
+	ID         string `json:"id"`
+	ProviderID string `json:"providerID"`
+}
+
+// V2Tokens mirrors the opencode token accounting object (same field
+// names on the V1 and V2 surfaces).
+type V2Tokens struct {
+	Input  int64 `json:"input"`
+	Output int64 `json:"output"`
+	Reason int64 `json:"reasoning"`
+	Cache  struct {
+		Read  int64 `json:"read"`
+		Write int64 `json:"write"`
+	} `json:"cache"`
+}
+
+// V2ContentPart is one assistant content item. Text and tool are the
+// types observed on 1.18.15; unknown types preserve raw JSON for the
+// contract's Custom pressure-relief valve.
+type V2ContentPart struct {
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Text string `json:"text,omitempty"`
+
+	// tool
+	Name  string          `json:"name,omitempty"`
+	State *V2ToolState    `json:"state,omitempty"`
+	Raw   json.RawMessage `json:"-"`
+}
+
+// V2ToolState is the tool execution state on a V2 content part.
+type V2ToolState struct {
+	Status  string          `json:"status,omitempty"`
+	Input   json.RawMessage `json:"input,omitempty"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content,omitempty"`
+	Structured json.RawMessage `json:"structured,omitempty"`
+	Time       *struct {
+		Created   int64 `json:"created"`
+		Ran       int64 `json:"ran,omitempty"`
+		Completed int64 `json:"completed,omitempty"`
+	} `json:"time,omitempty"`
+}
+
+// UnmarshalJSON captures the raw part for Custom fallback.
+func (p *V2ContentPart) UnmarshalJSON(data []byte) error {
+	type alias V2ContentPart
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*p = V2ContentPart(a)
+	p.Raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MessagesV2 fetches the V2 store's message list for a session
+// (descending, newest first — same ordering contract as the V1
+// endpoint). Streaming-decoded with a 64MB bound, mirroring
+// GetHistory's large-transcript posture.
+func (c *Client) MessagesV2(ctx context.Context, sessionID string) ([]V2Message, error) {
+	url := fmt.Sprintf("%s/api/session/%s/message", c.baseURL, sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build V2 messages request: %w", err)
+	}
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET /api/session/%s/message (V2): %w", sessionID, err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("GET /api/session/%s/message (V2) returned %d: %s", sessionID, resp.StatusCode, string(errBody))
+	}
+
+	var envelope struct {
+		Data []V2Message `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decode V2 messages: %w", err)
+	}
+	return envelope.Data, nil
 }

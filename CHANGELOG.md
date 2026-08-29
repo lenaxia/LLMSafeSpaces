@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-08-28
+
+### Fixed
+
+- **Bootstrap DEK failures are loud; legacy `user_keys` rows heal
+  opportunistically (#1114, 0052 Phase 1 precursor, 2026-08-28
+  incident)**: `InjectSecretsForPodBootstrap` audits every
+  non-"owner-has-no-secrets" degrade as `pod_bootstrap_dek_failed`
+  with the workspace and underlying error — the incident's silent
+  sessionless degrade (six-hour forensic diagnosis) now leaves a
+  breadcrumb at the failure site. `GetDEKServerSide` self-heals
+  unwrappable rows: when the master provider cannot decrypt the stored
+  wrap (June-era un-prefixed blob), the DEK is recovered from the
+  session source (warm login cache / `jwt_sessions`), the row is
+  re-wrapped at the active version with verify-after-write (the new
+  wrap must round-trip before the row is replaced), and the secrets
+  deliver. Incident-class rows converge on their next resume while a
+  30-day login cache still exists; the login-independent reconciler
+  follows in design 0052 Phase 1. Regression-gated: the heal is
+  asserted one-shot (second boot unwraps directly) and the no-session
+  degrade is asserted non-silent.
+
+## [0.25.1] - 2026-08-27
+
+### Fixed
+
+- **User-DEK secrets deliver at pod bootstrap with no active session —
+  pod exists ⟹ secrets (#1084 follow-up to #1087, #1104)**:
+  `InjectSecretsForPodBootstrap` no longer gates user-owned bindings on
+  `jwt_sessions` state. The password-tier removal made every user DEK
+  server-recoverable at rest (`user_keys` wrapped under the master
+  RootKeyProvider), so the session gate was an ACL defending a
+  constraint that no longer existed. New `KeyService.GetDEKServerSide`
+  unwraps the `user_keys` record directly and publishes a synthetic
+  single-use Redis handle (fresh UUID jti, 5-minute TTL, deliberately
+  no `jwt_sessions` row so it can never be rehydrated); bootstrap
+  delegates to `InjectSecrets` under that handle. Root cause closed:
+  on suspend/resume with no active `jwt_sessions` row, pod-bootstrap
+  degraded to server-KEK-only (user env-secrets audited-and-skipped
+  while org credentials still delivered), materialize wrote the reload
+  cache with the degraded batch (design 0045 Change 3), `hasUserCreds`
+  reported `UserCredsPresent=true`, and the `secretautopush` recovery
+  was permanently skipped (`skipped_ucp_true`) — total loss of user
+  credentials on every resume that outlived the session TTL.
+  Degrade semantics preserved for infra failures only (provider
+  unwired, store/cache unreachable, owner has no `user_keys` record);
+  `InjectSessionlessSecrets` (API-key SDK surface) is untouched.
+  Secrets remain user-DEK encrypted at rest — delivery-only change on
+  the pod-bootstrap path (TokenReview trust model unchanged).
+  Regression-gated at every level: unit session-independence rows (no
+  store / empty table / rotated-out signing keys), e2e
+  no-active-session and password-reset boots asserting user providers
+  materialize, and jwt wiring retained as an interference guard.
+
 ## [0.25.0] - 2026-08-27
 
 ### Added

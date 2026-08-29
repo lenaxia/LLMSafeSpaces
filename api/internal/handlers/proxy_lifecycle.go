@@ -345,7 +345,22 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 			model = &m
 		}
 	}
-	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
+	opts := session.SendOpts{Model: model}
+	if h.v2Delivery {
+		// V2 mode (design 0052, OPENCODE_V2_DELIVERY): admission
+		// returns in milliseconds — the entry completes at pickup and
+		// queue.update/sent fires near-instantly. Same failure
+		// classification: the admission POST is still an HTTP call
+		// whose transport failure is ambiguous.
+		if _, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts); err != nil {
+			if errors.Is(err, agent.ErrHTTPStatus) {
+				return err
+			}
+			return outbox.Ambiguous(err)
+		}
+		return nil
+	}
+	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, opts)
 	if err != nil {
 		if errors.Is(err, agent.ErrHTTPStatus) {
 			return err
@@ -353,6 +368,16 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 		return outbox.Ambiguous(err)
 	}
 	return nil
+}
+
+// SetV2Delivery enables V2 admit-and-return outbox delivery (design
+// 0052, OPENCODE_V2_DELIVERY). Must be called before Start(), and the
+// adapter must be constructed with WithV2Store(true) in the same
+// wiring — delivery and verification must agree on the store, or the
+// verifier reports false absence and re-sends (the #987 duplicate
+// class).
+func (h *ProxyHandler) SetV2Delivery(enabled bool) {
+	h.v2Delivery = enabled
 }
 
 // deliveryVerifier is the consumer-defined seam for #987 ambiguity

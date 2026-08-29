@@ -30,6 +30,16 @@ import (
 //     ParentID} — NEVER ContextUsage: its tokens are cumulative
 //   - session.error, session.next.step.failed → EventError
 //
+// V2-queue turns (design 0052, opencode ≥1.18.15) emit ONLY the
+// session.next.* taxonomy — V1 part events never fire for them:
+//   - session.next.text.delta       → EventPartDelta (streaming text)
+//   - session.next.text.ended       → EventPartEnd (final text part)
+//   - session.next.prompted         → EventPartEnd (user echo: the
+//     admitted prompt text — the same signal the V1 echo carried, which
+//     the frontend's queued-message strip matches on)
+//   - session.next.step.ended       → EventSessionUpdated with
+//     ContextUsage from the step's tokens (per-step occupancy)
+//
 // Events with no client-facing signal (the majority — heartbeats,
 // status, plugin/file events) return nil after a string-compare type
 // check; the streaming hot path never pays a parse for them.
@@ -43,6 +53,16 @@ func (a *Adapter) ClientEventsFromEvent(eventType string, rawData string) []sess
 		return clientEventsFromSessionUpdated(rawData)
 	case eventType == "session.error" || eventType == "session.next.step.failed":
 		return clientEventsFromError(eventType, rawData)
+	case eventType == "session.next.text.delta":
+		return clientEventsFromNextTextDelta(rawData)
+	case eventType == "session.next.text.started":
+		return clientEventsFromNextTextStarted(rawData)
+	case eventType == "session.next.text.ended":
+		return clientEventsFromNextTextEnded(rawData)
+	case eventType == "session.next.prompted":
+		return clientEventsFromNextPrompted(rawData)
+	case eventType == "session.next.step.ended":
+		return clientEventsFromNextStepEnded(rawData)
 	default:
 		return nil
 	}
@@ -225,5 +245,154 @@ func clientEventsFromError(eventType string, rawData string) []session.Event {
 		Timestamp: time.Now().UTC(),
 		SessionID: p.SessionID,
 		Error:     &session.Error{Code: code, Message: msg},
+	}}
+}
+
+// clientEventsFromNextTextStarted translates the V2 text-block start
+// into a MODE-FLIPPING part.end: the frontend routes part.delta events
+// by the mode the last part.end set, and the preceding prompted echo
+// leaves it in "user-echo" (discard). An empty assistant text part.end
+// primes the streaming buffer ("text" mode + the part slot), so the
+// following deltas append live — without this, a V2 turn's text would
+// appear only at text.ended. The empty-text branch of the part.end
+// handler exists for exactly this priming shape (it appends an empty
+// text part and records the slot index).
+func clientEventsFromNextTextStarted(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID          string `json:"sessionID"`
+		AssistantMessageID string `json:"assistantMessageID"`
+		TextID             string `json:"textID"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" || p.AssistantMessageID == "" {
+		return nil // without the assistant message there is nothing to prime
+	}
+	return []session.Event{{
+		Type:      session.EventPartEnd,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		MessageID: p.AssistantMessageID,
+		PartID:    p.TextID,
+		Part:      &session.Part{Type: session.PartText, ID: p.TextID, Text: ""},
+	}}
+}
+
+// clientEventsFromNextTextDelta translates a V2 streaming text delta
+// (session.next.text.delta). The wire carries assistantMessageID and
+// textID where the V1 taxonomy carried messageID/partID — both map
+// onto the contract fields unchanged.
+func clientEventsFromNextTextDelta(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID          string `json:"sessionID"`
+		AssistantMessageID string `json:"assistantMessageID"`
+		TextID             string `json:"textID"`
+		Delta              string `json:"delta"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" || p.Delta == "" {
+		return nil
+	}
+	return []session.Event{{
+		Type:      session.EventPartDelta,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		MessageID: p.AssistantMessageID,
+		PartID:    p.TextID,
+		Delta:     p.Delta,
+	}}
+}
+
+// clientEventsFromNextTextEnded translates the V2 final-text event
+// (session.next.text.ended) into the part.end the streaming renderer
+// consumes (ChatPage replaces the accumulated delta buffer with the
+// final snapshot).
+func clientEventsFromNextTextEnded(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID          string `json:"sessionID"`
+		AssistantMessageID string `json:"assistantMessageID"`
+		TextID             string `json:"textID"`
+		Text               string `json:"text"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" {
+		return nil
+	}
+	return []session.Event{{
+		Type:      session.EventPartEnd,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		MessageID: p.AssistantMessageID,
+		PartID:    p.TextID,
+		Part:      &session.Part{Type: session.PartText, ID: p.TextID, Text: p.Text},
+	}}
+}
+
+// clientEventsFromNextPrompted translates the V2 promotion event into
+// the user-echo part.end — the SAME contract signal the V1 echo
+// carried, which the frontend's queued-message strip matches on to
+// clear pills and suppress agent-side rendering of the user's text.
+func clientEventsFromNextPrompted(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID string `json:"sessionID"`
+		MessageID string `json:"messageID"`
+		Prompt    struct {
+			Text string `json:"text"`
+		} `json:"prompt"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" || p.Prompt.Text == "" {
+		return nil
+	}
+	return []session.Event{{
+		Type:      session.EventPartEnd,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		MessageID: p.MessageID,
+		Part:      &session.Part{Type: session.PartText, Text: p.Prompt.Text},
+	}}
+}
+
+// clientEventsFromNextStepEnded translates the V2 step-end event into
+// the per-step ContextUsage session update — mirroring the V1
+// step-finish part's EventSessionUpdated (tokens.input under the same
+// prompt-occupancy semantics).
+func clientEventsFromNextStepEnded(rawData string) []session.Event {
+	var env wire.Envelope
+	if json.Unmarshal([]byte(rawData), &env) != nil || len(env.Properties) == 0 {
+		return nil
+	}
+	var p struct {
+		SessionID string `json:"sessionID"`
+		Tokens    *struct {
+			Input int64 `json:"input"`
+			Cache struct {
+				Read  int64 `json:"read"`
+				Write int64 `json:"write"`
+			} `json:"cache"`
+		} `json:"tokens"`
+	}
+	if json.Unmarshal(env.Properties, &p) != nil || p.SessionID == "" || p.Tokens == nil {
+		return nil
+	}
+	return []session.Event{{
+		Type:      session.EventSessionUpdated,
+		Timestamp: time.Now().UTC(),
+		SessionID: p.SessionID,
+		Session: &session.Session{
+			ID:           p.SessionID,
+			ContextUsage: &session.ContextUsage{Used: p.Tokens.Input + p.Tokens.Cache.Read + p.Tokens.Cache.Write},
+		},
 	}}
 }

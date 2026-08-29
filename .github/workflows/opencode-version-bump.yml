@@ -1,0 +1,166 @@
+name: opencode-version-bump
+
+# Automated opencode release tracking. The runtime pin
+# (runtimes/base/Dockerfile ARG OPENCODE_VERSION) is a load-bearing
+# contract surface — every parser, taxonomy table, and metering decode
+# is pinned to fixtures captured against it (testdata/REFRESH.md).
+# Upstream (anomalyco/opencode) releases at a pace manual tracking
+# cannot keep up with; this workflow turns each new release into a
+# ready-to-validate PR instead of a quarterly archaeology dig.
+#
+# What it does (weekly + on demand):
+#   1. Reads the pinned version from runtimes/base/Dockerfile.
+#   2. Queries the latest anomalyco/opencode release.
+#   3. Refuses to bump into a KNOWN-BAD window (see SKIP_VERSIONS —
+#      e.g. v1.18.16–.18 break v1-format session databases, upstream
+#      #42444). Skipped windows are documented in the Dockerfile comment
+#      too; the workflow waits for the next release past the window.
+#   4. Opens/updates PR chore/opencode-bump-<version> updating the
+#      Dockerfile ARG + local/bootstrap.sh default, with the release
+#      notes linked and the fixture-refresh runbook front and center.
+#
+# What it deliberately does NOT do:
+#   - automerge. The pre-commit/CI bump gate requires a golden-fixture
+#     refresh in the same PR; that is a human+spike decision (REFRESH.md
+#     runbook), not something to green-light blindly.
+#
+# Idempotent: re-runs on an open bump branch update it in place
+# (gh pr edit body) rather than stacking PRs.
+
+on:
+  schedule:
+    # Mondays 09:12 UTC — offset from the top-of-hour cron storm.
+    - cron: '12 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Explicit version (e.g. 1.18.19) — defaults to latest release'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  REPO: anomalyco/opencode
+
+jobs:
+  bump:
+    name: Open opencode bump PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute pinned and target versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPLICIT: ${{ inputs.target_version }}
+        run: |
+          set -euo pipefail
+          PINNED="$(grep -oP '^ARG OPENCODE_VERSION=\K[0-9.]+' runtimes/base/Dockerfile)"
+          echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$EXPLICIT" ]; then
+            TARGET="$EXPLICIT"
+          else
+            TARGET="$(gh api "repos/${REPO}/releases/latest" --jq '.tag_name | ltrimstr("v")')"
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+          # Known-bad windows the pin must never traverse. Each entry:
+          #   <floor_inclusive>..<ceiling_inclusive>|<reason-citation>
+          # v1.18.16–.18: v1-DB-breaking projector change (upstream
+          # #42444 fixed it in .19); existing pod session volumes would
+          # cross the broken migration.
+          SKIP_VERSIONS='1.18.16..1.18.18|upstream #42444 v1-DB breakage'
+
+          skip=0
+          reason=""
+          while IFS='|' read -r range why; do
+            [ -z "$range" ] && continue
+            lo="${range%..*}"; hi="${range#*..}"
+            if [ "$(printf '%s\n%s\n' "$lo" "$TARGET" | sort -V | head -1)" = "$lo" ] \
+               && [ "$(printf '%s\n%s\n' "$hi" "$TARGET" | sort -V | tail -1)" = "$hi" ]; then
+              skip=1; reason="$why"; break
+            fi
+          done <<< "$SKIP_VERSIONS"
+
+          if [ "$skip" = 1 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "reason=$reason" >> "$GITHUB_OUTPUT"
+            echo "::notice title=known-bad window::v$TARGET falls inside a known-bad window ($reason) — no PR opened."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$(printf '%s\n%s\n' "$PINNED" "$TARGET" | sort -V | tail -1)" = "$PINNED" ]; then
+            echo "::notice title=no upgrade::pinned $PINNED >= target $TARGET — nothing to do."
+            echo "uptodate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "uptodate=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update pin
+        if: steps.versions.outputs.skip == 'false' && steps.versions.outputs.uptodate == 'false'
+        env:
+          PINNED: ${{ steps.versions.outputs.pinned }}
+          TARGET: ${{ steps.versions.outputs.target }}
+        run: |
+          set -euo pipefail
+          sed -i "s/^ARG OPENCODE_VERSION=.*/ARG OPENCODE_VERSION=${TARGET}/" runtimes/base/Dockerfile
+          sed -i "s/OPENCODE_VERSION:-${PINNED}/OPENCODE_VERSION:-${TARGET}/" local/bootstrap.sh
+          sed -i "s#(default: ${PINNED})#(default: ${TARGET})#" local/bootstrap.sh
+          git diff --stat
+
+      - name: Open or update PR
+        if: steps.versions.outputs.skip == 'false' && steps.versions.outputs.uptodate == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PINNED: ${{ steps.versions.outputs.pinned }}
+          TARGET: ${{ steps.versions.outputs.target }}
+          BRANCH: chore/opencode-bump-${{ steps.versions.outputs.target }}
+        run: |
+          set -euo pipefail
+          NOTES_URL="https://github.com/${REPO}/releases/tag/v${TARGET}"
+          BODY="$(cat <<EOF
+          Automated opencode bump: **${PINNED} → ${TARGET}**
+
+          Release notes: ${NOTES_URL}
+
+          ## Merge checklist (bump gate will enforce)
+
+          1. **Golden-fixture refresh** — capture new
+             \`sse_events_<version>_live.jsonl\` + \`event_store_<version>.jsonl\`
+             per \`pkg/agent/opencode/testdata/REFRESH.md\` (staging pod or local
+             \`opencode serve\` capture). Keep prior-version fixtures unless the
+             surface is provably gone.
+          2. **Pinned-surface diff** the tags upstream: \`packages/schema\`,
+             config schema, V1 routes, SSE taxonomy — extend
+             \`wire.IsKnownEventType\` for any new event types.
+          3. **V2 drain spot-check** (the #755 class): admit two
+             \`delivery:"queue"\` prompts behind a running turn; both must
+             promote FIFO with the right texts.
+          4. **Known-bad check**: the workflow refuses v1.18.16–.18
+             (v1-DB breakage, upstream #42444) — extend the skip list in
+             \`.github/workflows/opencode-version-bump.yml\` if a NEW bad window
+             is discovered, and record it in the Dockerfile comment.
+          EOF
+          )"
+          # The heredoc is indented for readability — strip the leading
+          # whitespace so markdown renders headings/lists, not code blocks.
+          BODY="$(printf '%s\n' "$BODY" | sed -E 's/^[[:space:]]+//')"
+          git config user.name "opencode-bump-bot"
+          git config user.email "actions@github.com"
+          git checkout -b "$BRANCH"
+          git add runtimes/base/Dockerfile local/bootstrap.sh
+          git commit -m "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)"
+          git push origin "$BRANCH"
+          if gh pr view "$BRANCH" >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --body "$BODY" --title "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)"
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)" \
+              --body "$BODY" --label opencode-bump
+          fi

@@ -1,0 +1,78 @@
+{"id":"evt0000000000000000000001","type":"server.connected","properties":{}}
+{"id":"evt0000000000000000000002","type":"session.created","properties":{"sessionID":"ses0000000000000000000001","info":{"id":"ses0000000000000000000002","slug":"crisp-planet","version":"1.18.15","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"New session - 2026-08-27T23:52:58.616Z","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874778616}}}}
+{"id":"evt0000000000000000000003","type":"session.updated","properties":{"sessionID":"ses0000000000000000000003","info":{"id":"ses0000000000000000000004","slug":"crisp-planet","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"New session - 2026-08-27T23:52:58.616Z","agent":"build","model":{"id":"mock-1","providerID":"mockprov","variant":"default"},"version":"1.18.15","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874778675}}}}
+{"id":"evt0000000000000000000004","type":"message.updated","properties":{"sessionID":"ses0000000000000000000005","info":{"id":"msg0000000000000000000001","role":"user","sessionID":"ses0000000000000000000006","time":{"created":1787874778675},"agent":"build","model":{"providerID":"mockprov","modelID":"mock-1"}}}}
+{"id":"evt0000000000000000000005","type":"message.part.updated","properties":{"sessionID":"ses0000000000000000000007","part":{"type":"text","text":"fixture capture on fresh boot","messageID":"msg0000000000000000000002","sessionID":"ses0000000000000000000008","id":"prt0000000000000000000001"},"time":1787874779312}}
+{"id":"evt0000000000000000000006","type":"session.updated","properties":{"sessionID":"ses0000000000000000000009","info":{"id":"ses0000000000000000000010","slug":"crisp-planet","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"New session - 2026-08-27T23:52:58.616Z","agent":"build","model":{"id":"mock-1","providerID":"mockprov","variant":"default"},"version":"1.18.15","cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874779318}}}}
+{"id":"evt0000000000000000000007","type":"session.status","properties":{"sessionID":"ses0000000000000000000011","status":{"type":"busy"}}}
+{"id":"evt0000000000000000000008","type":"message.updated","properties":{"sessionID":"ses0000000000000000000012","info":{"id":"msg0000000000000000000003","parentID":"msg0000000000000000000004","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/tmp/opencode/repro/v15","root":"/"},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"modelID":"mock-1","providerID":"mockprov","time":{"created":1787874779337},"sessionID":"ses0000000000000000000013"}}}
+{"id":"evt0000000000000000000009","type":"session.updated","properties":{"sessionID":"ses0000000000000000000014","info":{"id":"ses0000000000000000000015","slug":"crisp-planet","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"New session - 2026-08-27T23:52:58.616Z","agent":"build","model":{"id":"mock-1","providerID":"mockprov","variant":"default"},"version":"1.18.15","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874779394}}}}
+{"id":"evt0000000000000000000010","type":"session.diff","properties":{"sessionID":"ses0000000000000000000016","diff":[]}}
+{"id":"evt0000000000000000000011","type":"message.updated","properties":{"sessionID":"ses0000000000000000000017","info":{"role":"user","time":{"created":1787874778675},"agent":"build","model":{"providerID":"mockprov","modelID":"mock-1"},"id":"msg0000000000000000000005","sessionID":"ses0000000000000000000018","summary":{"diffs":[]}}}}
+{"id":"evt0000000000000000000012","type":"plugin.added","properties":{"id":"core/config-reference"}}
+{"id":"evt0000000000000000000013","type":"plugin.added","properties":{"id":"agent"}}
+{"id":"evt0000000000000000000014","type":"plugin.added","properties":{"id":"command"}}
+{"id":"evt0000000000000000000015","type":"plugin.added","properties":{"id":"skill"}}
+{"id":"evt0000000000000000000016","type":"plugin.added","properties":{"id":"models-dev"}}
+{"id":"evt0000000000000000000017","type":"plugin.added","properties":{"id":"config-agent"}}
+{"id":"evt0000000000000000000018","type":"plugin.added","properties":{"id":"config-command"}}
+{"id":"evt0000000000000000000019","type":"plugin.added","properties":{"id":"config-skill"}}
+{"id":"evt0000000000000000000020","type":"plugin.added","properties":{"id":"alibaba"}}
+{"id":"evt0000000000000000000021","type":"plugin.added","properties":{"id":"amazon-bedrock"}}
+{"id":"evt0000000000000000000022","type":"plugin.added","properties":{"id":"anthropic"}}
+{"id":"evt0000000000000000000023","type":"plugin.added","properties":{"id":"azure-cognitive-services"}}
+{"id":"evt0000000000000000000024","type":"plugin.added","properties":{"id":"azure"}}
+{"id":"evt0000000000000000000025","type":"plugin.added","properties":{"id":"cerebras"}}
+{"id":"evt0000000000000000000026","type":"plugin.added","properties":{"id":"cloudflare-ai-gateway"}}
+{"id":"evt0000000000000000000027","type":"plugin.added","properties":{"id":"cloudflare-workers-ai"}}
+{"id":"evt0000000000000000000028","type":"plugin.added","properties":{"id":"cohere"}}
+{"id":"evt0000000000000000000029","type":"plugin.added","properties":{"id":"deepinfra"}}
+{"id":"evt0000000000000000000030","type":"plugin.added","properties":{"id":"gateway"}}
+{"id":"evt0000000000000000000031","type":"plugin.added","properties":{"id":"github-copilot"}}
+{"id":"evt0000000000000000000032","type":"plugin.added","properties":{"id":"gitlab"}}
+{"id":"evt0000000000000000000033","type":"plugin.added","properties":{"id":"google"}}
+{"id":"evt0000000000000000000034","type":"plugin.added","properties":{"id":"google-vertex-anthropic"}}
+{"id":"evt0000000000000000000035","type":"plugin.added","properties":{"id":"google-vertex"}}
+{"id":"evt0000000000000000000036","type":"plugin.added","properties":{"id":"groq"}}
+{"id":"evt0000000000000000000037","type":"plugin.added","properties":{"id":"kilo"}}
+{"id":"evt0000000000000000000038","type":"plugin.added","properties":{"id":"llmgateway"}}
+{"id":"evt0000000000000000000039","type":"plugin.added","properties":{"id":"mistral"}}
+{"id":"evt0000000000000000000040","type":"plugin.added","properties":{"id":"nvidia"}}
+{"id":"evt0000000000000000000041","type":"plugin.added","properties":{"id":"opencode"}}
+{"id":"evt0000000000000000000042","type":"plugin.added","properties":{"id":"snowflake-cortex"}}
+{"id":"evt0000000000000000000043","type":"plugin.added","properties":{"id":"openai-compatible"}}
+{"id":"evt0000000000000000000044","type":"plugin.added","properties":{"id":"openai"}}
+{"id":"evt0000000000000000000045","type":"plugin.added","properties":{"id":"openrouter"}}
+{"id":"evt0000000000000000000046","type":"plugin.added","properties":{"id":"perplexity"}}
+{"id":"evt0000000000000000000047","type":"plugin.added","properties":{"id":"sap-ai-core"}}
+{"id":"evt0000000000000000000048","type":"catalog.updated","properties":{}}
+{"id":"evt0000000000000000000049","type":"plugin.added","properties":{"id":"togetherai"}}
+{"id":"evt0000000000000000000050","type":"plugin.added","properties":{"id":"vercel"}}
+{"id":"evt0000000000000000000051","type":"plugin.added","properties":{"id":"venice"}}
+{"id":"evt0000000000000000000052","type":"plugin.added","properties":{"id":"xai"}}
+{"id":"evt0000000000000000000053","type":"plugin.added","properties":{"id":"zenmux"}}
+{"id":"evt0000000000000000000054","type":"plugin.added","properties":{"id":"dynamic-provider"}}
+{"id":"evt0000000000000000000055","type":"plugin.added","properties":{"id":"config-plugin"}}
+{"id":"evt0000000000000000000056","type":"plugin.added","properties":{"id":"config-provider"}}
+{"id":"evt0000000000000000000057","type":"plugin.added","properties":{"id":"variant"}}
+{"id":"evt0000000000000000000058","type":"reference.updated","properties":{}}
+{"id":"evt0000000000000000000059","type":"integration.updated","properties":{}}
+{"id":"evt0000000000000000000060","type":"catalog.updated","properties":{}}
+{"id":"evt0000000000000000000061","type":"session.status","properties":{"sessionID":"ses0000000000000000000019","status":{"type":"busy"}}}
+{"id":"evt0000000000000000000062","type":"session.updated","properties":{"sessionID":"ses0000000000000000000020","info":{"id":"ses0000000000000000000021","slug":"crisp-planet","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"checking the file first","agent":"build","model":{"id":"mock-1","providerID":"mockprov","variant":"default"},"version":"1.18.15","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874779394}}}}
+{"id":"evt0000000000000000000063","type":"message.part.updated","properties":{"sessionID":"ses0000000000000000000022","part":{"id":"prt0000000000000000000002","messageID":"msg0000000000000000000006","sessionID":"ses0000000000000000000023","type":"step-start"},"time":1787874782051}}
+{"id":"evt0000000000000000000064","type":"message.part.updated","properties":{"sessionID":"ses0000000000000000000024","part":{"id":"prt0000000000000000000003","messageID":"msg0000000000000000000007","sessionID":"ses0000000000000000000025","type":"text","text":"","time":{"start":1787874782055}},"time":1787874782056}}
+{"id":"evt0000000000000000000065","type":"message.part.delta","properties":{"sessionID":"ses0000000000000000000026","messageID":"msg0000000000000000000008","partID":"prt0000000000000000000004","field":"text","delta":"mock-reply-6: "}}
+{"id":"evt0000000000000000000066","type":"message.part.delta","properties":{"sessionID":"ses0000000000000000000027","messageID":"msg0000000000000000000009","partID":"prt0000000000000000000005","field":"text","delta":"the fixture capture reply"}}
+{"id":"evt0000000000000000000067","type":"message.part.updated","properties":{"sessionID":"ses0000000000000000000028","part":{"id":"prt0000000000000000000006","messageID":"msg0000000000000000000010","sessionID":"ses0000000000000000000029","type":"text","text":"mock-reply-6: the fixture capture reply","time":{"start":1787874782055,"end":1787874782796}},"time":1787874782796}}
+{"id":"evt0000000000000000000068","type":"message.part.updated","properties":{"sessionID":"ses0000000000000000000030","part":{"id":"prt0000000000000000000007","reason":"stop","messageID":"msg0000000000000000000011","sessionID":"ses0000000000000000000031","type":"step-finish","tokens":{"total":162,"input":126,"output":36,"reasoning":0,"cache":{"write":0,"read":0}},"cost":0},"time":1787874782802}}
+{"id":"evt0000000000000000000069","type":"message.updated","properties":{"sessionID":"ses0000000000000000000032","info":{"id":"msg0000000000000000000012","parentID":"msg0000000000000000000013","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/tmp/opencode/repro/v15","root":"/"},"cost":0,"tokens":{"total":162,"input":126,"output":36,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"mock-1","providerID":"mockprov","time":{"created":1787874779337,"completed":1787874782809},"sessionID":"ses0000000000000000000033","finish":"stop"}}}
+{"id":"evt0000000000000000000070","type":"message.updated","properties":{"sessionID":"ses0000000000000000000034","info":{"id":"msg0000000000000000000014","parentID":"msg0000000000000000000015","role":"assistant","mode":"build","agent":"build","path":{"cwd":"/tmp/opencode/repro/v15","root":"/"},"cost":0,"tokens":{"total":162,"input":126,"output":36,"reasoning":0,"cache":{"write":0,"read":0}},"modelID":"mock-1","providerID":"mockprov","time":{"created":1787874779337,"completed":1787874782809},"sessionID":"ses0000000000000000000035","finish":"stop"}}}
+{"id":"evt0000000000000000000071","type":"session.status","properties":{"sessionID":"ses0000000000000000000036","status":{"type":"busy"}}}
+{"id":"evt0000000000000000000072","type":"session.status","properties":{"sessionID":"ses0000000000000000000037","status":{"type":"idle"}}}
+{"id":"evt0000000000000000000073","type":"session.idle","properties":{"sessionID":"ses0000000000000000000038"}}
+{"id":"evt0000000000000000000074","type":"session.updated","properties":{"sessionID":"ses0000000000000000000039","info":{"id":"ses0000000000000000000040","slug":"crisp-planet","projectID":"global","directory":"/tmp/opencode/repro/v15","path":"tmp/opencode/repro/v15","title":"checking the file first","agent":"build","model":{"id":"mock-1","providerID":"mockprov","variant":"default"},"version":"1.18.15","summary":{"additions":0,"deletions":0,"files":0},"cost":0,"tokens":{"input":126,"output":36,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":1787874778616,"updated":1787874782816}}}}
+{"id":"evt0000000000000000000075","type":"session.diff","properties":{"sessionID":"ses0000000000000000000041","diff":[]}}
+{"id":"evt0000000000000000000076","type":"message.updated","properties":{"sessionID":"ses0000000000000000000042","info":{"role":"user","time":{"created":1787874778675},"agent":"build","model":{"providerID":"mockprov","modelID":"mock-1"},"summary":{"diffs":[]},"id":"msg0000000000000000000016","sessionID":"ses0000000000000000000043"}}}
+{"id":"evt0000000000000000000077","type":"server.heartbeat","properties":{}}
+{"id":"evt0000000000000000000078","type":"server.heartbeat","properties":{}}

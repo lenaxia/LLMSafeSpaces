@@ -754,3 +754,78 @@ func TestTranslateMessage_OutputHasNoForbiddenIdentifiers(t *testing.T) {
 			"opencode-specific part type leaked into contract output")
 	}
 }
+
+// --- V2 store translation (design 0052) ---
+
+func TestTranslateV2Message_User(t *testing.T) {
+	m := V2Message{ID: "m1", Type: "user", Text: "hello v2"}
+	m.Time.Created = 1787880243128
+	sm := translateV2Message(m)
+	assert.Equal(t, session.MessageUser, sm.Type)
+	assert.Equal(t, "m1", sm.ID)
+	require.Len(t, sm.Parts, 1)
+	assert.Equal(t, session.PartText, sm.Parts[0].Type)
+	assert.Equal(t, "hello v2", sm.Parts[0].Text)
+	require.NotNil(t, sm.CreatedAt)
+	assert.Equal(t, int64(1787880243128), sm.CreatedAt.UnixMilli())
+}
+
+func TestTranslateV2Message_AssistantContent(t *testing.T) {
+	m := V2Message{ID: "m2", Type: "assistant"}
+	m.Time.Created = 1787880245324
+	m.Time.Completed = 1787880245433
+	m.Model = &V2ModelInMessage{ID: "mock-1", ProviderID: "mockprov"}
+	m.Tokens = &V2Tokens{}
+	m.Tokens.Input = 126
+	m.Tokens.Output = 36
+	m.Cost = 0.0025
+
+	toolState := &V2ToolState{Status: "completed", Input: json.RawMessage(`{"command":"echo hi"}`)}
+	toolState.Content = []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{{Type: "text", Text: "hi\n"}, {Type: "text", Text: "Command exited with code 0."}}
+	toolState.Time = &struct {
+		Created   int64 `json:"created"`
+		Ran       int64 `json:"ran,omitempty"`
+		Completed int64 `json:"completed,omitempty"`
+	}{Created: 1787880245342, Ran: 1787880245353, Completed: 1787880245428}
+	m.Content = []V2ContentPart{
+		{Type: "text", ID: "text-0", Text: "checking"},
+		{Type: "tool", ID: "call_7", Name: "bash", State: toolState},
+		{Type: "step-start"},
+		{Type: "future-thing", ID: "x1", Raw: json.RawMessage(`{"type":"future-thing"}`)},
+	}
+
+	sm := translateV2Message(m)
+	assert.Equal(t, session.MessageAssistant, sm.Type)
+	require.Len(t, sm.Parts, 3, "step-start dropped, unknown preserved as Custom")
+
+	assert.Equal(t, session.PartText, sm.Parts[0].Type)
+	assert.Equal(t, "checking", sm.Parts[0].Text)
+
+	tp := sm.Parts[1].Tool
+	require.NotNil(t, tp)
+	assert.Equal(t, "call_7", tp.CallID)
+	assert.Equal(t, "bash", tp.Name)
+	assert.Equal(t, string(session.ToolStatusCompleted), string(tp.State.Status))
+	assert.JSONEq(t, `{"command":"echo hi"}`, string(tp.Input))
+	assert.JSONEq(t, `"hi\nCommand exited with code 0."`, string(tp.Output))
+	require.NotNil(t, tp.State.StartedAt)
+	assert.Equal(t, int64(1787880245353), tp.State.StartedAt.UnixMilli())
+
+	assert.Equal(t, session.PartCustom, sm.Parts[2].Type)
+	assert.Equal(t, "future-thing", sm.Parts[2].Custom.Kind)
+
+	require.NotNil(t, sm.Model)
+	assert.Equal(t, "mock-1", sm.Model.ID)
+	assert.Equal(t, "mockprov", sm.Model.Provider)
+	require.NotNil(t, sm.Cost)
+	assert.InDelta(t, 0.0025, sm.Cost.CostUSD, 1e-9)
+	assert.Equal(t, int64(126), sm.Cost.InputTokens)
+}
+
+func TestTranslateV2Message_System(t *testing.T) {
+	sm := translateV2Message(V2Message{ID: "m3", Type: "system"})
+	assert.Equal(t, session.MessageSystem, sm.Type)
+}

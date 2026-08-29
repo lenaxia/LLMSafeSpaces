@@ -216,11 +216,30 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// (explicit conversion); agentoc.PodIPResolver is an interface that
 	// handlers.WorkspacePodIPResolver satisfies structurally (same
 	// method signature, no explicit cast needed — Go structural typing).
-	agentAdapter := agentoc.NewAdapter(
-		agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
-		proxyHandler.AdapterPodIPResolver(),
-		log.ZapLogger(),
-	)
+	//
+	// V2 delivery (design 0052, OPENCODE_V2_DELIVERY=1): routes outbox
+	// delivery through the V2 admit-and-return prompt endpoint and
+	// history reads/verification through the V2 store. The flag pairs
+	// the adapter option with proxyHandler.SetV2Delivery below — the
+	// two MUST move together (delivery and verification must agree on
+	// the store). Off by default; requires opencode ≥ 1.18.15 (the
+	// V2 queue-drain fixes — the runtime pin's floor).
+	v2Delivery := strings.EqualFold(os.Getenv("OPENCODE_V2_DELIVERY"), "1") || strings.EqualFold(os.Getenv("OPENCODE_V2_DELIVERY"), "true")
+	var agentAdapter *agentoc.Adapter
+	if v2Delivery {
+		agentAdapter = agentoc.NewAdapter(
+			agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
+			proxyHandler.AdapterPodIPResolver(),
+			log.ZapLogger(),
+			agentoc.WithV2Store(true),
+		)
+	} else {
+		agentAdapter = agentoc.NewAdapter(
+			agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
+			proxyHandler.AdapterPodIPResolver(),
+			log.ZapLogger(),
+		)
+	}
 
 	// #944: system-notice injection at the Adapter seam — the ONE point
 	// every entrypoint (HTTP chat, MCP, SDK) shares. The disk-pressure
@@ -256,6 +275,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
+		if v2Delivery {
+			proxyHandler.SetV2Delivery(true)
+		}
 		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 
 		// US-45.2..US-45.8: swap the in-memory state store for a Redis-backed
@@ -281,6 +303,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Valkey instance (AOF-persisted); accepts survive client
 		// disconnects and API restarts.
 		proxyHandler.SetOutbox(outbox.New(cacheSvc.GetClient()))
+		if v2Delivery {
+			// Design 0052: admission-scale delivery windows. The V1
+			// sync send blocks turn-to-completion (hence 10-minute
+			// bounds); the V2 admit-and-return POST completes in
+			// milliseconds, so the bounds shrink to admission scale.
+			// Set once here, before Start() spawns the worker.
+			outbox.DeliveryTimeout = 30 * time.Second
+			outbox.LockTTL = 2 * time.Minute
+		}
 	} else {
 		// M4 (worklog 371): surface the silent fallback to InMemoryStore.
 		// Without this warning, a future refactor that wraps the cache

@@ -56,6 +56,9 @@ func (a *Adapter) VerifyDelivery(ctx context.Context, userID, workspaceID, sessi
 	if err != nil {
 		return false, false, err
 	}
+	if a.v2Store {
+		return a.verifyDeliveryV2(ctx, c, sessionID, text, since)
+	}
 	floor := since.Add(-verifyClockSkew).UnixMilli()
 	cursor := ""
 	for page := 0; page < verifyPageBudget; page++ {
@@ -112,4 +115,30 @@ func userTextMatches(m ocMessage, text string) bool {
 		}
 	}
 	return false
+}
+
+// verifyDeliveryV2 is the V2-store branch of VerifyDelivery (design
+// 0052). The endpoint returns the full list (no paging on 1.18.15), so
+// a single fetch is either definitive (match → delivered; list fully
+// below the window start → absent) or inconclusive on transport error
+// only — there is no partial-coverage window like the paged V1 scan.
+func (a *Adapter) verifyDeliveryV2(ctx context.Context, c *Client, sessionID, text string, since time.Time) (bool, bool, error) {
+	msgs, err := c.MessagesV2(ctx, sessionID)
+	if err != nil {
+		return false, false, err
+	}
+	floor := since.Add(-verifyClockSkew).UnixMilli()
+	for _, m := range msgs {
+		if m.Time.Created < floor {
+			// Newest-first ordering: everything past this point predates
+			// the send window — absence is proven.
+			return false, true, nil
+		}
+		if m.Type == "user" && m.Text == text {
+			return true, true, nil
+		}
+	}
+	// List exhausted without crossing the floor: the window's messages
+	// are all present and none matched — absence is proven.
+	return false, true, nil
 }

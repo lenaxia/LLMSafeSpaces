@@ -10,8 +10,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // v2TestServer is a minimal httptest.Server that records the last request
@@ -337,4 +341,69 @@ func TestClient_Abort_AuthHeaderSent(t *testing.T) {
 	if user != "opencode" || pass != pw {
 		t.Fatalf("Basic auth = %q/%q, want opencode/%s", user, pass, pw)
 	}
+}
+
+// TestMessagesV2_RealShape drives MessagesV2 against the golden V2
+// history fixture (testdata/v2_messages_1_18_15.json — captured live
+// from opencode 1.18.15, IDs redacted; provenance in testdata/REFRESH.md).
+func TestMessagesV2_RealShape(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/v2_messages_1_18_15.json")
+	require.NoError(t, err)
+
+	ts := newV2TestServer(t, "pw")
+	ts.respBody = string(fixture)
+	ts.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/session/ses_1/message", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(fixture)
+	})
+
+	c := &Client{baseURL: ts.server.URL, password: "pw", httpClient: ts.server.Client()}
+	parsed, err := c.MessagesV2(context.Background(), "ses_1")
+	require.NoError(t, err)
+	require.Len(t, parsed, 6)
+
+	// Newest-first ordering: index 0 is the newest assistant, the last
+	// index is the oldest user message.
+	assert.Equal(t, "assistant", parsed[0].Type)
+	assert.Equal(t, "user", parsed[5].Type)
+	assert.Equal(t, "v2 fixture message one", parsed[5].Text)
+
+	// The tool-carrying assistant message: content[1] is the bash call.
+	var toolMsg *V2Message
+	for i := range parsed {
+		for _, cp := range parsed[i].Content {
+			if cp.Type == "tool" {
+				toolMsg = &parsed[i]
+			}
+		}
+	}
+	require.NotNil(t, toolMsg, "fixture must carry a tool content part")
+	var found bool
+	for _, cp := range toolMsg.Content {
+		if cp.Type == "tool" {
+			found = true
+			assert.Equal(t, "bash", cp.Name)
+			require.NotNil(t, cp.State)
+			assert.Equal(t, "completed", cp.State.Status)
+		}
+	}
+	assert.True(t, found)
+}
+
+// TestMessagesV2_ErrorStatus ensures non-2xx surfaces a typed error with
+// the status and body — the outbox's error classification depends on it.
+func TestMessagesV2_ErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`agent starting`))
+	}))
+	t.Cleanup(ts.Close)
+
+	c := &Client{baseURL: ts.URL, password: "pw", httpClient: ts.Client()}
+	_, err := c.MessagesV2(context.Background(), "ses_1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "503")
+	assert.Contains(t, err.Error(), "agent starting")
 }
