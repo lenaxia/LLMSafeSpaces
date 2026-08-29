@@ -78,6 +78,10 @@ type Adapter struct {
 	// hard per-request bounds, immune to shared-pool wedges.
 	verifyOnce    sync.Once
 	verifyHTTPCli *http.Client
+	// capsCache holds positive capability classifications per workspace
+	// endpoint (see capabilities.go). sync.Map: written once per
+	// workspace endpoint, read on every model-ref send.
+	capsCache sync.Map
 	// v2Store routes history reads and delivery verification through
 	// the V2 store (design 0052: OPENCODE_V2_DELIVERY). V2-queue
 	// messages persist ONLY there — a verify against the wrong store
@@ -371,6 +375,9 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 	if err != nil {
 		return "", err
 	}
+	c.setCapabilitySource(func(ctx context.Context, sessionID string) (Capabilities, error) {
+		return a.adapterCapabilities(ctx, c, sessionID)
+	})
 	delivery := V2DeliveryQueue
 	if opts.Admission == session.AdmissionSteer {
 		delivery = V2DeliverySteer

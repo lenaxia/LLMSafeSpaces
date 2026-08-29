@@ -106,6 +106,9 @@ func (c *Client) Capabilities(ctx context.Context) (Capabilities, error) {
 // capabilitiesFor probes with an optional real session ID for
 // existence-checked binaries (see probeCapabilities).
 func (c *Client) capabilitiesFor(ctx context.Context, sessionID string) (Capabilities, error) {
+	if c.capsSource != nil {
+		return c.capsSource(ctx, sessionID)
+	}
 	c.capsOnce.Do(func() {
 		if c.baseURL == "" {
 			c.cached = Capabilities{Probed: true}
@@ -184,4 +187,26 @@ func (c *Client) postRaw(ctx context.Context, path string, body any) (int, []byt
 	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // probe path
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	return resp.StatusCode, b
+}
+
+// adapterCapabilities resolves the wire-shape classification for a
+// workspace endpoint with an ADAPTER-scoped, positive-only cache.
+//
+// Two defects of the earlier per-Client cache motivated this scope
+// (#1119 review, 2026-08-29): (1) resolveWorkspaceClient constructs a
+// fresh Client per call, so a per-Client cache re-probed (2 extra POSTs)
+// on every message; (2) a transient probe failure cached an
+// indeterminate — and therefore floor-defaulted — classification for
+// the client's lifetime. Indeterminate results are never cached here.
+func (a *Adapter) adapterCapabilities(ctx context.Context, c *Client, sessionID string) (Capabilities, error) {
+	if v, ok := a.capsCache.Load(c.baseURL); ok {
+		return v.(Capabilities), nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	caps := c.probeCapabilities(pctx, sessionID)
+	if caps.V2PromptRoute && (caps.ModelRefIDKey || caps.ModelRefLegacy) {
+		a.capsCache.Store(c.baseURL, caps)
+	}
+	return caps, nil
 }
