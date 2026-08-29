@@ -270,3 +270,22 @@ func TestV2Bridge_ReapOnceProcessesAllDespiteDroppedPublishes(t *testing.T) {
 	assert.Zero(t, n, "every expired entry is processed in one pass despite dropped publishes")
 	assert.Empty(t, h.v2Busy.expired(), "nothing left to double-reap")
 }
+
+// Broker-failure resilience (review follow-up): a nil or failing broker
+// must never panic or block the reaper — the terminal states are already
+// consumed from the map, so surviving the publish path IS the contract.
+func TestV2Bridge_ReapOnceNilBrokerDoesNotPanic(t *testing.T) {
+	env := newVerifyEnv(t, &fakeAgentBackend{persistFirst: true})
+	h := env.handler
+	// Simulate broker loss (startup race, shutdown teardown).
+	saved := h.userBroker
+	h.userBroker = nil
+	t.Cleanup(func() { h.userBroker = saved })
+
+	h.v2Busy.mu.Lock()
+	h.v2Busy.entries = map[string]time.Time{"ws-1|s1": time.Now().Add(-time.Minute)}
+	h.v2Busy.mu.Unlock()
+
+	require.NotPanics(t, func() { h.reapOnce() })
+	assert.Empty(t, h.v2Busy.expired(), "the expired entry is consumed exactly once even with no broker")
+}
