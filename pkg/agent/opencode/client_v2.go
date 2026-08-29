@@ -55,8 +55,11 @@ type v2PromptBody struct {
 	// session default applies. Callers must never send a bare ID or a
 	// "provider/model" string — build it via modelOverride, which applies
 	// the Provider-authoritative split rules and rejects unexpressible
-	// shapes.
-	Model *V2ModelRef `json:"model,omitempty"`
+	// shapes. The wire shape of the ref is capability-selected at send
+	// time (see modelRefWire): opencode >= 1.18.15 requires
+	// {"id","providerID"}; <= 1.18.14 used {"modelID","providerID"} and
+	// silently rejects the other shape (#1119 stress finding 5).
+	Model any `json:"model,omitempty"`
 }
 
 // v2PromptRequest is the body for POST /api/session/:sid/prompt.
@@ -86,8 +89,12 @@ func (c *Client) PromptV2(ctx context.Context, sessionID, text string, delivery 
 // PromptV2WithModel is PromptV2 with an optional per-prompt model override
 // in object form (nil = session default).
 func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, delivery V2Delivery, model *V2ModelRef) (*V2PromptResponse, error) {
+	wire, err := c.modelRefWire(ctx, model)
+	if err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(v2PromptRequest{
-		Prompt:   v2PromptBody{Text: text, Model: model},
+		Prompt:   v2PromptBody{Text: text, Model: wire},
 		Delivery: delivery,
 	})
 	if err != nil {

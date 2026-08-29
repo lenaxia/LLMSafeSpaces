@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -35,6 +36,12 @@ type Client struct {
 	password   string
 	httpClient *http.Client
 	logger     *zap.Logger
+
+	// Capability detection (#1119): probed lazily once per client; see
+	// capabilities.go. Upstream changes wire shapes across patch releases,
+	// so the adapter detects instead of assuming.
+	capsOnce sync.Once
+	cached   Capabilities
 }
 
 type nonRetryableError struct {
