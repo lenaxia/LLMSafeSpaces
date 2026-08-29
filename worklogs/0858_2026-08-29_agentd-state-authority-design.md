@@ -66,7 +66,7 @@ None — design session. All load-bearing claims validated by inspection and cit
 ## Files Modified
 
 - `design/0055_2026-08-29_agentd-session-state-authority.md` (new; status Accepted)
-- `worklogs/NNNN_2026-08-29_agentd-state-authority-design.md` (new, this file)
+- `worklogs/0858_2026-08-29_agentd-state-authority-design.md` (new, this file)
 
 ## Issue filing
 
