@@ -163,6 +163,57 @@ func TestV2BusySessionsLifecycle(t *testing.T) {
 	})
 }
 
+// Review follow-ups: boundary and multi-session semantics.
+func TestV2BusySessionsBoundary(t *testing.T) {
+	v := v2BusySessions{}
+	v.mu.Lock()
+	// Strictly-future deadlines must NOT expire; strictly-past ones MUST.
+	// (now.After is strict; an exact-equality deadline is untestable
+	// against wall time — a margin stands in for the boundary.)
+	v.entries["w|edge"] = time.Now().Add(50 * time.Millisecond)
+	v.entries["w|past"] = time.Now().Add(-time.Nanosecond)
+	v.mu.Unlock()
+	got := v.expired()
+	var ses []string
+	for _, e := range got {
+		ses = append(ses, e.Ses)
+	}
+	assert.Contains(t, ses, "past", "deadline 1ns in the past expires")
+	assert.NotContains(t, ses, "edge", "a strictly-future deadline does not expire (strict After)")
+}
+
+func TestV2BusySessionsMultiExpire(t *testing.T) {
+	v := v2BusySessions{}
+	v.mu.Lock()
+	for _, s := range []string{"a", "b", "c"} {
+		v.entries["w|"+s] = time.Now().Add(-time.Minute)
+	}
+	// one fresh survivor
+	v.entries["w|fresh"] = time.Now().Add(time.Minute)
+	v.mu.Unlock()
+	got := v.expired()
+	require.Len(t, got, 3, "every expired session is returned in one pass, not just the first")
+	assert.Empty(t, v.expired(), "fresh survivor untouched")
+}
+
+// First-idle-wins: a real terminal event clears the entry; a later reap
+// of that same session must not double-publish idle.
+func TestV2Bridge_TerminalPreemptsReap(t *testing.T) {
+	orig := v2BusyTimeout
+	v2BusyTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { v2BusyTimeout = orig })
+
+	env := newVerifyEnv(t, &fakeAgentBackend{persistFirst: true})
+	h := env.handler
+	h.onV2RawEvent("ws-1", "session.next.prompted",
+		`{"type":"session.next.prompted","properties":{"sessionID":"ses_1","messageID":"m1","delivery":"queue"}}`)
+	// Terminal arrives before the deadline.
+	h.onV2RawEvent("ws-1", "session.next.step.ended",
+		`{"type":"session.next.step.ended","properties":{"sessionID":"ses_1","finish":"stop"}}`)
+	time.Sleep(80 * time.Millisecond) // past the original deadline
+	assert.Empty(t, h.v2Busy.expired(), "terminal cleared the entry — the reaper has nothing to double-publish")
+}
+
 // TestV2Bridge_BusyDecaysWithoutTerminalEvent is the G2 property at the
 // handler level: busy published, terminal never arrives, deadline passes
 // → the entry becomes reapable (the v2BusyReap loop itself is Start()
