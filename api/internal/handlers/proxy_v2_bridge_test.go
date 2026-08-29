@@ -33,9 +33,12 @@ func TestOutboxDeliver_V2ModelAppliedToSessionBeforeAdmission(t *testing.T) {
 
 	backend.mu.Lock()
 	order := append([]string{}, backend.callOrder...)
+	modelID := backend.lastModelID
 	backend.mu.Unlock()
 	require.Equal(t, []string{"model", "admit"}, order,
 		"the session model is set exactly once, BEFORE the single admission (the V2 prompt endpoint strips per-prompt overrides)")
+	assert.Equal(t, "glm-5.3", modelID,
+		"the picked model is what reaches the session — the fidelity regression was every turn silently running the default")
 }
 
 func TestOutboxDeliver_V2ModelSetFailureClassifications(t *testing.T) {

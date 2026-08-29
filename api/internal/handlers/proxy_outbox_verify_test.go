@@ -76,6 +76,7 @@ type fakeAgentBackend struct {
 	callOrder      []string
 	modelSetStatus int
 	reqLog         []string
+	lastModelID    string
 
 	// V2 promotion controls (#1119 contract): the user text persists at
 	// PROMOTION, not at admission. promoteDelay == 0 promotes
@@ -102,6 +103,7 @@ func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Real set — capability probes POST {"model":{}} (empty id).
 			f.modelSets++
 			f.callOrder = append(f.callOrder, "model")
+			f.lastModelID = mb.Model.ID
 		}
 		f.mu.Unlock()
 		if f.modelSetStatus != 0 {
