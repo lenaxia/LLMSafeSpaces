@@ -78,6 +78,17 @@ type Adapter interface {
 	// next wake (design 0049 §3 — loss of revoke is accepted).
 	Abort(ctx context.Context, userID, workspaceID, sessionID string) error
 
+	// SetSessionModel sets the session's default model. Under agents
+	// whose async-delivery endpoint strips per-prompt model overrides
+	// (opencode V2, verified 2026-08-29), this is the ONLY way a
+	// message's model selection reaches the agent — the delivery path
+	// applies it to the session before admission. On the interface (not
+	// a local assertion) per the #1127 lesson: production adapters are
+	// wrapped, and seam assertions fail silently through wrappers.
+	// Adapters without session-model support return nil (no-op) rather
+	// than failing the delivery.
+	SetSessionModel(ctx context.Context, userID, workspaceID, sessionID string, m *session.ModelRef) error
+
 	// VerifyDelivery reports whether a user message whose text equals
 	// `text` was persisted in the agent's transcript at or after
 	// `since`. delivered=true proves the agent holds it;

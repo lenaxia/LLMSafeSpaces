@@ -378,6 +378,17 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 		// ambiguous → the verifying machinery resolves it: text
 		// present (late promotion) completes; absent-after-window
 		// re-admits (the bounded nudge) — never a blind complete.
+		// V2 has no per-prompt model: the endpoint strips the field
+		// (verified live, 2026-08-29). Apply the entry's model to the
+		// SESSION before admission — the same mechanism the SPA uses.
+		if model != nil {
+			if err := h.adapter.SetSessionModel(ctx, "", workspaceID, sessionID, model); err != nil {
+				if errors.Is(err, agent.ErrHTTPStatus) {
+					return err
+				}
+				return outbox.Ambiguous(err)
+			}
+		}
 		admittedAt := time.Now().UTC()
 		msgID, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts)
 		if err != nil {
