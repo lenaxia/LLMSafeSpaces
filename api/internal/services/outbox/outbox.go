@@ -56,6 +56,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 // Entry is one accepted prompt in the outbox.
@@ -135,6 +137,26 @@ var (
 
 // ErrCapped is returned when the session's outbox is at Cap.
 var ErrCapped = errors.New("session outbox is full")
+
+// I6 observability (design 0054): outbox depth by status and the age of
+// the oldest non-terminal entry. The 2026-08-28 incident ran blind —
+// the rollout runbook grepped for outbox metrics that did not exist.
+// Package-level promauto: registered once, safe across Service
+// instances (tests included).
+var (
+	outboxEntriesGauge = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_outbox_entries",
+		Help: "Outbox entries by status (pending/delivering/verifying/error). Non-zero verifying/error age beyond the backoff span is the stranding signal (#1119).",
+	}, []string{"status"})
+	outboxOldestAgeGauge = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "llmsafespaces_outbox_oldest_nonterminal_age_seconds",
+		Help: "Age of the oldest pending/verifying entry across all sessions. Sustained growth without drains = delivery wedged.",
+	})
+)
+
+// metricsEveryNTicks bounds the Redis chatter of gauge refresh (one
+// LRANGE per session-with-entries per refresh).
+const metricsEveryNTicks = 15
 
 // Duplicate is returned when the clientMessageID was already accepted.
 // AcceptedID carries the original entry's ID.
@@ -429,6 +451,39 @@ func (s *Service) lockHeldFor(ctx context.Context, ws, ses string) (bool, time.D
 
 // sessions discovers session keys with a non-empty main or staging list.
 // SCAN-based; bounded by Valkey's keyspace.
+// updateMetrics refreshes the I6 gauges from the queue lists.
+func (s *Service) updateMetrics(ctx context.Context, pairs [][2]string) {
+	counts := map[string]float64{}
+	var oldest time.Time
+	for _, p := range pairs {
+		vals, err := s.client.LRange(ctx, qKey(p[0], p[1]), 0, -1).Result()
+		if err != nil {
+			continue
+		}
+		for _, v := range vals {
+			var e Entry
+			if json.Unmarshal([]byte(v), &e) != nil {
+				continue
+			}
+			counts[e.Status]++
+			if e.Status == StatusPending || e.Status == StatusVerifying || e.Status == StatusDelivering {
+				at := e.AcceptedAt
+				if oldest.IsZero() || at.Before(oldest) {
+					oldest = at
+				}
+			}
+		}
+	}
+	for _, st := range []string{StatusPending, StatusDelivering, StatusVerifying, StatusError} {
+		outboxEntriesGauge.WithLabelValues(st).Set(counts[st])
+	}
+	if !oldest.IsZero() {
+		outboxOldestAgeGauge.Set(time.Since(oldest).Seconds())
+	} else {
+		outboxOldestAgeGauge.Set(0)
+	}
+}
+
 func (s *Service) sessions(ctx context.Context) [][2]string {
 	var out [][2]string
 	seen := map[string]bool{}
@@ -768,12 +823,18 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 	sem := make(chan struct{}, 32)
 	var workers sync.WaitGroup
 	defer workers.Wait()
+	tickN := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, pair := range s.sessions(ctx) {
+			tickN++
+			pairs := s.sessions(ctx)
+			if tickN%metricsEveryNTicks == 0 {
+				s.updateMetrics(ctx, pairs)
+			}
+			for _, pair := range pairs {
 				select {
 				case <-ctx.Done():
 					return
