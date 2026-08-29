@@ -59,6 +59,8 @@ None. Decision to proceed to S1 (or shelve) is the user's.
 
 None — design session. All load-bearing claims validated by inspection and cited in the design's assumption table (A1–A8): tracker existence, port reservations (`pkg/agentd/types.go:76-79`), `pkg/session` contract, PVC subPath machinery (`pod_builder.go:785`), 0053 pin coupling, proxy IP re-resolution, suspend/resume volume semantics.
 
+- **Round 7 (owner-requested): test plans everywhere.** Every Epic 69 story issue (#1135–#1148) now carries a named Test plan section (unit/golden/property/fuzz/fault-injection/envtest/e2e/soak/benchmark per test); epic #1134 gained a cross-cutting test strategy (invariants-are-test-names, regression-first replay tests for the 2026-08-15/#1119/#755/0818 classes, harnesses-as-deliverables, `-race` suite, suites-gate-stories); design 0055 gained §Test plan — the consolidated suite→invariant→gate inventory. Fixed a self-inflicted edit that briefly dropped the §Non-goals header (restored; count wording aligned to five ops).
+
 ---
 
 ## Files Modified

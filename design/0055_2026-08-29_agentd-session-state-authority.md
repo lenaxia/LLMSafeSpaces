@@ -476,12 +476,44 @@ design amendment, not a code comment.
 
 ---
 
+## Test plan (inventory of tests that must exist)
+
+Per-story test plans live in the Epic 69 issues (#1135–#1148); this is
+the cross-cutting inventory. Naming: every test maps to an invariant or
+a historical incident class — a test that proves neither is noise.
+
+| Suite | Proves | Type | Gate |
+|---|---|---|---|
+| `stamp_atomicity_race`, `seq_monotonic_across_kill9` | I1 (seq authority, atomic stamp) | `-race`, fault-injection | S1 |
+| `connect_race_no_event_loss`, `discard_rule_property_fuzz` | I2 (subscribe-before-snapshot; client fold) | fault-injection, property | S1 |
+| `reseed_under_active_streaming`, `reseed_agentd_restart_opencode_alive`, `orphaned_busy_impossible` | I3/I4 (rebuildability; store is truth; the 2026-08-15 class dead) | integration, regression | S1 |
+| `translation_golden_fixtures` (per pinned version, wired into the bump gate), `id_preservation_stitch`, `unknown_custom_valve_passthrough` | I11/I12 (dialect containment; ID stitch) | golden | S1 |
+| Scenario suite ×6 + soak (streaming, kill -9, agentd restart, suspend/resume, starvation, reseed-under-load) | S1 exit: zero divergence | e2e + soak | S1 |
+| Crash matrix (agentd-after-ack, opencode-after-admission, suspend-in-window), `durability_202_survives_kill`, `dedupe_entryid_attempt`, `single_flight_per_session` | I5/I9 (exactly-once per attempt; 202 survives kill) | fault-injection | S2 |
+| `stranded_1119_replay`, `interrupt_purity_suite` | I6 (wake-only) / I7 (interrupt purity) — the #1119 and abort-UX classes | regression | S2 |
+| `duplicate_contract_suite`, `crash_matrix_via_real_outbox`, `rollback_drill_under_load` | R2/R8 through the real outbox | e2e, drill | S2 |
+| `illegal_flag_combo_boot_rejected`, `state_mapping_guard`, `flip_drain_and_park` | I10 + M4 matrix | unit/config, drill | S2 |
+| `action_vs_delivery_serialization`, `interrupt_admission_race`, `not_supported_typed` | op-5 serialization + I7 | golden, e2e | S2 |
+| `client_discard_rule_unit_property`, `midturn_reconnect_e2e`, `standing_question_reconnect_e2e`, `api_rolling_deploy_e2e`, `old_dialect_dead_code` | I12 client rule; hard cutover clean | unit/property, Playwright | S3 |
+| `streams_scale_to_zero`, `two_replicas_single_owner`, `rolling_deploy_no_fanin_storm` | D1-B consumption model | e2e, metrics | S3 |
+| Alert rehearsals (starvation, stranded, latency) + `metrics_scrape_completeness` | R5 | drill | S4 |
+| `resume_budget_final_p95`, `flipgate_park_with_reason`, epic-exit review | Exit criteria | benchmark, drill | S4 |
+| `history_cursor_pages_budget`, `stitch_rule_e2e_post_move`, `adapter_history_paths_dead_code` | US-69.14 | instrumented, e2e | S5 |
+
+Harness rules: the crash-window driver, fixture replay runner, and probe
+scripts are committed artifacts; concurrency tests run under `-race` in
+CI; fixture goldens regenerate per pinned opencode version through the
+existing bump-gate pattern (`agent_config_writer_schema_test.go`
+precedent, REFRESH.md provenance).
+
+---
+
 ## Non-goals
 
 - No cross-workspace events in agentd (Epic 28 stays API-owned).
 - No business logic in agentd: quotas, permissions, catalog, billing
-  stay in the API. The outward surface is frozen at M1's four
-  operations.
+  stay in the API. The outward surface is frozen at the five
+  operations of M1/op-5.
 - The API outbox is not replaced — accept durability for
   suspended/unreachable workspaces remains Valkey's job.
 - No new trust in opencode's own V2 queue beyond 0052/0054 assumptions;
