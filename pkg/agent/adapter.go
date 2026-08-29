@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
@@ -76,6 +77,25 @@ type Adapter interface {
 	// non-destructive: queued user input survives and runs on the
 	// next wake (design 0049 §3 — loss of revoke is accepted).
 	Abort(ctx context.Context, userID, workspaceID, sessionID string) error
+
+	// VerifyDelivery reports whether a user message whose text equals
+	// `text` was persisted in the agent's transcript at or after
+	// `since`. delivered=true proves the agent holds it;
+	// definitive=true with delivered=false proves absence (a re-send
+	// cannot duplicate); both false means inconclusive — recheck, never
+	// re-send. This is the #987 ambiguity oracle and the #1119
+	// promotion oracle.
+	//
+	// Promoted from a handlers-local type assertion to the interface by
+	// the 2026-08-29 incident: production adapters are WRAPPED
+	// (systemnotices.Wrap embeds this interface), and the handlers'
+	// deliveryVerifier assertion silently failed against the wrapper —
+	// every verification returned inconclusive without touching the
+	// network, breaking all V2 delivery. The wrapper was the "second
+	// consumer" the old comment said would fund this promotion.
+	// Adapters without transcript verification return the inconclusive
+	// shape (false, false, nil).
+	VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (delivered, definitive bool, err error)
 
 	// GetHistory returns the session transcript in platform shape.
 	// The adapter drops agent-specific parts (e.g. opencode's patch
