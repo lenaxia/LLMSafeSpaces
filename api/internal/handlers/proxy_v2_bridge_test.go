@@ -115,3 +115,83 @@ func TestV2Bridge_TurnLifecycleStatus(t *testing.T) {
 	}
 	assert.Equal(t, []string{"busy", "idle", "idle"}, got, "prompted→busy; terminal step→idle; tool step ignored; failure→idle")
 }
+
+// G2 (design 0054): bridge-derived busy states must decay — a lost
+// terminal event (agent restart mid-turn) cannot hang the indicator.
+func TestV2BusySessionsLifecycle(t *testing.T) {
+	v := v2BusySessions{}
+
+	t.Run("remember initializes lazily and overwrites", func(t *testing.T) {
+		v.remember("ws", "s1")
+		v.remember("ws", "s1") // same key: overwrite, not duplicate
+		v.mu.Lock()
+		n := len(v.entries)
+		v.mu.Unlock()
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("clear is a no-op on missing keys", func(t *testing.T) {
+		v.clear("ws", "never-existed")
+		v.mu.Lock()
+		n := len(v.entries)
+		v.mu.Unlock()
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("expired returns only stale entries and removes them", func(t *testing.T) {
+		// Force one entry stale by backdating its deadline.
+		v.mu.Lock()
+		v.entries["ws|stale"] = time.Now().Add(-time.Minute)
+		v.mu.Unlock()
+		got := v.expired()
+		require.Len(t, got, 1)
+		assert.Equal(t, "stale", got[0].Ses)
+		v.mu.Lock()
+		_, stillThere := v.entries["ws|stale"]
+		n := len(v.entries)
+		v.mu.Unlock()
+		assert.False(t, stillThere, "expired entries are removed by expired()")
+		assert.Equal(t, 1, n, "the fresh entry survives")
+	})
+
+	t.Run("empty and all-fresh maps expire nothing", func(t *testing.T) {
+		empty := v2BusySessions{}
+		assert.Empty(t, empty.expired())
+		fresh := v2BusySessions{}
+		fresh.remember("w", "s")
+		assert.Empty(t, fresh.expired())
+	})
+}
+
+// TestV2Bridge_BusyDecaysWithoutTerminalEvent is the G2 property at the
+// handler level: busy published, terminal never arrives, deadline passes
+// → the entry becomes reapable (the v2BusyReap loop itself is Start()
+// wiring with a 30s tick; the reapability transition is what it consumes).
+func TestV2Bridge_BusyDecaysWithoutTerminalEvent(t *testing.T) {
+	orig := v2BusyTimeout
+	v2BusyTimeout = 60 * time.Millisecond
+	t.Cleanup(func() { v2BusyTimeout = orig })
+
+	env := newVerifyEnv(t, &fakeAgentBackend{persistFirst: true})
+	events := subscribeStatusEvents(t, env)
+	h := env.handler
+
+	h.onV2RawEvent("ws-1", "session.next.prompted",
+		`{"type":"session.next.prompted","properties":{"sessionID":"ses_1","messageID":"m1","delivery":"queue"}}`)
+
+	select {
+	case e := <-events:
+		assert.Equal(t, "busy", e.Status)
+	case <-time.After(2 * time.Second):
+		t.Fatal("busy event not published")
+	}
+
+	// No terminal event ever arrives. After the deadline the busy entry
+	// must be expired() — exactly what the reaper loop consumes to
+	// publish idle.
+	time.Sleep(100 * time.Millisecond)
+	reaped := h.v2Busy.expired()
+	require.NotEmpty(t, reaped, "busy must become reapable after the deadline without a terminal event")
+	assert.Equal(t, "ses_1", reaped[0].Ses)
+	assert.Empty(t, h.v2Busy.expired(), "reaping is single-shot — no double idle")
+}
