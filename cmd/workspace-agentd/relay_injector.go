@@ -243,7 +243,22 @@ func updateAuthJSONForRelay(authJSONPath string) error {
 	if err != nil {
 		return fmt.Errorf("marshal auth.json: %w", err)
 	}
-	return os.WriteFile(authJSONPath, updated, 0o600)
+	// auth.json is written across the uid split (uid-2000 sidecar boot
+	// here, uid-1000 opencode the reader via the ~/.local/opencode
+	// symlink) — the same T2 exception as AgentConfigWriteMode (design
+	// 0051 §D1): 0640 via the pod's shared gid 1000. The 2026-08-29
+	// fleet-wide ModelUnavailableError was this file landing 0600:
+	// opencode could never read its auth store, so every custom
+	// provider failed init (#1119). WriteFile's perm applies only on
+	// CREATE, so an existing 0600 file keeps its mode through rewrites —
+	// the explicit Chmod repairs legacy files on the next pass.
+	if err := os.WriteFile(authJSONPath, updated, 0o640); err != nil {
+		return fmt.Errorf("write auth.json: %w", err)
+	}
+	if err := os.Chmod(authJSONPath, 0o640); err != nil {
+		return fmt.Errorf("chmod auth.json: %w", err)
+	}
+	return nil
 }
 
 // relayInjectorConfig holds the parameters for startRelayInjector.

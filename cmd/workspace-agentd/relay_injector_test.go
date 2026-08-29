@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -687,4 +688,37 @@ func TestStartRelayInjector_SuccessTerminal(t *testing.T) {
 	require.Eventually(t, func() bool { return RelayFreeModelsState() == 1 },
 		2*time.Second, 10*time.Millisecond,
 		"successful injection must mark the generation ok (state 1)")
+}
+
+// TestUpdateAuthJSONForRelay_CrossUIDMode (2026-08-29 regression): the
+// auth store is written across the uid split — this writer runs as the
+// uid-2000 sidecar boot while uid-1000 opencode reads the file through
+// the ~/.local/opencode symlink. A 0600 landing made every custom
+// provider unresolvable fleet-wide (#1119, ModelUnavailableError). The
+// mode must be 0640 on create AND on rewrite of a legacy 0600 file.
+func TestUpdateAuthJSONForRelay_CrossUIDMode(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+
+	t.Run("create lands 0640", func(t *testing.T) {
+		require.NoError(t, updateAuthJSONForRelay(authPath))
+		info, err := os.Stat(authPath)
+		require.NoError(t, err)
+		require.Equal(t, fs.FileMode(0o640), info.Mode().Perm(), "auth.json must be shared-gid readable (design 0051 D1/T2)")
+	})
+
+	t.Run("legacy 0600 file is repaired on rewrite", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(authPath,
+			[]byte(`{"thekaocloud":{"type":"api","key":"sk-legacy"}}`), 0o600))
+		require.NoError(t, updateAuthJSONForRelay(authPath))
+		info, err := os.Stat(authPath)
+		require.NoError(t, err)
+		require.Equal(t, fs.FileMode(0o640), info.Mode().Perm(),
+			"WriteFile perm applies only on CREATE — the rewrite must explicitly repair legacy 0600 modes")
+		// The preserved entry survives the repair.
+		data, err := os.ReadFile(authPath)
+		require.NoError(t, err)
+		require.Contains(t, string(data), "sk-legacy")
+		require.Contains(t, string(data), "opencode-relay")
+	})
 }
