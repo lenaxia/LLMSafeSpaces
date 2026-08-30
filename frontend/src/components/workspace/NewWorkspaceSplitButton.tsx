@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
 import { workspacesApi } from "../../api/workspaces";
 import { imageFactoryApi } from "../../api/imageFactory";
 import { Spinner } from "../ui/Spinner";
 import { generateWorkspaceName } from "../../lib/names";
-import { computeMenuPosition } from "../ui/KebabMenu";
+import { useMenuPosition } from "../ui/menuPosition";
 import { Plus, ChevronDown, Package } from "lucide-react";
 
 /**
@@ -22,12 +22,24 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // triggerRef is on the ▼ button (the dropdown trigger); menuRef is on the
-  // popup itself. Both are needed for viewport-aware positioning and
-  // outside-click detection.
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number; maxHeight?: number }>({ top: 0, left: 0 });
+  // containerRef anchors the transient creation-error notice to the whole
+  // control; the popup is anchored to the ▼ trigger via its own ref.
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Viewport-aware positioning: measures the trigger rect and the rendered
+  // floating-element size, then flips/clamps/caps so it always fits in the
+  // viewport (no edge overflow). Shared hook, same geometry as KebabMenu.
+  const { triggerRef, menuRef, pos } = useMenuPosition<HTMLButtonElement, HTMLDivElement>(
+    showPopup,
+    "right",
+    240,
+  );
+  const { menuRef: errorRef, pos: errorPos } = useMenuPosition<HTMLDivElement, HTMLDivElement>(
+    error !== null,
+    "right",
+    224,
+    containerRef,
+  );
 
   const { data: configsData } = useQuery({
     queryKey: ["image-factory-configs"],
@@ -45,27 +57,6 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
 
   const hasContent = readyConfigs.length > 0 || buildingConfigs.length > 0;
 
-  // Viewport-aware positioning: measures the trigger rect and the rendered
-  // menu size, then flips/clamps/caps so the popup always fits in the
-  // viewport (no edge overflow). Mirrors the proven pattern in KebabMenu.
-  const measureAndPosition = useCallback(() => {
-    const btn = triggerRef.current;
-    if (!btn) return;
-    const btnRect = btn.getBoundingClientRect();
-    const menuSize = {
-      width: menuRef.current?.offsetWidth ?? 240,
-      height: menuRef.current?.scrollHeight ?? 0,
-    };
-    setPos(
-      computeMenuPosition(
-        btnRect,
-        menuSize,
-        { width: window.innerWidth, height: window.innerHeight },
-        "right",
-      ),
-    );
-  }, []);
-
   // Close popup on outside click.
   useEffect(() => {
     if (!showPopup) return;
@@ -78,29 +69,10 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
       }
     }
     document.addEventListener("mousedown", handleClick);
-
-    // Re-position on scroll/resize so the menu stays anchored and clamped.
-    const handleReposition = () => measureAndPosition();
-    window.addEventListener("scroll", handleReposition, true);
-    window.addEventListener("resize", handleReposition);
-
     return () => {
       document.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("scroll", handleReposition, true);
-      window.removeEventListener("resize", handleReposition);
     };
-  }, [showPopup, measureAndPosition]);
-
-  // Position synchronously before paint, then remeasure after paint (fonts/
-  // layout may shift the menu height on first open).
-  useLayoutEffect(() => {
-    if (!showPopup) return;
-    measureAndPosition();
-  }, [showPopup, measureAndPosition]);
-
-  useEffect(() => {
-    if (showPopup) measureAndPosition();
-  }, [showPopup, measureAndPosition]);
+  }, [showPopup, triggerRef, menuRef]);
 
   async function launchDefault() {
     setCreating(true);
@@ -133,7 +105,7 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
   }
 
   return (
-    <div className="relative flex items-stretch">
+    <div ref={containerRef} className="relative flex items-stretch">
       {/* Primary + button — launches default */}
       <button
         onClick={launchDefault}
@@ -223,11 +195,22 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
         document.body,
       )}
 
-      {error && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive">
-          {error}
-        </div>
-      )}
+      {/* Creation-error notice — portaled to document.body with fixed
+          positioning and anchored to the control, viewport-aware so it never
+          overflows the screen edge (flips above when the control is near the
+          bottom). */}
+      {error &&
+        createPortal(
+          <div
+            ref={errorRef}
+            className="fixed z-50 w-56 rounded-md border border-destructive/50 bg-destructive/10 p-2 text-xs text-destructive"
+            style={{ top: errorPos.top, left: errorPos.left, maxHeight: errorPos.maxHeight }}
+            role="alert"
+          >
+            {error}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

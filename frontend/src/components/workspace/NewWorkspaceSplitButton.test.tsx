@@ -3,6 +3,7 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { NewWorkspaceSplitButton } from "./NewWorkspaceSplitButton";
+import { mockButtonRect, mockMenuSize, mockViewport, restoreMenuGeometry } from "../../test/menuGeometry";
 
 vi.mock("../../api/workspaces", () => ({
   workspacesApi: {
@@ -19,36 +20,12 @@ vi.mock("../../api/imageFactory", () => ({
   },
 }));
 
-// --- jsdom geometry mocking (mirrors KebabMenu.test.tsx) ---
+// --- jsdom geometry mocking (shared: src/test/menuGeometry.ts) ---
 // jsdom doesn't compute layout, so getBoundingClientRect/offsetHeight/scrollHeight
 // return zeros. These mocks let us assert the component applies viewport-aware
 // positioning from computeMenuPosition.
 
-let origScrollHeight: PropertyDescriptor | undefined;
-let origOffsetWidth: PropertyDescriptor | undefined;
-let origInnerHeight: PropertyDescriptor | undefined;
-
-function mockButtonRect(el: HTMLElement, rect: { top: number; bottom: number; left: number; right: number }) {
-  Object.defineProperty(el, "getBoundingClientRect", { configurable: true, value: () => rect });
-}
-
-function mockMenuSize(height: number, width = 240) {
-  origScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-  origOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
-  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => height });
-  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => width });
-}
-
-function mockInnerHeight(h: number) {
-  origInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: h });
-}
-
-afterEach(() => {
-  if (origScrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", origScrollHeight);
-  if (origOffsetWidth) Object.defineProperty(HTMLElement.prototype, "offsetWidth", origOffsetWidth);
-  if (origInnerHeight) Object.defineProperty(window, "innerHeight", origInnerHeight);
-});
+afterEach(restoreMenuGeometry);
 
 describe("NewWorkspaceSplitButton", () => {
   it("renders + and arrow buttons", () => {
@@ -154,7 +131,7 @@ describe("NewWorkspaceSplitButton", () => {
 
   it("flips above when the trigger is near the viewport bottom", async () => {
     const user = userEvent.setup();
-    mockInnerHeight(600);
+    mockViewport(600);
     mockMenuSize(150);
     render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);
     mockButtonRect(screen.getByLabelText("Select workspace image"), {
@@ -178,7 +155,7 @@ describe("NewWorkspaceSplitButton", () => {
       top: 100, bottom: 124, left: 780, right: 800,
     });
     // Override innerWidth for the clamp calculation.
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    mockViewport(800, 800);
     await user.click(screen.getByLabelText("Select workspace image"));
     const menu = await screen.findByRole("menu");
     // Clamped: 800 - 8(pad) - 240 = 552. NOT 560 (790-240, which overflows).
@@ -187,7 +164,7 @@ describe("NewWorkspaceSplitButton", () => {
 
   it("applies maxHeight when the menu is taller than the viewport room", async () => {
     const user = userEvent.setup();
-    mockInnerHeight(300);
+    mockViewport(300);
     mockMenuSize(400);
     render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);
     mockButtonRect(screen.getByLabelText("Select workspace image"), {
@@ -209,5 +186,50 @@ describe("NewWorkspaceSplitButton", () => {
 
     await user.click(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  // --- Creation-error notice: edge-aware, anchored to the control ---
+  // Regression: the error div used to be absolute-positioned below the
+  // control (off-screen when the control is near the bottom edge), and a
+  // broken intermediate version rendered it fixed at the viewport top-left
+  // because it reused the popup's unmeasured position state.
+
+  it("renders creation errors fixed and anchored to the control, flipping above near the bottom edge", async () => {
+    const { workspacesApi } = await import("../../api/workspaces");
+    vi.mocked(workspacesApi.create).mockRejectedValueOnce(new Error("quota exceeded"));
+    mockViewport(600);
+    mockMenuSize(40, 224);
+    const user = userEvent.setup();
+    render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);
+
+    // Anchor the measurement to the control container (parent of the + button).
+    mockButtonRect(screen.getByLabelText("New workspace (default image)").parentElement!, {
+      top: 540, bottom: 560, left: 300, right: 460,
+    });
+    await user.click(screen.getByLabelText("New workspace (default image)"));
+    const error = await screen.findByText("quota exceeded");
+    expect(error.className).toContain("fixed");
+    // Flipped above: 540 - 40 - 4 = 496. NOT below (560+4, off-screen) and
+    // NOT 0 (the unmeasured top-left regression).
+    expect(error.style.top).toBe("496px");
+    // Right-aligned to the control: 460 - 224 = 236.
+    expect(error.style.left).toBe("236px");
+  });
+
+  it("renders creation errors below the control when there is room", async () => {
+    const { workspacesApi } = await import("../../api/workspaces");
+    vi.mocked(workspacesApi.create).mockRejectedValueOnce(new Error("quota exceeded"));
+    mockViewport(800);
+    mockMenuSize(40, 224);
+    const user = userEvent.setup();
+    render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);
+
+    mockButtonRect(screen.getByLabelText("New workspace (default image)").parentElement!, {
+      top: 100, bottom: 124, left: 300, right: 460,
+    });
+    await user.click(screen.getByLabelText("New workspace (default image)"));
+    const error = await screen.findByText("quota exceeded");
+    // Default placement below: 124 + 4 = 128.
+    expect(error.style.top).toBe("128px");
   });
 });
