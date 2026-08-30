@@ -452,3 +452,53 @@ func TestSnapshotAtomicStamp(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// TestStreamReseedReconnect: a reseed notice mid-stream forces the client
+// to reconnect and re-snapshot (I3 client side) — deterministic, no
+// scenario racing.
+func TestStreamReseedReconnect(t *testing.T) {
+	a, ts, _ := newSurface(t, map[string]sessionstate.SessionSeed{
+		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_BUSY},
+	}, nil)
+	c := clientFor(ts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates := make(chan *abiclient.SessionState, 16)
+	go func() { _ = c.Stream(ctx, func(s *abiclient.SessionState) { updates <- s }) }()
+
+	// Pre-reseed events.
+	for i := 0; i < 3; i++ {
+		a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	}
+	require.NoError(t, a.Reseed(ctx, sessionstate.ReseedReasonGenerationChange))
+	// Post-reseed event (applies after the reseed's seq).
+	a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+
+	deadline := time.After(15 * time.Second)
+	var last *abiclient.SessionState
+	for {
+		select {
+		case s := <-updates:
+			last = s
+		case <-time.After(300 * time.Millisecond):
+			if last != nil && last.Seq >= a.State().Seq {
+				require.Equal(t, a.State().Seq, last.Seq, "client must resync past the reseed")
+				snap := last.Sessions["s1"]
+				require.NotNil(t, snap)
+				require.Equal(t, abiv1.SessionStatus_SESSION_STATUS_IDLE, snap.GetStatus(),
+					"post-reseed store/event truth must reach the fold")
+				return
+			}
+		case <-deadline:
+			t.Fatalf("client never resynced past the reseed: last=%d server=%d", lastSeqOf(last), a.State().Seq)
+		}
+	}
+}
+
+func lastSeqOf(s *abiclient.SessionState) uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.Seq
+}

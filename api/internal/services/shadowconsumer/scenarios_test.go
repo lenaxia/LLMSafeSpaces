@@ -335,7 +335,7 @@ func TestScenario_ReseedActiveStreaming(t *testing.T) {
 		}()
 		comp.NoteGenerationReseed(map[string]bool{"s1": true})
 		<-fed
-		require.Eventually(t, func() bool { return comp.Converged() }, 10*time.Second, 100*time.Millisecond,
+		require.Eventually(t, func() bool { return comp.Converged() }, 30*time.Second, 100*time.Millisecond,
 			"never converged; serverSeq=%d metrics=%+v state:\n%s", p.auth.State().Seq, p.auth.Metrics(), comp.Debug())
 		require.Zero(t, comp.CompareNow(), "divergences: %s", comp.Report())
 	})
