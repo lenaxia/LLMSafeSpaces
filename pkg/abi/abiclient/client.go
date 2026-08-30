@@ -24,6 +24,11 @@ import (
 
 // Client talks to one pod's ABI surface (agentd :4097 behind Basic auth —
 // supply an http.Client whose transport injects the credential).
+//
+// Concurrency contract: one Client is used by ONE goroutine (the fold is
+// single-threaded by design — the discard rule owns ordering). The states
+// handed to Stream's onUpdate callback are immutable snapshots (deep
+// copies) safe to retain or read from any goroutine.
 type Client struct {
 	svc abiconnect.HarnessABIServiceClient
 }
@@ -42,6 +47,16 @@ type SessionState struct {
 
 func newState() *SessionState {
 	return &SessionState{Sessions: map[string]*abiv1.SessionSnapshot{}}
+}
+
+// clone returns an immutable deep copy (handed to callbacks; the live fold
+// keeps mutating the original).
+func (s *SessionState) clone() *SessionState {
+	out := &SessionState{Seq: s.Seq, Sessions: make(map[string]*abiv1.SessionSnapshot, len(s.Sessions))}
+	for k, v := range s.Sessions {
+		out.Sessions[k] = cloneSessionSnapshot(v)
+	}
+	return out
 }
 
 // GetSnapshot fetches one session's authoritative snapshot (I12) — a pure
@@ -161,7 +176,7 @@ func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState)) error
 				applyEvent(st, f.GetEvent())
 			}
 			if onUpdate != nil {
-				onUpdate(st)
+				onUpdate(st.clone())
 			}
 		}
 		if err := s.Err(); err != nil && ctx.Err() == nil {
@@ -222,7 +237,10 @@ func applyEvent(st *SessionState, seqed *abiv1.SequencedEvent) {
 	sid := evt.GetSessionId()
 	snap := st.Sessions[sid]
 	if snap == nil {
-		snap = &abiv1.SessionSnapshot{SessionId: sid}
+		// A session observed before any status event is UNKNOWN — the
+		// same convention as the server projection (never UNSPECIFIED:
+		// the zero value is not a valid status).
+		snap = &abiv1.SessionSnapshot{SessionId: sid, Status: abiv1.SessionStatus_SESSION_STATUS_UNKNOWN}
 		st.Sessions[sid] = snap
 	}
 	switch evt.GetType() {

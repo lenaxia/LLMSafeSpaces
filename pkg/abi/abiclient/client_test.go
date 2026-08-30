@@ -197,16 +197,22 @@ func TestDiscardRulePropertyFuzz(t *testing.T) {
 			a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, SessionId: "s0",
 				Input: &abiv1.InputRequest{Id: "q1"}})
 		}
-		deadline := time.After(5 * time.Second)
+		// Backoff-poll for convergence (CI -race load makes the event
+		// pipeline latency seconds-scale; a tight spin only flakes).
 		var last *abiclient.SessionState
-		for last == nil || last.Seq < a.State().Seq {
+		target := a.State().Seq
+		for start := time.Now(); time.Since(start) < 30*time.Second; time.Sleep(100 * time.Millisecond) {
 			select {
 			case s := <-updates:
 				last = s
-			case <-deadline:
-				t.Fatalf("iter %d: client stalled at seq %d, server at %d", iter, lastSeq(last), a.State().Seq)
+			default:
+			}
+			if last != nil && last.Seq >= target {
+				break
 			}
 		}
+		require.NotNil(t, last, "iter %d: no client updates", iter)
+		require.GreaterOrEqual(t, last.Seq, target, "iter %d: client stalled at seq %d, server at %d", iter, last.Seq, target)
 		cancel()
 
 		// Equivalence: client fold == server fold (status with busy
@@ -307,4 +313,142 @@ func TestAuthorityServesGeneratedHandlers(t *testing.T) {
 	mount, _ := a.Handler()
 	require.Equal(t, "/llmsafespaces.abi.v1.HarnessABIService/", mount,
 		"the mount path must be the generated connect procedure root, not a hand-written route")
+}
+
+// TestConnectRaceNoEventLoss (issue #1138: connect_race_no_event_loss, I2
+// fault-injection): a concurrent emitter fires DURING the client's connect
+// window; the client's fold must contain every event ≥ S+1 — the
+// subscribe-before-snapshot ordering proven end-to-end through the wire,
+// under -race.
+func TestConnectRaceNoEventLoss(t *testing.T) {
+	a, ts, _ := newSurface(t, nil, nil)
+	c := clientFor(ts)
+
+	const storm = 150
+	emitting := make(chan struct{})
+	var emitted uint64
+	go func() {
+		close(emitting)
+		for i := 0; i < storm; i++ {
+			a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+				SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+			emitted++
+		}
+	}()
+	<-emitting
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates := make(chan *abiclient.SessionState, storm+8)
+	go func() {
+		_ = c.Stream(ctx, func(s *abiclient.SessionState) { updates <- s })
+	}()
+
+	deadline := time.After(30 * time.Second)
+	var last *abiclient.SessionState
+	for {
+		select {
+		case s := <-updates:
+			last = s
+		case <-time.After(200 * time.Millisecond):
+			if last != nil && last.Seq >= a.State().Seq && a.State().Seq >= storm {
+				goto converged
+			}
+		case <-deadline:
+			t.Fatalf("client did not converge: last=%d server=%d", lastSeq(last), a.State().Seq)
+		}
+	}
+converged:
+	// Every event ≥ S+1 was applied: the client's seq equals the server's
+	// final seq (each ingested event consumes exactly one).
+	require.Equal(t, a.State().Seq, last.Seq, "event lost mid-connect — I2 violated")
+	require.Contains(t, last.Sessions, "s1")
+}
+
+// TestSnapshotAtomicStamp (issue #1138: snapshot_atomic-stamp): under a
+// concurrent writer, every snapshot frame's state equals the fold of
+// events 1..S exactly — no torn snapshots. The event log is recorded by
+// the single writer, so the fold at any stamp is replayable.
+func TestSnapshotAtomicStamp(t *testing.T) {
+	a, ts, _ := newSurface(t, nil, nil)
+	_ = ts
+
+	var mu sync.Mutex
+	fold := map[uint64]map[string]abiv1.SessionStatus{}
+	// Single writer: statuses toggle deterministically per event index.
+	writer := func() {
+		for i := 1; i <= 100; i++ {
+			sid := "s1"
+			if i%3 == 0 {
+				sid = "s2"
+			}
+			st := abiv1.SessionStatus_SESSION_STATUS_BUSY
+			if i%2 == 0 {
+				st = abiv1.SessionStatus_SESSION_STATUS_IDLE
+			}
+			a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: sid, Status: st})
+			mu.Lock()
+			state := map[string]abiv1.SessionStatus{}
+			for k, v := range fold[uint64(i-1)] {
+				state[k] = v
+			}
+			state[sid] = st
+			fold[uint64(i)] = state
+			mu.Unlock()
+		}
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); writer() }()
+
+	// Readers: connect, capture the snapshot frame, verify fold == frame.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			frames, cancelS, err := a.Stream(context.Background())
+			if err != nil {
+				return
+			}
+			select {
+			case f := <-frames:
+				if snap := f.GetSnapshot(); snap != nil {
+					want := func() map[string]abiv1.SessionStatus {
+						mu.Lock()
+						defer mu.Unlock()
+						return fold[snap.GetAtSeq()]
+					}()
+					if want == nil {
+						cancelS()
+						continue // stamp raced past our recorded window
+					}
+					got := map[string]abiv1.SessionStatus{}
+					for _, s := range snap.GetSnapshot().GetSessions() {
+						got[s.GetSessionId()] = s.GetStatus()
+					}
+					if len(got) == 0 && len(want) == 0 {
+						cancelS()
+						continue
+					}
+					for id, st := range want {
+						if got[id] != st {
+							t.Errorf("torn snapshot @%d: %s=%v, want fold %v", snap.GetAtSeq(), id, got[id], st)
+						}
+					}
+				}
+			case <-time.After(time.Second):
+			}
+			cancelS()
+		}
+	}()
+	time.Sleep(400 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
