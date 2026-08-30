@@ -244,11 +244,24 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	// US-4a: the reload path's socket-backed restarter — pushes the fresh
 	// secrets-env delta, then requests the credential_reload restart.
 	reloadProc := newSocketReloadProc(cc, secretsEnvPathFromEnv())
+	// US-70.1: the sidecar relays the supervisor's terminal spawn state
+	// (I4/I10) through statusz — bounded-context cache: the deep-status
+	// poll cadence (60s) is the consumer, not the spawn path.
+	spawnStatusFn := func() (string, string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		st, err := cc.SpawnStatus(ctx)
+		if err != nil {
+			return "", ""
+		}
+		return st.SpawnedRev, st.Degraded
+	}
 	return serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,
 		resolvedAdminToken:   cfg.adminToken,
 		reloadProc:           reloadProc,
+		spawnStatus:          spawnStatusFn,
 		startedAt:            startedAt,
 		cache:                &providerCache{},
 		sseTracker:           newSessionStatusTracker(),

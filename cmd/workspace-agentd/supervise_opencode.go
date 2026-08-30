@@ -28,9 +28,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"go.uber.org/zap"
 )
 
@@ -122,12 +124,40 @@ func runSuperviseOpencodeCommand(_ []string) int {
 // regressing to the PATH-lookup default. Verify failure exits 83/84 from
 // opencodeSpawnBaseFactory before this function returns.
 func newSupervisorProcess() (*managedProcess, *managedProcAdapter) {
+	return newSupervisorProcessPulling(newSpawnEnvPullerForPod())
+}
+
+// newSupervisorProcessPulling is newSupervisorProcess with the spawn-env
+// puller injected (tests pin the URL/bound; production resolves the pod
+// mux + §D1 credential from the workspace password file).
+func newSupervisorProcessPulling(puller *spawnEnvPuller) (*managedProcess, *managedProcAdapter) {
 	base := opencodeSpawnBaseFactory()
-	proc := &managedProcess{cmdFactory: base}
+	// US-70.1 (design 0057 R2): every spawn PULLS the current delta
+	// (bounded wait + last-good memory cache) instead of consuming a
+	// boot-time push that structurally cannot land. Never-block-spawn:
+	// the bound holds under any mux failure mode.
+	proc := &managedProcess{cmdFactory: withSpawnEnvPull(base, puller)}
 	proc.onChildStarted = nil
 	proc.skipHealthProbe = true
-	return proc, &managedProcAdapter{p: proc, baseCmdFactory: base}
+	return proc, &managedProcAdapter{p: proc, baseCmdFactory: base, spawnPuller: puller}
 }
+
+// newSpawnEnvPullerForPod resolves the production pull target: the pod's
+// user mux (single netns, both modes) with the §D1 workspace credential
+// read from the uid-1000-owned password file (A2: the supervisor reads
+// ONLY files it owns; the HTTP boundary carries the crossing).
+func newSpawnEnvPullerForPod() *spawnEnvPuller {
+	pw := ""
+	if b, err := os.ReadFile(agentd.PasswordPath); err == nil {
+		pw = strings.TrimSpace(string(b))
+	}
+	return newSpawnEnvPuller(fmt.Sprintf("http://127.0.0.1:%d", agentd.AgentdPort), pw, defaultSpawnPullBound)
+}
+
+// defaultSpawnPullBound bounds the spawn-time pull (never-block-spawn).
+// Generous vs a healthy mux (localhost, ms-scale) and vs the spawn path
+// overall; the last-good cache makes longer outages non-blocking.
+const defaultSpawnPullBound = 2 * time.Second
 
 // newSupervisorControlServer builds the supervisor's control socket with
 // the metrics source wired (US-2): the supervisor's own cgroup IS the
@@ -164,6 +194,20 @@ type managedProcAdapter struct {
 	// shape). Never returned over the socket (A.4 invariant 1), never
 	// written to disk.
 	spawnEnv []string
+	// spawnPuller (US-70.1) surfaces spawned_rev + degraded reason for
+	// the status endpoint — terminal verification at the point of
+	// consumption (I4), loud degradation (I10).
+	spawnPuller *spawnEnvPuller
+}
+
+// SpawnStatus reports the terminal spawn-env state for the control
+// socket's status surface: the rev the child actually spawned with and
+// the active degrade reason ("" healthy).
+func (a *managedProcAdapter) SpawnStatus() (rev, degraded string) {
+	if a.spawnPuller == nil {
+		return "", ""
+	}
+	return a.spawnPuller.spawnedRev(), a.spawnPuller.degradedReason()
 }
 
 func (a *managedProcAdapter) factory() func() *exec.Cmd {

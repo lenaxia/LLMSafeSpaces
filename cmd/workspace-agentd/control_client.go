@@ -163,6 +163,26 @@ func (c *controlClient) Restart(ctx context.Context, reason string, graceSeconds
 	return r, nil
 }
 
+// SupervisorSpawnStatus is the status method's terminal spawn fields
+// (US-70.1): the rev the child actually spawned with (I4) and the active
+// degrade reason (I10, "" healthy).
+type SupervisorSpawnStatus struct {
+	SpawnedRev string `json:"spawned_rev"`
+	Degraded   string `json:"degraded"`
+}
+
+// SpawnStatus fetches the supervisor's terminal spawn state via the
+// control socket's status method.
+func (c *controlClient) SpawnStatus(ctx context.Context) (*SupervisorSpawnStatus, error) {
+	res, err := c.call(ctx, "status", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	out := &SupervisorSpawnStatus{}
+	_ = json.Unmarshal(mustMarshal(res), out)
+	return out, nil
+}
+
 // SpawnEnv stores the composed child env for the NEXT spawn (US-0.2(a):
 // memory-only, write-only — there is deliberately no read-back).
 func (c *controlClient) SpawnEnv(ctx context.Context, env map[string]string) error {
