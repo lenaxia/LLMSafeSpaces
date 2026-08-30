@@ -47,4 +47,4 @@ None — documentation-only change. Citation targets verified by grep/read again
 ## Files Modified
 
 - `README-LLM.md` — version 1.25; §17 "Task Model" added; ToC entry 17; version-history row
-- `worklogs/NNNN_2026-08-27_task-model-design-doc.md` — this entry (added)
+- `worklogs/0860_2026-08-27_task-model-design-doc.md` — this entry (added)
