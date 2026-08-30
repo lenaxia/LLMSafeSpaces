@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -168,7 +167,7 @@ func TestRunRedactCommand_DefaultConfigPath(t *testing.T) {
 	// No -config flag: the flag default is /sandbox-cfg/redact-patterns.json,
 	// which does not exist here — built-in rules apply, exit 0.
 	var rc int
-	withStdin(t, fmt.Sprintf("token=abc\n"), func() {
+	withStdin(t, "token=abc\n", func() {
 		_ = captureStdout(t, func() {
 			rc = runRedactCommand(nil)
 		})

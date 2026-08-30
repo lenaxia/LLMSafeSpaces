@@ -283,7 +283,11 @@ func runRedactCommand(args []string) int {
 
 	fs := flag.NewFlagSet("redact", flag.ExitOnError)
 	configPath := fs.String("config", "/sandbox-cfg/redact-patterns.json", "path to extra patterns JSON file")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		// ExitOnError already exits on parse failure; this is the
+		// unreachable defensive return for errcheck/completeness.
+		return 1
+	}
 
 	r, err := redact.NewRedactorFromFile(*configPath)
 	if err != nil {

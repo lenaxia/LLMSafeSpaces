@@ -46,14 +46,22 @@ func shellSingleQuote(s string) string {
 // (temp-file + rename) and idempotent — a rewrite over an existing
 // wrapper replaces it whole, never truncating the live file mid-read.
 func writeRedactWrapper(dir, agentdPath string) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// G301: 0750 — the wrapper dir is uid-1000 tmpfs; group (the pod's
+	// shared gid) may traverse, others may not.
+	//nolint:gosec // G301: deliberate mode for a credential-adjacent dir
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dir, err)
 	}
 
 	script := "#!/bin/sh\nexec " + shellSingleQuote(agentdPath) + ` redact "$@"` + "\n"
 	target := filepath.Join(dir, "redact")
 
-	tmp, err := os.CreateTemp(dir, ".redact-wrapper-*")
+	// G703 (taint via dir): dir is not user input — it derives from
+	// redactWrapperPath(), a package constant or the operator-set
+	// LLMSAFESPACES_REDACT_WRAPPER_PATH env (same trust domain as every
+	// other LLMSAFESPACES_*_PATH store coordinate). Temp+rename stay
+	// inside that same directory by construction.
+	tmp, err := os.CreateTemp(dir, ".redact-wrapper-*") //nolint:gosec // G703: see above
 	if err != nil {
 		return fmt.Errorf("temp file in %s: %w", dir, err)
 	}
@@ -70,7 +78,7 @@ func writeRedactWrapper(dir, agentdPath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close wrapper script: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), target); err != nil {
+	if err := os.Rename(tmp.Name(), target); err != nil { //nolint:gosec // G703: same dir by construction
 		return fmt.Errorf("rename into %s: %w", target, err)
 	}
 	return nil
