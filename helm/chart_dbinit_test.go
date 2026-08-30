@@ -297,7 +297,8 @@ func execLookHelm() (string, error) {
 // does NOT assert success — callers use it to assert a render FAILURE.
 func helmTemplateRaw(t *testing.T, valuesPath string) ([]byte, error) {
 	t.Helper()
-	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath}
+	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath}
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()
 	return out, err

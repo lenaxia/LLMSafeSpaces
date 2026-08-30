@@ -56,6 +56,12 @@ func chartDir(t *testing.T) string {
 // testDeliveryPins satisfies the design 0053 §4.5 mandatory-pin render
 // gate for tests that exercise something OTHER than the gate itself.
 // The digests are synthetic — render sanity only, never deployed.
+// testKubeVersion pins the render's target cluster version to the chart's
+// own floor (Chart.yaml) — helm CLI defaults vary by build and lag the
+// chart; without this, renders fail on the compatibility gate instead of
+// the surface under test.
+const testKubeVersion = "1.35.0"
+
 const (
 	testAgentdPin   = "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	testOpencodePin = "ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
@@ -78,7 +84,8 @@ func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 		extraSets = append(extraSets, "--set", "controller.opencodeDelivery.image="+testOpencodePin)
 	}
 
-	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns"}
+	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion}
 	if valuesYAML != "" {
 		dir := t.TempDir()
 		valuesPath := filepath.Join(dir, "values.yaml")
@@ -3958,7 +3965,8 @@ orgSubdomainRouting:
 	valuesPath := filepath.Join(dir, "values.yaml")
 	require.NoError(t, writeFile(valuesPath, values))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()

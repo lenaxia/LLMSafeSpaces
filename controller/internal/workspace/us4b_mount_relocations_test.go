@@ -197,27 +197,4 @@ func TestUS4B_Enabled_CredentialSetupInitSidecarEnv(t *testing.T) {
 
 // --- enabled: script branch -------------------------------------------------
 
-func credSetupScriptFor(t *testing.T, sidecar bool) string {
-	t.Helper()
-	// Sidecar-migration step 1: the bash cred script exists only in
-	// legacy-no-overlay pods now (overlay pods run platform-init); the
-	// script branch pins below validate the SCRIPT, so extract from a
-	// legacy pod regardless of the sidecar parameter.
-	pod := buildPodUS4B(t, sidecar)
-	var src *corev1.Container
-	if cred := sidecarInitContainer(pod, "credential-setup"); cred != nil {
-		src = cred
-	} else {
-		// Overlay pod: build a legacy pod for the script text.
-		ws := newWorkspaceForSecurity(t)
-		r := reconcilerFor(t)
-		legacy, err := r.buildPod(context.Background(), ws)
-		require.NoError(t, err)
-		src = sidecarInitContainer(legacy, "credential-setup")
-	}
-	require.NotNil(t, src)
-	require.Len(t, src.Command, 3)
-	return src.Command[2]
-}
-
 // --- disabled: single-container regression pins ------------------------------

@@ -93,7 +93,8 @@ func TestAgentdDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided hash override must fail the render; output: %s", out)
@@ -115,7 +116,8 @@ func TestAgentdDelivery_HashesWithoutImageFailsRender(t *testing.T) {
     binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `), 0o600))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err,
@@ -138,7 +140,8 @@ func TestAgentdDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     binarySHA256Arm64: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided arm64-only override must fail the render; output: %s", out)

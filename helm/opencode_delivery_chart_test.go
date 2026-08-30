@@ -96,7 +96,9 @@ func TestOpencodeDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	)
 	out, err := cmd.CombinedOutput()
@@ -115,7 +117,9 @@ func TestOpencodeDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Arm64: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	)
 	out, err := cmd.CombinedOutput()
@@ -138,7 +142,9 @@ func TestOpencodeDelivery_HashesWithoutImageFailsRender(t *testing.T) {
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 `), 0o600))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	)
 	out, err := cmd.CombinedOutput()
@@ -157,8 +163,6 @@ func TestOpencodeDelivery_PinsRBACGrantRenders(t *testing.T) {
 	docs := helmTemplate(t, `controller:
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
-  agentdDelivery:
-    image: ""
   inferenceRelay:
     enabled: false
   freeModelsRefresher:
@@ -206,33 +210,43 @@ func TestOpencodeDelivery_PinsRBACGrantRenders(t *testing.T) {
 	require.True(t, createRule, "separate unscoped create rule required (create cannot be resourceNames-scoped)")
 }
 
-// TestOpencodeDelivery_DoesNotGateAgentdSidecar locks the independence
-// of the two delivery artifacts: agentdSidecar requires agentdDelivery
-// (its own guard), NOT opencodeDelivery — both directions render clean.
+// TestOpencodeDelivery_DoesNotGateAgentdSidecar locks the FEATURE
+// independence of the two delivery artifacts: agentdSidecar requires
+// agentdDelivery (its own guard), NOT opencodeDelivery — both directions
+// render clean with both pins present (the S3 mandatory-pin world).
 func TestOpencodeDelivery_DoesNotGateAgentdSidecar(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
 	dir := t.TempDir()
 
-	// agentdSidecar on with opencodeDelivery unset: renders.
+	// agentdSidecar on: renders (both pins per the S3 mandatory gate —
+	// the FEATURE independence under test, not pin presence).
 	p := filepath.Join(dir, "sidecar-without-opencode.yaml")
 	require.NoError(t, os.WriteFile(p, []byte(`controller:
   agentdDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  opencodeDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
   agentdSidecar:
     enabled: true
 `), 0o600))
-	out, err := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", p).CombinedOutput()
+	out, err := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--kube-version", testKubeVersion, "-f", p).CombinedOutput()
 	require.NoError(t, err, "agentdSidecar must not require opencodeDelivery; output: %s", out)
 
 	// opencodeDelivery set with agentdSidecar off: renders.
 	p2 := filepath.Join(dir, "opencode-without-sidecar.yaml")
 	require.NoError(t, os.WriteFile(p2, []byte(`controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   opencodeDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 `), 0o600))
-	out, err = exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", p2).CombinedOutput()
+	out, err = exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--kube-version", testKubeVersion, "-f", p2).CombinedOutput()
 	require.NoError(t, err, "opencodeDelivery must not require agentdSidecar; output: %s", out)
 }
 

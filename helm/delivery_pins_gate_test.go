@@ -44,7 +44,7 @@ func TestDeliveryPins_MandatoryRenderGate(t *testing.T) {
 			wantErrOn: "agentdDelivery.image is mandatory",
 		},
 		{
-			name: "agentd pinned, opencode missing",
+			name: "agentd pinned / opencode missing",
 			values: `
 controller:
   agentdDelivery:

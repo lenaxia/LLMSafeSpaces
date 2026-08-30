@@ -43,14 +43,6 @@ func envMap(envs []corev1.EnvVar) map[string]string {
 
 // mountPaths returns the set of MountPath values for cross-validation against
 // the absolute paths the init script references.
-func mountPaths(mounts []corev1.VolumeMount) map[string]bool {
-	m := make(map[string]bool, len(mounts))
-	for _, mt := range mounts {
-		m[mt.MountPath] = true
-	}
-	return m
-}
-
 // findInitContainerOrFatal returns the init container with the given name, failing
 // the test if absent.
 func findInitContainerOrFatal(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
