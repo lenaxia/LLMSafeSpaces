@@ -73,7 +73,8 @@ func TestPlatformInit_OverlayMode_ReplacesBashInits(t *testing.T) {
 	require.NotNil(t, pi, "platform-init must exist in overlay mode")
 	require.Equal(t, testAgentdImage, pi.Image)
 	require.Equal(t, []string{agentdMountPath + agentdBinaryRelPath}, pi.Command)
-	require.Equal(t, []string{"init-fs"}, pi.Args)
+	require.Equal(t, []string{"init-fs", "--platform-subpath=create"}, pi.Args,
+		"Epic 69 US-69.2: platform-init creates the platform/ subPath (single-container)")
 
 	// uid 1000 = PVC home owner (symlink farm writes into uid-1000 dirs).
 	require.NotNil(t, pi.SecurityContext.RunAsUser)

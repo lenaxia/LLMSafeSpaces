@@ -180,6 +180,12 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			{Name: "sandbox-cfg", MountPath: "/sandbox-cfg", ReadOnly: true},
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "workspace", MountPath: agentd.WorkspacePath, SubPath: "workspace", ReadOnly: true},
+			// Epic 69 US-69.2: the platform/ subPath — the sessionstate seq
+			// cursor (+ ledger at S2). RW in the SIDECAR only (uid 2000 owns
+			// it — created by the platform-dirs init); never mounted in the
+			// workspace container's uid-1000 space (mount-topology integrity,
+			// design 0055 M2).
+			{Name: "workspace", MountPath: "/platform", SubPath: "platform"},
 			// US-4b: both new volumes RW — the ConfigWriter and the
 			// reload handler write here; the workspace container gets
 			// agentd-config RO and NEVER agentd-secrets.

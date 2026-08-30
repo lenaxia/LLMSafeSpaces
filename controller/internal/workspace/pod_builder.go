@@ -232,7 +232,18 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// the baked binary).
 	overlayOn := r.agentdOverlayEnabled()
 	if overlayOn {
-		initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != ""))
+		// Epic 69 US-69.2: the platform/ subPath (sessionstate cursor).
+		// Single-container agentd (uid 1000) gets it from platform-init;
+		// sidecar mode defers to the uid-2000 platform-dirs init below —
+		// ownership must follow the writer.
+		platformFlag := "create"
+		if r.AgentdSidecarEnabled {
+			platformFlag = "skip"
+		}
+		initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != "", platformFlag))
+		if r.AgentdSidecarEnabled {
+			initContainers = append(initContainers, r.buildPlatformDirsInit())
+		}
 	} else {
 		// workspace-dirs init: unconditionally ensures all three PVC subPath
 		// directories exist at the PVC root before any other init or the main
@@ -395,6 +406,22 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	}
 	if runtimeClassName != "" {
 		pod.Spec.RuntimeClassName = &runtimeClassName
+	}
+
+	// Epic 69 US-69.2: single-container mode mounts the platform/ subPath
+	// in the main container (agentd runs there as uid 1000 — the design
+	// 0055 documented weakening: file perms are crash-ambiguity protection
+	// only; uid-1000 processes share the uid). Sidecar mode does NOT mount
+	// it in uid-1000 space at all — mount topology is the integrity
+	// control (the sidecar's own mount is added in agentd_sidecar.go).
+	if !r.AgentdSidecarEnabled {
+		if i := containerIndexByName(pod.Spec.Containers, mainContainerName); i >= 0 {
+			pod.Spec.Containers[i].VolumeMounts = append(pod.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+				Name:      "workspace",
+				MountPath: "/platform",
+				SubPath:   "platform",
+			})
+		}
 	}
 
 	// Design 0051 US-2: native agentd sidecar + supervisor-mode main
@@ -790,6 +817,19 @@ LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize
 	return credInit, pwVolume, bootstrapTokenVolume, nil
 }
 
+// mainContainerName is the workspace (opencode) container's name.
+const mainContainerName = "workspace"
+
+// containerIndexByName returns the index of the named container, or -1.
+func containerIndexByName(containers []corev1.Container, name string) int {
+	for i := range containers {
+		if containers[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // buildWorkspaceDirsInit returns an always-running init container that creates
 // the three PVC subPath directories (workspace/, home/, tmp/) at the PVC root
 // before any other init or the main container attempts to mount them.
@@ -810,7 +850,7 @@ LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize
 func buildWorkspaceDirsInit(runtimeImage string) corev1.Container {
 	trueVal := true
 	falseVal := false
-	dirsScript := "mkdir -p /pvc/workspace /pvc/home /pvc/tmp"
+	dirsScript := "mkdir -p /pvc/workspace /pvc/home /pvc/tmp && mkdir -p -m 0750 /pvc/platform"
 	return corev1.Container{
 		Name:    "workspace-dirs",
 		Image:   runtimeImage,

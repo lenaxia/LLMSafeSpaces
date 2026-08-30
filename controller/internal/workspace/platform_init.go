@@ -37,7 +37,7 @@ import (
 // buildPlatformInit returns the init-fs container: uid-1000 PVC prep
 // (subPath roots, hardened symlink farm, password/admin-token install,
 // free-models copy — see cmd/workspace-agentd/init_fs.go).
-func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool) corev1.Container {
+func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool, platformSubpath string) corev1.Container {
 	trueVal := true
 	falseVal := false
 	uid1000 := int64(1000)
@@ -62,7 +62,7 @@ func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool) corev1.Container {
 		Name:    "platform-init",
 		Image:   r.AgentdImage,
 		Command: []string{agentdMountPath + agentdBinaryRelPath},
-		Args:    []string{"init-fs"},
+		Args:    []string{"init-fs", "--platform-subpath=" + platformSubpath},
 		SecurityContext: &corev1.SecurityContext{
 			ReadOnlyRootFilesystem:   &trueVal,
 			RunAsNonRoot:             &trueVal,
@@ -179,6 +179,36 @@ func buildBootstrapTokenVolume() corev1.Volume {
 					},
 				}},
 			},
+		},
+	}
+}
+
+// buildPlatformDirsInit returns the sidecar-mode platform/ init (Epic 69
+// US-69.2): runs the agentd image as uid 2000 so the platform/ PVC subPath
+// is OWNED by the sidecar's uid (a uid-1000 process cannot chown across
+// uids; ownership follows the creator). Creates the directory only —
+// mode 0750; payload files (seq cursor, ledger) are 0640 per design 0055
+// M2 (a directory needs the x bit to traverse — the design's "0640"
+// applies to files).
+func (r *WorkspaceReconciler) buildPlatformDirsInit() corev1.Container {
+	trueVal := true
+	falseVal := false
+	uid2000 := int64(2000)
+	return corev1.Container{
+		Name:    "platform-dirs",
+		Image:   r.AgentdImage,
+		Command: []string{agentdMountPath + agentdBinaryRelPath},
+		Args:    []string{"init-fs", "--platform-subpath=only"},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
+			{Name: "workspace", MountPath: "/pvc"},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			ReadOnlyRootFilesystem:   &trueVal,
+			RunAsNonRoot:             &trueVal,
+			RunAsUser:                &uid2000,
+			AllowPrivilegeEscalation: &falseVal,
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 	}
 }

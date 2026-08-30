@@ -18,6 +18,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
@@ -163,13 +164,29 @@ func main() {
 	// generation-change hook (design 0050 D2) clears orphaned busy flags
 	// at every child start.
 	sseTracker := newSessionStatusTracker()
-	proc := startManagedProcess(supervise, sseTracker)
+
+	// Epic 69 US-69.2: the session-state authority. S1 shadow — additive
+	// machinery only; a non-bootable durable cursor degrades loudly
+	// (sessionstate_wiring.go). The authority receives every raw SSE
+	// payload, owns seq + reseed + the authenticated ABI surface on the
+	// user mux.
+	controlPlanePassword, _ := readSidecarControlPlanePasswordFromEnv()
+	stateAuthority := newStateAuthority(client, password, controlPlanePassword)
+	if stateAuthority != nil {
+		sseTracker.onRawEvent = stateAuthority.Ingest
+	}
+
+	proc := startManagedProcess(supervise, sseTracker, stateAuthority)
+	if stateAuthority != nil {
+		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
+	}
 
 	startedAt := time.Now()
 	deps := serverDeps{
 		client:             client,
 		cache:              &providerCache{},
 		sseTracker:         sseTracker,
+		stateAuthority:     stateAuthority,
 		pressureMonitor:    newMemoryPressureMonitor(),
 		healthCache:        newHealthzCache(),
 		gr:                 newGateRecorder(startedAt, agentdGateDurationSeconds, log),
@@ -256,14 +273,29 @@ func readAgentPasswordFromPath(path string) (string, error) {
 // agentd is invoked with --supervise; returns nil otherwise. The
 // tracker's generation hook is wired here so every child start (first
 // boot and each restart/crash recovery) clears orphaned busy flags
-// (design 0050 D2).
-func startManagedProcess(supervise bool, sseTracker *sessionStatusTracker) *managedProcess {
+// (design 0050 D2). Epic 69 US-69.2: a child start is ALSO the
+// authoritative generation-change signal for the session-state authority
+// (agentd is opencode's parent — design 0055 A9); the reseed runs async
+// so the supervisor path never blocks on store reads.
+func startManagedProcess(supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority) *managedProcess {
 	if !supervise {
 		return nil
 	}
 	proc := &managedProcess{}
 	if sseTracker != nil {
-		proc.onChildStarted = sseTracker.onOpencodeGenerationStart
+		if authority != nil {
+			a := authority
+			proc.onChildStarted = func() {
+				sseTracker.onOpencodeGenerationStart()
+				go func() {
+					if err := a.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange); err != nil {
+						log.Warn("sessionstate: generation-change reseed failed (will retry on next generation)", zap.Error(err))
+					}
+				}()
+			}
+		} else {
+			proc.onChildStarted = sseTracker.onOpencodeGenerationStart
+		}
 	}
 	proc.start()
 	return proc

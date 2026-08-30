@@ -633,7 +633,7 @@ func TestSingleContainerOverlayHelperProcess(t *testing.T) {
 	if os.Getenv("GO_TEST_SINGLE_CONTAINER_OVERLAY") != "1" {
 		return
 	}
-	proc := startManagedProcess(true, nil)
+	proc := startManagedProcess(true, nil, nil)
 	if proc == nil {
 		fmt.Fprintln(os.Stderr, "helper: no managed process returned")
 		os.Exit(9)
