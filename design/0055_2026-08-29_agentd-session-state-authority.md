@@ -690,6 +690,11 @@ session-create routing).
 
 ### Decisions owed (block epic filing or early stories)
 
+> **IDL + transport decided 2026-08-30 (US-69.1):** protobuf IDL managed by
+> buf; transport = **Connect RPC** (connect-go); `pkg/session` ↔ schema
+> source-of-truth agreement recorded with the Epic 65 flip at S2 freeze.
+> See [`design/0056_2026-08-30_harness-abi-idl-transport.md`](0056_2026-08-30_harness-abi-idl-transport.md).
+
 > **ALL DECIDED 2026-08-29 (owner): D1-B, D2-C, D3-A, D4, D5-revised.**
 > D1: on-demand streams + inline-first admission. D2: frontend cutover
 > merges into S3 — only a test env is deployed, so a hard cutover that

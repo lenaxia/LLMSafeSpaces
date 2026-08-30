@@ -1,0 +1,33 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Cursor-typed history (design 0055 §Harness ABI): history is DEFINED in
+// the ABI but implemented for opencode only at S5, when upstream ships
+// limit/before pagination on its message endpoint. New harnesses are
+// ABI-native for history from day one. No RPC exists yet — S5 adds it as an
+// additive surface extension; these message shapes freeze with the rest of
+// the schema at S2 entrance so the op shape cannot drift in the meantime.
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+import "llmsafespaces/abi/v1/contract.proto";
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+// Cursor is opaque: clients pass it back verbatim and must not interpret it.
+message Cursor {
+  bytes opaque = 1;
+}
+
+message HistoryRequest {
+  string session_id = 1;
+  int32 limit = 2;
+  optional Cursor before = 3;
+}
+
+message HistoryPage {
+  repeated Message messages = 1;
+  optional Cursor next = 2;
+}

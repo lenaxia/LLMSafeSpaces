@@ -1,0 +1,12 @@
+# Frozen-baseline fixture for TestSchemaLintFreezeGate: a minimal module the
+# test mutates and runs `buf breaking` against, proving the S2 freeze gate
+# detects post-freeze violations before the real freeze arms.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE
