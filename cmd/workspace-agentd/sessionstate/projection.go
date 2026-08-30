@@ -183,23 +183,28 @@ func seedLocked(seed SessionSeed) *sessionRecord {
 	return rec
 }
 
-// podSnapshotsLocked renders the pod-wide snapshot payload (I12 complete:
-// status, in-flight parts with partials, pending inputs; queue depth is
-// ledger-derived and lands with US-69.7).
+// sessionSnapshotLocked renders one session's I12-complete snapshot:
+// status (busy-aware), in-flight parts with partials, pending inputs.
+// Queue depth is ledger-derived and lands with US-69.7.
+func sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.SessionSnapshot {
+	v := rec.view()
+	snap := &abiv1.SessionSnapshot{
+		SessionId:     id,
+		Status:        v.Status,
+		InFlightParts: v.InFlightParts,
+		PendingInputs: v.PendingInputs,
+	}
+	if v.Busy {
+		snap.Status = abiv1.SessionStatus_SESSION_STATUS_BUSY
+	}
+	return snap
+}
+
+// podSnapshotsLocked renders the pod-wide snapshot payload.
 func podSnapshotsLocked(sessions map[string]*sessionRecord) []*abiv1.SessionSnapshot {
 	out := make([]*abiv1.SessionSnapshot, 0, len(sessions))
 	for id, rec := range sessions {
-		v := rec.view()
-		snap := &abiv1.SessionSnapshot{
-			SessionId:     id,
-			Status:        v.Status,
-			InFlightParts: v.InFlightParts,
-			PendingInputs: v.PendingInputs,
-		}
-		if v.Busy {
-			snap.Status = abiv1.SessionStatus_SESSION_STATUS_BUSY
-		}
-		out = append(out, snap)
+		out = append(out, sessionSnapshotLocked(id, rec))
 	}
 	return out
 }
