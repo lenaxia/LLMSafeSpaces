@@ -203,15 +203,6 @@ func importsOf(path string) ([]string, error) {
 	return out, nil
 }
 
-func containsString(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
-}
-
 func anyPrefix(s string, prefixes []string) bool {
 	for _, p := range prefixes {
 		if strings.HasPrefix(s, p) {

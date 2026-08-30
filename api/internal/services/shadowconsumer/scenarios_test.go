@@ -104,6 +104,7 @@ func newPod(t *testing.T) *pod {
 		Parser:      tr,
 		Store:       store,
 		Passwords:   []string{password},
+		FastCursor:  true, // burst replay: durability covered by sessionstate fault tests
 	}
 	p := &pod{store: store, dir: cfg.PlatformDir}
 	a, err := sessionstate.New(cfg)
@@ -248,6 +249,7 @@ func TestScenario_AgentdRestartMidturn(t *testing.T) {
 			Parser:      &opencode.ABITranslator{Now: func() time.Time { return time.Unix(0, 0).UTC() }},
 			Store:       store,
 			Passwords:   []string{password},
+			FastCursor:  true,
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = a2.Close() })
@@ -284,6 +286,7 @@ func TestScenario_SuspendResume(t *testing.T) {
 			Parser:      &opencode.ABITranslator{Now: func() time.Time { return time.Unix(0, 0).UTC() }},
 			Store:       store,
 			Passwords:   []string{password},
+			FastCursor:  true,
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = a2.Close() })

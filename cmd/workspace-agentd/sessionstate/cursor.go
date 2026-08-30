@@ -27,13 +27,19 @@ type seqCursor struct {
 	dir     string
 	path    string
 	lastSeq uint64
+	// fast disables fsync (in-memory-ack durability). For scenario
+	// harnesses that replay event BURSTS: fsync-per-event matches
+	// production's human/LLM-paced event rate, not burst replay; the
+	// durability property itself is covered by the fault-injection suite
+	// (TestSeqMonotonicAcrossKill9 etc.) with fsync on.
+	fast bool
 }
 
-func openSeqCursor(dir string) (*seqCursor, error) {
+func openSeqCursor(dir string, fast bool) (*seqCursor, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create platform dir: %w", err)
 	}
-	c := &seqCursor{dir: dir, path: filepath.Join(dir, "seq-cursor")}
+	c := &seqCursor{dir: dir, path: filepath.Join(dir, "seq-cursor"), fast: fast}
 	data, err := os.ReadFile(c.path)
 	if os.IsNotExist(err) {
 		return c, nil
@@ -75,15 +81,20 @@ func (c *seqCursor) persist(seq uint64) error {
 		_ = f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
+	if !c.fast {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, c.path); err != nil {
 		return err
+	}
+	if c.fast {
+		return nil
 	}
 	// Directory fsync: make the rename itself durable.
 	d, err := os.Open(c.dir)

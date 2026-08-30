@@ -33,6 +33,11 @@ Drives the REAL pod path — pinned dialect fixtures/synthetic feeds → `ABITra
 2. **Never-statused sessions**: client fold created sessions as UNSPECIFIED vs the server's UNKNOWN — aligned.
 3. Comparator self-deadlock (Debug→Report double lock) — found via harness hang.
 4. Reference-fold semantics: monotonic part counting vs in-flight sets; session-set maintenance for created/updated; harness-death record drop; generation reconcile.
+5. **Projection/fanout shared-pointer race (production-grade)**: the projection retained part/input objects also referenced by fanned-out frames — later mutations (PART_DELTA) raced in-flight sends. Fixed with clone-on-retain (upsertPartLocked, pending inputs, view()). Surfaced only when the burst-fsync serialization was removed.
+6. **abiclient reseed-reconnect wedge + Receive/Err concurrency**: a wedged reconnect could stall the fold forever — now a first-frame budget (2s) drops and retries; s.Err() only after the receiver goroutine completed (connect streams are not goroutine-safe).
+7. **repolint detector/test parity**: TestKnownLeaksStillMatchReality used exact-match imports while production prefix-matches subpackages — aligned; dated knownLeaks entry for the S1 comparator's wire import (disposable at S1/S3 exit).
+
+Also: `FastCursor` config (scenario harnesses replay event BURSTS; fsync-per-event matches production's paced event rate — durability stays covered by the fault-injection suite with fsync on).
 
 ---
 
