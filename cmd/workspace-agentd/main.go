@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/redact"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
@@ -113,6 +116,16 @@ func main() {
 		os.Exit(runBootstrapCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
 
+	// Design 0053 — platform overlay delivery: redact folds into
+	// the agentd binary as a subcommand. The standalone cmd/redact
+	// is deleted; the supervisor provides a /sandbox-runtime/bin/redact
+	// PATH wrapper so the documented "some-command | redact" UX is
+	// preserved with zero bytes of a second executable in the
+	// trusted artifact.
+	if len(os.Args) > 1 && os.Args[1] == "redact" {
+		os.Exit(runRedactCommand(os.Args[2:]))
+	}
+
 	supervise := len(os.Args) > 1 && os.Args[1] == "--supervise"
 
 	// #904: agentd is the container's PID 1 (or a subreaper when run
@@ -149,6 +162,13 @@ func main() {
 	// .tmp residue; the atomic-or-absent contract (D3) removes them once
 	// at startup. Best-effort: a failed scrub never blocks boot.
 	scrubUploadsAtBoot(log, uploadsPathFromEnv())
+
+	// Design 0053 S2: install the redact PATH wrapper before any opencode
+	// spawn can inherit the child env. Best-effort (see redact_wrapper.go);
+	// unreachable for the subcommands dispatched above and for --sidecar
+	// (which exits earlier — the wrapper belongs to uid-1000 space, not
+	// the sidecar container's mounts).
+	ensureRedactWrapper(log)
 
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
@@ -267,6 +287,48 @@ func readAgentPasswordFromPath(path string) (string, error) {
 		return "", fmt.Errorf("password file %s is empty", path)
 	}
 	return trimmed, nil
+}
+
+// runRedactCommand implements the `redact` subcommand (design 0053).
+// Folds cmd/redact into the agentd binary; the standalone cmd/redact
+// is deleted. Reads stdin, applies the redact pattern set from
+// --config (default /sandbox-cfg/redact-patterns.json), writes to
+// stdout. Exit 1 on any failure.
+func runRedactCommand(args []string) int {
+	log = newLogger()
+	defer func() { _ = log.Sync() }()
+
+	fs := flag.NewFlagSet("redact", flag.ExitOnError)
+	configPath := fs.String("config", "/sandbox-cfg/redact-patterns.json", "path to extra patterns JSON file")
+	if err := fs.Parse(args); err != nil {
+		// ExitOnError already exits on parse failure; this is the
+		// unreachable defensive return for errcheck/completeness.
+		return 1
+	}
+
+	r, err := redact.NewRedactorFromFile(*configPath)
+	if err != nil {
+		log.Error("redact: failed to load patterns", zap.Error(err))
+		return 1
+	}
+
+	input, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		log.Error("redact: failed to read stdin", zap.Error(err))
+		return 1
+	}
+
+	result, err := r.Redact(string(input))
+	if err != nil {
+		log.Error("redact: failed", zap.Error(err))
+		return 1
+	}
+
+	if _, err := fmt.Fprint(os.Stdout, result); err != nil {
+		log.Error("redact: failed to write stdout", zap.Error(err))
+		return 1
+	}
+	return 0
 }
 
 // startManagedProcess builds and starts the opencode supervisor when

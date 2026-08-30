@@ -147,9 +147,9 @@ The MCP server (Model Context Protocol). Exposes tools (`sandbox_create`, `sessi
 
 ## redact
 
-A stdin → stdout secret redaction pipeline. Reads from stdin, applies the 16 built-in regex rules (plus any from a config file), writes redacted output to stdout. Built from `pkg/redact` and installed at `/usr/local/bin/redact` in every runtime image.
+A stdin → stdout secret redaction pipeline. Reads from stdin, applies the 16 built-in regex rules (plus any from a config file), writes redacted output to stdout. Implemented as the `redact` subcommand of `workspace-agentd` (design 0053 S2) — there is no standalone binary. On PATH as a wrapper: `/sandbox-runtime/bin/redact` (written by the supervisor at boot, leads PATH for opencode children) and `/usr/local/bin/redact` (baked wrapper script, until the S3 base strip).
 
-**Run by:** the runtime image's PATH-shadowing wrappers (high-security mode) and directly when needed. Designed to be piped: `some-command | redact`.
+**Run by:** opencode tool shells via the PATH wrappers and directly when needed. Designed to be piped: `some-command | redact` (equivalently `some-command | workspace-agentd redact`).
 
 **Flags:**
 
@@ -159,7 +159,7 @@ A stdin → stdout secret redaction pipeline. Reads from stdin, applies the 16 b
 
 **Built-in rules (16):** URL credentials, bearer tokens, GitHub tokens, JSON passwords, `password=`/`token=`/`secret=`/`api_key=`/`x-api-key=` assignments, PEM private keys, age keys, OpenAI/Anthropic keys (`sk-…`), AWS IAM keys (`AKIA…`), JWTs, authorization headers, long base64.
 
-**Fail mode:** the wrappers fail-closed (exit 1) if `redact` is missing or crashes — they never emit unredacted output. The binary itself exits 1 on regex compilation failure or a read error.
+**Fail mode:** the subcommand exits 1 on regex compilation failure, a config read error, or a stdin/stdout error. A missing PATH wrapper fails the pipeline invocation outright — nothing is ever emitted unredacted.
 
 **Example:**
 

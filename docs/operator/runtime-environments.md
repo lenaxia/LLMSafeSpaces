@@ -71,7 +71,7 @@ The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeS
 | **gh** (GitHub CLI) | 2.74.1 (pinned) | Downloaded over TLS; **checksum-verified** via `checksums.txt` (G9 partial fix). |
 | **AWS CLI v2** | 2.34.57 (pinned) | Full PGP verification (AWS CLI Team key). |
 | **mise** | 2026.5.15 (pinned) | `MISE_GITHUB_ATTESTATIONS=1` — verifies Sigstore-backed GitHub attestations on every tool install. |
-| **redact** | built from source (this repo) | Go-built in a multi-stage `FROM golang:1.26-bookworm` builder. |
+| **redact** | `workspace-agentd` subcommand (design 0053 S2) | On PATH via wrapper scripts (supervisor-written `/sandbox-runtime/bin/redact`; baked `/usr/local/bin/redact` until the S3 strip) — no standalone binary. |
 | **workspace-agentd** | built from source (this repo) | Go-built in a multi-stage builder. |
 
 ### Entrypoints
@@ -79,7 +79,7 @@ The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeS
 The image ships entrypoint scripts under `/tools/entrypoints/`:
 
 - `entrypoint-common.sh` — shared setup (env, path, security-policy file check).
-- `entrypoint-opencode.sh` — the main entrypoint. Sources `entrypoint-common.sh`, optionally pipes opencode stdout/stderr through `redact`, then `exec opencode serve --hostname 0.0.0.0 --port 4096`.
+- `entrypoint-opencode.sh` — the main entrypoint. Sources `entrypoint-common.sh`, verifies/selects the agentd binary (overlay or baked), then execs it as the supervisor (`--supervise`, or `supervise-opencode` in sidecar mode) — the supervisor owns the opencode child.
 
 ### Security posture
 
@@ -236,7 +236,7 @@ For a workspace pod to function, the runtime image must:
 
 1. **Run `opencode serve`** — the entrypoint must exec opencode on port 4096. The base entrypoint handles this; custom images extending the base inherit it.
 2. **Include `workspace-agentd`** — the sidecar binary. The base image includes it; custom images extending base inherit it.
-3. **Include `redact`** — the secret-redaction binary. Same inheritance.
+3. **Include `redact`** — the secret-redaction entry point (`workspace-agentd redact`, or the wrapper the base provides). Same inheritance.
 4. **Be `readOnlyRootFilesystem`-compatible** — all writable paths must be mounted volumes (`/workspace`, `/home/sandbox`, `/tmp`, `/sandbox-cfg`, `/sandbox-runtime`).
 
 If you build a runtime image **from scratch** (not extending base), you must provide all four. This is why extending the base image is strongly recommended.
@@ -249,7 +249,7 @@ If you build a runtime image **from scratch** (not extending base), you must pro
 | gh | TLS download, checksum-verified | G9 (partial fix) — checksums.txt verified at build |
 | AWS CLI | Full PGP verification | None |
 | mise | Sigstore GitHub attestations | None (G19 fixed) |
-| redact, agentd | Built from source in multi-stage build | None |
+| redact, agentd | Built from source in multi-stage build (redact rides inside the agentd binary — S2) | None |
 
 For custom runtime images, mirror the base image's verification practices. If you install additional binaries, pin versions and verify checksums where the upstream publishes them. Release images are cosign-signed (see [Security Hardening](security.md#supply-chain-security)); admission-time verification is the remaining gap.
 
