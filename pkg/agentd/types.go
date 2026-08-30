@@ -235,4 +235,13 @@ type StatuszResponse struct {
 	// the controller's AgentHealthy condition message, so the warning
 	// must appear here too or it would be erased between scrapes.
 	Warnings []string `json:"warnings,omitempty"`
+	// SpawnedRev (US-70.1 / design 0057 I4): the env revision the agent
+	// child ACTUALLY spawned with — terminal verification at the point
+	// of consumption, relayed from the supervisor's control socket.
+	SpawnedRev string `json:"spawned_rev,omitempty"`
+	// Degraded (US-70.1 / design 0057 I10): active machine-readable
+	// degrade reason ("" healthy). First value of the family:
+	// spawn_env_unavailable — the child spawned platform-env-only from
+	// the last-good cache because the pull missed its bound.
+	Degraded string `json:"degraded,omitempty"`
 }

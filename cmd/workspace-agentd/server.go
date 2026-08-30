@@ -49,6 +49,12 @@ type serverDeps struct {
 	// Nil only when construction failed (degraded, logged at boot).
 	stateAuthority *sessionstate.Authority
 
+	// spawnStatus (US-70.1, design 0057 I4/I10) reports the terminal
+	// spawn-env state (spawned_rev + degraded reason) from the
+	// supervisor in split mode; nil in single-container mode when the
+	// supervisor adapter is not wired.
+	spawnStatus func() (rev, degraded string)
+
 	// vitals, when non-nil, is the watchdog corroboration probe.
 	// Single-container mode leaves it nil (built from deps.proc);
 	// sidecar mode wires the socket gatherer. NEVER leave both nil in
@@ -110,6 +116,7 @@ func buildStatuszHandler(
 	startedAt time.Time,
 	modelWarnPath string,
 	sys sysMetricsSource,
+	spawnStatus func() (rev, degraded string),
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -160,6 +167,14 @@ func buildStatuszHandler(
 		// US-44.5: surface memory pressure state.
 		pressure, _, _ := pressureMon.snapshot()
 
+		// US-70.1 (design 0057 I4/I10): terminal spawn verification +
+		// loud degradation, relayed from the supervisor (nil = not in
+		// split mode / not wired: fields stay empty).
+		var spawnedRev, degraded string
+		if spawnStatus != nil {
+			spawnedRev, degraded = spawnStatus()
+		}
+
 		sys := sys.orDefaults()
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:             healthy,
@@ -182,6 +197,8 @@ func buildStatuszHandler(
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
 			Warnings:            modelResolutionWarnings(modelWarnPath),
+			SpawnedRev:          spawnedRev,
+			Degraded:            degraded,
 		})
 	})
 }
@@ -351,6 +368,14 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 		}
 	}
 
+	// US-70.1 (design 0057 R2): the spawn-time PULL endpoint — the
+	// supervisor fetches the current env delta here at every spawn (the
+	// structurally-broken boot push retires with it). Both modes serve
+	// their own coordinate: single-container the uid-1000-owned file,
+	// sidecar the sidecar-owned one — the HTTP boundary is the only
+	// cross-uid crossing (D6.1 credential pair, A2 validated).
+	userMux.HandleFunc("/v1/spawn-env", spawnEnvHandler(secretsEnvPathFromEnv(), deps.password, deps.controlPlanePassword))
+
 	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
 		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,
@@ -416,7 +441,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys)))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus)))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.

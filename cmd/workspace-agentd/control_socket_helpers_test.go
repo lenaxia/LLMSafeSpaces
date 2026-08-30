@@ -64,6 +64,10 @@ func (f *fakeRestartProc) SetSpawnEnv(env map[string]string) {
 	f.lastEnv.Store(&stored)
 }
 
+func (f *fakeRestartProc) SpawnStatus() (rev, degraded string) {
+	return "", ""
+}
+
 // newControlSocketServerForTest builds a server on addr (":0" for
 // ephemeral) backed by the fake proc.
 func newControlSocketServerForTest(t *testing.T, addr string) *controlSocketServer {
