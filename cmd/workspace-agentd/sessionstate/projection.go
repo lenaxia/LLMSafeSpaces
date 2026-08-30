@@ -5,6 +5,7 @@ package sessionstate
 
 import (
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // SessionSeed is the store-truth seed for one session at reseed time
@@ -38,11 +39,17 @@ func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
 	return &sessionRecord{status: status, pending: map[string]*abiv1.InputRequest{}}
 }
 
+// view returns a PRIVATE copy: views (and the snapshots built from them)
+// are serialized outside the lock — sharing projection pointers would race
+// live mutations against in-flight sends.
 func (r *sessionRecord) view() *SessionView {
-	v := &SessionView{Status: r.status, Busy: r.busy, InFlightParts: r.inFly}
+	v := &SessionView{Status: r.status, Busy: r.busy, InFlightParts: make([]*abiv1.Part, len(r.inFly))}
+	for i, p := range r.inFly {
+		v.InFlightParts[i] = proto.Clone(p).(*abiv1.Part)
+	}
 	v.PendingInputs = make([]*abiv1.InputRequest, 0, len(r.pending))
 	for _, in := range r.pending {
-		v.PendingInputs = append(v.PendingInputs, in)
+		v.PendingInputs = append(v.PendingInputs, proto.Clone(in).(*abiv1.InputRequest))
 	}
 	return v
 }
@@ -130,8 +137,8 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 			pid = p.GetId()
 		}
 		if i := rec.partIndex(pid); i >= 0 {
-			if p := rec.inFly[i].GetText(); p != "" || evt.Delta != "" {
-				rec.inFly[i].Payload = &abiv1.Part_Text{Text: p + evt.Delta}
+			if t := rec.inFly[i].GetText(); t != "" || evt.Delta != "" {
+				rec.inFly[i].Payload = &abiv1.Part_Text{Text: t + evt.Delta}
 			}
 		} else if pid != "" {
 			rec.inFly = append(rec.inFly, &abiv1.Part{Id: pid, Type: abiv1.PartType_PART_TYPE_TEXT,
@@ -145,7 +152,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if in := evt.GetInput(); in != nil && in.GetId() != "" {
-			rec.pending[in.GetId()] = in
+			rec.pending[in.GetId()] = proto.Clone(in).(*abiv1.InputRequest)
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED:
 		if in := evt.GetInput(); in != nil {
@@ -161,15 +168,21 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 	}
 }
 
+// upsertPartLocked stores a PRIVATE clone: the event object is also
+// referenced by the fanout frame (serialized outside the lock by the
+// Events handler) — retaining the shared pointer would race later
+// mutations (PART_DELTA) against in-flight sends. Caught by the S1 shadow
+// harness under -race.
 func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 	if p == nil || p.GetId() == "" {
 		return
 	}
+	clone := proto.Clone(p).(*abiv1.Part)
 	if i := rec.partIndex(p.GetId()); i >= 0 {
-		rec.inFly[i] = p
+		rec.inFly[i] = clone
 		return
 	}
-	rec.inFly = append(rec.inFly, p)
+	rec.inFly = append(rec.inFly, clone)
 }
 
 // seedLocked rebuilds one session's record from store truth.

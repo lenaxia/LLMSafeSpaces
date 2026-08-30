@@ -145,6 +145,50 @@ func (c *Client) syncInner(ctx context.Context, idle time.Duration) (*SessionSta
 	}
 }
 
+// firstFrameBudget bounds how long a (re)connect may take to deliver its
+// snapshot frame — the handler sends it immediately, so a silent window
+// means a wedged connection; the client drops it and reconnects instead of
+// stalling the fold forever.
+const firstFrameBudget = 2 * time.Second
+
+type frameResult struct {
+	f   *abiv1.StreamFrame
+	ok  bool
+	err error
+}
+
+// receiveOne reads one frame with a first-frame budget; budget=false for
+// steady-state frames (idle pods legitimately emit nothing for minutes).
+func receiveOne(ctx context.Context, s *connect.ServerStreamForClient[abiv1.StreamFrame], budget bool) frameResult {
+	recv := make(chan frameResult, 1)
+	go func() {
+		if s.Receive() {
+			recv <- frameResult{f: s.Msg(), ok: true}
+		} else {
+			recv <- frameResult{ok: false}
+		}
+	}()
+	if !budget {
+		select {
+		case r := <-recv:
+			return r
+		case <-ctx.Done():
+			return frameResult{err: ctx.Err()}
+		}
+	}
+	timer := time.NewTimer(firstFrameBudget)
+	defer timer.Stop()
+	select {
+	case r := <-recv:
+		return r
+	case <-timer.C:
+		_ = s.Close()
+		return frameResult{err: errText("no snapshot frame within budget")}
+	case <-ctx.Done():
+		return frameResult{err: ctx.Err()}
+	}
+}
+
 // Stream keeps the folded state current: it applies the snapshot, then live
 // events, invoking onUpdate after each applied frame. On
 // projection.reseeded (mandatory re-snapshot) it transparently reconnects.
@@ -159,28 +203,62 @@ func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState)) error
 			return err
 		}
 		st := newState()
-		for s.Receive() {
-			f := s.Msg()
-			seeded := false
-			if snap := f.GetSnapshot(); snap != nil && st.Seq == 0 {
-				applySnapshot(st, snap)
-				seeded = true
-			}
-			if !seeded {
-				if r := f.GetReseeded(); r != nil {
-					// Mandatory re-snapshot (I3): drop the connection and
-					// resync from a fresh stamped snapshot.
-					_ = s.Close()
-					break
+		seeded := false
+		wedged := false
+		receiveDone := false
+		for {
+			receiveDone = false // per-call: only THIS call's completion counts
+			r := receiveOne(ctx, s, !seeded)
+			if r.err != nil {
+				if ctx.Err() == nil {
+					wedged = true // budget/protocol stall: reconnect with pause
 				}
-				applyEvent(st, f.GetEvent())
+				break
 			}
+			// The receiver goroutine completed (buffered result): the
+			// stream is idle now — s.Err() is safe. Never concurrent with
+			// an in-flight Receive (connect streams are not goroutine-safe).
+			receiveDone = true
+			if !r.ok {
+				break
+			}
+			f := r.f
+			if !seeded {
+				if snap := f.GetSnapshot(); snap != nil {
+					applySnapshot(st, snap)
+					seeded = true
+					if onUpdate != nil {
+						onUpdate(st.clone())
+					}
+					continue
+				}
+				// A non-snapshot first frame violates the protocol; treat
+				// as wedged and reconnect.
+				_ = s.Close()
+				break
+			}
+			if rr := f.GetReseeded(); rr != nil {
+				// Mandatory re-snapshot (I3): drop the connection and
+				// resync from a fresh stamped snapshot.
+				_ = s.Close()
+				break
+			}
+			applyEvent(st, f.GetEvent())
 			if onUpdate != nil {
 				onUpdate(st.clone())
 			}
 		}
-		if err := s.Err(); err != nil && ctx.Err() == nil {
-			return err
+		if receiveDone {
+			if err := s.Err(); err != nil && ctx.Err() == nil {
+				return err
+			}
+		}
+		if wedged {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -246,6 +324,12 @@ func applyEvent(st *SessionState, seqed *abiv1.SequencedEvent) {
 	switch evt.GetType() {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
 		snap.Status = evt.GetStatus()
+		if evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+			// Turn over: the server projection clears in-flight parts on
+			// idle — the fold must mirror it or reconnects show stale
+			// parts.
+			snap.InFlightParts = nil
+		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if in := evt.GetInput(); in != nil {
 			snap.PendingInputs = append(snap.PendingInputs, in)
