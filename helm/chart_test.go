@@ -53,10 +53,29 @@ func chartDir(t *testing.T) string {
 	return filepath.Dir(thisFile)
 }
 
+// testDeliveryPins satisfies the design 0053 §4.5 mandatory-pin render
+// gate for tests that exercise something OTHER than the gate itself.
+// The digests are synthetic — render sanity only, never deployed.
+const testDeliveryPins = `
+controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  opencodeDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+`
+
 func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	// Design 0053 §4.5: both delivery pins are mandatory — an empty
+	// image fails the render. Tests that don't pass their own pins get
+	// synthetic ones so they can exercise everything else.
+	if !strings.Contains(valuesYAML, "Delivery:") &&
+		!strings.Contains(valuesYAML, "agentdDelivery") &&
+		!strings.Contains(valuesYAML, "opencodeDelivery") {
+		valuesYAML = testDeliveryPins + valuesYAML
 	}
 
 	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns"}

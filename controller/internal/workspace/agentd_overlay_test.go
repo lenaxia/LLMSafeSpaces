@@ -327,7 +327,7 @@ func TestAgentdValidateConfig(t *testing.T) {
 		arm64   string
 		wantErr string
 	}{
-		{"all empty (legacy)", "", "", "", ""},
+		{"all empty (post-S3: mandatory)", "", "", "", "mandatory"},
 		{"fully configured", testAgentdImage, testAgentdSHAAMD64, testAgentdSHAARM64, ""},
 		// Renovate-friendly: image-only is the NORMAL pin form now —
 		// hashes resolve from index annotations at startup.

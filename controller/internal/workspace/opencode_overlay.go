@@ -112,11 +112,11 @@ func ValidateOpencodeDelivery(image, amd64, arm64 string) error {
 // contract as the agentd guard at controller startup: image
 // (digest-pinned) + both per-arch binary hashes, or nothing at all.
 func validateOpencodeDeliveryConfig(image, amd64, arm64 string) error {
-	if image == "" && amd64 == "" && arm64 == "" {
-		return nil
-	}
+	// Design 0053 §4.5: mandatory pin, no baked fallback. Empty image
+	// is a fatal configuration error, not the opt-in no-op it was in
+	// the S1 interim.
 	if image == "" {
-		return fmt.Errorf("opencode delivery: --opencode-image is required when binary sha256 flags are set")
+		return fmt.Errorf("opencode delivery: --opencode-image is mandatory (design 0053 §4.5 — the base image carries no opencode)")
 	}
 	if !digestRe.MatchString(image) {
 		return fmt.Errorf("opencode delivery: --opencode-image must be digest-pinned (@sha256:<64 hex>), got %q — a floating tag defeats both reproducibility and the supervisor verify contract", image)

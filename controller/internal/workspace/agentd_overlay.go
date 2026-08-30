@@ -117,11 +117,11 @@ func ValidateAgentdDelivery(image, amd64, arm64 string) error {
 // controller startup: image (digest-pinned) + both per-arch binary hashes,
 // or nothing at all (legacy baked-in mode).
 func validateAgentdDeliveryConfig(image, amd64, arm64 string) error {
-	if image == "" && amd64 == "" && arm64 == "" {
-		return nil
-	}
+	// Design 0053 §4.5: mandatory pin, no baked fallback. Empty image
+	// is a fatal configuration error, not the opt-in no-op it was in
+	// the S1 interim.
 	if image == "" {
-		return fmt.Errorf("agentd delivery: --agentd-image is required when binary sha256 flags are set")
+		return fmt.Errorf("agentd delivery: --agentd-image is mandatory (design 0053 §4.5 — the base image carries no platform binaries)")
 	}
 	if !digestRe.MatchString(image) {
 		return fmt.Errorf("agentd delivery: --agentd-image must be digest-pinned (@sha256:<64 hex>), got %q — a floating tag defeats both reproducibility and the entrypoint verify contract", image)
