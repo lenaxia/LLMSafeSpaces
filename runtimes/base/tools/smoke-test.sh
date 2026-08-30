@@ -47,9 +47,10 @@ mise ls 2>/dev/null || echo "(mise ls unavailable)"
 echo
 echo "=== smoke checks ==="
 
-# Internal binaries (built into the image)
-verify redact           which redact
-verify workspace-agentd which workspace-agentd
+# Design 0053 §4.3 (S3): OS-content assertions only. The platform-
+# contract asserts (redact, workspace-agentd, and the opencode pipe)
+# moved to the overlay artifacts' own CI — each artifact validates
+# itself; the base validates the dev-OS.
 
 # Core shell + dev tools (apt)
 verify bash    which bash
@@ -78,7 +79,6 @@ verify mysql which mysql
 verify aws   which aws
 
 # Agent runtime
-verify opencode which opencode
 verify mise     which mise
 
 # GitHub CLI

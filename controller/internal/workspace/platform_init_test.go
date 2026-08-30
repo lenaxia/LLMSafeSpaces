@@ -292,4 +292,3 @@ func TestPlatformInit_Step2_SupervisorCommandBypass(t *testing.T) {
 	// Mode marker retained (identity; markers read it).
 	require.NotNil(t, sidecarEnvVar(main, "AGENTD_SIDECAR_MODE"))
 }
-

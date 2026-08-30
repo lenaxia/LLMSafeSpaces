@@ -1,29 +1,4 @@
 ARG TARGETARCH
-
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS agentd-builder
-
-ARG TARGETARCH
-
-WORKDIR /src
-
-ARG GOPROXY=https://proxy.golang.org,direct
-ENV GOPROXY=${GOPROXY}
-
-ARG VERSION=unknown
-ARG COMMIT_SHA=unknown
-ARG BUILD_TIME=unknown
-
-COPY go.mod go.sum ./
-RUN go mod download
-COPY cmd/ ./cmd/
-COPY pkg/ ./pkg/
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -trimpath \
-        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION} \
-                  -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${COMMIT_SHA} \
-                  -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=${BUILD_TIME}" \
-        -o /out/workspace-agentd ./cmd/workspace-agentd
-
 FROM debian:bookworm-slim
 
 ARG TARGETARCH
@@ -122,34 +97,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get upgrade -y sqlite3 libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install opencode from upstream releases.
-#
-# Source: https://github.com/anomalyco/opencode/releases
-# Asset naming: opencode-linux-{x64,arm64}.tar.gz
-#   (Note: x64, NOT amd64, despite Docker's TARGETARCH using amd64.)
-#
-# SECURITY NOTE: Upstream does not publish .sha256 or signature files for
-# release assets. Transport integrity relies on TLS to github.com plus curl's
-# --fail flag rejecting non-2xx responses. For SLSA-grade verification, the
-# correct path is `cosign verify-blob` against the Sigstore OIDC signature,
-# but anomalyco/opencode does not currently publish Sigstore attestations.
-# Track upstream: https://github.com/anomalyco/opencode/issues/?q=cosign
-#
-# When upstream adds .sha256 or Sigstore signatures, restore verification here.
-RUN set -eux; \
-    TARGETARCH="${TARGETARCH:-$(dpkg --print-architecture)}"; \
-    case "${TARGETARCH}" in \
-        amd64) OC_ARCH=x64 ;; \
-        arm64) OC_ARCH=arm64 ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    curl --fail --show-error --location \
-        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OC_ARCH}.tar.gz" \
-        -o /tmp/opencode.tar.gz; \
-    tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin/ opencode; \
-    chmod +x /usr/local/bin/opencode; \
-    rm /tmp/opencode.tar.gz; \
-    \
 # Install GitHub CLI (gh) from upstream releases.
 # Source: https://github.com/cli/cli/releases
 # Asset naming: gh_{version}_linux_{arch}.tar.gz  (amd64/arm64 — matches Docker TARGETARCH).
@@ -247,15 +194,12 @@ RUN set -eux; \
     rm -rf /tmp/aws /tmp/awscliv2.zip /tmp/awscliv2.zip.sig /tmp/aws-cli-team.pgp "${GNUPGHOME}"; \
     aws --version
 
-# Design 0053 S2: redact is an agentd subcommand — the wrapper (not a
-# second binary) keeps /usr/local/bin/redact on PATH until the S3 strip.
-COPY --chmod=755 runtimes/base/tools/redact-wrapper.sh /usr/local/bin/redact
-COPY --from=agentd-builder --chmod=755 /out/workspace-agentd /usr/local/bin/workspace-agentd
-
-COPY --chmod=755 runtimes/base/tools/entrypoints/entrypoint-common.sh  /usr/local/bin/entrypoint-common.sh
-COPY --chmod=755 runtimes/base/tools/entrypoints/entrypoint-opencode.sh /usr/local/bin/entrypoint-opencode.sh
-
-COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
+# Design 0053 §4.3 (S3): the base is the OS. No platform-contract
+# artifacts are baked — agentd, redact (an agentd subcommand), the
+# entrypoints, and opencode arrive at pod time via the two digest-pinned
+# overlay volumes (controller.agentdDelivery / opencodeDelivery).
+# The build-time smoke test below stays: OS-content assertions only
+# (design §4.3 — platform-contract assertions moved to the artifacts CI).COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 
 # --- Git credential consumption (#1087) ---
 #
@@ -282,14 +226,6 @@ COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 # /etc/gitconfig is defeated by the setup-git reset (then env serves).
 # Both point at the absolute PVC-symlink path, immune to $HOME drift.
 RUN printf '[credential]\n\thelper = store --file=/home/sandbox/.git-credentials\n' > /etc/gitconfig
-# DS-0031 false positive: GIT_CONFIG_KEY_0's VALUE is the literal public
-# git config key name "credential.helper", not a secret — the *_KEY_*
-# name is mandated by git's documented env-config interface
-# (GIT_CONFIG_COUNT/KEY_n/VALUE_n, git >= 2.31).
-# trivy:ignore:DS-0031
-ENV GIT_CONFIG_COUNT=1 \
-    GIT_CONFIG_KEY_0=credential.helper \
-    GIT_CONFIG_VALUE_0="store --file=/home/sandbox/.git-credentials"
 
 # Pre-install runtimes into the system mise data dir so they are baked into
 # the image layer and always available regardless of PVC state.
@@ -331,16 +267,15 @@ RUN mkdir -p /etc/mise \
     && printf '[tools]\npython = "3.12.13"\nnode = "lts"\nrust = "stable"\ngo = "1.26.6"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml
 
 # Rebuild shims into the SYSTEM data dir (/usr/local/share/mise/shims):
-# baked into the image layer, on the runtime PATH (ENV below), and —
-# unlike MISE_DATA_DIR under /workspace — NEVER shadowed by the PVC
-# mount. The install-time `mise reshim` above ran before MISE_DATA_DIR
-# was set, i.e. as root with the default data dir (~root/.local/share/
-# mise/shims): dead weight, which is why both runtime shims dirs were
-# historically empty and toolchains never resolved in non-interactive
-# shells. Runtime user installs are re-shimmed to $MISE_DATA_DIR/shims
-# at boot (entrypoint-common.sh legacy mode; ensureMiseShims sidecar
-# mode) — PVC tools win via PATH precedence, this dir is the floor.
-# Smoke test runs with the system shims on PATH so `command -v`
+# baked into the image layer, on the runtime PATH (controller-injected pod
+# env post-S3), and — unlike MISE_DATA_DIR under /workspace — NEVER
+# shadowed by the PVC mount. The install-time `mise reshim` above ran as
+# root with the default data dir (~root/.local/share/mise/shims): dead
+# weight, which is why both runtime shims dirs were historically empty
+# and toolchains never resolved in non-interactive shells. Runtime user
+# installs are re-shimmed to $MISE_DATA_DIR/shims at boot (ensureMiseShims
+# in the supervisor) — PVC tools win via PATH precedence, this dir is the
+# floor. Smoke test runs with the system shims on PATH so `command -v`
 # verifies real resolution, not just `mise which` discoverability.
 RUN MISE_DATA_DIR=/usr/local/share/mise mise reshim \
     && PATH="/usr/local/share/mise/shims:$PATH" /usr/local/bin/smoke-test.sh
@@ -352,13 +287,10 @@ RUN MISE_DATA_DIR=/usr/local/share/mise mise reshim \
 #
 # Package manager homes are redirected to the PVC for the same reason.
 # The PATH additions expose binaries from those homes immediately.
-ENV MISE_DATA_DIR=/workspace/.local/share/mise \
-    CARGO_HOME=/workspace/.local/share/cargo \
-    GEM_HOME=/workspace/.local/share/gem \
-    GOPATH=/workspace/.local/share/go \
-    NPM_CONFIG_PREFIX=/workspace/.local \
-    PYTHONUSERBASE=/workspace/.local \
-    PATH=/workspace/.local/bin:/workspace/.local/share/mise/shims:/workspace/.local/share/go/bin:/workspace/.local/share/cargo/bin:/usr/local/share/mise/shims:$PATH
+# Design 0053 §4.3 (S3): the runtime ENV block (MISE_DATA_DIR, cargo/
+# gem/go/npm/python homes, PATH composition) moved to controller-injected
+# pod env (controller/internal/workspace/platform_env.go) — it encodes
+# PVC mount topology (platform contract), not OS content.
 
 RUN useradd -u 1000 -m -s /bin/bash sandbox
 
@@ -366,4 +298,4 @@ RUN useradd -u 1000 -m -s /bin/bash sandbox
 USER sandbox
 WORKDIR /workspace
 
-ENTRYPOINT ["/usr/local/bin/entrypoint-opencode.sh"]
+

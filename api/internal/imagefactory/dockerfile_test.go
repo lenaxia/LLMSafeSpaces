@@ -42,7 +42,12 @@ func TestRenderDockerfile_Happy_Empty(t *testing.T) {
 	mustContain(t, out, "FROM ghcr.io/acme/base:0.20.1")
 	mustContain(t, out, "USER sandbox")
 	mustContain(t, out, "WORKDIR /workspace")
-	mustEndWith(t, out, `ENTRYPOINT ["/usr/local/bin/entrypoint-opencode.sh"]`)
+	mustEndWith(t, out, "WORKDIR /workspace")
+	// Design 0053 §4.4 (S4): no ENTRYPOINT — the pod spec's overlay
+	// supervisor command owns the process.
+	if strings.Contains(out, "ENTRYPOINT") {
+		t.Errorf("render must not stamp an ENTRYPOINT (design 0053 S4):\n%s", out)
+	}
 	// No apt/mise/file blocks when none provided.
 	if strings.Contains(out, "apt-get") {
 		t.Errorf("empty resolved must not emit apt block:\n%s", out)

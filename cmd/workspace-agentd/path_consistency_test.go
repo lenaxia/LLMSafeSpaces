@@ -5,12 +5,10 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
@@ -117,32 +115,6 @@ func TestPathResolution_ToPathsPreservesAllFields(t *testing.T) {
 	assert.Equal(t, cfg.agentConfigPath, paths.AgentConfigPath)
 	assert.Equal(t, cfg.secretsEnvPath, paths.SecretsEnvPath)
 	assert.Equal(t, cfg.gitCredsPath, paths.GitCredsPath)
-}
-
-// TestPathResolution_EntrypointMatchesConstants verifies that the
-// entrypoint-opencode.sh script references the same paths as the agentd
-// constants. If someone updates the constant but not the script (or vice
-// versa), opencode reads the wrong file.
-func TestPathResolution_EntrypointMatchesConstants(t *testing.T) {
-	scriptBytes, err := os.ReadFile(filepath.Join("..", "..", "runtimes", "base", "tools", "entrypoints", "entrypoint-opencode.sh"))
-	require.NoError(t, err, "entrypoint-opencode.sh must be readable")
-	script := string(scriptBytes)
-
-	// OPENCODE_CONFIG must default to AgentConfigPath while honoring a
-	// pre-set value (US-4b: the sidecar-mode controller override points
-	// the workspace container at /agentd-config/agent-config.json).
-	require.Contains(t, script, "OPENCODE_CONFIG=\"${OPENCODE_CONFIG:-"+agentd.AgentConfigPath+"}\"",
-		"entrypoint OPENCODE_CONFIG must default to agentd.AgentConfigPath (%s) without clobbering a pre-set value", agentd.AgentConfigPath)
-
-	// The source path for secrets-env must match SecretsEnvPath.
-	require.Contains(t, script, agentd.SecretsEnvPath,
-		"entrypoint must reference agentd.SecretsEnvPath (%s) for source", agentd.SecretsEnvPath)
-
-	// Must NOT reference old PVC-backed paths.
-	require.NotContains(t, script, "/tmp/agent-config.json",
-		"entrypoint must not reference old PVC path /tmp/agent-config.json")
-	require.NotContains(t, script, "/tmp/secrets-env",
-		"entrypoint must not reference old PVC path /tmp/secrets-env")
 }
 
 // TestPathResolution_EnricherCacheStaysOnPVC verifies the enricher cache

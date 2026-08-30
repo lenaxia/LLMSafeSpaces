@@ -362,4 +362,3 @@ func TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersistedOnResume(t *testing.T
 	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
 		"must be OnRootMismatch on the resume path — resume was the observed incident path")
 }
-

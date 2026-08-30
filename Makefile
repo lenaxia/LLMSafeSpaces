@@ -132,17 +132,24 @@ helm-install-dry-run:
 helm-package:
 	$(HELM) package $(CHART_DIR) -d dist/
 
-# helm-render: lint + template the chart against the bundled defaults
-# (values.yaml). Catches:
+# helm-render: lint + template the chart. Catches:
 #   - syntax errors / missing template files
 #   - undefined values referenced by templates
 #   - invalid Helm chart structure (missing Chart.yaml, etc.)
+# Design 0053 §4.5: both delivery pins are mandatory at render — synthetic
+# digests are injected so bundled-defaults rendering stays a syntax check,
+# NOT a pin check (chart tests own the mandatory-pin gate).
 # Output is discarded; we only care about the exit code. Pre-commit
 # and CI use this; for debugging use helm-template or
 # helm-template-debug to see the rendered manifests.
+SYNTHETIC_AGENTD_DIGEST ?= sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+SYNTHETIC_OPENCODE_DIGEST ?= sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
 helm-render:
 	$(HELM) lint $(CHART_DIR)
-	$(HELM) template $(RELEASE_NAME) $(CHART_DIR) -n $(RELEASE_NS) >/dev/null
+	$(HELM) template $(RELEASE_NAME) $(CHART_DIR) -n $(RELEASE_NS) \
+		--set controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@$(SYNTHETIC_AGENTD_DIGEST) \
+		--set controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@$(SYNTHETIC_OPENCODE_DIGEST) \
+		>/dev/null
 
 # helm-chart-test: run the Go-based chart rendering tests (chart_test.go).
 # These tests render manifests via `helm template` and assert structural

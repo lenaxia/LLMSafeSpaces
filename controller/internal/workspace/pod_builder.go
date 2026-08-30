@@ -616,6 +616,19 @@ func buildNodeSelector(workspace *v1.Workspace) map[string]string {
 	}
 }
 
+// mainContainerName is the workspace (opencode) container's name.
+const mainContainerName = "workspace"
+
+// containerIndexByName returns the index of the named container, or -1.
+func containerIndexByName(containers []corev1.Container, name string) int {
+	for i := range containers {
+		if containers[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 // buildFreeModelsVolume returns the volume spec for the cluster-wide
 // free-models ConfigMap (2026-06-23 cold-start optimization, item #1a).
 // The credential-setup init container mounts it at /mnt/freemodels and

@@ -440,4 +440,3 @@ func TestOpencodeVerify_LegacyPodExit83NotMisread(t *testing.T) {
 	require.Equal(t, before, after, "legacy-pod exit-83 must not fire the verify-failure metric")
 	require.Nil(t, conditionOfType(ws, v1.WorkspaceConditionOpencodeVerified))
 }
-

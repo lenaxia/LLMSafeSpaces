@@ -1,7 +1,7 @@
 name: opencode-version-bump
 
 # Automated opencode release tracking. The runtime pin
-# (runtimes/base/Dockerfile ARG OPENCODE_VERSION) is a load-bearing
+# (runtimes/opencode/Dockerfile ARG OPENCODE_VERSION) is a load-bearing
 # contract surface — every parser, taxonomy table, and metering decode
 # is pinned to fixtures captured against it (testdata/REFRESH.md).
 # Upstream (anomalyco/opencode) releases at a pace manual tracking
@@ -9,7 +9,7 @@ name: opencode-version-bump
 # ready-to-validate PR instead of a quarterly archaeology dig.
 #
 # What it does (weekly + on demand):
-#   1. Reads the pinned version from runtimes/base/Dockerfile.
+#   1. Reads the pinned version from runtimes/opencode/Dockerfile.
 #   2. Queries the latest anomalyco/opencode release.
 #   3. Refuses to bump into a KNOWN-BAD window (see SKIP_VERSIONS —
 #      e.g. v1.18.16–.18 break v1-format session databases, upstream
@@ -59,7 +59,7 @@ jobs:
           EXPLICIT: ${{ inputs.target_version }}
         run: |
           set -euo pipefail
-          PINNED="$(grep -oP '^ARG OPENCODE_VERSION=\K[0-9.]+' runtimes/base/Dockerfile)"
+          PINNED="$(grep -oP '^ARG OPENCODE_VERSION=\K[0-9.]+' runtimes/opencode/Dockerfile)"
           echo "pinned=$PINNED" >> "$GITHUB_OUTPUT"
 
           if [ -n "$EXPLICIT" ]; then
@@ -109,7 +109,7 @@ jobs:
           TARGET: ${{ steps.versions.outputs.target }}
         run: |
           set -euo pipefail
-          sed -i "s/^ARG OPENCODE_VERSION=.*/ARG OPENCODE_VERSION=${TARGET}/" runtimes/base/Dockerfile
+          sed -i "s/^ARG OPENCODE_VERSION=.*/ARG OPENCODE_VERSION=${TARGET}/" runtimes/opencode/Dockerfile
           sed -i "s/OPENCODE_VERSION:-${PINNED}/OPENCODE_VERSION:-${TARGET}/" local/bootstrap.sh
           sed -i "s#(default: ${PINNED})#(default: ${TARGET})#" local/bootstrap.sh
           git diff --stat
@@ -154,7 +154,7 @@ jobs:
           git config user.name "opencode-bump-bot"
           git config user.email "actions@github.com"
           git checkout -b "$BRANCH"
-          git add runtimes/base/Dockerfile local/bootstrap.sh
+          git add runtimes/opencode/Dockerfile local/bootstrap.sh
           git commit -m "chore(runtime): opencode ${PINNED} → ${TARGET} (automated bump)"
           git push origin "$BRANCH"
           if gh pr view "$BRANCH" >/dev/null 2>&1; then

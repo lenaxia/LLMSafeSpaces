@@ -47,6 +47,7 @@ env:
   RELAY_ROUTER_IMAGE: lenaxia/llmsafespaces/relay-router
   RELAY_PROXY_IMAGE: lenaxia/llmsafespaces/relay-proxy
   AGENTD_IMAGE: lenaxia/llmsafespaces/agentd
+  OPENCODE_IMAGE: lenaxia/llmsafespaces/opencode
 
 jobs:
   # Gate: refuse to release a tag whose CHANGELOG section is missing.
@@ -809,6 +810,165 @@ jobs:
               image: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.create.outputs.digest }}
           EOF
 
+  # #863 / release-integrity: standalone agentd image, ported from the
+  # tag-CI workflow so that RELEASE SUCCESS == ALL ARTIFACTS PUBLISHED.
+  # Before this, release.yml went green while agentd:<version> was never
+  # pushed (the tag CI built it — and when that run failed on a test
+  # flake, v0.19.1 shipped with the API/controller on 0.19.1 and agentd
+  # absent; discovered via a ghcr 404 during the ops bump).
+  build-opencode:
+    name: Build Opencode (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: runtimes/opencode/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=opencode-${{ matrix.platform }}
+          cache-to: type=gha,scope=opencode-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export binary sha256
+        run: |
+          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
+          tag="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${{ github.sha }}-${arch}"
+          src="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools create -t "$tag" "$src"
+          docker pull --platform ${{ matrix.platform }} "$tag"
+          cid="opencode-extract-$GITHUB_RUN_ID"
+          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" \
+            /usr/local/bin/opencode >/dev/null
+          docker cp "$cid":/usr/local/bin/opencode /tmp/opencode-bin
+          docker rm -f "$cid" >/dev/null
+          sha256sum /tmp/opencode-bin | awk '{print $1}' > "/tmp/opencode-binary-${arch}.sha256"
+          echo "arch=$arch binary-sha256=$(cat /tmp/opencode-binary-$arch.sha256)"
+
+      - name: Upload binary sha256
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencode-binary-sha256-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          path: /tmp/opencode-binary-*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencode-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+
+  merge-opencode:
+    name: Merge Opencode Manifest
+    needs: [build-opencode, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: opencode-digests-*
+          merge-multiple: true
+
+      - name: Download binary sha256s
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/sha
+          pattern: opencode-binary-sha256-*
+          merge-multiple: true
+
+      - name: Create manifest list and push
+        id: create
+        working-directory: /tmp/digests
+        run: |
+          amd64="$(cat /tmp/sha/opencode-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/opencode-binary-arm64.sha256)"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            --annotation "index:dev.llmsafespaces/opencode.sha256-amd64=${amd64}" \
+            --annotation "index:dev.llmsafespaces/opencode.sha256-arm64=${arm64}" \
+            --annotation "index:dev.llmsafespaces/version=${{ needs.prepare.outputs.version }}" \
+            $(printf '${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@sha256:%s ' *)
+          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${GITHUB_SHA:0:7} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Print Helm values block for opencodeDelivery
+        run: |
+          echo "::notice::opencodeDelivery values for this release:"
+          cat <<EOF
+          controller:
+            opencodeDelivery:
+              image: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@${{ steps.create.outputs.digest }}
+          EOF
+
   build-relay-router:
     name: Build Relay Router (${{ matrix.platform }})
     needs: [verify-changelog, prepare, test, test-full, frontend-test]
@@ -1024,7 +1184,7 @@ jobs:
   #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
   sign-images:
     name: Sign images (cosign keyless)
-    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -1050,13 +1210,14 @@ jobs:
         # pass them as flags (those are for `cosign verify`, not `cosign sign`).
         # The signature is recorded in Rekor automatically.
         run: |
-          for img in api controller base frontend agentd relay-router relay-proxy; do
+          for img in api controller base frontend agentd opencode relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               base) image_ref="${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
+              opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1070,7 +1231,7 @@ jobs:
   # (catches vulns in base images, installed packages, etc.).
   scan-images:
     name: Scan images (Trivy)
-    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -1110,13 +1271,14 @@ jobs:
         #   - Wait for Debian bookworm's next point release.
         run: |
           fail=0
-          for img in api controller base frontend agentd relay-router relay-proxy; do
+          for img in api controller base frontend agentd opencode relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               base) image_ref="${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
+              opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1186,7 +1348,7 @@ jobs:
   # grype, or similar.
   generate-sbom:
     name: Generate SBOM
-    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-relay-router, merge-relay-proxy]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1210,13 +1372,14 @@ jobs:
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
           mkdir -p sbom-out
-          for img in api controller base frontend agentd relay-router relay-proxy; do
+          for img in api controller base frontend agentd opencode relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
               controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
               base) image_ref="${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}:${VERSION}" ;;
               frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
               agentd) image_ref="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:${VERSION}" ;;
+              opencode) image_ref="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:${VERSION}" ;;
               relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
@@ -1276,7 +1439,7 @@ jobs:
   # Create the GitHub Release with notes from CHANGELOG.md.
   create-release:
     name: Create GitHub Release
-    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-relay-router, merge-relay-proxy, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-agentd, merge-opencode, merge-relay-router, merge-relay-proxy, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -1324,6 +1487,7 @@ jobs:
           | Runtime base | \`ghcr.io/lenaxia/llmsafespaces/base:${VERSION}\` |
           | Frontend | \`ghcr.io/lenaxia/llmsafespaces/frontend:${VERSION}\` |
           | Agentd | \`ghcr.io/lenaxia/llmsafespaces/agentd:${VERSION}\` |
+          | Opencode | \`ghcr.io/lenaxia/llmsafespaces/opencode:${VERSION}\` |
           | Relay router | \`ghcr.io/lenaxia/llmsafespaces/relay-router:${VERSION}\` |
           | Relay proxy | \`ghcr.io/lenaxia/llmsafespaces/relay-proxy:${VERSION}\` |
 
@@ -1426,3 +1590,4 @@ jobs:
         run: cd sdks/typescript && npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+

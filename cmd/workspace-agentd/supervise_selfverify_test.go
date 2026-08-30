@@ -178,3 +178,44 @@ func writeAgentdTestScript(t *testing.T, dir, name, body string) {
 	p := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755))
 }
+
+// TestSupervise_SelfVerifyMismatch_Exit81: design 0053 S3 — the
+// single-container pod execs the overlay binary with `--supervise`
+// directly (the entrypoint that used to verify is deleted). The
+// supervisor path must self-verify with the same 81 contract as
+// supervise-opencode BEFORE any work (socket, children, markers).
+func TestSupervise_SelfVerifyMismatch_Exit81(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess test in -short mode")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/exe self-hash is linux-only")
+	}
+
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+	emptyHash := sha256Hex(nil)
+
+	cmd := exec.Command(bin, "--supervise")
+	cmd.Env = append(filteredEnviron(overlayEnvKeys()...),
+		"AGENTD_IMAGE_VOLUME=1",
+		"LLMSAFESPACES_AGENTD_SHA256_AMD64="+emptyHash,
+		"LLMSAFESPACES_AGENTD_SHA256_ARM64="+emptyHash,
+	)
+	stderr := filepath.Join(dir, "stderr")
+	f, err := os.Create(stderr)
+	require.NoError(t, err)
+	cmd.Stderr = f
+	cmd.Stdout = f
+
+	runErr := cmd.Run()
+	require.Error(t, runErr, "verify failure must exit non-zero")
+	exitErr, ok := runErr.(*exec.ExitError)
+	require.True(t, ok, "got %v", runErr)
+	require.Equal(t, 81, exitErr.ExitCode(), "--supervise keeps the bash 81 contract")
+	_ = f.Close()
+
+	out, err := os.ReadFile(stderr)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "AgentdVerificationFailed: expected=")
+}
