@@ -46,7 +46,7 @@ func (p *fixtureParser) Parse(raw []byte) (*abiv1.Event, bool, error) {
 // the context is canceled (M3.1 / the 2026-08-15 starvation shape).
 type hangingStore struct{}
 
-func (hangingStore) SessionStatuses(ctx context.Context) (map[string]abiv1.SessionStatus, error) {
+func (hangingStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -56,13 +56,13 @@ type mapStore struct {
 	err error
 }
 
-func (s *mapStore) SessionStatuses(ctx context.Context) (map[string]abiv1.SessionStatus, error) {
+func (s *mapStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
-	out := make(map[string]abiv1.SessionStatus, len(s.m))
+	out := make(map[string]sessionstate.SessionSeed, len(s.m))
 	for k, v := range s.m {
-		out[k] = v
+		out[k] = sessionstate.SessionSeed{Status: v}
 	}
 	return out, nil
 }
@@ -109,7 +109,7 @@ func TestIngestFuzzRecover(t *testing.T) {
 	if st.Seq == 0 {
 		t.Fatalf("no seq assigned after 10k fuzz iterations + one good event")
 	}
-	if got := st.Statuses["s1"]; got != abiv1.SessionStatus_SESSION_STATUS_BUSY {
+	if got := st.Sessions["s1"].Status; got != abiv1.SessionStatus_SESSION_STATUS_BUSY {
 		t.Errorf("good event after fuzz storm not applied: s1=%v", got)
 	}
 }
@@ -224,7 +224,7 @@ func TestStampAtomicityRace(t *testing.T) {
 			if next.Seq < st.Seq {
 				violated.Store(true)
 			}
-			if st.Seq > 0 && len(st.Statuses) == 0 {
+			if st.Seq > 0 && len(st.Sessions) == 0 {
 				violated.Store(true)
 			}
 		}
@@ -331,8 +331,8 @@ func TestReseedUnderActiveStreaming(t *testing.T) {
 	}
 
 	st := a.State()
-	if st.Statuses["s1"] != abiv1.SessionStatus_SESSION_STATUS_IDLE {
-		t.Errorf("projection does not reflect store truth after reseed: %+v", st.Statuses)
+	if st.Sessions["s1"].Status != abiv1.SessionStatus_SESSION_STATUS_IDLE {
+		t.Errorf("projection does not reflect store truth after reseed: %+v", st.Sessions["s1"])
 	}
 }
 
@@ -366,7 +366,7 @@ func TestReseedConvergesToStoreTruth(t *testing.T) {
 	}
 	st := a2.State()
 	for id, want := range store.m {
-		if got := st.Statuses[id]; got != want {
+		if got := st.Sessions[id].Status; got != want {
 			t.Errorf("session %s = %v, want store truth %v — I4 store-is-truth broken", id, got, want)
 		}
 	}
@@ -382,7 +382,7 @@ func TestReseedStoreFailureKeepsServing(t *testing.T) {
 	if err := a.Reseed(context.Background(), sessionstate.ReseedReasonBoot); !errors.Is(err, sessionstate.ErrNoStore) {
 		t.Fatalf("reseed without store wiring = %v, want ErrNoStore", err)
 	}
-	if got := a.State().Statuses["s1"]; got != abiv1.SessionStatus_SESSION_STATUS_BUSY {
+	if got := a.State().Sessions["s1"].Status; got != abiv1.SessionStatus_SESSION_STATUS_BUSY {
 		t.Errorf("failed reseed corrupted projection: s1=%v", got)
 	}
 }
@@ -392,10 +392,10 @@ type slowStore struct {
 	delay time.Duration
 }
 
-func (s *slowStore) SessionStatuses(ctx context.Context) (map[string]abiv1.SessionStatus, error) {
+func (s *slowStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	select {
 	case <-time.After(s.delay):
-		return s.inner.SessionStatuses(ctx)
+		return s.inner.SessionStates(ctx)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

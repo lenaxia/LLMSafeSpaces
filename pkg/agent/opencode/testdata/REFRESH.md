@@ -158,3 +158,19 @@ Alert semantics and edge cases:
   bucket under `unknown`, with a single class-level "malformed agent
   event" warn. Envelope-shape drift is therefore as visible as
   type-name drift.
+
+## ABI translation goldens (Epic 69 US-69.3)
+
+`golden/sse_events_*_live_abi.want.jsonl` lock the output of the sole
+opencode→contract translation point (`translate_abi.go`,
+`TestTranslateABI_GoldenFixtures`). Regenerate after refreshing the live
+fixtures:
+
+```bash
+REGEN_GOLDEN=1 go test -run TestTranslateABI_GoldenFixtures ./pkg/agent/opencode/
+```
+
+Review the diff deliberately: ID fields, event-type mappings, and cost
+shapes are contract surfaces (I12 stitch / Epic 33 billing). A diff you
+cannot explain means opencode changed shape — update the translation table
+in the same commit as the refreshed goldens.

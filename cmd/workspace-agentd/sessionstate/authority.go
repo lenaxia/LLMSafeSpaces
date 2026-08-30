@@ -53,11 +53,11 @@ type EventParser interface {
 	Parse(raw []byte) (evt *abiv1.Event, ok bool, err error)
 }
 
-// StoreReader snapshots the harness store's session statuses — the reseed
-// source of truth (I3/I4). Implementations must respect ctx deadlines;
-// a hung store must surface as ctx error, never block forever.
+// StoreReader snapshots the harness store's session truth — the reseed
+// source (I3/I4). Implementations must respect ctx deadlines; a hung store
+// must surface as ctx error, never block forever.
 type StoreReader interface {
-	SessionStatuses(ctx context.Context) (map[string]abiv1.SessionStatus, error)
+	SessionStates(ctx context.Context) (map[string]SessionSeed, error)
 }
 
 // RateLimitConfig bounds per-session mutating-op rates (I8).
@@ -88,7 +88,7 @@ type Config struct {
 // state is exactly the fold of events 1..Seq).
 type StateSnapshot struct {
 	Seq      uint64
-	Statuses map[string]abiv1.SessionStatus
+	Sessions map[string]*SessionView
 }
 
 type subscriber struct {
@@ -105,7 +105,7 @@ type Authority struct {
 
 	mu        sync.Mutex
 	seq       uint64
-	statuses  map[string]abiv1.SessionStatus
+	sessions  map[string]*sessionRecord
 	subs      map[*subscriber]struct{}
 	buffering bool
 	pending   [][]byte
@@ -154,7 +154,7 @@ func New(cfg Config) (*Authority, error) {
 		cfg:      cfg,
 		logger:   logger,
 		seq:      cursor.last(),
-		statuses: map[string]abiv1.SessionStatus{},
+		sessions: map[string]*sessionRecord{},
 		subs:     map[*subscriber]struct{}{},
 		cursor:   cursor,
 		limiter:  newSessionLimiter(cfg.RateLimit),
@@ -223,13 +223,7 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 }
 
 func (a *Authority) projectLocked(evt *abiv1.Event) {
-	if evt.SessionId == "" {
-		return
-	}
-	switch evt.Type {
-	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
-		a.statuses[evt.SessionId] = evt.Status
-	}
+	a.applyContractLocked(evt)
 }
 
 func (a *Authority) fanoutLocked(frame *abiv1.StreamFrame) {
@@ -257,7 +251,7 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	if a.cfg.Store == nil {
 		return ErrNoStore
 	}
-	statuses, err := a.cfg.Store.SessionStatuses(ctx)
+	seeds, err := a.cfg.Store.SessionStates(ctx)
 	if err != nil {
 		return fmt.Errorf("sessionstate: store read during reseed: %w", err)
 	}
@@ -291,9 +285,9 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 		return fmt.Errorf("sessionstate: reseed seq persist: %w", err)
 	}
 	a.seq = next
-	a.statuses = make(map[string]abiv1.SessionStatus, len(statuses))
-	for id, st := range statuses {
-		a.statuses[id] = st
+	a.sessions = make(map[string]*sessionRecord, len(seeds))
+	for id, seed := range seeds {
+		a.sessions[id] = seedLocked(seed)
 	}
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Reseeded{Reseeded: &abiv1.ReseedNotice{Seq: next, Reason: reason.proto()}}}
 	a.fanoutLocked(frame)
@@ -307,11 +301,11 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 func (a *Authority) State() StateSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make(map[string]abiv1.SessionStatus, len(a.statuses))
-	for k, v := range a.statuses {
-		out[k] = v
+	out := make(map[string]*SessionView, len(a.sessions))
+	for k, v := range a.sessions {
+		out[k] = v.view()
 	}
-	return StateSnapshot{Seq: a.seq, Statuses: out}
+	return StateSnapshot{Seq: a.seq, Sessions: out}
 }
 
 // capabilityReportLocked builds the snapshot frame's capability report at
@@ -340,16 +334,13 @@ func (a *Authority) Stream(ctx context.Context) (<-chan *abiv1.StreamFrame, func
 
 	a.mu.Lock()
 	stamp := a.seq
-	statuses := make(map[string]abiv1.SessionStatus, len(a.statuses))
-	for k, v := range a.statuses {
-		statuses[k] = v
-	}
+	pod := &abiv1.PodSnapshot{Sessions: podSnapshotsLocked(a.sessions)}
 	a.subs[sub] = struct{}{} // (1) subscribe BEFORE snapshot capture
 	a.mu.Unlock()            // (2) stamp captured under the same lock hold
 
 	snap := &abiv1.SnapshotFrame{
 		AtSeq:        stamp,
-		Snapshot:     &abiv1.PodSnapshot{Sessions: podSnapshots(statuses)},
+		Snapshot:     pod,
 		Capabilities: a.capabilityReport(),
 	}
 	select {
@@ -384,14 +375,6 @@ func (a *Authority) dropSub(sub *subscriber) {
 	a.mu.Lock()
 	delete(a.subs, sub)
 	a.mu.Unlock()
-}
-
-func podSnapshots(statuses map[string]abiv1.SessionStatus) []*abiv1.SessionSnapshot {
-	out := make([]*abiv1.SessionSnapshot, 0, len(statuses))
-	for id, st := range statuses {
-		out = append(out, &abiv1.SessionSnapshot{SessionId: id, Status: st})
-	}
-	return out
 }
 
 // Close persists the final cursor and releases resources.

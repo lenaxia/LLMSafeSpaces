@@ -129,6 +129,20 @@ type ocStatusDetail struct {
 	Type string `json:"type"`
 }
 
+// ParseQuestionListItem parses one entry of opencode's GET /question list
+// into the normalized QuestionRequest (the list entries share the
+// question.asked properties shape). Used by the API adapter's ListPending
+// and by agentd's sessionstate store reader (US-69.3).
+func (d *Dialect) ParseQuestionListItem(raw json.RawMessage) (*agent.QuestionRequest, error) {
+	return d.ParseQuestionRequest("question.asked", raw)
+}
+
+// ParsePermissionListItem parses one entry of GET /permission (shares the
+// permission.asked properties shape).
+func (d *Dialect) ParsePermissionListItem(raw json.RawMessage) (*agent.PermissionRequest, error) {
+	return d.ParsePermissionRequest("permission.asked", raw)
+}
+
 func (d *Dialect) ParseQuestionRequest(eventType string, properties json.RawMessage) (*agent.QuestionRequest, error) {
 	if !d.IsQuestionAsked(eventType) {
 		return nil, fmt.Errorf("not a question.asked event: %s", eventType)
