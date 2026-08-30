@@ -16,7 +16,6 @@ import type { Page, Route, CDPSession } from "@playwright/test";
 
 const API_PREFIX = "**/api/v1";
 const RP_ID = "localhost";
-const ORIGIN = "http://localhost:5173";
 
 interface VirtualAuthenticatorOptions {
   protocol: string;
@@ -431,7 +430,6 @@ test.describe("Passkey e2e", () => {
     // Override navigator.credentials to simulate unsupported browser.
     await page.addInitScript(() => {
       // Remove the WebAuthn API to trigger browserSupportsWebAuthn() === false.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (window as any).PublicKeyCredential;
     });
 

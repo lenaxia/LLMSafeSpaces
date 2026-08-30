@@ -10,6 +10,7 @@ import {
   useEdgesState,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node,
   BackgroundVariant,
 } from "@xyflow/react";
@@ -105,7 +106,7 @@ function DAGCanvasInner({ spec, onSpecChange }: DAGCanvasProps) {
     });
   }, [nodes.length, setNodes, edges, syncToParent]);
 
-  const onEdgesChangeSync = useCallback((params: any) => {
+  const onEdgesChangeSync = useCallback((params: EdgeChange[]) => {
     onEdgesChange(params);
     setTimeout(() => syncToParent(nodes, edges), 0);
   }, [onEdgesChange, nodes, edges, syncToParent]);

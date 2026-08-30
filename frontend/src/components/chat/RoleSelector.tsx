@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { agentRolesApi, type AgentRole } from "../../api/agentRoles";
 import { promptsApi } from "../../api/prompts";
 import { ChevronDown, Lock } from "lucide-react";
+import { useMenuPosition } from "../ui/menuPosition";
 
 interface Props {
   workspaceId: string;
@@ -80,6 +82,12 @@ export function RoleSelector({ workspaceId, orgId, disabled }: Props) {
     ? allRoles.find((r) => r.id === roleId)?.name ?? "Custom"
     : "Default";
 
+  // Viewport-aware positioning: the selector sits in the composer options
+  // drawer at the bottom of the screen, so the dropdown must flip above /
+  // clamp horizontally / cap height instead of opening blindly downward
+  // off-screen.
+  const { triggerRef, menuRef, pos } = useMenuPosition(open, "right", 224);
+
   if (isLocked) {
     return (
       <span
@@ -99,6 +107,7 @@ export function RoleSelector({ workspaceId, orgId, disabled }: Props) {
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen(!open)}
         disabled={disabled}
@@ -108,45 +117,54 @@ export function RoleSelector({ workspaceId, orgId, disabled }: Props) {
         <ChevronDown className="h-3 w-3 shrink-0" />
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full z-50 mt-1 max-h-64 w-56 overflow-y-auto rounded-md border border-border bg-popover shadow-md">
-            {roleId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  setOptimisticRole(null);
-                  clearRoleMutation.mutate();
-                }}
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-accent text-muted-foreground"
-              >
-                <span>Use platform default</span>
-              </button>
-            )}
-            {allRoles.map((role: AgentRole) => (
-              <button
-                key={role.id}
-                type="button"
-                onClick={() => {
-                  setOptimisticRole(role.id);
-                  setOpen(false);
-                  setRoleMutation.mutate(role.id);
-                }}
-                className={`flex w-full flex-col px-3 py-2 text-left text-xs hover:bg-accent ${
-                  role.id === roleId ? "bg-accent/50" : ""
-                }`}
-              >
-                <span className="font-medium">{role.name}</span>
-                {role.description && (
-                  <span className="text-muted-foreground line-clamp-1">{role.description}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      {open &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+            <div
+              ref={menuRef}
+              role="menu"
+              className="fixed z-50 max-h-64 w-56 overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+              style={{ top: pos.top, left: pos.left, maxHeight: pos.maxHeight }}
+            >
+              {roleId && (
+                <button
+                  role="menuitem"
+                  type="button"
+                  onClick={() => {
+                    setOpen(false);
+                    setOptimisticRole(null);
+                    clearRoleMutation.mutate();
+                  }}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-accent text-muted-foreground"
+                >
+                  <span>Use platform default</span>
+                </button>
+              )}
+              {allRoles.map((role: AgentRole) => (
+                <button
+                  key={role.id}
+                  role="menuitem"
+                  type="button"
+                  onClick={() => {
+                    setOptimisticRole(role.id);
+                    setOpen(false);
+                    setRoleMutation.mutate(role.id);
+                  }}
+                  className={`flex w-full flex-col px-3 py-2 text-left text-xs hover:bg-accent ${
+                    role.id === roleId ? "bg-accent/50" : ""
+                  }`}
+                >
+                  <span className="font-medium">{role.name}</span>
+                  {role.description && (
+                    <span className="text-muted-foreground line-clamp-1">{role.description}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   );
 }

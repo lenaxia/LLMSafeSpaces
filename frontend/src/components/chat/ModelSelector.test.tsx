@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ModelSelector } from "./ModelSelector";
+import { mockButtonRect, mockMenuSize, mockViewport, restoreMenuGeometry } from "../../test/menuGeometry";
 
 const mockModels = {
   models: [
@@ -241,6 +242,96 @@ describe("ModelSelector", () => {
       // Wait another tick to ensure no duplicate call
       await new Promise((r) => setTimeout(r, 50));
       expect(workspacesApi.setModel).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // --- Viewport-aware positioning ---
+  // Regression: the composer drawer (US-67.5) moved the selector to the
+  // bottom of the screen; a dropdown that opens downward renders off-screen.
+  // These tests prove the dropdown and the transient toast are portaled,
+  // fixed-positioned, and flip/clamp via computeMenuPosition.
+
+  describe("viewport-aware positioning", () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      vi.mocked(useUserSetting).mockReturnValue("");
+      vi.mocked(workspacesApi.listModels).mockResolvedValue(mockModels);
+    });
+    afterEach(restoreMenuGeometry);
+
+    async function openDropdown() {
+      render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+      await waitFor(() => screen.getByText("Claude Sonnet"));
+      fireEvent.click(screen.getByRole("button", { name: /Claude Sonnet/i }));
+    }
+
+    it("portals the dropdown to document.body with fixed positioning", async () => {
+      await openDropdown();
+      const menu = screen.getByRole("menu");
+      expect(menu.parentElement).toBe(document.body);
+      expect(menu.className).toContain("fixed");
+      expect(menu.className).toContain("z-50");
+    });
+
+    it("flips above when the trigger is near the viewport bottom", async () => {
+      mockViewport(600);
+      mockMenuSize(150, 256);
+      render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+      await waitFor(() => screen.getByText("Claude Sonnet"));
+      mockButtonRect(screen.getByRole("button", { name: /Claude Sonnet/i }), {
+        top: 580, bottom: 600, left: 300, right: 460,
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Sonnet/i }));
+      const menu = screen.getByRole("menu");
+      // 580 - 150 - 4 = 426 (flipped above), NOT 604 (below, off-screen).
+      expect(menu.style.top).toBe("426px");
+    });
+
+    it("clamps left when the dropdown would overflow the right edge", async () => {
+      mockViewport(800, 800);
+      mockMenuSize(150, 256);
+      render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+      await waitFor(() => screen.getByText("Claude Sonnet"));
+      mockButtonRect(screen.getByRole("button", { name: /Claude Sonnet/i }), {
+        top: 100, bottom: 124, left: 780, right: 800,
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Sonnet/i }));
+      const menu = screen.getByRole("menu");
+      // Right-aligned left = 800-256 = 544; 544+256 = 800 > 800-8 → clamp to 536.
+      expect(menu.style.left).toBe("536px");
+    });
+
+    it("caps dropdown height when it is taller than the viewport room", async () => {
+      mockViewport(300);
+      mockMenuSize(400, 256);
+      render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+      await waitFor(() => screen.getByText("Claude Sonnet"));
+      mockButtonRect(screen.getByRole("button", { name: /Claude Sonnet/i }), {
+        top: 280, bottom: 290, left: 300, right: 460,
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Sonnet/i }));
+      const menu = screen.getByRole("menu");
+      // Above has more room: top clamps to pad 8, maxHeight = 280-4-8 = 268.
+      expect(menu.style.top).toBe("8px");
+      expect(menu.style.maxHeight).toBe("268px");
+    });
+
+    it("renders the toast fixed and flipped above near the viewport bottom", async () => {
+      mockViewport(600);
+      mockMenuSize(40, 224);
+      vi.mocked(workspacesApi.setModel).mockResolvedValue({ model: "openai/gpt-4o", applied: false });
+      render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+      await waitFor(() => screen.getByText("Claude Sonnet"));
+      mockButtonRect(screen.getByRole("button", { name: /Claude Sonnet/i }), {
+        top: 580, bottom: 600, left: 300, right: 460,
+      });
+      fireEvent.click(screen.getByRole("button", { name: /Claude Sonnet/i }));
+      fireEvent.click(screen.getByText("GPT-4o"));
+      const toast = await screen.findByText(/takes effect/);
+      // Fixed-positioned (not statically dropped at the end of body) and
+      // flipped above the trigger: 580 - 40 - 4 = 536, NOT below (off-screen).
+      expect(toast.className).toContain("fixed");
+      expect(toast.style.top).toBe("536px");
     });
   });
 });

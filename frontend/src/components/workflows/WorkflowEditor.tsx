@@ -78,8 +78,8 @@ export function WorkflowEditor({ mode, workflow, onSave, onCancel, onDelete, onR
         inputSchema: parsedSchema,
         defaults: parsedDefaults,
       });
-    } catch (e: any) {
-      const msg = e?.message || String(e);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
     } finally {
       setSaving(false);

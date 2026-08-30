@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { triggerApi, workflowApi, type Trigger, type Workflow } from "../api/workflows";
+import { triggerApi, workflowApi, type Trigger, type TriggerCreateInput, type TriggerUpdateInput, type Workflow } from "../api/workflows";
 import { workspacesApi } from "../api/workspaces";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import {
   type FriendlyCron, type CronFrequency, friendlyToCron, cronToFriendly,
-  describeCron, COMMON_TIMEZONES,
+  describeCron, toCronConfig, COMMON_TIMEZONES,
 } from "../components/workflows/cronUtils";
 
 export function TriggersPage() {
@@ -93,7 +93,7 @@ export function TriggersPage() {
               </div>
               {trig.sourceType === "cron" && trig.enabled && trig.nextFireAt && (
                 <span className="text-xs text-muted-foreground">
-                  Next: {describeCron(cronToFriendly(trig.sourceConfig))}
+                  Next: {describeCron(cronToFriendly(toCronConfig(trig.sourceConfig)))}
                 </span>
               )}
               {trig.consecutiveFailures > 0 && (
@@ -179,9 +179,24 @@ export function TriggersPage() {
   );
 }
 
+function parseScriptEnvText(text: string): Record<string, string> | undefined {
+  if (!text.trim()) return undefined;
+  const env: Record<string, string> = {};
+  text.split("\n").forEach((line) => {
+    const idx = line.indexOf("=");
+    if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+  return env;
+}
+
+function scriptEnvToText(env: unknown): string {
+  if (!env || typeof env !== "object") return "";
+  return Object.entries(env).map(([k, v]) => `${k}=${String(v)}`).join("\n");
+}
+
 function TriggerCreateForm({ workflows, onSave, onCancel }: {
   workflows: Workflow[];
-  onSave: (data: any) => void;
+  onSave: (data: TriggerCreateInput) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
@@ -222,41 +237,33 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
     : { expr: "", tz: "UTC" };
 
   const handleCreate = async () => {
-    const data: any = {
+    const scriptEnvRecord = parseScriptEnvText(scriptEnv);
+    const data: TriggerCreateInput = {
       name,
       sourceType,
       sourceConfig: sourceType === "cron" ? cronConfig : {},
       memoryMode,
       captureMode,
       preserveSession,
+      ...(mode === "workflow"
+        ? { workflowId }
+        : {
+            workspaceId,
+            prompt,
+            ...(agentProfile ? { agent: agentProfile } : {}),
+            ...(scriptPath
+              ? {
+                  scriptPath,
+                  scriptArgs: scriptArgs.trim() ? scriptArgs.split(/\s+/) : [],
+                  ...(scriptEnvRecord ? { scriptEnv: scriptEnvRecord } : {}),
+                }
+              : {}),
+          }),
+      ...(sourceType === "webhook" && webhookAllowedIps.trim()
+        ? { webhookAllowedIps: webhookAllowedIps.split(",").map((s) => s.trim()).filter(Boolean) }
+        : {}),
+      ...(sourceType === "webhook" ? { webhookIdempotencyMode } : {}),
     };
-
-    if (mode === "workflow") {
-      data.workflowId = workflowId;
-    } else {
-      data.workspaceId = workspaceId;
-      data.prompt = prompt;
-      if (agentProfile) data.agent = agentProfile;
-      if (scriptPath) {
-        data.scriptPath = scriptPath;
-        data.scriptArgs = scriptArgs.trim() ? scriptArgs.split(/\s+/) : [];
-        if (scriptEnv.trim()) {
-          const env: Record<string, string> = {};
-          scriptEnv.split("\n").forEach((line) => {
-            const idx = line.indexOf("=");
-            if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-          });
-          data.scriptEnv = env;
-        }
-      }
-    }
-
-    if (sourceType === "webhook" && webhookAllowedIps.trim()) {
-      data.webhookAllowedIps = webhookAllowedIps.split(",").map((s) => s.trim()).filter(Boolean);
-    }
-    if (sourceType === "webhook") {
-      data.webhookIdempotencyMode = webhookIdempotencyMode;
-    }
     try {
       const result = await triggerApi.create(data);
       if (result.webhookSecret) {
@@ -265,8 +272,8 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
       } else {
         onSave(data);
       }
-    } catch (e: any) {
-      alert(e?.message || "Failed to create trigger");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to create trigger");
     }
   };
 
@@ -536,7 +543,7 @@ function CronBuilder({ friendly, onChange }: { friendly: FriendlyCron; onChange:
 function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }: {
   trigger: Trigger;
   workflows: Workflow[];
-  onUpdate: (updates: any) => void;
+  onUpdate: (updates: TriggerUpdateInput) => void;
   onDelete: () => void;
   onRunWorkflow: (workflowId: string) => void;
 }) {
@@ -545,9 +552,9 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [editingSchedule, setEditingSchedule] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
 
-  const [friendly, setFriendly] = useState<FriendlyCron>(() => cronToFriendly(trigger.sourceConfig || {}));
+  const [friendly, setFriendly] = useState<FriendlyCron>(() => cronToFriendly(toCronConfig(trigger.sourceConfig)));
   const [rawMode, setRawMode] = useState(false);
-  const [rawExpr, setRawExpr] = useState(trigger.sourceConfig?.expr || "0 * * * *");
+  const [rawExpr, setRawExpr] = useState(toCronConfig(trigger.sourceConfig).expr || "0 * * * *");
 
   const isRoutine = !trigger.workflowId && !!trigger.workspaceId;
 
@@ -557,9 +564,7 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [agentProfile, setAgentProfile] = useState(trigger.agent || "");
   const [scriptPath, setScriptPath] = useState(trigger.scriptPath || "");
   const [scriptArgs, setScriptArgs] = useState((trigger.scriptArgs || []).join(" "));
-  const [scriptEnv, setScriptEnv] = useState(
-    Object.entries(trigger.scriptEnv || {}).map(([k, v]) => `${k}=${v}`).join("\n"),
-  );
+  const [scriptEnv, setScriptEnv] = useState(scriptEnvToText(trigger.scriptEnv));
   const [memoryMode, setMemoryMode] = useState(trigger.memoryMode || "none");
   const [captureMode, setCaptureMode] = useState(trigger.captureMode || "errors_only");
   const [preserveSession, setPreserveSession] = useState(trigger.preserveSession || "never");
@@ -586,27 +591,22 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
 
   const handleSaveTarget = () => {
     if (isRoutine) {
-      const updates: Record<string, unknown> = {
+      const scriptEnvRecord = parseScriptEnvText(scriptEnv);
+      onUpdate({
         workspaceId: selectedWorkspaceId,
         prompt: promptStr,
         memoryMode,
         captureMode,
         preserveSession,
-      };
-      if (agentProfile) updates.agent = agentProfile;
-      if (scriptPath) {
-        updates.scriptPath = scriptPath;
-        updates.scriptArgs = scriptArgs.trim() ? scriptArgs.split(/\s+/) : [];
-        if (scriptEnv.trim()) {
-          const env: Record<string, string> = {};
-          scriptEnv.split("\n").forEach((line) => {
-            const idx = line.indexOf("=");
-            if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-          });
-          updates.scriptEnv = env;
-        }
-      }
-      onUpdate(updates);
+        ...(agentProfile ? { agent: agentProfile } : {}),
+        ...(scriptPath
+          ? {
+              scriptPath,
+              scriptArgs: scriptArgs.trim() ? scriptArgs.split(/\s+/) : [],
+              ...(scriptEnvRecord ? { scriptEnv: scriptEnvRecord } : {}),
+            }
+          : {}),
+      });
     } else {
       onUpdate({ workflowId: selectedWorkflowId });
     }
@@ -665,7 +665,7 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
           {!editingSchedule ? (
             <>
               <code className="rounded bg-muted px-2 py-1 text-xs font-mono">
-                {describeCron(cronToFriendly(trigger.sourceConfig || {}))}
+                {describeCron(cronToFriendly(toCronConfig(trigger.sourceConfig)))}
               </code>
               {trigger.nextFireAt && trigger.enabled && (
                 <div className="text-xs text-muted-foreground">
@@ -970,8 +970,8 @@ function RotateSecretButton({ triggerId }: { triggerId: string }) {
         try {
           const result = await triggerApi.rotateSecret(triggerId);
           setNewSecret(result.webhookSecret);
-        } catch (e: any) {
-          setError(e?.message || "Failed to rotate secret");
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Failed to rotate secret");
         } finally {
           setRotating(false);
         }
@@ -1060,7 +1060,7 @@ function DeliveryLog({ triggerId }: { triggerId: string }) {
             <div className="flex items-center gap-2">
               <span className={`font-medium ${statusColors[f.status] || "text-muted-foreground"}`}>{f.status}</span>
               <span className="font-mono text-muted-foreground">{f.actionType}</span>
-              {(f.inputEnvelope || f.actionResult) && (
+              {!!(f.inputEnvelope || f.actionResult) && (
                 <span className="text-muted-foreground">{expanded.has(f.id) ? "▼" : "▶"}</span>
               )}
             </div>
@@ -1068,9 +1068,9 @@ function DeliveryLog({ triggerId }: { triggerId: string }) {
               {new Date(f.firedAt).toLocaleString()}
             </span>
           </button>
-          {expanded.has(f.id) && (f.inputEnvelope || f.actionResult) && (
+          {expanded.has(f.id) && !!(f.inputEnvelope || f.actionResult) && (
             <div className="space-y-1 px-4 pb-2">
-              {f.inputEnvelope && (
+              {!!f.inputEnvelope && (
                 <div>
                   <div className="text-[10px] text-muted-foreground">Envelope:</div>
                   <pre className="overflow-x-auto rounded bg-muted p-1.5 text-[10px] font-mono">
@@ -1078,7 +1078,7 @@ function DeliveryLog({ triggerId }: { triggerId: string }) {
                   </pre>
                 </div>
               )}
-              {f.actionResult && (
+              {!!f.actionResult && (
                 <div>
                   <div className="text-[10px] text-muted-foreground">Result:</div>
                   <pre className="overflow-x-auto rounded bg-muted p-1.5 text-[10px] font-mono">

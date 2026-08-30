@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { runApi } from "../api/workflows";
-import { Badge } from "../components/ui/Badge";
+import { Badge, type BadgeVariant } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import {
   CheckCircle2, XCircle, Clock, Loader2, SkipForward,
@@ -41,7 +41,7 @@ export function RunDetailPage() {
     queryKey: ["run", runId],
     queryFn: () => runApi.get(runId!),
     refetchInterval: (q) => {
-      const status = (q.state.data as any)?.status;
+      const status = q.state.data?.status;
       return status === "running" || status === "queued" ? 3000 : false;
     },
   });
@@ -50,8 +50,7 @@ export function RunDetailPage() {
     queryKey: ["run-nodes", runId],
     queryFn: () => runApi.nodes(runId!),
     refetchInterval: (q) => {
-      const arr = q.state.data as any[];
-      const anyRunning = arr?.some((n) => n.status === "running" || n.status === "pending");
+      const anyRunning = q.state.data?.some((n) => n.status === "running" || n.status === "pending");
       return anyRunning ? 3000 : false;
     },
   });
@@ -67,8 +66,7 @@ export function RunDetailPage() {
     );
   }
 
-  const runData = run as any;
-  const isRunning = runData.status === "running" || runData.status === "queued";
+  const isRunning = run.status === "running" || run.status === "queued";
 
   const toggleNode = (id: string) => {
     setExpandedNodes((prev) => {
@@ -90,10 +88,10 @@ export function RunDetailPage() {
             >
               ← Back
             </button>
-            <h2 className="text-sm font-semibold">Run {runData.id.slice(0, 8)}</h2>
-            <StatusBadge status={runData.status} />
-            {runData.errorCode && (
-              <Badge variant="destructive" className="text-xs font-mono">{runData.errorCode}</Badge>
+            <h2 className="text-sm font-semibold">Run {run.id.slice(0, 8)}</h2>
+            <StatusBadge status={run.status} />
+            {run.errorCode && (
+              <Badge variant="destructive" className="text-xs font-mono">{run.errorCode}</Badge>
             )}
           </div>
           {isRunning && (
@@ -108,30 +106,30 @@ export function RunDetailPage() {
         </div>
 
         <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-          {runData.createdAt && runData.startedAt && (
+          {run.createdAt && run.startedAt && (
             <span className="text-yellow-500">
-              Wake-up: {Math.round((new Date(runData.startedAt).getTime() - new Date(runData.createdAt).getTime()) / 1000)}s
+              Wake-up: {Math.round((new Date(run.startedAt).getTime() - new Date(run.createdAt).getTime()) / 1000)}s
             </span>
           )}
-          {runData.startedAt && (
-            <span>Started: {new Date(runData.startedAt).toLocaleString()}</span>
+          {run.startedAt && (
+            <span>Started: {new Date(run.startedAt).toLocaleString()}</span>
           )}
-          {runData.finishedAt && (
-            <span>Finished: {new Date(runData.finishedAt).toLocaleString()}</span>
+          {run.finishedAt && (
+            <span>Finished: {new Date(run.finishedAt).toLocaleString()}</span>
           )}
-          {runData.startedAt && runData.finishedAt && (
+          {run.startedAt && run.finishedAt && (
             <span>
-              Duration: {Math.round((new Date(runData.finishedAt).getTime() - new Date(runData.startedAt).getTime()) / 1000)}s
+              Duration: {Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000)}s
             </span>
           )}
-          {runData.triggerId && (
-            <span>Trigger: {runData.triggerId.slice(0, 8)}</span>
+          {run.triggerId && (
+            <span>Trigger: {run.triggerId.slice(0, 8)}</span>
           )}
         </div>
 
-        {runData.error && (
+        {!!run.error && (
           <div className="mt-2 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
-            <pre className="whitespace-pre-wrap font-mono">{JSON.stringify(runData.error, null, 2)}</pre>
+            <pre className="whitespace-pre-wrap font-mono">{JSON.stringify(run.error, null, 2)}</pre>
           </div>
         )}
       </div>
@@ -139,13 +137,13 @@ export function RunDetailPage() {
       <div className="flex-1 overflow-y-auto p-4">
         {nodesLoading ? (
           <Spinner />
-        ) : (nodes as any[])?.length === 0 ? (
+        ) : !nodes || nodes.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
             {isRunning ? "Waiting for node execution to start..." : "No node runs recorded."}
           </div>
         ) : (
           <div className="space-y-2">
-            {(nodes as any[]).map((node) => {
+            {(nodes ?? []).map((node) => {
               const Icon = STATUS_ICONS[node.status] || Clock;
               const color = STATUS_COLORS[node.status] || "text-muted-foreground";
               const isExpanded = expandedNodes.has(node.id);
@@ -187,13 +185,13 @@ export function RunDetailPage() {
 
                   {isExpanded && (
                     <div className="border-t border-border p-3 space-y-2">
-                      {node.input && (
+                      {!!node.input && (
                         <DetailBlock label="Input" data={node.input} />
                       )}
-                      {node.output && (
+                      {!!node.output && (
                         <DetailBlock label="Output" data={node.output} />
                       )}
-                      {node.error && (
+                      {!!node.error && (
                         <DetailBlock label="Error" data={node.error} error />
                       )}
                     </div>
@@ -204,11 +202,11 @@ export function RunDetailPage() {
           </div>
         )}
 
-        {runData.output && (
+        {!!run.output && (
           <div className="mt-4 rounded-lg border border-green-500/30 bg-green-500/5 p-3">
             <h3 className="mb-2 text-xs font-semibold text-green-500">Final Output</h3>
             <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs">
-              {typeof runData.output === "string" ? runData.output : JSON.stringify(runData.output, null, 2)}
+              {typeof run.output === "string" ? run.output : JSON.stringify(run.output, null, 2)}
             </pre>
           </div>
         )}
@@ -218,12 +216,12 @@ export function RunDetailPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const variant =
+  const variant: BadgeVariant =
     status === "succeeded" ? "success" :
     status === "failed" || status === "timed_out" ? "destructive" :
     status === "canceled" ? "warning" :
     "default";
-  return <Badge variant={variant as any} className="text-xs">{status}</Badge>;
+  return <Badge variant={variant} className="text-xs">{status}</Badge>;
 }
 
 function DetailBlock({ label, data, error }: { label: string; data: unknown; error?: boolean }) {

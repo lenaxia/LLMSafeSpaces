@@ -324,10 +324,13 @@ test.describe("Composer attachments — mobile viewport 375×812 (E5)", () => {
     await expect(drawer.getByRole("button", { name: /Test Model/ })).toBeVisible();
     await expect(drawer.getByRole("button", { name: /Default/ })).toBeVisible();
 
-    // Persona is selectable from the drawer.
+    // Persona is selectable from the drawer. The dropdown is portaled to
+    // document.body (viewport-aware positioning, escapes composer clipping),
+    // so its items are queried at page level under the menuitem role.
     await drawer.getByRole("button", { name: /Default/ }).click();
-    await expect(drawer.getByRole("button", { name: "Reviewer" })).toBeVisible();
-    await drawer.getByRole("button", { name: "Reviewer" }).click();
+    const reviewerItem = page.getByRole("menuitem", { name: "Reviewer" });
+    await expect(reviewerItem).toBeVisible();
+    await reviewerItem.click();
 
     await chevron.click();
     await expect(chevron).toHaveAttribute("aria-expanded", "false");

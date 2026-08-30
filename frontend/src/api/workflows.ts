@@ -16,14 +16,16 @@ export interface Workflow {
   updatedAt: string;
 }
 
+// error/input/output mirror the backend's json.RawMessage wire fields —
+// arbitrary JSON payloads, typed as unknown and rendered via JSON.stringify.
 export interface WorkflowRun {
   id: string;
   workflowId: string;
   status: string;
   errorCode?: string;
-  error?: any;
-  input?: any;
-  output?: any;
+  error?: unknown;
+  input?: unknown;
+  output?: unknown;
   triggerId?: string;
   workspaceId?: string;
   startedAt?: string;
@@ -39,10 +41,10 @@ export interface NodeRun {
   status: string;
   attempt: number;
   branch?: string;
-  output?: any;
-  input?: any;
+  output?: unknown;
+  input?: unknown;
   errorCode?: string;
-  error?: any;
+  error?: unknown;
   startedAt: string;
   finishedAt?: string;
 }
@@ -53,14 +55,14 @@ export interface Trigger {
   description?: string;
   enabled: boolean;
   sourceType: string;
-  sourceConfig: any;
+  sourceConfig: unknown;
   workspaceId?: string;
   workflowId?: string;
   prompt?: string;
   agent?: string;
   scriptPath?: string;
   scriptArgs?: string[];
-  scriptEnv?: any;
+  scriptEnv?: unknown;
   memoryMode?: string;
   memoryMaxRuns?: number;
   captureMode?: string;
@@ -77,9 +79,9 @@ export interface TriggerFire {
   id: string;
   triggerId: string;
   sourceType: string;
-  inputEnvelope?: any;
+  inputEnvelope?: unknown;
   actionType: string;
-  actionResult?: any;
+  actionResult?: unknown;
   status: string;
   firedAt: string;
   completedAt?: string;
@@ -117,38 +119,51 @@ export const workflowApi = {
     api.post<WorkflowRun>(`/me/workflows/${id}/runs`, { input, workspaceId }),
 };
 
+export interface TriggerCreateInput {
+  name: string;
+  sourceType: string;
+  sourceConfig: unknown;
+  workspaceId?: string;
+  workflowId?: string;
+  prompt?: string;
+  agent?: string;
+  scriptPath?: string;
+  scriptArgs?: string[];
+  scriptEnv?: unknown;
+  memoryMode?: string;
+  captureMode?: string;
+  preserveSession?: string;
+  description?: string;
+  enabled?: boolean;
+  autoDisableAfter?: number;
+  webhookAllowedIps?: string[];
+  webhookIdempotencyMode?: string;
+  webhookIdempotencyHeader?: string;
+}
+
+export interface TriggerUpdateInput {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+  autoDisableAfter?: number;
+  sourceConfig?: unknown;
+  workspaceId?: string;
+  workflowId?: string;
+  prompt?: string;
+  agent?: string;
+  scriptPath?: string;
+  scriptArgs?: string[];
+  scriptEnv?: unknown;
+  memoryMode?: string;
+  captureMode?: string;
+  preserveSession?: string;
+}
+
 export const triggerApi = {
   list: () => api.get<{ triggers?: Trigger[] }>('/me/triggers').then(r => r.triggers || []),
   get: (id: string) => api.get<Trigger>(`/me/triggers/${id}`),
-  create: (data: {
-    name: string;
-    sourceType: string;
-    sourceConfig: unknown;
-    workspaceId?: string;
-    workflowId?: string;
-    prompt?: string;
-    agent?: string;
-    scriptPath?: string;
-    scriptArgs?: string[];
-    scriptEnv?: unknown;
-    memoryMode?: string;
-    captureMode?: string;
-    preserveSession?: string;
-    description?: string;
-    enabled?: boolean;
-    autoDisableAfter?: number;
-    webhookAllowedIps?: string[];
-    webhookIdempotencyMode?: string;
-    webhookIdempotencyHeader?: string;
-  }) => api.post<WebhookCreateResult>('/me/triggers', data),
-  update: (id: string, data: Partial<{
-    name: string; description?: string; enabled: boolean; autoDisableAfter: number;
-    sourceConfig: unknown;
-    workspaceId?: string; workflowId?: string;
-    prompt?: string; agent?: string;
-    scriptPath?: string; scriptArgs?: string[]; scriptEnv?: unknown;
-    memoryMode?: string; captureMode?: string; preserveSession?: string;
-  }>) => api.put<Trigger>(`/me/triggers/${id}`, data),
+  create: (data: TriggerCreateInput) => api.post<WebhookCreateResult>('/me/triggers', data),
+  update: (id: string, data: TriggerUpdateInput) => api.put<Trigger>(`/me/triggers/${id}`, data),
   delete: (id: string) => api.delete(`/me/triggers/${id}`),
   fires: (id: string) =>
     api.get<{ fires?: TriggerFire[] }>(`/me/triggers/${id}/fires`).then((r) => r.fires || []),

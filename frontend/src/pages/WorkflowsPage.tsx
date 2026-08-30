@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { workflowApi, runApi, type Workflow, type WorkflowRun } from "../api/workflows";
 import { workspacesApi } from "../api/workspaces";
 import { WorkflowEditor } from "../components/workflows/WorkflowEditor";
-import { Badge } from "../components/ui/Badge";
+import { Badge, type BadgeVariant } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
 import { Plus, History, ArrowLeft } from "lucide-react";
@@ -133,9 +133,9 @@ export function WorkflowsPage() {
                     name, specYaml: spec, status,
                     targetWorkspaceId: opts?.targetWorkspaceId,
                     onMissingWorkspace: opts?.onMissingWorkspace,
-                    inputSchema: opts?.inputSchema as any,
-                    defaults: opts?.defaults as any,
-                  }) as Workflow;
+                    inputSchema: opts?.inputSchema,
+                    defaults: opts?.defaults,
+                  });
                   setShowCreate(false);
                   queryClient.invalidateQueries({ queryKey: ["workflows"] });
                   navigate(`/workflows/${created.id}`);
@@ -161,8 +161,8 @@ export function WorkflowsPage() {
                     name, status, specYaml: spec,
                     targetWorkspaceId: opts?.targetWorkspaceId,
                     onMissingWorkspace: opts?.onMissingWorkspace,
-                    inputSchema: opts?.inputSchema as any,
-                    defaults: opts?.defaults as any,
+                    inputSchema: opts?.inputSchema,
+                    defaults: opts?.defaults,
                   });
                   queryClient.invalidateQueries({ queryKey: ["workflows"] });
                 }}
@@ -241,11 +241,11 @@ export function WorkflowsPage() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const variant =
+  const variant: BadgeVariant =
     status === "active" ? "success" :
     status === "archived" ? "warning" :
     "default";
-  return <Badge variant={variant as any} className="text-[10px]">{status}</Badge>;
+  return <Badge variant={variant} className="text-[10px]">{status}</Badge>;
 }
 
 function RunStatusDot({ status }: { status: string }) {
