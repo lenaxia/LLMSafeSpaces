@@ -444,14 +444,14 @@ func TestNoEventLossMidConnect(t *testing.T) {
 	a.Ingest([]byte("busy s1"))
 
 	const flood = 200
-	flooding := make(chan struct{})
+	floodDone := make(chan struct{})
 	go func() {
-		close(flooding)
+		defer close(floodDone)
 		for i := 0; i < flood; i++ {
 			a.Ingest([]byte("busy s2"))
 		}
 	}()
-	<-flooding
+	defer func() { <-floodDone }() // t.TempDir cleanup must not race the flood writes
 	frames, cancel, err := a.Stream(context.Background())
 	if err != nil {
 		t.Fatal(err)
