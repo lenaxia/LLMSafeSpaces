@@ -60,11 +60,6 @@ func opencodeFlags(t *testing.T, valuesYAML string) []string {
 	return flags
 }
 
-func TestOpencodeDelivery_DefaultRendersNoFlags(t *testing.T) {
-	flags := opencodeFlags(t, "")
-	require.Empty(t, flags, "default (inert) mode must render no opencode flags")
-}
-
 func TestOpencodeDelivery_ConfiguredRendersAllFlags(t *testing.T) {
 	flags := opencodeFlags(t, `controller:
   opencodeDelivery:
@@ -101,7 +96,9 @@ func TestOpencodeDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided hash override must fail the render; output: %s", out)
 	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
@@ -118,7 +115,9 @@ func TestOpencodeDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/opencode:1.18.10@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
     binarySHA256Arm64: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided arm64-only override must fail the render; output: %s", out)
 	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
@@ -139,11 +138,13 @@ func TestOpencodeDelivery_HashesWithoutImageFailsRender(t *testing.T) {
     binarySHA256Amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 `), 0o600))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath,
+		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err,
 		"hashes-without-image must fail the render; output: %s", out)
-	require.Contains(t, string(out), "opencodeDelivery.image is required",
+	require.Contains(t, string(out), "opencodeDelivery.image is mandatory",
 		"the failure must be the reverse-guard fail; output: %s", out)
 }
 
@@ -203,16 +204,6 @@ func TestOpencodeDelivery_PinsRBACGrantRenders(t *testing.T) {
 	}
 	require.True(t, scoped, "exact scoped rule required: get+update on configmaps resourceNames=[llmsafespaces-opencode-pins]")
 	require.True(t, createRule, "separate unscoped create rule required (create cannot be resourceNames-scoped)")
-}
-
-func TestOpencodeDelivery_PinsRBACGrantAbsentByDefault(t *testing.T) {
-	docs := helmTemplate(t, "")
-	for _, doc := range docs {
-		raw, err := yaml.Marshal(doc)
-		require.NoError(t, err)
-		require.NotContains(t, string(raw), "llmsafespaces-opencode-pins",
-			"inert mode must not grant opencode-pins access")
-	}
 }
 
 // TestOpencodeDelivery_DoesNotGateAgentdSidecar locks the independence

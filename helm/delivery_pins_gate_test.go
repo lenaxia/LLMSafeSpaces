@@ -25,13 +25,12 @@ func TestDeliveryPins_MandatoryRenderGate(t *testing.T) {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
 
-	render := func(t *testing.T, values string) error {
+	render := func(t *testing.T, values string) ([]byte, error) {
 		t.Helper()
 		dir := t.TempDir()
 		path := filepath.Join(dir, "values.yaml")
 		require.NoError(t, os.WriteFile(path, []byte(values), 0o644))
-		_, err := helmTemplateRaw(t, path)
-		return err
+		return helmTemplateRaw(t, path)
 	}
 
 	for _, tc := range []struct {
@@ -54,11 +53,11 @@ controller:
 			wantErrOn: "opencodeDelivery.image is mandatory",
 		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := render(t, tc.values)
-			require.Error(t, err, "render must fail without both pins")
-			assert.True(t, strings.Contains(err.Error(), tc.wantErrOn),
-				"error should mention %q, got: %v", tc.wantErrOn, err)
-		})
+	t.Run(tc.name, func(t *testing.T) {
+		out, err := render(t, tc.values)
+		require.Error(t, err, "render must fail without both pins")
+		assert.True(t, strings.Contains(string(out), tc.wantErrOn),
+			"render output should mention %q, got: %s", tc.wantErrOn, out)
+	})
 	}
 }

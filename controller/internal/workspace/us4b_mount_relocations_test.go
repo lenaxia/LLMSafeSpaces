@@ -221,4 +221,3 @@ func credSetupScriptFor(t *testing.T, sidecar bool) string {
 }
 
 // --- disabled: single-container regression pins ------------------------------
-

@@ -1024,6 +1024,16 @@ controller:
 				rv := resourceVerbs(doc)
 				require.NotContains(t, rv, "/services",
 					"%s %q must NOT grant services (F1.3.1)", kind, name)
+				// Design 0053 §4.5: the overlay-pin cache grants
+				// (agentd-pins / opencode-pins ConfigMaps) are
+				// unconditional platform RBAC — the only configmaps
+				// the controller may touch with the refresher off.
+				raw, err := yaml.Marshal(doc)
+				require.NoError(t, err)
+				if strings.Contains(string(raw), "llmsafespaces-agentd-pins") ||
+					strings.Contains(string(raw), "llmsafespaces-opencode-pins") {
+					continue
+				}
 				require.NotContains(t, rv, "/configmaps",
 					"%s %q must NOT grant configmaps when freeModelsRefresher is disabled (F1.3.1)", kind, name)
 			}
