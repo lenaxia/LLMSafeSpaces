@@ -1,0 +1,22 @@
+# Codegen for the harness ABI. Run `make abi-generate` (ensures plugins on
+# PATH); `make abi-check` regenerates in CI and fails on any diff so hand
+# edits to generated files cannot survive.
+#
+# The Go plugins emit with `module=github.com/lenaxia/llmsafespaces` so the
+# generated files land at the clean Go import path pkg/abi/v1 (the .proto
+# sources live in their buf-standard directory tree
+# pkg/abi/llmsafespaces/abi/v1/). protoc-gen-es generates TS types under the
+# package tree; the frontend consumes them in S3 (US-69.10).
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/lenaxia/llmsafespaces
+  - local: protoc-gen-connect-go
+    out: .
+    opt: module=github.com/lenaxia/llmsafespaces
+  - local: protoc-gen-es
+    out: frontend/src/abi
+    opt:
+      - target=ts
+      - import_extension=none

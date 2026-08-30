@@ -1,0 +1,35 @@
+# LLMSafeSpaces harness-ABI schema (Epic 69 / US-69.1, design 0055 + ADR 0056).
+#
+# The schema IS the ABI: agentd sessionstate (server), the API (client), the
+# S1 comparator, and the frontend (S3) all consume generated types from these
+# files. Hand-written wire types are forbidden in the surface path
+# (no_hand_written_wire contract test).
+#
+# Lint runs the full STANDARD ruleset with two documented exceptions:
+# - ENUM_VALUE_PREFIX stays ON (load-bearing, not stylistic): proto enum
+#   values are package-scoped, so unprefixed names collide across enums
+#   (PartType.TEXT vs DeliveryPartKind.TEXT, SessionStatus.ERROR vs
+#   EventType.ERROR). The contract-string mapping (strip enum prefix,
+#   lowercase, '_'→'.' for EventType) is pinned by
+#   TestPkgSessionContractParity.
+# - RPC_REQUEST_STANDARD_NAME / RPC_RESPONSE_STANDARD_NAME: the request and
+#   response messages use the design-0055/issue-#1135 domain vocabulary
+#   (DeliveryRequest/DeliveryAck/DeliveryStatus, ActionRequest/ActionResult,
+#   StreamFrame) rather than generic <Method>Request/<Method>Response names.
+#
+# Breaking-change policy (D5): the schema evolves freely during the S1 shadow
+# and FREEZES at S2 entrance (US-69.8). The freeze arms `buf breaking`
+# against the recorded baseline via the abi/FROZEN marker — see
+# TestSchemaLintFreezeGate and `make abi-check`.
+version: v2
+modules:
+  - path: pkg/abi
+lint:
+  use:
+    - STANDARD
+  except:
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

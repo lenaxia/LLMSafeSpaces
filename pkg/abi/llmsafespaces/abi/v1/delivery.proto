@@ -1,0 +1,84 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Idempotent in-pod delivery over the agentd ledger (design 0055 M2).
+// Dedupe scope is (entry_id, attempt): at-most-once admission per attempt,
+// at-least-once effort overall. The delivery POST admits inline (D1-B) —
+// 202 from agentd means "durably ledgered" (fsync before ack, I9), never
+// "admitted to opencode".
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+import "google/protobuf/timestamp.proto";
+import "llmsafespaces/abi/v1/contract.proto";
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+// LedgerState is the M2 state machine:
+// ledgered → admitted → promoted → turn-ended, with stalled (admitted past
+// the promotion deadline — recovered by wake only, never re-admitted) and
+// failed (per attempt — re-armable as (entry_id, attempt+1)).
+enum LedgerState {
+  LEDGER_STATE_UNSPECIFIED = 0;
+  LEDGER_STATE_LEDGERED = 1;
+  LEDGER_STATE_ADMITTED = 2;
+  LEDGER_STATE_PROMOTED = 3;
+  LEDGER_STATE_TURN_ENDED = 4;
+  LEDGER_STATE_STALLED = 5;
+  LEDGER_STATE_FAILED = 6;
+}
+
+// FileReference points at a previously uploaded workspace file (Epic 68
+// upload path shape: /workspace/uploads/<uuid>-<name>).
+message FileReference {
+  string path = 1;
+  string name = 2;
+}
+
+// DeliveryPart is one part of a delivery. The schema is parts-capable from
+// day one (D3); harnesses that only accept text (opencode on 1.18.x) declare
+// file parts NotSupported via the capability report — harness limits are
+// data, not code branches. Multiple text parts are joined in order with
+// newlines into the harness's text field (multi-text-part join rule).
+message DeliveryPart {
+  oneof part {
+    string text = 1;
+    FileReference file = 2;
+  }
+}
+
+// DeliveryRequest is the outbox's idempotent admission call. entry_id and
+// attempt are outbox-controlled; agentd never invents them.
+message DeliveryRequest {
+  string session_id = 1;
+  string entry_id = 2;
+  uint32 attempt = 3;
+  repeated DeliveryPart parts = 4;
+  optional ModelRef model = 5;
+}
+
+// DeliveryAck confirms the entry is durably ledgered (I9). state is LEDGERED
+// at ack time; later states are observable via GetDeliveryStatus.
+message DeliveryAck {
+  string entry_id = 1;
+  uint32 attempt = 2;
+  LedgerState state = 3;
+}
+
+message GetDeliveryStatusRequest {
+  string session_id = 1;
+  string entry_id = 2;
+  uint32 attempt = 3;
+}
+
+// DeliveryStatus is the per-(entry_id, attempt) ledger outcome — the
+// replacement for the API-side text-scan verify oracle.
+message DeliveryStatus {
+  string entry_id = 1;
+  uint32 attempt = 2;
+  LedgerState state = 3;
+  string failure_reason = 4;
+  optional google.protobuf.Timestamp updated_at = 5;
+}

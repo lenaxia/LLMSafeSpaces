@@ -1,0 +1,107 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// The harness ABI — the entire outward surface of the agentd session-state
+// authority (design 0055 M1): five operations in platform schema, frozen.
+// If a change wants more than these ops, it belongs in the API.
+//
+// Sync protocol (M1): connect → snapshot@S → event@S+1 → event@S+2 …
+// client rule: apply in order; discard seq ≤ S. There is no replay buffer
+// and no since-cursor by design; reconnect mid-turn re-fetches in-flight
+// state via a fresh stamped snapshot.
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+import "llmsafespaces/abi/v1/action.proto";
+import "llmsafespaces/abi/v1/capability.proto";
+import "llmsafespaces/abi/v1/contract.proto";
+import "llmsafespaces/abi/v1/delivery.proto";
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+// HarnessABIService is served on agentd's user port (4097). Every route —
+// this surface included — requires the 0051 agentdPassword (I8).
+service HarnessABIService {
+  // Op 1 — pod-wide event stream: one snapshot frame, then ordered live
+  // events. Display only (D1-B); delivery never depends on it.
+  rpc Events(EventsRequest) returns (stream StreamFrame);
+
+  // Op 2 — session snapshot: busy/streaming state, in-flight parts with
+  // partials, ledger-derived queue depth, pending question/permission
+  // requests. Served from the projection with zero harness calls; a
+  // snapshot alone is sufficient to render state and act (I12).
+  rpc GetSnapshot(GetSnapshotRequest) returns (SessionSnapshot);
+
+  // Op 3 — idempotent delivery admission (D1-B inline-first). Dedupe scope
+  // is (entry_id, attempt); the ack implies durable ledger persistence.
+  rpc Deliver(DeliveryRequest) returns (DeliveryAck);
+
+  // Op 4 — ledger outcome lookup for one outbox entry attempt.
+  rpc GetDeliveryStatus(GetDeliveryStatusRequest) returns (DeliveryStatus);
+
+  // Op 5 — typed session actions, capability-negotiated.
+  rpc Act(ActionRequest) returns (ActionResult);
+}
+
+message EventsRequest {}
+
+// StreamFrame is one item on the events stream.
+message StreamFrame {
+  oneof frame {
+    SnapshotFrame snapshot = 1;
+    SequencedEvent event = 2;
+    ReseedNotice reseeded = 3;
+  }
+}
+
+// SnapshotFrame is always the first frame on a connection. at_seq is the
+// atomic stamp: the snapshot is exactly the fold of events 1..at_seq
+// captured under the projection lock (I1/I2).
+message SnapshotFrame {
+  uint64 at_seq = 1;
+  PodSnapshot snapshot = 2;
+  CapabilityReport capabilities = 3;
+}
+
+// PodSnapshot is the pod-wide in-flight state. Sessions with no in-flight
+// state may be omitted; the set is capped (S1 spike: snapshot size at N
+// sessions).
+message PodSnapshot {
+  repeated SessionSnapshot sessions = 1;
+}
+
+// SequencedEvent carries one contract event stamped with the pod-local
+// monotonic seq assigned by agentd.
+message SequencedEvent {
+  uint64 seq = 1;
+  Event event = 2;
+}
+
+enum ReseedReason {
+  RESEED_REASON_UNSPECIFIED = 0;
+  RESEED_REASON_BOOT = 1;
+  RESEED_REASON_GENERATION_CHANGE = 2;
+}
+
+// ReseedNotice is the synthetic invalidation signal (I3): the projection
+// was reseeded from the harness store; live clients MUST re-snapshot. It
+// consumes the next seq so ordering stays monotonic across the rebuild.
+message ReseedNotice {
+  uint64 seq = 1;
+  ReseedReason reason = 2;
+}
+
+message GetSnapshotRequest {
+  string session_id = 1;
+}
+
+// SessionSnapshot is one session's authoritative state (I12).
+message SessionSnapshot {
+  string session_id = 1;
+  SessionStatus status = 2;
+  repeated Part in_flight_parts = 3;
+  int32 queue_depth = 4;
+  repeated InputRequest pending_inputs = 5;
+}

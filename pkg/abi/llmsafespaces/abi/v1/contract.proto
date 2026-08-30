@@ -1,0 +1,269 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// The Epic 65 agent session contract (design 0049, mirrored in
+// pkg/session) expressed as ABI schema messages. Parity with pkg/session is
+// enforced field-by-field and enum-by-enum by TestPkgSessionContractParity.
+// Until the S2 freeze flips pkg/session to generated types (ADR 0056), these
+// two representations must stay equivalent — the parity test fails CI on
+// drift in either direction.
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+// SessionStatus is the lifecycle state of an agent session. UNKNOWN is a
+// contract-real non-zero state; the zero value is never a valid status.
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_UNKNOWN = 1;
+  SESSION_STATUS_IDLE = 2;
+  SESSION_STATUS_BUSY = 3;
+  SESSION_STATUS_ERROR = 4;
+  SESSION_STATUS_COMPACTING = 5;
+  SESSION_STATUS_ARCHIVED = 6;
+}
+
+// TimeRange bounds a session or message. completed_at is unset while busy.
+message TimeRange {
+  google.protobuf.Timestamp started_at = 1;
+  optional google.protobuf.Timestamp completed_at = 2;
+}
+
+// Cost is display-only token/cost data. Billing is cgroup-based; these
+// fields are never authoritative for metering (design 0049 §4.1 rule 5).
+message Cost {
+  int64 input_tokens = 1;
+  int64 output_tokens = 2;
+  int64 reasoning_tokens = 3;
+  int64 cache_read_tokens = 4;
+  int64 cache_write_tokens = 5;
+  int64 total_tokens = 6;
+  double cost_usd = 7;
+}
+
+// ContextUsage is the session's live context occupancy. Non-monotonic by
+// design: compaction resets it.
+message ContextUsage {
+  int64 used = 1;
+  int64 window = 2;
+}
+
+// ModelRef identifies a model an adapter selected for a session or message.
+message ModelRef {
+  string id = 1;
+  string provider = 2;
+}
+
+// Session is the platform-owned view of one agent session. Agent/model
+// switches and compaction ride the transcript as Messages, not side-band
+// fields here (design 0049 §4.5).
+message Session {
+  string id = 1;
+  string workspace_id = 2;
+  string parent_id = 3;
+  string title = 4;
+  string agent_id = 5;
+  ModelRef model = 6;
+  SessionStatus status = 7;
+  Cost cost = 8;
+  ContextUsage context_usage = 9;
+  TimeRange time = 10;
+  string summary = 11;
+  bool archived = 12;
+}
+
+// PartType is the closed part union — 5 types forever (design 0049 §4.1
+// rule 1). Adding a value is a contract change, not a schema edit.
+enum PartType {
+  PART_TYPE_UNSPECIFIED = 0;
+  PART_TYPE_TEXT = 1;
+  PART_TYPE_REASONING = 2;
+  PART_TYPE_TOOL = 3;
+  PART_TYPE_FILE_CHANGE = 4;
+  PART_TYPE_CUSTOM = 5;
+}
+
+enum ToolStatus {
+  TOOL_STATUS_UNSPECIFIED = 0;
+  TOOL_STATUS_PENDING = 1;
+  TOOL_STATUS_RUNNING = 2;
+  TOOL_STATUS_COMPLETED = 3;
+  TOOL_STATUS_ERROR = 4;
+}
+
+// ToolState is the lifecycle state of one tool call.
+message ToolState {
+  ToolStatus status = 1;
+  string error = 2;
+  optional google.protobuf.Timestamp started_at = 3;
+  optional google.protobuf.Timestamp completed_at = 4;
+}
+
+// ToolPart is the payload of a Tool part: every tool call discriminated by
+// name (design 0049 §4.1 rule 2). input/output carry raw JSON because tool
+// schemas are open-ended; adapters and renderers decode per name.
+message ToolPart {
+  string call_id = 1;
+  string name = 2;
+  bytes input = 3;
+  bytes output = 4;
+  ToolState state = 5;
+}
+
+enum ChangeStatus {
+  CHANGE_STATUS_UNSPECIFIED = 0;
+  CHANGE_STATUS_ADDED = 1;
+  CHANGE_STATUS_MODIFIED = 2;
+  CHANGE_STATUS_DELETED = 3;
+  CHANGE_STATUS_RENAMED = 4;
+}
+
+// FileDiff is the payload of a FileChange part. patch is authoritative
+// unified-diff text — no hunk structs (design 0049 §4.1 rule 4).
+message FileDiff {
+  string path = 1;
+  string old_path = 2;
+  ChangeStatus status = 3;
+  string patch = 4;
+  int32 additions = 5;
+  int32 deletions = 6;
+}
+
+// CustomPart is the pressure-relief valve for extension-defined semantics
+// (design 0049 §4.3). kind is required; data carries raw JSON.
+message CustomPart {
+  string kind = 1;
+  bytes data = 2;
+}
+
+// Part is one typed piece of an assistant message. type is the authoritative
+// discriminator; the oneof payload mirrors it 1:1 — both are set together.
+message Part {
+  string id = 1;
+  PartType type = 2;
+  oneof payload {
+    string text = 3;
+    string reasoning = 4;
+    ToolPart tool = 5;
+    FileDiff file_change = 6;
+    CustomPart custom = 7;
+  }
+}
+
+// MessageType discriminates a transcript entry (design 0049 §4.5).
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_USER = 1;
+  MESSAGE_TYPE_ASSISTANT = 2;
+  MESSAGE_TYPE_SHELL = 3;
+  MESSAGE_TYPE_AGENT_SWITCH = 4;
+  MESSAGE_TYPE_MODEL_SWITCH = 5;
+  MESSAGE_TYPE_COMPACTION = 6;
+  MESSAGE_TYPE_SYSTEM = 7;
+}
+
+// Message is one entry in a session transcript: a flat discriminated record
+// where type selects which payload fields are meaningful.
+message Message {
+  string id = 1;
+  string session_id = 2;
+  MessageType type = 3;
+  optional google.protobuf.Timestamp created_at = 4;
+  repeated Part parts = 5;
+  optional ModelRef model = 6;
+  optional Cost cost = 7;
+  string text = 8;
+  string command = 9;
+  optional int32 exit_code = 10;
+  string from_agent = 11;
+  string to_agent = 12;
+  optional ModelRef from_model = 13;
+  optional ModelRef to_model = 14;
+  optional Error error = 15;
+}
+
+// Error is the payload of an error event (and an assistant message's error
+// field). Deliberately not a PartType — the part union stays closed.
+message Error {
+  string code = 1;
+  string message = 2;
+}
+
+// EventType is the contract's pinned event set. The ABI's synthetic stream
+// control notices (snapshot frame, reseed) are NOT contract events; they are
+// frame types on the stream (abi.proto).
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_SESSION_STATUS = 1;
+  EVENT_TYPE_SESSION_UPDATED = 2;
+  EVENT_TYPE_MESSAGE_START = 3;
+  EVENT_TYPE_MESSAGE_END = 4;
+  EVENT_TYPE_PART_START = 5;
+  EVENT_TYPE_PART_DELTA = 6;
+  EVENT_TYPE_PART_END = 7;
+  EVENT_TYPE_INPUT_REQUEST = 8;
+  EVENT_TYPE_INPUT_RESOLVED = 9;
+  EVENT_TYPE_ERROR = 10;
+}
+
+// InputKind unifies questions and permissions: both are "the agent needs a
+// human" (design 0049 §4.5).
+enum InputKind {
+  INPUT_KIND_UNSPECIFIED = 0;
+  INPUT_KIND_QUESTION = 1;
+  INPUT_KIND_PERMISSION = 2;
+}
+
+// InputOption is one selectable choice within a question input request.
+message InputOption {
+  string label = 1;
+  string description = 2;
+}
+
+// ToolRef identifies the tool call that triggered an input request, if any.
+message ToolRef {
+  string message_id = 1;
+  string call_id = 2;
+}
+
+// InputRequest is the unified pending-input shape. Question fields apply
+// when kind = QUESTION; permission fields when kind = PERMISSION. metadata
+// values carry raw JSON (open-ended extension data).
+message InputRequest {
+  string id = 1;
+  string session_id = 2;
+  string root_session_id = 3;
+  InputKind kind = 4;
+  string question = 5;
+  string header = 6;
+  repeated InputOption options = 7;
+  bool multiple = 8;
+  bool custom = 9;
+  string permission = 10;
+  repeated string patterns = 11;
+  repeated string always = 12;
+  map<string, bytes> metadata = 13;
+  ToolRef tool = 14;
+}
+
+// Event is one item on a session's streaming event stream. type selects
+// which payload fields are meaningful; the rest stay unset.
+message Event {
+  EventType type = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string session_id = 3;
+  string message_id = 4;
+  string part_id = 5;
+  SessionStatus status = 6;
+  Session session = 7;
+  Message message = 8;
+  Part part = 9;
+  string delta = 10;
+  InputRequest input = 11;
+  Error error = 12;
+}

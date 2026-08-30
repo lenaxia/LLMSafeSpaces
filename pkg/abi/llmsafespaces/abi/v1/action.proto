@@ -1,0 +1,82 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Typed session actions (design 0055 M1, op 5): one verb slot,
+// capability-negotiated. agentd is the sole writer of session mutations;
+// actions serialize against delivery via the same per-session single-flight
+// machinery. Undeclared actions return NotSupported per the capability
+// report — harness differences are data, never API-side branches.
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+import "llmsafespaces/abi/v1/contract.proto";
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+message ActionRequest {
+  string session_id = 1;
+  oneof action {
+    InterruptAction interrupt = 2;
+    SwitchModelAction switch_model = 3;
+    SwitchAgentAction switch_agent = 4;
+    AnswerInputAction answer_question = 5;
+    CompactAction compact = 6;
+  }
+}
+
+// InterruptAction aborts the in-flight turn. Non-destructive (I7): it
+// mutates turn projection state only and NEVER entry states — admitted
+// rows survive an interrupt and drain after it.
+message InterruptAction {}
+
+message SwitchModelAction {
+  ModelRef model = 1;
+}
+
+message SwitchAgentAction {
+  string agent_id = 1;
+}
+
+// AnswerInputAction answers a pending InputRequest (questions and
+// permissions unified, design 0049 §4.5): selected option labels and/or a
+// custom free-text answer.
+message AnswerInputAction {
+  string input_id = 1;
+  repeated string option_ids = 2;
+  optional string custom_text = 3;
+}
+
+message CompactAction {}
+
+message ActionResult {
+  string session_id = 1;
+  oneof result {
+    InterruptResult interrupt = 2;
+    SwitchModelResult switch_model = 3;
+    SwitchAgentResult switch_agent = 4;
+    AnswerInputResult answer_question = 5;
+    CompactResult compact = 6;
+  }
+  // effect_seq is the seq of the event the action produced, when knowable
+  // before the response returns (action-result ↔ event causal linkage is a
+  // design-0055 open item; unset means "not yet knowable").
+  optional uint64 effect_seq = 7;
+}
+
+message InterruptResult {}
+
+message SwitchModelResult {
+  ModelRef model = 1;
+}
+
+message SwitchAgentResult {
+  string agent_id = 1;
+}
+
+message AnswerInputResult {
+  string input_id = 1;
+}
+
+message CompactResult {}

@@ -4,6 +4,7 @@ go 1.26.6
 
 require (
 	cloud.google.com/go/kms v1.31.0
+	connectrpc.com/connect v1.20.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alicebob/miniredis/v2 v2.34.0
 	github.com/aws/aws-sdk-go-v2 v1.42.1
@@ -182,11 +183,4 @@ require (
 	k8s.io/kube-openapi v0.0.0-20241105132330-32ad38e42d3f // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.2 // indirect
-)
-
-replace (
-	github.com/lenaxia/llmsafespaces/mocks => ./mocks
-	github.com/lenaxia/llmsafespaces/mocks/kubernetes => ./mocks/kubernetes
-	github.com/lenaxia/llmsafespaces/mocks/logger => ./mocks/logger
-	github.com/lenaxia/llmsafespaces/pkg => ./pkg
 )

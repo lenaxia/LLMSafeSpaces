@@ -27,6 +27,7 @@ while IFS= read -r f; do
 done < <(find . -type f -name "*.go" \
             -not -path "./.git/*" \
             -not -path "*/vendor/*" \
-            -not -path "*/node_modules/*")
+            -not -path "*/node_modules/*" \
+            -not -path "./pkg/abi/v1/*")
 
 echo "Total: $total  Added: $added  Skipped (already had SPDX): $skipped"

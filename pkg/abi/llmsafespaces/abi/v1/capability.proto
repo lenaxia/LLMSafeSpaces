@@ -1,0 +1,62 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// Capability report (design 0055 M1/M4): provenance, supported actions, and
+// supported delivery part types ride the events snapshot frame. Harness
+// limits are data: every typed action and part kind is declared here, and
+// undeclared capability use returns NotSupported — never an API-side branch.
+
+syntax = "proto3";
+
+package llmsafespaces.abi.v1;
+
+option go_package = "github.com/lenaxia/llmsafespaces/pkg/abi/v1;abi";
+
+// Provenance is the 0054 provenance predicate relocated into the report
+// (M4): only PLATFORM_PINNED pods with the state-authority surface may arm
+// AGENTD_STATE_AUTHORITY; the wiring rejects the rest.
+enum Provenance {
+  PROVENANCE_UNSPECIFIED = 0;
+  PROVENANCE_PLATFORM_PINNED = 1;
+  PROVENANCE_UNPINNED = 2;
+  PROVENANCE_BYO = 3;
+}
+
+// ActionType enumerates the op-5 union for capability declaration.
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_INTERRUPT = 1;
+  ACTION_TYPE_SWITCH_MODEL = 2;
+  ACTION_TYPE_SWITCH_AGENT = 3;
+  ACTION_TYPE_ANSWER_QUESTION = 4;
+  ACTION_TYPE_COMPACT = 5;
+}
+
+// DeliveryPartKind enumerates delivery part kinds for capability
+// declaration. opencode on 1.18.x declares TEXT only (D3).
+enum DeliveryPartKind {
+  DELIVERY_PART_KIND_UNSPECIFIED = 0;
+  DELIVERY_PART_KIND_TEXT = 1;
+  DELIVERY_PART_KIND_FILE = 2;
+}
+
+message CapabilityReport {
+  Provenance provenance = 1;
+  string harness = 2;
+  string harness_version = 3;
+  string agentd_version = 4;
+  repeated ActionType supported_actions = 5;
+  repeated DeliveryPartKind supported_delivery_parts = 6;
+  string abi_version = 7;
+  // v2_delivery reports whether the harness's V2 session runner surface is
+  // present (the M4 flag-matrix "surface present" predicate).
+  bool v2_delivery = 8;
+}
+
+// NotSupported is the typed error detail for capability-gated refusals —
+// undeclared actions and undeclared delivery part kinds. It rides connect
+// CodeUnimplemented errors, so the refusal survives every codec.
+message NotSupported {
+  string capability = 1;
+  string detail = 2;
+}

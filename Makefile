@@ -15,11 +15,17 @@ BINARY_UNIX=$(BINARY_NAME)_unix
         openapi-validate \
         repolint repolint-build chart-sync-migrations install-hooks \
         relay-bin \
+        abi-generate abi-lint abi-breaking abi-check abi-codegen-tools \
         check tools-install \
         gitleaks govulncheck trivy-fs trivy-config security-scan \
         migration-roundtrip migration-fk-cascade migration-idempotent migration-data-cleanup migration-safety migration-safety-docker \
         test-full cover-floor mutation \
         release-tag release-verify-changelog
+
+# Codegen tool pins — codegen must be reproducible, unlike lint tools.
+BUF_VERSION=v1.72.0
+PROTOC_GEN_GO_VERSION=v1.36.11
+PROTOC_GEN_CONNECT_GO_VERSION=v1.20.0
 
 all: test build
 
@@ -267,14 +273,63 @@ install-hooks:
 # ---------------------------------------------------------------------------
 # tools-install: install the developer tools the gates rely on. Run once
 # per fresh clone, or after a Go-toolchain upgrade. Idempotent.
-tools-install:
+tools-install: abi-codegen-tools
 	$(GOCMD) install golang.org/x/tools/cmd/goimports@latest
 	$(GOCMD) install github.com/client9/misspell/cmd/misspell@latest
 	@which golangci-lint >/dev/null 2>&1 || \
 		$(GOCMD) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-	@echo "Tools installed: goimports, misspell, golangci-lint"
+	@echo "Tools installed: goimports, misspell, golangci-lint, buf, protoc-gen-go, protoc-gen-connect-go"
+	@echo "protoc-gen-es comes from frontend/node_modules (npm install in frontend/)."
 	@echo "Other tools (helm, gitleaks, govulncheck, trivy) are checked"
 	@echo "by the relevant gates and installed on demand."
+
+# abi-codegen-tools: the pinned schema codegen toolchain only. Used by the
+# CI abi-schema job (which needs no lint tools) and by tools-install.
+abi-codegen-tools:
+	$(GOCMD) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	$(GOCMD) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	$(GOCMD) install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
+
+# --- Harness ABI schema (Epic 69 / US-69.1) --------------------------------
+# The .proto sources are the ABI (pkg/abi/llmsafespaces/abi/v1/); generated
+# code lands in pkg/abi/v1 (Go) and frontend/src/abi (TS, consumed in S3).
+# Hand edits to generated files cannot survive `make abi-check`.
+
+# abi-generate: regenerate all stubs. Requires buf + protoc plugins on PATH
+# (make tools-install) and frontend/node_modules for protoc-gen-es. The Go
+# output is piped through goimports so the generated tree satisfies the same
+# imports gate as hand-written code (and regen stays idempotent).
+abi-generate:
+	@export PATH="$$(go env GOPATH)/bin:$$PATH:frontend/node_modules/.bin"; \
+	buf generate pkg/abi && \
+	goimports -w pkg/abi/v1
+
+# abi-lint: buf STANDARD lint over the schema (exceptions documented in buf.yaml).
+abi-lint:
+	@export PATH="$$(go env GOPATH)/bin:$$PATH"; \
+	buf lint
+
+# abi-breaking: run buf breaking IF the S2 freeze is armed (abi/FROZEN
+# records the baseline git ref). Before the freeze this is a no-op by
+# design (D5: the schema evolves freely during the S1 shadow).
+abi-breaking:
+	@export PATH="$$(go env GOPATH)/bin:$$PATH"; \
+	if [ -f abi/FROZEN ]; then \
+		echo "abi/FROZEN present — breaking gate ARMED against $$(cat abi/FROZEN)"; \
+		buf breaking pkg/abi --against "$$(cat abi/FROZEN)"; \
+	else \
+		echo "abi/FROZEN absent — S1 evolution window, breaking gate advisory only (D5)"; \
+	fi
+
+# abi-check: the CI gate. Lint + breaking + Go regeneration freshness. (TS
+# freshness is verified in the CI abi job, which has npm; locally run
+# make abi-generate with frontend/node_modules present.)
+abi-check: abi-lint abi-breaking
+	@export PATH="$$(go env GOPATH)/bin:$$PATH:frontend/node_modules/.bin"; \
+	buf generate pkg/abi && goimports -w pkg/abi/v1; \
+	git diff --exit-code -- pkg/abi/v1 || \
+		{ echo "pkg/abi/v1 is stale — run make abi-generate and commit"; exit 1; }
+	@echo "ABI schema gates passed."
 
 # check: run all the pre-merge quality gates locally. Mirrors what CI
 # will block on. Use this before pushing to avoid CI round-trips.
