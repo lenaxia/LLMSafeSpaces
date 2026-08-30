@@ -53,6 +53,10 @@ type sessionStatusTracker struct {
 	// unattended-escalation detection. Cleared on idle.
 	busySince    map[string]time.Time
 	promptTokens map[string]int64 // session ID → current context size (input + cache.read + cache.write)
+	// onRawEvent, when non-nil, receives every raw SSE payload before
+	// dialect parsing (Epic 69 US-69.2 — the sessionstate authority's
+	// ingestion hook). Never blocks: the authority buffers internally.
+	onRawEvent func([]byte)
 }
 
 func newSessionStatusTracker() *sessionStatusTracker {
@@ -335,6 +339,13 @@ func (t *sessionStatusTracker) connectAndRead(ctx context.Context, client *OpenC
 }
 
 func (t *sessionStatusTracker) processEvent(data string) {
+	// Epic 69 US-69.2: forward the raw payload to the session-state
+	// authority BEFORE any dialect parsing — the authority's recover wall
+	// owns projection ingestion; this tracker remains the statusz/busy
+	// derivation it always was.
+	if t.onRawEvent != nil {
+		t.onRawEvent([]byte(data))
+	}
 	// Parse flat envelope first (cheap). Only try nested if flat fails.
 	var evt struct {
 		Type       string          `json:"type"`

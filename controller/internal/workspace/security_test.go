@@ -268,8 +268,10 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 		require.True(t, found, "expected main container mount %q to be present", name)
 	}
 
-	// The workspace PVC is now mounted at three paths via explicit subPaths:
-	// /workspace (subPath: workspace), /home/sandbox (subPath: home), /tmp (subPath: tmp).
+	// The workspace PVC is mounted via explicit subPaths: /workspace
+	// (workspace), /home/sandbox (home), /tmp (tmp), and — since Epic 69
+	// US-69.2 — /platform (platform: the sessionstate durable cursor;
+	// single-container mode only, the documented uid-1000 weakening).
 	var workspaceMountPaths []string
 	homeMountSubPath := ""
 	workspaceMountSubPath := ""
@@ -289,14 +291,22 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 		}
 		require.NotEqual(t, "sandbox-home", m.Name, "sandbox-home emptyDir mount must not exist")
 	}
-	require.ElementsMatch(t, []string{"/workspace", "/home/sandbox", "/tmp"}, workspaceMountPaths,
-		"workspace PVC must be mounted at /workspace, /home/sandbox, and /tmp")
+	require.ElementsMatch(t, []string{"/workspace", "/home/sandbox", "/tmp", "/platform"}, workspaceMountPaths,
+		"workspace PVC must be mounted at /workspace, /home/sandbox, /tmp, and /platform (Epic 69 platform/ subPath)")
 	require.Equal(t, "workspace", workspaceMountSubPath,
 		"/workspace mount must use SubPath: \"workspace\"")
 	require.Equal(t, "home", homeMountSubPath,
 		"/home/sandbox mount must use SubPath: \"home\"")
 	require.Equal(t, "tmp", tmpMountSubPath,
 		"/tmp mount must use SubPath: \"tmp\"")
+	platformMountSubPath := ""
+	for _, m := range main.VolumeMounts {
+		if m.MountPath == "/platform" {
+			platformMountSubPath = m.SubPath
+		}
+	}
+	require.Equal(t, "platform", platformMountSubPath,
+		"/platform mount must use SubPath: \"platform\" (Epic 69 US-69.2)")
 
 	for _, v := range pod.Spec.Volumes {
 		require.NotEqual(t, "sandbox-home", v.Name, "sandbox-home emptyDir volume must not exist")

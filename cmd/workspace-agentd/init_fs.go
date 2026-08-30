@@ -133,6 +133,14 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	runtimeDir := fs.String("runtime-dir", "/sandbox-runtime", "pod-scoped tmpfs runtime dir")
 	pwSource := fs.String("pw-source", "/mnt/secrets/password", "projected password Secret dir")
 	freemodels := fs.String("freemodels", "/mnt/freemodels/models.json", "free-models catalog (optional)")
+	// Epic 69 US-69.2 — the platform/ PVC subPath (sessionstate seq cursor
+	// + future ledger). Ownership follows the RUNNING uid: single-container
+	// agentd is uid 1000, so the default platform-init (uid 1000) creates
+	// it; in sidecar mode platform-init skips it and a uid-2000 init
+	// (init-fs --platform-subpath=only) creates it owned by the sidecar.
+	// Mode 0750, files inside 0640: a directory needs the x bit to
+	// traverse — design 0055's "0640" applies to the payload files.
+	platformSubpath := fs.String("platform-subpath", "create", "platform/ subPath handling: create | skip | only")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -143,10 +151,23 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 		return initFSExitOperational
 	}
 
+	if *platformSubpath == "only" {
+		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
+			return fail("platform subPath: %v", err)
+		}
+		_, _ = fmt.Fprintln(stderr, "init-fs: platform-only ok")
+		return 0
+	}
+
 	// 1. PVC subPath roots (absorbs workspace-dirs).
 	for _, d := range []string{"workspace", "home", "tmp"} {
 		if err := os.MkdirAll(filepath.Join(*pvcRoot, d), 0o750); err != nil {
 			return fail("subPath root %s: %v", d, err)
+		}
+	}
+	if *platformSubpath == "create" {
+		if err := os.MkdirAll(filepath.Join(*pvcRoot, "platform"), 0o750); err != nil {
+			return fail("platform subPath: %v", err)
 		}
 	}
 

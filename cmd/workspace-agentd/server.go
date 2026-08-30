@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -44,6 +45,10 @@ type serverDeps struct {
 	// Single-container mode leaves it nil (the loop falls back to
 	// deps.proc); sidecar mode wires the control-socket restarter.
 	restarter healthWatchdogRestarter
+	// stateAuthority is the Epic 69 session-state authority (US-69.2).
+	// Nil only when construction failed (degraded, logged at boot).
+	stateAuthority *sessionstate.Authority
+
 	// vitals, when non-nil, is the watchdog corroboration probe.
 	// Single-container mode leaves it nil (built from deps.proc);
 	// sidecar mode wires the socket gatherer. NEVER leave both nil in
@@ -337,6 +342,15 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 		// a nil proc meant files applied but opencode never restarted).
 		reloadProc = deps.reloadProc
 	}
+	// Epic 69 US-69.2: the harness-ABI surface (five ops, Basic-auth
+	// gated inside the authority, per-session rate limits). Mounted from
+	// the authority so the module owns its route subtree (I8).
+	if deps.stateAuthority != nil {
+		if mount, handler := deps.stateAuthority.Handler(); mount != "" {
+			userMux.Handle(mount, handler)
+		}
+	}
+
 	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
 		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,

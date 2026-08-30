@@ -32,6 +32,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -183,6 +184,16 @@ func runSidecarCommand(_ []string) int {
 	deps.client = client
 	deps.agentConfigWriter = agentConfigWriter
 
+	// Epic 69 US-69.2: the sidecar runs the session-state authority too —
+	// same machinery, boot reseed only (the sidecar is not opencode's
+	// parent; the generation signal crosses the control socket and lands
+	// with the US-69.3/69.4 surface work).
+	sidecarAuthority := newStateAuthority(client, password, deps.controlPlanePassword)
+	if sidecarAuthority != nil {
+		deps.stateAuthority = sidecarAuthority
+		deps.sseTracker.onRawEvent = sidecarAuthority.Ingest
+	}
+
 	// Same loop set as single-container mode: SSE tracking, pressure
 	// monitor, ops ticker, fillGaps, health watchdog (+reaper loop,
 	// which is a no-op — the sidecar spawns no children and never
@@ -200,6 +211,9 @@ func runSidecarCommand(_ []string) int {
 		}
 	}
 
+	if sidecarAuthority != nil {
+		startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonBoot)
+	}
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
