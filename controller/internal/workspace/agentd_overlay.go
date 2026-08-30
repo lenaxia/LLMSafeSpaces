@@ -72,18 +72,10 @@ var (
 	digestRe                    = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 )
 
-// agentdOverlayEnabled reports whether image-volume agentd delivery is on.
-func (r *WorkspaceReconciler) agentdOverlayEnabled() bool {
-	return r.AgentdImage != ""
-}
-
 // wireAgentdOverlay adds the agentd image volume, the read-only mount, and
-// the verification env pins to the main container and volume list when
-// overlay delivery is enabled. No-op in legacy mode.
+// the verification env pins to the main container and volume list.
+// Design 0053 §4.5: always on — the pins are validated mandatory.
 func (r *WorkspaceReconciler) wireAgentdOverlay(mainContainer *corev1.Container, volumes *[]corev1.Volume) {
-	if !r.agentdOverlayEnabled() {
-		return
-	}
 	*volumes = append(*volumes, corev1.Volume{
 		Name: agentdVolumeName,
 		VolumeSource: corev1.VolumeSource{
@@ -125,11 +117,11 @@ func ValidateAgentdDelivery(image, amd64, arm64 string) error {
 // controller startup: image (digest-pinned) + both per-arch binary hashes,
 // or nothing at all (legacy baked-in mode).
 func validateAgentdDeliveryConfig(image, amd64, arm64 string) error {
-	if image == "" && amd64 == "" && arm64 == "" {
-		return nil
-	}
+	// Design 0053 §4.5: mandatory pin, no baked fallback. Empty image
+	// is a fatal configuration error, not the opt-in no-op it was in
+	// the S1 interim.
 	if image == "" {
-		return fmt.Errorf("agentd delivery: --agentd-image is required when binary sha256 flags are set")
+		return fmt.Errorf("agentd delivery: --agentd-image is mandatory (design 0053 §4.5 — the base image carries no platform binaries)")
 	}
 	if !digestRe.MatchString(image) {
 		return fmt.Errorf("agentd delivery: --agentd-image must be digest-pinned (@sha256:<64 hex>), got %q — a floating tag defeats both reproducibility and the entrypoint verify contract", image)
@@ -162,7 +154,7 @@ func validateAgentdDeliveryConfig(image, amd64, arm64 string) error {
 // the failure reason (pod recreated with a good binary or a corrected
 // pin). Repeated reconciles of the same episode do not re-emit.
 func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Context, ws *v1.Workspace, pod *corev1.Pod) bool {
-	if !r.agentdOverlayEnabled() || !podHasAgentdOverlay(pod) {
+	if !podHasAgentdOverlay(pod) {
 		return false
 	}
 
@@ -216,7 +208,7 @@ func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Contex
 // Same gate protects detection below from misreading an unrelated
 // exit-81 on a legacy pod.
 func (r *WorkspaceReconciler) markAgentdVerified(pod *corev1.Pod, ws *v1.Workspace) {
-	if !r.agentdOverlayEnabled() || !podHasAgentdOverlay(pod) {
+	if !podHasAgentdOverlay(pod) {
 		return
 	}
 	if prev := conditionOfTypeLocal(ws, v1.WorkspaceConditionAgentdVerified); prev != nil && prev.Status == "True" {

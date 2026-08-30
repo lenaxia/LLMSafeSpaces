@@ -359,11 +359,13 @@ func TestPodBuilder_FreeModelsVolume_AbsentWhenNoRelay(t *testing.T) {
 		"free-models volume must be absent when no relay URL is configured — "+
 			"the ConfigMap exists but the pod has no use for it")
 
-	credInit := findInitContainer(pod, "credential-setup")
-	require.NotNil(t, credInit)
-	assert.Nil(t, findVolumeMount(credInit, "free-models"),
-		"credential-setup must not mount the free-models volume when relay is off")
-	assert.Nil(t, findEnv(credInit, "INFERENCE_RELAY_BASEURL"),
+	platformInit := findInitContainer(pod, "platform-init")
+	require.NotNil(t, platformInit)
+	assert.Nil(t, findVolumeMount(platformInit, "free-models"),
+		"platform-init must not mount the free-models volume when relay is off")
+	platformMaterialize := findInitContainer(pod, "platform-materialize")
+	require.NotNil(t, platformMaterialize)
+	assert.Nil(t, findEnv(platformMaterialize, "INFERENCE_RELAY_BASEURL"),
 		"INFERENCE_RELAY_BASEURL env must be absent when relay is off — "+
 			"its presence is what tells materialize to attempt relay injection")
 }
@@ -393,13 +395,13 @@ func TestPodBuilder_FreeModelsVolume_PresentWhenRelayConfigured(t *testing.T) {
 		"free-models ConfigMap mount MUST be optional — pods can boot before "+
 			"the controller's first refresh completes; missing CM must not fail the pod")
 
-	credInit := findInitContainer(pod, "credential-setup")
-	require.NotNil(t, credInit, "credential-setup init container must exist")
+	platformInit := findInitContainer(pod, "platform-init")
+	require.NotNil(t, platformInit, "platform-init init container must exist")
 
-	mount := findVolumeMount(credInit, "free-models")
-	require.NotNil(t, mount, "credential-setup must mount the free-models volume")
+	mount := findVolumeMount(platformInit, "free-models")
+	require.NotNil(t, mount, "platform-init must mount the free-models volume")
 	assert.Equal(t, "/mnt/freemodels", mount.MountPath,
-		"free-models must be mounted at /mnt/freemodels — the credential-setup script "+
+		"free-models must be mounted at /mnt/freemodels — the init-fs subcommand "+
 			"copies models.json from this path into /sandbox-cfg/free-models.json")
 	assert.True(t, mount.ReadOnly, "free-models mount must be read-only")
 }
@@ -419,12 +421,12 @@ func TestPodBuilder_RelayBaseURLEnv_OnInitContainer(t *testing.T) {
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
 
-	credInit := findInitContainer(pod, "credential-setup")
-	require.NotNil(t, credInit)
+	platformMaterialize := findInitContainer(pod, "platform-materialize")
+	require.NotNil(t, platformMaterialize)
 
-	env := findEnv(credInit, "INFERENCE_RELAY_BASEURL")
+	env := findEnv(platformMaterialize, "INFERENCE_RELAY_BASEURL")
 	require.NotNil(t, env,
-		"INFERENCE_RELAY_BASEURL must be set on the credential-setup init container "+
+		"INFERENCE_RELAY_BASEURL must be set on the platform-materialize init container "+
 			"so the materialize subcommand can pre-render the relay block")
 	assert.Equal(t, "https://relay.test.example/", env.Value,
 		"relay URL is the controller's InferenceRelayURL verbatim (no path-segment rewriting)")
@@ -449,103 +451,6 @@ func TestPodBuilder_RelayBaseURLEnv_MainContainer(t *testing.T) {
 	require.NotNil(t, env, "main container must carry INFERENCE_RELAY_BASEURL when InferenceRelayURL is set")
 	assert.Equal(t, "https://relay.test.example/", env.Value,
 		"INFERENCE_RELAY_BASEURL equals InferenceRelayURL verbatim")
-}
-
-// TestPodBuilder_FreeModelsScriptCopy verifies the credential-setup
-// init script copies the optional free-models file into /sandbox-cfg/
-// when the file is present. The materialize subcommand expects to find
-// it at /sandbox-cfg/free-models.json, sibling to other config files.
-//
-// The cp is guarded by `if [ -f /mnt/freemodels/models.json ]` so a
-// missing CM (Optional: true) doesn't break the script — the copy
-// happens IFF the file exists.
-func TestPodBuilder_FreeModelsScriptCopy(t *testing.T) {
-	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerWithRelay(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	credInit := findInitContainer(pod, "credential-setup")
-	require.NotNil(t, credInit)
-	require.Len(t, credInit.Command, 3)
-	script := credInit.Command[2]
-
-	assert.Contains(t, script, "if [ -f /mnt/freemodels/models.json ]",
-		"copy must be conditional — missing CM (Optional: true) must not fail the script")
-	assert.Contains(t, script, "cp /mnt/freemodels/models.json /sandbox-cfg/free-models.json",
-		"models.json must land at /sandbox-cfg/free-models.json so materialize can find it")
-}
-
-// TestPodBuilder_InitXDGDataHome locks in the PR #401 review fix:
-// the credential-setup init container must carry XDG_DATA_HOME set
-// to /workspace/.local so agentd's materialize subcommand reads
-// auth.json from the same path opencode reads it from in the main
-// container (the symlink the init script creates that points into
-// /sandbox-runtime/rt/auth.json).
-//
-// Without this env var, preBootAuthJSONPath in the init container
-// falls back to $HOME/.local/opencode/auth.json
-// (=/home/sandbox/.local/opencode/auth.json), which is NOT the same
-// file opencode reads. For a resumed pod with a stale pre-US-35.7
-// auth.json carrying a personal opencode key on the PVC home subpath,
-// the bypass check would silently miss the key and the cold-start
-// optimization would be lost (legacy in-pod injector would still
-// catch it but the user loses the savings).
-func TestPodBuilder_InitXDGDataHome(t *testing.T) {
-	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerFor(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	credInit := findInitContainer(pod, "credential-setup")
-	require.NotNil(t, credInit)
-
-	xdg := findEnv(credInit, "XDG_DATA_HOME")
-	require.NotNil(t, xdg,
-		"credential-setup init must carry XDG_DATA_HOME so preBootAuthJSONPath "+
-			"resolves to the same auth.json opencode reads in the main container")
-	assert.Equal(t, "/workspace/.local", xdg.Value,
-		"XDG_DATA_HOME must match entrypoint-opencode.sh's value (/workspace/.local) — "+
-			"any drift between the two would silently break the personal-key bypass")
-}
-
-// TestPodBuilder_WorkspaceDirsInit_NoGitInit verifies the workspace-dirs
-// init container creates PVC directories but does NOT run `git init`.
-//
-// PR #715 (US-65.3) added `git init /workspace` to enable
-// pkg/agent/opencode/filediff.Producer. This was the root cause of the
-// snapshot bloat spiral (worklog 0746): making /workspace a git repo
-// triggers opencode's snapshot system, which has no self-exclusion and
-// recursively stages its own object database inside .local/, causing
-// exponential growth, CPU starvation, and "Load failed" for users.
-//
-// The fix is to NOT git-init /workspace. opencode detects VCS
-// per-project (when users clone repos to /workspace/myproject) and does
-// the right thing natively. The container-level git repo served no
-// purpose: filediff.Producer diffs against HEAD (which never existed —
-// no commits were ever made), and opencode's native session.diff event
-// already carries patch text.
-func TestPodBuilder_WorkspaceDirsInit_NoGitInit(t *testing.T) {
-	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerFor(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	dirsInit := findInitContainer(pod, "workspace-dirs")
-	require.NotNil(t, dirsInit, "workspace-dirs init container must exist")
-	require.NotEmpty(t, dirsInit.Command, "workspace-dirs must have a command")
-	require.GreaterOrEqual(t, len(dirsInit.Command), 3, "command must be [/bin/sh -c <script>]")
-
-	script := dirsInit.Command[2]
-	assert.Contains(t, script, "mkdir -p /pvc/workspace /pvc/home /pvc/tmp",
-		"workspace-dirs must create the three PVC subPath directories")
-	assert.NotContains(t, script, "git init",
-		"workspace-dirs must NOT run `git init` — it triggers opencode's snapshot self-inclusion recursion (worklog 0746)")
-	assert.NotContains(t, script, "git config",
-		"workspace-dirs must NOT run `git config` — no git repo should be created")
 }
 
 // Silence "imported and not used" if any test above is removed.

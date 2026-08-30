@@ -54,11 +54,6 @@ func agentdFlags(t *testing.T, valuesYAML string) []string {
 	return flags
 }
 
-func TestAgentdDelivery_DefaultRendersNoFlags(t *testing.T) {
-	flags := agentdFlags(t, "")
-	require.Empty(t, flags, "legacy mode must render no agentd flags")
-}
-
 func TestAgentdDelivery_ConfiguredRendersAllFlags(t *testing.T) {
 	flags := agentdFlags(t, `controller:
   agentdDelivery:
@@ -98,7 +93,9 @@ func TestAgentdDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided hash override must fail the render; output: %s", out)
 	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
@@ -119,12 +116,14 @@ func TestAgentdDelivery_HashesWithoutImageFailsRender(t *testing.T) {
     binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 `), 0o600))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err,
 		"hashes-without-image must fail the render — silently running legacy while the operator believes overlay mode is on is the worst failure mode; output: %s", out)
-	require.Contains(t, string(out), "agentdDelivery.image is required",
-		"the failure must be the reverse-guard fail; output: %s", out)
+	require.Contains(t, string(out), "agentdDelivery.image is mandatory",
+		"the failure must be the mandatory-pin gate; output: %s", out)
 }
 
 // TestAgentdDelivery_OneSidedArm64OverrideFailsRender mirrors the
@@ -141,7 +140,9 @@ func TestAgentdDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
     image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     binarySHA256Arm64: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 `), 0o600))
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath,
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided arm64-only override must fail the render; output: %s", out)
 	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
@@ -200,14 +201,4 @@ func TestAgentdDelivery_PinsRBACGrantRenders(t *testing.T) {
 	}
 	require.True(t, scoped, "exact scoped rule required: get+update on configmaps resourceNames=[llmsafespaces-agentd-pins]")
 	require.True(t, createRule, "separate unscoped create rule required (create cannot be resourceNames-scoped)")
-}
-
-func TestAgentdDelivery_PinsRBACGrantAbsentByDefault(t *testing.T) {
-	docs := helmTemplate(t, "")
-	for _, doc := range docs {
-		raw, err := yaml.Marshal(doc)
-		require.NoError(t, err)
-		require.NotContains(t, string(raw), "llmsafespaces-agentd-pins",
-			"legacy mode must not grant agentd-pins access")
-	}
 }

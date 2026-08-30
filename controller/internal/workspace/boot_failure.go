@@ -46,11 +46,16 @@ func platformBootContainer(name string) bool {
 // Records BootReady=False, emits one warning event and one metric
 // increment per episode, and returns true.
 func (r *WorkspaceReconciler) detectPlatformBootFailure(ctx context.Context, ws *v1.Workspace, pod *corev1.Pod) bool {
-	if !r.agentdOverlayEnabled() {
-		return false
-	}
-
+	// Design 0053 S3: init containers are filtered by name exactly as
+	// main containers are — only PLATFORM boot containers surface here
+	// (surfaced, not recovered: deleting the pod cannot fix a platform
+	// bug). User-plane inits (workspace-setup) fall through to the #935
+	// crashloop recovery, where pod recreation genuinely heals. Pre-S3
+	// the legacy gate masked this distinction for every non-overlay pod.
 	for i := range pod.Status.InitContainerStatuses {
+		if !platformBootContainer(pod.Status.InitContainerStatuses[i].Name) {
+			continue
+		}
 		if cs := bootFailureStatus(&pod.Status.InitContainerStatuses[i]); cs != nil {
 			r.reportPlatformBootFailure(ctx, ws, pod, pod.Status.InitContainerStatuses[i].Name, cs)
 			return true
@@ -108,9 +113,6 @@ func (r *WorkspaceReconciler) reportPlatformBootFailure(ctx context.Context, ws 
 // markBootReady sets the positive condition once a pod's platform boot
 // phase is observed clean. Cheap and idempotent.
 func (r *WorkspaceReconciler) markBootReady(pod *corev1.Pod, ws *v1.Workspace) {
-	if !r.agentdOverlayEnabled() {
-		return
-	}
 	if prev := conditionOfTypeLocal(ws, v1.WorkspaceConditionBootReady); prev != nil && prev.Status == "True" {
 		return
 	}

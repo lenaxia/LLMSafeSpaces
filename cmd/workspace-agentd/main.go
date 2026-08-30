@@ -126,6 +126,17 @@ func main() {
 		os.Exit(runRedactCommand(os.Args[2:]))
 	}
 
+	// Design 0053 S3: the pod execs this binary directly (the baked
+	// entrypoint's verify_and_select_agentd is deleted). Same
+	// fail-closed self-verify as supervise-opencode — exit 81 keeps the
+	// controller's AgentdVerificationFailed detection contract. Runs
+	// before ANY work; no-op when the overlay marker is unset (dev).
+	if err := runSupervisorSelfVerify("/proc/self/exe"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0o644) //nolint:gosec // best-effort, mirrors runSuperviseOpencodeCommand
+		os.Exit(supervisorExitVerifyFailed)
+	}
+
 	supervise := len(os.Args) > 1 && os.Args[1] == "--supervise"
 
 	// #904: agentd is the container's PID 1 (or a subreaper when run
@@ -142,6 +153,7 @@ func main() {
 	var bgWg sync.WaitGroup
 
 	password := readAgentPassword()
+	bootAgentPassword = password
 	client := &OpenCodeClient{password: password, client: &http.Client{Timeout: 5 * time.Second}}
 
 	// #887 D5.2: refuse to boot without an admin-mux credential (unset

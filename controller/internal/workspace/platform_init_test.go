@@ -292,38 +292,3 @@ func TestPlatformInit_Step2_SupervisorCommandBypass(t *testing.T) {
 	// Mode marker retained (identity; markers read it).
 	require.NotNil(t, sidecarEnvVar(main, "AGENTD_SIDECAR_MODE"))
 }
-
-// TestPlatformInit_Step2_LegacyMode_KeepsBakedEntrypoint: sidecar OFF →
-// the baked entrypoint stays (it performs verify+select, secrets-env
-// sourcing, and the --supervise branch for single-container mode). It is
-// the migration step-5 deletion target, unchanged until then.
-func TestPlatformInit_Step2_LegacyMode_KeepsBakedEntrypoint(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-	r := reconcilerWithAgentd(t) // overlay on, sidecar off
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	main := &pod.Spec.Containers[0]
-	require.Equal(t, []string{"/usr/local/bin/entrypoint-opencode.sh"}, main.Command)
-	require.Nil(t, sidecarEnvVar(main, "OPENCODE_SERVER_PASSWORD"),
-		"legacy mode: the entrypoint reads the password file, not the pod spec")
-}
-
-// TestPlatformInit_LegacyNoOverlay_KeepsBashPath: no overlay delivery →
-// the bash init containers remain (migration step 5 deletes this path
-// together with the baked binary).
-func TestPlatformInit_LegacyNoOverlay_KeepsBashPath(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-	r := reconcilerFor(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	require.NotNil(t, platformInitContainer(pod, "workspace-dirs"),
-		"legacy no-overlay mode keeps the bash workspace-dirs init")
-	cred := platformInitContainer(pod, "credential-setup")
-	require.NotNil(t, cred, "legacy no-overlay mode keeps the bash credential-setup init")
-	require.Nil(t, platformInitContainer(pod, "platform-init"),
-		"no platform-init without the agentd delivery image")
-}

@@ -44,7 +44,17 @@ func reconcilerFor(t *testing.T, objs ...runtime.Object) *WorkspaceReconciler {
 		WithRuntimeObjects(objs...).
 		WithStatusSubresource(&v1.Workspace{}).
 		Build()
-	return &WorkspaceReconciler{Client: fakeClient, Scheme: scheme}
+	r := &WorkspaceReconciler{Client: fakeClient, Scheme: scheme}
+	// Design 0053 §4.5: overlay pins are mandatory — the default test
+	// reconciler is a fully-pinned production reconciler. Tests that need
+	// the missing-pin failure path nil the fields explicitly.
+	r.AgentdImage = testAgentdImage
+	r.AgentdBinarySHA256AMD64 = testAgentdSHAAMD64
+	r.AgentdBinarySHA256ARM64 = testAgentdSHAARM64
+	r.OpencodeImage = testOpencodeImage
+	r.OpencodeBinarySHA256AMD64 = testOpencodeSHAAMD64
+	r.OpencodeBinarySHA256ARM64 = testOpencodeSHAARM64
+	return r
 }
 
 func reqFor(name, namespace string) ctrl.Request {

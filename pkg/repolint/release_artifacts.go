@@ -92,15 +92,11 @@ func parseReleaseWorkflow(path string) (*releaseWorkflow, error) {
 }
 
 // componentFor maps an env var to its loop name (API_IMAGE→api,
-// RUNTIME_IMAGE→base — the one non-mechanical mapping).
+// RELAY_PROXY_IMAGE→relay-proxy — loop names use hyphens). The base no
+// longer appears: design 0053 D5 moved it off the release train into
+// base-image.yml.
 func componentFor(envName string) string {
-	switch envName {
-	case "RUNTIME_IMAGE":
-		return "base"
-	default:
-		// RELAY_PROXY_IMAGE → relay-proxy: loop names use hyphens.
-		return strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(envName, "_IMAGE")), "_", "-")
-	}
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSuffix(envName, "_IMAGE")), "_", "-")
 }
 
 func loopHas(body, component string) bool {

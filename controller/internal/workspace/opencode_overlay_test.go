@@ -24,7 +24,6 @@ package workspace
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -75,32 +74,6 @@ func withOpencodeOverlayMarker(pod *corev1.Pod) *corev1.Pod {
 }
 
 // --- buildPod wiring ------------------------------------------------------
-
-func TestOpencodeOverlay_DisabledByDefault_NoVolumeMountOrEnv(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-
-	for name, r := range map[string]*WorkspaceReconciler{
-		"nothing enabled":  reconcilerFor(t),
-		"agentd only":      reconcilerWithAgentd(t),
-		"agentd + sidecar": func() *WorkspaceReconciler { r := reconcilerWithAgentd(t); r.AgentdSidecarEnabled = true; return r }(),
-	} {
-		pod, err := r.buildPod(context.Background(), ws)
-		require.NoError(t, err)
-
-		for _, vol := range pod.Spec.Volumes {
-			require.NotEqual(t, "opencode", vol.Name, "%s: opencode volume must not exist when opencodeDelivery is unset", name)
-		}
-		for _, m := range pod.Spec.Containers[0].VolumeMounts {
-			require.NotEqual(t, "/opencode", m.MountPath, "%s: no opencode mount when opencodeDelivery is unset", name)
-		}
-		for _, env := range pod.Spec.Containers[0].Env {
-			require.False(t, strings.HasPrefix(env.Name, "LLMSAFESPACES_OPENCODE_"),
-				"%s: no opencode env pins when opencodeDelivery is unset, got %s", name, env.Name)
-			require.NotEqual(t, "OPENCODE_IMAGE_VOLUME", env.Name,
-				"%s: no opencode overlay marker when opencodeDelivery is unset", name)
-		}
-	}
-}
 
 func TestOpencodeOverlay_Enabled_WiresImageVolume(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
@@ -466,53 +439,4 @@ func TestOpencodeVerify_LegacyPodExit83NotMisread(t *testing.T) {
 	after := testutil.ToFloat64(metricsOpencodeVerifyFailures.WithLabelValues("verify_failed", "node-1", opencodeMetricLabel))
 	require.Equal(t, before, after, "legacy-pod exit-83 must not fire the verify-failure metric")
 	require.Nil(t, conditionOfType(ws, v1.WorkspaceConditionOpencodeVerified))
-}
-
-// TestOpencodeVerify_DeliveryDisabledOnReconciler_PodExit83Ignored is the
-// rollout-DOWN leg of the gating matrix: opencodeDelivery disabled on the
-// reconciler (flag off / rolled back) while the pod still carries the
-// overlay wiring (OPENCODE_IMAGE_VOLUME=1) and the workspace container
-// genuinely exited 83. No opencode condition, no event, no metric may
-// fire — with delivery off, the controller has no OpencodeImage to
-// attribute against, and an exit-83 report from a pod the controller no
-// longer owns the contract for must not page anyone.
-//
-// This test was written FIRST and passes immediately against the current
-// code — verified, not assumed: the gate at detectOpencodeVerification-
-// Failure (opencode_overlay.go ~:165) is
-// `!r.opencodeOverlayEnabled() || !podHasOpencodeOverlay(pod)`, i.e. it
-// requires BOTH the reconciler config AND the pod marker, so the
-// reconciler-disabled case returns false before any condition/event/
-// metric is touched. The test exists to pin that conjunction: replacing
-// the gate with a pod-marker-only check (e.g. "the pod says it has the
-// overlay, trust it") makes this fail, restoring the rollout-down
-// misattribution the #863 live-cluster finding class warns about.
-func TestOpencodeVerify_DeliveryDisabledOnReconciler_PodExit83Ignored(t *testing.T) {
-	r := reconcilerFor(t)
-	r.Recorder = record.NewFakeRecorder(16)
-	ws := activeOverlayWorkspace(t, r, "ws-oc-rollout-down")
-
-	pod := makeWorkspacePod(ws, "CrashLoopBackOff", opencodeExitVerifyFailed,
-		"OpencodeVerificationFailed: expected=cccc got=eeee binary=/opencode/usr/local/bin/opencode")
-	require.NoError(t, r.Create(context.Background(), withOpencodeOverlayMarker(pod)))
-
-	before := testutil.ToFloat64(metricsOpencodeVerifyFailures.WithLabelValues("verify_failed", "node-1", opencodeMetricLabel))
-	_, err := r.handleActive(context.Background(), ws)
-	require.NoError(t, err)
-	after := testutil.ToFloat64(metricsOpencodeVerifyFailures.WithLabelValues("verify_failed", "node-1", opencodeMetricLabel))
-	require.Equal(t, before, after,
-		"delivery disabled on the reconciler: exit-83 from a still-marked pod must not fire the verify-failure metric")
-	require.Nil(t, conditionOfType(ws, v1.WorkspaceConditionOpencodeVerified),
-		"no OpencodeVerified condition when delivery is disabled on the reconciler")
-
-	rec := r.Recorder.(*record.FakeRecorder)
-	for {
-		select {
-		case e := <-rec.Events:
-			require.NotContains(t, e, "OpencodeVerificationFailed",
-				"no opencode warning event when delivery is disabled on the reconciler")
-		default:
-			return
-		}
-	}
 }

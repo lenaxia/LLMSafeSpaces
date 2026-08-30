@@ -145,6 +145,20 @@ spec:
                     renders fail below. Hashes without an image fail
                     (they are overrides). Empty-everything (legacy mode)
                     renders nothing. */}}
+            {{- /* Design 0053 §4.5 (S3): BOTH delivery pins are
+                    MANDATORY — the base image carries no platform
+                    binaries, so an unpinned controller would build pods
+                    that PATH-look up binaries that no longer exist.
+                    Empty image fails the render here and fails
+                    controller startup (ValidateAgentdDelivery/
+                    ValidateOpencodeDelivery) — same operator hint from
+                    both surfaces. */}}
+            {{- if not .Values.controller.agentdDelivery.image }}
+            {{- fail "controller.agentdDelivery.image is mandatory (design 0053 §4.5 — no baked fallback; pin the digest-pinned agentd delivery image)" }}
+            {{- end }}
+            {{- if not .Values.controller.opencodeDelivery.image }}
+            {{- fail "controller.opencodeDelivery.image is mandatory (design 0053 §4.5 — no baked fallback; pin the digest-pinned opencode delivery image)" }}
+            {{- end }}
             {{- if and (not .Values.controller.agentdDelivery.image) (or .Values.controller.agentdDelivery.binarySHA256Amd64 .Values.controller.agentdDelivery.binarySHA256Arm64) }}
             {{- fail "controller.agentdDelivery.image is required when binarySHA256* values are set (they are per-image overrides)" }}
             {{- end }}

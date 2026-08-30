@@ -89,6 +89,25 @@ jobs:
           echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"
           echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"
 
+          # Design 0053 §4.2 (S3 mandatory): opencode delivery artifact →
+          # same local-registry pattern (digest-pinned ref + binary sha
+          # for the supervisor verify pins).
+          docker build --network host \
+            -f runtimes/opencode/Dockerfile -t localhost:5001/llmsafespaces/opencode:$IMAGE_TAG .
+          docker push localhost:5001/llmsafespaces/opencode:$IMAGE_TAG >/dev/null
+          OPENCODE_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/opencode:$IMAGE_TAG)
+          case "$OPENCODE_REF" in
+            *@sha256:*) OPENCODE_REF="localhost:5001/llmsafespaces/opencode:$IMAGE_TAG@${OPENCODE_REF##*@}" ;;
+            *) echo "could not determine opencode digest"; exit 1 ;;
+          esac
+          OC_CID=$(docker create localhost:5001/llmsafespaces/opencode:$IMAGE_TAG no-start)
+          docker cp "$OC_CID:/usr/local/bin/opencode" /tmp/opencode-bin >/dev/null 2>&1 || { docker rm -f "$OC_CID"; echo "opencode binary extract failed"; exit 1; }
+          docker rm -f "$OC_CID" >/dev/null 2>&1
+          OPENCODE_BINARY_SHA=$(sha256sum /tmp/opencode-bin | cut -d' ' -f1)
+          [ -n "$OPENCODE_BINARY_SHA" ] || { echo "opencode binary hash failed"; exit 1; }
+          echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"
+          echo "OPENCODE_BINARY_SHA=$OPENCODE_BINARY_SHA" >> "$GITHUB_ENV"
+
           # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
           # RuntimeEnvironment validating webhook's image allow-list accepts
           # it (the webhook requires ghcr.io/lenaxia/ prefixed images).
@@ -153,6 +172,9 @@ jobs:
             --set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \
             --set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \
             --set "controller.agentdDelivery.binarySHA256Arm64=${{ env.AGENTD_BINARY_SHA }}" \
+            --set "controller.opencodeDelivery.image=${{ env.OPENCODE_REF }}" \
+            --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
+            --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
             --wait --timeout 5m
 
