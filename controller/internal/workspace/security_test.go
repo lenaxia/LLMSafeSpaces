@@ -15,12 +15,11 @@ package workspace
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -209,51 +208,37 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 	require.True(t, sandboxCfgMount.ReadOnly,
 		"sandbox-cfg must remain RO on main container (input-only)")
 
-	// US-35.7: credential-setup init container must have RW PVC mounts for symlink creation.
-	var credInit *corev1.Container
+	// US-35.7 (design 0053 S3 shape): the PVC symlink farm moved into the
+	// agentd init-fs subcommand (cmd/workspace-agentd/init_fs.go — its
+	// tests pin the farm itself). The controller-side invariant is the
+	// mount topology that makes init-fs possible: PVC ROOT RW (subPath
+	// + symlink creation), sandbox-cfg + sandbox-runtime RW, pw-secret RO.
+	var platformInit *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			credInit = &pod.Spec.InitContainers[i]
+		if pod.Spec.InitContainers[i].Name == "platform-init" {
+			platformInit = &pod.Spec.InitContainers[i]
 			break
 		}
 	}
-	require.NotNil(t, credInit, "credential-setup init container must exist")
-	credMountNames := make(map[string]bool)
-	for _, m := range credInit.VolumeMounts {
-		credMountNames[m.Name+"@"+m.MountPath] = !m.ReadOnly
+	require.NotNil(t, platformInit, "platform-init init container must exist")
+	initMountNames := make(map[string]bool)
+	for _, m := range platformInit.VolumeMounts {
+		initMountNames[m.Name+"@"+m.MountPath] = !m.ReadOnly
 	}
-	require.True(t, credMountNames["workspace@/home/sandbox"],
-		"credential-setup init must mount /home/sandbox RW (for symlink creation)")
-	require.True(t, credMountNames["workspace@/workspace"],
-		"credential-setup init must mount /workspace RW (for auth.json symlink)")
-	require.True(t, credMountNames["sandbox-runtime@/sandbox-runtime"],
-		"credential-setup init must mount /sandbox-runtime RW")
+	require.True(t, initMountNames["workspace@/pvc"],
+		"platform-init must mount the PVC root RW (init-fs creates subPaths + symlinks)")
+	require.True(t, initMountNames["sandbox-runtime@/sandbox-runtime"],
+		"platform-init must mount /sandbox-runtime RW")
+	require.True(t, initMountNames["pw-secret@/mnt/secrets/password"] == false,
+		"pw-secret must be RO on platform-init (input-only)")
 
-	// US-35.7: init script must create the symlink farm + use set -e.
-	script := credInit.Command[2]
-	require.Contains(t, script, "set -e", "init script must use set -e (surface symlink failures)")
-	require.Contains(t, script, "ln -s /sandbox-runtime/rt/ssh", "init script must symlink .ssh to tmpfs")
-	require.Contains(t, script, "ln -s /sandbox-runtime/rt/secrets", "init script must symlink .secrets to tmpfs")
-	require.Contains(t, script, "ln -s /sandbox-runtime/rt/git-credentials", "init script must symlink .git-credentials to tmpfs")
-	require.Contains(t, script, "ln -s /sandbox-runtime/rt/auth.json", "init script must symlink auth.json to tmpfs")
-
-	// US-35.7: credential-setup must run AFTER workspace-dirs (which creates
-	// the PVC subPath directories). If workspace-dirs runs after credential-setup,
-	// it would recreate /home/sandbox as a real directory and destroy the symlinks.
-	wsDirsIdx := -1
-	credSetupIdx := -1
-	for i, c := range pod.Spec.InitContainers {
-		if c.Name == "workspace-dirs" {
-			wsDirsIdx = i
-		}
-		if c.Name == "credential-setup" {
-			credSetupIdx = i
-		}
-	}
-	require.GreaterOrEqual(t, wsDirsIdx, 0, "workspace-dirs init container must exist")
-	require.GreaterOrEqual(t, credSetupIdx, 0, "credential-setup init container must exist")
-	require.Greater(t, credSetupIdx, wsDirsIdx,
-		"credential-setup must run AFTER workspace-dirs (symlinks need the PVC dirs to exist first)")
+	// The PVC symlink farm is init-fs internal now, but its ordering
+	// precondition survives: platform-init (subPath roots + symlinks)
+	// must be the FIRST init container so later inits and the main
+	// container see the completed filesystem.
+	require.NotEmpty(t, pod.Spec.InitContainers)
+	assert.Equal(t, "platform-init", pod.Spec.InitContainers[0].Name,
+		"platform-init must run first (PVC prep precedes every consumer)")
 
 	expectedMounts := map[string]bool{
 		"workspace":   false,
@@ -312,12 +297,13 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 		require.NotEqual(t, "sandbox-home", v.Name, "sandbox-home emptyDir volume must not exist")
 	}
 
-	// workspace-dirs init container must always be present (first in the list)
-	// and must mount the workspace PVC at /pvc with no subPath so it can create
-	// the workspace/, home/, and tmp/ subdirectories on a fresh PVC.
+	// platform-init (agentd init-fs) must always be present (first in the
+// list) and must mount the workspace PVC at /pvc with no subPath so it
+// can create the workspace/, home/, and tmp/ subdirectories on a fresh
+// PVC (design 0053 S3 — absorbed from the deleted workspace-dirs init).
 	require.NotEmpty(t, pod.Spec.InitContainers)
-	require.Equal(t, "workspace-dirs", pod.Spec.InitContainers[0].Name,
-		"workspace-dirs must be the first init container")
+	require.Equal(t, "platform-init", pod.Spec.InitContainers[0].Name,
+		"platform-init must be the first init container")
 	var wsDirsInit = pod.Spec.InitContainers[0]
 	var pvcRootMount *corev1.VolumeMount
 	for i := range wsDirsInit.VolumeMounts {
@@ -349,121 +335,6 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 				"workspace-setup init container /tmp mount must use SubPath: \"tmp\"")
 		}
 	}
-}
-
-// TestCredentialSetupScript_ValidShellSyntax runs the credential-setup init
-// script through `sh -n` (syntax check) to catch quoting errors, missing
-// newlines, or malformed commands that substring assertions can't detect.
-// Matches the existing pattern for the workspace-setup script (TestG4_F125).
-func TestCredentialSetupScript_ValidShellSyntax(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-	r := reconcilerFor(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	var credInit *corev1.Container
-	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			credInit = &pod.Spec.InitContainers[i]
-			break
-		}
-	}
-	require.NotNil(t, credInit)
-	require.Len(t, credInit.Command, 3)
-
-	script := credInit.Command[2]
-	cmd := exec.Command("sh", "-n")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err,
-		"credential-setup init script must be valid POSIX shell syntax: %s\nscript:\n%s", out, script)
-}
-
-// TestCredentialSetupScript_ExecutesCorrectly runs the actual credential-setup
-// init script against temp directories and verifies it produces the correct
-// symlinks. This catches errors that syntax checks miss: wrong target paths,
-// missing mkdir, rm -rf on wrong path, or symlink ordering bugs.
-//
-// The script references absolute paths (/sandbox-runtime, /home/sandbox,
-// /workspace) — we can't override those without changing the script. So this
-// test exercises the script's LOGIC by extracting the symlink-creation
-// commands and running them against a temp-dir-based simulation.
-func TestCredentialSetupScript_SymlinkLogicProducesCorrectResult(t *testing.T) {
-	// Simulate the init script's symlink commands against temp dirs.
-	// This mirrors the symlinkFarmSim in pkg/agentd/secrets but runs
-	// through actual shell execution, not Go os calls.
-	pvcDir := t.TempDir()
-	tmpfsDir := t.TempDir()
-
-	homeDir := filepath.Join(pvcDir, "home")
-	opencodeDir := filepath.Join(pvcDir, "workspace", ".local", "opencode")
-	require.NoError(t, os.MkdirAll(homeDir, 0o755))
-	require.NoError(t, os.MkdirAll(opencodeDir, 0o755))
-
-	// Pre-create a real directory at $HOME/.ssh (simulates pre-US-35.7 PVC).
-	require.NoError(t, os.MkdirAll(filepath.Join(homeDir, ".ssh"), 0o755))
-
-	// Execute the same commands the init script runs, but with temp-dir paths.
-	// We substitute the absolute paths via environment variables.
-	script := `
-set -e
-RUNTIME="${RUNTIME_DIR}"
-PVC_HOME="${PVC_HOME_DIR}"
-PVC_WORKSPACE="${PVC_WORKSPACE_DIR}"
-
-mkdir -p "$RUNTIME/rt/ssh" "$RUNTIME/rt/secrets"
-chmod 700 "$RUNTIME/rt/ssh" "$RUNTIME/rt/secrets"
-
-rm -rf "$PVC_HOME/.ssh" "$PVC_HOME/.secrets" "$PVC_HOME/.git-credentials"
-ln -s "$RUNTIME/rt/ssh"             "$PVC_HOME/.ssh"
-ln -s "$RUNTIME/rt/secrets"         "$PVC_HOME/.secrets"
-ln -s "$RUNTIME/rt/git-credentials" "$PVC_HOME/.git-credentials"
-
-mkdir -p "$PVC_WORKSPACE/.local/opencode"
-rm -f "$PVC_WORKSPACE/.local/opencode/auth.json"
-ln -s "$RUNTIME/rt/auth.json" "$PVC_WORKSPACE/.local/opencode/auth.json"
-`
-	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = []string{
-		"RUNTIME_DIR=" + tmpfsDir,
-		"PVC_HOME_DIR=" + homeDir,
-		"PVC_WORKSPACE_DIR=" + filepath.Join(pvcDir, "workspace"),
-		"PATH=/usr/bin:/bin",
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	require.NoError(t, cmd.Run(),
-		"init script symlink commands must execute successfully: %s", stderr.String())
-
-	// Verify each PVC path is a symlink pointing into tmpfs.
-	checks := []struct {
-		linkPath   string
-		wantTarget string
-	}{
-		{filepath.Join(homeDir, ".ssh"), filepath.Join(tmpfsDir, "rt", "ssh")},
-		{filepath.Join(homeDir, ".secrets"), filepath.Join(tmpfsDir, "rt", "secrets")},
-		{filepath.Join(homeDir, ".git-credentials"), filepath.Join(tmpfsDir, "rt", "git-credentials")},
-		{filepath.Join(pvcDir, "workspace", ".local", "opencode", "auth.json"), filepath.Join(tmpfsDir, "rt", "auth.json")},
-	}
-	for _, c := range checks {
-		fi, err := os.Lstat(c.linkPath)
-		require.NoError(t, err, "%s must exist", c.linkPath)
-		require.True(t, fi.Mode()&os.ModeSymlink != 0,
-			"%s must be a symlink, got mode %v", c.linkPath, fi.Mode())
-		target, err := os.Readlink(c.linkPath)
-		require.NoError(t, err)
-		require.Equal(t, c.wantTarget, target,
-			"%s symlink must point to %s, got %s", c.linkPath, c.wantTarget, target)
-	}
-
-	// Verify the pre-existing .ssh directory was replaced (not nested).
-	// If rm -rf didn't run, ln -s would create .ssh/.ssh → nested symlink.
-	// We check there's no nested .ssh inside the symlink target.
-	nestedCheck := filepath.Join(tmpfsDir, "rt", "ssh", ".ssh")
-	_, err := os.Lstat(nestedCheck)
-	require.True(t, os.IsNotExist(err),
-		"pre-existing .ssh dir must be replaced by symlink, not nested inside target")
 }
 
 // =============================================================================

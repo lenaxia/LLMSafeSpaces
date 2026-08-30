@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -533,106 +532,6 @@ func TestBuildPod_HTTPProbes(t *testing.T) {
 	}
 	assert.True(t, portNames["opencode"], "opencode port should be declared")
 	assert.True(t, portNames["agentd"], "agentd port should be declared")
-}
-
-func TestInitContainerScript_NoElseBranch(t *testing.T) {
-	opencode.Register()
-	ws := makeWorkspace("ws-init", "default", v1.WorkspacePhaseCreating)
-	ws.Status.PVCName = "workspace-ws-init"
-	pvc := makeBoundPVC("workspace-ws-init", "default", ws.UID)
-	pwSecret := makePasswordSecret("ws-init", "default")
-	rte := makeRuntimeEnv("python-3.11")
-	r := reconcilerFor(t, ws, pvc, pwSecret, rte)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	var credInit *corev1.Container
-	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			credInit = &pod.Spec.InitContainers[i]
-			break
-		}
-	}
-	require.NotNil(t, credInit, "credential-setup init container should exist")
-	require.Len(t, credInit.Command, 3)
-	assert.Equal(t, "/bin/sh", credInit.Command[0])
-	assert.Equal(t, "-c", credInit.Command[1])
-	script := credInit.Command[2]
-
-	// Epic 35: the init script calls bootstrap (fetches secrets + workspace-config
-	// from the API) then materialize (applies them). Password is still copied
-	// from the K8s Secret.
-	assert.Contains(t, script, "workspace-agentd bootstrap",
-		"init script must call workspace-agentd bootstrap (Epic 35 secretless injection)")
-	assert.Contains(t, script, "workspace-agentd materialize",
-		"init script must call workspace-agentd materialize")
-	// G21: install -m 0600 (not cp) so the password file is mode 0600
-	// regardless of the source Secret's defaultMode.
-	assert.Contains(t, script, "install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password",
-		"password should be installed with mode 0600 (G21: cp preserved source mode 0644)")
-
-	// #847: the password must be installed BEFORE `workspace-agentd
-	// materialize` — materialize stamps the llmsafespaces MCP entry with
-	// the Basic credential /v1/mcp requires (when the pre-boot relay
-	// applies). Installed after, the read fails on every boot and the
-	// entry is stamped disabled.
-	pwIdx := strings.Index(script, "\ninstall -m 0600 /mnt/secrets/password/password")
-	// 2026-08-29: materialize is invoked with the cross-uid file modes
-	// armed (single-container init runs as uid 2000; uid-1000 opencode
-	// reads the materialized auth store — see pod_builder.go).
-	matIdx := strings.Index(script, "workspace-agentd materialize")
-	require.GreaterOrEqual(t, pwIdx, 0, "password install command line must exist")
-	require.GreaterOrEqual(t, matIdx, 0, "materialize command line must exist")
-	assert.Less(t, pwIdx, matIdx,
-		"password must be installed before materialize so the pre-boot writer can stamp the MCP credential (#847)")
-
-	// Verify the credential-setup init container mounts bootstrap-token.
-	var bootstrapMount *corev1.VolumeMount
-	for i := range credInit.VolumeMounts {
-		if credInit.VolumeMounts[i].Name == "bootstrap-token" {
-			bootstrapMount = &credInit.VolumeMounts[i]
-			break
-		}
-	}
-	require.NotNil(t, bootstrapMount, "credential-setup init container must mount bootstrap-token")
-	assert.Equal(t, "/var/run/bootstrap", bootstrapMount.MountPath)
-	assert.True(t, bootstrapMount.ReadOnly)
-}
-
-// TestInitContainerScript_BootstrapEnvVars verifies the init container
-// carries WORKSPACE_ID and LLMSAFESPACE_API_URL env vars needed by the
-// bootstrap subcommand.
-func TestInitContainerScript_BootstrapEnvVars(t *testing.T) {
-	opencode.Register()
-	ws := makeWorkspace("ws-env", "default", v1.WorkspacePhaseCreating)
-	ws.Status.PVCName = "workspace-ws-env"
-	pvc := makeBoundPVC("workspace-ws-env", "default", ws.UID)
-	pwSecret := makePasswordSecret("ws-env", "default")
-	rte := makeRuntimeEnv("python-3.11")
-	r := reconcilerFor(t, ws, pvc, pwSecret, rte)
-	r.APIServiceURL = "http://test-api:8080"
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	var credInit *corev1.Container
-	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			credInit = &pod.Spec.InitContainers[i]
-			break
-		}
-	}
-	require.NotNil(t, credInit)
-
-	envVars := make(map[string]string)
-	for _, e := range credInit.Env {
-		envVars[e.Name] = e.Value
-	}
-	assert.Equal(t, "ws-env", envVars["WORKSPACE_ID"],
-		"WORKSPACE_ID env var must be set on init container")
-	assert.Equal(t, "http://test-api:8080", envVars["LLMSAFESPACE_API_URL"],
-		"LLMSAFESPACE_API_URL env var must be set on init container")
 }
 
 func makeRuntimeEnv(name string) *v1.RuntimeEnvironment {

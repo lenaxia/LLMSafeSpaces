@@ -55,25 +55,6 @@ func reconcilerWithAgentd(t *testing.T) *WorkspaceReconciler {
 
 // --- buildPod wiring ------------------------------------------------------
 
-func TestAgentdOverlay_DisabledByDefault_NoVolumeMountOrEnv(t *testing.T) {
-	ws := newWorkspaceForSecurity(t)
-	r := reconcilerFor(t)
-
-	pod, err := r.buildPod(context.Background(), ws)
-	require.NoError(t, err)
-
-	for _, vol := range pod.Spec.Volumes {
-		require.NotEqual(t, "agentd", vol.Name, "agentd volume must not exist in legacy mode")
-	}
-	for _, m := range pod.Spec.Containers[0].VolumeMounts {
-		require.NotEqual(t, "/agentd", m.MountPath, "no agentd mount in legacy mode")
-	}
-	for _, env := range pod.Spec.Containers[0].Env {
-		require.False(t, strings.HasPrefix(env.Name, "LLMSAFESPACES_AGENTD_"),
-			"no agentd env pins in legacy mode, got %s", env.Name)
-	}
-}
-
 func TestAgentdOverlay_Enabled_WiresImageVolume(t *testing.T) {
 	ws := newWorkspaceForSecurity(t)
 	r := reconcilerWithAgentd(t)

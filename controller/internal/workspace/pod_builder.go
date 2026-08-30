@@ -26,6 +26,13 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		return nil, fmt.Errorf("resolving runtime image: %w", err)
 	}
 
+	// Design 0053 §4.5: both overlay pins are mandatory — there is no
+	// baked-fallback mode. Fail the build loud rather than silently
+	// producing a pod that PATH-lookups binaries the base no longer has.
+	if err := r.validateOverlayDeliveryPins(); err != nil {
+		return nil, err
+	}
+
 	// F1.4.2 (Epic 17): Read the per-workspace admin token from the
 	// password Secret. Used as the `Authorization: Bearer <token>`
 	// header for the readiness probe so kubelet can hit the
@@ -77,9 +84,15 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	requirements := resourceRequirementsFor(workspace)
 
 	mainContainer := corev1.Container{
-		Name:    "workspace",
-		Image:   runtimeImage,
-		Command: []string{"/usr/local/bin/entrypoint-opencode.sh"},
+		Name:  "workspace",
+		Image: runtimeImage,
+		// Design 0053 §4.1: entrypoints are deleted; the pod execs the
+		// digest-pinned agentd binary directly (the supervisor self-
+		// verifies before any work — exit 81/82, same contract the
+		// entrypoint's bash enforced). Sidecar mode re-points Args at
+		// `supervise-opencode` (agentd_sidecar.go).
+		Command: []string{agentdMountPath + agentdBinaryRelPath},
+		Args:    []string{"--supervise"},
 		Ports: []corev1.ContainerPort{
 			{ContainerPort: agentd.AgentPort, Name: "opencode", Protocol: corev1.ProtocolTCP},
 			{ContainerPort: agentd.AgentdPort, Name: "agentd", Protocol: corev1.ProtocolTCP},
@@ -112,6 +125,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 				}}
 			}(),
 		}, toolParallelismEnv(requirements)...),
+
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -192,6 +206,11 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		Resources: requirements,
 	}
 
+	// Design 0053 §4.3: the base ENV block (mise homes, PATH, git layer)
+	// is controller-injected post-strip. OPENCODE_* env names stay
+	// behind the agent seam (supervisor) — containment per #942.
+	mainContainer.Env = append(mainContainer.Env, platformBaseEnv()...)
+
 	volumes := []corev1.Volume{
 		{Name: "workspace", VolumeSource: corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: workspace.Status.PVCName},
@@ -223,34 +242,23 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// calls https://opencode.ai/zen/v1 directly using its built-in `public` key.
 	relayBaseURL := r.InferenceRelayURL
 
-	// Design 0051 sidecar migration, step 1: with overlay delivery on,
-	// the bash init containers are replaced by platform init containers
-	// running the digest-pinned agentd image (platform_init.go). The
-	// first one (platform-init) creates the PVC subPath roots, so it
-	// keeps workspace-dirs' FIRST position. Legacy-no-overlay keeps the
-	// bash path unchanged (deleted in migration step 5, together with
-	// the baked binary).
-	overlayOn := r.agentdOverlayEnabled()
-	if overlayOn {
-		// Epic 69 US-69.2: the platform/ subPath (sessionstate cursor).
-		// Single-container agentd (uid 1000) gets it from platform-init;
-		// sidecar mode defers to the uid-2000 platform-dirs init below —
-		// ownership must follow the writer.
-		platformFlag := "create"
-		if r.AgentdSidecarEnabled {
-			platformFlag = "skip"
-		}
-		initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != "", platformFlag))
-		if r.AgentdSidecarEnabled {
-			initContainers = append(initContainers, r.buildPlatformDirsInit())
-		}
-	} else {
-		// workspace-dirs init: unconditionally ensures all three PVC subPath
-		// directories exist at the PVC root before any other init or the main
-		// container mounts them. Without this, kubelet fails the pod with
-		// "subPath not found" on a fresh PVC. Runs as the same non-root UID as
-		// the main container; writes only to the PVC root.
-		initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
+	// Design 0053 S3: the platform init containers (running the pinned
+	// agentd image, platform_init.go) are the ONLY boot path — the bash
+	// workspace-dirs and credential-setup inits are deleted with the
+	// entrypoints. platform-init keeps FIRST position: it creates the
+	// PVC subPath roots.
+	//
+	// Epic 69 US-69.2: the platform/ subPath (sessionstate cursor).
+	// Single-container agentd (uid 1000) gets it from platform-init;
+	// sidecar mode defers to the uid-2000 platform-dirs init below —
+	// ownership must follow the writer.
+	platformFlag := "create"
+	if r.AgentdSidecarEnabled {
+		platformFlag = "skip"
+	}
+	initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != "", platformFlag))
+	if r.AgentdSidecarEnabled {
+		initContainers = append(initContainers, r.buildPlatformDirsInit())
 	}
 
 	if relayBaseURL != "" {
@@ -282,28 +290,17 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		initContainers = append(initContainers, buildWorkspaceSetupInit(workspace, runtimeImage))
 	}
 
-	// Credential setup: overlay mode runs the platform subcommands from
-	// the pinned agentd image; sidecar mode defers bootstrap+materialize
-	// to the sidecar's boot phase (the sidecar is appended last by
-	// applyAgentdSidecar, and its startup probe gates the main container
-	// on boot completion — #857 ordering preserved). Legacy-no-overlay
-	// keeps the bash heredoc (step-5 deletion candidate).
-	if overlayOn {
-		volumes = append(volumes, buildPasswordSecretVolume(workspace))
-		volumes = append(volumes, buildBootstrapTokenVolume())
-		if !r.AgentdSidecarEnabled {
-			initContainers = append(initContainers,
-				r.buildPlatformBootstrap(workspace),
-				r.buildPlatformMaterialize(relayBaseURL))
-		}
-	} else {
-		credInit, pwVolume, bootstrapTokenVol, err := r.buildCredentialSetupInit(workspace, runtimeImage, relayBaseURL)
-		if err != nil {
-			return nil, err
-		}
-		initContainers = append(initContainers, credInit)
-		volumes = append(volumes, pwVolume)
-		volumes = append(volumes, bootstrapTokenVol)
+	// Credential setup: the platform subcommands from the pinned agentd
+	// image; sidecar mode defers bootstrap+materialize to the sidecar's
+	// boot phase (the sidecar is appended last by applyAgentdSidecar,
+	// and its startup probe gates the main container on boot
+	// completion — #857 ordering preserved).
+	volumes = append(volumes, buildPasswordSecretVolume(workspace))
+	volumes = append(volumes, buildBootstrapTokenVolume())
+	if !r.AgentdSidecarEnabled {
+		initContainers = append(initContainers,
+			r.buildPlatformBootstrap(workspace),
+			r.buildPlatformMaterialize(relayBaseURL))
 	}
 
 	// Free-models ConfigMap volume (2026-06-23 cold-start optimization,
@@ -619,255 +616,6 @@ func buildNodeSelector(workspace *v1.Workspace) map[string]string {
 	}
 }
 
-func (r *WorkspaceReconciler) buildCredentialSetupInit(workspace *v1.Workspace, runtimeImage string, relayBaseURL string) (corev1.Container, corev1.Volume, corev1.Volume, error) {
-	credScript := `
-set -e
-
-# US-35.7: create symlink farm so credential files resolve to tmpfs, not PVC.
-# The PVC paths ($HOME/.ssh, $HOME/.secrets, $HOME/.git-credentials,
-# $WORKSPACE/.local/opencode/auth.json) become symlinks pointing into
-# /sandbox-runtime/rt/*. On pod death, tmpfs is wiped — the PVC retains
-# only dangling symlink inodes, no plaintext bytes.
-mkdir -p /sandbox-runtime/rt/ssh /sandbox-runtime/rt/secrets /sandbox-runtime/rt
-chmod 700 /sandbox-runtime/rt/ssh /sandbox-runtime/rt/secrets
-
-# rm -rf is required: ln -s into an existing directory creates the symlink
-# inside it. These are credential paths that reset() wipes on every reload
-# — no user data is lost.
-rm -rf /home/sandbox/.ssh /home/sandbox/.secrets /home/sandbox/.git-credentials
-ln -s /sandbox-runtime/rt/ssh             /home/sandbox/.ssh
-ln -s /sandbox-runtime/rt/secrets         /home/sandbox/.secrets
-ln -s /sandbox-runtime/rt/git-credentials /home/sandbox/.git-credentials
-
-mkdir -p /workspace/.local/opencode
-rm -f /workspace/.local/opencode/auth.json
-ln -s /sandbox-runtime/rt/auth.json /workspace/.local/opencode/auth.json
-
-# 2026-06-23 cold-start optimization (item #1a): copy the cluster-wide
-# free-models catalog into /sandbox-cfg so the materialize subcommand
-# can render the relay agent-config.json block before opencode boots.
-# Mounted optional: an absent file is normal (relay disabled or
-# controller hasn't fetched yet). The script swallows the error and
-# materialize falls back to the legacy in-pod relay injector path.
-if [ -f /mnt/freemodels/models.json ]; then
-  cp /mnt/freemodels/models.json /sandbox-cfg/free-models.json
-fi
-
-# G21: install (not cp) so the password file is created with mode 0600
-# regardless of the source Secret's defaultMode. cp preserves the
-# source mode (0644 by default for K8s Secret projections), leaving
-# the password world-readable in the pod filesystem. install -m 0600
-# sets the mode atomically with the copy, so the file is never briefly
-# world-readable even on slow filesystems.
-#
-# #847: this must land BEFORE the materialize step below — that
-# subcommand stamps the llmsafespaces MCP entry (with the Basic
-# credential /v1/mcp requires) when the pre-boot relay applies.
-# Installed after materialize, the read fails on every boot and the
-# entry is stamped disabled.
-install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
-
-# #887 D5.1: distinct admin-mux bearer token, file-only delivery. The
-# pw-secret volume projects the whole Secret, so key presence == file
-# presence; the guard covers legacy Secrets during the upsert convergence
-# window. agentd resolves AGENTD_ADMIN_TOKEN_FILE first, so an installed
-# but unreferenced file is inert in legacy pods.
-# POSIX test only — this script runs under /bin/sh (dash), where [[ ]]
-# is a silent no-op (F1, review round 2).
-if [ -f /mnt/secrets/password/admin-token ]; then
-  install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token
-fi
-
-# Design 0051 US-4b: sidecar-mode store relocations. Every relocation is
-# gated on AGENTD_SIDECAR_MODE (set by the controller only in
-# sidecar-enabled pods) — the default path below is the unchanged
-# single-container behavior. POSIX [ = ] only (the dash lesson, #933).
-if [ "${AGENTD_SIDECAR_MODE:-}" = "1" ]; then
-  # rt dirs group-writable (0770): the uid-2000 sidecar's reset()
-  # unlinks/recreates these on every credential reload; the pod's shared
-  # gid 1000 carries the write. Materialized files land 0640
-  # (LLMSAFESPACES_CROSS_UID_FILES=1 on the sidecar).
-  chmod 0770 /sandbox-runtime/rt /sandbox-runtime/rt/secrets /sandbox-runtime/rt/ssh
-  # Bootstrap writes the admin prompt to the sidecar-ONLY agentd-secrets
-  # volume and allowed-dirs to agentd-config (the integrity volume).
-  # The materialize env (LLMSAFESPACES_*_PATH) points its outputs at the
-  # relocated stores as well.
-  workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL" \
-    --admin-prompt-out /agentd-secrets/admin-prompt.md \
-    --allowed-dirs-out /agentd-config/allowed-dirs.json
-else
-  # Single-container mode: the SAME uid split exists — this init
-  # (uid 2000) materializes the rt/* stores that uid-1000 opencode
-  # consumes (auth.json via the ~/.local/opencode symlink is
-  # load-bearing: provider init reads it; unreadable = every custom
-  # provider unresolvable, the 2026-08-29 fleet-wide
-  # ModelUnavailableError). Arm the cross-uid file modes exactly as the
-  # sidecar does (0640 via the shared gid 1000). Platform-owned writes
-  # still route through agentd; opencode's own auth-store WRITES remain
-  # best-effort (0640 is read-only for gid 1000 — US-4b T2 ruling).
-  LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
-fi
-LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize
-`
-	pwVolume := corev1.Volume{
-		Name: "pw-secret",
-		VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{SecretName: passwordSecretName(workspace.Name)},
-		},
-	}
-
-	credMounts := []corev1.VolumeMount{
-		{Name: "sandbox-cfg", MountPath: "/sandbox-cfg"},
-		{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
-		{Name: "pw-secret", MountPath: "/mnt/secrets/password", ReadOnly: true},
-		{Name: "bootstrap-token", MountPath: "/var/run/bootstrap", ReadOnly: true},
-		// US-35.7: RW PVC mounts needed for symlink creation on the PVC paths.
-		// Without these, ReadOnlyRootFilesystem causes ln -s to silently fail.
-		{Name: "workspace", MountPath: "/home/sandbox", SubPath: "home"},
-		{Name: "workspace", MountPath: "/workspace", SubPath: "workspace"},
-	}
-
-	// 2026-06-23 cold-start optimization (item #1a). The free-models
-	// ConfigMap is added to pod.Spec.Volumes by buildPod when a relay
-	// URL is configured; we always mount it here when the volume is
-	// present (init-side) so the cp in the script can read it. Optional
-	// mount semantics live on the Volume itself (Optional: true), so an
-	// absent CM is harmless — the cp simply finds no file.
-	if relayBaseURL != "" {
-		credMounts = append(credMounts, corev1.VolumeMount{
-			Name: "free-models", MountPath: "/mnt/freemodels", ReadOnly: true,
-		})
-	}
-
-	// Epic 35 US-35.4: projected SA token volume. The kubelet creates a token
-	// for the pod's ServiceAccount (workspace-<name>) with the specified
-	// audience and expiry. Mounted only on the init container — the main
-	// container never sees this token (AutomountServiceAccountToken: false
-	// suppresses the default mount; this is an explicit projected volume).
-	tokenTTL := int64(600)
-	bootstrapTokenVolume := corev1.Volume{
-		Name: "bootstrap-token",
-		VolumeSource: corev1.VolumeSource{
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Path:              "token",
-						ExpirationSeconds: &tokenTTL,
-						Audience:          bootstrapAudience,
-					},
-				}},
-			},
-		},
-	}
-
-	trueVal := true
-	falseVal := false
-
-	credInit := corev1.Container{
-		Name:    credentialSetupContainerName,
-		Image:   runtimeImage,
-		Command: []string{"/bin/sh", "-c", credScript},
-		Env: func() []corev1.EnvVar {
-			env := []corev1.EnvVar{
-				{Name: "WORKSPACE_ID", Value: workspace.Name},
-				{Name: "LLMSAFESPACE_API_URL", Value: r.APIServiceURL},
-				// 2026-06-24 PR #401 review fix: XDG_DATA_HOME must
-				// match the value entrypoint-opencode.sh sets in the
-				// MAIN container so agentd's materialize subcommand
-				// (running in the INIT container) reads auth.json from
-				// the same location opencode will read it from in the
-				// main container — i.e. the symlink the init script
-				// creates at /workspace/.local/opencode/auth.json
-				// pointing into /sandbox-runtime/rt/auth.json (US-35.7).
-				//
-				// Without this, preBootAuthJSONPath falls back to
-				// $HOME/.local/opencode/auth.json
-				// (=/home/sandbox/.local/opencode/auth.json), which
-				// for a fresh pod doesn't exist (correct by accident:
-				// shouldSkipRelay returns false → relay proceeds), but
-				// for a resumed pod with a stale pre-US-35.7 auth.json
-				// at PVC:home/.local/opencode/auth.json containing a
-				// personal key, the bypass check would silently miss
-				// the key and the cold-start optimization would then
-				// be lost (the legacy in-pod injector would pick up
-				// the slack and skip injection itself, but the user
-				// loses the ~6-8s savings).
-				{Name: "XDG_DATA_HOME", Value: "/workspace/.local"},
-			}
-			// 2026-06-23 cold-start optimization (item #1a): propagate
-			// the relay URL into the init container so the materialize
-			// subcommand can pre-render the relay agent-config block
-			// before opencode boots. Without this, materialize has no
-			// way to know whether to inject relay (it currently runs
-			// in the main container as a goroutine after opencode is
-			// already up).
-			if relayBaseURL != "" {
-				env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: relayBaseURL})
-			}
-			return env
-		}(),
-		SecurityContext: &corev1.SecurityContext{
-			ReadOnlyRootFilesystem:   &trueVal,
-			RunAsNonRoot:             &trueVal,
-			AllowPrivilegeEscalation: &falseVal,
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		},
-		VolumeMounts: credMounts,
-	}
-	return credInit, pwVolume, bootstrapTokenVolume, nil
-}
-
-// mainContainerName is the workspace (opencode) container's name.
-const mainContainerName = "workspace"
-
-// containerIndexByName returns the index of the named container, or -1.
-func containerIndexByName(containers []corev1.Container, name string) int {
-	for i := range containers {
-		if containers[i].Name == name {
-			return i
-		}
-	}
-	return -1
-}
-
-// buildWorkspaceDirsInit returns an always-running init container that creates
-// the three PVC subPath directories (workspace/, home/, tmp/) at the PVC root
-// before any other init or the main container attempts to mount them.
-// Without this, kubelet fails the pod with "subPath not found" on a fresh PVC.
-//
-// NOTE: This previously ran `git init /workspace` (PR #715 / US-65.3) to
-// enable pkg/agent/opencode/filediff.Producer. That was the root cause of
-// the snapshot bloat spiral (worklog 0746): making /workspace a git repo
-// triggers opencode's snapshot system, which has no self-exclusion and
-// recursively stages its own object database (inside .local/), causing
-// exponential growth, CPU starvation, and "Load failed" for users.
-// The git init was removed because:
-//  1. filediff.Producer diffs against HEAD — but no commits were ever made,
-//     so it produced noise, not signal.
-//  2. opencode's native session.diff event already carries full patch text.
-//  3. opencode detects VCS per-project (cloned repos under /workspace/) and
-//     does the right thing natively without a container-level git repo.
-func buildWorkspaceDirsInit(runtimeImage string) corev1.Container {
-	trueVal := true
-	falseVal := false
-	dirsScript := "mkdir -p /pvc/workspace /pvc/home /pvc/tmp && mkdir -p -m 0750 /pvc/platform"
-	return corev1.Container{
-		Name:    "workspace-dirs",
-		Image:   runtimeImage,
-		Command: []string{"/bin/sh", "-c", dirsScript},
-		VolumeMounts: []corev1.VolumeMount{
-			// Mount PVC root (no subPath) so we can create the subdirectories.
-			{Name: "workspace", MountPath: "/pvc"},
-		},
-		SecurityContext: &corev1.SecurityContext{
-			ReadOnlyRootFilesystem:   &trueVal,
-			RunAsNonRoot:             &trueVal,
-			AllowPrivilegeEscalation: &falseVal,
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-		},
-	}
-}
-
 // buildFreeModelsVolume returns the volume spec for the cluster-wide
 // free-models ConfigMap (2026-06-23 cold-start optimization, item #1a).
 // The credential-setup init container mounts it at /mnt/freemodels and
@@ -905,6 +653,9 @@ func buildWorkspaceSetupInit(workspace *v1.Workspace, runtimeImage string) corev
 		Name:    "workspace-setup",
 		Image:   runtimeImage,
 		Command: []string{"/bin/sh", "-c", buildWorkspaceSetupScript(workspace)},
+		// Design 0053 §4.3: package installs resolve mise/apt from the
+		// relocated ENV block — the base image no longer carries it.
+		Env: platformBaseEnv(),
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: "workspace", MountPath: "/workspace", SubPath: "workspace"},
 			{Name: "workspace", MountPath: "/tmp", SubPath: "tmp"},

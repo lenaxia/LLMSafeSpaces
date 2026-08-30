@@ -220,56 +220,5 @@ func credSetupScriptFor(t *testing.T, sidecar bool) string {
 	return src.Command[2]
 }
 
-func TestUS4B_Enabled_CredScriptSidecarBranch(t *testing.T) {
-	script := credSetupScriptFor(t, true)
-
-	require.Contains(t, script, "chmod 0770 /sandbox-runtime/rt",
-		"sidecar mode must group-write rt/ so the uid-2000 sidecar's reset() can unlink")
-	require.Contains(t, script, "--admin-prompt-out /agentd-secrets/admin-prompt.md",
-		"bootstrap must write admin-prompt.md to the sidecar-only volume")
-	require.Contains(t, script, "--allowed-dirs-out /agentd-config/allowed-dirs.json",
-		"bootstrap must write allowed-dirs.json to agentd-config")
-}
-
 // --- disabled: single-container regression pins ------------------------------
 
-func TestUS4B_Disabled_NoRelocations(t *testing.T) {
-	pod := buildPodUS4B(t, false)
-
-	require.Nil(t, podVolumeByName(pod, us4bAgentdConfigVolume), "no agentd-config volume when disabled")
-	require.Nil(t, podVolumeByName(pod, us4bAgentdSecretsVolume), "no agentd-secrets volume when disabled")
-
-	for i := range pod.Spec.InitContainers {
-		c := &pod.Spec.InitContainers[i]
-		require.Nil(t, sidecarVolumeMount(c, us4bAgentdConfigVolume), "init %s must not mount agentd-config when disabled", c.Name)
-		require.Nil(t, sidecarVolumeMount(c, us4bAgentdSecretsVolume), "init %s must not mount agentd-secrets when disabled", c.Name)
-		require.Nil(t, sidecarEnvVar(c, "AGENTD_SIDECAR_MODE"), "init %s must not carry sidecar-mode env when disabled", c.Name)
-		require.Nil(t, sidecarEnvVar(c, "LLMSAFESPACES_AGENT_CONFIG_PATH"), "init %s must not carry relocation env when disabled", c.Name)
-	}
-	main := &pod.Spec.Containers[0]
-	require.Nil(t, sidecarVolumeMount(main, us4bAgentdConfigVolume), "main must not mount agentd-config when disabled")
-	require.Nil(t, sidecarEnvVar(main, "OPENCODE_CONFIG"),
-		"single-container mode must not set OPENCODE_CONFIG (entrypoint default stands)")
-}
-
-func TestUS4B_Disabled_CredScriptKeepsDefaultModes(t *testing.T) {
-	script := credSetupScriptFor(t, false)
-
-	// The guarded branch may exist in the generated text; the default
-	// path keeps 0700 rt dirs, and since 2026-08-29 BOTH branches arm the
-	// cross-uid FILE modes (the single-container init is uid 2000 and
-	// uid-1000 opencode reads the materialized auth store — the
-	// fleet-wide ModelUnavailableError fix). exec-level behavior pins
-	// live in us4b_cred_script_exec_test.go.
-	require.Contains(t, script, "chmod 700 /sandbox-runtime/rt/ssh /sandbox-runtime/rt/secrets",
-		"single-container mode keeps rt dirs 0700")
-	require.Contains(t, script,
-		"else\n  # Single-container mode: the SAME uid split exists",
-		"the default branch documents the uid split it materializes under")
-	require.Contains(t, script,
-		"LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd bootstrap",
-		"the single-container bootstrap arms cross-uid file modes (auth store must be uid-1000 readable)")
-	require.Contains(t, script,
-		"LLMSAFESPACES_CROSS_UID_FILES=1 workspace-agentd materialize",
-		"materialize arms cross-uid file modes in every mode")
-}

@@ -142,6 +142,7 @@ func main() {
 	var bgWg sync.WaitGroup
 
 	password := readAgentPassword()
+	bootAgentPassword = password
 	client := &OpenCodeClient{password: password, client: &http.Client{Timeout: 5 * time.Second}}
 
 	// #887 D5.2: refuse to boot without an admin-mux credential (unset

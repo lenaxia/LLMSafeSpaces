@@ -69,17 +69,28 @@ func TestPodSpec_AdminTokenFileMode(t *testing.T) {
 	_, tokenVar := envVar(main, "AGENTD_ADMIN_TOKEN")
 	assert.False(t, tokenVar, "AGENTD_ADMIN_TOKEN must NOT be set in file mode — it rides opencode's env into every tool process")
 
-	// Init script installs the file 0400 from the projected Secret key.
-	var cred *corev1.Container
+	// The admin-token file install moved into the agentd init-fs
+	// subcommand (design 0053 S3 — the bash heredoc is deleted); the
+	// controller-side invariant is that the projected Secret reaches
+	// the platform-init container that performs the install. The 0400
+	// mode itself is pinned by cmd/workspace-agentd init-fs tests.
+	var platformInit *corev1.Container
 	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			cred = &pod.Spec.InitContainers[i]
+		if pod.Spec.InitContainers[i].Name == "platform-init" {
+			platformInit = &pod.Spec.InitContainers[i]
 			break
 		}
 	}
-	require.NotNil(t, cred)
-	assert.Contains(t, cred.Command[2], "install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token",
-		"init must install the admin token file 0400")
+	require.NotNil(t, platformInit)
+	var pwMount *corev1.VolumeMount
+	for i := range platformInit.VolumeMounts {
+		if platformInit.VolumeMounts[i].Name == "pw-secret" {
+			pwMount = &platformInit.VolumeMounts[i]
+			break
+		}
+	}
+	require.NotNil(t, pwMount, "platform-init must mount the password Secret (init-fs installs admin-token from it)")
+	require.True(t, pwMount.ReadOnly)
 
 	// Probes carry the DISTINCT token.
 	for _, p := range []*corev1.Probe{main.ReadinessProbe, main.StartupProbe} {
