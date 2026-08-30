@@ -742,19 +742,58 @@ session-create routing).
 
 ### Spikes & measurements (S1-gated)
 
-- Caller-supplied admission ID acceptance — decides whether the
-  localhost text-match fallback exists at all.
-- fsync-through-gVisor on Longhorn/EFS — I9's premise is assumed, not
-  yet verified; group-commit if send-path p99 exceeds budget.
-- Resume budget: reseed + ledger replay within ~22s p95, including V2
-  store full-list cost on long sessions.
-- Snapshot size at N sessions (pod-wide snapshot; cap or paginate if
-  large).
-- Reseed under active streaming; question/permission event semantics;
-  4097 auth detail (agentdPassword inheritance); snapshot-vs-statusz
-  dedupe.
-- Control-op concurrency matrix — now *exceptions only* (actions op is
-  the default route), still an S1 deliverable.
+> **US-69.6 findings recorded 2026-08-30** (harnesses committed;
+> in-repo numbers below, pool-bound numbers marked POOL):
+
+- **Caller-supplied admission ID** — probe harness committed:
+  `local/spike-admission-id.sh` (baseline / fresh-unique / duplicate-reuse
+  matrix per pinned version). POOL: run on the staged pool for every
+  pinned opencode version. Disposition rule recorded: fresh-unique accept
+  + duplicate 409 ⇒ delete the localhost text-match fallback outright in
+  US-69.7; anything else ⇒ the fallback stays and the matrix documents why.
+- **fsync-through-gVisor on Longhorn/EFS** — baseline harness committed:
+  `BenchmarkCursorFsyncLatency` + `TestSpikeNumbers/fsync_baseline_local`.
+  Local (container overlayfs): **~7–10 ms/op**. Decision rule: pool
+  numbers ≤10 ms/op ⇒ fsync-per-event stands (I9 as written); >10 ms/op ⇒
+  group-commit enters US-69.7's ledger design. POOL: measure under
+  gVisor (runsc) on Longhorn AND EFS storage classes.
+- **Resume budget** — in-process harness committed:
+  `BenchmarkResumeBudget` (reopen + durable-cursor load + boot reseed at
+  50 sessions, cursor@500 events): **~0.5 ms** — the authority's share of
+  the ~22 s budget is negligible; PVC re-attach + opencode boot dominate
+  (unchanged conclusion). POOL: the V2 store full-list cost on a
+  ~20k-message session (no pagination on 1.18.15) is measured with the
+  same harness shape on the pool; feeds US-69.13 verification.
+- **Snapshot size at N sessions** — `BenchmarkSnapshotSize100/500` +
+  `TestSpikeNumbers`: 100 sessions × (4 in-flight parts + 2 pending
+  inputs) = **33 KB / ~0.8 ms**; 500 sessions = **169 KB / ~4 ms**.
+  **Decision: no cap or pagination at S1/S2** — three orders of magnitude
+  under any wire concern, single-consumer-per-pod (D1-B). Revisit only if
+  a future harness produces ≥10 KB/session snapshots.
+- **Reseed under active streaming** — settled in US-69.2/69.5 suites
+  (deterministic green; CI starvation finding documented on #1139 for the
+  pool soak).
+- **Question/permission event semantics** — confirmed from the pinned
+  fixtures + existing adapter surface: the events carry request/response
+  payload only (id, sessionID, question/options, permission/patterns);
+  no control-plane semantics hide in them. Answer routing via the
+  `answer_question` action is the complete path (US-69.9); the V1 REST
+  reply endpoints the proxy uses today are the same store mutations the
+  action will wrap. No divergence found.
+- **statusz ↔ snapshot dedupe** — **Decision: keep both, distinct
+  charters.** statusz is the controller's deep-introspection poll
+  (no-latency-bound; sessions list with tokens/context); the ABI snapshot
+  is the I12 contract view (bounded, zero harness calls). Merging them
+  would put a no-upper-bound endpoint's semantics into the frozen
+  surface. US-69.11 retires the API-side DERIVATION, not statusz; the
+  controller's scrape may later source cheaper data from the snapshot,
+  decided there.
+- **Control-op concurrency matrix** — **Decision: no exceptions.** All
+  five action verbs serialize against delivery via the authority's
+  single-flight (US-69.9); session-create stays API-side (adapter CRUD)
+  per M1's explicit carve-out. The interrupt/admission-in-flight race is
+  settled by construction (I7: an admission completing during an
+  interrupt lands a preserved queued row).
 
 ### Upstream dependencies
 
