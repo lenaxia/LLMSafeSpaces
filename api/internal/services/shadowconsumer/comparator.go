@@ -165,7 +165,13 @@ func (c *Comparator) ObserveReference(ref ReferenceState) {
 
 // CompareNow diffs the two folds at a checkpoint (scenario boundaries,
 // quiescent polls) and records divergences. Returns the unexplained count.
+// A checkpoint against a still-converging pair records NOTHING: the ABI seq
+// counts a superset of the reference's projectable events, so a seq-based
+// lag guard cannot prove per-session quiescence — only agreement can.
 func (c *Comparator) CompareNow() int {
+	if !c.Converged() {
+		return 0
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.diffLocked(time.Now())

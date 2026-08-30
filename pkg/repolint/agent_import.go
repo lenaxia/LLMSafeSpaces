@@ -56,11 +56,10 @@ var agentImportAllowedPrefixes = []string{
 //     design's full allow-set with no exceptions.
 var agentImportKnownLeaks = map[string]string{
 	// Epic 69 S1 shadow comparator (#1139): the reference fold deliberately
-	// consumes the DIALECT via the wire seam — the comparator's entire value
+	// consumes the DIALECT via the wire subpackage — the comparator's value
 	// is two independent derivations of one stream. Disposable with the
-	// comparator at S1 exit (design 0055: "only the comparator is
-	// disposable"); retire this entry when the S3 tracker retirement deletes
-	// the package.
+	// comparator at S1/S3 exit (design 0055); retire when the tracker
+	// retirement deletes the package (#1145).
 	"api/internal/services/shadowconsumer/comparator.go": "S1 shadow comparator consumes the dialect by design; retired with the comparator at Epic 69 S1/S3 exit (#1139, #1145)",
 }
 

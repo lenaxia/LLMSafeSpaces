@@ -138,7 +138,7 @@ func TestKnownLeaksStillMatchReality(t *testing.T) {
 		if ierr != nil {
 			return nil
 		}
-		if !containsString(imports, AgentImportForbiddenPath) {
+		if !importsForbiddenAgentPath(imports) {
 			return nil
 		}
 		rel, rerr := filepath.Rel(root, path)
@@ -146,6 +146,11 @@ func TestKnownLeaksStillMatchReality(t *testing.T) {
 			return nil
 		}
 		norm := filepath.ToSlash(rel)
+		// Same semantics as the production detector (CheckAgentImports):
+		// skip the seam itself, then the allow-set.
+		if strings.HasPrefix(norm, agentSelfPrefix) {
+			return nil
+		}
 		if anyPrefix(norm, agentImportAllowedPrefixes) {
 			return nil
 		}
