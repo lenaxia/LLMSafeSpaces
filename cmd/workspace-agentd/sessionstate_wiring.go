@@ -13,103 +13,114 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"os"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"go.uber.org/zap"
 )
 
-// opencodeSessionEventParser is the US-69.2-stage EventParser: it maps the
-// opencode session.status SSE shape (flat and legacy-nested envelopes) onto
-// the contract session-status event. Every other event type reports
-// ok=false (dropped + counted by the authority) until US-69.3's full
-// translation.
-type opencodeSessionEventParser struct{}
-
-func (opencodeSessionEventParser) Parse(raw []byte) (*abiv1.Event, bool, error) {
-	var flat struct {
-		Type       string          `json:"type"`
-		Properties json.RawMessage `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &flat); err != nil {
-		return nil, false, nil
-	}
-	props := flat.Properties
-	if flat.Type == "" {
-		var nested struct {
-			Payload struct {
-				Type       string          `json:"type"`
-				Properties json.RawMessage `json:"properties"`
-			} `json:"payload"`
-		}
-		if err := json.Unmarshal(raw, &nested); err != nil {
-			return nil, false, nil
-		}
-		flat.Type = nested.Payload.Type
-		props = nested.Payload.Properties
-	}
-	if flat.Type != "session.status" || len(props) == 0 {
-		return nil, false, nil
-	}
-	var p struct {
-		SessionID string `json:"sessionID"`
-		Status    struct {
-			Type string `json:"type"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(props, &p); err != nil {
-		return nil, true, fmt.Errorf("session.status properties: %w", err)
-	}
-	if p.SessionID == "" {
-		return nil, false, nil
-	}
-	var status abiv1.SessionStatus
-	switch p.Status.Type {
-	case "idle":
-		status = abiv1.SessionStatus_SESSION_STATUS_IDLE
-	case "busy", "retry":
-		status = abiv1.SessionStatus_SESSION_STATUS_BUSY
-	case "error":
-		status = abiv1.SessionStatus_SESSION_STATUS_ERROR
-	case "compacting":
-		status = abiv1.SessionStatus_SESSION_STATUS_COMPACTING
-	default:
-		return nil, false, nil
-	}
-	return &abiv1.Event{
-		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
-		SessionId: p.SessionID,
-		Status:    status,
-	}, true, nil
-}
-
-// opencodeStoreReader is the US-69.2-stage StoreReader: opencode's session
-// list is the store truth for session statuses. Respects ctx; a wedged
-// opencode surfaces as ctx deadline (M3.1).
+// opencodeStoreReader is the US-69.3 StoreReader: opencode's session list
+// is the store truth for statuses; the /question + /permission lists are
+// the truth for pending inputs. Respects ctx; a wedged opencode surfaces as
+// ctx deadline (M3.1).
 type opencodeStoreReader struct {
 	client *OpenCodeClient
 }
 
-func (r opencodeStoreReader) SessionStatuses(ctx context.Context) (map[string]abiv1.SessionStatus, error) {
+func (r opencodeStoreReader) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	sessions, err := r.client.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]abiv1.SessionStatus, len(sessions))
+	out := make(map[string]sessionstate.SessionSeed, len(sessions))
 	for _, s := range sessions {
+		var status abiv1.SessionStatus
 		switch s.Status {
 		case "busy":
-			out[s.ID] = abiv1.SessionStatus_SESSION_STATUS_BUSY
+			status = abiv1.SessionStatus_SESSION_STATUS_BUSY
 		case "error":
-			out[s.ID] = abiv1.SessionStatus_SESSION_STATUS_ERROR
+			status = abiv1.SessionStatus_SESSION_STATUS_ERROR
 		default:
-			out[s.ID] = abiv1.SessionStatus_SESSION_STATUS_IDLE
+			status = abiv1.SessionStatus_SESSION_STATUS_IDLE
+		}
+		out[s.ID] = sessionstate.SessionSeed{Status: status}
+	}
+	d := &opencode.Dialect{}
+	for _, in := range fetchList(ctx, r.client, "/question", d.ParseQuestionListItem) {
+		if seed, ok := out[in.SessionID]; ok {
+			seed.PendingInputs = append(seed.PendingInputs, questionToABI(in))
+			out[in.SessionID] = seed
+		}
+	}
+	for _, in := range fetchList(ctx, r.client, "/permission", d.ParsePermissionListItem) {
+		if seed, ok := out[in.SessionID]; ok {
+			seed.PendingInputs = append(seed.PendingInputs, permissionToABI(in))
+			out[in.SessionID] = seed
 		}
 	}
 	return out, nil
+}
+
+// fetchList GETs a JSON-array endpoint and maps each entry through parse.
+// Unreachable/unimplemented endpoints (404, conn refused) are an
+// authoritative-empty for PENDING INPUTS specifically — opencode versions
+// without the endpoints never had questions; session-list errors above are
+// the real store-read failure path.
+func fetchList[T any](ctx context.Context, client *OpenCodeClient, path string, parse func(json.RawMessage) (T, error)) []T {
+	resp, err := client.doRequest(ctx, path)
+	if err != nil || resp.StatusCode >= 400 {
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+	var out []T
+	for _, item := range items {
+		if v, err := parse(item); err == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func questionToABI(q *agent.QuestionRequest) *abiv1.InputRequest {
+	in := &abiv1.InputRequest{Id: q.ID, SessionId: q.SessionID, Kind: abiv1.InputKind_INPUT_KIND_QUESTION}
+	if len(q.Questions) > 0 {
+		inq := q.Questions[0]
+		in.Question = inq.Question
+		in.Header = inq.Header
+		in.Multiple = inq.Multiple
+		in.Custom = inq.Custom
+		for _, o := range inq.Options {
+			in.Options = append(in.Options, &abiv1.InputOption{Label: o.Label, Description: o.Description})
+		}
+	}
+	if q.Tool != nil {
+		in.Tool = &abiv1.ToolRef{MessageId: q.Tool.MessageID, CallId: q.Tool.CallID}
+	}
+	return in
+}
+
+func permissionToABI(p *agent.PermissionRequest) *abiv1.InputRequest {
+	in := &abiv1.InputRequest{
+		Id: p.ID, SessionId: p.SessionID, Kind: abiv1.InputKind_INPUT_KIND_PERMISSION,
+		Permission: p.Permission, Patterns: p.Patterns, Always: p.Always,
+	}
+	if p.Tool != nil {
+		in.Tool = &abiv1.ToolRef{MessageId: p.Tool.MessageID, CallId: p.Tool.CallID}
+	}
+	return in
 }
 
 // platformDirFromEnv resolves the platform/ PVC subPath mount (US-69.2).
@@ -129,7 +140,7 @@ func platformDirFromEnv() string {
 func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword string) *sessionstate.Authority {
 	cfg := sessionstate.Config{
 		PlatformDir: platformDirFromEnv(),
-		Parser:      opencodeSessionEventParser{},
+		Parser:      opencode.ABITranslator{},
 		Store:       opencodeStoreReader{client: client},
 		// D6.1 pair: accept either credential across mixed-generation
 		// windows; empty entries are skipped by the auth gate.
