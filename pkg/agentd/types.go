@@ -121,6 +121,25 @@ type HealthzResponse struct {
 	// The controller relays them into the AgentHealthy condition message
 	// so users see why their selected model is not in use.
 	Warnings []string `json:"warnings,omitempty"`
+	// SpawnEnv (US-70.1, design 0057) is the supervisor's
+	// terminal-verified spawn-env state: the revision of the secrets
+	// delta the agent process actually spawned with, plus a
+	// machine-readable degrade reason when delivery is incomplete.
+	// Nil when the reporter has no supervisor evidence yet
+	// (single-container mode, or before the first status poll) — no
+	// evidence is not a degrade. Observability only, like Warnings.
+	SpawnEnv *SpawnEnvHealth `json:"spawnEnv,omitempty"`
+}
+
+// SpawnEnvHealth is the spawn-env delivery slice of HealthzResponse.
+// Degraded=true carries a non-empty Reason from the closed reason set
+// (spawn_env_unavailable, spawn_env_unauthorized, spawn_env_no_credential,
+// spawn_env_bad_response); the controller mirrors it into the Workspace
+// CRD's secretsDelivery status.
+type SpawnEnvHealth struct {
+	SpawnedRev string `json:"spawnedRev,omitempty"`
+	Degraded   bool   `json:"degraded"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // ReadyzResponse is the response for GET /v1/readyz.

@@ -667,14 +667,18 @@ fi
 # entry is stamped disabled.
 install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 
-# #887 D5.1: distinct admin-mux bearer token, file-only delivery. The
-# pw-secret volume projects the whole Secret, so key presence == file
-# presence; the guard covers legacy Secrets during the upsert convergence
-# window. agentd resolves AGENTD_ADMIN_TOKEN_FILE first, so an installed
-# but unreferenced file is inert in legacy pods.
+# #887 D5.1: distinct admin-mux bearer token, file-only delivery —
+# SINGLE-CONTAINER pods only. The pw-secret volume projects the whole
+# Secret, so key presence == file presence; the guard covers legacy
+# Secrets during the upsert convergence window. agentd resolves
+# AGENTD_ADMIN_TOKEN_FILE first, so an installed but unreferenced file
+# is inert in legacy pods. US-70.1 R3: sidecar-mode pods skip the
+# install entirely — the sidecar receives the bearer via env (uid-2000
+# space) and a 0400 uid-1000-owned file in the RW sandbox-cfg mount
+# would hand it to uid-1000 space (design 0051 D1).
 # POSIX test only — this script runs under /bin/sh (dash), where [[ ]]
 # is a silent no-op (F1, review round 2).
-if [ -f /mnt/secrets/password/admin-token ]; then
+if [ -f /mnt/secrets/password/admin-token ] && [ "${AGENTD_SIDECAR_MODE:-}" != "1" ]; then
   install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token
 fi
 

@@ -60,6 +60,16 @@ func overlayEnvKeys() []string {
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64",
 		"LLMSAFESPACES_AGENTD_SHA256_ARM64",
 		"LLMSAFESPACES_CONTROL_SOCKET_ADDR",
+		// US-70.1: these tests exercise the overlay spawn path, not the
+		// spawn-env pull. Without filtering, an ambient workspace-pod
+		// environment (this repo's own dev sandboxes carry
+		// OPENCODE_SERVER_PASSWORD and a live :4097 mux) makes the
+		// supervisor pull a real old sidecar, eat the full 2s bound per
+		// spawn, and blow the control-client's restart timeout. Filtering
+		// both keys forces the deterministic no-credential fast-fail; the
+		// pull itself has dedicated tests (spawn_env_pull_exec_test.go).
+		"OPENCODE_SERVER_PASSWORD",
+		"LLMSAFESPACES_SPAWN_ENV_PULL_ADDR",
 		"PATH",
 	}
 }
@@ -339,7 +349,7 @@ func TestNewSupervisorProcess_SharesOverlayBaseWithAdapter(t *testing.T) {
 	oc, sha := writeOverlayStub(t, t.TempDir(), "exec sleep 3600")
 	setOverlayEnv(t, oc, sha, sha)
 
-	proc, adapter := newSupervisorProcess()
+	proc, adapter := newSupervisorProcess(context.Background())
 	require.NotNil(t, proc.cmdFactory,
 		"supervisor mode resolves the opencode spawn base at construction (verify before socket, before spawn)")
 	require.Equal(t, oc, proc.cmdFactory().Path)

@@ -68,6 +68,11 @@ type supervisedProcIface interface {
 	Restart(reason string, graceSeconds int) (restarted, inProgress bool)
 	State() (pid int, state string, restarts int, lastRestartAt time.Time)
 	SetSpawnEnv(env map[string]string)
+	// SpawnEnvState reports the terminal-verified spawn-env delivery
+	// state (US-70.1, design 0057 I4): the revision the last-spawned
+	// child actually spawned with, plus any degrade reason. A revision
+	// hash and a reason code only — no env values (A.4 invariant 1).
+	SpawnEnvState() spawnEnvStateReport
 }
 
 type controlSocketServer struct {
@@ -199,12 +204,16 @@ func (s *controlSocketServer) status(id *int64) controlResponse {
 	if !last.IsZero() {
 		lastStr = last.UTC().Format(time.RFC3339)
 	}
+	spawn := s.proc.SpawnEnvState()
 	return controlResponse{V: controlProtocolVersion, ID: idOr(id),
 		Result: map[string]any{
-			"child_pid":       pid,
-			"child_state":     state,
-			"restarts":        restarts,
-			"last_restart_at": lastStr,
+			"child_pid":          pid,
+			"child_state":        state,
+			"restarts":           restarts,
+			"last_restart_at":    lastStr,
+			"spawned_rev":        spawn.SpawnedRev,
+			"spawn_env_degraded": spawn.Degraded,
+			"spawn_env_reason":   spawn.Reason,
 		}}
 }
 

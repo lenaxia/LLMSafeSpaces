@@ -340,6 +340,20 @@ type AgentSessionStatus struct {
 	ContextUsed int64  `json:"contextUsed"`
 }
 
+// SecretsDeliveryStatus reports the terminal-verified spawn-env
+// delivery state (US-70.1, design 0057 R2): the revision of the secrets
+// delta the supervised agent process actually spawned with (measured at
+// the point of consumption — never at materialization or fetch), plus
+// the machine-readable degrade reason when delivery is incomplete
+// (spawn_env_unavailable, spawn_env_unauthorized, spawn_env_no_credential,
+// spawn_env_bad_response). Mirrored by the controller from agentd's
+// /v1/healthz. Empty DegradedReason means converged; the reconcile loop
+// that consumes this for convergence lands with US-70.3.
+type SecretsDeliveryStatus struct {
+	SpawnedRev     string `json:"spawnedRev,omitempty"`
+	DegradedReason string `json:"degradedReason,omitempty"`
+}
+
 // WorkspaceStatus defines the observed state of a Workspace.
 // Ownership is documented per-field to enforce the single-writer principle
 // (US-23.3): each field has exactly one owner, eliminating cross-owner
@@ -418,6 +432,16 @@ type WorkspaceStatus struct {
 	// Cleared to nil when the pod becomes unreachable so a stale "true"
 	// from a previous pod doesn't suppress the push after recreation.
 	UserCredsPresent *bool `json:"userCredsPresent,omitempty"`
+
+	// SecretsDelivery (US-70.1, design 0057) is the terminal-verified
+	// spawn-env delivery state scraped from agentd's /v1/healthz:
+	// spawned_rev (what the agent process actually spawned with) and the
+	// degrade reason when delivery is incomplete. Cleared to nil when
+	// the pod becomes unreachable (same doctrine as UserCredsPresent —
+	// a stale value from a previous pod must not survive); left as-is
+	// when a healthy scrape omits the field (mixed-fleet old runtimes
+	// never report it — W15).
+	SecretsDelivery *SecretsDeliveryStatus `json:"secretsDelivery,omitempty"`
 
 	// ---- Startup latency measurement anchors (S18.10) ----
 	//

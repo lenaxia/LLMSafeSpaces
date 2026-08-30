@@ -206,6 +206,27 @@ spec:
                     /v1/healthz scrape. Absent (nil) means the
                     controller hasn't scraped yet — the API's
                     watcher-driven auto-push treats absent as unknown.
+                secretsDelivery:
+                  type: object
+                  description: |
+                    Terminal-verified spawn-env delivery state (US-70.1,
+                    design 0057 R2). Populated by the controller from
+                    agentd's /v1/healthz scrape. Absent (nil) means no
+                    evidence (unreachable pod, or a pre-US-70.1 runtime).
+                  properties:
+                    spawnedRev:
+                      type: string
+                      description: |
+                        Revision of the secrets delta the agent process
+                        actually spawned with — measured at the point of
+                        consumption, never at materialization or fetch.
+                    degradedReason:
+                      type: string
+                      description: |
+                        Machine-readable reason when delivery is
+                        incomplete (spawn_env_unavailable,
+                        spawn_env_unauthorized, spawn_env_no_credential,
+                        spawn_env_bad_response). Empty means converged.
                 conditions:
                   type: array
                   items:

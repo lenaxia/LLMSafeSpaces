@@ -54,8 +54,25 @@ import (
 // warning is surfaced so the controller can relay it into the AgentHealthy
 // condition message the user sees. Absent or corrupt marker → no warnings;
 // liveness is never affected.
-func healthzHandler(startedAt time.Time, reloadCachePath, modelWarnPath string) http.HandlerFunc {
+//
+// spawnEnvSnapshot (US-70.1, design 0057 I10/I13), when non-nil, supplies
+// the supervisor's terminal-verified spawn-env state for the spawnEnv
+// field: the revision the child actually spawned with, plus a
+// machine-readable degrade reason when delivery is incomplete. Cached
+// state only — the handler still performs no I/O (US-22.1 contract); a
+// degrade surfaces as the spawnEnv field AND a `degraded:<reason>`
+// warning the controller relays into the AgentHealthy condition, never
+// as Healthy=false (a secrets degrade must not cascade to pod-kill).
+func healthzHandler(startedAt time.Time, reloadCachePath, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		warnings := modelResolutionWarnings(modelWarnPath)
+		var spawnEnv *agentd.SpawnEnvHealth
+		if spawnEnvSnapshot != nil {
+			spawnEnv = spawnEnvSnapshot()
+			if w := spawnEnvWarning(spawnEnv); w != "" {
+				warnings = append(warnings, w)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
 			Healthy:          true,
@@ -64,7 +81,8 @@ func healthzHandler(startedAt time.Time, reloadCachePath, modelWarnPath string) 
 			BuildTime:        buildTime,
 			UptimeSeconds:    int(time.Since(startedAt).Seconds()),
 			UserCredsPresent: hasUserCreds(reloadCachePath),
-			Warnings:         modelResolutionWarnings(modelWarnPath),
+			SpawnEnv:         spawnEnv,
+			Warnings:         warnings,
 		})
 	}
 }

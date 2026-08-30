@@ -64,10 +64,16 @@ type serverDeps struct {
 	// (D6.1 mixed-generation window). Empty in single-container mode.
 	controlPlanePassword string
 	// reloadProc is the reload-secrets path's restarter for sidecar mode
-	// (US-4a): pushes the fresh secrets-env delta over the socket, then
-	// requests the credential_reload restart. Used only when proc is nil
-	// (single-container mode keeps the in-process managedProcess).
+	// (US-4a; US-70.1 removed the pre-restart push — the restarted
+	// child's spawn pulls the fresh delta from the user mux). Used only
+	// when proc is nil (single-container mode keeps the in-process
+	// managedProcess).
 	reloadProc restartableProcess
+	// spawnEnvSnapshot, when non-nil, supplies the healthz spawnEnv
+	// field: the supervisor's terminal-verified spawn-env state mirrored
+	// by the sidecar's status poller (US-70.1). Nil in single-container
+	// mode (no split supervisor to poll) — healthz then omits the field.
+	spawnEnvSnapshot func() *agentd.SpawnEnvHealth
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -363,6 +369,13 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	}))
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
+	// US-70.1 (design 0057 R2): the spawn-time env PULL endpoint. The
+	// supervisor fetches the current secrets-env delta + revision here at
+	// every spawn (bounded wait, last-good fallback). §D1 Basic pair —
+	// the supervisor presents the workspace password (the uid-1000
+	// carve-out credential), never agentdPassword.
+	userMux.HandleFunc("/v1/spawn-env", spawnEnvHandler(deps.password, deps.controlPlanePassword, secretsEnvPathFromEnv()))
+
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
 	// user mux, symmetric with reload-secrets (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
@@ -403,7 +416,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, reloadCachePathFromEnv(), modelWarnPathFromEnv()))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, reloadCachePathFromEnv(), modelWarnPathFromEnv(), deps.spawnEnvSnapshot))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 

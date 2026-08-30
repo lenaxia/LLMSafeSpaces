@@ -70,6 +70,14 @@ type managedProcess struct {
 	// start().
 	cmdFactory func() *exec.Cmd
 
+	// preSpawn, when non-nil, is invoked by the supervisor goroutine at
+	// the top of each loop iteration — before the child cmd is built,
+	// and deliberately OUTSIDE p.mu — so a bounded-wait external call
+	// (the US-70.1 spawn-env pull) can never block restart/state/metrics
+	// readers. Runs once per spawn: first boot, operator restarts, crash
+	// recovery. A nil hook is a no-op.
+	preSpawn func()
+
 	// healthCheckURL is the URL polled after restart() to verify the
 	// new child is serving. Empty means skip the health check.
 	healthCheckURL string
@@ -177,6 +185,9 @@ func (p *managedProcess) supervise() {
 	}()
 
 	for {
+		if p.preSpawn != nil {
+			p.preSpawn()
+		}
 		p.mu.Lock()
 		// stop() may have run while we were in a crash backoff sleep:
 		// it signals the child it saw (possibly the dead one) and waits

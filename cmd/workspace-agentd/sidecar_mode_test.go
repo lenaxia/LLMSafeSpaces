@@ -189,11 +189,16 @@ func TestSidecar_SpawnEnvConsumerReady(t *testing.T) {
 	defer p.stop()
 
 	adapter := &managedProcAdapter{p: p}
-	// Inject the fake child factory BEFORE SetSpawnEnv: the wrapper
-	// composes on top of this base, so the spawned child keeps the
-	// test-binary re-exec (the production `opencode` binary does not
-	// exist on CI runners — CI hang found the hard way).
+	// Inject the fake child factory BEFORE wiring the composition: the
+	// composition builds on top of this base, so the spawned child keeps
+	// the test-binary re-exec (the production `opencode` binary does not
+	// exist on CI runners — CI hang found the hard way). Wire the
+	// adapter's composeChild as the process factory exactly as
+	// newSupervisorProcess does in production.
 	adapter.baseCmdFactory = p.cmdFactory
+	p.mu.Lock()
+	p.cmdFactory = adapter.composeChild
+	p.mu.Unlock()
 	adapter.SetSpawnEnv(map[string]string{"PROBE_VAR": "socket-handed"})
 	_, _ = adapter.Restart("credential_reload", 5)
 
