@@ -11,8 +11,6 @@ interface ConfirmOptions {
   onConfirm: () => void;
 }
 
-interface ConfirmState extends ConfirmOptions {}
-
 /**
  * useConfirmDialog provides an imperative confirm API backed by the
  * accessible ConfirmDialog (Radix DOM portal) instead of window.confirm.
@@ -40,7 +38,7 @@ export function useConfirmDialog(): {
   confirm: (opts: ConfirmOptions) => void;
   dialog: ReactNode;
 } {
-  const [state, setState] = useState<ConfirmState | null>(null);
+  const [state, setState] = useState<ConfirmOptions | null>(null);
 
   const confirm = useCallback((opts: ConfirmOptions) => {
     setState(opts);

@@ -41,8 +41,21 @@ export function friendlyToCron(f: FriendlyCron): CronConfig {
   return { expr: "0 * * * *", tz };
 }
 
-export function cronToFriendly(c: CronConfig): FriendlyCron {
-  const expr = c.expr?.trim() || "0 * * * *";
+/**
+ * Narrows a trigger's sourceConfig (unknown JSON on the wire — the API
+ * returns `cron: {expr, tz?}` for cron sources and `{}` for webhooks) to a
+ * CronConfig. Invalid or missing values fall back to an empty config, which
+ * the display helpers render as "0 * * * *" / "Custom schedule".
+ */
+export function toCronConfig(value: unknown): CronConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { expr: "", tz: "UTC" };
+  const candidate = value as { expr?: unknown; tz?: unknown };
+  const expr = typeof candidate.expr === "string" ? candidate.expr : "";
+  const tz = typeof candidate.tz === "string" ? candidate.tz : "UTC";
+  return { expr, tz };
+}
+
+export function cronToFriendly(c: CronConfig): FriendlyCron {  const expr = c.expr?.trim() || "0 * * * *";
   const parts = expr.split(/\s+/);
   if (parts.length !== 5) return { frequency: "custom", tz: c.tz || "UTC", expr };
   const min = parts[0] || "";

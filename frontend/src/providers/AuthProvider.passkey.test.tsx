@@ -14,7 +14,7 @@ vi.mock("../api/auth", () => ({
 
 import { authApi } from "../api/auth";
 
-function useAuthHook() {
+function renderAuthHook() {
   return renderHook(() => useAuth(), { wrapper: AuthProvider });
 }
 
@@ -30,7 +30,7 @@ describe("loginWithToken", () => {
     vi.mocked(authApi.me).mockResolvedValueOnce({
       id: "u1", username: "a", email: "a@b.com", role: "user", active: true, createdAt: "",
     });
-    const { result } = useAuthHook();
+    const { result } = renderAuthHook();
 
     await act(async () => {
       await result.current.loginWithToken("cookie-set-by-server");
@@ -42,7 +42,7 @@ describe("loginWithToken", () => {
 
   it("clears user state on logout", async () => {
     vi.mocked(authApi.logout).mockResolvedValueOnce(undefined);
-    const { result } = useAuthHook();
+    const { result } = renderAuthHook();
 
     await act(async () => {
       await result.current.logout();

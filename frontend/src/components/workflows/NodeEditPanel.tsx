@@ -2,6 +2,14 @@ import { useState } from "react";
 import { X, Plus, Trash2 } from "lucide-react";
 import type { FlowNode, NodeType, ScriptNodeData, AgentNodeData, HTTPNodeData, ConditionNodeData } from "./dagTypes";
 
+function strField(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numField(value: unknown): number | "" {
+  return typeof value === "number" ? value : "";
+}
+
 interface NodeEditPanelProps {
   node: FlowNode | null;
   onClose: () => void;
@@ -44,7 +52,7 @@ export function NodeEditPanel({ node, onClose, onChange, onDelete }: NodeEditPan
           <label className="mb-1 block text-xs font-medium text-muted-foreground">Label</label>
           <input
             className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-            value={(node.data as any).label || ""}
+            value={strField(node.data.label)}
             onChange={(e) => onChange(node.id, { ...node.data, label: e.target.value })}
             placeholder="Display name"
           />
@@ -60,7 +68,7 @@ export function NodeEditPanel({ node, onClose, onChange, onDelete }: NodeEditPan
               min={1}
               max={10}
               className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-              value={(node.data as any).maxAttempts || ""}
+              value={numField(node.data.maxAttempts)}
               onChange={(e) => onChange(node.id, { ...node.data, maxAttempts: e.target.value ? parseInt(e.target.value) : undefined })}
               placeholder="1"
             />
@@ -69,7 +77,7 @@ export function NodeEditPanel({ node, onClose, onChange, onDelete }: NodeEditPan
             <label className="mb-1 block text-xs font-medium text-muted-foreground">Timeout</label>
             <input
               className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-              value={(node.data as any).timeout || ""}
+              value={strField(node.data.timeout)}
               onChange={(e) => onChange(node.id, { ...node.data, timeout: e.target.value })}
               placeholder="10m"
             />
@@ -206,7 +214,7 @@ function AgentFields({ data, onChange }: { data: AgentNodeData; onChange: (d: Pa
               try {
                 onChange({ outputSchema: JSON.parse(e.target.value) });
               } catch {
-                onChange({ outputSchema: e.target.value as any });
+                onChange({ outputSchema: e.target.value });
               }
             }}
             placeholder='{"type":"object","properties":{"result":{"type":"string"}}}'
