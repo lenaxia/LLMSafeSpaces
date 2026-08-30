@@ -101,6 +101,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Source: https://github.com/cli/cli/releases
 # Asset naming: gh_{version}_linux_{arch}.tar.gz  (amd64/arm64 — matches Docker TARGETARCH).
 # Pinned to 2.74.1 (June 2026) — validated against API surface used by sandbox agents.
+RUN set -eux; \
     GH_VERSION="${GH_VERSION:-2.74.1}"; \
     case "${TARGETARCH}" in \
         amd64) GH_ARCH=amd64 ;; \

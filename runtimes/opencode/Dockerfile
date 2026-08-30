@@ -49,6 +49,12 @@ FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS fetch
 ARG TARGETARCH
 ARG OPENCODE_VERSION
 
+# bookworm-slim ships neither curl nor CA bundles — both are needed for
+# the TLS fetch (the pre-S3 base installed them in its apt block).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # SECURITY NOTE (unchanged from the pre-S3 base install): upstream does
 # not publish .sha256 or signature files for release assets. Transport
 # integrity relies on TLS to github.com plus curl's --fail flag
