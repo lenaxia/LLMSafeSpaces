@@ -45,6 +45,8 @@ func shellSingleQuote(s string) string {
 // that execs the agentd binary with the redact subcommand. Atomic
 // (temp-file + rename) and idempotent — a rewrite over an existing
 // wrapper replaces it whole, never truncating the live file mid-read.
+//
+//nolint:gosec // G703 (taint via dir): dir is not user input — it derives from redactWrapperPath(), a package constant or the operator-set LLMSAFESPACES_REDACT_WRAPPER_PATH env (same trust domain as every other LLMSAFESPACES_*_PATH store coordinate). Temp+rename stay inside that same directory by construction. Function-level directive: the pinned gosec taint release attributes the finding inconsistently across lines.
 func writeRedactWrapper(dir, agentdPath string) error {
 	// G301: 0750 — the wrapper dir is uid-1000 tmpfs; group (the pod's
 	// shared gid) may traverse, others may not.
@@ -61,7 +63,7 @@ func writeRedactWrapper(dir, agentdPath string) error {
 	// LLMSAFESPACES_REDACT_WRAPPER_PATH env (same trust domain as every
 	// other LLMSAFESPACES_*_PATH store coordinate). Temp+rename stay
 	// inside that same directory by construction.
-	tmp, err := os.CreateTemp(dir, ".redact-wrapper-*") //nolint:gosec // G703: see above
+	tmp, err := os.CreateTemp(dir, ".redact-wrapper-*")
 	if err != nil {
 		return fmt.Errorf("temp file in %s: %w", dir, err)
 	}
@@ -78,7 +80,7 @@ func writeRedactWrapper(dir, agentdPath string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close wrapper script: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), target); err != nil { //nolint:gosec // G703: same dir by construction
+	if err := os.Rename(tmp.Name(), target); err != nil {
 		return fmt.Errorf("rename into %s: %w", target, err)
 	}
 	return nil
