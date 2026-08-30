@@ -298,9 +298,9 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 	}
 
 	// platform-init (agentd init-fs) must always be present (first in the
-// list) and must mount the workspace PVC at /pvc with no subPath so it
-// can create the workspace/, home/, and tmp/ subdirectories on a fresh
-// PVC (design 0053 S3 — absorbed from the deleted workspace-dirs init).
+	// list) and must mount the workspace PVC at /pvc with no subPath so it
+	// can create the workspace/, home/, and tmp/ subdirectories on a fresh
+	// PVC (design 0053 S3 — absorbed from the deleted workspace-dirs init).
 	require.NotEmpty(t, pod.Spec.InitContainers)
 	require.Equal(t, "platform-init", pod.Spec.InitContainers[0].Name,
 		"platform-init must be the first init container")

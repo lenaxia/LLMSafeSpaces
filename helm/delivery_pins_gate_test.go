@@ -53,11 +53,11 @@ controller:
 			wantErrOn: "opencodeDelivery.image is mandatory",
 		},
 	} {
-	t.Run(tc.name, func(t *testing.T) {
-		out, err := render(t, tc.values)
-		require.Error(t, err, "render must fail without both pins")
-		assert.True(t, strings.Contains(string(out), tc.wantErrOn),
-			"render output should mention %q, got: %s", tc.wantErrOn, out)
-	})
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := render(t, tc.values)
+			require.Error(t, err, "render must fail without both pins")
+			assert.True(t, strings.Contains(string(out), tc.wantErrOn),
+				"render output should mention %q, got: %s", tc.wantErrOn, out)
+		})
 	}
 }
