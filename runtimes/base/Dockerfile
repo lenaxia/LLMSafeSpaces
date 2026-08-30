@@ -199,7 +199,8 @@ RUN set -eux; \
 # entrypoints, and opencode arrive at pod time via the two digest-pinned
 # overlay volumes (controller.agentdDelivery / opencodeDelivery).
 # The build-time smoke test below stays: OS-content assertions only
-# (design §4.3 — platform-contract assertions moved to the artifacts CI).COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
+# (design §4.3 — platform-contract assertions moved to the artifacts CI).
+COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 
 # --- Git credential consumption (#1087) ---
 #
