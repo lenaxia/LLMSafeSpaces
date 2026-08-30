@@ -246,6 +246,12 @@ func applyEvent(st *SessionState, seqed *abiv1.SequencedEvent) {
 	switch evt.GetType() {
 	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
 		snap.Status = evt.GetStatus()
+		if evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+			// Turn over: the server projection clears in-flight parts on
+			// idle — the fold must mirror it or reconnects show stale
+			// parts.
+			snap.InFlightParts = nil
+		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if in := evt.GetInput(); in != nil {
 			snap.PendingInputs = append(snap.PendingInputs, in)

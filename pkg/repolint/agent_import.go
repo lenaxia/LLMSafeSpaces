@@ -54,7 +54,15 @@ var agentImportAllowedPrefixes = []string{
 //     app.New / controller main boot.
 //   - Once those land, this list must be empty; the rule then enforces the
 //     design's full allow-set with no exceptions.
-var agentImportKnownLeaks = map[string]string{}
+var agentImportKnownLeaks = map[string]string{
+	// Epic 69 S1 shadow comparator (#1139): the reference fold deliberately
+	// consumes the DIALECT via the wire seam — the comparator's entire value
+	// is two independent derivations of one stream. Disposable with the
+	// comparator at S1 exit (design 0055: "only the comparator is
+	// disposable"); retire this entry when the S3 tracker retirement deletes
+	// the package.
+	"api/internal/services/shadowconsumer/comparator.go": "S1 shadow comparator consumes the dialect by design; retired with the comparator at Epic 69 S1/S3 exit (#1139, #1145)",
+}
 
 // KnownLeaks returns a defensive copy of the current agentImportKnownLeaks
 // map. The success message in cmd/repolint uses len() on this to surface how

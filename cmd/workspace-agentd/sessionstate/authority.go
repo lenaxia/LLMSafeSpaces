@@ -265,7 +265,6 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	a.mu.Lock()
 	a.buffering = true
 	a.mu.Unlock()
-
 	// quiesce point: everything ingested from here on buffers.
 
 	flush := func() {
@@ -419,6 +418,10 @@ func (a *Authority) Metrics() Metrics {
 
 // SetStoreForTest swaps the store reader (fault-injection support).
 func (a *Authority) SetStoreForTest(s StoreReader) { a.cfg.Store = s }
+
+// PlatformDir reports the durable-cursor directory (suspend/resume
+// diagnostics and the S1 scenario harness's restart scenarios).
+func (a *Authority) PlatformDir() string { return a.cfg.PlatformDir }
 
 // IngestForTest applies a contract event directly, bypassing the parser
 // seam (fault-injection + comparator support: the projection fold is

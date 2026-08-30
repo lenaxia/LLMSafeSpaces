@@ -278,6 +278,18 @@ func ParseSessionUpdatedProps(props json.RawMessage) (SessionUsage, bool, error)
 // The fixture-coverage test forces every fixture type to be listed here,
 // so a fixture refresh that introduces a type extends this set in the
 // same change.
+// Event-type literals (the dialect seam — Rule 12): consumers outside
+// pkg/agent/opencode reference these constants, never raw strings
+// (repolint: agent-event-literals gate).
+const (
+	EventTypeSessionStatus      = "session.status"
+	EventTypeSessionCreated     = "session.created"
+	EventTypeSessionUpdated     = "session.updated"
+	EventTypeSessionIdle        = "session.idle"
+	EventTypeMessagePartUpdated = "message.part.updated"
+	EventTypeMessagePartDelta   = "message.part.delta"
+)
+
 var knownEventTypes = map[string]bool{
 	"session.status":               true,
 	"session.updated":              true,
