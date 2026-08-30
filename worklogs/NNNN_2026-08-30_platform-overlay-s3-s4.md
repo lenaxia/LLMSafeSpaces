@@ -97,3 +97,18 @@ Runtimes: `base/Dockerfile`, `tools/smoke-test.sh`, `tools/entrypoints/*` (delet
 Factory: `imagefactory/dockerfile.go`, `base_sync.go` (deleted), `base_floor_test.go` (deleted), `dockerfile_test.go`, `app.go`.
 Helm: `templates/controller-deployment.yaml`, `chart_test.go`, `delivery_pins_gate_test.go` (new).
 CI/release: `ci.yml`, `release.yml`, `e2e-nightly.yml`, `e2e-attachments-single-container.yml`, `opencode-version-bump.yml`, `Makefile`, `local/bootstrap.sh`, `pkg/repolint/entrypoint_event_flag_test.go` → `event_flag_relocation_test.go`.
+
+---
+
+## Addendum (same session): S4 remainder — content-versioned base, off the release train
+
+**Decision (owner, live):** CalVer `YYYY.MM.x` — month = when the OS content last changed; `x` = patch bump for further changes within the same month. Chosen over bare month-CalVer: in-month collisions (two content changes) resolve without waiting for calendar rollover; monotonic under the factory's numeric `CompareVersions`.
+
+**Implementation:**
+- **Single source of version truth: the catalog seed row** (`catalog.seed.yaml` bookworm → `2026.08.0`). A base change ships as ONE reviewed PR: `runtimes/base/**` diff + row bump. No registry tag-arithmetic anywhere — the same pattern as the opencode pin (diffable, reviewable, revertible).
+- **`base-image.yml` (new)**: triggered by pushes touching `runtimes/base/**` or the seed; reads the row, CalVer shape-guards it, builds both arches, merges the manifest, cosign-signs + SBOM-attests. Idempotent: an existing tag is never rebuilt — a rebuild requires a patch bump (surfaced as a notice).
+- **release.yml de-coupled**: `build-runtime`/`merge-runtime` deleted; base removed from sign/scan/SBOM loops, case arms, env. RELEASE SUCCESS == platform artifacts only; base success == its own workflow. repolint's release-artifact invariants stay green (discovery is env-driven); the now-dead `RUNTIME_IMAGE` mapping removed from `componentFor`.
+- **Seed semantics on existing fleets**: `SeedUpsertBase` inserts the new row NON-default (never moves an operator default, #936) — promotion is an admin action; fresh installs default to `2026.08.0`.
+- ci.yml's PR-validation base build drops the now-unused agentd build-args.
+
+**Tests:** imagefactory + database + repolint suites green against the reseeded catalog (seed tests parse the real embedded YAML, so the new row shape is exercised); the awk extraction in `base-image.yml` verified against the seed locally (2026.08.0).

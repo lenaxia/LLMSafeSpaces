@@ -1514,10 +1514,6 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
-          build-args: |
-            VERSION=${{ needs.prepare.outputs.version }}
-            COMMIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
