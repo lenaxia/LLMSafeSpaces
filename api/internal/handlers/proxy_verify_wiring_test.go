@@ -36,4 +36,12 @@ func TestComposedAdapterSatisfiesDeliveryVerifier(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, delivered)
 	assert.False(t, definitive)
+
+	// Discipline (2026-08-29 postmortem): EVERY method the handlers call
+	// through seam assertions or with wrapping-sensitive semantics gets a
+	// pass-through assertion HERE, on the composed production stack —
+	// unit tests see the raw adapter and cannot catch wrapper gaps.
+	// SetSessionModel (R4): nil is a documented no-op; the wrapper must
+	// pass it through untouched rather than panic or swallow.
+	require.NoError(t, composed.SetSessionModel(ctx, "u", "ws", "ses", nil))
 }
