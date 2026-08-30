@@ -283,12 +283,15 @@ tools-install: abi-codegen-tools
 	@echo "Other tools (helm, gitleaks, govulncheck, trivy) are checked"
 	@echo "by the relevant gates and installed on demand."
 
-# abi-codegen-tools: the pinned schema codegen toolchain only. Used by the
-# CI abi-schema job (which needs no lint tools) and by tools-install.
+# abi-codegen-tools: the pinned schema codegen toolchain (plus goimports —
+# generated Go is piped through it so the imports gate and the regen
+# freshness gate agree byte-for-byte). Used by the CI abi-schema job (which
+# needs no lint tools) and by tools-install.
 abi-codegen-tools:
 	$(GOCMD) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GOCMD) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	$(GOCMD) install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
+	$(GOCMD) install golang.org/x/tools/cmd/goimports@latest
 
 # --- Harness ABI schema (Epic 69 / US-69.1) --------------------------------
 # The .proto sources are the ABI (pkg/abi/llmsafespaces/abi/v1/); generated
@@ -326,9 +329,9 @@ abi-breaking:
 # make abi-generate with frontend/node_modules present.)
 abi-check: abi-lint abi-breaking
 	@export PATH="$$(go env GOPATH)/bin:$$PATH:frontend/node_modules/.bin"; \
-	buf generate pkg/abi && goimports -w pkg/abi/v1; \
+	buf generate pkg/abi && goimports -w pkg/abi/v1 && \
 	git diff --exit-code -- pkg/abi/v1 || \
-		{ echo "pkg/abi/v1 is stale — run make abi-generate and commit"; exit 1; }
+		{ echo "pkg/abi/v1 is stale (or a codegen tool is missing — run make abi-codegen-tools) — run make abi-generate and commit"; exit 1; }
 	@echo "ABI schema gates passed."
 
 # check: run all the pre-merge quality gates locally. Mirrors what CI
