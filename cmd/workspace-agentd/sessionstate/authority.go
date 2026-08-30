@@ -82,6 +82,12 @@ type Config struct {
 	Logger      *zap.Logger
 	// ABIVersion is reported in the capability report snapshot frame.
 	ABIVersion string
+	// Capabilities, when set, is the capability report served on the
+	// snapshot frame (provenance, supported actions, supported part
+	// kinds). Built by the wiring layer from boot-time facts (0053 pins,
+	// versions, D3 part limits) — the report is STATIC per boot so the
+	// hot path never touches the harness (M3.1).
+	Capabilities *abiv1.CapabilityReport
 }
 
 // StateSnapshot is an atomically-stamped view of the projection (I1: the
@@ -311,12 +317,15 @@ func (a *Authority) State() StateSnapshot {
 // capabilityReportLocked builds the snapshot frame's capability report at
 // the current story stage. US-69.4 replaces this with the full provenance
 // wiring (0054 predicate); the frame shape is stable from day one.
+// capabilityReport serves the wiring-provided static report (provenance,
+// supported actions, supported part kinds — US-69.4); the fallback covers
+// bare constructions (tests) with the D3 opencode part limits.
 func (a *Authority) capabilityReport() *abiv1.CapabilityReport {
+	if a.cfg.Capabilities != nil {
+		return a.cfg.Capabilities
+	}
 	return &abiv1.CapabilityReport{
 		Provenance:             abiv1.Provenance_PROVENANCE_PLATFORM_PINNED,
-		Harness:                "",
-		HarnessVersion:         "",
-		AgentdVersion:          "",
 		SupportedActions:       nil,
 		SupportedDeliveryParts: []abiv1.DeliveryPartKind{abiv1.DeliveryPartKind_DELIVERY_PART_KIND_TEXT},
 		AbiVersion:             a.cfg.ABIVersion,
@@ -410,5 +419,19 @@ func (a *Authority) Metrics() Metrics {
 
 // SetStoreForTest swaps the store reader (fault-injection support).
 func (a *Authority) SetStoreForTest(s StoreReader) { a.cfg.Store = s }
+
+// IngestForTest applies a contract event directly, bypassing the parser
+// seam (fault-injection + comparator support: the projection fold is
+// exercised without dialect fixtures).
+func (a *Authority) IngestForTest(evt *abiv1.Event) {
+	a.mu.Lock()
+	if a.buffering {
+		a.pending = append(a.pending, nil)
+		a.mu.Unlock()
+		return
+	}
+	a.applyLocked(evt)
+	a.mu.Unlock()
+}
 
 const streamBuffer = 256

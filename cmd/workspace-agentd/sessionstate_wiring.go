@@ -21,6 +21,7 @@ import (
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 	"go.uber.org/zap"
 )
 
@@ -139,9 +140,10 @@ func platformDirFromEnv() string {
 // cursor a boot requirement instead.
 func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword string) *sessionstate.Authority {
 	cfg := sessionstate.Config{
-		PlatformDir: platformDirFromEnv(),
-		Parser:      opencode.ABITranslator{},
-		Store:       opencodeStoreReader{client: client},
+		PlatformDir:  platformDirFromEnv(),
+		Parser:       opencode.ABITranslator{},
+		Store:        opencodeStoreReader{client: client},
+		Capabilities: bootCapabilityReport(client),
 		// D6.1 pair: accept either credential across mixed-generation
 		// windows; empty entries are skipped by the auth gate.
 		Passwords: []string{controlPlanePassword, password},
@@ -195,4 +197,36 @@ func startStateAuthorityReseed(ctx context.Context, a *sessionstate.Authority, r
 			}
 		}
 	}()
+}
+
+// bootCapabilityReport builds the static capability report served on every
+// snapshot frame (US-69.4). Provenance: the 0053 overlay anchor
+// (AGENTD_IMAGE_VOLUME — the digest-pinned delivery the self-verify gate
+// enforces); BYO/legacy bases report UNPINNED (the M4 wiring rejects
+// authority-flag-on for them). Harness version: ONE bounded boot-time
+// discovery call (the report is static afterwards — M3.1: no harness calls
+// on hot paths). Supported actions: none declared until US-69.9 wires the
+// action surface; file delivery parts are NotSupported on opencode per D3.
+func bootCapabilityReport(client *OpenCodeClient) *abiv1.CapabilityReport {
+	provenance := abiv1.Provenance_PROVENANCE_PLATFORM_PINNED
+	if os.Getenv("AGENTD_IMAGE_VOLUME") != "1" {
+		provenance = abiv1.Provenance_PROVENANCE_UNPINNED
+	}
+	harnessVersion := "unknown"
+	if client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if _, v, err := client.IsHealthy(ctx); err == nil && v != "" {
+			harnessVersion = v
+		}
+		cancel()
+	}
+	return &abiv1.CapabilityReport{
+		Provenance:             provenance,
+		Harness:                "opencode",
+		HarnessVersion:         harnessVersion,
+		AgentdVersion:          version.Version,
+		SupportedActions:       nil,
+		SupportedDeliveryParts: []abiv1.DeliveryPartKind{abiv1.DeliveryPartKind_DELIVERY_PART_KIND_TEXT},
+		AbiVersion:             "1",
+	}
 }

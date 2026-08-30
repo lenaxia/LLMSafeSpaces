@@ -81,10 +81,25 @@ func (a *Authority) Events(ctx context.Context, req *connect.Request[abiv1.Event
 }
 
 func (a *Authority) GetSnapshot(ctx context.Context, req *connect.Request[abiv1.GetSnapshotRequest]) (*connect.Response[abiv1.SessionSnapshot], error) {
-	if err := a.limiter.allow(req.Msg.GetSessionId()); err != nil {
-		return nil, err
+	// Reads are NOT rate-limited (I8 bounds deliveries/actions — the
+	// mutating ops; the comparator polls snapshots legitimately).
+	sid := req.Msg.GetSessionId()
+	if sid == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errText("session_id is required"))
 	}
-	return nil, notSupported("abi.snapshot", "endpoint semantics land in US-69.4")
+	a.mu.Lock()
+	rec := a.sessions[sid]
+	var snap *abiv1.SessionSnapshot
+	if rec != nil {
+		snap = sessionSnapshotLocked(sid, rec)
+	}
+	stamp := a.seq
+	a.mu.Unlock()
+	if snap == nil {
+		return nil, connect.NewError(connect.CodeNotFound, errText("unknown session: "+sid))
+	}
+	_ = stamp
+	return connect.NewResponse(snap), nil
 }
 
 func (a *Authority) Deliver(ctx context.Context, req *connect.Request[abiv1.DeliveryRequest]) (*connect.Response[abiv1.DeliveryAck], error) {
@@ -95,9 +110,6 @@ func (a *Authority) Deliver(ctx context.Context, req *connect.Request[abiv1.Deli
 }
 
 func (a *Authority) GetDeliveryStatus(ctx context.Context, req *connect.Request[abiv1.GetDeliveryStatusRequest]) (*connect.Response[abiv1.DeliveryStatus], error) {
-	if err := a.limiter.allow(req.Msg.GetSessionId()); err != nil {
-		return nil, err
-	}
 	return nil, notSupported("abi.delivery_status", "delivery ledger lands in US-69.7")
 }
 
