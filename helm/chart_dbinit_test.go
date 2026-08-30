@@ -274,8 +274,12 @@ func TestDBInit_RequiresSuperuserSecretName(t *testing.T) {
 	}
 	dir := t.TempDir()
 	valuesPath := dir + "/values.yaml"
+	// Design 0053 §4.5: both delivery pins are mandatory — synthetic
+	// ones here so THIS test isolates its own dbInit gate.
 	require.NoError(t, writeFile(valuesPath,
-		"dbInit:\n  enabled: true\n  superuserSecret:\n    name: \"\"\n"))
+		"dbInit:\n  enabled: true\n  superuserSecret:\n    name: \"\"\n"+
+			"controller:\n  agentdDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"+
+			"  opencodeDelivery:\n    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210\n"))
 	out, err := helmTemplateRaw(t, valuesPath)
 	require.Error(t, err,
 		"helm template must fail when dbInit.enabled=true but superuserSecret.name is empty")

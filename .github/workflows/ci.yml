@@ -97,15 +97,27 @@ jobs:
       # fixtures in the same PR (upgrade runbook: REFRESH.md). Without
       # this gate a bump ships with every parser pinning stale shapes —
       # CI green, production drifting (#739 class).
+      # Design 0053 S3: the pin lives in runtimes/opencode/Dockerfile
+      # (moved off the stripped base). The gate compares the pinned
+      # VALUE old-vs-new — file moves that keep the value (e.g. the S3
+      # relocation) must not false-positive.
       - name: Opencode bump requires fixture refresh
         if: github.event_name == 'pull_request'
         run: |
-          if git diff --name-only origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -q .; then
-            if git diff -U0 origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -E '^[+-].*OPENCODE_VERSION' | grep -qvE '^[+-]{3}'; then
-              if ! git diff --name-only origin/main...HEAD -- 'pkg/agent/opencode/testdata/' | grep -q .; then
-                echo "::error::OPENCODE_VERSION bumped without a golden-fixture refresh (pkg/agent/opencode/testdata/). See the upgrade runbook: pkg/agent/opencode/testdata/REFRESH.md"
-                exit 1
-              fi
+          pin_of() {
+            # $1 = git ref, $2 = preferred file, $3 = fallback file
+            for f in "$2" "$3"; do
+              v=$(git show "$1:$f" 2>/dev/null | grep -oE '^ARG OPENCODE_VERSION=[0-9.]+' | head -1 | cut -d= -f2)
+              [ -n "$v" ] && { echo "$v"; return; }
+            done
+          }
+          old=$(pin_of origin/main runtimes/opencode/Dockerfile runtimes/base/Dockerfile)
+          new=$(pin_of HEAD runtimes/opencode/Dockerfile runtimes/base/Dockerfile)
+          echo "opencode pin: main=${old:-none} head=${new:-none}"
+          if [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ]; then
+            if ! git diff --name-only origin/main...HEAD -- 'pkg/agent/opencode/testdata/' | grep -q .; then
+              echo "::error::OPENCODE_VERSION bumped ${old} → ${new} without a golden-fixture refresh (pkg/agent/opencode/testdata/). See the upgrade runbook: pkg/agent/opencode/testdata/REFRESH.md"
+              exit 1
             fi
           fi
           echo "fixture-freshness gate: ok"

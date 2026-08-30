@@ -56,13 +56,10 @@ func chartDir(t *testing.T) string {
 // testDeliveryPins satisfies the design 0053 §4.5 mandatory-pin render
 // gate for tests that exercise something OTHER than the gate itself.
 // The digests are synthetic — render sanity only, never deployed.
-const testDeliveryPins = `
-controller:
-  agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-  opencodeDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
-`
+const (
+	testAgentdPin   = "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testOpencodePin = "ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+)
 
 func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 	t.Helper()
@@ -70,12 +67,15 @@ func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
 	// Design 0053 §4.5: both delivery pins are mandatory — an empty
-	// image fails the render. Tests that don't pass their own pins get
-	// synthetic ones so they can exercise everything else.
-	if !strings.Contains(valuesYAML, "Delivery:") &&
-		!strings.Contains(valuesYAML, "agentdDelivery") &&
-		!strings.Contains(valuesYAML, "opencodeDelivery") {
-		valuesYAML = testDeliveryPins + valuesYAML
+	// image fails the render. Tests that don't exercise a given pin get
+	// a synthetic one (per-pin: delivery-focused tests override only
+	// their pin in values and still need the other to render).
+	extraSets := []string{}
+	if !strings.Contains(valuesYAML, "agentdDelivery") {
+		extraSets = append(extraSets, "--set", "controller.agentdDelivery.image="+testAgentdPin)
+	}
+	if !strings.Contains(valuesYAML, "opencodeDelivery") {
+		extraSets = append(extraSets, "--set", "controller.opencodeDelivery.image="+testOpencodePin)
 	}
 
 	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns"}
@@ -85,6 +85,7 @@ func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 		require.NoError(t, writeFile(valuesPath, valuesYAML))
 		args = append(args, "-f", valuesPath)
 	}
+	args = append(args, extraSets...)
 	cmd := exec.Command("helm", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
