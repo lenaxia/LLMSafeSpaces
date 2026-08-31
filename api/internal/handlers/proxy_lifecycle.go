@@ -334,6 +334,15 @@ var (
 // (app wiring sizes the V2 delivery budget = window + margin).
 func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 
+// SetAgentdTerminus switches the outbox deliverer to the agentd ledger
+// (US-69.8, design 0055 M2/M4). It must be called before Start().
+//
+// Parameters:
+//   - enabled: route outboxDeliver through the ABI delivery ledger.
+func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
+	h.agentdTerminus = enabled
+}
+
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
 // the raw selector JSON). Confirmed delivery completes via the outbox's
@@ -356,16 +365,6 @@ func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 //     the request — definitive, safe to retry. Anything else (timeout
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
-//
-// SetAgentdTerminus switches the outbox deliverer to the agentd ledger
-// (US-69.8, design 0055 M2/M4). It must be called before Start().
-//
-// Parameters:
-//   - enabled: route outboxDeliver through the ABI delivery ledger.
-func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
-	h.agentdTerminus = enabled
-}
-
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	if h.agentdTerminus {
 		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
