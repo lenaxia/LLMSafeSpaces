@@ -454,7 +454,7 @@ func TestG2_SSHKey_KeyTypeAllowlist(t *testing.T) {
 				Metadata:  map[string]string{"key_type": tc.keyType, "host": "github.com"},
 				Plaintext: "key-bytes",
 			}})
-			require.NoError(t, err)
+			require.NoError(t, err, "results: %+v", res.Results)
 			require.Equal(t, tc.want, res.Results[0].Outcome,
 				"key_type %q outcome", tc.keyType)
 		})
