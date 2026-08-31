@@ -12,6 +12,7 @@
  * route mocks) plus the Epic 68 upload route stub.
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 const API = "**/api/v1";
 const WS_ID = "ws-e2e";
@@ -103,13 +104,7 @@ async function mockAuthAndWorkspace(page: Page, opts: { settings?: Record<string
   });
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await page.route(`${API}/workspaces/${WS_ID}/contract-events`, async (route: Route) => {
-    await route.fulfill({
-      status: 200, contentType: "text/event-stream",
-      body: `data: ${JSON.stringify({ snapshot: { atSeq: "1", snapshot: { sessions: [{ sessionId: SES_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }] } } })}\n\n`,
-    });
-  });
-  await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/queue`, async (route: Route) => {
+  await await mockIdleContractStream(page, `${API}/workspaces/${WS_ID}/contract-events`, SES_ID);  await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/queue`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ messages: [] }) });
   });
   await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/seen`, async (route: Route) => {

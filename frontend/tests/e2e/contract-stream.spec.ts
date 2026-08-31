@@ -85,6 +85,8 @@ interface HarnessOptions {
   sessions?: () => Array<Record<string, unknown>>;
   /** Body for the user stream (/events). */
   userStreamBody?: string;
+  /** Dynamic user-stream body (takes precedence over userStreamBody). */
+  userStream?: () => string;
 }
 
 async function setupChatMocks(page: Page, opts: HarnessOptions) {
@@ -128,7 +130,10 @@ async function setupChatMocks(page: Page, opts: HarnessOptions) {
   // User stream: busy status seeds the provider's busy map so the
   // streaming bubble renders while the turn is in flight.
   await page.route(`${API_PREFIX}/events`, async (route: Route) => {
-    const body = opts.userStreamBody ?? `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`;
+    const busy = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`;
+    const idle = `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "idle" })}\n\n`;
+    const body = opts.userStream ? opts.userStream() : (opts.userStreamBody ?? busy);
+    void busy; void idle;
     await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
   });
 }
@@ -250,7 +255,12 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     let turnOver = false;
     await setupChatMocks(page, {
       history: () => (turnOver ? [userHistoryMessage("go"), assistantHistoryMessage("rolled through the deploy")] : [userHistoryMessage("go")]),
-      userStreamBody: `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`,
+      // The provider's busy map follows the user stream: busy while the
+      // turn is live, idle once the store owns it — same shape production
+      // dual-publishes.
+      userStream: () => (turnOver
+        ? `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "idle" })}\n\n`
+        : `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`),
     });
 
     let contractHits = 0;

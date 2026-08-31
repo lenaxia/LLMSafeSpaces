@@ -18,6 +18,7 @@
  * silent to avoid interfering with the chat UI.
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 const WS_A = "ws-sa-a";   // workspace A — active session
 const WS_B = "ws-sa-b";   // workspace B — unread session
@@ -86,9 +87,7 @@ async function setupBase(page: Page, opts: {
     r.fulfill({ status: 204, body: "" }));
 
   // Workspace-scoped SSE — silent keep-alive
-  await page.route(`${API}/workspaces/*/session-events`, (r: Route) =>
-    r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
-
+  await await mockIdleContractStream(page, `${API}/workspaces/*/contract-events`, SESS_A1);
   // Contract stream (US-69.10 cutover: ChatPage consumes session state via
   // /contract-events) — minimal idle snapshot; every body must open with a
   // snapshot frame or the client reconnects.
