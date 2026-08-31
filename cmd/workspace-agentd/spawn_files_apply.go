@@ -68,12 +68,18 @@ func fileDeliveryFromEnv() fileDelivery {
 	if v := os.Getenv(fileDeliveryLedgerEnvOverride); v != "" {
 		ledger = v
 	}
-	sshDir := "/sandbox-runtime/rt/ssh"
+	sshDir := ""
 	for _, r := range roots {
-		if filepath.Base(filepath.Clean(r)) == "ssh" {
-			sshDir = filepath.Clean(r)
+		clean := filepath.Clean(r)
+		if filepath.Base(clean) == "ssh" {
+			sshDir = clean
 			break
 		}
+	}
+	if sshDir == "" && len(roots) > 0 {
+		// No ssh-named root (test overrides pass a single dir): the
+		// config.d user-fragment home goes under the first root.
+		sshDir = filepath.Clean(roots[0])
 	}
 	return fileDelivery{roots: cleanAll(roots), ledgerPath: ledger, sshDir: sshDir}
 }

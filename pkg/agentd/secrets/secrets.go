@@ -585,12 +585,16 @@ func (m *Materializer) reset() error {
 	return nil
 }
 
-// stagingPath resolves the staging dir, defaulting when unset.
+// stagingPath resolves the staging dir. Unset derives beside the env
+// file (same tmpfs in production; tests that override SecretsEnvPath get
+// an isolated staging tree for free). The cmd layer pins the explicit
+// sidecar location via cfg.toPaths() — the 96Mi shared tmpfs, not the
+// 16Mi /agentd-secrets volume.
 func (m *Materializer) stagingPath() string {
 	if m.Paths.StagingDir != "" {
 		return m.Paths.StagingDir
 	}
-	return "/sandbox-runtime/staged-secret-files"
+	return filepath.Join(filepath.Dir(m.Paths.SecretsEnvPath), "staged-secret-files")
 }
 
 // applyOne dispatches by Type and returns a SecretResult. Errors are
