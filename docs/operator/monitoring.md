@@ -94,6 +94,29 @@ Workspace pods are dynamic (one per `Workspace` CRD) and addressed by PodIP, so 
 | `workspace_context_tokens` | Gauge | Context window utilization |
 | `workspace_oom_kills_total` | Counter | OOM kill attribution |
 
+#### Session state (Epic 69, US-69.12)
+
+The delivery-ledger projection exports its own health surface (design 0055 R5):
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `llmsafespaces_seq_stall_seconds` | Gauge | `workspace_id` | Seconds since the projection last advanced — the starvation signal. Idle pods legitimately stall (no events); correlate with `ledger_depth` before acting. |
+| `llmsafespaces_ledger_depth` | Gauge | `workspace_id`, `state` | Row count per ledger state (the funnel: `ledgered` → `admitted` → `promoted`/`turn_ended`, with `stalled` and `failed` visible). |
+| `llmsafespaces_stalled_entries` | Gauge | — | Rows in `stalled` (admitted past the promotion deadline) — the #1119 silent-strand class, visible. |
+| `llmsafespaces_promotion_stall_seconds` | Gauge | `workspace_id` | Age of the oldest admitted-unpromoted row (0 when none) — the stall precursor. |
+| `llmsafespaces_delivery_202_latency_seconds` | Histogram | — | Deliver-ack latency (the 202 equivalent: idempotent fsync'd ledger accept). |
+| `llmsafespaces_snapshot_size_bytes` / `llmsafespaces_snapshot_latency_seconds` | Histogram | — | GetSnapshot cost (R9: O(in-flight state), never O(history)). |
+| `llmsafespaces_wake_failures_total` | Counter | — | Errored stall-wake attempts (the wake is a store reseed; failure = harness/store unreachable). |
+| `llmsafespaces_sessionstate_dropped_events` / `_parser_failures` / `_panics_contained` | Gauge | — | Cumulative projection containment counters. |
+| `llmsafespaces_sessionstate_subscribers` | Gauge | — | Active ABI stream subscribers (on-demand consumption health). |
+
+##### Session-state alert triage
+
+- **`LLMSafeSpacesSeqStalled`** (critical): seq stalled >5m **with ledgered work pending** — starvation or a wedged harness, not an idle pod. Triage: check CFS throttling (`container_cpu_cfs_throttled_periods_total` for the pod) and the watchdog suppression counter; if starved, the watchdog is deliberately suppressing restarts — free CPU or evict the noisy neighbor. If not starved, exec into the pod and `curl :4097` GetSnapshot — a wedged opencode with a live agentd needs the stranded-entry path.
+- **`LLMSafespacesStalledEntries`** (warning): an admitted entry crossed the promotion deadline and the wake (store reseed) did not resolve it. The user-visible turn is stranded: `GetDeliveryStatus(entryId, attempt)` on the pod's ABI to read the row; if the transcript never landed, replay the entry (the outbox re-arms at attempt+1 only on `failed` — a stalled row needs manual re-drive or the US-69.13 flip/park procedure).
+- **`LLMSafespacesWakeFailures`** (warning): the reseed behind the wake is failing — opencode unreachable or store read errors. The stalled entries will not self-resolve; fix the harness path first (agentd logs `stall wake failed`).
+- **`LLMSafeSpacesDeliveryLatencyBudget`** (warning): Deliver-ack p99 > 1s sustained — fsync latency on the platform volume or WAL contention. Every send on the pod slows; check the volume's write latency and ledger WAL compaction (`ledger.compact` runs at retention boundaries).
+
 !!! warning "cgroup v2 required"
     `workspace_memory_bytes` and `workspace_oom_kills_total` require cgroup v2. On cgroup v1 hosts these silently produce nothing — agentd logs a single Warn per pod boot. See [Storage](storage.md#cgroup-v2-requirement).
 

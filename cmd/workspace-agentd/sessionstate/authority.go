@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"go.uber.org/zap"
@@ -36,6 +37,12 @@ type ReseedReason int
 const (
 	ReseedReasonBoot ReseedReason = iota
 	ReseedReasonGenerationChange
+	// ReseedReasonStallWake (US-69.12): the stall watchdog reseeded
+	// because an admitted row crossed the promotion deadline — the
+	// store refresh is the wake (events completing the turn promote or
+	// turn-end the row; a still-missing promotion escalates via the
+	// stalled-entries/wake-failure alerts).
+	ReseedReasonStallWake
 )
 
 func (r ReseedReason) proto() abiv1.ReseedReason {
@@ -96,6 +103,12 @@ type Config struct {
 	// Actor (US-69.9) is the typed-actions seam; nil DISABLES the Act op
 	// (NotSupported) — the wiring layer injects the opencode executor.
 	Actor Actor
+	// Wake (US-69.12) is the stall-recovery seam: agentd's best-effort
+	// nudge when an admitted row crosses the promotion deadline
+	// (checkStalls fires it once per row). Nil = no-op wake (stalls
+	// still surface via metrics/alerts; wake failures count only when a
+	// wake exists).
+	Wake func(ctx context.Context, sessionID string) error
 	// FastCursor disables per-event fsync (scenario harnesses replaying
 	// event BURSTS; durability is covered by the fault-injection suite).
 	FastCursor bool
@@ -120,8 +133,11 @@ type Authority struct {
 	cfg    Config
 	logger *zap.Logger
 
-	mu        sync.Mutex
-	seq       uint64
+	mu  sync.Mutex
+	seq uint64
+	// lastSeqAt is when the projection last advanced (the seq-stall
+	// signal's clock, R5/US-69.12).
+	lastSeqAt time.Time
 	sessions  map[string]*sessionRecord
 	subs      map[*subscriber]struct{}
 	buffering bool
@@ -274,6 +290,7 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 		return
 	}
 	a.seq = next
+	a.lastSeqAt = time.Now()
 	a.projectLocked(evt)
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: next, Event: evt}}}
 	a.fanoutLocked(frame)
@@ -344,6 +361,7 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 		return fmt.Errorf("sessionstate: reseed seq persist: %w", err)
 	}
 	a.seq = next
+	a.lastSeqAt = time.Now()
 	a.sessions = make(map[string]*sessionRecord, len(seeds))
 	for id, seed := range seeds {
 		a.sessions[id] = seedLocked(seed)
@@ -468,18 +486,65 @@ type Metrics struct {
 	PanicsContained int64
 	Subscribers     int
 	BufferedPending int
+	// SecondsSinceSeqAdvance is how long since the projection last moved
+	// (the R5 starvation signal: seq stalled N seconds while the pod
+	// runs). Initialized at construction; a reseed counts as advance.
+	SecondsSinceSeqAdvance float64
+	// LedgerDepths is the per-state row count (the ledger funnel).
+	// Nil when no ledger is wired.
+	LedgerDepths map[string]int64
+	// StalledEntries is the current stalled-row count (the #1119 class,
+	// visible).
+	StalledEntries int64
+	// OldestPromotionStallSeconds is the age of the oldest
+	// admitted-unpromoted row (0 when none).
+	OldestPromotionStallSeconds float64
 }
 
 func (a *Authority) Metrics() Metrics {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return Metrics{
-		DroppedEvents:   a.droppedEvents,
-		ParserFailures:  a.parserFailures,
-		PanicsContained: a.panicsContained,
-		Subscribers:     len(a.subs),
-		BufferedPending: len(a.pending),
+	m := Metrics{
+		DroppedEvents:               a.droppedEvents,
+		ParserFailures:              a.parserFailures,
+		PanicsContained:             a.panicsContained,
+		Subscribers:                 len(a.subs),
+		BufferedPending:             len(a.pending),
+		SecondsSinceSeqAdvance:      time.Since(a.lastSeqAt).Seconds(),
+		LedgerDepths:                nil,
+		StalledEntries:              0,
+		OldestPromotionStallSeconds: 0,
 	}
+	if a.ledger != nil {
+		m.LedgerDepths = a.ledger.depths()
+		m.StalledEntries = a.ledger.stalledCount()
+		m.OldestPromotionStallSeconds = a.ledger.oldestAdmittedAge(time.Now())
+	}
+	return m
+}
+
+// StallStats is one stall-watchdog pass's outcome (US-69.12).
+type StallStats struct {
+	// Stalled is the number of rows moved admitted→stalled THIS pass.
+	Stalled int
+	// WakeFailures is the number of wake attempts that errored THIS pass
+	// (the escalation signal: wake-only recovery failing).
+	WakeFailures int
+}
+
+// CheckStalls runs one stall-detection pass: admitted rows older than the
+// promotion deadline move to stalled (fsync'd), and the configured Wake
+// fires once per newly-stalled row. No-op without a ledger.
+func (a *Authority) CheckStalls(ctx context.Context) StallStats {
+	if a.ledger == nil {
+		return StallStats{}
+	}
+	wake := a.cfg.Wake
+	if wake == nil {
+		wake = func(context.Context, string) error { return nil }
+	}
+	stalled, failures := a.ledger.checkStalls(ctx, wake, time.Now())
+	return StallStats{Stalled: stalled, WakeFailures: failures}
 }
 
 // SetStoreForTest swaps the store reader (fault-injection support).
@@ -504,3 +569,13 @@ func (a *Authority) IngestForTest(evt *abiv1.Event) {
 }
 
 const streamBuffer = 256
+
+// SetStallDeadlineForTest shrinks the promotion-stall deadline (the
+// fault-injection harness makes a row cross it without waiting 10m).
+func (a *Authority) SetStallDeadlineForTest(d time.Duration) {
+	if a.ledger != nil {
+		a.ledger.mu.Lock()
+		a.ledger.deadline = d
+		a.ledger.mu.Unlock()
+	}
+}
