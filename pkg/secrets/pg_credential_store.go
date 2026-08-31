@@ -264,6 +264,9 @@ func (s *PgSecretStore) CreateCredential(ctx context.Context, ownerType, ownerID
 	if row.ModelOutputLimits == nil {
 		row.ModelOutputLimits = map[string]int{}
 	}
+	if row.ModelAllowlist == nil {
+		row.ModelAllowlist = []string{}
+	}
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO provider_credentials (id, owner_type, owner_id, name, kind, slug, ciphertext, key_version, version, model_allowlist, model_context_limits, model_output_limits, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, $9, $10, $11, $12, $13)

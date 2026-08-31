@@ -239,15 +239,3 @@ func TestReloadSecretsHandler_DoesNotPersistOnFailure(t *testing.T) {
 	assert.True(t, os.IsNotExist(err),
 		"cache must NOT be written on failure — last known good state must survive")
 }
-
-// findSecret locates an entry by Type+Name in a merged batch (test helper).
-func findSecret(t *testing.T, batch []secrets.Secret, typ, name string) secrets.Secret {
-	t.Helper()
-	for _, s := range batch {
-		if s.Type == typ && s.Name == name {
-			return s
-		}
-	}
-	t.Fatalf("secret %s/%s not found in batch", typ, name)
-	return secrets.Secret{}
-}

@@ -189,7 +189,7 @@ func TestCurrentRevision_DelegatesToStore(t *testing.T) {
 // must fail, never fabricate.
 func TestCurrentRevision_StoreWithoutRevisionStoreErrors(t *testing.T) {
 	svc, _, _ := setupBuilder(t)
-	svc.store = newMockSecretStore()
+	svc.store = revisionlessStore{SecretStore: newMockSecretStore()}
 
 	_, _, _, err := svc.CurrentRevision(context.Background(), "ws-1")
 	require.Error(t, err)

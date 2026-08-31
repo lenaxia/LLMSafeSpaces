@@ -15,11 +15,11 @@
 
 BEGIN;
 
-ALTER TABLE user_secrets ADD COLUMN version bigint NOT NULL DEFAULT 1;
-ALTER TABLE provider_credentials ADD COLUMN version bigint NOT NULL DEFAULT 1;
-ALTER TABLE mcp_servers ADD COLUMN version bigint NOT NULL DEFAULT 1;
+ALTER TABLE user_secrets ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 1;
+ALTER TABLE provider_credentials ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 1;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 1;
 
-CREATE TABLE workspace_secret_revisions (
+CREATE TABLE IF NOT EXISTS workspace_secret_revisions (
   workspace_id text PRIMARY KEY,
   seq bigint NOT NULL DEFAULT 0,
   manifest_hash text NOT NULL DEFAULT '',

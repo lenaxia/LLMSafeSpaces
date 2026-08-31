@@ -522,11 +522,20 @@ func TestBatchEntryContract(t *testing.T) {
 // cannot mint revisions must fail loudly, never silently fabricate one.
 func TestBuildWorkspaceBatch_StoreWithoutRevisionStoreErrors(t *testing.T) {
 	svc, _, _ := setupBuilder(t)
-	svc.store = newMockSecretStore()
+	creds := &mockCredentialStore{}
+	svc.store = revisionlessStore{SecretStore: newMockSecretStore(), CredentialStore: creds}
 
 	_, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "RevisionStore")
+}
+
+// revisionlessStore delegates SecretStore + CredentialStore but
+// structurally cannot satisfy RevisionStore — the loud-failure fixture
+// for the builder's revision cast.
+type revisionlessStore struct {
+	SecretStore
+	CredentialStore
 }
 
 // TestBuildWorkspaceBatch_EmptyWorkspace pins the quiet tier (law 5):

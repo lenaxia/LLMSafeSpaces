@@ -20,14 +20,21 @@ type mockSecretStore struct {
 	mu                   sync.Mutex
 	secrets              map[string]*UserSecret // keyed by ID
 	bindings             map[string][]string    // workspace_id -> []secret_id
+	revisions            map[string]mockRevisionRow
 	audit                []*AuditEntry
 	listGlobalDefaultErr error // optional: forces ListGlobalDefaultSecrets to fail
 }
 
+type mockRevisionRow struct {
+	seq          int64
+	manifestHash string
+}
+
 func newMockSecretStore() *mockSecretStore {
 	return &mockSecretStore{
-		secrets:  make(map[string]*UserSecret),
-		bindings: make(map[string][]string),
+		secrets:   make(map[string]*UserSecret),
+		bindings:  make(map[string][]string),
+		revisions: make(map[string]mockRevisionRow),
 	}
 }
 
@@ -246,6 +253,24 @@ func (m *mockSecretStore) QueryAudit(_ context.Context, userID string, _ AuditQu
 
 func (m *mockSecretStore) GetWorkspaceCredentials(_ context.Context, _ string) ([]CredentialBinding, error) {
 	return nil, nil
+}
+
+func (m *mockSecretStore) CurrentRevision(_ context.Context, workspaceID string) (int64, string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.revisions[workspaceID]
+	return row.seq, row.manifestHash, ok, nil
+}
+
+func (m *mockSecretStore) EnsureRevision(_ context.Context, workspaceID, manifestHash string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, exists := m.revisions[workspaceID]
+	if !exists || row.manifestHash != manifestHash {
+		row = mockRevisionRow{seq: row.seq + 1, manifestHash: manifestHash}
+		m.revisions[workspaceID] = row
+	}
+	return row.seq, nil
 }
 
 func (m *mockSecretStore) UpsertFreeTierCredential(_ context.Context, _ []byte) error { return nil }
