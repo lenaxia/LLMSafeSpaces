@@ -316,9 +316,12 @@ func (s *SecretService) buildCredentialEntries(ctx context.Context, ownerUserID,
 			SecretID: b.ID,
 			Version:  b.Version,
 			Type:     SecretTypeLLMProvider,
-			// Name is the slug — the provider-map key in agent-config.json
-			// (Epic 55); opencode persists it as providerID on sessions.
-			Name:  b.Slug,
+			// Name is the decrypted provider data's slug — this becomes
+			// the provider-map key in agent-config.json (Epic 55) and
+			// opencode persists it as providerID on sessions. It is NOT
+			// the binding row's slug column, which is derived from the
+			// credential name at insert and can differ.
+			Name:  pd.Slug,
 			Value: string(plaintext),
 		})
 	}

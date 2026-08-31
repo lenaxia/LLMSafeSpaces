@@ -39,8 +39,8 @@ func TestUS70RevisionsScript_SourcesCommonLib(t *testing.T) {
 	}
 	// Distinct workspace prefix: the audit-truncation budget (≤33 chars)
 	// collides with the sibling suites' workspaces otherwise.
-	if !strings.Contains(src, "e2esrev0-0000-0000-000000000") {
-		t.Fatalf("%s must keep its distinct WS_BASE default (e2esrev0-…)", us70RevisionsScript)
+	if !strings.Contains(src, "e2e57000-0000-4000-8000-000000000000") {
+		t.Fatalf("%s must keep its distinct UUID WS_BASE default (workspaces.id is a uuid column — non-UUID names can never resolve)", us70RevisionsScript)
 	}
 }
 

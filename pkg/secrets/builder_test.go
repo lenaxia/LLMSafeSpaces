@@ -99,7 +99,7 @@ func setupBuilder(t *testing.T) (*SecretService, *builderEnv, string) {
 		orgKey:   deterministicTestKey(t, 0xC3),
 	}
 	env.adminCred = CredentialBinding{
-		ID: "cred-admin", OwnerType: "admin", OwnerID: "_platform", Kind: "openai", Slug: "openai",
+		ID: "cred-admin", OwnerType: "admin", OwnerID: "_platform", Kind: "openai", Slug: "openai-admin-row-slug",
 		Ciphertext: adminCiphertext(t, env.adminKey, LLMProviderData{Kind: "openai", Slug: "openai", APIKey: "admin-key"}),
 		Version:    3, SourceType: "auto",
 	}

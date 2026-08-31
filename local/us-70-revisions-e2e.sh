@@ -59,7 +59,7 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
-WS_BASE="${WS_BASE:-e2esrev0-0000-0000-000000000}"
+WS_BASE="${WS_BASE:-e2e57000-0000-4000-8000-000000000000}"
 REV_PF_PORT_1="${REV_PF_PORT_1:-18091}"
 REV_PF_PORT_2="${REV_PF_PORT_2:-18092}"
 

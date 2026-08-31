@@ -133,7 +133,7 @@ type stageBuilder struct {
 	// rev is the revision anchor ("<seq>:<manifestHash>") stamped into
 	// the published manifest when the materialized batch carried a
 	// revision; empty publishes the legacy bare array.
-	rev string)
+	rev string
 }
 
 func newStageBuilder(fs Filesystem, stagingDir string) *stageBuilder {
