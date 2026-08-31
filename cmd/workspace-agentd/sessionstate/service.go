@@ -91,7 +91,7 @@ func (a *Authority) GetSnapshot(ctx context.Context, req *connect.Request[abiv1.
 	rec := a.sessions[sid]
 	var snap *abiv1.SessionSnapshot
 	if rec != nil {
-		snap = sessionSnapshotLocked(sid, rec)
+		snap = a.sessionSnapshotLocked(sid, rec)
 	}
 	stamp := a.seq
 	a.mu.Unlock()
@@ -103,14 +103,59 @@ func (a *Authority) GetSnapshot(ctx context.Context, req *connect.Request[abiv1.
 }
 
 func (a *Authority) Deliver(ctx context.Context, req *connect.Request[abiv1.DeliveryRequest]) (*connect.Response[abiv1.DeliveryAck], error) {
-	if err := a.limiter.allow(req.Msg.GetSessionId()); err != nil {
+	m := req.Msg
+	if err := a.limiter.allow(m.GetSessionId()); err != nil {
 		return nil, err
 	}
-	return nil, notSupported("abi.deliver", "delivery ledger lands in US-69.7")
+	if a.deliver == nil {
+		return nil, notSupported("abi.deliver", "delivery ledger not wired on this authority")
+	}
+	if m.GetEntryId() == "" || m.GetAttempt() == 0 || len(m.GetParts()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errText("entry_id, attempt >= 1, and at least one part are required"))
+	}
+	var texts []string
+	for _, p := range m.GetParts() {
+		if f := p.GetFile(); f != nil {
+			return nil, notSupported("delivery.file_parts", "file path "+f.GetPath())
+		}
+		if p.GetText() != "" {
+			texts = append(texts, p.GetText())
+		}
+	}
+	if len(texts) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errText("at least one non-empty text part is required"))
+	}
+	rec, _, err := a.deliver.deliver(ctx, m.GetSessionId(), m.GetEntryId(), m.GetAttempt(), texts, m.GetModel().GetId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&abiv1.DeliveryAck{
+		EntryId: rec.EntryID,
+		Attempt: rec.Attempt,
+		State:   rec.State.proto(),
+	}), nil
 }
 
 func (a *Authority) GetDeliveryStatus(ctx context.Context, req *connect.Request[abiv1.GetDeliveryStatusRequest]) (*connect.Response[abiv1.DeliveryStatus], error) {
-	return nil, notSupported("abi.delivery_status", "delivery ledger lands in US-69.7")
+	if a.ledger == nil {
+		return nil, notSupported("abi.delivery_status", "delivery ledger not wired on this authority")
+	}
+	m := req.Msg
+	if m.GetEntryId() == "" || m.GetAttempt() == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errText("entry_id and attempt are required"))
+	}
+	rec, ok := a.ledger.status(m.GetEntryId(), m.GetAttempt())
+	if !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errText("no ledger row for (entry, attempt)"))
+	}
+	_ = rec
+	out := &abiv1.DeliveryStatus{
+		EntryId:       rec.EntryID,
+		Attempt:       rec.Attempt,
+		State:         rec.State.proto(),
+		FailureReason: rec.Failure,
+	}
+	return connect.NewResponse(out), nil
 }
 
 func (a *Authority) Act(ctx context.Context, req *connect.Request[abiv1.ActionRequest]) (*connect.Response[abiv1.ActionResult], error) {
