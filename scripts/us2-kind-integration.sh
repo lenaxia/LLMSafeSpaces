@@ -571,11 +571,11 @@ fi
 
 # --- K13: the incident class — DEGRADED runtime base boots clean ---------------
 # 2026-08-25 regression form: a base whose baked agentd and entrypoints
-# are GONE (simulating any stale/broken factory base — worse than the
-# incident's, which merely carried a pre-#871 binary) must still boot
-# Ready in sidecar mode. Post step-1+2 the pod executes zero platform
-# code from the runtime image; this check proves it end-to-end. If it
-# fails, platform logic has leaked back into the base dependency.
+# are GONE must still boot Ready. Design 0053 S3 made this THE mode (the
+# stripped base ships no platform binaries), so K13 is now a tautology
+# kept as a canary: if it ever fails again, platform logic has leaked
+# back into the base dependency. The rm -f below no-ops on the stripped
+# base and remains correct for older bases under test.
 log "building degraded runtime base (baked agentd + entrypoints removed)"
 DEGRADED_TAG="$REG/llmsafespaces/runtime-base:degraded"
 docker build --network host -t "$DEGRADED_TAG" -f - "$TMPDIR" <<EOF
@@ -627,7 +627,8 @@ fi
 # PVC ⇒ empty shims dirs ⇒ `command not found` for go/python3/node in
 # every non-interactive shell (harness tool shells; the sidecar-mode PID 1
 # runs `mise activate` nowhere). Fixed by reshim at supervisor boot
-# (ensureMiseShims) + entrypoint-common.sh (legacy mode) + MISE_DATA_DIR
+# (ensureMiseShims) + MISE_DATA_DIR (the entrypoint-common legacy leg was
+# deleted with the entrypoints, design 0053 S3)
 # shims on the image PATH. `kubectl exec ... -- sh -c` IS the
 # non-interactive shell of record here — if this passes, the bug class is
 # closed in the production topology (sidecar mode, fresh PVC, real kubelet).

@@ -112,3 +112,20 @@ CI/release: `ci.yml`, `release.yml`, `e2e-nightly.yml`, `e2e-attachments-single-
 - ci.yml's PR-validation base build drops the now-unused agentd build-args.
 
 **Tests:** imagefactory + database + repolint suites green against the reseeded catalog (seed tests parse the real embedded YAML, so the new row shape is exercised); the awk extraction in `base-image.yml` verified against the seed locally (2026.08.0).
+
+---
+
+## Addendum 2 (same session): S4 finish — stale-reference sync
+
+The code S4 work was complete; this pass is the zero-stale-docs sweep (Rule 5 applied to documentation):
+
+- **README-LLM** (v1.27→v1.28): deliverables + repo-structure lines re-pointed at dev-OS base + two artifacts; architecture diagram main line (pinned agentd → opencode overlay); OPENCODE_CONFIG/auth.json ownership → supervisor spawn seam + controller env; Version History 1.28 entry summarizing S2–S4 incl. the US-70.1 merge gate.
+- **docs/operator/runtime-environments.md**: intro (image = dev-OS; agents delivered as overlay volumes), bundled-binaries table (opencode/agentd rows → NOT in image, verify contracts), Entrypoints section → "No entrypoint (design 0053 S3)", custom-image contract (no ENTRYPOINT/process requirement), supply-chain rows.
+- **docs/operator/agentd-delivery.md**: entrypoint-verify → supervisor self-verify (81/82), "legacy mode" → §4.5 mandatory, trust-chain wording.
+- **REFRESH.md rollout coupling**: event-flag ships with the agentd artifact (not the runtime image) — deploy order updated.
+- **helm/values.yaml**: agentdDelivery/opencodeDelivery comments → mandatory (no "leave empty for legacy").
+- **local/test-entrypoint.sh**: Test 1 (sourcing contract of the deleted entrypoint) removed; materialize + HTTP tests remain.
+- **scripts/us2-kind-integration.sh**: K13 re-framed (tautology-as-canary against re-baking), K14 comment updated for the deleted legacy leg.
+- **pkg/agentd/secrets/secrets.go**: threat-model comment's consumer reference updated (buildEnvFrom; entrypoint consumer gone).
+
+All remaining `entrypoint-*` greps are historical records (CHANGELOG, worklogs, design docs, code comments describing where things moved from).

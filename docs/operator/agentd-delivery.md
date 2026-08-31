@@ -12,7 +12,7 @@ When enabled, every workspace pod receives:
   artifact containing only the `workspace-agentd` binary,
 - mounted **read-only** on the workspace container,
 - with the binary's **per-arch sha256** pinned in the pod spec env,
-- verified by the entrypoint before exec (`sha256sum` vs pin).
+- verified by the supervisor itself before any work (`runSupervisorSelfVerify`, `sha256sum` vs pin — design 0053 S3 moved the deleted entrypoint's bash verify into the binary; exit 81/82 unchanged).
 
 The workspace image still owns everything user-facing (distro, packages,
 opencode). Only the platform supervisor binary moves to platform cadence:
@@ -36,7 +36,7 @@ per-arch binary sha256s onto the image index as OCI annotations (covered
 by the digest — they cannot desync), and the controller resolves them at
 startup, caching the result in the `llmsafespaces-agentd-pins`
 ConfigMap so a registry outage at controller boot does not brick
-startup. The entrypoint sha256 verify, exit codes, conditions, and
+startup. The supervisor sha256 self-verify, exit codes, conditions, and
 alerts are unchanged from the original design.
 
 Requirements (enforced at the Helm render and again at controller
@@ -44,14 +44,16 @@ startup):
 
 - `image` must carry a **digest** (`repo:tag@sha256:…` — the tag may
   move, the digest must not be dropped): the digest is what the
-  entrypoint trust chain resolves through,
+  supervisor trust chain resolves through,
 - `binarySHA256Amd64`/`binarySHA256Arm64` are OPTIONAL per-image
   overrides (break-glass): set BOTH or NEITHER,
 - the binary path inside the image is fixed:
   `/usr/local/bin/workspace-agentd`.
 
-Leave `image` empty for legacy mode (baked-in binary) — nothing renders,
-no volume is mounted, the entrypoint behaves exactly as before.
+Design 0053 §4.5 (S3): there is NO legacy mode — `image` is mandatory
+and the Helm render fails when it is empty (the controller refuses to
+build pods without the pin; the base image contains no agentd to fall
+back to).
 
 **RBAC:** enabling agentdDelivery adds two rules for the outage cache:
 `get`/`update` on configmaps scoped by `resourceNames` to the single
@@ -115,7 +117,7 @@ agentd the next time their pod is recreated.
 
 Roll **back** the same way: pin the old digest back. Pods created in the
 meantime verify against their own pod-spec pins, so a mixed-version fleet
-is safe — each pod's entrypoint only ever trusts its own immutable spec.
+is safe — each pod's supervisor only ever trusts its own immutable spec.
 
 To force a single workspace onto the new agentd immediately: suspend and
 resume it (or bump `spec.restartGeneration`).
@@ -127,7 +129,7 @@ resume it (or bump `spec.restartGeneration`).
 | sha256 matches pin | 0 | exec overlay binary; pod sets `AgentdVerified=True` |
 | sha256 mismatch | **81** | refuse to exec — **no fallback**; CrashLoopBackOff |
 | pinned binary missing | **82** | refuse to exec; CrashLoopBackOff |
-| verify disabled (legacy) | — | baked-in binary, no condition |
+| verify disabled | — | removed with the legacy mode (design 0053 S3); the marker env is always set |
 
 On 81/82 the controller:
 
