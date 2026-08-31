@@ -211,6 +211,8 @@ HELM_LEAN_ARGS=(
   --set controller.image.repository="$REG/llmsafespaces/controller"
   --set controller.image.tag=ci
   --set controller.image.pullPolicy=IfNotPresent
+  --set runtimeEnvironments.base.image.repository="$REG/llmsafespaces/runtime-base"
+  --set runtimeEnvironments.base.image.tag=ci
 )
 
 log "installing controller-lean chart with BOTH pins (single-container mode)"
@@ -227,12 +229,14 @@ done
 [ -n "$EPS" ] || { log "webhook service never got endpoints"; exit 1; }
 
 apply_workspace() {
-  local name=$1 extra=${2:-}
-  cat <<EOF | kubectl apply -f - >/dev/null
+  local name=$1 extra=${2:-} ws_manifest
+  ws_manifest=$(mktemp)
+  cat >"$ws_manifest" <<EOF
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace
 metadata:
   name: $name
+  namespace: $NS
 spec:
   owner:
     userID: s5-int
@@ -241,13 +245,22 @@ spec:
     size: 1Gi
 $extra
 EOF
+  # Retry through the webhook cert/endpoint window (us2 lesson).
+  local applied=0 i
+  for i in 1 2 3 4 5; do
+    if kubectl -n "$NS" apply -f "$ws_manifest" >/dev/null 2>&1; then applied=1; break; fi
+    log "workspace $name apply failed (attempt $i) - retrying"
+    sleep 3
+  done
+  [ "$applied" = "1" ] || { log "workspace $name apply kept failing"; return 1; }
   log "workspace $name applied"
+  return 0
 }
 
 wait_phase() {
   local name=$1 phase=$2 timeout=${3:-420}
   for i in $(seq 1 "$timeout"); do
-    [ "$(kubectl get workspace "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)" = "$phase" ] && return 0
+    [ "$(kubectl -n "$NS" get workspace "$name" -o jsonpath='{.status.phase}' 2>/dev/null || true)" = "$phase" ] && return 0
     sleep 2
   done
   return 1
@@ -309,7 +322,7 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
 apply_workspace "$WS_BAD_AG"
 AG_COND=""
 for i in $(seq 1 120); do
-  AG_COND=$(kubectl get workspace "$WS_BAD_AG" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+  AG_COND=$(kubectl -n "$NS" get workspace "$WS_BAD_AG" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
   echo "$AG_COND" | grep -q "AgentdVerified=False" && break
   sleep 2
 done
@@ -323,7 +336,7 @@ if echo "$AG_COND" | grep -q "AgentdVerified=False"; then
 else
   fail S5.3 "wrong agentd pin never surfaced the condition: ${AG_COND:-none}"
 fi
-kubectl delete workspace "$WS_BAD_AG" --wait=false >/dev/null 2>&1 || true
+kubectl -n "$NS" delete workspace "$WS_BAD_AG" --wait=false >/dev/null 2>&1 || true
 
 # --- S5.4: opencode verify failure → condition + event -----------------------
 
@@ -343,7 +356,7 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
 apply_workspace "$WS_BAD_OC"
 OC_COND=""
 for i in $(seq 1 120); do
-  OC_COND=$(kubectl get workspace "$WS_BAD_OC" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
+  OC_COND=$(kubectl -n "$NS" get workspace "$WS_BAD_OC" -o jsonpath='{range .status.conditions[*]}{.type}={.status} {end}' 2>/dev/null || true)
   echo "$OC_COND" | grep -q "OpencodeVerified=False" && break
   sleep 2
 done
@@ -352,7 +365,7 @@ if echo "$OC_COND" | grep -q "OpencodeVerified=False"; then
 else
   fail S5.4 "wrong opencode pin never surfaced the condition: ${OC_COND:-none}"
 fi
-kubectl delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
+kubectl -n "$NS" delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
 
 log "restoring correct pins"
 helm upgrade --install "$RELEASE" helm -n "$NS" \
@@ -363,14 +376,14 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
 
 log "S5.5: suspend → evict overlay images from the node → activate (cold pull)"
 if wait_phase "$WS_MAIN" Active 60 \
-   && kubectl patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":true}}' >/dev/null \
+   && kubectl -n "$NS" patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":true}}' >/dev/null \
    && wait_phase "$WS_MAIN" Suspended 300; then
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
   for img in "$AGENTD_REF" "$OPENCODE_REF"; do
     docker exec "$NODE" crictl rmi "$img" >/dev/null 2>&1 || true
   done
   T0=$(date +%s)
-  kubectl patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
+  kubectl -n "$NS" patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
   if wait_phase "$WS_MAIN" Active 600; then
     T1=$(date +%s)
     RESUME=$((T1 - T0))
@@ -444,7 +457,7 @@ EOF
       fail S5.6 "gvisor workspace never reached Active (image volumes under runsc — design 0051 open item)"
       kubectl -n "$NS" describe pod -l llmsafespaces.dev/workspace="$WS_GVISOR" 2>&1 | tail -30 || true
     fi
-    kubectl delete workspace "$WS_GVISOR" --wait=false >/dev/null 2>&1 || true
+    kubectl -n "$NS" delete workspace "$WS_GVISOR" --wait=false >/dev/null 2>&1 || true
   else
     fail S5.6 "runsc installation failed on the kind node (environment — re-run on a gvisor-capable runner)"
   fi
