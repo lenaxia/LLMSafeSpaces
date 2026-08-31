@@ -65,7 +65,7 @@ log "AC-1 — cold create workspace ${WS1} with an env-secret bound before Activ
 # deterministically pinned by the in-process exec suite; this row verifies
 # the end-to-end wire (create → bind → deliver → /proc/<pid>/environ →
 # healthz scrape → CRD secretsDelivery).
-seed_workspace "${WS1}" "${USER_ID}"
+seed_workspace "${WS1}"
 bind_env "${WS1}" "SD_FIRST" "ac1-first-value"
 ok "env-secret SD_FIRST bound immediately after CR creation"
 
@@ -87,7 +87,7 @@ ok "AC-1 PASS"
 WS2=$(ws_id 2)
 log "AC-2 — suspend≥${SUSPEND_SECONDS}s → resume → env present ≤90s, owner offline, no reload"
 
-seed_workspace "${WS2}" "${USER_ID}"
+seed_workspace "${WS2}"
 bind_env "${WS2}" "SD_RESUME" "ac2-after-resume"
 wait_phase "${WS2}" Active 240 || die "AC-2: workspace never Active"
 secrets_converged "${WS2}" 120 || die "AC-2: pre-suspend secretsDelivery unhealthy"
@@ -153,7 +153,7 @@ if (( SCALE > 0 )); then
 
     ok "seeding + binding ${#WSBATCH[@]} workspaces (this is the slow part; parallelizable in pool)"
     for ws in "${WSBATCH[@]}"; do
-        seed_workspace "${ws}" "${USER_ID}" "${RUNTIME_CLASS}"
+        seed_workspace "${ws}" "${RUNTIME_CLASS}"
         bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
     done
     for ws in "${WSBATCH[@]}"; do
@@ -275,17 +275,17 @@ fi
 WSF=$(ws_id 4)
 log "AC-F — bind ssh-key → uid-1000-owned ~/.ssh artifacts + files_rev"
 
-seed_workspace "${WSF}" "${USER_ID}"
+seed_workspace "${WSF}"
 wait_phase "${WSF}" Active 240 || die "AC-F: workspace never Active"
 
 # Bind an ssh-key via the secrets API.
 SF_BODY=$(jq -nc --arg n "deploy" '{name:("e2e-sd-ssh-deploy"),type:"ssh-key",value:"ssh-ed25519 E2EKEYBYTES",metadata:{key_type:"ed25519",host:"github.com"}}')
 SF_STATUS=$(curl -sm 30 -o /tmp/opencode/sf.json -w "%{http_code}" -X POST \
-    -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
     -d "$SF_BODY" "http://127.0.0.1:${PORTFWD_PORT}/api/v1/secrets")
 [[ "${SF_STATUS}" == "201" || "${SF_STATUS}" == "200" ]] || die "AC-F: secret create returned ${SF_STATUS}: $(cat /tmp/opencode/sf.json)"
 SF_ID=$(jq -r .id /tmp/opencode/sf.json)
-curl -sfm 30 -X PUT -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+curl -sfm 30 -X PUT -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
     -d "{\"secretIds\":[\"${SF_ID}\"]}" \
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WSF}/bindings" >/dev/null \
     || die "AC-F: bind failed"
@@ -322,7 +322,7 @@ FREV=$(kc get workspace "${WSF}" -o jsonpath='{.status.secretsDelivery.filesRev}
 WSCH=$(ws_id 3)
 log "Chaos — kill agent mid-turn → agentd re-spawn pulls, env survives"
 
-seed_workspace "${WSCH}" "${USER_ID}"
+seed_workspace "${WSCH}"
 bind_env "${WSCH}" "SD_CHAOS" "ac-chaos-value"
 wait_phase "${WSCH}" Active 240 || die "Chaos: workspace never Active"
 secrets_converged "${WSCH}" 120 || die "Chaos: pre-kill secretsDelivery unhealthy"

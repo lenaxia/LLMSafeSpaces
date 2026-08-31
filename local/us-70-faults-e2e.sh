@@ -164,7 +164,7 @@ else
 
     WS1=$(ws_id 1)
     log "F1: seed workspace ${WS1} + bind env-secret before boot"
-    seed_workspace "${WS1}" "${USER_ID}"
+    seed_workspace "${WS1}"
     bind_env "${WS1}" "SD_F1" "fault-f1-value"
 
     wait_phase "${WS1}" Active 240 || die "F1: workspace never Active despite failed bootstraps (never-block-boot violated)"
@@ -197,7 +197,7 @@ fi
 WS2=$(ws_id 2)
 log "F2 — partition at resume: suspend → API to 0 → patch-resume → degraded boot → restore → converge"
 
-seed_workspace "${WS2}" "${USER_ID}"
+seed_workspace "${WS2}"
 bind_env "${WS2}" "SD_F2" "partition-f2-value"
 wait_phase "${WS2}" Active 240 || die "F2: workspace never Active"
 secrets_converged "${WS2}" 120 || die "F2: pre-suspend secretsDelivery unhealthy"
@@ -274,7 +274,7 @@ fi
 WS3=$(ws_id 3)
 log "F3 — corrupted wrapped_dek → sessionless degrade + pod_bootstrap_dek_failed audit → restore"
 
-seed_workspace "${WS3}" "${USER_ID}"
+seed_workspace "${WS3}"
 bind_env "${WS3}" "SD_F3" "corrupt-f3-value"
 wait_phase "${WS3}" Active 240 || die "F3: workspace never Active"
 secrets_converged "${WS3}" 120 || die "F3: pre-suspend secretsDelivery unhealthy"
@@ -283,11 +283,11 @@ if ! env_in_child "${WS3}" "SD_F3=corrupt-f3-value"; then
 fi
 ok "F3: pre-suspend env present"
 
-ORIG_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${USER_ID}'")
-[[ -n "${ORIG_HEX}" ]] || die "F3: no user_keys.wrapped_dek row for ${USER_ID} (seed a DEK first)"
+ORIG_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${OWNER_ID}'")
+[[ -n "${ORIG_HEX}" ]] || die "F3: no user_keys.wrapped_dek row for ${OWNER_ID} (seed a DEK first)"
 
 suspend_ws "${WS3}"
-psql_q -c "UPDATE user_keys SET wrapped_dek=decode('00','hex') WHERE user_id='${USER_ID}'" >/dev/null
+psql_q -c "UPDATE user_keys SET wrapped_dek=decode('00','hex') WHERE user_id='${OWNER_ID}'" >/dev/null
 ok "F3: wrapped_dek corrupted (decode('00','hex')) while suspended"
 
 activate_ws "${WS3}"
@@ -300,7 +300,7 @@ fi
 
 AUDIT_N=0
 for _i in $(seq 1 20); do
-    AUDIT_N=$(psql_q -Atc "SELECT count(*) FROM secret_audit_log WHERE user_id='${USER_ID}' AND action='pod_bootstrap_dek_failed' AND workspace_id='${WS3}'")
+    AUDIT_N=$(psql_q -Atc "SELECT count(*) FROM secret_audit_log WHERE user_id='${OWNER_ID}' AND action='pod_bootstrap_dek_failed' AND workspace_id='${WS3}'")
     (( AUDIT_N >= 1 )) && break
     sleep 3
 done
@@ -310,8 +310,8 @@ else
     die "F3 FAIL: no pod_bootstrap_dek_failed audit row — the #1114 silent-degrade regression"
 fi
 
-psql_q -c "UPDATE user_keys SET wrapped_dek=decode('${ORIG_HEX}','hex') WHERE user_id='${USER_ID}'" >/dev/null
-RESTORED_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${USER_ID}'")
+psql_q -c "UPDATE user_keys SET wrapped_dek=decode('${ORIG_HEX}','hex') WHERE user_id='${OWNER_ID}'" >/dev/null
+RESTORED_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${OWNER_ID}'")
 [[ "${RESTORED_HEX}" == "${ORIG_HEX}" ]] || die "F3: restore mismatch — user_keys left corrupted, aborting"
 
 if secrets_converged "${WS3}" 300 && wait_env_present "${WS3}" "SD_F3=corrupt-f3-value" 300; then
@@ -334,7 +334,7 @@ fi
 WS4=$(ws_id 4)
 log "F4 — SA-token rows: minted token tampered → 401; expired (JWT-exp time-travel) → 401 + fresh mint works"
 
-seed_workspace "${WS4}" "${USER_ID}"
+seed_workspace "${WS4}"
 bind_env "${WS4}" "SD_F4" "token-f4-value"
 wait_phase "${WS4}" Active 240 || die "F4: workspace never Active"
 secrets_converged "${WS4}" 120 || die "F4: secretsDelivery unhealthy"
@@ -422,7 +422,7 @@ fi
 WS5=$(ws_id 5)
 log "F5a — kill the agentd sidecar container → restart → converge"
 
-seed_workspace "${WS5}" "${USER_ID}"
+seed_workspace "${WS5}"
 bind_env "${WS5}" "SD_F5" "chaos5-value"
 wait_phase "${WS5}" Active 240 || die "F5a: workspace never Active"
 secrets_converged "${WS5}" 120 || die "F5a: pre-kill secretsDelivery unhealthy"
@@ -477,7 +477,7 @@ fi
 WS6=$(ws_id 6)
 log "F5b — pod-delete mid-bind → recreate → converge"
 
-seed_workspace "${WS6}" "${USER_ID}"
+seed_workspace "${WS6}"
 wait_phase "${WS6}" Active 240 || die "F5b: workspace never Active"
 POD6=$(pod_of "${WS6}")
 [[ -n "${POD6}" ]] || die "F5b: no pod to delete"

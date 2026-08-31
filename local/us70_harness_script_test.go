@@ -74,6 +74,34 @@ func TestUS70WorkspaceNamesAreUUIDs(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_SessionAuthPins pins the DEK-gate fix layer: secret
+// authoring (bind_env, AC-F create/bind) must ride the JWT session —
+// CreateSecret resolves the user DEK through the session cache and an
+// API-key request carries none (ErrDEKUnavailable -> 500). The lib must
+// register/login (OWNER_ID is the API-minted users.id UUID, not the
+// username) and the scripts' secret-creating calls must use AUTH_TOKEN.
+func TestUS70Harness_SessionAuthPins(t *testing.T) {
+	lib := mustRead(t, us70CommonScript)
+	for _, pin := range []string{
+		"login_harness_user()",
+		"seed_session()",
+		"OWNER_ID=$(curl",
+		"Bearer ${AUTH_TOKEN:?}",
+	} {
+		if !strings.Contains(lib, pin) {
+			t.Fatalf("us70-common.sh must keep %q — the DEK-gated authoring path depends on it", pin)
+		}
+	}
+	if strings.Contains(lib, "password_hash, role)") {
+		t.Fatal("the lib must not psql-insert the user row (dummy hash): registration through the API provisions user_keys + a real hash")
+	}
+	delivery := mustRead(t, us70DeliveryScript)
+	sfCreate := strings.Count(delivery, "Bearer ${AUTH_TOKEN}")
+	if sfCreate < 2 {
+		t.Fatalf("AC-F secret create + bind must use the JWT session (got %d AUTH_TOKEN uses)", sfCreate)
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {
