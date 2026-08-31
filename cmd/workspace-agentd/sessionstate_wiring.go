@@ -145,6 +145,7 @@ func platformDirFromEnv() string {
 // and harmless (design 0055 M4). At S2 the authority flag makes the durable
 // cursor a boot requirement instead.
 func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword string) *sessionstate.Authority {
+	var authority *sessionstate.Authority
 	actor, supportedActions := opencodeActionSurface(client, password)
 	cfg := sessionstate.Config{
 		PlatformDir:  platformDirFromEnv(),
@@ -153,6 +154,19 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		Admitter:     opencodeAdmitter{password: password},
 		Actor:        actor,
 		Capabilities: bootCapabilityReport(client, supportedActions),
+		// US-69.12 stall wake (I6 wake-only recovery): a store refresh is
+		// the nudge — events completing the stalled row's turn promote or
+		// turn-end it; a still-missing promotion escalates via the
+		// stalled-entries/wake-failure alerts. (A harness-specific
+		// queue-poke lands only if a pinned version exposes one — the
+		// probe discipline, never an invented route.)
+		Wake: func(ctx context.Context, sessionID string) error {
+			if authority == nil {
+				return nil
+			}
+			log.Info("sessionstate: stall wake — reseeding from the store", zap.String("session", sessionID))
+			return authority.Reseed(ctx, sessionstate.ReseedReasonStallWake)
+		},
 		// D6.1 pair: accept either credential across mixed-generation
 		// windows; empty entries are skipped by the auth gate.
 		Passwords: []string{controlPlanePassword, password},
@@ -172,6 +186,7 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 			return nil
 		}
 	}
+	authority = a // the stall-wake closure's target
 	return a
 }
 

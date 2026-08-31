@@ -2550,6 +2550,11 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesAgentReloadFailures",
 		"LLMSafeSpacesAgentdSlowStartup",
 		"LLMSafeSpacesRelayInjectorFailures",
+		// US-69.12 (design 0055 R5/S4): session-state observability.
+		"LLMSafeSpacesSeqStalled",
+		"LLMSafeSpacesStalledEntries",
+		"LLMSafeSpacesWakeFailures",
+		"LLMSafeSpacesDeliveryLatencyBudget",
 		"LLMSafeSpacesHighInferenceCostRate",
 		"LLMSafeSpacesWorkspaceDiskUsageHigh",
 		"LLMSafeSpacesLegacyAPIKeysRemaining",

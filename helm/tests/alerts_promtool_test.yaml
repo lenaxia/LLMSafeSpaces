@@ -178,3 +178,106 @@ tests:
             exp_annotations:
               summary: "Relay injector free-model fetch exhausted"
               description: "The relay injector gave up fetching free models for this agent generation — free-tier model routing is unavailable until the next agent restart. Check opencode /provider health."
+
+  # ── US-69.12 session-state alerts (design 0055 R5/S4) ─────────────────
+  # Seq stall WITH pending ledgered work → fires (the starvation signal;
+  # idle-but-quiet pods do not page — the correlation is the design).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_seq_stall_seconds{job="test-release-llmsafespaces-agentd",workspace_id="ws-stall"}'
+        values: '400+0x20'
+      - series: 'llmsafespaces_ledger_depth{job="test-release-llmsafespaces-agentd",workspace_id="ws-stall",state="ledgered"}'
+        values: '2+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesSeqStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: agentd
+              job: test-release-llmsafespaces-agentd
+              workspace_id: ws-stall
+            exp_annotations:
+              summary: "Session-state seq stalled 6m 40s with pending ledger work"
+              description: 'The projection has not advanced for 6m 40s while ledgered entries wait (workspace ws-stall). In-pod starvation or a wedged harness — differentiate via CFS throttling and the watchdog suppression counters, then triage per the stranded-entry runbook.'
+
+  # Idle pod: seq stalled but NO pending work → must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_seq_stall_seconds{job="test-release-llmsafespaces-agentd",workspace_id="ws-idle"}'
+        values: '4000+0x20'
+      - series: 'llmsafespaces_ledger_depth{job="test-release-llmsafespaces-agentd",workspace_id="ws-idle",state="ledgered"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesSeqStalled
+        exp_alerts: []
+
+  # Stalled entries sustained → fires after for:10m.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_stalled_entries{job="test-release-llmsafespaces-agentd"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMSafeSpacesStalledEntries
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: agentd
+              job: test-release-llmsafespaces-agentd
+            exp_annotations:
+              summary: "Stalled delivery entries sustained for 10m"
+              description: '1 admitted entries crossed the promotion deadline and the stall wake has not resolved them. The user-visible turn is stranded (#1119 class) — run the stranded-entry triage (GetDeliveryStatus on the ledger, then wake/reseed or replay).'
+
+  # Wake failures (increase over 15m) → fires.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_wake_failures_total{job="test-release-llmsafespaces-agentd"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 17m
+        alertname: LLMSafeSpacesWakeFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: agentd
+            exp_annotations:
+              summary: "Stall-wake attempts failing"
+              description: '15 stall-wake attempts errored in the last 15m — the store reseed behind the wake is failing (opencode unreachable or store read errors). Stalled entries will not self-resolve; check the harness and the wake logs.'
+
+  # Delivery latency budget breach: all mass above the 1.024s bucket →
+  # p99 lands in (1.024, 2.048] → fires (buckets per
+  # ExponentialBuckets(0.001, 2, 13)).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="0.001"}'
+        values: '0+0x20'
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="1.024"}'
+        values: '0+0x20'
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="2.048"}'
+        values: '60+60x20'
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="+Inf"}'
+        values: '60+60x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesDeliveryLatencyBudget
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: agentd
+            exp_annotations:
+              summary: "Delivery ack latency p99 over budget"
+              description: 'The Deliver-ack (202-equivalent) p99 is 2.038s (budget 1s). Check platform-volume fsync latency and ledger WAL contention — sustained breach slows every send on this pod.'
+
+  # Healthy delivery latency: all mass in the 1ms bucket → must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="0.001"}'
+        values: '60+60x20'
+      - series: 'llmsafespaces_delivery_202_latency_seconds_bucket{job="test-release-llmsafespaces-agentd",le="+Inf"}'
+        values: '60+60x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesDeliveryLatencyBudget
+        exp_alerts: []

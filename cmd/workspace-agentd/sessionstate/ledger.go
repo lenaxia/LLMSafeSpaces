@@ -37,6 +37,25 @@ const (
 	LedgerStateFailed
 )
 
+// String returns the lowercase wire name (metric labels, logs).
+func (s LedgerState) String() string {
+	switch s {
+	case LedgerStateLedgered:
+		return "ledgered"
+	case LedgerStateAdmitted:
+		return "admitted"
+	case LedgerStatePromoted:
+		return "promoted"
+	case LedgerStateTurnEnded:
+		return "turn_ended"
+	case LedgerStateStalled:
+		return "stalled"
+	case LedgerStateFailed:
+		return "failed"
+	}
+	return "unknown"
+}
+
 func (s LedgerState) proto() abiv1.LedgerState {
 	switch s {
 	case LedgerStateLedgered:
@@ -287,7 +306,8 @@ func (l *deliveryLedger) markTurnEnded(sessionID string) error {
 // checkStalls moves admitted rows older than the deadline to stalled and
 // fires the wake exactly once per row (I6: wake-only recovery — there is
 // no re-admission path from this state, by construction and by API).
-func (l *deliveryLedger) checkStalls(ctx context.Context, wake func(context.Context, string) error, now time.Time) {
+// Returns the stall/wake-failure counts of THIS pass (US-69.12 metrics).
+func (l *deliveryLedger) checkStalls(ctx context.Context, wake func(context.Context, string) error, now time.Time) (stalled, wakeFailures int) {
 	l.mu.Lock()
 	var toStall []*ledgerRecord
 	for _, rec := range l.rows {
@@ -307,10 +327,58 @@ func (l *deliveryLedger) checkStalls(ctx context.Context, wake func(context.Cont
 			continue
 		}
 		rec.wakeFired = true
-		if err := wake(ctx, rec.SessionID); err != nil && logger() != nil {
-			logger().Warn("sessionstate ledger: stall wake failed", zap.String("session", rec.SessionID), zap.Error(err))
+		stalled++
+		if err := wake(ctx, rec.SessionID); err != nil {
+			wakeFailures++
+			if logger() != nil {
+				logger().Warn("sessionstate ledger: stall wake failed", zap.String("session", rec.SessionID), zap.Error(err))
+			}
 		}
 	}
+	return stalled, wakeFailures
+}
+
+// depths returns the per-state row counts (the ledger funnel: ledgered →
+// admitted → promoted/turn-ended, with stalled and failed visible).
+func (l *deliveryLedger) depths() map[string]int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[string]int64{}
+	for _, rec := range l.rows {
+		out[rec.State.String()]++
+	}
+	return out
+}
+
+// oldestAdmittedAge is how long the oldest admitted-unpromoted row has
+// waited (seconds; 0 when none) — the promotion-stall signal (#1119
+// class, made visible before it crosses the stall deadline).
+func (l *deliveryLedger) oldestAdmittedAge(now time.Time) float64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	oldest := time.Duration(0)
+	for _, rec := range l.rows {
+		if rec.State != LedgerStateAdmitted {
+			continue
+		}
+		if age := now.Sub(rec.UpdatedAt); age > oldest {
+			oldest = age
+		}
+	}
+	return oldest.Seconds()
+}
+
+// stalledCount returns the current stalled-row count.
+func (l *deliveryLedger) stalledCount() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var n int64
+	for _, rec := range l.rows {
+		if rec.State == LedgerStateStalled {
+			n++
+		}
+	}
+	return n
 }
 
 func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, bool) {

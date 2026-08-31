@@ -180,7 +180,7 @@
       ],
       "title": "Active Workspaces",
       "type": "stat",
-      "description": "Current count of workspaces in the Active phase. Use this to gauge platform load and correlate with resource panels below. A sudden drop indicates mass workspace failures \u2014 check Phase Transitions."
+      "description": "Current count of workspaces in the Active phase. Use this to gauge platform load and correlate with resource panels below. A sudden drop indicates mass workspace failures — check Phase Transitions."
     },
     {
       "datasource": {
@@ -308,7 +308,7 @@
       ],
       "title": "Safe Mode Workspaces",
       "type": "stat",
-      "description": "Workspaces in Safe Mode (repeated failure, awaiting manual intervention). Any non-zero value requires operator action \u2014 affected workspaces will NOT auto-recover. Action: investigate the failing workspace, fix root cause, manually clear safe mode."
+      "description": "Workspaces in Safe Mode (repeated failure, awaiting manual intervention). Any non-zero value requires operator action — affected workspaces will NOT auto-recover. Action: investigate the failing workspace, fix root cause, manually clear safe mode."
     },
     {
       "datasource": {
@@ -371,7 +371,7 @@
       ],
       "title": "Legacy Plaintext API Keys",
       "type": "stat",
-      "description": "API keys still using pre-DEK plaintext storage. Target is 0. Any non-zero value is a security risk \u2014 action: force key rotation for affected users."
+      "description": "API keys still using pre-DEK plaintext storage. Target is 0. Any non-zero value is a security risk — action: force key rotation for affected users."
     },
     {
       "datasource": {
@@ -719,7 +719,7 @@
       ],
       "title": "API Latency p95 / p99",
       "type": "timeseries",
-      "description": "p95 and p99 response latency (p50 dropped \u2014 only the tail is actionable). Red line at 2s: above this, users experience noticeable delays. Sustained p99 above 5s likely reflects slow workspace proxy calls to agentd. Action: scale API replicas, check DB/Redis latency, investigate slow agentd endpoints."
+      "description": "p95 and p99 response latency (p50 dropped — only the tail is actionable). Red line at 2s: above this, users experience noticeable delays. Sustained p99 above 5s likely reflects slow workspace proxy calls to agentd. Action: scale API replicas, check DB/Redis latency, investigate slow agentd endpoints."
     },
     {
       "collapsed": false,
@@ -1047,7 +1047,7 @@
       ],
       "title": "Workspace Failure & Restart Rate",
       "type": "timeseries",
-      "description": "Rate of workspaces entering Failed or re-entering Creating (restart loops). Non-zero is CRITICAL. Action: investigate why workspaces are failing \u2014 check Recovery Attempts vs Success panel, examine controller logs for phase handler errors. reason label on failed_total identifies OOM, crash, eviction, etc."
+      "description": "Rate of workspaces entering Failed or re-entering Creating (restart loops). Non-zero is CRITICAL. Action: investigate why workspaces are failing — check Recovery Attempts vs Success panel, examine controller logs for phase handler errors. reason label on failed_total identifies OOM, crash, eviction, etc."
     },
     {
       "collapsed": false,
@@ -1168,7 +1168,7 @@
       ],
       "title": "DB Connection Pool Utilization",
       "type": "timeseries",
-      "description": "Active DB connections as % of pool max. Red line at 80%: above this, the API is approaching pool exhaustion \u2014 new requests will queue or fail. Action: increase maxOpenConns, scale PostgreSQL, or investigate long-running queries holding connections."
+      "description": "Active DB connections as % of pool max. Red line at 80%: above this, the API is approaching pool exhaustion — new requests will queue or fail. Action: increase maxOpenConns, scale PostgreSQL, or investigate long-running queries holding connections."
     },
     {
       "datasource": {
@@ -1580,7 +1580,7 @@
       },
       "id": 20,
       "panels": [],
-      "title": "Noisy Neighbor Detection \u2014 by Workspace",
+      "title": "Noisy Neighbor Detection — by Workspace",
       "type": "row",
       "description": "Top-10 workspaces by CPU, memory, and disk. Pinpoints the specific workspace pod consuming disproportionate resources. Each bar gauge shows the top-10 consumers at the current instant. See the by-User row below for per-tenant aggregates."
     },
@@ -1856,7 +1856,7 @@
       },
       "id": 38,
       "panels": [],
-      "title": "Noisy Neighbor Detection \u2014 by User",
+      "title": "Noisy Neighbor Detection — by User",
       "type": "row",
       "description": "Top-10 users by aggregated workspace CPU, memory, and disk, plus concurrent active compute. A user with high values across multiple panels has both heavy single-workspace usage and parallel workspaces. Action: enforce per-user quota, contact user, or terminate workspaces."
     },
@@ -2261,7 +2261,7 @@
       ],
       "title": "Reconciliation Errors",
       "type": "timeseries",
-      "description": "Error rate in the controller reconcile loop by resource and error type. Any non-zero rate is critical \u2014 the controller relies on successful reconciles to progress workspace state. get_failed = cannot fetch workspace from API server. phase_handler = error in creating/active/terminating handler. Action: check controller logs, check K8s API server health."
+      "description": "Error rate in the controller reconcile loop by resource and error type. Any non-zero rate is critical — the controller relies on successful reconciles to progress workspace state. get_failed = cannot fetch workspace from API server. phase_handler = error in creating/active/terminating handler. Action: check controller logs, check K8s API server health."
     },
     {
       "datasource": {
@@ -2359,7 +2359,7 @@
       ],
       "title": "Recovery Success Ratio (by failure class)",
       "type": "timeseries",
-      "description": "Fraction of recovery attempts that successfully returned to Active, per failure class. Red line at 75%: below this, the system cannot reliably self-heal. Classes: infrastructure (node/pod eviction), resource (OOM/CPU limit), process (app crash), configuration (bad user spec). A low ratio for a class indicates a systemic issue. Action: investigate why that failure class is not recovering \u2014 may need image fixes, resource limit changes, or configuration validation."
+      "description": "Fraction of recovery attempts that successfully returned to Active, per failure class. Red line at 75%: below this, the system cannot reliably self-heal. Classes: infrastructure (node/pod eviction), resource (OOM/CPU limit), process (app crash), configuration (bad user spec). A low ratio for a class indicates a systemic issue. Action: investigate why that failure class is not recovering — may need image fixes, resource limit changes, or configuration validation."
     },
     {
       "collapsed": false,
@@ -2660,7 +2660,7 @@
       ],
       "title": "Agent Reload Failure Ratio (credential rotation health)",
       "type": "timeseries",
-      "description": "Fraction of agent reload operations that failed. Reloads happen when user credentials are rotated. Red threshold at 10%: a high failure rate means credential rotations are failing \u2014 users will NOT receive updated credentials in their running workspaces. Action: check agentd logs for reload errors, verify opencode dispose/restart mechanism."
+      "description": "Fraction of agent reload operations that failed. Reloads happen when user credentials are rotated. Red threshold at 10%: a high failure rate means credential rotations are failing — users will NOT receive updated credentials in their running workspaces. Action: check agentd logs for reload errors, verify opencode dispose/restart mechanism."
     },
     {
       "collapsed": false,
@@ -2674,7 +2674,7 @@
       "panels": [],
       "title": "Metering Pipeline Integrity",
       "type": "row",
-      "description": "Is billing data trustworthy? These panels verify the metering pipeline is recording, batching, and exporting usage events correctly. Non-zero dropped events or growing DLQ means billing data is incomplete \u2014 costs shown on the Billing dashboard may be understated."
+      "description": "Is billing data trustworthy? These panels verify the metering pipeline is recording, batching, and exporting usage events correctly. Non-zero dropped events or growing DLQ means billing data is incomplete — costs shown on the Billing dashboard may be understated."
     },
     {
       "datasource": {
@@ -2834,7 +2834,7 @@
       ],
       "title": "Metering Events: Recorded vs Failed vs Dropped",
       "type": "timeseries",
-      "description": "Pipeline throughput by outcome. Recorded (green) = events successfully written to usage_events table. Failed (yellow) = batch write failed, event went to DLQ. Dropped (red) = buffer full or DLQ write also failed \u2014 data is LOST. Any dropped events are critical: billing data is incomplete. Action: check PostgreSQL connectivity, check DLQ depth, verify batch write latency."
+      "description": "Pipeline throughput by outcome. Recorded (green) = events successfully written to usage_events table. Failed (yellow) = batch write failed, event went to DLQ. Dropped (red) = buffer full or DLQ write also failed — data is LOST. Any dropped events are critical: billing data is incomplete. Action: check PostgreSQL connectivity, check DLQ depth, verify batch write latency."
     },
     {
       "datasource": {
@@ -3058,6 +3058,323 @@
       "title": "Billing Export Lag",
       "type": "timeseries",
       "description": "Seconds since last successful billing export. Red threshold at 900s (15min): rising lag indicates the export goroutine is failing. Billing data forwarded to external billing providers is stale. Action: check export goroutine logs, verify external billing provider connectivity."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 85
+      },
+      "id": 42,
+      "title": "Session State — agentd (Epic 69)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 86
+      },
+      "id": 43,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (workspace_id) (llmsafespaces_seq_stall_seconds{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"})",
+          "legendFormat": "{{workspace_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Seq stall by workspace (starvation signal — correlate with pending ledger work)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 86
+      },
+      "id": 44,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (state) (llmsafespaces_ledger_depth{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"})",
+          "legendFormat": "{{state}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Ledger funnel by state (ledgered → admitted → promoted/turn_ended; stalled, failed)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 86
+      },
+      "id": 50,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(llmsafespaces_delivery_202_latency_seconds_bucket{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(llmsafespaces_delivery_202_latency_seconds_bucket{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "B"
+        }
+      ],
+      "title": "Delivery ack latency (202-equivalent) — p50/p99",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 86
+      },
+      "id": 45,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(llmsafespaces_stalled_entries{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"})",
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ],
+      "title": "Stalled entries (#1119 class)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 86
+      },
+      "id": 46,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(llmsafespaces_wake_failures_total{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"}[1h]))",
+          "legendFormat": "__auto",
+          "refId": "A"
+        }
+      ],
+      "title": "Wake failures (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 86
+      },
+      "id": 47,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(llmsafespaces_promotion_stall_seconds{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"})",
+          "legendFormat": "promotion stall",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(llmsafespaces_snapshot_size_bytes_bucket{job=~\"__LLMSAFESPACES_AGENTD_JOB__\"}[$__rate_interval])))",
+          "legendFormat": "snapshot p99 bytes)",
+          "refId": "B"
+        }
+      ],
+      "title": "Promotion stall (oldest admitted-unpromoted) + snapshot size p99",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

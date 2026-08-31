@@ -367,10 +367,12 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	}
 	// Epic 69 US-69.2: the harness-ABI surface (five ops, Basic-auth
 	// gated inside the authority, per-session rate limits). Mounted from
-	// the authority so the module owns its route subtree (I8).
+	// the authority so the module owns its route subtree (I8). The
+	// US-69.12 instrumented wrapper times/sizes the two budget-carrying
+	// ops (Deliver ack, GetSnapshot) without touching the harness.
 	if deps.stateAuthority != nil {
 		if mount, handler := deps.stateAuthority.Handler(); mount != "" {
-			userMux.Handle(mount, handler)
+			userMux.Handle(mount, instrumentABISurface(handler))
 		}
 	}
 

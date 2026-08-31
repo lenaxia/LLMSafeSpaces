@@ -211,6 +211,9 @@ func main() {
 	proc := startManagedProcess(supervise, sseTracker, stateAuthority)
 	if stateAuthority != nil {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
+		// US-69.12: the stall watchdog + metric refresh (seq stall, ledger
+		// funnel, promotion stall; wake failures escalate via alerts).
+		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority)
 	}
 
 	startedAt := time.Now()

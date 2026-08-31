@@ -20,6 +20,9 @@
 */ -}}
 {{- $apiJob := printf "%s-api.*" (include "llmsafespaces.fullname" .) -}}
 {{- $ctrlJob := printf "%s-controller.*" (include "llmsafespaces.fullname" .) -}}
+{{- /* US-69.12: workspace pods' agentd-admin scrape (the PodMonitor
+      relabels job to <release>-agentd). */}}
+{{- $agentdJob := printf "%s-agentd.*" (include "llmsafespaces.fullname" .) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -38,6 +41,6 @@ metadata:
 data:
   {{- range $path, $_ := .Files.Glob "dashboards/**.json" }}
   {{ base $path }}: |-
-{{ $.Files.Get $path | replace "__LLMSAFESPACES_API_JOB__" $apiJob | replace "__LLMSAFESPACES_CTRL_JOB__" $ctrlJob | indent 4 }}
+{{ $.Files.Get $path | replace "__LLMSAFESPACES_API_JOB__" $apiJob | replace "__LLMSAFESPACES_CTRL_JOB__" $ctrlJob | replace "__LLMSAFESPACES_AGENTD_JOB__" $agentdJob | indent 4 }}
   {{- end }}
 {{- end }}
