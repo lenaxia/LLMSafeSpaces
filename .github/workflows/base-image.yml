@@ -1,0 +1,184 @@
+# Base image publish — design 0053 D5/S4: the base is content-versioned on
+# its own cadence, decoupled from the platform release train.
+#
+# The version SINGLE SOURCE is the catalog seed row
+# (api/internal/imagefactory/catalog.seed.yaml → bases[bookworm].version),
+# CalVer `YYYY.MM.x`. A base content change ships as ONE PR: the
+# runtimes/base change + the row bump (month rollover if the calendar
+# moved, else patch +1). Merging that PR triggers this workflow, which
+# reads the row and publishes exactly that tag — idempotent (an existing
+# tag is never rebuilt or moved; a rebuild PR must bump x).
+#
+# The platform release (release.yml) no longer builds or tags the base at
+# all: RELEASE SUCCESS == platform artifacts, base success == this
+# workflow.
+name: base-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runtimes/base/**"
+      - "api/internal/imagefactory/catalog.seed.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: base-image-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  # cosign keyless signing (Fulcio/Rekor) needs id-token.
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  BASE_IMAGE: lenaxia/llmsafespaces/base
+
+jobs:
+  publish:
+    name: Publish base (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve the content version from the catalog seed
+        id: version
+        run: |
+          VERSION=$(awk '
+            /^bases:/ { inbases=1; next }
+            inbases && /^  - name: bookworm/ { inrow=1; next }
+            inrow && /^    version:/ { gsub(/"/, "", $2); print $2; exit }
+          ' api/internal/imagefactory/catalog.seed.yaml)
+          [ -n "$VERSION" ] || { echo "::error::could not read bookworm version from catalog.seed.yaml"; exit 1; }
+          # CalVer shape guard: YYYY.MM.x (design 0053 D5).
+          echo "$VERSION" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]+$' || {
+            echo "::error::base version '$VERSION' is not CalVer YYYY.MM.x — content versioning is the single source (design 0053 §4.3)"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if this content version is already published
+        id: exists
+        run: |
+          REF="${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}"
+          if docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$REF already published — a rebuild requires a patch bump in catalog.seed.yaml"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@v7
+        if: steps.exists.outputs.exists == 'false'
+        id: build
+        with:
+          context: .
+          file: runtimes/base/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.BASE_IMAGE }},push-by-digest=true,name-canonical=true
+          cache-from: type=gha,scope=base-${{ matrix.platform }}
+          cache-to: type=gha,scope=base-${{ matrix.platform }},mode=max
+
+      - name: Export digest
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v7
+        if: steps.exists.outputs.exists == 'false'
+        with:
+          name: base-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge base manifest
+    needs: [publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve the content version from the catalog seed
+        id: version
+        run: |
+          VERSION=$(awk '
+            /^bases:/ { inbases=1; next }
+            inbases && /^  - name: bookworm/ { inrow=1; next }
+            inrow && /^    version:/ { gsub(/"/, "", $2); print $2; exit }
+          ' api/internal/imagefactory/catalog.seed.yaml)
+          [ -n "$VERSION" ] || { echo "::error::could not read bookworm version"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/download-buildx-action@v0.30.0
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if already published
+        id: exists
+        run: |
+          REF="${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}"
+          if docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download digests
+        if: steps.exists.outputs.exists == 'false'
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: base-digests-*
+          merge-multiple: true
+
+      - name: Create manifest list and push
+        if: steps.exists.outputs.exists == 'false'
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create -t "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" \
+            $(printf '${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}@sha256:%s ' *)
+
+      - name: Sign the published tag (cosign keyless)
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          curl -fsSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          cosign sign --yes "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}"
+
+      - name: Generate SBOM
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          curl -fsSL https://github.com/anchore/syft/releases/latest/download/syft_linux_amd64.tar.gz | tar xz
+          ./syft "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" -o spdx-json > base-sbom.spdx.json
+          curl -fsSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign 2>/dev/null || true
+          cosign attest --predicate base-sbom.spdx.json --type spdxjson \
+            "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" || \
+            echo "::warning::SBOM attestation skipped (cosign attest unavailable)"

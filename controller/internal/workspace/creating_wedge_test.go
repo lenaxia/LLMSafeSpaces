@@ -47,11 +47,21 @@ func makeInitCrashLoopPod(name, namespace string, age time.Duration) *corev1.Pod
 				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
 			},
 			InitContainerStatuses: []corev1.ContainerStatus{
-				{Name: "workspace-dirs", State: crashWaiting,
-					LastTerminationState: corev1.ContainerState{
-						Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0},
-					}},
-				{Name: "credential-setup", State: crashWaiting,
+				{Name: "platform-init", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0},
+				}},
+				{Name: "platform-bootstrap", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0},
+				}},
+				{Name: "platform-materialize", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Reason: "Completed", ExitCode: 0},
+				}},
+				// Design 0053 S3: platform-init containers crash-looping
+				// is SURFACED (detectPlatformBootFailure — deleting the
+				// pod cannot fix a platform bug). The #935 recovery path
+				// remains live for user-plane inits: workspace-setup
+				// (packages/initScript) is the crash-loop shape here.
+				{Name: "workspace-setup", State: crashWaiting,
 					LastTerminationState: corev1.ContainerState{
 						Terminated: &corev1.ContainerStateTerminated{
 							Reason: "Error", ExitCode: 2,
@@ -130,9 +140,10 @@ func TestReconcile_Creating_PlatformBootFailure_PrecedesCrashloopRecovery(t *tes
 	expectedPodName := podName("ws-pb-cl", string(ws.UID))
 
 	pod := makeInitCrashLoopPod(expectedPodName, "default", stuckScheduledPendingTimeout+time.Hour)
-	// Rename the crash-looping init container to a platform boot
-	// container — that family is surfaced, not recovered.
-	pod.Status.InitContainerStatuses[1].Name = "platform-materialize"
+	// Rename the crash-looping init container (workspace-setup, the last
+	// init in the fixture) to a platform boot container — that family is
+	// surfaced, not recovered.
+	pod.Status.InitContainerStatuses[len(pod.Status.InitContainerStatuses)-1].Name = "platform-materialize"
 
 	r := reconcilerFor(t, ws, pod)
 	r.AgentdImage = "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:35a1a5bb35a1a5bb35a1a5bb35a1a5bb35a1a5bb"

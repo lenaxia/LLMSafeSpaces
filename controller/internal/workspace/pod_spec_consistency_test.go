@@ -19,7 +19,6 @@ package workspace
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -44,14 +43,6 @@ func envMap(envs []corev1.EnvVar) map[string]string {
 
 // mountPaths returns the set of MountPath values for cross-validation against
 // the absolute paths the init script references.
-func mountPaths(mounts []corev1.VolumeMount) map[string]bool {
-	m := make(map[string]bool, len(mounts))
-	for _, mt := range mounts {
-		m[mt.MountPath] = true
-	}
-	return m
-}
-
 // findInitContainerOrFatal returns the init container with the given name, failing
 // the test if absent.
 func findInitContainerOrFatal(t *testing.T, pod *corev1.Pod, name string) corev1.Container {
@@ -104,81 +95,86 @@ func reconcileToCreatingPod(t *testing.T, ws *v1.Workspace, apiURL string) (*Wor
 	return r, pod
 }
 
-// TestE2E_Reconcile_PodSpec_InitContainerSelfConsistent is the central guard.
-// On a SINGLE Reconcile-produced pod it asserts:
-//  1. The credential-setup init container's Env contains WORKSPACE_ID and
-//     LLMSAFESPACE_API_URL, AND the script references "$WORKSPACE_ID" and
-//     "$LLMSAFESPACE_API_URL" — i.e. env names and script $VAR names agree.
-//  2. Every absolute path the script touches (/sandbox-cfg, /sandbox-runtime,
-//     /mnt/secrets/password, /var/run/bootstrap, /home/sandbox, /workspace) is
-//     the MountPath of a declared VolumeMount on the SAME container.
-//  3. The script calls bootstrap BEFORE materialize (ordering invariant).
-//  4. The bootstrap-token volume is projected with Path "token" so the binary's
-//     default read path /var/run/bootstrap/token resolves.
+// TestE2E_Reconcile_PodSpec_InitContainerSelfConsistent is the central
+// guard. On a SINGLE Reconcile-produced pod it asserts the platform
+// init chain (design 0053 S3 — the bash heredoc is deleted):
+//  1. Every platform init container runs the pinned overlay binary
+//     (Command references the agentd image volume), never a PATH lookup.
+//  2. platform-bootstrap receives --workspace-id == the workspace name
+//     and LLMSAFESPACES_API_URL == the reconciler's APIServiceURL (the
+//     binary contract: --workspace-id required, --api-url env fallback).
+//  3. The bootstrap-token volume is projected with Path "token" so the
+//     binary's default read path /var/run/bootstrap/token resolves, and
+//     the bootstrap init mounts it read-only.
+//  4. Init ordering: platform-init (subPath roots) precedes
+//     platform-bootstrap, which precedes platform-materialize.
 //
-// A refactor renaming an env var, dropping a mount, or reordering the script
+// A refactor renaming an arg, dropping a mount, or reordering the chain
 // breaks exactly one of these cross-checks.
 func TestE2E_Reconcile_PodSpec_InitContainerSelfConsistent(t *testing.T) {
 	ws := makeWorkspace("ws-consistency", "default", v1.WorkspacePhasePending)
 	const apiURL = "http://test-api.e2e:8080"
 	_, pod := reconcileToCreatingPod(t, ws, apiURL)
 
-	credInit := findInitContainerOrFatal(t, pod, "credential-setup")
-	script := credInit.Command[len(credInit.Command)-1]
-	envs := envMap(credInit.Env)
-	mounts := mountPaths(credInit.VolumeMounts)
-
-	// (1) Env names ↔ script $VAR references must agree.
-	assert.Equal(t, ws.Name, envs["WORKSPACE_ID"],
-		"WORKSPACE_ID env must equal the workspace name")
-	assert.Equal(t, apiURL, envs["LLMSAFESPACE_API_URL"],
-		"LLMSAFESPACE_API_URL env must equal the reconciler's APIServiceURL")
-	assert.Contains(t, script, "$WORKSPACE_ID",
-		"script must reference $WORKSPACE_ID (rename would silently break bootstrap)")
-	assert.Contains(t, script, "$LLMSAFESPACE_API_URL",
-		"script must reference $LLMSAFESPACE_API_URL (rename would silently break bootstrap)")
-
-	// (2) Every absolute path the script touches must be a declared mount.
-	// These are the paths the credScript writes/cp's/ln -s's into.
-	scriptPaths := []string{
-		"/sandbox-cfg",          // bootstrap --out + cp password
-		"/sandbox-runtime",      // mkdir -p symlink targets
-		"/mnt/secrets/password", // cp password source
-		"/home/sandbox",         // ln -s .ssh, .secrets, .git-credentials
-		"/workspace",            // ln -s auth.json
+	var initOrder []string
+	for _, c := range pod.Spec.InitContainers {
+		initOrder = append(initOrder, c.Name)
 	}
-	for _, p := range scriptPaths {
-		assert.True(t, mounts[p],
-			"script references %q but no VolumeMount has that MountPath — a dropped/renamed mount breaks the script silently", p)
+	require.GreaterOrEqual(t, indexOf(initOrder, "platform-init"), 0, "platform-init must exist")
+	require.Less(t, indexOf(initOrder, "platform-init"), indexOf(initOrder, "platform-bootstrap"),
+		"platform-init (subPath roots) must run before bootstrap")
+	require.Less(t, indexOf(initOrder, "platform-bootstrap"), indexOf(initOrder, "platform-materialize"),
+		"bootstrap must run before materialize (secrets land before they are applied)")
+
+	for _, name := range []string{"platform-init", "platform-bootstrap", "platform-materialize"} {
+		c := findInitContainerOrFatal(t, pod, name)
+		assert.Equal(t, agentdMountPath+agentdBinaryRelPath, c.Command[0],
+			"%s must exec the pinned overlay binary", name)
 	}
 
-	// (3) bootstrap must precede materialize in the script (the bootstrap
-	// output is the materialize input).
-	bootIdx := strings.Index(script, "workspace-agentd bootstrap")
-	matIdx := strings.Index(script, "workspace-agentd materialize")
-	require.NotEqual(t, -1, bootIdx, "script must call workspace-agentd bootstrap")
-	require.NotEqual(t, -1, matIdx, "script must call workspace-agentd materialize")
-	assert.Less(t, bootIdx, matIdx,
-		"bootstrap must precede materialize in the init script (bootstrap output is materialize input)")
+	bootstrap := findInitContainerOrFatal(t, pod, "platform-bootstrap")
+	assert.Contains(t, bootstrap.Args, "bootstrap")
+	assert.Contains(t, bootstrap.Args, "--workspace-id")
+	assert.Equal(t, ws.Name, bootstrap.Args[indexOf(bootstrap.Args, "--workspace-id")+1],
+		"--workspace-id must equal the workspace name")
+	assert.Equal(t, apiURL, envMap(bootstrap.Env)["LLMSAFESPACE_API_URL"],
+		"LLMSAFESPACES_API_URL must equal the reconciler's APIServiceURL")
+	for _, e := range bootstrap.Env {
+		assert.NotEqual(t, "WORKSPACE_ID", e.Name,
+			"the platform subcommands take --workspace-id, not an env var")
+	}
 
-	// (4) bootstrap-token projection Path must be "token" so the binary's
-	// default read path /var/run/bootstrap/token (bootstrap.go:51) resolves.
-	var bootstrapVol *corev1.Volume
+	var tokenVol *corev1.Volume
 	for i := range pod.Spec.Volumes {
 		if pod.Spec.Volumes[i].Name == "bootstrap-token" {
-			bootstrapVol = &pod.Spec.Volumes[i]
+			tokenVol = &pod.Spec.Volumes[i]
 			break
 		}
 	}
-	require.NotNil(t, bootstrapVol, "bootstrap-token volume must exist")
-	require.NotNil(t, bootstrapVol.Projected, "bootstrap-token must be a projected volume")
-	require.Len(t, bootstrapVol.Projected.Sources, 1, "bootstrap-token must have exactly one source")
-	satProj := bootstrapVol.Projected.Sources[0].ServiceAccountToken
-	require.NotNil(t, satProj, "bootstrap-token source must be ServiceAccountToken")
-	assert.Equal(t, "token", satProj.Path,
-		"projected token Path must be 'token' so /var/run/bootstrap/token resolves")
-	assert.Equal(t, bootstrapAudience, satProj.Audience,
-		"bootstrap-token audience must match the API's TokenReview audience")
+	require.NotNil(t, tokenVol, "bootstrap-token volume must exist")
+	require.NotNil(t, tokenVol.Projected)
+	require.Len(t, tokenVol.Projected.Sources, 1)
+	assert.Equal(t, "token", tokenVol.Projected.Sources[0].ServiceAccountToken.Path,
+		"projected token Path must be 'token' (binary default /var/run/bootstrap/token)")
+	var tokenMount *corev1.VolumeMount
+	for i := range bootstrap.VolumeMounts {
+		if bootstrap.VolumeMounts[i].Name == "bootstrap-token" {
+			tokenMount = &bootstrap.VolumeMounts[i]
+			break
+		}
+	}
+	require.NotNil(t, tokenMount)
+	assert.Equal(t, "/var/run/bootstrap", tokenMount.MountPath)
+	assert.True(t, tokenMount.ReadOnly)
+}
+
+func indexOf(items []string, want string) int {
+	for i, v := range items {
+		if v == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestE2E_Reconcile_PodSpec_ServiceAccountCreatedBeforePod verifies the
@@ -261,8 +257,18 @@ func TestE2E_Reconcile_PodSpec_PasswordSecretMounted(t *testing.T) {
 	if fileMode {
 		assert.False(t, legacyEnvMode,
 			"file mode must not ALSO carry the env var — the token would ride opencode's env into every tool process")
-		assert.Contains(t, credSetupScript(t, pod), "install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token",
-			"file mode requires the init script to install the token file")
+		// The 0400 install itself is agentd init-fs territory (design
+		// 0053 S3); the controller-side precondition is that the
+		// Secret reaches the init that performs it.
+		platformInit := findInitContainerOrFatal(t, pod, "platform-init")
+		var pwMount *corev1.VolumeMount
+		for i := range platformInit.VolumeMounts {
+			if platformInit.VolumeMounts[i].Name == "pw-secret" {
+				pwMount = &platformInit.VolumeMounts[i]
+				break
+			}
+		}
+		require.NotNil(t, pwMount, "file mode requires pw-secret on platform-init (init-fs installs the token)")
 	}
 }
 
@@ -347,17 +353,4 @@ func TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersistedOnResume(t *testing.T
 		"resumed pod must set fsGroupChangePolicy explicitly")
 	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
 		"must be OnRootMismatch on the resume path — resume was the observed incident path")
-}
-
-// credSetupScript extracts the credential-setup init container's script.
-func credSetupScript(t *testing.T, pod *corev1.Pod) string {
-	t.Helper()
-	for i := range pod.Spec.InitContainers {
-		if pod.Spec.InitContainers[i].Name == "credential-setup" {
-			require.Len(t, pod.Spec.InitContainers[i].Command, 3)
-			return pod.Spec.InitContainers[i].Command[2]
-		}
-	}
-	t.Fatal("credential-setup init container not found")
-	return ""
 }

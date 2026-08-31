@@ -208,7 +208,7 @@ func TestValidateOpencodeDeliveryConfig(t *testing.T) {
 		arm64   string
 		wantErr string
 	}{
-		{"all empty (default, inert)", "", "", "", ""},
+		{"all empty (post-S3: mandatory)", "", "", "", "mandatory"},
 		{"fully configured", testOpencodeImage, testOpencodeSHAAMD64, testOpencodeSHAARM64, ""},
 		{"image only (renovate form)", testOpencodeImage, "", "", ""},
 		{"hashes only", "", testOpencodeSHAAMD64, testOpencodeSHAARM64, "image"},

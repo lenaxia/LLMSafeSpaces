@@ -47,9 +47,10 @@ mise ls 2>/dev/null || echo "(mise ls unavailable)"
 echo
 echo "=== smoke checks ==="
 
-# Internal binaries (built into the image)
-verify redact           which redact
-verify workspace-agentd which workspace-agentd
+# Design 0053 §4.3 (S3): OS-content assertions only. The platform-
+# contract asserts (redact, workspace-agentd, and the opencode pipe)
+# moved to the overlay artifacts' own CI — each artifact validates
+# itself; the base validates the dev-OS.
 
 # Core shell + dev tools (apt)
 verify bash    which bash
@@ -78,7 +79,6 @@ verify mysql which mysql
 verify aws   which aws
 
 # Agent runtime
-verify opencode which opencode
 verify mise     which mise
 
 # GitHub CLI
@@ -103,17 +103,15 @@ verify python3-shim sh -c "command -v python3"
 verify node-shim    sh -c "command -v node"
 verify go-shim      sh -c "command -v go"
 
-# Git credential consumption (#1087): the image must ship BOTH config
-# layers that point git's credential store helper at the materialized
-# /home/sandbox/.git-credentials — the system /etc/gitconfig layer AND
-# the env layer (GIT_CONFIG_KEY_0) that survives a PVC-persisted
-# `gh auth setup-git` helper reset. Gates the wiring end to end: if
-# either layer is dropped from the Dockerfile, the build fails here.
-# The env check greps the "command line:" ORIGIN (how git labels
-# GIT_CONFIG_KEY_* entries) — the plain effective query would pass via
-# the /etc/gitconfig layer alone and prove nothing about the env layer.
+# Git credential consumption (#1087): the image ships the SYSTEM config
+# layer pointing git's credential store helper at the materialized
+# /home/sandbox/.git-credentials. Post-S3 (design 0053 §4.3) the SECOND
+# defense layer — GIT_CONFIG_COUNT/KEY_0/VALUE_0 env — moved from the
+# image ENV block to controller-injected pod env; it is gated by
+# TestS3_BaseEnvInjectedOnMainContainer
+# (controller/internal/workspace/overlay_mandatory_test.go), which asserts
+# the env block verbatim on the main container.
 verify git-credential-store-system sh -c "git config --file /etc/gitconfig --get-all credential.helper | grep -q 'store --file=/home/sandbox/.git-credentials'"
-verify git-credential-store-env    sh -c "git config --show-origin --get-all credential.helper | grep -q '^command line:.*store --file=/home/sandbox/.git-credentials'"
 
 # JVM tools are SOFT (best-effort pre-install; available via mise at runtime).
 for t in java mvn gradle; do

@@ -37,6 +37,7 @@ env:
   RELAY_ROUTER_IMAGE: lenaxia/llmsafespaces/relay-router
   RELAY_PROXY_IMAGE: lenaxia/llmsafespaces/relay-proxy
   AGENTD_IMAGE: lenaxia/llmsafespaces/agentd
+  OPENCODE_IMAGE: lenaxia/llmsafespaces/opencode
 
 jobs:
   # Docs-only fast path: a change confined to *.md / docs/ / design/ /
@@ -96,15 +97,27 @@ jobs:
       # fixtures in the same PR (upgrade runbook: REFRESH.md). Without
       # this gate a bump ships with every parser pinning stale shapes —
       # CI green, production drifting (#739 class).
+      # Design 0053 S3: the pin lives in runtimes/opencode/Dockerfile
+      # (moved off the stripped base). The gate compares the pinned
+      # VALUE old-vs-new — file moves that keep the value (e.g. the S3
+      # relocation) must not false-positive.
       - name: Opencode bump requires fixture refresh
         if: github.event_name == 'pull_request'
         run: |
-          if git diff --name-only origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -q .; then
-            if git diff -U0 origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -E '^[+-].*OPENCODE_VERSION' | grep -qvE '^[+-]{3}'; then
-              if ! git diff --name-only origin/main...HEAD -- 'pkg/agent/opencode/testdata/' | grep -q .; then
-                echo "::error::OPENCODE_VERSION bumped without a golden-fixture refresh (pkg/agent/opencode/testdata/). See the upgrade runbook: pkg/agent/opencode/testdata/REFRESH.md"
-                exit 1
-              fi
+          pin_of() {
+            # $1 = git ref, $2 = preferred file, $3 = fallback file
+            for f in "$2" "$3"; do
+              v=$(git show "$1:$f" 2>/dev/null | grep -oE '^ARG OPENCODE_VERSION=[0-9.]+' | head -1 | cut -d= -f2)
+              [ -n "$v" ] && { echo "$v"; return; }
+            done
+          }
+          old=$(pin_of origin/main runtimes/opencode/Dockerfile runtimes/base/Dockerfile)
+          new=$(pin_of HEAD runtimes/opencode/Dockerfile runtimes/base/Dockerfile)
+          echo "opencode pin: main=${old:-none} head=${new:-none}"
+          if [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ]; then
+            if ! git diff --name-only origin/main...HEAD -- 'pkg/agent/opencode/testdata/' | grep -q .; then
+              echo "::error::OPENCODE_VERSION bumped ${old} → ${new} without a golden-fixture refresh (pkg/agent/opencode/testdata/). See the upgrade runbook: pkg/agent/opencode/testdata/REFRESH.md"
+              exit 1
             fi
           fi
           echo "fixture-freshness gate: ok"
@@ -1501,10 +1514,6 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
-          build-args: |
-            VERSION=${{ needs.prepare.outputs.version }}
-            COMMIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -1756,6 +1765,198 @@ jobs:
               # binarySHA256Arm64: "${arm64}"
           EOF
 
+
+  # #863: standalone agentd image for image-volume delivery. FROM scratch,
+  # single binary. The merge job additionally extracts the per-arch BINARY
+  # sha256s (what the chart's agentdDelivery.binarySHA256* values need —
+  # binary hashes, not image digests) and prints the ready-to-paste Helm
+  # values block on non-PR events.
+  build-opencode:
+    name: Build Opencode (${{ matrix.platform }})
+    needs: [test, test-full, prepare]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: runtimes/opencode/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=opencode-${{ matrix.platform }}
+          cache-to: type=gha,scope=opencode-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export binary sha256
+        if: github.event_name != 'pull_request'
+        run: |
+          # The chart pins the BINARY sha256 (the entrypoint verifies the
+          # file, not the image). Tag the arch image, copy the binary out
+          # of a stopped container, hash it.
+          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
+          tag="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${{ github.sha }}-${arch}"
+          # outputs.digest already carries the sha256: prefix — reference
+          # it verbatim after @ (prepending @sha256: doubled the prefix;
+          # putting comments INSIDE the line continuation made bash eat
+          # the source arg — "no sources specified"). Comments stay above
+          # the command.
+          src="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools create -t "$tag" "$src"
+          docker pull --platform ${{ matrix.platform }} "$tag"
+          cid="opencode-extract-$GITHUB_RUN_ID"
+          # FROM scratch has no CMD — docker create demands a command arg
+          # even for a never-started container (it only records it; the
+          # binary is not invoked). Record the binary path itself.
+          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" \
+            /usr/local/bin/opencode >/dev/null
+          docker cp "$cid":/usr/local/bin/opencode /tmp/opencode-bin
+          docker rm -f "$cid" >/dev/null
+          sha256sum /tmp/opencode-bin | awk '{print $1}' > "/tmp/opencode-binary-${arch}.sha256"
+          echo "arch=$arch binary-sha256=$(cat /tmp/opencode-binary-$arch.sha256)"
+
+      - name: Upload binary sha256
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencode-binary-sha256-${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          path: /tmp/opencode-binary-*.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencode-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+
+  merge-opencode:
+    name: Merge Opencode Manifest
+    needs: [build-opencode, prepare]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: opencode-digests-*
+          merge-multiple: true
+
+      - name: Download binary sha256s
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/sha
+          pattern: opencode-binary-sha256-*
+          merge-multiple: true
+
+      - name: Create manifest list and push
+        id: create
+        working-directory: /tmp/digests
+        run: |
+          # The per-arch BINARY sha256s ride on the index as annotations,
+          # covered by the digest itself: one Renovate-updatable
+          # coordinate (repo:tag@sha256:digest) carries the whole verify
+          # contract — hashes can never desync from the digest. The
+          # controller resolves them at startup (agentd_pins.go).
+          amd64="$(cat /tmp/sha/opencode-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/opencode-binary-arm64.sha256)"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            --annotation "index:dev.llmsafespaces/opencode.sha256-amd64=${amd64}" \
+            --annotation "index:dev.llmsafespaces/opencode.sha256-arm64=${arm64}" \
+            --annotation "index:dev.llmsafespaces/version=${{ needs.prepare.outputs.version }}" \
+            $(printf '${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@sha256:%s ' *)
+          # metadata emits the short sha tag (sha-<7hex>, same as every
+          # sibling merge job); inspect that for the manifest digest.
+          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${GITHUB_SHA:0:7} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Print Helm values block for opencodeDelivery
+        run: |
+          amd64="$(cat /tmp/sha/opencode-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/opencode-binary-arm64.sha256)"
+          # Digest-only (pull-authoritative, tag-independent): the dev
+          # tag is default-branch-only, so a hardcoded :dev@ would
+          # reference a tag that does not point at this digest on other
+          # events. Paste into values as-is, or add your own tag.
+          echo "::notice::opencodeDelivery values for this commit (Renovate-friendly: image-only; hashes resolve from the index annotations):"
+          cat <<EOF
+          controller:
+            opencodeDelivery:
+              image: ${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}@${{ steps.create.outputs.digest }}
+              # break-glass overrides (both or neither):
+              # binarySHA256Amd64: "${amd64}"
+              # binarySHA256Arm64: "${arm64}"
+          EOF
   build-frontend:
     name: Build Frontend (${{ matrix.platform }})
     needs: [prepare]
@@ -1868,3 +2069,4 @@ jobs:
   # path filter (fast path) AND a 6-hour schedule trigger (self-healing
   # catch-up) so any future [skip ci] bypass is recovered within 6h.
   # See worklog 0552/0553 for the incident and resolution.
+

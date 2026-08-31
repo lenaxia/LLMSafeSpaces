@@ -39,7 +39,12 @@ func TestChart_AgentdSidecar_DefaultOff(t *testing.T) {
 	if _, err := lookPathHelm(); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
-	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns").CombinedOutput()
+	// Design 0053 §4.5: both delivery pins are mandatory — synthetic
+	// pins so this test isolates the sidecar default.
+	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
+		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	require.NotContains(t, string(out), "--agentd-sidecar=true",
 		"default render must not enable the sidecar (single-container mode unchanged)")
@@ -50,7 +55,9 @@ func TestChart_AgentdSidecar_EnabledWiresFlag(t *testing.T) {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
 	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdDelivery.image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"--set-string", "controller.opencodeDelivery.image=ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
 		"--set-string", "controller.agentdSidecar.enabled=true").CombinedOutput()
 	require.NoError(t, err, "helm output: %s", out)
 	require.Contains(t, string(out), "--agentd-sidecar=true")
@@ -62,6 +69,7 @@ func TestChart_AgentdSidecar_EnabledWithoutImageFailsRender(t *testing.T) {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
 	out, err := exec.Command("helm", "template", "test-release", sidecarChartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion,
 		"--set-string", "controller.agentdSidecar.enabled=true").CombinedOutput()
 	require.Error(t, err, "sidecar without a delivery image must fail the render; output: %s", out)
 	require.True(t, strings.Contains(string(out), "agentdDelivery.image") || strings.Contains(string(out), "agentdSidecar.enabled requires"),

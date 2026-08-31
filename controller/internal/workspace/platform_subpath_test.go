@@ -35,26 +35,6 @@ func containerMount(c *corev1.Container, mountPath string) *corev1.VolumeMount {
 	return nil
 }
 
-func TestPlatformSubPath_SingleContainerLegacy(t *testing.T) {
-	r := reconcilerFor(t)
-	pod, err := r.buildPod(context.Background(), newWorkspaceForPodBuilder(t))
-	require.NoError(t, err)
-
-	dirs := findInitContainer(pod, "workspace-dirs")
-	require.NotNil(t, dirs)
-	assert.Contains(t, dirs.Command[2], "/pvc/platform",
-		"legacy workspace-dirs must create the platform/ subPath for existing PVCs")
-
-	mainIdx := containerIndexByName(pod.Spec.Containers, mainContainerName)
-	require.NotEqual(t, -1, mainIdx)
-	main := &pod.Spec.Containers[mainIdx]
-	m := containerMount(main, "/platform")
-	require.NotNil(t, m, "single-container main container must mount /platform")
-	assert.Equal(t, "workspace", m.Name)
-	assert.Equal(t, "platform", m.SubPath)
-	assert.False(t, m.ReadOnly)
-}
-
 func TestPlatformSubPath_SingleContainerOverlay(t *testing.T) {
 	r := reconcilerWithAgentd(t)
 	pod, err := r.buildPod(context.Background(), newWorkspaceForPodBuilder(t))

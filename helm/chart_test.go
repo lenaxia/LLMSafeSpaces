@@ -53,19 +53,46 @@ func chartDir(t *testing.T) string {
 	return filepath.Dir(thisFile)
 }
 
+// testDeliveryPins satisfies the design 0053 §4.5 mandatory-pin render
+// gate for tests that exercise something OTHER than the gate itself.
+// The digests are synthetic — render sanity only, never deployed.
+// testKubeVersion pins the render's target cluster version to the chart's
+// own floor (Chart.yaml) — helm CLI defaults vary by build and lag the
+// chart; without this, renders fail on the compatibility gate instead of
+// the surface under test.
+const testKubeVersion = "1.35.0"
+
+const (
+	testAgentdPin   = "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testOpencodePin = "ghcr.io/lenaxia/llmsafespaces/opencode@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+)
+
 func helmTemplate(t *testing.T, valuesYAML string) []map[string]any {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
+	// Design 0053 §4.5: both delivery pins are mandatory — an empty
+	// image fails the render. Tests that don't exercise a given pin get
+	// a synthetic one (per-pin: delivery-focused tests override only
+	// their pin in values and still need the other to render).
+	extraSets := []string{}
+	if !strings.Contains(valuesYAML, "agentdDelivery") {
+		extraSets = append(extraSets, "--set", "controller.agentdDelivery.image="+testAgentdPin)
+	}
+	if !strings.Contains(valuesYAML, "opencodeDelivery") {
+		extraSets = append(extraSets, "--set", "controller.opencodeDelivery.image="+testOpencodePin)
+	}
 
-	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns"}
+	args := []string{"template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion}
 	if valuesYAML != "" {
 		dir := t.TempDir()
 		valuesPath := filepath.Join(dir, "values.yaml")
 		require.NoError(t, writeFile(valuesPath, valuesYAML))
 		args = append(args, "-f", valuesPath)
 	}
+	args = append(args, extraSets...)
 	cmd := exec.Command("helm", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -1004,6 +1031,16 @@ controller:
 				rv := resourceVerbs(doc)
 				require.NotContains(t, rv, "/services",
 					"%s %q must NOT grant services (F1.3.1)", kind, name)
+				// Design 0053 §4.5: the overlay-pin cache grants
+				// (agentd-pins / opencode-pins ConfigMaps) are
+				// unconditional platform RBAC — the only configmaps
+				// the controller may touch with the refresher off.
+				raw, err := yaml.Marshal(doc)
+				require.NoError(t, err)
+				if strings.Contains(string(raw), "llmsafespaces-agentd-pins") ||
+					strings.Contains(string(raw), "llmsafespaces-opencode-pins") {
+					continue
+				}
 				require.NotContains(t, rv, "/configmaps",
 					"%s %q must NOT grant configmaps when freeModelsRefresher is disabled (F1.3.1)", kind, name)
 			}
@@ -3928,7 +3965,8 @@ orgSubdomainRouting:
 	valuesPath := filepath.Join(dir, "values.yaml")
 	require.NoError(t, writeFile(valuesPath, values))
 
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
+		"--kube-version", testKubeVersion, "-f", valuesPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()

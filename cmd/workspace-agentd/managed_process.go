@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -515,6 +516,16 @@ func defaultOpencodeCmdFactory() *exec.Cmd {
 // and the overlay direct-exec spawn (design 0053 S1): only argv[0]
 // differs — args, stdout/stderr wiring, and the secrets-env-merged
 // environment are identical by construction.
+//
+// Design 0053 §4.1/S3: the entrypoint's opencode env exports live here
+// (containment per #942 — opencode env-var names are runtime knowledge
+// behind the agent seam, never controller/pod-spec knowledge). Values
+// resolve exactly as entrypoint-opencode.sh did, adapted per mode:
+// OPENCODE_CONFIG mirrors the agentd store resolution (sidecar: the RO
+// integrity mount via LLMSAFESPACES_AGENT_CONFIG_PATH; single: the
+// tmpfs default); the server password comes from the file agentd
+// already gates boot on (single-container) or the inherited pod env
+// (sidecar — controller-set, never overwritten).
 func opencodeServeCmd(bin string) *exec.Cmd {
 	// G204: argument list is fixed at compile time; agentd.AgentPort
 	// is a typed int constant. The only "variable" here is fmt.Sprintf
@@ -528,6 +539,44 @@ func opencodeServeCmd(bin string) *exec.Cmd {
 	cmd.Stderr = os.Stderr
 	// Design 0053 S2: /sandbox-runtime/bin leads PATH so the supervisor-
 	// installed redact wrapper resolves ahead of any baked binary.
-	cmd.Env = prependPathEnv(buildEnvFrom(agentd.SecretsEnvPath), filepath.Dir(redactWrapperPath()))
+	// Design 0053 S3: opencodeChildEnv applies the relocated entrypoint
+	// exports on top (#942 containment).
+	cmd.Env = opencodeChildEnv(prependPathEnv(buildEnvFrom(agentd.SecretsEnvPath), filepath.Dir(redactWrapperPath())))
 	return cmd
 }
+
+// opencodeChildEnv applies the relocated entrypoint exports onto the
+// buildEnvFrom-produced environment. Existing entries win over the
+// defaults (the sidecar controller env carries the same names with
+// mode-specific values) except OPENCODE_SERVER_PASSWORD, which is only
+// set when absent AND a boot-resolved password exists — the entrypoint
+// exported it unconditionally in single-container mode; sidecar mode
+// inherits the pod env's secretKeyRef value verbatim.
+func opencodeChildEnv(base []string) []string {
+	base = appendEnvIfAbsent(base, "OPENCODE_CONFIG", agentConfigPathFromEnv())
+	base = appendEnvIfAbsent(base, "XDG_DATA_HOME", "/workspace/.local")
+	base = appendEnvIfAbsent(base, "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", "true")
+	if pw := bootAgentPassword; pw != "" {
+		base = appendEnvIfAbsent(base, "OPENCODE_SERVER_PASSWORD", pw)
+	}
+	return base
+}
+
+// appendEnvIfAbsent appends name=value when name is not already present
+// in env. Caller-order wins; the input slice is not mutated.
+func appendEnvIfAbsent(env []string, name, value string) []string {
+	for _, e := range env {
+		if strings.HasPrefix(e, name+"=") {
+			return env
+		}
+	}
+	return append(env, name+"="+value)
+}
+
+// bootAgentPassword holds the password read at supervisor boot (single-
+// container mode; main() sets it after the readAgentPassword gate). It
+// exists so the production cmd factory can stamp the opencode child env
+// without threading the password through every test-faked factory.
+// Empty in supervise-opencode mode — the password rides the inherited
+// pod env there (controller secretKeyRef).
+var bootAgentPassword string

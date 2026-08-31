@@ -134,6 +134,17 @@ The first-spawn and pull-semantics properties remain deterministically pinned
 by the in-process exec suite (`spawn_env_pull_exec_test.go`); these rows close
 the end-to-end wiring + CRD-mirror + latency gaps the review flagged.
 
+**Merge resolution (2026-08-31):** main had meanwhile received #1163 — an
+earlier, partial cut of the same US-70.1 story (pull mechanics + its own
+`spawn_env_pull.go`/tests, no surface plumbing) — followed by #1156 (S3+S4,
+pod-builder/entrypoint restructuring). Resolution: this branch's complete
+implementation (pull + `spawned_rev`/degrade surface, cross-uid matrix, exec
+tests, design 0057) wins for the agentd core files; main's restructured
+`pod_builder.go` wins; the duplicate `/v1/spawn-env` registration the
+auto-merge left in `server.go` (both variants) was removed down to one. Full
+`cmd/workspace-agentd` (incl. exec suite), `controller/...`, `pkg/...`,
+`api/... -short`, and repolint green on the merged tree.
+
 ## Blockers
 
 - Cluster-bound ACs (AC-2 #1087 gate with 1h suspend, gVisor runsc, 100-concurrent resumes, chaos kill) need US-70.0's harness (not yet started — no issue/file exists). In-process analogs are green; the exec tests exercise the real subcommand + real handler. **Update:** the cluster rows now EXIST (`us-70-secret-delivery-e2e.sh`, nightly-wired); the ≥1h suspend and runsc legs still require the US-70.0 staged pool to PROVISION those resources (runtime + gVisor RuntimeClass), which the script gates and SKIPs loudly when absent.
