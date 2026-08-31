@@ -75,7 +75,18 @@ jobs:
           # no PR number. On the cron path the HEAD may already be the bot's
           # own previous commit, so PR_NUM will be empty — the comment step
           # tolerates that.
-          PR_NUM=$(git log -1 --pretty=%B | grep -oE '#[0-9]+' | tail -1 | tr -d '#')
+          #
+          # Extraction: GitHub's squash/merge convention appends "(#PR)" as
+          # the LAST parenthesized ref on the subject; titles also carry
+          # ISSUE refs (#1182-class), and `tail -1` over all #Ns picked
+          # those up (run 33428514243 commented on issue 1183 — not a PR —
+          # and failed the whole job). Prefer the trailing (#N) form; fall
+          # back to any #N only if that's absent. The comment step
+          # validates with gh pr view before commenting.
+          PR_NUM=$(git log -1 --pretty=%s | grep -oE '\(#[0-9]+\)$' | grep -oE '[0-9]+' || true)
+          if [ -z "$PR_NUM" ]; then
+            PR_NUM=$(git log -1 --pretty=%B | grep -oE '#[0-9]+' | tail -1 | tr -d '#' || true)
+          fi
           echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
 
           OUTPUT=$(./bin/repolint -fix-worklogs-only 2>&1) || true
@@ -115,6 +126,14 @@ jobs:
         run: |
           PR_NUM="${{ steps.autofix.outputs.pr_num }}"
 
+          # The numbering commit is the payload; the comment is best-effort.
+          # An invalid/non-PR number (issue ref picked off a merge commit)
+          # must never fail the job — the renames have already landed.
+          if ! gh pr view "$PR_NUM" >/dev/null 2>&1; then
+            echo "::notice::$PR_NUM is not a PR (likely an issue ref) — skipping the comment"
+            exit 0
+          fi
+
           # Build the comment body using a heredoc to avoid quote-nesting issues.
           {
             echo "## Worklog numbers assigned"
@@ -128,4 +147,5 @@ jobs:
             done < /tmp/renames.txt
           } > /tmp/full-comment.md
 
-          gh pr comment "$PR_NUM" --body-file /tmp/full-comment.md
+          gh pr comment "$PR_NUM" --body-file /tmp/full-comment.md || \
+            echo "::warning::PR comment failed (non-fatal — numbering already applied)"
