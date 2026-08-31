@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -88,6 +89,10 @@ type Config struct {
 	// versions, D3 part limits) — the report is STATIC per boot so the
 	// hot path never touches the harness (M3.1).
 	Capabilities *abiv1.CapabilityReport
+	// Admitter (US-69.7) is the delivery-admission seam; nil DISABLES
+	// the ledger (Deliver returns NotSupported) — the authority owns
+	// nothing dialect-specific.
+	Admitter Admitter
 	// FastCursor disables per-event fsync (scenario harnesses replaying
 	// event BURSTS; durability is covered by the fault-injection suite).
 	FastCursor bool
@@ -123,6 +128,9 @@ type Authority struct {
 	cursor   *seqCursor
 	limiter  *sessionLimiter
 
+	ledger  *deliveryLedger
+	deliver *deliveryDriver
+
 	droppedEvents   int64
 	parserFailures  int64
 	panicsContained int64
@@ -156,6 +164,15 @@ func New(cfg Config) (*Authority, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sessionstate: seq cursor: %w", err)
 	}
+	var ledger *deliveryLedger
+	var driver *deliveryDriver
+	if cfg.Admitter != nil {
+		ledger, err = openDeliveryLedger(filepath.Join(dir, "ledger.wal"))
+		if err != nil {
+			return nil, fmt.Errorf("sessionstate: ledger: %w", err)
+		}
+		driver = newDeliveryDriver(ledger, cfg.Admitter, cfg)
+	}
 	if cfg.ABIVersion == "" {
 		cfg.ABIVersion = "1"
 	}
@@ -167,6 +184,8 @@ func New(cfg Config) (*Authority, error) {
 		subs:     map[*subscriber]struct{}{},
 		cursor:   cursor,
 		limiter:  newSessionLimiter(cfg.RateLimit),
+		ledger:   ledger,
+		deliver:  driver,
 	}, nil
 }
 
@@ -233,6 +252,9 @@ func (a *Authority) applyLocked(evt *abiv1.Event) {
 
 func (a *Authority) projectLocked(evt *abiv1.Event) {
 	a.applyContractLocked(evt)
+	if a.deliver != nil {
+		a.deliver.observeEvent(evt)
+	}
 }
 
 func (a *Authority) fanoutLocked(frame *abiv1.StreamFrame) {
@@ -345,7 +367,7 @@ func (a *Authority) Stream(ctx context.Context) (<-chan *abiv1.StreamFrame, func
 
 	a.mu.Lock()
 	stamp := a.seq
-	pod := &abiv1.PodSnapshot{Sessions: podSnapshotsLocked(a.sessions)}
+	pod := &abiv1.PodSnapshot{Sessions: a.podSnapshotsLocked()}
 	a.subs[sub] = struct{}{} // (1) subscribe BEFORE snapshot capture
 	a.mu.Unlock()            // (2) stamp captured under the same lock hold
 
@@ -390,7 +412,19 @@ func (a *Authority) dropSub(sub *subscriber) {
 
 // Close persists the final cursor and releases resources.
 func (a *Authority) Close() error {
+	if a.ledger != nil {
+		_ = a.ledger.close()
+	}
 	return a.cursor.close()
+}
+
+// ReplayUnresolvedDeliveries drives admission for ledgered rows after a
+// crash/suspend resume (M2 pod-death path: exactly-once per attempt —
+// admitted rows are skipped by construction, I6).
+func (a *Authority) ReplayUnresolvedDeliveries(ctx context.Context) {
+	if a.deliver != nil {
+		a.deliver.replayUnresolved(ctx)
+	}
 }
 
 // KillForTest simulates SIGKILL semantics for the kill-9 fault-injection

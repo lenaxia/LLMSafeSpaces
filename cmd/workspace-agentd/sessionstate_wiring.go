@@ -11,9 +11,12 @@ package main
 // seam and grows these implementations.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"time"
 
@@ -143,6 +146,7 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 		PlatformDir:  platformDirFromEnv(),
 		Parser:       opencode.ABITranslator{},
 		Store:        opencodeStoreReader{client: client},
+		Admitter:     opencodeAdmitter{password: password},
 		Capabilities: bootCapabilityReport(client),
 		// D6.1 pair: accept either credential across mixed-generation
 		// windows; empty entries are skipped by the auth gate.
@@ -229,4 +233,55 @@ func bootCapabilityReport(client *OpenCodeClient) *abiv1.CapabilityReport {
 		SupportedDeliveryParts: []abiv1.DeliveryPartKind{abiv1.DeliveryPartKind_DELIVERY_PART_KIND_TEXT},
 		AbiVersion:             "1",
 	}
+}
+
+// opencodeAdmitter is the US-69.7 admission seam implementation: POST the
+// V2 prompt endpoint on the pod's opencode (localhost :4096, §D1 Basic
+// credential). Delivery mode "queue" (0052 semantics: durable admission,
+// drains on idle/wake). The returned message ID is the promotion
+// correlation input (M2).
+type opencodeAdmitter struct {
+	password string
+}
+
+func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+	if text == "" {
+		return "", fmt.Errorf("admit: empty text")
+	}
+	body := map[string]any{
+		"prompt":   map[string]any{"text": text},
+		"delivery": "queue",
+	}
+	if model != "" {
+		body["model"] = map[string]any{"id": model}
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", err
+	}
+	url := fmt.Sprintf("%s/api/session/%s/prompt", getAgentAddr(), sessionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	req.SetBasicAuth("opencode", o.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("admit: status %d: %s", resp.StatusCode, string(errBody))
+	}
+	var out struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return "", err
+	}
+	return out.Data.ID, nil
 }
