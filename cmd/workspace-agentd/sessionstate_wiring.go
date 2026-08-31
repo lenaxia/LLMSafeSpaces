@@ -18,12 +18,15 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 	"go.uber.org/zap"
 )
@@ -142,12 +145,14 @@ func platformDirFromEnv() string {
 // and harmless (design 0055 M4). At S2 the authority flag makes the durable
 // cursor a boot requirement instead.
 func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword string) *sessionstate.Authority {
+	actor, supportedActions := opencodeActionSurface(client, password)
 	cfg := sessionstate.Config{
 		PlatformDir:  platformDirFromEnv(),
 		Parser:       opencode.ABITranslator{},
 		Store:        opencodeStoreReader{client: client},
 		Admitter:     opencodeAdmitter{password: password},
-		Capabilities: bootCapabilityReport(client),
+		Actor:        actor,
+		Capabilities: bootCapabilityReport(client, supportedActions),
 		// D6.1 pair: accept either credential across mixed-generation
 		// windows; empty entries are skipped by the auth gate.
 		Passwords: []string{controlPlanePassword, password},
@@ -209,9 +214,10 @@ func startStateAuthorityReseed(ctx context.Context, a *sessionstate.Authority, r
 // enforces); BYO/legacy bases report UNPINNED (the M4 wiring rejects
 // authority-flag-on for them). Harness version: ONE bounded boot-time
 // discovery call (the report is static afterwards — M3.1: no harness calls
-// on hot paths). Supported actions: none declared until US-69.9 wires the
-// action surface; file delivery parts are NotSupported on opencode per D3.
-func bootCapabilityReport(client *OpenCodeClient) *abiv1.CapabilityReport {
+// on hot paths). Supported actions (US-69.9): the regression-pinned trio
+// unconditionally + the two boot-probed V2 routes (opencodeActionSurface);
+// file delivery parts are NotSupported on opencode per D3.
+func bootCapabilityReport(client *OpenCodeClient, supportedActions []abiv1.ActionType) *abiv1.CapabilityReport {
 	provenance := abiv1.Provenance_PROVENANCE_PLATFORM_PINNED
 	if os.Getenv("AGENTD_IMAGE_VOLUME") != "1" {
 		provenance = abiv1.Provenance_PROVENANCE_UNPINNED
@@ -229,7 +235,7 @@ func bootCapabilityReport(client *OpenCodeClient) *abiv1.CapabilityReport {
 		Harness:                "opencode",
 		HarnessVersion:         harnessVersion,
 		AgentdVersion:          version.Version,
-		SupportedActions:       nil,
+		SupportedActions:       supportedActions,
 		SupportedDeliveryParts: []abiv1.DeliveryPartKind{abiv1.DeliveryPartKind_DELIVERY_PART_KIND_TEXT},
 		AbiVersion:             "1",
 	}
@@ -284,4 +290,194 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model stri
 		return "", err
 	}
 	return out.Data.ID, nil
+}
+
+// --- US-69.9: the typed-actions seam (design 0055 M1 op 5) ---------------
+//
+// opencodeActor implements sessionstate.Actor: the five frozen-union verbs
+// against the pod's opencode (localhost :4096, §D1 Basic credential — the
+// admitter's transport discipline). Route selection is measured fact, not
+// assumption: the three regression-pinned routes (V1 abort, V2 model, V1
+// question/permission reply) are declared unconditionally; the two
+// unpinned V2 routes (switchAgent, compact) are boot-probed — the
+// 1.18.10 V2-interrupt removal is the precedent for never trusting route
+// presence across pinned versions.
+
+// opencodeActionSurface probes the two unpinned routes and returns the
+// actor plus the capability declaration the boot report carries.
+func opencodeActionSurface(client *OpenCodeClient, password string) (sessionstate.Actor, []abiv1.ActionType) {
+	actions := []abiv1.ActionType{
+		abiv1.ActionType_ACTION_TYPE_INTERRUPT,
+		abiv1.ActionType_ACTION_TYPE_SWITCH_MODEL,
+		abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION,
+	}
+	switchAgent, agentKey, compact := probeActionRoutes(client)
+	if switchAgent {
+		actions = append(actions, abiv1.ActionType_ACTION_TYPE_SWITCH_AGENT)
+	}
+	if compact {
+		actions = append(actions, abiv1.ActionType_ACTION_TYPE_COMPACT)
+	}
+	return opencodeActor{password: password, agentKey: agentKey}, actions
+}
+
+// probeActionRoutes measures whether the pinned opencode serves the
+// switchAgent and compact V2 routes. Discrimination (the established
+// probeCapabilities discipline): route present → typed 400 (missing-key
+// validation error, JSON); route absent → catch-all 204 / non-JSON 404.
+// The switchAgent probe also learns the body's required key name (the
+// same missing-key pointer that revealed the model id/modelID split).
+func probeActionRoutes(client *OpenCodeClient) (switchAgent bool, agentKey string, compact bool) {
+	agentKey = "agentID" // pinned floor default; a positive probe overrides
+	if client == nil {
+		return false, agentKey, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	const probeSID = "00000000000000000000000000"
+	if code, body := postHarnessRaw(ctx, client.password, "/api/session/"+probeSID+"/switchAgent", map[string]any{}); code == 400 {
+		switchAgent = true
+		if m := missingAgentKeyRe.FindSubmatch(body); m != nil {
+			agentKey = string(m[1])
+		}
+	}
+	if code, _ := postHarnessRaw(ctx, client.password, "/api/session/"+probeSID+"/compact", map[string]any{}); code == 400 {
+		compact = true
+	}
+	return switchAgent, agentKey, compact
+}
+
+var missingAgentKeyRe = regexp.MustCompile(`Missing key \[\\"?([a-zA-Z]+)\\"?\]`)
+
+// postHarnessRaw is the probe transport: one POST, status + body back.
+func postHarnessRaw(ctx context.Context, password, path string, body any) (int, []byte) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return 0, nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, getAgentAddr()+path, bytes.NewReader(b))
+	if err != nil {
+		return 0, nil
+	}
+	req.SetBasicAuth(agentd.AuthUsername, password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, data
+}
+
+// opencodeActor executes the typed actions against opencode.
+type opencodeActor struct {
+	password string
+	// agentKey is the switchAgent body key (boot-probed).
+	agentKey string
+}
+
+func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	switch a := req.GetAction().(type) {
+	case *abiv1.ActionRequest_Interrupt:
+		// V1 abort: the only interrupt route on pinned versions ≥ 1.18.10
+		// (V2 interrupt was removed upstream — e2e regression-pinned).
+		// I7: non-destructive by construction — this aborts the harness
+		// turn only; ledger/entry states are never touched here.
+		if _, err := o.post(ctx, "/session/"+sessionID+"/abort", map[string]any{}, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Interrupt{Interrupt: &abiv1.InterruptResult{}}}, nil
+
+	case *abiv1.ActionRequest_SwitchModel:
+		m := a.SwitchModel.GetModel()
+		wire := map[string]any{"id": m.GetId()}
+		if m.GetProvider() != "" {
+			wire["provider"] = m.GetProvider()
+		}
+		if _, err := o.post(ctx, "/api/session/"+sessionID+"/model", map[string]any{"model": wire}, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_SwitchModel{SwitchModel: &abiv1.SwitchModelResult{Model: m}}}, nil
+
+	case *abiv1.ActionRequest_SwitchAgent:
+		if _, err := o.post(ctx, "/api/session/"+sessionID+"/switchAgent", map[string]any{o.agentKey: a.SwitchAgent.GetAgentId()}, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_SwitchAgent{SwitchAgent: &abiv1.SwitchAgentResult{AgentId: a.SwitchAgent.GetAgentId()}}}, nil
+
+	case *abiv1.ActionRequest_AnswerQuestion:
+		ans := a.AnswerQuestion
+		// opencode's unified reply contract (worklog 0069 live capture +
+		// the frontend's input client): questions take {"answers": [[..]]}
+		// (one array per question: selected labels and/or free text);
+		// permissions take {"reply": "once"|"always"|"reject"} — 404 on
+		// the question route means the input is a permission.
+		options := append([]string{}, ans.GetOptionIds()...)
+		if ans.GetCustomText() != "" {
+			options = append(options, ans.GetCustomText())
+		}
+		code, err := o.post(ctx, "/question/"+ans.GetInputId()+"/reply", map[string]any{"answers": [][]string{options}}, nil)
+		if code == http.StatusNotFound {
+			reply := "once"
+			if len(options) > 0 {
+				reply = options[0] // "once"|"always"|"reject" ride the same field
+			}
+			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": reply}, nil); err != nil {
+				return nil, err
+			}
+		} else if err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+
+	case *abiv1.ActionRequest_Compact:
+		if _, err := o.post(ctx, "/api/session/"+sessionID+"/compact", map[string]any{}, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Compact{Compact: &abiv1.CompactResult{}}}, nil
+
+	default:
+		return nil, fmt.Errorf("opencodeActor: unhandled action %T", a)
+	}
+}
+
+// post is the action transport: POST JSON, expect 2xx. A non-2xx returns
+// a typed connect error so the Act op surfaces the harness's status
+// (InvalidArgument/Failure etc.) instead of a generic 500.
+func (o opencodeActor) post(ctx context.Context, path string, body any, out any) (int, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, getAgentAddr()+path, bytes.NewReader(b))
+	if err != nil {
+		return 0, err
+	}
+	req.SetBasicAuth(agentd.AuthUsername, o.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		code := connect.CodeInternal
+		switch resp.StatusCode {
+		case http.StatusBadRequest:
+			code = connect.CodeInvalidArgument
+		case http.StatusNotFound:
+			code = connect.CodeNotFound
+		case http.StatusUnauthorized:
+			code = connect.CodeUnauthenticated
+		}
+		return resp.StatusCode, connect.NewError(code, fmt.Errorf("POST %s: status %d: %s", path, resp.StatusCode, string(data)))
+	}
+	if out != nil {
+		if err := json.Unmarshal(data, out); err != nil {
+			return resp.StatusCode, err
+		}
+	}
+	return resp.StatusCode, nil
 }

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -449,22 +448,7 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 func (h *ProxyHandler) agentdTerminusDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	d := &agentdDeliverer{
 		resolve: func(ctx context.Context, ws, ses string) (string, string, error) {
-			pw, err := h.getPassword(ctx, ws)
-			if err != nil {
-				return "", "", err
-			}
-			v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
-			if v1Err != nil {
-				return "", "", v1Err
-			}
-			wsObj, err := v1Client.Workspaces(h.namespace).Get(ctx, ws, metav1.GetOptions{})
-			if err != nil {
-				return "", "", err
-			}
-			if wsObj.Status.PodIP == "" {
-				return "", "", fmt.Errorf("agentd terminus: no pod IP for %s (phase %s)", ws, wsObj.Status.Phase)
-			}
-			return fmt.Sprintf("http://%s:%d", wsObj.Status.PodIP, agentd.AgentdPort), pw, nil
+			return h.agentdEndpoint(ctx, ws)
 		},
 	}
 	return d.deliver(ctx, workspaceID, sessionID, e)

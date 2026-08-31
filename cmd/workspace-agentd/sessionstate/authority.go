@@ -93,6 +93,9 @@ type Config struct {
 	// the ledger (Deliver returns NotSupported) — the authority owns
 	// nothing dialect-specific.
 	Admitter Admitter
+	// Actor (US-69.9) is the typed-actions seam; nil DISABLES the Act op
+	// (NotSupported) — the wiring layer injects the opencode executor.
+	Actor Actor
 	// FastCursor disables per-event fsync (scenario harnesses replaying
 	// event BURSTS; durability is covered by the fault-injection suite).
 	FastCursor bool
@@ -130,6 +133,12 @@ type Authority struct {
 
 	ledger  *deliveryLedger
 	deliver *deliveryDriver
+
+	// sessionLocks is the per-session single-flight domain shared by
+	// delivery admission and Act (US-69.9 sole-writer serialization:
+	// actions serialize against in-flight delivery on the same lock).
+	sessionLocks   map[string]*sync.Mutex
+	sessionLocksMu sync.Mutex
 
 	droppedEvents   int64
 	parserFailures  int64
@@ -171,27 +180,47 @@ func New(cfg Config) (*Authority, error) {
 		if err != nil {
 			return nil, fmt.Errorf("sessionstate: ledger: %w", err)
 		}
-		driver = newDeliveryDriver(ledger, cfg.Admitter, cfg)
 	}
 	if cfg.ABIVersion == "" {
 		cfg.ABIVersion = "1"
 	}
-	return &Authority{
-		cfg:      cfg,
-		logger:   logger,
-		seq:      cursor.last(),
-		sessions: map[string]*sessionRecord{},
-		subs:     map[*subscriber]struct{}{},
-		cursor:   cursor,
-		limiter:  newSessionLimiter(cfg.RateLimit),
-		ledger:   ledger,
-		deliver:  driver,
-	}, nil
+	a := &Authority{
+		cfg:          cfg,
+		logger:       logger,
+		seq:          cursor.last(),
+		sessions:     map[string]*sessionRecord{},
+		subs:         map[*subscriber]struct{}{},
+		cursor:       cursor,
+		limiter:      newSessionLimiter(cfg.RateLimit),
+		ledger:       ledger,
+		sessionLocks: map[string]*sync.Mutex{},
+	}
+	if cfg.Admitter != nil {
+		// The driver joins the authority's per-session single-flight —
+		// the SAME lock domain Act executes under (US-69.9: actions and
+		// admissions serialize per session; M1 sole writer).
+		driver = newDeliveryDriver(ledger, cfg.Admitter, cfg, a.sessionLock)
+		a.deliver = driver
+	}
+	return a, nil
 }
 
 // DefaultPlatformDir is the platform/ PVC subPath mount (pod_builder).
 // Overridable for tests via Config.PlatformDir.
 const DefaultPlatformDir = "/platform"
+
+// sessionLock returns the session's single-flight mutex — the sole-writer
+// domain admissions (US-69.7) and actions (US-69.9) share.
+func (a *Authority) sessionLock(sessionID string) *sync.Mutex {
+	a.sessionLocksMu.Lock()
+	defer a.sessionLocksMu.Unlock()
+	m, ok := a.sessionLocks[sessionID]
+	if !ok {
+		m = &sync.Mutex{}
+		a.sessionLocks[sessionID] = m
+	}
+	return m
+}
 
 // Ingest applies one raw harness event. It is the recover wall: parser
 // panics and decode failures are contained (counted + logged), never

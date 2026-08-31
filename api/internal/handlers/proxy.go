@@ -193,6 +193,10 @@ type ProxyHandler struct {
 	// Written only before Start (test wiring), read on the upload path.
 	uploadMaxBytesOverride      int64
 	uploadStreamTimeoutOverride time.Duration
+
+	// agentdPortOverride redirects the ABI-surface port (terminus +
+	// actions) at a test stub; zero → agentd.AgentdPort.
+	agentdPortOverride int
 }
 
 func NewProxyHandler(
