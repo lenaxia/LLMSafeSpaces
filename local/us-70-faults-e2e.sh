@@ -42,16 +42,16 @@
 #   FAULT_COUNT    - expected fault-rule count (default 8); the workflow's
 #                    arming step sets LLMSAFESPACES_FAULT_INJECTION from the
 #                    SAME number (workflow env FAULT_COUNT) — one source.
-#   WS_BASE        - distinct workspace prefix (default e2esdf0-…; the
-#                    longest name is 30 chars ≤ the secret_audit_log
-#                    workspace_id varchar(36) so F3's exact match works)
+#   WS_BASE        - distinct UUID workspace base (default e2e5f000-…; the
+#                    names are 36-char UUIDs == workspaces.id, exactly
+#                    fitting secret_audit_log.workspace_id varchar(36)
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
 export FAULT_COUNT="${FAULT_COUNT:-8}"
-WS_BASE="${WS_BASE:-e2esdf0-0000-0000-000000000}"
+WS_BASE="${WS_BASE:-e2e5f000-0000-4000-8000-000000000000}"
 
 PASS=0
 SKIP=0

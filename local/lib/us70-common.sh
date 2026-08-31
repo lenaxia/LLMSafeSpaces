@@ -37,15 +37,17 @@ NS="${NS:-llmsafespaces}"
 PORTFWD_PORT="${PORTFWD_PORT:-18082}"
 API_KEY="${API_KEY:-lsp_e2esduser0000000000000000000001}"
 USER_ID="${USER_ID:-e2e-sd-user}"
-WS_BASE="${WS_BASE:-e2esd0000-0000-0000-0000-0000000000}"
+# WS_BASE must be a valid UUID: production mints workspaceID = uuid.New() and
+# the CR name IS that UUID (workspace_service.go CreateWorkspace), so every
+# API workspace op resolves WHERE workspaces.id = $1 (uuid column) against the
+# CR name. ws_id keeps the base's first 32 chars and appends a 4-digit suffix.
+WS_BASE="${WS_BASE:-e2e5d000-0000-4000-8000-000000000000}"
 SUSPEND_SECONDS="${SUSPEND_SECONDS:-5}"
 RESUME_SCALE="${RESUME_SCALE:-100}"
 RESUME_SCALE_TIMEOUT_S="${RESUME_SCALE_TIMEOUT_S:-180}"
 P95_BUDGET_MS="${P95_BUDGET_MS:-30000}"
 
-# Workspace CR names are DNS-valid k8s names (not UUIDs) — the suspend/activate
-# and /env API ops key on the raw CR name, so an opaque stable suffix suffices.
-ws_id() { printf '%s%03d' "${WS_BASE}" "$1"; }
+ws_id() { printf '%s%04d\n' "${WS_BASE:0:32}" "$1"; }
 
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 
@@ -200,6 +202,19 @@ spec:
     accessMode: ReadWriteOnce
 EOF
     fi
+    # The API's workspace routes resolve through PostgreSQL
+    # (WorkspaceAccessMiddleware -> workspaces.id = $1), and ownership is
+    # established at API create time — nothing back-fills a kubectl-applied
+    # CR into the DB. The harness therefore seeds the metadata row itself
+    # (test.sh precedent): without it every bind/suspend/activate 4xx/5xx's.
+    seed_workspace_metadata "${ws}" "${user_id}"
+}
+
+seed_workspace_metadata() { # ws user_id
+    local ws="$1" user_id="$2"
+    [[ -n "${PGPOD:-}" && -n "${PG_PWD:-}" ]] || die "seed_workspace_metadata: harness_start must run first (PGPOD/PG_PWD unset)"
+    kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 \
+        -c "INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size) VALUES ('${ws}', 'us70-${ws}', '${user_id}', '${NS}', 'python:3.11', '1Gi') ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id, deleted_at = NULL" >/dev/null
 }
 
 # bind_env ws VAR VALUE — create+bind one env-secret via the convenience

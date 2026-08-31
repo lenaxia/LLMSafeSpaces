@@ -40,6 +40,40 @@ func mustRead(t *testing.T, path string) string {
 	return string(raw)
 }
 
+// TestUS70WorkspaceNamesAreUUIDs executes the lib's ws_id against several
+// indexes and pins the UUID contract: production mints workspaceID =
+// uuid.New() and the CR name IS that UUID, so every API workspace op
+// resolves WHERE workspaces.id = $1 (uuid column) against the CR name.
+// The 2026-08-31 pool AC-1 failure was exactly this shape violation
+// (non-UUID WS_BASE → bind_env could never resolve).
+func TestUS70WorkspaceNamesAreUUIDs(t *testing.T) {
+	bash := requireBash(t)
+	script := mustRead(t, us70CommonScript)
+	wsID := regexp.MustCompile(`(?m)^ws_id\(\) \{.*\}$`).FindString(script)
+	if wsID == "" {
+		t.Fatal("us70-common.sh must define ws_id() on a single line")
+	}
+	out, err := exec.Command(bash, "-c",
+		`WS_BASE='e2e5d000-0000-4000-8000-000000000000'; `+wsID+`; `+
+			`for i in 1 2 101 9999; do ws_id "$i"; done`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute ws_id: %v\n%s", err, out)
+	}
+	re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	lines := strings.FieldsFunc(string(out), func(r rune) bool { return r == '\n' || r == '\r' })
+	if len(lines) != 4 {
+		t.Fatalf("ws_id must print 4 lines, got %d: %q", len(lines), string(out))
+	}
+	for _, line := range lines {
+		if !re.MatchString(line) {
+			t.Fatalf("ws_id output %q is not a valid UUID — API workspace ops resolve workspaces.id (uuid) by CR name", line)
+		}
+	}
+	if !strings.Contains(script, "INSERT INTO workspaces (id, name, user_id") {
+		t.Fatal("us70-common.sh must seed the workspaces metadata row — WorkspaceAccessMiddleware resolves through PostgreSQL; a CR-only workspace cannot bind")
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {
