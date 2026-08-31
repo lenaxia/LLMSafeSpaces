@@ -33,13 +33,24 @@ func TestIntegration_GetWorkspace_UUIDNameWithRow_Resolves(t *testing.T) {
 	ctx := context.Background()
 
 	wsID := "8e65d000-0000-4000-8000-000000000001"
-	defer func() { _, _ = svc.DB.ExecContext(ctx, "DELETE FROM workspaces WHERE id = $1", wsID) }()
+	userID := "e2e-sd-user"
+	defer func() {
+		_, _ = svc.DB.ExecContext(ctx, "DELETE FROM workspaces WHERE id = $1", wsID)
+		_, _ = svc.DB.ExecContext(ctx, "DELETE FROM users WHERE id = $1", userID)
+	}()
 
 	_, err := svc.DB.ExecContext(ctx, `
+		INSERT INTO users (id, username, email, password_hash, role)
+		VALUES ($1, $1, $1 || '@example.test', 'unused-by-api-key-auth', 'user')
+		ON CONFLICT (id) DO NOTHING
+	`, userID)
+	require.NoError(t, err, "seed the owner the way the harness does (FK target)")
+
+	_, err = svc.DB.ExecContext(ctx, `
 		INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size)
-		VALUES ($1, 'us70-harness-pin', 'e2e-sd-user', 'llmsafespaces', 'python:3.11', '1Gi')
+		VALUES ($1, 'us70-harness-pin', $2, 'llmsafespaces', 'python:3.11', '1Gi')
 		ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id, deleted_at = NULL
-	`, wsID)
+	`, wsID, userID)
 	require.NoError(t, err, "seed the metadata row the way the harness does")
 
 	meta, err := svc.GetWorkspace(ctx, wsID)
