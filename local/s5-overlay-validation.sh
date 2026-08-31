@@ -317,7 +317,7 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
-  --wait --timeout 300s >/dev/null
+  >/dev/null 2>&1 || log "S5.3: tamper upgrade reported an error (continuing — the check polls conditions)"
 
 apply_workspace "$WS_BAD_AG"
 AG_COND=""
@@ -351,7 +351,7 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.image=${OPENCODE_REF}" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${BAD_OC_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${BAD_OC_SHA}" \
-  --wait --timeout 300s >/dev/null
+  >/dev/null 2>&1 || log "S5.4: tamper upgrade reported an error (continuing — the check polls conditions)"
 
 apply_workspace "$WS_BAD_OC"
 OC_COND=""
@@ -367,10 +367,12 @@ else
 fi
 kubectl -n "$NS" delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
 
-log "restoring correct pins"
+log "restoring correct pins (controller rolls in background; S5.5 waits for readiness)"
 helm upgrade --install "$RELEASE" helm -n "$NS" \
-  "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" \
-  --wait --timeout 300s >/dev/null
+  "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" >/dev/null 2>&1 \
+  || log "restore upgrade reported an error (continuing)"
+kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s \
+  || fail S5.5 "controller did not roll back to correct pins (S5.5 cannot run)"
 
 # --- S5.5: resume-path pull cost (cold-node overlay re-pull) ------------------
 
