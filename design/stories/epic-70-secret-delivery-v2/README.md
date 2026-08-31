@@ -6,10 +6,10 @@ Pull-based, terminal-verified credential delivery. Normative source: **issue #11
 
 | Story | Issue | Scope | State |
 |---|---|---|---|
-| US-70.0 | — | delivery test harness (API fault injection, key-row corruption, SA-token time-travel, gVisor load, chaos-kill) | open — blocks the remaining cluster-bound ACs |
+| US-70.0 | #1182 | delivery test harness (API fault injection, key-row corruption, SA-token time-travel, gVisor load, chaos-kill) | implementation in progress (branch `test/us-70-0-delivery-harness`) |
 | US-70.1 | #1162 | spawn-time env pull (R2): bounded wait + last-good cache; `spawned_rev` (I4); degrade reason codes healthz → CRD; A2 validation; R3 cross-uid boot matrix | **landed 2026-08-30**; surface completion + cluster e2e (`local/us-70-secret-delivery-e2e.sh`, nightly-wired) via #1164 on 2026-08-31 |
 | R2b fix | #1165 | file-class ownership flip: sidecar stages manifest, uid-1000 supervisor writes; manifest-scoped reset; per-type mode contracts; `files_rev`; R3 schema growth (owner-uid + consumer-constraint) | **landed 2026-08-31** |
-| US-70.2 | — | one builder + two-tier revisions (R1, covers the file manifest) + conditional pull endpoint | open — absorbs the #1165 manifest into the revision model |
+| US-70.2 | #1183 | one builder + two-tier revisions (R1, covers the file manifest) + conditional pull endpoint | open — absorbs the #1165 manifest into the revision model |
 | US-70.3 | — | notify-pull + reconcile loop + revocation + `secrets_resync`; alerts + SLO; consumes `files_rev` as the file-class oracle | open |
 | US-70.4 | — | login-independent re-wrap reconciler (CAS, retained wrap re-wrapped) | open |
 | US-70.5 | — | demolition: `InjectSecrets*`, `rehydrateDEKFromJWTSession`, `secretautopush`+`UserCredsPresent`, `pushInitialSpawnEnv`, reload cache handoff | blocked by 70.3 + 70.4 **and #1165** |
