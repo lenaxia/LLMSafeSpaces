@@ -132,12 +132,9 @@ func (b *stageBuilder) add(rel, target string, mode int, content []byte) error {
 		return fmt.Errorf("staged path %q escapes staging dir", rel)
 	}
 	full := filepath.Join(b.dir+".tmp", filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
-		return err
-	}
 	// G115: masked to 9 bits; modes come from the contract constants or
 	// the validated metadata override — cannot overflow.
-	if err := os.WriteFile(full, content, os.FileMode(mode&0o777)); err != nil { //nolint:gosec
+	if err := b.writeFile(full, os.FileMode(mode&0o777), content); err != nil { //nolint:gosec
 		return err
 	}
 	b.entries = append(b.entries, StagedEntry{Target: target, Mode: mode, File: rel})
