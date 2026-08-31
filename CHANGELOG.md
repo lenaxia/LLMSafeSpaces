@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-08-31
+
+### Changed (breaking — read before upgrading)
+
+- **Platform overlay delivery is the only mode (design 0053, #1116)**:
+  the runtime base is a pure dev-OS image — agentd (with redact as a
+  subcommand, #1152), opencode, and the entrypoints are no longer baked.
+  Both delivery pins are now **mandatory at Helm render, controller
+  startup, and pod build** (`controller.agentdDelivery.image` +
+  `controller.opencodeDelivery.image`, digest-pinned; the release job
+  prints the ready-to-paste values block). A render without them fails
+  closed — that is the design working, not a bug to work around.
+- **The main container execs the pinned overlay agentd directly**
+  (`/agentd/.../workspace-agentd --supervise`; sidecar mode:
+  `supervise-opencode`), self-verifying its sha256 before any work
+  (exit 81/82); the supervisor verify-before-spawns opencode from the
+  `/opencode` volume (exit 83/84 → Workspace conditions + events).
+- **Base image content-versioned off the release train**: CalVer
+  `YYYY.MM.x`, first row `bookworm@2026.08.0`, published solely by the
+  new `base-image.yml` workflow (checksum-verified direct binaries,
+  cosign + SBOM). Existing clusters promote the default via admin
+  upsert — the seed does not move operator defaults (#936).
+- **opencode version pin moved to one place**: `runtimes/opencode/Dockerfile`
+  (validated 1.18.15, do-not-bump window documented); the base no longer
+  carries any opencode coordinate.
+
+### Added
+
+- **S5 overlay-validation kind suite** (`local/s5-overlay-validation.yml`,
+  weekly Sun 06:00 + dispatch): missing-pin render legs, full
+  launch→ready on the stripped base (PID1 = pinned agentd, opencode
+  serving, redact wrapper on-pod), tamper-pin → verify-failure
+  conditions, cold-node resume pull cost (measured 13–19s vs the
+  pre-overlay ~22s), and the gVisor runsc leg — **design 0051's open
+  item answered: image volumes work under gVisor** (pod Active, both
+  volumes, opencode serving).
+- **Epic 69 (design 0055) session-state machinery**: PVC-backed
+  delivery ledger (#1168), outbox terminus switch with inline-first
+  delivery and the M4 flag matrix wiring (#1172), typed actions op with
+  capability negotiation and sole-writer serialization (#1190),
+  API shadow consumer + divergence comparator (#1159), `/v1/events`
+  stamped-snapshot surface (#1138). All inert until the V2/authority
+  flags flip per the M4 ordering.
+- **Epic 70 (design 0057) US-70.1**: spawn-time env pull at the
+  supervisor with bounded wait, last-good delta cache, and
+  `spawned_rev` terminal verification — closes the sidecar env-class
+  secret loss (#1163/#1164); R2b file-class ownership flip (#1171).
+- **US-70.0 delivery fault harness** (#1187): env-gated API fault
+  injection, key-row corruption fixtures, SA-token time-travel, gVisor
+  pool, chaos kills — default-off, zero behavior change.
+- `pkg/session` flips to schema-generated types (ADR 0056 T3, #1189).
+
+### Fixed
+
+- Single-container pods materialize cross-uid readable credential stores
+  (#1131, in 0.25.7 lineage) — carried forward with the spawn-time pull.
+- The worklog renumber bot commented on issue numbers picked off merge
+  titles and failed its job after the rename landed; now prefers the
+  trailing `(#N)` convention, validates before commenting, and treats
+  comment failure as non-fatal (#1191).
+
+### Upgrade notes
+
+1. Set BOTH delivery pins in the same values change as the upgrade
+   (digests from this release's printed values block).
+2. `agentdSidecar.enabled` remains **off** by default; the flip is a
+   separate, preconditions-green action per `docs/runbooks/sidecar-flip.md`.
+3. Workspace pods recreate on their next natural cycle; suspended
+   workspaces upgrade free at resume.
+
 ## [0.25.7] - 2026-08-29
 
 ### Fixed
