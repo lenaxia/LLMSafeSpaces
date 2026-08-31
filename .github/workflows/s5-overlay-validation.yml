@@ -1,0 +1,55 @@
+# S5 overlay-delivery validation (design 0053) — executes
+# local/s5-overlay-validation.sh on a throwaway kind cluster with a local
+# registry: missing-pin render legs, full launch→ready on the stripped
+# base + both overlay artifacts, agentd/opencode verify-failure
+# surfacing, cold-node resume pull cost, and the gVisor (runsc)
+# image-volume leg (design 0051's open item).
+#
+# NOT gating PRs: kubelet-side behavior; workflow_dispatch + weekly
+# cadence. The S5 "flip defaults" decision is made from THESE results.
+name: S5 overlay validation (kind)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Sundays 06:00 UTC — after the attachments slot (Sun 04:00), before
+    # the US-2 L3 slot (Mon 05:00).
+    - cron: "0 6 * * 0"
+
+jobs:
+  s5-overlay:
+    name: S5 overlay checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run S5 overlay validation checks
+        run: local/s5-overlay-validation.sh
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+          kubectl -n llmsafespaces get pods -o wide || true
+          for ws in ws-s5-main ws-s5-bad-agentd ws-s5-bad-opencode ws-s5-gvisor; do
+            kubectl -n llmsafespaces describe pod -l llmsafespaces.dev/workspace="$ws" || true
+            kubectl -n llmsafespaces logs -l llmsafespaces.dev/workspace="$ws" -c workspace --tail=80 || true
+            kubectl get workspace "$ws" -o yaml || true
+          done
+          kubectl -n llmsafespaces logs deployment/lss-llmsafespaces-controller --tail=100 || true
