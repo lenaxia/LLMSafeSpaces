@@ -466,7 +466,28 @@ handler: runsc
 EOF
     WS_GVISOR="ws-s5-gvisor"
     log "S5.6: creating gvisor workspace $WS_GVISOR"
-    apply_workspace "$WS_GVISOR" '  runtimeClassName: gvisor'
+    # spec.runtimeClass (the CRD field) is admin-gated: the webhook
+    # rejects any set value unless the object carries the override
+    # annotation (WorkspaceValidator, Epic 51 S51.1). The apply_workspace
+    # helper does not support annotations — inline manifest here.
+    GV_MANIFEST=$(mktemp)
+    cat >"$GV_MANIFEST" <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $WS_GVISOR
+  namespace: $NS
+  annotations:
+    llmsafespaces.dev/allow-runtime-class-override: "true"
+spec:
+  owner:
+    userID: s5-int
+  runtime: $REG/llmsafespaces/runtime-base:ci
+  runtimeClass: gvisor
+  storage:
+    size: 1Gi
+EOF
+    kubectl -n "$NS" apply -f "$GV_MANIFEST" >/dev/null
     if wait_phase "$WS_GVISOR" Active 600; then
       GV_POD=$(pod_of "$WS_GVISOR")
       GV_OC=$(kubectl -n "$NS" exec "$GV_POD" -c workspace -- \
