@@ -327,6 +327,7 @@ abi-breaking:
 	@export PATH="$$(go env GOPATH)/bin:$$PATH"; \
 	if [ -f abi/FROZEN ]; then \
 		echo "abi/FROZEN present — breaking gate ARMED against $$(cat abi/FROZEN)"; \
+		git fetch -q origin $$(cat abi/FROZEN) --depth=1 2>/dev/null || true; \
 		git worktree add -q "$${TMPDIR:-/tmp}/abi-frozen-baseline" $$(cat abi/FROZEN) 2>/dev/null || true; \
 		buf breaking --against "$${TMPDIR:-/tmp}/abi-frozen-baseline"; \
 		rc=$$?; \

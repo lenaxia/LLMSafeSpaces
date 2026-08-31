@@ -212,6 +212,14 @@ type fakeAdmitter struct {
 	maxInFl  int
 }
 
+// setError mutates the scripted failure under the same lock Admit reads
+// it with (the driver's admission goroutine races a bare field write).
+func (f *fakeAdmitter) setError(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
+}
+
 func (f *fakeAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
 	f.mu.Lock()
 	f.inFlight++
@@ -281,7 +289,7 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, LedgerStateLedgered, st.State, "failed admission returns to retryable ledgered")
 
-	admitter.err = nil
+	admitter.setError(nil)
 	_, _, err = d.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, err)
 	waitFor(t, func() bool {

@@ -358,7 +358,10 @@ func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
 //
 // SetAgentdTerminus switches the outbox deliverer to the agentd ledger
-// (US-69.8, design 0055 M2/M4). Must be called before Start().
+// (US-69.8, design 0055 M2/M4). It must be called before Start().
+//
+// Parameters:
+//   - enabled: route outboxDeliver through the ABI delivery ledger.
 func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
 	h.agentdTerminus = enabled
 }
