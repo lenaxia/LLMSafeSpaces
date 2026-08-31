@@ -86,6 +86,10 @@ vet:
 generate:
 	$(GOCMD) generate ./...
 
+# deepcopy: regenerate pkg/apis zz_generated.deepcopy.go via
+# controller-gen (kubebuilder object:generate — see
+# hack/update-deepcopy.sh for why code-generator's deepcopy-gen was a
+# silent no-op here).
 deepcopy:
 	chmod +x ./hack/update-deepcopy.sh
 	./hack/update-deepcopy.sh

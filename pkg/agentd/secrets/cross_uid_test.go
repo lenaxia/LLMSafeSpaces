@@ -21,8 +21,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/stretchr/testify/require"
 )
 
@@ -223,4 +225,55 @@ func TestR2B_UserStateSurvivesMaterializePasses(t *testing.T) {
 	data, err := os.ReadFile(knownHosts)
 	require.NoError(t, err, "the user's known_hosts must survive every materialize pass")
 	require.Equal(t, "github.com ssh-ed25519 AAAA\n", string(data))
+}
+
+// TestR2B_SizeExceeded_PerEntry (W8): a single entry larger than the
+// delivery budget is skipped loudly (apply_failed class) while the rest
+// of the batch still stages.
+func TestR2B_SizeExceeded_PerEntry(t *testing.T) {
+	m, paths := crossUIDFixture(t)
+	huge := strings.Repeat("A", agentd.StagedFilesMaxBytes+1)
+
+	result, err := m.Materialize([]Secret{
+		{Type: "secret-file", Name: "huge", Plaintext: huge,
+			Metadata: map[string]string{"mount_path": "huge.bin"}},
+		{Type: "secret-file", Name: "ok", Plaintext: "fine",
+			Metadata: map[string]string{"mount_path": "ok.txt"}},
+	})
+	require.ErrorIs(t, err, ErrPartialFailure)
+	require.Len(t, result.Results, 2)
+	require.Equal(t, OutcomeFailed, result.Results[0].Outcome)
+	require.Contains(t, result.Results[0].Reason, "size_exceeded")
+	require.Equal(t, OutcomeMaterialized, result.Results[1].Outcome,
+		"T5: only the oversized entry is refused")
+
+	entries := readManifest(t, paths.StagingDir)
+	require.Len(t, entries, 1, "the oversized entry never stages")
+}
+
+// TestR2B_SizeExceeded_WholeBatch (W8): individually-valid entries whose
+// total exceeds the budget fail the pass loudly BEFORE publish — the
+// previous staging generation survives untouched (level-triggered: the
+// endpoint keeps serving the last complete tree).
+func TestR2B_SizeExceeded_WholeBatch(t *testing.T) {
+	m, paths := crossUIDFixture(t)
+
+	_, err := m.Materialize([]Secret{
+		{Type: "secret-file", Name: "gen1", Plaintext: "v1",
+			Metadata: map[string]string{"mount_path": "a.txt"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, readManifest(t, paths.StagingDir), 1)
+
+	chunk := strings.Repeat("B", agentd.StagedFilesMaxBytes/2+1)
+	_, err = m.Materialize([]Secret{
+		{Type: "secret-file", Name: "x", Plaintext: chunk,
+			Metadata: map[string]string{"mount_path": "x.bin"}},
+		{Type: "secret-file", Name: "y", Plaintext: chunk,
+			Metadata: map[string]string{"mount_path": "y.bin"}},
+	})
+	require.ErrorContains(t, err, "size_exceeded",
+		"the whole-batch ceiling is loud, not a silent truncation")
+	entries := readManifest(t, paths.StagingDir)
+	require.Len(t, entries, 1, "the last complete generation survives the refused pass")
 }

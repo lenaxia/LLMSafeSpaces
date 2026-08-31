@@ -539,6 +539,17 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 		}
 	}
 
+	// W8 whole-batch ceiling: the manifest + bytes share the
+	// /v1/spawn-files response budget — a batch over it could stage fine
+	// but never be pulled whole (the supervisor's reader is capped at the
+	// same constant and a truncated manifest is a bad_response loop).
+	// Loud, whole-batch: individually-valid entries over the ceiling are
+	// a configuration problem, not a per-secret input defect.
+	if staging.total > agentd.StagedFilesMaxBytes {
+		return nil, fmt.Errorf("staged batch is %d bytes; the delivery budget is %d (size_exceeded)",
+			staging.total, agentd.StagedFilesMaxBytes)
+	}
+
 	// Publish is part of the pass: a staging build that never publishes
 	// leaves the endpoint serving the previous tree — stale, but complete
 	// and loudly superseded on the next successful pass.
