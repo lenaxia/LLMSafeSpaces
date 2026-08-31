@@ -307,7 +307,7 @@ fi
 # --- S5.3: agentd verify failure → condition + event -------------------------
 
 WS_BAD_AG="ws-s5-bad-agentd"
-BAD_SHA=$(printf 'agentd-tamper-%s' "$AGENTD_SHA" | head -c 64)
+BAD_SHA=$(printf '0%.0s' {1..64})
 log "S5.3: upgrading chart with a WRONG agentd break-glass pin"
 helm upgrade --install "$RELEASE" helm -n "$NS" \
   "${HELM_LEAN_ARGS[@]}" \
@@ -343,7 +343,7 @@ kubectl -n "$NS" delete workspace "$WS_BAD_AG" --wait=false >/dev/null 2>&1 || t
 # --- S5.4: opencode verify failure → condition + event -----------------------
 
 WS_BAD_OC="ws-s5-bad-opencode"
-BAD_OC_SHA=$(printf 'opencode-tamper-%s' "$OPENCODE_SHA" | head -c 64)
+BAD_OC_SHA=$(printf '0%.0s' {1..64})
 log "S5.4: upgrading chart with a WRONG opencode break-glass pin"
 helm upgrade --install "$RELEASE" helm -n "$NS" \
   "${HELM_LEAN_ARGS[@]}" \
@@ -429,7 +429,8 @@ else
       apt-get update -qq >/dev/null
       apt-get install -y -qq gnupg curl ca-certificates >/dev/null
       install -d -m 0755 /etc/apt/keyrings
-      curl -fsSL https://gvisor.dev/archives.asc -o /etc/apt/keyrings/gvisor.asc
+      curl -fsSL https://gvisor.dev/archives.asc -o /etc/apt/keyrings/gvisor.asc \
+        || curl -fsSL https://storage.googleapis.com/gvisor/archive/latest.key -o /etc/apt/keyrings/gvisor.asc
       echo "deb [signed-by=/etc/apt/keyrings/gvisor.asc] https://storage.googleapis.com/gvisor/releases release main" > /etc/apt/sources.list.d/gvisor.list
       apt-get update -qq >/dev/null
       apt-get install -y -qq runsc >/dev/null
