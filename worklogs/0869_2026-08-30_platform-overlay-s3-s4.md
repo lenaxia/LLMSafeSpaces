@@ -112,3 +112,17 @@ CI/release: `ci.yml`, `release.yml`, `e2e-nightly.yml`, `e2e-attachments-single-
 - ci.yml's PR-validation base build drops the now-unused agentd build-args.
 
 **Tests:** imagefactory + database + repolint suites green against the reseeded catalog (seed tests parse the real embedded YAML, so the new row shape is exercised); the awk extraction in `base-image.yml` verified against the seed locally (2026.08.0).
+
+---
+
+## Addendum 3 (follow-up `docs/s4-sync`): S4 finish — stale-reference sync
+
+The code S4 work landed with #1156; this follow-up is the zero-stale-docs sweep (Rule 5 applied to documentation):
+
+- **README-LLM** (v1.27→v1.28): deliverables + repo-structure lines re-pointed at dev-OS base + two artifacts; architecture diagram main line (pinned agentd → opencode overlay); OPENCODE_CONFIG/auth.json ownership → supervisor spawn seam + controller env; Version History 1.28 entry summarizing S2–S4 incl. the US-70.1 merge gate.
+- **docs/operator/runtime-environments.md**: intro (image = dev-OS; agents as overlay volumes), bundled-binaries table, Entrypoints section → "No entrypoint (design 0053 S3)", custom-image contract, supply-chain rows.
+- **docs/operator/agentd-delivery.md**: entrypoint-verify → supervisor self-verify (81/82), "legacy mode" → §4.5 mandatory.
+- **REFRESH.md rollout coupling**: event-flag ships with the agentd artifact, not the runtime image.
+- **helm/values.yaml**: delivery comments → mandatory.
+- **local/test-entrypoint.sh**: sourcing-contract test removed (entrypoint deleted); materialize + HTTP tests remain.
+- **scripts/us2-kind-integration.sh**: K13 re-framed as tautology-as-canary; K14 legacy leg noted deleted.

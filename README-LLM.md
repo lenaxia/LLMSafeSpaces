@@ -2,7 +2,7 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.27
+**Version:** 1.28
 **Last Updated:** 2026-08-30
 **Project Status:** Active Development
 
@@ -48,7 +48,7 @@
 
 1. `api` — Go API service (Gin) + MCP server — reverse proxy to workspace agents, workspace/credential/secret management, session tracking, event streaming
 2. `controller` — Kubernetes operator (controller-runtime) — manages Workspace CRD (pod lifecycle, PVC, credentials, health monitoring via agentd sidecar), validating webhooks for Workspace and RuntimeEnvironment, optional InferenceRelay reconciler (multi-cloud relay fleet, Epic 42)
-3. `runtimes` — Container images (Python, Node.js, Go) — hardened environments with `opencode serve`, `redact` binary, credential injection
+3. `runtimes` — the base dev-OS image (design 0053: Debian + apt set + mise, no platform binaries) plus the two `FROM scratch` delivery artifacts (agentd, opencode) that the controller pins into every pod
 
 **Optional deployable binaries** (feature-gated, only when the self-hosted relay fleet is enabled): `cmd/relay-router` (in-cluster traffic distributor) and `cmd/relay-proxy` (token-gated reverse proxy run on each relay VM). See [Inference Relay Fleet](#inference-relay-fleet).
 
@@ -291,7 +291,7 @@ llmsafespaces/
 ├── cmd/           # Top-level binaries (api, mcp, redact, repolint, seal-key, workspace-agentd, relay-router, relay-proxy)
 ├── api/           # Go API service (Gin) + MCP server — reverse proxy, workspace/credential/secret management
 ├── controller/    # Kubernetes operator (controller-runtime) — Workspace reconciler, InferenceRelay reconciler, validating webhooks
-├── runtimes/      # Container images (Python, Node.js, Go) with opencode serve, redact binary
+├── runtimes/      # base/ = dev-OS image; opencode/ = agent delivery artifact (design 0053)
 ├── pkg/           # Shared packages imported by api/ and controller/ (see CRD type ownership below)
 ├── mocks/         # Shared test mocks
 ├── sdks/          # Client SDKs (Go, TypeScript, Python, Java, VS Code extension) from OpenAPI spec
@@ -531,9 +531,9 @@ opencode merges config files via recursive deep-merge, last writer wins:
 2. Project config: `findUp(["opencode.json","opencode.jsonc"], cwd, {rootFirst:true})`
 3. `OPENCODE_CONFIG` env var path — **always appended last, always wins**
 
-`OPENCODE_CONFIG=/sandbox-runtime/agent-config.json` is set by `entrypoint-opencode.sh` (the export honors a pre-set value: in sidecar mode the controller points the workspace container at `/agentd-config/agent-config.json`, US-4b). Therefore `agent-config.json` overrides all other config for any key it sets. opencode does **not** hot-reload this file — it is only read at process startup.
+`OPENCODE_CONFIG=/sandbox-runtime/agent-config.json` is set by the supervisor's spawn seam (`opencodeChildEnv`, `managed_process.go` — design 0053 S3 absorbed the deleted entrypoint's exports; sidecar mode's controller-set value wins by construction). Therefore `agent-config.json` overrides all other config for any key it sets. opencode does **not** hot-reload this file — it is only read at process startup.
 
-**auth.json location** (validated): `XDG_DATA_HOME=/workspace/.local` is set before `exec workspace-agentd`, so agentd inherits it. `authJSONPath = /workspace/.local/opencode/auth.json` — US-35.7: this path is a symlink to `/sandbox-runtime/rt/auth.json` (tmpfs), created by the init container. Wiped on pod death; no plaintext on PVC at rest.
+**auth.json location** (validated): `XDG_DATA_HOME=/workspace/.local` is controller-injected pod env (design 0053 S3; sidecar sets it, single-container's supervisor spawn seam `opencodeChildEnv` defaults it), so agentd inherits it. `authJSONPath = /workspace/.local/opencode/auth.json` — US-35.7: this path is a symlink to `/sandbox-runtime/rt/auth.json` (tmpfs), created by the init container. Wiped on pod death; no plaintext on PVC at rest.
 
 ---
 
@@ -2148,6 +2148,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.28 | 2026-08-30 | Design 0053 (platform overlay delivery) S2–S4 synced into the doc: the base is the OS — no platform binaries baked (agentd, redact-as-subcommand, entrypoints deleted, opencode unpinned from the image); both delivery artifacts (`agentdDelivery`, `opencodeDelivery`) are mandatory digest-pinned image volumes (Helm render gate + controller startup + buildPod fail-loud); the main container execs the pinned agentd directly (`--supervise` / `supervise-opencode`) with fail-closed self-verify (exit 81; opencode exit 83/84); the base ENV block (mise homes, PATH, git-credential env layer) is controller-injected (`platform_env.go`); opencode env exports live in the supervisor spawn seam (`opencodeChildEnv` — #942 containment holds); the base is content-versioned CalVer `YYYY.MM.x` (seed row `bookworm@2026.08.0` is the single source; `base-image.yml` publishes off the release train; factory stamps no ENTRYPOINT, `MinBaseVersion` and platform-train base-sync deleted). S3 merge is gated on Epic 70 US-70.1 (sidecar env-class secret handoff — see design 0053 §7). |
 | 1.27 | 2026-08-30 | Added "Task Model" section §18 (design contract, not yet implemented): a platform-side background-LLM feature distinct from the workspace agent model. First consumer is workspace naming, replacing the frontend-only auto-rename hack (`ChatPage.tsx:599-613`) with a server-side OpenAI-compatible call triggered by session context. Precedence: user → org → platform default → workspace model fallback. Storage follows established patterns (Tier 2 instance setting, new `org_policies` key via CHECK-swap migration, new server-resolved `user_settings` key distinct from client-side `preferredModel`). Credential prerequisite marked **satisfied** (DEK cut landed: worklog 0673 + migration 000014; cleanup PR #734 + migration 000023); the remaining gate is **sessionless decryption** — `GetDEK`/`GetDEKForUser` unwrap only via Redis/active `jwt_sessions` rows and never fall back to `rootKeyProvider` on `user_keys.wrapped_dek`. (Section renumbered 17→18 and doc version 1.25→1.27 during rebase: §17 File Attachments and v1.26 landed via later PRs.) |
 | 1.26 | 2026-08-27 | Added "File Attachments (Epic 68)" section documenting the as-built upload/attachment system: agentd `PUT /v1/files` on the user mux (:4097, single-container mode only — sidecar /workspace is read-only, uploads clean-fail 5xx there), API `POST /workspaces/:id/uploads` streaming multipart with the D16 gate order (auth→access→phase→disk→cap), manifest format v1 (path+name only — the `bytes=` sketch was dropped) locked by golden fixtures with compose-once idempotency (D15), `files[]` on /prompt + /queue with explicit 400 rejection on V1 /message, MCP `workspace_file_upload` + `session_message(files)` (5 MiB decoded cap), caps 25 MiB REST / 5 MiB MCP / 10 files per send, SDK upload + files surface in all four SDKs (`make sdk-check` + sdk-contract CI), and the out-of-scope list. E2E rows E7/E8/E9/E12 CI-enforced; E3/E4 browser-half; E2/E10/E11 cluster-only via `local/us-68-attachments-e2e.sh`. Fixed pre-existing canary Makefile breakage from #1072. |
 | 1.25 | 2026-08-27 | Epic #1032 API-surface sync follow-ups: API Reference rewritten — ~200 routes, 22 areas (passkeys, workflows/triggers, MCP servers, image factory, org surface, admin, usage/billing, Stripe webhook), canonical reference is now sdks/openapi.yaml with TestOpenAPIRouterContract as the both-directions parity gate; `?verbose` documented as accepted-and-ignored (patch stripping removed in Epic 65); spec ssoProviders dead field removed and verbose descriptions corrected. |

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # test-entrypoint.sh — Local shell-level tests for the boot credential path.
 #
-# Test 1 locks the entrypoint-common sourcing contract (worklog 0078):
-# sourcing the script must NOT exit the parent shell. Tests 2–3 exercise
-# the REAL `workspace-agentd materialize` subcommand (the entrypoint's
-# boot step since Epic 17 G2) through the same LLMSAFESPACES_* env-var
-# path overrides the Go suite uses, against a temp tree that mirrors the
-# production volume layout (PVC home symlinks → tmpfs targets).
+# (Test 1 — the entrypoint-common sourcing contract, worklog 0078 — was
+# deleted with the entrypoints themselves in design 0053 S3; the
+# materialize subcommand owns that path.) The remaining tests exercise
+# the REAL `workspace-agentd materialize` subcommand through the same
+# LLMSAFESPACES_* env-var path overrides the Go suite uses, against a
+# temp tree that mirrors the production volume layout (PVC home
+# symlinks → tmpfs targets).
 #
 # The git-credential assertions are the shell variant of the #1087
 # regression gate (Go twin: cmd/workspace-agentd/git_creds_boot_test.go):
@@ -19,7 +20,6 @@ PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR/.."
-ENTRYPOINT="$REPO_ROOT/runtimes/base/tools/entrypoints/entrypoint-common.sh"
 
 pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; }
@@ -35,30 +35,6 @@ build_agentd() {
     rm -rf /tmp/test-agentd-bin
     mkdir -p /tmp/test-agentd-bin
     (cd "$REPO_ROOT" && go build -o /tmp/test-agentd-bin/workspace-agentd ./cmd/workspace-agentd/)
-}
-
-# ============================================================
-# Test 1: 'return 0' in sourced entrypoint does not kill parent
-# (This is the bug we fixed — exit 0 was killing the shell)
-# ============================================================
-test_source_does_not_exit_parent() {
-    # Simulate: no /sandbox-cfg, no credentials — the early return path
-    RESULT=$(bash -c '
-        mkdir -p /tmp/test-ep-$$/sandbox-cfg
-        # Patch the script to use our temp paths
-        sed "s|/sandbox-cfg|/tmp/test-ep-'$$'/sandbox-cfg|g" "'"$ENTRYPOINT"'" > /tmp/test-ep-$$/entrypoint.sh
-        chmod +x /tmp/test-ep-$$/entrypoint.sh
-        export HOME=/tmp/test-ep-$$/home
-        mkdir -p $HOME
-        source /tmp/test-ep-$$/entrypoint.sh
-        echo "SURVIVED"
-        rm -rf /tmp/test-ep-$$
-    ' 2>&1 || true)
-    if echo "$RESULT" | grep -q "SURVIVED"; then
-        pass "source without secrets.json: parent shell survives"
-    else
-        fail "source without secrets.json: parent shell died (output: $RESULT)"
-    fi
 }
 
 # ============================================================
@@ -159,7 +135,6 @@ test_agentd_http() {
 
 # ============================================================
 echo "=== Entrypoint & Agentd E2E Tests ==="
-test_source_does_not_exit_parent
 test_full_secrets_materialization
 test_agentd_http
 echo ""
