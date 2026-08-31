@@ -29,6 +29,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // ManifestName is the manifest file inside the staging tree. The pull
@@ -100,6 +102,7 @@ type stageBuilder struct {
 	fs      Filesystem
 	dir     string
 	entries []StagedEntry
+	total   int
 }
 
 func newStageBuilder(fs Filesystem, stagingDir string) *stageBuilder {
@@ -131,6 +134,14 @@ func (b *stageBuilder) add(rel, target string, mode int, content []byte) error {
 	if rel == "" || rel == "." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "/../") {
 		return fmt.Errorf("staged path %q escapes staging dir", rel)
 	}
+	// W8 per-entry ceiling: a single entry larger than the whole delivery
+	// budget can never be served; skip it loudly at stage time (the
+	// bind-time 400 is the user-facing gate — this is the bypass guard).
+	if len(content) > agentd.StagedFilesMaxBytes {
+		return fmt.Errorf("size_exceeded: staged entry %s is %d bytes; the delivery budget is %d",
+			rel, len(content), agentd.StagedFilesMaxBytes)
+	}
+	b.total += len(content)
 	full := filepath.Join(b.dir+".tmp", filepath.FromSlash(rel))
 	// G115: masked to 9 bits; modes come from the contract constants or
 	// the validated metadata override — cannot overflow.

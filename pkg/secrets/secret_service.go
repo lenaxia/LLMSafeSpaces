@@ -509,10 +509,21 @@ func (s *SecretService) audit(ctx context.Context, userID, action string, secret
 	_ = s.store.LogAudit(ctx, entry) //nolint:errcheck // audit log is best-effort; failure doesn't affect the secret operation
 }
 
+// MaxSecretValueBytes caps a single secret's plaintext (W8): file-class
+// delivery stages bytes onto the pod tmpfs and serves them under the
+// /v1/spawn-files budget; a value larger than this can never deliver.
+// Enforced at bind time (create + update) so the author gets a 400, not
+// a spawn-time degrade.
+const MaxSecretValueBytes = 2 << 20
+
 // validateValue validates type-specific constraints on the plaintext secret
 // value before encryption. Errors wrap ErrInvalidMetadata so callers map them
 // to 400 responses via handleSecretError.
 func validateValue(secretType SecretType, value string) error {
+	if len(value) > MaxSecretValueBytes {
+		return fmt.Errorf("%w: value is %d bytes; the per-secret cap is %d (size_exceeded)",
+			ErrInvalidMetadata, len(value), MaxSecretValueBytes)
+	}
 	if secretType != SecretTypeLLMProvider {
 		return nil
 	}

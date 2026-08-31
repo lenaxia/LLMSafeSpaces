@@ -51,11 +51,6 @@ const (
 const (
 	spawnFilesURLPath     = "/v1/spawn-files"
 	stagingDirEnvOverride = "LLMSAFESPACES_STAGED_FILES_DIR"
-
-	// spawnFilesBodyCap bounds the manifest response: file-class content
-	// (secret-files) is larger than the env delta. 8MiB headroom under
-	// the 96MiB tmpfs; bind-time size validation is the W8 follow-up.
-	spawnFilesBodyCap = 8 << 20
 )
 
 // spawnFileEntry is one delivered file in the /v1/spawn-files wire shape:
@@ -233,7 +228,7 @@ func (p *spawnEnvPuller) attemptFilesOnce(ctx context.Context) (spawnFilesRespon
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
 	case http.StatusOK:
-		body, err := io.ReadAll(io.LimitReader(resp.Body, spawnFilesBodyCap))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, agentd.StagedFilesMaxBytes))
 		if err != nil {
 			return spawnFilesResponse{}, "", err
 		}

@@ -25,6 +25,13 @@ const (
 	PasswordPath    = "/sandbox-cfg/password"
 	SecretsBasePath = "/sandbox-runtime/rt/secrets"
 	WorkspacePath   = "/workspace"
+	// StagedFilesMaxBytes is the W8 file-class delivery budget: the
+	// staged manifest + bytes MUST fit under it because it is also the
+	// /v1/spawn-files response cap the supervisor enforces. Binding-time
+	// per-secret validation (pkg/secrets) is the user-facing gate; the
+	// materializer's per-entry and whole-batch checks are the
+	// defense-in-depth ceiling (size_exceeded).
+	StagedFilesMaxBytes = 8 << 20
 	// ReloadSecretsCachePath is where reloadSecretsHandler persists the last
 	// reload-secrets batch so it can be replayed after a main-container restart
 	// (#443). It lives on the /sandbox-runtime tmpfs emptyDir (Memory medium):
