@@ -1531,6 +1531,10 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	// forwarded to the pod's Act op when AGENTD_STATE_AUTHORITY is armed
 	// (D4 single regime; 501 NotSupported when the flag is off).
 	idGroup.POST("/sessions/:sessionId/actions", proxyHandler.SessionAction)
+	// Epic 69 US-69.10 (design 0055 S3/D1-B): the API-proxied contract
+	// stream — raw ABI frames; the browser runs the stamped-snapshot
+	// client rule. Behind the authority flag (typed 501 off-regime).
+	idGroup.GET("/contract-events", proxyHandler.ContractEvents)
 	idGroup.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
 	idGroup.GET("/session-events", proxyHandler.StreamEvents)
 
