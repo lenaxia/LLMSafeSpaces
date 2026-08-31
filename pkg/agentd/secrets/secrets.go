@@ -254,6 +254,7 @@ type Filesystem interface {
 	Chmod(path string, perm os.FileMode) error
 	OpenForCreate(path string, flag int, perm os.FileMode) (io.WriteCloser, error)
 	Remove(path string) error
+	Rename(oldpath, newpath string) error
 }
 
 // realFS is the os-backed filesystem.
@@ -266,6 +267,7 @@ func (realFS) RemoveAll(path string) error                  { return os.RemoveAl
 func (realFS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
 func (realFS) Chmod(path string, perm os.FileMode) error    { return os.Chmod(path, perm) }
 func (realFS) Remove(path string) error                     { return os.Remove(path) }
+func (realFS) Rename(oldpath, newpath string) error         { return os.Rename(oldpath, newpath) }
 func (realFS) OpenForCreate(path string, flag int, perm os.FileMode) (io.WriteCloser, error) {
 	return os.OpenFile(path, flag, perm)
 }
@@ -518,7 +520,7 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 		return nil, fmt.Errorf("reset: %w", err)
 	}
 
-	staging := newStageBuilder(m.stagingPath())
+	staging := newStageBuilder(m.FS, m.stagingPath())
 	m.sshBlocks = nil
 
 	result := &MaterializeResult{Results: make([]SecretResult, 0, len(secrets))}
@@ -572,7 +574,7 @@ func (m *Materializer) reset() error {
 	// destroyed uid-1000-owned user state (known_hosts, user keys) on
 	// every reload. This pass owns the staging tree's scratch areas, the
 	// env file, and the agent config.
-	stageCleanup(m.stagingPath())
+	stageCleanup(m.FS, m.stagingPath())
 	if err := m.FS.RemoveAll(m.stagingPath() + ".tmp"); err != nil && !os.IsNotExist(err) {
 		return err
 	}

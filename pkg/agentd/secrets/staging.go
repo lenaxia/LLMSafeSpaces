@@ -94,13 +94,35 @@ func resolveSecretFileMode(metadata map[string]string) (int, error) {
 // stageBuilder accumulates staged bytes + manifest rows for one
 // Materialize pass and publishes them atomically (tmp tree → rename
 // swap), so the pull endpoint never observes a half-built staging state.
+// All I/O goes through the Materializer's Filesystem — staging is as
+// fake-injectable as every other materialize write.
 type stageBuilder struct {
+	fs      Filesystem
 	dir     string
 	entries []StagedEntry
 }
 
-func newStageBuilder(stagingDir string) *stageBuilder {
-	return &stageBuilder{dir: stagingDir}
+func newStageBuilder(fs Filesystem, stagingDir string) *stageBuilder {
+	if fs == nil {
+		fs = RealFS()
+	}
+	return &stageBuilder{fs: fs, dir: stagingDir}
+}
+
+// writeFile lands bytes at path with perm via the Filesystem seam.
+func (b *stageBuilder) writeFile(path string, perm os.FileMode, content []byte) error {
+	if err := b.fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	w, err := b.fs.OpenForCreate(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(content); err != nil {
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
 }
 
 // add stages content under rel (a clean, slash-separated relative path
@@ -127,7 +149,7 @@ func (b *stageBuilder) add(rel, target string, mode int, content []byte) error {
 // A reader either sees the previous complete tree or the new complete
 // tree — never a mix.
 func (b *stageBuilder) publish() error {
-	if err := os.MkdirAll(b.dir+".tmp", 0o700); err != nil {
+	if err := b.fs.MkdirAll(b.dir+".tmp", 0o700); err != nil {
 		return err
 	}
 	entries := b.entries
@@ -141,27 +163,31 @@ func (b *stageBuilder) publish() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(b.dir+".tmp", ManifestName), manifest, 0o600); err != nil {
+	if err := b.writeFile(filepath.Join(b.dir+".tmp", ManifestName), 0o600, manifest); err != nil {
 		return err
 	}
-	_ = os.RemoveAll(b.dir + ".old")
-	if _, err := os.Stat(b.dir); err == nil {
-		if err := os.Rename(b.dir, b.dir+".old"); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(b.dir+".tmp", b.dir); err != nil {
+	_ = b.fs.RemoveAll(b.dir + ".old")
+	// Swap: current → .old (a missing source's error is the first
+	// publish — ignored), tmp → current, then drop .old. The gap between
+	// the two renames is microseconds and only occurs mid-restage; a
+	// concurrent pull in it observes the quiet empty manifest and the
+	// next pull re-delivers — level-triggered by construction.
+	_ = b.fs.Rename(b.dir, b.dir+".old")
+	if err := b.fs.Rename(b.dir+".tmp", b.dir); err != nil {
 		return err
 	}
-	return os.RemoveAll(b.dir + ".old")
+	return b.fs.RemoveAll(b.dir + ".old")
 }
 
 // stageCleanup removes scratch trees left by a crash between builds. The
 // published staging tree itself is NOT removed — it is the level-triggered
 // source of truth the endpoint serves until the next publish replaces it.
-func stageCleanup(stagingDir string) {
-	_ = os.RemoveAll(stagingDir + ".tmp")
-	_ = os.RemoveAll(stagingDir + ".old")
+func stageCleanup(fs Filesystem, stagingDir string) {
+	if fs == nil {
+		fs = RealFS()
+	}
+	_ = fs.RemoveAll(stagingDir + ".tmp")
+	_ = fs.RemoveAll(stagingDir + ".old")
 }
 
 // sortedEntries returns the manifest rows deterministically ordered —

@@ -203,6 +203,43 @@ func (f *fakeFS) OpenForCreate(path string, flag int, perm os.FileMode) (io.Writ
 	return &fakeFile{path: path, mode: perm, flag: flag, fs: f}, nil
 }
 
+// OpenForCreateRaw is the unwrapped create, for wrapper FSs that gate
+// OpenForCreate by path.
+func (f *fakeFS) OpenForCreateRaw(path string) (io.WriteCloser, error) {
+	return &fakeFile{path: path, mode: 0o600, flag: os.O_CREATE | os.O_TRUNC, fs: f}, nil
+}
+
+// Rename moves content+mode between fake paths (the staging publish is a
+// directory swap; the fake treats a whole-dir rename as moving every
+// entry under the prefix).
+func (f *fakeFS) Rename(oldpath, newpath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.contents[oldpath]; ok {
+		f.contents[newpath] = f.contents[oldpath]
+		f.modes[newpath] = f.modes[oldpath]
+		delete(f.contents, oldpath)
+		delete(f.modes, oldpath)
+		return nil
+	}
+	prefix := oldpath + "/"
+	moved := false
+	for p, c := range f.contents {
+		if strings.HasPrefix(p, prefix) {
+			np := newpath + "/" + strings.TrimPrefix(p, prefix)
+			f.contents[np] = c
+			f.modes[np] = f.modes[p]
+			delete(f.contents, p)
+			delete(f.modes, p)
+			moved = true
+		}
+	}
+	if !moved {
+		return &fs.PathError{Op: "rename", Path: oldpath, Err: fs.ErrNotExist}
+	}
+	return nil
+}
+
 // helpers ------------------------------------------------------------------
 
 func newFixture(t *testing.T) (*Materializer, *fakeFS) {
@@ -515,7 +552,10 @@ func TestG2_SecretFile_PathTraversal(t *testing.T) {
 			require.Equal(t, tc.want, res.Results[0].Outcome,
 				"mount_path %q outcome", tc.mountPath)
 			for path := range fs.contents {
+				// R2b: the staging tree (beside secrets-env) is the
+				// materializer's other legitimate write location.
 				require.True(t, strings.HasPrefix(path, "/sandbox-runtime/rt/secrets/") ||
+					strings.HasPrefix(path, "/sandbox-runtime/staged-secret-files") ||
 					path == "/sandbox-runtime/agent-config.json",
 					"no file outside secrets base; got %q", path)
 			}
@@ -968,11 +1008,28 @@ func TestMaterialize_PartialFailure_ReturnsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrPartialFailure)
 }
 
-// errFS wraps fakeFS but fails OpenForCreate.
+// errFS wraps fakeFS but fails OpenForCreate outside the staging tree —
+// R2b: the staging manifest publish is platform-owned and its failure
+// takes precedence over the per-secret sentinel, so the sentinel test
+// must fail a CONSUMED-path write, not every write.
 type errFS struct{ *fakeFS }
 
-func (e *errFS) OpenForCreate(string, int, os.FileMode) (io.WriteCloser, error) {
+func (e *errFS) OpenForCreate(path string, _ int, _ os.FileMode) (io.WriteCloser, error) {
+	if strings.Contains(path, "staged-secret-files") {
+		return e.OpenForCreateRaw(path)
+	}
 	return nil, errors.New("simulated open failure")
+}
+
+// stagingErrFS fails OpenForCreate ONLY inside the staging tree — the
+// mirror of errFS, pinning the publish-failure precedence.
+type stagingErrFS struct{ *fakeFS }
+
+func (e *stagingErrFS) OpenForCreate(path string, _ int, _ os.FileMode) (io.WriteCloser, error) {
+	if strings.Contains(path, "staged-secret-files") {
+		return nil, errors.New("simulated staging failure")
+	}
+	return e.OpenForCreateRaw(path)
 }
 
 // TestStagedProviders_Accessor verifies the public StagedProviders() method
@@ -1007,4 +1064,27 @@ func TestStagedProviders_EmptyAfterNoLLMProviders(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Nil(t, m.StagedProviders())
+}
+
+// TestMaterialize_PublishFailureTakesPrecedence (R2b): a staging-publish
+// failure is a platform-owned hard error — it surfaces directly (loud),
+// never swallowed into the per-secret partial-failure sentinel, or a
+// broken staging tree would masquerade as a partial batch.
+func TestMaterialize_PublishFailureTakesPrecedence(t *testing.T) {
+	m := &Materializer{
+		FS: &stagingErrFS{newFakeFS()},
+		Paths: Paths{
+			Home:            "/home/sandbox",
+			SecretsBaseDir:  "/sandbox-runtime/rt/secrets",
+			SSHDir:          "/sandbox-runtime/rt/ssh",
+			AgentConfigPath: "/sandbox-runtime/agent-config.json",
+			SecretsEnvPath:  "/sandbox-runtime/secrets-env",
+			GitCredsPath:    "/sandbox-runtime/rt/git-credentials",
+		},
+	}
+	_, err := m.Materialize([]Secret{
+		{Type: "env-secret", Name: "x", Metadata: map[string]string{"var_name": "X"}, Plaintext: "v"},
+	})
+	require.Error(t, err)
+	require.ErrorContains(t, err, "publish staging")
 }
