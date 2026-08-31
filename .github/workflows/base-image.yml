@@ -133,8 +133,6 @@ jobs:
           [ -n "$VERSION" ] || { echo "::error::could not read bookworm version"; exit 1; }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/download-buildx-action@v0.30.0
-
       - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
