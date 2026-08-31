@@ -1121,6 +1121,40 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Workspace-agentd sidecar">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-state-epic-69-us-6912" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session state (Epic 69, US-69.12)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Session state (Epic 69, US-69.12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-state-alert-triage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session-state alert triage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
       </ul>
@@ -2338,6 +2372,40 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Workspace-agentd sidecar">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-state-epic-69-us-6912" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session state (Epic 69, US-69.12)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Session state (Epic 69, US-69.12)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#session-state-alert-triage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session-state alert triage
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
       </ul>
@@ -2745,6 +2813,81 @@
 </tr>
 </tbody>
 </table>
+<h4 id="session-state-epic-69-us-6912">Session state (Epic 69, US-69.12)<a class="headerlink" href="#session-state-epic-69-us-6912" title="Permanent link">&para;</a></h4>
+<p>The delivery-ledger projection exports its own health surface (design 0055 R5):</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Type</th>
+<th>Labels</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>llmsafespaces_seq_stall_seconds</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code></td>
+<td>Seconds since the projection last advanced — the starvation signal. Idle pods legitimately stall (no events); correlate with <code>ledger_depth</code> before acting.</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_ledger_depth</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code>, <code>state</code></td>
+<td>Row count per ledger state (the funnel: <code>ledgered</code> → <code>admitted</code> → <code>promoted</code>/<code>turn_ended</code>, with <code>stalled</code> and <code>failed</code> visible).</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_stalled_entries</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Rows in <code>stalled</code> (admitted past the promotion deadline) — the #1119 silent-strand class, visible.</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_promotion_stall_seconds</code></td>
+<td>Gauge</td>
+<td><code>workspace_id</code></td>
+<td>Age of the oldest admitted-unpromoted row (0 when none) — the stall precursor.</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_delivery_202_latency_seconds</code></td>
+<td>Histogram</td>
+<td>—</td>
+<td>Deliver-ack latency (the 202 equivalent: idempotent fsync'd ledger accept).</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_snapshot_size_bytes</code> / <code>llmsafespaces_snapshot_latency_seconds</code></td>
+<td>Histogram</td>
+<td>—</td>
+<td>GetSnapshot cost (R9: O(in-flight state), never O(history)).</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_wake_failures_total</code></td>
+<td>Counter</td>
+<td>—</td>
+<td>Errored stall-wake attempts (the wake is a store reseed; failure = harness/store unreachable).</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_sessionstate_dropped_events</code> / <code>_parser_failures</code> / <code>_panics_contained</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Cumulative projection containment counters.</td>
+</tr>
+<tr>
+<td><code>llmsafespaces_sessionstate_subscribers</code></td>
+<td>Gauge</td>
+<td>—</td>
+<td>Active ABI stream subscribers (on-demand consumption health).</td>
+</tr>
+</tbody>
+</table>
+<h5 id="session-state-alert-triage">Session-state alert triage<a class="headerlink" href="#session-state-alert-triage" title="Permanent link">&para;</a></h5>
+<ul>
+<li><strong><code>LLMSafeSpacesSeqStalled</code></strong> (critical): seq stalled &gt;5m <strong>with ledgered work pending</strong> — starvation or a wedged harness, not an idle pod. Triage: check CFS throttling (<code>container_cpu_cfs_throttled_periods_total</code> for the pod) and the watchdog suppression counter; if starved, the watchdog is deliberately suppressing restarts — free CPU or evict the noisy neighbor. If not starved, exec into the pod and <code>curl :4097</code> GetSnapshot — a wedged opencode with a live agentd needs the stranded-entry path.</li>
+<li><strong><code>LLMSafespacesStalledEntries</code></strong> (warning): an admitted entry crossed the promotion deadline and the wake (store reseed) did not resolve it. The user-visible turn is stranded: <code>GetDeliveryStatus(entryId, attempt)</code> on the pod's ABI to read the row; if the transcript never landed, replay the entry (the outbox re-arms at attempt+1 only on <code>failed</code> — a stalled row needs manual re-drive or the US-69.13 flip/park procedure).</li>
+<li><strong><code>LLMSafespacesWakeFailures</code></strong> (warning): the reseed behind the wake is failing — opencode unreachable or store read errors. The stalled entries will not self-resolve; fix the harness path first (agentd logs <code>stall wake failed</code>).</li>
+<li><strong><code>LLMSafeSpacesDeliveryLatencyBudget</code></strong> (warning): Deliver-ack p99 &gt; 1s sustained — fsync latency on the platform volume or WAL contention. Every send on the pod slows; check the volume's write latency and ledger WAL compaction (<code>ledger.compact</code> runs at retention boundaries).</li>
+</ul>
 <div class="admonition warning">
 <p class="admonition-title">cgroup v2 required</p>
 <p><code>workspace_memory_bytes</code> and <code>workspace_oom_kills_total</code> require cgroup v2. On cgroup v1 hosts these silently produce nothing — agentd logs a single Warn per pod boot. See <a href="../storage/#cgroup-v2-requirement">Storage</a>.</p>
@@ -3074,7 +3217,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 31, 2026 19:24:45 UTC"><span class="timeago" datetime="2026-08-31T19:24:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 31, 2026 19:24:45 UTC">2026-08-31</span>
   </span>
 
     
