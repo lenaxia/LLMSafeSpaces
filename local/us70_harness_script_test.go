@@ -102,6 +102,43 @@ func TestUS70Harness_SessionAuthPins(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_SessionBootstrap_UnhappyPaths executes the extracted
+// session helpers against a dead port: login must yield an empty
+// AUTH_TOKEN without killing the caller (the register fallback depends
+// on that), and seed_session must die loudly naming the failure.
+func TestUS70Harness_SessionBootstrap_UnhappyPaths(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	extract := func(name string) string {
+		m := regexp.MustCompile(`(?s)(?m)^` + name + `\(\) \{.*?^\}`).FindString(lib)
+		if m == "" {
+			t.Fatalf("us70-common.sh must define %s()", name)
+		}
+		return m
+	}
+
+	out, err := exec.Command(bash, "-c",
+		`PORTFWD_PORT=1; AUTH_TOKEN=sentinel; `+extract("login_harness_user")+`; printf '|%s', "${AUTH_TOKEN}"`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("login against a dead port must not kill the caller: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "|,") && !strings.HasSuffix(strings.TrimSpace(string(out)), ",") {
+		t.Fatalf("failed login must leave AUTH_TOKEN empty, got: %q", out)
+	}
+
+	out, err = exec.Command(bash, "-c",
+		`set -u; PORTFWD_PORT=1; USER_ID=dead; API_KEY=k; PGPOD=x; PG_PWD=x; `+
+			`die() { printf '%s' "$*" >&2; exit 1; }; `+
+			extract("login_harness_user")+`; `+extract("seed_session")+
+			`; seed_session dead-user 2>&1; exit $?`).CombinedOutput()
+	if err == nil {
+		t.Fatalf("seed_session with both register and login failing must exit non-zero, got: %q", out)
+	}
+	if !strings.Contains(string(out), "harness register/login failed") {
+		t.Fatalf("the loud failure must name the problem, got: %q", out)
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {

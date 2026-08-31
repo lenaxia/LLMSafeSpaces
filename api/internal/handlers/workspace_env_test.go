@@ -7,10 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
@@ -150,6 +153,30 @@ func doEnvRequest(r http.Handler, method, path, body string) *httptest.ResponseR
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// TestSetWorkspaceEnv_APIKeyAuth_NoDEKSession_500 documents the contract
+// the US-70.0 harness learned the hard way (pool run 33447976676):
+// CreateSecret resolves the user's DEK through the JWT session cache, so
+// an API-key request (empty sessionID) gets ErrDEKUnavailable and the env
+// bind 500s. Secret authoring from scripts requires a logged-in session.
+func TestSetWorkspaceEnv_APIKeyAuth_NoDEKSession_500(t *testing.T) {
+	svc := newMockEnvService()
+	svc.createErr = fmt.Errorf("%w: no session for API-key auth", secrets.ErrDEKUnavailable)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		c.Set("sessionID", "")
+		c.Next()
+	})
+	h := NewWorkspaceEnvHandler(svc)
+	r.PUT("/workspaces/:id/env", h.SetWorkspaceEnv)
+
+	w := doEnvRequest(r, http.MethodPut, "/workspaces/ws-1/env", `{"vars":{"SD_FIRST":"v"}}`)
+	require.Equal(t, http.StatusInternalServerError, w.Code,
+		"API-key-shaped auth (no DEK session) must fail the bind loudly, not silently skip")
+	require.Contains(t, w.Body.String(), "failed to set env var: SD_FIRST")
 }
 
 // --- SetWorkspaceEnv ---
