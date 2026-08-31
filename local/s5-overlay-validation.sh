@@ -432,13 +432,21 @@ else
       apt-get update -qq >/dev/null
       apt-get install -y -qq curl ca-certificates >/dev/null
       BASE=https://storage.googleapis.com/gvisor/releases/release/latest/x86_64
-      curl -fsSL "$BASE/runsc" -o /tmp/runsc
-      curl -fsSL "$BASE/runsc.sha512" -o /tmp/runsc.sha512
+      CURL="curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-delay 3"
+      $CURL "$BASE/runsc" -o /tmp/runsc
+      $CURL "$BASE/runsc.sha512" -o /tmp/runsc.sha512
       # gVisor publishes "<sha512>  runsc" — verify the download against it.
+      # An empty/short EXPECTED means the checksum FORMAT changed upstream
+      # (fail with that diagnosis instead of a bare mismatch).
       EXPECTED=$(cut -d" " -f1 /tmp/runsc.sha512)
+      case "$EXPECTED" in
+        ????????????????????????????????????????????????????????????????????) ;;
+        *) echo "runsc.sha512 format changed upstream (got: $(cat /tmp/runsc.sha512))"; exit 1 ;;
+      esac
       ACTUAL=$(sha512sum /tmp/runsc | cut -d" " -f1)
       [ "$EXPECTED" = "$ACTUAL" ] || { echo "runsc sha512 mismatch"; exit 1; }
       install -m 0755 /tmp/runsc /usr/local/bin/runsc
+      rm -f /tmp/runsc /tmp/runsc.sha512
       /usr/local/bin/runsc --version >/dev/null
       # Register the handler in containerd (config_v2 runtime table);
       # containerd resolves `runsc` from PATH (/usr/local/bin).
