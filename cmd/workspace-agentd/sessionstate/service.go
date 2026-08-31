@@ -162,7 +162,11 @@ func (a *Authority) Act(ctx context.Context, req *connect.Request[abiv1.ActionRe
 	if err := a.limiter.allow(req.Msg.GetSessionId()); err != nil {
 		return nil, err
 	}
-	return nil, notSupported("abi.actions", "typed actions land in US-69.9")
+	res, err := a.act(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(res), nil
 }
 
 func notSupported(capability, detail string) error {

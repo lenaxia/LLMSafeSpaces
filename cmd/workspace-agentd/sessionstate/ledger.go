@@ -434,29 +434,37 @@ type Admitter interface {
 
 // deliveryDriver owns Deliver + admission + promotion correlation.
 // Per-session single-flight: at most one admission in flight per session
-// (I5 — bounds every ambiguity window to exactly one entry).
+// (I5 — bounds every ambiguity window to exactly one entry). The lock map
+// is INJECTED (the authority's) so actions (US-69.9) join the same
+// sole-writer domain; a nil injection owns a private map (tests).
 type deliveryDriver struct {
 	ledger *deliveryLedger
 	admit  Admitter
 	cfg    Config
 
-	sessionMu   map[string]*sync.Mutex
-	sessionMuMu sync.Mutex
+	sessionLock func(string) *sync.Mutex
 
+	ownMu       sync.Mutex
+	ownLocks    map[string]*sync.Mutex
 	promotionMu sync.Mutex
 }
 
-func newDeliveryDriver(l *deliveryLedger, admit Admitter, cfg Config) *deliveryDriver {
-	return &deliveryDriver{ledger: l, admit: admit, cfg: cfg, sessionMu: map[string]*sync.Mutex{}}
+func newDeliveryDriver(l *deliveryLedger, admit Admitter, cfg Config, lock func(string) *sync.Mutex) *deliveryDriver {
+	d := &deliveryDriver{ledger: l, admit: admit, cfg: cfg, sessionLock: lock, ownLocks: map[string]*sync.Mutex{}}
+	if lock == nil {
+		d.sessionLock = d.privateSessionLock
+	}
+	return d
 }
 
-func (d *deliveryDriver) sessionLock(sessionID string) *sync.Mutex {
-	d.sessionMuMu.Lock()
-	defer d.sessionMuMu.Unlock()
-	m, ok := d.sessionMu[sessionID]
+// privateSessionLock is the fallback single-flight domain (no injection).
+func (d *deliveryDriver) privateSessionLock(sessionID string) *sync.Mutex {
+	d.ownMu.Lock()
+	defer d.ownMu.Unlock()
+	m, ok := d.ownLocks[sessionID]
 	if !ok {
 		m = &sync.Mutex{}
-		d.sessionMu[sessionID] = m
+		d.ownLocks[sessionID] = m
 	}
 	return m
 }
@@ -489,31 +497,46 @@ const admissionAttempts = 5
 //
 //nolint:contextcheck // admission is queue-scoped (M2): the 202 must not
 func (d *deliveryDriver) driveAdmission(sessionID, entryID string, attempt uint32, text, model string) {
-	m := d.sessionLock(sessionID)
-	m.Lock()
-	defer m.Unlock()
 	backoff := 200 * time.Millisecond
 	for i := 0; i < admissionAttempts; i++ {
-		// Re-read state under the session lock: a replay may have already
-		// admitted this row (crash-window resolution).
-		if rec, ok := d.ledger.status(entryID, attempt); ok && rec.State != LedgerStateLedgered {
+		if d.attemptAdmission(sessionID, entryID, attempt, text, model) {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:contextcheck // queue-scoped by design
-		msgID, err := d.admit.Admit(ctx, sessionID, text, model)
-		cancel()
-		if err == nil {
-			if err := d.ledger.markAdmitted(entryID, attempt, msgID); err != nil && logger() != nil {
-				logger().Warn("sessionstate: admitted append failed", zap.Error(err))
-			}
-			return
-		}
+		// The backoff sleeps OUTSIDE the session lock: an action (US-69.9)
+		// queuing behind a failing admission waits at most ONE attempt
+		// (~10s), not the whole retry chain — the sole-writer invariant
+		// holds per attempt (nothing is in flight while unlocked).
 		time.Sleep(backoff)
 		backoff *= 2
 	}
 	if err := d.ledger.markFailed(entryID, attempt, "admission exhausted retries"); err != nil && logger() != nil {
 		logger().Warn("sessionstate: failed append failed", zap.Error(err))
 	}
+}
+
+// attemptAdmission runs ONE admission attempt under the session's
+// single-flight lock. Returns true when the row reached a terminal state
+// (admitted by this attempt — or already terminal via a replay).
+func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uint32, text, model string) bool {
+	m := d.sessionLock(sessionID)
+	m.Lock()
+	defer m.Unlock()
+	// Re-read state under the session lock: a replay may have already
+	// admitted this row (crash-window resolution), and a prior attempt's
+	// failure may have re-armed at attempt+1.
+	if rec, ok := d.ledger.status(entryID, attempt); ok && rec.State != LedgerStateLedgered {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:contextcheck // queue-scoped by design
+	msgID, err := d.admit.Admit(ctx, sessionID, text, model)
+	cancel()
+	if err == nil {
+		if err := d.ledger.markAdmitted(entryID, attempt, msgID); err != nil && logger() != nil {
+			logger().Warn("sessionstate: admitted append failed", zap.Error(err))
+		}
+		return true
+	}
+	return false
 }
 
 // replayUnresolved resumes after agentd death/suspend: every ledgered row

@@ -137,6 +137,7 @@ func waitForState(t *testing.T, c abiclientIface, entryID string, attempt uint32
 type abiclientIface interface {
 	Deliver(context.Context, *connect.Request[abiv1.DeliveryRequest]) (*connect.Response[abiv1.DeliveryAck], error)
 	GetDeliveryStatus(context.Context, *connect.Request[abiv1.GetDeliveryStatusRequest]) (*connect.Response[abiv1.DeliveryStatus], error)
+	Act(context.Context, *connect.Request[abiv1.ActionRequest]) (*connect.Response[abiv1.ActionResult], error)
 }
 
 func newAuthedServer(t *testing.T, h http.Handler) abiclientIface {

@@ -253,7 +253,7 @@ func (f *fakeAdmitter) Admit(ctx context.Context, sessionID, text, model string)
 func TestDeliver_SingleFlightPerSession(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
 	admitter := &fakeAdmitter{latency: 30 * time.Millisecond}
-	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}})
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -282,7 +282,7 @@ func TestDeliver_SingleFlightPerSession(t *testing.T) {
 func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
 	admitter := &fakeAdmitter{err: fmt.Errorf("provider down")}
-	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}})
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
 
 	_, _, err := d.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, err, "delivery accepts; admission failure is recorded not returned")
@@ -324,7 +324,7 @@ func TestDeliver_AdmittedNeverReadmitted(t *testing.T) {
 	require.NoError(t, l.markAdmitted("e1", 1, "msg-1"))
 
 	admitter := &fakeAdmitter{}
-	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}})
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
 	d.replayUnresolved(context.Background())
 
 	assert.Empty(t, admitter.calls, "no re-admission path exists for admitted entries")
@@ -338,13 +338,13 @@ func TestDeliver_CrashAgentdAfterAckPreAdmission(t *testing.T) {
 	l1 := openLedgerForTest(t, path)
 	// The pre-crash driver's admission goroutine dies WITH the process —
 	// its admitter is separate and never observed by the resume side.
-	d1 := newDeliveryDriver(l1, &fakeAdmitter{err: fmt.Errorf("process died")}, Config{Passwords: []string{"pw"}})
+	d1 := newDeliveryDriver(l1, &fakeAdmitter{err: fmt.Errorf("process died")}, Config{Passwords: []string{"pw"}}, nil)
 	_, _, err := d1.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, err)
 
 	l2 := openLedgerForTest(t, path) // kill + resume
 	admitter := &fakeAdmitter{}
-	d2 := newDeliveryDriver(l2, admitter, Config{Passwords: []string{"pw"}})
+	d2 := newDeliveryDriver(l2, admitter, Config{Passwords: []string{"pw"}}, nil)
 	d2.replayUnresolved(context.Background())
 	waitFor(t, func() bool {
 		st, ok := l2.status("e1", 1)
@@ -366,7 +366,7 @@ func TestDeliver_CrashAgentdAfterAckPreAdmission(t *testing.T) {
 func TestDeliver_PromotionFromProjectionEvents(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
 	admitter := &fakeAdmitter{}
-	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}})
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
 
 	_, _, err := d.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, err)

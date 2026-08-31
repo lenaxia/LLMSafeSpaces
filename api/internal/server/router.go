@@ -1527,6 +1527,10 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	idGroup.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
 	idGroup.GET("/sessions/:sessionId", proxyHandler.GetSession)
 	idGroup.POST("/sessions/:sessionId/abort", proxyHandler.AbortSession)
+	// Epic 69 US-69.9: the typed-actions union (design 0055 M1 op 5) —
+	// forwarded to the pod's Act op when AGENTD_STATE_AUTHORITY is armed
+	// (D4 single regime; 501 NotSupported when the flag is off).
+	idGroup.POST("/sessions/:sessionId/actions", proxyHandler.SessionAction)
 	idGroup.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
 	idGroup.GET("/session-events", proxyHandler.StreamEvents)
 
