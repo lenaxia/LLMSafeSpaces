@@ -318,6 +318,8 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${OPENCODE_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${OPENCODE_SHA}" \
   >/dev/null 2>&1 || log "S5.3: tamper upgrade reported an error (continuing — the check polls conditions)"
+kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+  || log "S5.3: controller rollout wait timed out (the condition poll decides)"
 
 apply_workspace "$WS_BAD_AG"
 AG_COND=""
@@ -352,6 +354,8 @@ helm upgrade --install "$RELEASE" helm -n "$NS" \
   --set "controller.opencodeDelivery.binarySHA256Amd64=${BAD_OC_SHA}" \
   --set "controller.opencodeDelivery.binarySHA256Arm64=${BAD_OC_SHA}" \
   >/dev/null 2>&1 || log "S5.4: tamper upgrade reported an error (continuing — the check polls conditions)"
+kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller" --timeout=300s >/dev/null 2>&1 \
+  || log "S5.4: controller rollout wait timed out (the condition poll decides)"
 
 apply_workspace "$WS_BAD_OC"
 OC_COND=""
@@ -421,19 +425,21 @@ else
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
   if docker exec "$NODE" bash -c '
       set -e
-      apt-get update -qq >/dev/null 2>&1 || true
-      apt-get install -y -qq apt-transport-https gnupg2 >/dev/null 2>&1 || true
-      curl -fsSL https://gvisor.dev/archives.asc | apt-key add - >/dev/null 2>&1 || true
-      echo "deb https://storage.googleapis.com/gvisor/releases release main" > /etc/apt/sources.list.d/gvisor.list
-      apt-get update -qq >/dev/null 2>&1
-      apt-get install -y -qq runsc >/dev/null 2>&1
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null
+      apt-get install -y -qq gnupg curl ca-certificates >/dev/null
+      install -d -m 0755 /etc/apt/keyrings
+      curl -fsSL https://gvisor.dev/archives.asc -o /etc/apt/keyrings/gvisor.asc
+      echo "deb [signed-by=/etc/apt/keyrings/gvisor.asc] https://storage.googleapis.com/gvisor/releases release main" > /etc/apt/sources.list.d/gvisor.list
+      apt-get update -qq >/dev/null
+      apt-get install -y -qq runsc >/dev/null
       runsc --version >/dev/null
       # Register the handler in containerd (config_v2 runtime table).
       CFG=/etc/containerd/config.toml
       grep -q "runsc" "$CFG" || {
         printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" >> "$CFG"
       }
-    ' >/dev/null 2>&1; then
+    '; then
     docker exec "$NODE" systemctl restart containerd >/dev/null 2>&1 || docker exec "$NODE" pkill -x containerd >/dev/null 2>&1 || true
     sleep 10
     cat <<'EOF' | kubectl apply -f - >/dev/null
