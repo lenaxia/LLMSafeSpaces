@@ -59,6 +59,7 @@ func crossUIDPaths(t *testing.T) Paths {
 		AgentConfigPath: filepath.Join(dir, "agent-config.json"),
 		SecretsEnvPath:  filepath.Join(dir, "secrets-env"),
 		GitCredsPath:    filepath.Join(dir, "git-credentials"),
+		StagingDir:      filepath.Join(dir, "staged"),
 	}
 }
 
@@ -71,36 +72,46 @@ func modeOf(t *testing.T, path string) os.FileMode {
 
 // TestCredentialWriteMode_LegacyDefault_0600: zero-value Paths must keep
 // every credential output 0600 — legacy pods are byte-identical.
+// R2b (#1165): file-class modes moved to the mode-contract table; the
+// only materializer-written credential file left is secrets-env, and the
+// only direct-write mode assertion left is its default owner-only shape.
 func TestCredentialWriteMode_LegacyDefault_0600(t *testing.T) {
 	p := crossUIDPaths(t)
 	m := &Materializer{FS: RealFS(), Paths: p}
 	_, err := m.Materialize(crossUIDBatch())
 	require.NoError(t, err)
 
+	assert.Equal(t, os.FileMode(0o600), modeOf(t, p.SecretsEnvPath), "secrets-env")
 	for _, path := range []string{
-		p.SecretsEnvPath, p.GitCredsPath,
+		p.GitCredsPath,
 		filepath.Join(p.SSHDir, "id_ed25519_deploy"),
 		filepath.Join(p.SecretsBaseDir, "app", "cert.pem"),
 	} {
-		assert.Equal(t, os.FileMode(0o600), modeOf(t, path), "%s", path)
+		_, err := os.Lstat(path)
+		assert.True(t, os.IsNotExist(err),
+			"%s must not exist — file-class delivery is staged, not direct-written", path)
 	}
 }
 
-// TestCredentialWriteMode_CrossUID_0640: the sidecar profile (US-4b's
-// CrossUIF flag; the sidecar controller env arms it) makes every
-// uid-1000-consumed output group-readable (shared gid 1000 bridge).
+// R2b (#1165): the 0640 group-read bridge is retired for file-class —
+// CrossUID widens ONLY secrets-env now; staged file-class bytes stay
+// owner-only regardless.
 func TestCredentialWriteMode_CrossUID_0640(t *testing.T) {
 	p := crossUIDPaths(t)
 	m := &Materializer{FS: RealFS(), Paths: p, CrossUID: true}
 	_, err := m.Materialize(crossUIDBatch())
 	require.NoError(t, err)
 
+	assert.Equal(t, os.FileMode(0o640), modeOf(t, p.SecretsEnvPath),
+		"secrets-env must be 0640 for the sidecar boot handoff via gid 1000")
 	for _, path := range []string{
-		p.SecretsEnvPath, p.GitCredsPath,
+		p.GitCredsPath,
 		filepath.Join(p.SSHDir, "id_ed25519_deploy"),
 		filepath.Join(p.SecretsBaseDir, "app", "cert.pem"),
 	} {
-		assert.Equal(t, os.FileMode(0o640), modeOf(t, path),
-			"%s must be 0640 for the uid-1000 reader via gid 1000", path)
+		_, err := os.Lstat(path)
+		assert.True(t, os.IsNotExist(err), "%s must not exist (staged delivery)", path)
 	}
+	manifest := filepath.Join(p.StagingDir, ManifestName)
+	assert.Equal(t, os.FileMode(0o600), modeOf(t, manifest), "staged manifest owner-only")
 }

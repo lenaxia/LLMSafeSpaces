@@ -3,25 +3,22 @@
 
 package secrets
 
-// cross_uid_test.go — design 0051 US-4b (owner ruling 2026-08-21):
-// in sidecar mode the RELOAD-path materializer runs as uid 2000 while
-// rt/* stays tool-consumed by uid-1000 processes (US-35.7 class C —
-// git/ssh/user tools read ~/.secrets/*, ~/.ssh/*, ~/.git-credentials
-// via the shared gid 1000). CrossUID arms the group bits on exactly
-// those stores:
+// cross_uid_test.go — design 0057 R2b (#1165) supersedes the US-4b
+// group-bit regime for file-class credentials: the tool-consumed rt/*
+// stores are no longer written by the materializer at all (neither sidecar
+// uid 2000 nor single-container), because no mode/ownership the writer
+// confers survives the uid split for consumers with ownership-sensitive
+// parsers (OpenSSH). File-class secrets are STAGED owner-only; the
+// uid-1000 delivery side writes the consumed paths itself (tested in
+// cmd/workspace-agentd).
 //
-//   - dirs  0770 (group rwx — traversal + the NEXT reset()'s unlink)
-//   - files 0640 (group r — tool reads; writes stay owner-only)
-//
-// Everything else keeps its mode: secrets-env (0600 — sidecar-only
-// volume, no uid-1000 reader exists) and the agent config (already
-// AgentConfigWriteMode). Single-container mode (CrossUID=false) must
-// stay byte-identical: 0700/0600, the pre-US-4b shapes.
-//
-// These tests run against the REAL filesystem (not fakeFS) so the mode
-// assertions stat actual inodes.
+// CrossUID's remaining scope: secrets-env — written by the init container
+// (uid 1000), read by the sidecar's boot handoff (uid 2000) — where the
+// reader is a platform process with no parser constraints and the shared
+// gid remains the read bridge.
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +36,7 @@ func crossUIDFixture(t *testing.T) (*Materializer, Paths) {
 		AgentConfigPath: filepath.Join(dir, "agent-config.json"),
 		SecretsEnvPath:  filepath.Join(dir, "secrets-env"),
 		GitCredsPath:    filepath.Join(dir, "rt", "git-credentials"),
+		StagingDir:      filepath.Join(dir, "staged"),
 	}
 	return &Materializer{FS: RealFS(), Paths: paths, CrossUID: true}, paths
 }
@@ -50,10 +48,21 @@ func requirePerm(t *testing.T, path string, want os.FileMode, msg string) {
 	require.Equal(t, want, info.Mode().Perm(), "%s: %s", path, msg)
 }
 
-// TestCrossUID_ToolConsumedFilesGroupReadable: after a cross-uid
-// materialization, every rt/* store a uid-1000 tool consumes is
-// group-readable (gid 1000), and its directories are group-traversable.
-func TestCrossUID_ToolConsumedFilesGroupReadable(t *testing.T) {
+// readManifest loads the published staging manifest, sorted by target.
+func readManifest(t *testing.T, stagingDir string) []StagedEntry {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(stagingDir, ManifestName))
+	require.NoError(t, err)
+	var entries []StagedEntry
+	require.NoError(t, json.Unmarshal(data, &entries))
+	return sortedEntries(entries)
+}
+
+// TestR2B_FileClassStagedNotWritten: after materialization the consumed
+// paths DO NOT EXIST (no uid-2000-owned ~/.ssh, ~/.git-credentials,
+// secrets base) — the files are staged owner-only, awaiting the uid-1000
+// pull-side delivery. This is the ownership fix's construction half.
+func TestR2B_FileClassStagedNotWritten(t *testing.T) {
 	m, paths := crossUIDFixture(t)
 
 	_, err := m.Materialize([]Secret{
@@ -66,20 +75,69 @@ func TestCrossUID_ToolConsumedFilesGroupReadable(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	requirePerm(t, paths.SecretsBaseDir, 0o770, "secret-file root must be group-traversable (nested binds)")
-	requirePerm(t, filepath.Join(paths.SecretsBaseDir, "app"), 0o770, "nested mount dirs must be group-traversable")
-	requirePerm(t, filepath.Join(paths.SecretsBaseDir, "app", "config.env"), 0o640, "secret-file content must be tool-readable via gid 1000")
-	requirePerm(t, paths.SSHDir, 0o770, "ssh dir must be group-traversable")
-	requirePerm(t, filepath.Join(paths.SSHDir, "id_ed25519_deploy"), 0o640, "ssh keys must be tool-readable via gid 1000")
-	requirePerm(t, filepath.Join(paths.SSHDir, "config"), 0o640, "ssh config must be tool-readable via gid 1000")
-	requirePerm(t, paths.GitCredsPath, 0o640, "git-credentials must be tool-readable via gid 1000")
+	for _, p := range []string{
+		paths.SSHDir,
+		paths.GitCredsPath,
+		paths.SecretsBaseDir,
+	} {
+		_, err := os.Lstat(p)
+		require.True(t, os.IsNotExist(err),
+			"%s must not be created by the materializer (R2b: the consumer's uid writes it)", p)
+	}
+
+	entries := readManifest(t, paths.StagingDir)
+	require.Len(t, entries, 4, "key + assembled config + git creds + secret-file → 4 staged entries")
+	targets := map[string]StagedEntry{}
+	for _, e := range entries {
+		targets[e.Target] = e
+	}
+	require.Contains(t, targets, filepath.Join(paths.SSHDir, "id_ed25519_deploy"))
+	require.Contains(t, targets, filepath.Join(paths.SSHDir, "config"))
+	require.Contains(t, targets, paths.GitCredsPath)
+	require.Contains(t, targets, filepath.Join(paths.SecretsBaseDir, "app", "config.env"))
+	require.Equal(t, ModeSSHPrivateKey, targets[filepath.Join(paths.SSHDir, "id_ed25519_deploy")].Mode)
+	require.Equal(t, ModeSSHConfig, targets[filepath.Join(paths.SSHDir, "config")].Mode)
+	require.Equal(t, ModeGitCredential, targets[paths.GitCredsPath].Mode)
+
+	// Staged bytes carry the mode contract and the owner-only shape.
+	stagedKey := filepath.Join(paths.StagingDir, "ssh", "id_ed25519_deploy")
+	requirePerm(t, stagedKey, os.FileMode(ModeSSHPrivateKey), "staged key is owner-only — the delivery side owns the final mode")
+
+	cfg, err := os.ReadFile(filepath.Join(paths.StagingDir, "ssh", "config"))
+	require.NoError(t, err)
+	require.Contains(t, string(cfg), "Include config.d/*\n",
+		"user fragments get a durable home reloads never touch")
+	require.Contains(t, string(cfg), "Host github.com")
+
+	// CrossUID must NOT widen staged or delivered file-class modes: the
+	// 0640 group-read bridge is dead for these classes.
+	requirePerm(t, filepath.Join(paths.StagingDir, "ssh", "config"), os.FileMode(ModeSSHConfig), "staged config owner-only regardless of CrossUID")
 }
 
-// TestCrossUID_SecretsEnvGroupReadableForBootHandoff: secrets-env is
-// written by the INIT container (uid 1000) and read by the SIDECAR's
-// boot push (uid 2000) — the cross-uid READ bridge is the shared gid.
-// The uid-1000 EXCLUSION is the mount topology (the agentd-secrets
-// volume is never mounted in the workspace container), not the mode.
+// TestR2B_SecretFileModeContract: the mode table + user override, and the
+// rejection of deliverable-weakening overrides.
+func TestR2B_SecretFileModeContract(t *testing.T) {
+	mode, err := resolveSecretFileMode(nil)
+	require.NoError(t, err)
+	require.Equal(t, ModeSecretFile, mode)
+
+	mode, err = resolveSecretFileMode(map[string]string{"mode": "0640"})
+	require.NoError(t, err)
+	require.Equal(t, 0o640, mode, "a user-nominated group-read mode is honored")
+
+	_, err = resolveSecretFileMode(map[string]string{"mode": "0660"})
+	require.Error(t, err, "group-write is never deliverable")
+	_, err = resolveSecretFileMode(map[string]string{"mode": "0666"})
+	require.Error(t, err, "world-write is never deliverable")
+	_, err = resolveSecretFileMode(map[string]string{"mode": "99"})
+	require.Error(t, err, "non-octal rejected")
+}
+
+// TestCrossUID_SecretsEnvGroupReadableForBootHandoff: secrets-env is the
+// one remaining cross-uid FILE crossing the materializer writes (init
+// uid 1000 writes, sidecar uid 2000 reads at boot) — the shared gid is
+// the read bridge, and the reader is a platform process with no parser
+// constraints.
 func TestCrossUID_SecretsEnvGroupReadableForBootHandoff(t *testing.T) {
 	m, paths := crossUIDFixture(t)
 
@@ -106,51 +164,63 @@ func TestDefault_SecretsEnvStaysOwnerOnly(t *testing.T) {
 	requirePerm(t, paths.SecretsEnvPath, 0o600, "single-container: owner-only secrets-env")
 }
 
-// TestCrossUID_ReMaterializeSucceedsAcrossOwnership: the ruling's core
-// scenario — dirs/files first owned by "uid 1000" (the init container's
-// boot materialization), then re-materialized by the "uid 2000" sidecar.
-// Same-os-user in tests, but the MODES are what carry the property in
-// production: group bits on every rt/* store the rewrite touches.
-func TestCrossUID_ReMaterializeSucceedsAcrossOwnership(t *testing.T) {
+// TestR2B_ReloadReplacesStagingAtomically: two generations — the second
+// publish fully replaces the first (revocation is absence), and no
+// scratch trees survive a completed pass.
+func TestR2B_ReloadReplacesStagingAtomically(t *testing.T) {
 	m, paths := crossUIDFixture(t)
 
-	// First generation (init container, CrossUID=false: uid-1000-only).
-	boot := &Materializer{FS: m.FS, Paths: m.Paths}
-	_, err := boot.Materialize([]Secret{
+	_, err := m.Materialize([]Secret{
 		{Type: "secret-file", Name: "cfg", Plaintext: "gen1",
 			Metadata: map[string]string{"mount_path": "config.env"}},
+		{Type: "secret-file", Name: "gone", Plaintext: "temp",
+			Metadata: map[string]string{"mount_path": "gone.env"}},
 	})
 	require.NoError(t, err)
+	require.Len(t, readManifest(t, paths.StagingDir), 2)
 
-	// Second generation (sidecar reload, cross-uid modes): reset() must
-	// unlink the uid-1000-owned tree and rebuild it group-readable.
 	_, err = m.Materialize([]Secret{
 		{Type: "secret-file", Name: "cfg", Plaintext: "gen2",
 			Metadata: map[string]string{"mount_path": "config.env"}},
 	})
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(filepath.Join(paths.SecretsBaseDir, "config.env"))
+	entries := readManifest(t, paths.StagingDir)
+	require.Len(t, entries, 1, "the revoked secret is absent from the new staging (absence is the delete)")
+
+	data, err := os.ReadFile(filepath.Join(paths.StagingDir, "secrets", "config.env"))
 	require.NoError(t, err)
 	require.Equal(t, "gen2", string(data), "reload must fully replace boot materialization")
+
+	for _, scratch := range []string{paths.StagingDir + ".tmp", paths.StagingDir + ".old"} {
+		_, err := os.Lstat(scratch)
+		require.True(t, os.IsNotExist(err), "no scratch tree survives a completed pass: %s", scratch)
+	}
 }
 
-// TestCrossUID_DisabledKeepsOwnerOnlyModes: the single-container
-// regression pin — CrossUID=false keeps the exact pre-US-4b modes.
-func TestCrossUID_DisabledKeepsOwnerOnlyModes(t *testing.T) {
+// TestR2B_UserStateSurvivesMaterializePasses: the #1165 reset-blast-radius
+// regression pin — uid-1000-owned user files in the consumed dirs (e.g.
+// ssh's own known_hosts) are NEVER touched by materialize/reload passes,
+// because the materializer never writes or resets those dirs.
+func TestR2B_UserStateSurvivesMaterializePasses(t *testing.T) {
 	m, paths := crossUIDFixture(t)
-	m.CrossUID = false
+
+	require.NoError(t, os.MkdirAll(paths.SSHDir, 0o700))
+	knownHosts := filepath.Join(paths.SSHDir, "known_hosts")
+	require.NoError(t, os.WriteFile(knownHosts, []byte("github.com ssh-ed25519 AAAA\n"), 0o600))
 
 	_, err := m.Materialize([]Secret{
-		{Type: "secret-file", Name: "cfg", Plaintext: "x",
-			Metadata: map[string]string{"mount_path": "config.env"}},
-		{Type: "ssh-key", Name: "k", Plaintext: "x"},
-		{Type: "git-credential", Name: "g", Plaintext: "tok"},
+		{Type: "ssh-key", Name: "deploy", Plaintext: "key",
+			Metadata: map[string]string{"host": "github.com"}},
 	})
 	require.NoError(t, err)
+	_, err = m.Materialize([]Secret{
+		{Type: "ssh-key", Name: "deploy", Plaintext: "key2",
+			Metadata: map[string]string{"host": "github.com"}},
+	})
+	require.NoError(t, err, "second pass (reload) must succeed")
 
-	requirePerm(t, paths.SecretsBaseDir, 0o700, "single-container: owner-only dirs")
-	requirePerm(t, filepath.Join(paths.SecretsBaseDir, "config.env"), 0o600, "single-container: owner-only files")
-	requirePerm(t, filepath.Join(paths.SSHDir, "id_ed25519_k"), 0o600, "single-container: owner-only ssh keys")
-	requirePerm(t, paths.GitCredsPath, 0o600, "single-container: owner-only git-credentials")
+	data, err := os.ReadFile(knownHosts)
+	require.NoError(t, err, "the user's known_hosts must survive every materialize pass")
+	require.Equal(t, "github.com ssh-ed25519 AAAA\n", string(data))
 }

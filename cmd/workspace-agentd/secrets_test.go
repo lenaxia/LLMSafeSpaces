@@ -114,6 +114,10 @@ func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDi
 		"LLMSAFESPACES_SECRETS_ENV_PATH="+envPath,
 		"LLMSAFESPACES_GIT_CREDS_PATH="+gitCreds,
 		"LLMSAFESPACES_RELOAD_CACHE_PATH="+filepath.Join(filepath.Dir(secretsBase), "nonexistent-reload-cache.json"),
+		// Neutralize the ambient pod env: when the suite runs inside a
+		// sidecar-mode workspace pod, CROSS_UID=1 would flip the
+		// subcommand to stage-only (R2b) and starve the delivery asserts.
+		"LLMSAFESPACES_CROSS_UID_FILES=",
 		"HOME="+filepath.Dir(sshDir),
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)

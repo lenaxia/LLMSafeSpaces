@@ -231,10 +231,12 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	require.Contains(t, string(data), "MY_PROVIDER_KEY")
 }
 
-// TestReloadHandler_SidecarEndToEnd_CrossUIDModes: with the sidecar's
-// LLMSAFESPACES_CROSS_UID_FILES armed, the SAME handler's materialization
-// must produce group-readable rt/* stores (US-4b: uid-2000 writes,
-// uid-1000 tools read via gid 1000).
+// TestReloadHandler_SidecarEndToEnd_StagesOnly (R2b, #1165): with the
+// sidecar's LLMSAFESPACES_CROSS_UID_FILES armed, the handler's
+// materialization STAGES owner-only and never writes the consumed rt/*
+// paths — delivery belongs to the uid-1000 supervisor pull (pinned by the
+// exec suite). This replaces the US-4b 0640 group-read regime, which
+// solved readability but not the consumers' ownership checks.
 func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	withTestLogger(t)
 	dir := t.TempDir()
@@ -247,6 +249,7 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "rt", "git-credentials"))
 	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "last-reload.json"))
 	t.Setenv("LLMSAFESPACES_CROSS_UID_FILES", "1")
+	t.Setenv(stagingDirEnvOverride, filepath.Join(dir, "staged"))
 
 	proc := &fakeRestartProc{}
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
@@ -265,14 +268,20 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	h(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
-	fileInfo, err := os.Stat(filepath.Join(secretsDir, "app", "config.env"))
+	// Staged owner-only with the manifest contract.
+	staged, err := os.ReadFile(filepath.Join(dir, "staged", "secrets", "app", "config.env"))
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o640), fileInfo.Mode().Perm(),
-		"cross-uid reload: secret-file must be gid-1000 readable")
-	dirInfo, err := os.Stat(secretsDir)
+	require.Equal(t, "tool-bytes", string(staged))
+	stInfo, err := os.Stat(filepath.Join(dir, "staged", "secrets", "app", "config.env"))
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o770), dirInfo.Mode().Perm(),
-		"cross-uid reload: secret-file root must be gid-1000 traversable")
+	require.Equal(t, os.FileMode(0o600), stInfo.Mode().Perm(), "staged bytes are owner-only")
+
+	// The consumed path is NOT written by the sidecar — the supervisor
+	// pull owns it (ownership by construction, #1165).
+	_, err = os.Stat(filepath.Join(secretsDir, "app", "config.env"))
+	require.True(t, os.IsNotExist(err), "sidecar reload must not write consumed paths")
+	_, err = os.Stat(secretsDir)
+	require.True(t, os.IsNotExist(err), "not even the consumed dir is created by the sidecar")
 }
 
 // --- review round 1: boot ordering + degradation ------------------------------

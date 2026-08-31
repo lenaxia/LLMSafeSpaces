@@ -280,12 +280,13 @@ func TestReloadSecretsHandler_PersistsCacheAfterMaterialize(t *testing.T) {
 func TestReloadSecretsHandler_DoesNotPersistOnFailure(t *testing.T) {
 	cfg, dir := newPersistTestCfg(t)
 
-	// Point secretsBaseDir at an unwritable location so Materialize's reset()
-	// (MkdirAll) fails, producing a 500.
+	// R2b (#1165): the platform-owned materialize failure surface is now
+	// the STAGING tree (the consumed file-class dirs are delivery-side
+	// state). An unwritable staging parent fails reset()'s MkdirAll → 500.
 	roDir := filepath.Join(dir, "ro")
 	require.NoError(t, os.Mkdir(roDir, 0o500))
 	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
-	cfg.secretsBaseDir = filepath.Join(roDir, "secrets")
+	cfg.stagingDir = filepath.Join(roDir, "staged")
 
 	body := `[{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))

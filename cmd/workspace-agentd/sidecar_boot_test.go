@@ -56,6 +56,7 @@ func setSidecarMaterializeEnv(t *testing.T, dir string) {
 	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
 	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "reload-cache.json"))
+	t.Setenv(stagingDirEnvOverride, filepath.Join(dir, "staged"))
 	require.NoError(t, os.MkdirAll(os.Getenv("HOME"), 0o755))
 }
 

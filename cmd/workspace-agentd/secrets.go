@@ -318,9 +318,15 @@ type materializeConfig struct {
 	// LLMSAFESPACES_CROSS_UID_FILES (controller wires it on the sidecar
 	// only); every other construction keeps the owner-only modes.
 	crossUID bool
+	// stagingDir is the R2b staging tree root (see toPaths).
+	stagingDir string
 }
 
 func (c materializeConfig) toPaths() secrets.Paths {
+	staging := c.stagingDir
+	if staging == "" {
+		staging = stagingDirFor(c.secretsEnvPath, c.crossUID)
+	}
 	return secrets.Paths{
 		Home:            c.home,
 		SecretsBaseDir:  c.secretsBaseDir,
@@ -328,6 +334,25 @@ func (c materializeConfig) toPaths() secrets.Paths {
 		AgentConfigPath: c.agentConfigPath,
 		SecretsEnvPath:  c.secretsEnvPath,
 		GitCredsPath:    c.gitCredsPath,
+		StagingDir:      staging,
+	}
+}
+
+// deliveryFromCfg builds the file-class delivery applier for contexts
+// where the materializer runs as the CONSUMING uid (single-container boot
+// and reload — crossUID false): it applies the just-published staging
+// manifest directly, writing the same ledger the supervisor's pull side
+// uses, so revocation stays exact across every writer (R2b, #1165).
+func (c materializeConfig) deliveryFromCfg() fileDelivery {
+	return fileDelivery{
+		roots: []string{c.sshDir, c.secretsBaseDir, filepath.Dir(c.gitCredsPath)},
+		ledgerPath: func() string {
+			if v := os.Getenv(fileDeliveryLedgerEnvOverride); v != "" {
+				return v
+			}
+			return filepath.Join(filepath.Dir(c.secretsEnvPath), "spawn-files-ledger.json")
+		}(),
+		sshDir: c.sshDir,
 	}
 }
 
@@ -351,6 +376,20 @@ func loadMaterializeConfig() materializeConfig {
 		reloadCachePath:  envOrDefault("LLMSAFESPACES_RELOAD_CACHE_PATH", agentd.ReloadSecretsCachePath),
 		crossUID:         os.Getenv("LLMSAFESPACES_CROSS_UID_FILES") == "1",
 	}
+}
+
+// stagingDirFor resolves the R2b staging root: explicit override first;
+// sidecar contexts (crossUID) stage on the roomy shared tmpfs; otherwise
+// beside the env file (same tmpfs in production, and tests that override
+// the env path get an isolated staging tree for free).
+func stagingDirFor(envPath string, crossUID bool) string {
+	if v := os.Getenv(stagingDirEnvOverride); v != "" {
+		return v
+	}
+	if crossUID {
+		return "/sandbox-runtime/staged-secret-files"
+	}
+	return filepath.Join(filepath.Dir(envPath), "staged-secret-files")
 }
 
 func envOrDefault(key, def string) string {
@@ -430,6 +469,16 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 
 	if err != nil && !errors.Is(err, secrets.ErrPartialFailure) {
 		_, _ = fmt.Fprintf(stderr, "materialize: %v\n", err)
+		return 3
+	}
+
+	// R2b (#1165): the materialize subcommand runs as the CONSUMING uid
+	// (single-container boot; the sidecar materializes in-process), so it
+	// delivers the staged manifest directly — same applier, same ledger as
+	// the supervisor's pull side. Boot keeps today's synchronous
+	// file-present guarantee (#443/#1087); ownership is by construction.
+	if dErr := deliverStaged(cfg); dErr != nil {
+		_, _ = fmt.Fprintf(stderr, "materialize: file delivery: %v\n", dErr)
 		return 3
 	}
 
@@ -903,6 +952,19 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 
 		m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
 		result, mErr := m.Materialize(batch)
+
+		// R2b (#1165): single-container reload (crossUID false) runs as
+		// the consuming uid — deliver now. Sidecar reload only STAGES;
+		// the uid-1000 supervisor pull delivers at the next spawn.
+		if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
+			if dErr := deliverStaged(cfg); dErr != nil {
+				reloadMu.Unlock()
+				log.Error("reload-secrets: file delivery failed", zap.Error(dErr))
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": dErr.Error()})
+				return
+			}
+		}
 
 		if mErr != nil && !errors.Is(mErr, secrets.ErrPartialFailure) {
 			reloadMu.Unlock()

@@ -55,9 +55,12 @@ func (s *supervisorStatusStore) spawnEnvHealth() *agentd.SpawnEnvHealth {
 		return nil
 	}
 	return &agentd.SpawnEnvHealth{
-		SpawnedRev: st.SpawnedRev,
-		Degraded:   st.SpawnEnvDegraded,
-		Reason:     st.SpawnEnvReason,
+		SpawnedRev:    st.SpawnedRev,
+		Degraded:      st.SpawnEnvDegraded,
+		Reason:        st.SpawnEnvReason,
+		FilesRev:      st.FilesRev,
+		FilesDegraded: st.SpawnFilesReason != "",
+		FilesReason:   st.SpawnFilesReason,
 	}
 }
 
@@ -96,8 +99,15 @@ func startSupervisorStatusPoller(ctx context.Context, wg *sync.WaitGroup, cc *co
 // AgentHealthy condition message; the copy must not contain semicolons).
 // Empty string when there is no degrade to report.
 func spawnEnvWarning(h *agentd.SpawnEnvHealth) string {
-	if h == nil || !h.Degraded || h.Reason == "" {
+	if h == nil {
 		return ""
 	}
-	return "degraded:" + h.Reason
+	switch {
+	case h.Degraded && h.Reason != "":
+		return "degraded:" + h.Reason
+	case h.FilesDegraded && h.FilesReason != "":
+		return "degraded:" + h.FilesReason
+	default:
+		return ""
+	}
 }
