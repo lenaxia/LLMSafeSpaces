@@ -390,3 +390,33 @@ func TestAgentdSidecar_ControlPlanePasswordEnvAndIsolation(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentdSidecar_WorkspaceContainerSandboxRuntimeRW (R2b, #1165): the
+// uid-1000 workspace container must mount /sandbox-runtime READ-WRITE in
+// sidecar mode — the file-class delivery applier (supervisor preSpawn and
+// the materialize direct path) writes the consumed credential files there
+// as the consuming uid. Evidenced live by #1165's uid-1000-written
+// known_hosts; pinned here so a future mount-topology change cannot
+// silently break delivery by turning the volume RO.
+func TestAgentdSidecar_WorkspaceContainerSandboxRuntimeRW(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	var main *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == "workspace" {
+			main = &pod.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, main, "workspace container must exist")
+
+	mnt := sidecarVolumeMount(main, "sandbox-runtime")
+	require.NotNil(t, mnt, "workspace container must mount /sandbox-runtime in sidecar mode")
+	require.False(t, mnt.ReadOnly,
+		"R2b: the consuming uid WRITES the delivered credential files (ownership by construction)")
+	require.Equal(t, "/sandbox-runtime", mnt.MountPath)
+}

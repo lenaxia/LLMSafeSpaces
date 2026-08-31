@@ -140,3 +140,41 @@ func TestCheckAgentHealth_UnreachableClearsSecretsDelivery(t *testing.T) {
 	assert.Nil(t, ws.Status.SecretsDelivery,
 		"a stale value from an unreachable pod must not survive — no evidence beats stale evidence")
 }
+
+// TestCheckAgentHealth_MirrorsFilesRev (R2b, #1165): the file-class
+// terminal revision mirrors into the CRD alongside spawnedRev, and a
+// files-only degrade (env healthy) still surfaces its reason.
+func TestCheckAgentHealth_MirrorsFilesRev(t *testing.T) {
+	r, ws, _ := setupSpawnEnvHealthTest(t, agentd.HealthzResponse{
+		Healthy: true,
+		SpawnEnv: &agentd.SpawnEnvHealth{
+			SpawnedRev:    "rev-env",
+			FilesRev:      "rev-files",
+			FilesDegraded: true,
+			FilesReason:   "spawn_files_unavailable",
+		},
+	})
+
+	r.checkAgentHealth(context.Background(), ws)
+
+	require.NotNil(t, ws.Status.SecretsDelivery)
+	assert.Equal(t, "rev-env", ws.Status.SecretsDelivery.SpawnedRev)
+	assert.Equal(t, "rev-files", ws.Status.SecretsDelivery.FilesRev)
+	assert.Equal(t, "spawn_files_unavailable", ws.Status.SecretsDelivery.DegradedReason,
+		"a files-only degrade still carries its machine-readable reason")
+}
+
+// TestCheckAgentHealth_FilesRevConverged (R2b): healthy file delivery
+// mirrors the rev with no degrade.
+func TestCheckAgentHealth_FilesRevConverged(t *testing.T) {
+	r, ws, _ := setupSpawnEnvHealthTest(t, agentd.HealthzResponse{
+		Healthy:  true,
+		SpawnEnv: &agentd.SpawnEnvHealth{SpawnedRev: "rev-a", FilesRev: "rev-f"},
+	})
+
+	r.checkAgentHealth(context.Background(), ws)
+
+	require.NotNil(t, ws.Status.SecretsDelivery)
+	assert.Equal(t, "rev-f", ws.Status.SecretsDelivery.FilesRev)
+	assert.Empty(t, ws.Status.SecretsDelivery.DegradedReason)
+}

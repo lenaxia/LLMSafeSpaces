@@ -1,6 +1,6 @@
 # 0053 — Platform overlay delivery: the base is the OS
 
-**Status:** Approved (design — no implementation yet)
+**Status:** Implemented — S1–S4 merged (#1126 S1, #1152 S2, #1156 S3+S4 incl. the S1-remainder artifact), S5 kind suite shipped (#1169); flip pending a green S5 run. The S3 merge gate — Epic 70 US-70.1 (sidecar env-class secret handoff, design 0057) — landed first (#1164).
 **Date:** 2026-08-28
 **Issue:** #1116
 **Related:** #863 + `docs/operator/agentd-delivery.md` (image-volume mechanism), `design/0051_2026-08-18_agentd-uid-separation.md` (sidecar architecture, uid tiers), `design/0046_2026-08-01_image-factory.md` (factory; ruling #29), worklog 0657 (opencode 1.15.12→1.18.10 validation), incident 2026-08-25 (#871 baked-agentd contract drift)
@@ -118,6 +118,8 @@ It keeps: the apt set, `mise` + the baked runtimes, `gh`/`aws` CLIs, `useradd -u
 
 ## 7. Rollout (stories)
 
+> **Status (2026-08-31):** S1 ✅ (#1126 + artifact/CI remainder in #1156) · S2 ✅ (#1152) · S3+S4 ✅ (#1156 — sequenced behind the US-70.1 gate: Epic 70 #1158/#1164, design 0057, per the live-credential-handoff finding) · S5 suite shipped ✅ (#1169 — `local/s5-overlay-validation.yml`); **defaults flip pending a green S5 run** (flip inventory: worklog NNNN_2026-08-31; runbook `docs/runbooks/sidecar-flip.md`).
+
 - **S1 — opencode artifact.** Standalone `opencode` image (`FROM scratch`, fixed path), CI per-arch stamping, `opencodeDelivery` Helm values + controller wiring, supervisor spawn + verify. Inert until the base is stripped.
 - **S2 — redact subcommand.** Fold `cmd/redact` into agentd; supervisor PATH wrapper; delete `cmd/redact`.
 - **S3 — base strip + pod env.** Remove platform artifacts + ENV from `runtimes/base`; controller injects env; pins become mandatory; delete baked-fallback branches; entrypoints deleted with glue absorbed.
@@ -128,10 +130,10 @@ Story ordering allows S1/S2 in parallel with S3 prep; S4 must land with S3 (fact
 
 ## 8. Risks / open questions
 
-- **Resume-path pull cost.** The ~22s suspend→active time is dominated by PVC re-attach + opencode boot. agentd's 25MB volume was sized for cheap resume pulls; opencode is ~10×. Digest-pinned + node layer cache should absorb it, but S5 must measure resume before/after on a cold node.
-- **gVisor + image volumes.** Design 0051 flags nested RO+RW subPath mount behavior under `runsc` as the big unvalidated item for sidecar mode; image volumes under gVisor inherit that gap. S5 must include a `runsc` leg before default-on.
-- **Two pins in the release process.** Renovate needs per-artifact `helm-values` rules (automerge like agentd's). The release runbook gains the opencode artifact row.
-- **mise-baked runtime pins** (python/node/rust/go/java) previously moved implicitly with the platform train; after the strip they move on the base's own cadence. Validation ownership transfers to the base image's CI — must be explicit in S3, or tool bumps ship untested.
+- **Resume-path pull cost.** *Measured by S5.5* (`local/s5-overlay-validation.sh`; number lands in the job summary). The ~22s suspend→active time is dominated by PVC re-attach + opencode boot. agentd's 25MB volume was sized for cheap resume pulls; opencode is ~10×. Digest-pinned + node layer cache should absorb it, but S5 must measure resume before/after on a cold node.
+- **gVisor + image volumes.** *Covered by S5.6 (runsc leg; loud-skip only).* Design 0051 flags nested RO+RW subPath mount behavior under `runsc` as the big unvalidated item for sidecar mode; image volumes under gVisor inherit that gap. S5 must include a `runsc` leg before default-on.
+- **Two pins in the release process.** *Disposition:* no Renovate rules exist for either artifact (the in-repo-built images are invisible to the docker manager); the upstream OPENCODE_VERSION pin is tracked by the bespoke `opencode-version-bump.yml` (stronger than Renovate — it enforces the REFRESH.md fixture gate), and release-time digest values come from the CI-printed values block (create-release table carries the opencode row).
+- **mise-baked runtime pins** (ownership transferred in S3: the base's build-time smoke test covers toolchain resolution) (python/node/rust/go/java) previously moved implicitly with the platform train; after the strip they move on the base's own cadence. Validation ownership transfers to the base image's CI — must be explicit in S3, or tool bumps ship untested.
 - **Registry availability at pod creation.** Overlay delivery already depends on pulling the agentd image volume; this adds a second pull. The pins ConfigMap protects annotation resolution, not pulls — same exposure as today's #863, but doubled. Accepted; node caching mitigates.
 
 ## 9. Assumptions (stated and validated — README-LLM Rule 7)

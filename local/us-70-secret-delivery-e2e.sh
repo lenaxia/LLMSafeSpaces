@@ -456,6 +456,55 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# AC-F (R2b, #1165) — file-class ownership flip: bind an ssh-key secret →
+# the delivered ~/.ssh artifacts are uid-1000-owned with the mode contract
+# (ownership by construction; OpenSSH's ownership check passes).
+# -----------------------------------------------------------------------------
+WSF=$(ws_id 4)
+log "AC-F — bind ssh-key → uid-1000-owned ~/.ssh artifacts + files_rev"
+
+seed_workspace "${WSF}" "${USER_ID}"
+wait_phase "${WSF}" Active 240 || die "AC-F: workspace never Active"
+
+# Bind an ssh-key via the secrets API.
+SF_BODY=$(jq -nc --arg n "deploy" '{name:("e2e-sd-ssh-deploy"),type:"ssh-key",value:"ssh-ed25519 E2EKEYBYTES",metadata:{key_type:"ed25519",host:"github.com"}}')
+SF_STATUS=$(curl -sm 30 -o /tmp/opencode/sf.json -w "%{http_code}" -X POST \
+    -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+    -d "$SF_BODY" "http://127.0.0.1:${PORTFWD_PORT}/api/v1/secrets")
+[[ "${SF_STATUS}" == "201" || "${SF_STATUS}" == "200" ]] || die "AC-F: secret create returned ${SF_STATUS}: $(cat /tmp/opencode/sf.json)"
+SF_ID=$(jq -r .id /tmp/opencode/sf.json)
+curl -sfm 30 -X PUT -H "Authorization: Bearer ${API_KEY}" -H "Content-Type: application/json" \
+    -d "{\"secretIds\":[\"${SF_ID}\"]}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WSF}/bindings" >/dev/null \
+    || die "AC-F: bind failed"
+
+secrets_converged "${WSF}" 180 || die "AC-F: secretsDelivery not healthy after bind"
+PODF=$(pod_of "${WSF}")
+RCF=$(runtime_container "${PODF}")
+SSH_OK=false
+for _i in $(seq 1 40); do
+    OUT=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- sh -c \
+        'ls -l /sandbox-runtime/rt/ssh/ 2>/dev/null; id -u' 2>/dev/null || true)
+    # The delivered key must be owned by the container's own uid (1000) at 0600.
+    if echo "$OUT" | grep -q "id_ed25519_deploy" \
+        && ! echo "$OUT" | grep -q " 1 sandbox .*id_ed25519_deploy\| 2000 .*id_ed25519_deploy"; then
+        MODE=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- stat -c %a /sandbox-runtime/rt/ssh/id_ed25519_deploy 2>/dev/null || echo "")
+        CFGOWN=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- stat -c %u /sandbox-runtime/rt/ssh/config 2>/dev/null || echo "")
+        UID1000=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- id -u 2>/dev/null || echo "")
+        if [[ "${MODE}" == "600" && "${CFGOWN}" == "${UID1000}" ]]; then SSH_OK=true; break; fi
+    fi
+    sleep 3
+done
+if [[ "${SSH_OK}" == "true" ]]; then
+    ok "AC-F PASS: ssh key delivered uid-owned 0600, config owner = consuming uid (R2b)"
+else
+    die "AC-F FAIL: ssh artifacts not uid-1000-owned with mode contract (last: ${OUT:-<none>})"
+fi
+FREV=$(kc get workspace "${WSF}" -o jsonpath='{.status.secretsDelivery.filesRev}' 2>/dev/null)
+[[ -n "${FREV}" ]] || FREV=$(kc get workspace "${WSF}" -o jsonpath='{.status.secretsDelivery.filesRev}')
+[[ -n "${FREV}" ]] || die "AC-F FAIL: filesRev not surfaced on the CRD"
+
+# -----------------------------------------------------------------------------
 # Chaos — agent killed mid-turn → restart re-pulls, env survives, converge
 # -----------------------------------------------------------------------------
 WSCH=$(ws_id 3)

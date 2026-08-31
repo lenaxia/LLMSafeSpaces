@@ -212,9 +212,11 @@ type fakeAdmitter struct {
 	maxInFl  int
 }
 
-// setError mutates the scripted failure under the same lock Admit reads
-// it with (the driver's admission goroutine races a bare field write).
-func (f *fakeAdmitter) setError(err error) {
+// setErr mutates err under the fake's mutex: the delivery driver's
+// goroutine reads err inside Admit, so a bare test-side assignment races
+// with an in-flight retry (caught by CI's -race; the write must go
+// through the same lock the reader holds).
+func (f *fakeAdmitter) setErr(err error) {
 	f.mu.Lock()
 	f.err = err
 	f.mu.Unlock()
@@ -289,7 +291,7 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, LedgerStateLedgered, st.State, "failed admission returns to retryable ledgered")
 
-	admitter.setError(nil)
+	admitter.setErr(nil)
 	_, _, err = d.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, err)
 	waitFor(t, func() bool {

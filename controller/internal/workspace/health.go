@@ -172,9 +172,13 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		if healthResp.SpawnEnv.Degraded {
 			reason = healthResp.SpawnEnv.Reason
 		}
+		if reason == "" && healthResp.SpawnEnv.FilesDegraded {
+			reason = healthResp.SpawnEnv.FilesReason
+		}
 		ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{
 			SpawnedRev:     healthResp.SpawnEnv.SpawnedRev,
 			DegradedReason: reason,
+			FilesRev:       healthResp.SpawnEnv.FilesRev,
 		}
 	}
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",

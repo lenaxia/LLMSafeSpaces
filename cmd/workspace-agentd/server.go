@@ -381,6 +381,11 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// carve-out credential), never agentdPassword.
 	userMux.HandleFunc("/v1/spawn-env", spawnEnvHandler(deps.password, deps.controlPlanePassword, secretsEnvPathFromEnv()))
 
+	// R2b (#1165): the file-class pull endpoint — staged manifest +
+	// canonical bytes, same §D1 gate. The uid-1000 supervisor delivers
+	// them into the consumed paths itself (ownership by construction).
+	userMux.HandleFunc("/v1/spawn-files", spawnFilesHandler(deps.password, deps.controlPlanePassword, stagingDirPath()))
+
 	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
 		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,

@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,16 +43,24 @@ const execPullPassword = "exec-pull-pw"
 // pull from.
 func startPullMux(t *testing.T, secretsEnvPath string) string {
 	t.Helper()
-	h := spawnEnvHandler(execPullPassword, "", secretsEnvPath)
-	srv := httptest.NewServer(http.HandlerFunc(h))
+	mux := http.NewServeMux()
+	mux.Handle("/v1/spawn-env", http.HandlerFunc(spawnEnvHandler(execPullPassword, "", secretsEnvPath)))
+	mux.Handle("/v1/spawn-files", http.HandlerFunc(spawnFilesHandler(execPullPassword, "", filepath.Join(t.TempDir(), "staged"))))
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.Listener.Addr().String()
 }
 
 func pullEnvFor(addr string) []string {
+	dir, _ := os.MkdirTemp("", "spawn-pull-rt-*")
 	return []string{
 		"LLMSAFESPACES_SPAWN_ENV_PULL_ADDR=" + addr,
 		"OPENCODE_SERVER_PASSWORD=" + execPullPassword,
+		// Hermetic file-delivery roots/ledger: absent these, the files
+		// pull would target /sandbox-runtime (absent on CI runners) and
+		// degrade every spawn with spawn_files_unavailable.
+		fileDeliveryRootsEnvOverride + "=" + dir,
+		fileDeliveryLedgerEnvOverride + "=" + filepath.Join(dir, "led.json"),
 	}
 }
 

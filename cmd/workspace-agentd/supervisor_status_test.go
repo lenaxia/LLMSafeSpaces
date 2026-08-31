@@ -154,3 +154,28 @@ func TestHealthzHandler_SpawnEnvFieldAndWarning(t *testing.T) {
 		require.Empty(t, resp.Warnings)
 	})
 }
+
+// spawnEnvHealth projects the files-family fields (R2b, #1165): filesRev
+// mirrors through, and the warning renders the files reason when it is
+// the active degrade.
+func TestSpawnEnvHealth_ProjectsFilesRevAndFilesReason(t *testing.T) {
+	var store supervisorStatusStore
+	store.set(&controlStatus{
+		SpawnedRev:       "rev-env",
+		FilesRev:         "rev-files",
+		SpawnFilesReason: spawnFilesReasonUnavailable,
+	})
+	h := store.spawnEnvHealth()
+	require.NotNil(t, h)
+	require.Equal(t, "rev-files", h.FilesRev)
+	require.True(t, h.FilesDegraded)
+	require.Equal(t, spawnFilesReasonUnavailable, h.FilesReason)
+	require.Equal(t, "degraded:"+spawnFilesReasonUnavailable, spawnEnvWarning(h),
+		"a files degrade must render the same machine-readable warning line")
+}
+
+// A healthy files state with no env degrade renders no warning.
+func TestSpawnEnvWarning_HealthyFilesQuiet(t *testing.T) {
+	h := &agentd.SpawnEnvHealth{SpawnedRev: "a", FilesRev: "b"}
+	require.Empty(t, spawnEnvWarning(h))
+}
