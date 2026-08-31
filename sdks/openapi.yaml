@@ -978,6 +978,44 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/{sessionId}/actions:
+    post:
+      tags: [sessions]
+      summary: Perform a typed session action (design 0055 M1 op 5)
+      description: |
+        Discriminated union — exactly one member per request:
+        `{"interrupt":{}}`, `{"switchModel":{"model":{"id":...,"provider":...}}}`,
+        `{"switchAgent":{"agentId":...}}`,
+        `{"answerQuestion":{"inputId":...,"optionIds":[...],"customText":...}}`,
+        `{"compact":{}}`. The path's sessionId is authoritative over any body
+        value. Requires AGENTD_STATE_AUTHORITY (501 with a not_supported
+        capability body otherwise); actions the pod's capability report does
+        not declare return 501 not_supported.
+      operationId: sessionAction
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              description: The action union (one member per request).
+      responses:
+        "200":
+          description: The typed ActionResult for the executed verb
+        "400":
+          description: Malformed union or missing per-verb fields
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          description: Per-session rate limit exceeded
+        "501":
+          description: Flag off (requires AGENTD_STATE_AUTHORITY) or the action is not declared in the pod's capability report
   /workspaces/{id}/sessions/{sessionId}/queue:
     post:
       tags: [sessions]
