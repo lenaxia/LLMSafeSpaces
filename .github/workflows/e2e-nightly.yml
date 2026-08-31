@@ -15,7 +15,10 @@ jobs:
   e2e-kind:
     name: Full system E2E (kind cluster)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60m: the Epic 70 US-70.1 secret-delivery step provisions a
+    # RESUME_SCALE=100 (AC-13) batch of workspaces, which is the dominant
+    # cost; prior steps had ~30m of headroom.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
@@ -278,6 +281,25 @@ jobs:
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
         run: bash local/us-68-attachments-e2e.sh
+
+      - name: Run secret-delivery e2e rows (Epic 70 US-70.1 AC-1/2/13/17 + chaos)
+        # Cluster-bound spawn-time-pull acceptance rows: cold-create env
+        # (AC-1), suspend→resume env ≤90s with no reload (AC-2), concurrent
+        # resumes with p95 budget + identical spawned_rev (AC-13/17), and
+        # agent-kill convergence (chaos). The nightly runs the bounded
+        # suspend variant (SUSPEND_SECONDS=5); the ≥1h #1087 gate and the
+        # gVisor/runsc leg are gated behind env/flags for the US-70.0 staged
+        # pool (the script SKIPs the runsc leg loudly when no RuntimeClass
+        # is advertised). Seed-created user + API key via local postgres.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18083
+          SUSPEND_SECONDS: 5
+          RESUME_SCALE: 100
+          P95_BUDGET_MS: 30000
+        run: bash local/us-70-secret-delivery-e2e.sh
 
       - name: Run V2 session-queue behavioral e2e (US-63.3/63.4/63.9)
         # Hard-assert behavioral properties that unit tests cannot cover:

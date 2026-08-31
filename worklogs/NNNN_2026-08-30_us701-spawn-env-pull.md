@@ -101,9 +101,42 @@ Independent skeptical-validator delegation returned **PASS** (zero real findings
 - F11 test gaps — added: oversized-body cap test (`TestSpawnEnvPuller_OversizedBodyIsBounded`), concurrent push/pull/compose hammer (`TestAdapterConcurrentPushPullCompose`, `-race`).
 - F3 (stop during backoff eats one pull window, aborted early by ctx cancel in production) and F12 (retained-for-US-70.5 `pushInitialSpawnEnv`; served-but-unconsumed `Rev` field) — documented residuals, no action.
 
+## Iteration (review on PR #1164, 2026-08-31)
+
+The automated reviewer returned `REQUEST CHANGES` on #1164: cluster-bound e2e
+missing for AC-2 (suspend/resume ≤90s), AC-13 (gVisor runsc + 100 concurrent
+resumes + p95), AC-17 (rapid binds), AC-1 latency bound, and chaos-kill.
+
+**Delivered:** `local/us-70-secret-delivery-e2e.sh` — a cluster-bound e2e
+following the `us-68`/`us-63` kind harness conventions, wired into
+`.github/workflows/e2e-nightly.yml` (step after the attachments rows). Rows:
+
+- **AC-1** — cold-create a workspace with an env-secret bound before first
+  Active; assert `/proc/<pid>/environ` of `opencode serve` carries the var and
+  `status.secretsDelivery.spawnedRev` is present + `degradedReason` empty.
+- **AC-2** — bind → suspend → resume → var present in child env and
+  `secretsDelivery` converged ≤90s, owner offline, no manual reload.
+  `SUSPEND_SECONDS` defaults to 5 (nightly); the ≥1h #1087 gate is set by the
+  pool run (`SUSPEND_SECONDS=3600`).
+- **AC-13/17** — `RESUME_SCALE` (default 100) concurrent resumes → sorted p95
+  ≤ `P95_BUDGET_MS` (default 30000) and byte-identical `spawned_rev` across the
+  batch (single-writer/one-truth). The **gVisor (runsc) leg is feature-detected
+  against the cluster's RuntimeClasses** and SKIPs loudly when absent (kind
+  can't run runsc) — the runsc leg remains a US-70.0 staged-pool artifact (epic
+  W7), exactly as the PR body documented.
+- **AC-17 (`SD_B1..B5`)** — rapid sequential env binds on a live workspace → the
+  reload path converges to a healthy `spawned_rev` with no stuck degrade and no
+  lost env.
+- **Chaos** — kill `opencode serve` mid-run → agentd re-spawn re-pulls, env
+  survives, `secretsDelivery` re-converges.
+
+The first-spawn and pull-semantics properties remain deterministically pinned
+by the in-process exec suite (`spawn_env_pull_exec_test.go`); these rows close
+the end-to-end wiring + CRD-mirror + latency gaps the review flagged.
+
 ## Blockers
 
-- Cluster-bound ACs (AC-2 #1087 gate with 1h suspend, gVisor runsc, 100-concurrent resumes, chaos kill) need US-70.0's harness (not yet started — no issue/file exists). In-process analogs are green; the exec tests exercise the real subcommand + real handler.
+- Cluster-bound ACs (AC-2 #1087 gate with 1h suspend, gVisor runsc, 100-concurrent resumes, chaos kill) need US-70.0's harness (not yet started — no issue/file exists). In-process analogs are green; the exec tests exercise the real subcommand + real handler. **Update:** the cluster rows now EXIST (`us-70-secret-delivery-e2e.sh`, nightly-wired); the ≥1h suspend and runsc legs still require the US-70.0 staged pool to PROVISION those resources (runtime + gVisor RuntimeClass), which the script gates and SKIPs loudly when absent.
 - `make deepcopy` is a silent no-op for `pkg/apis` (marker mismatch vs controller-gen output) — hand-extended this session; needs a controller-gen Makefile wiring (flagged for follow-up; flagged in epic README).
 
 ## Tests Run
