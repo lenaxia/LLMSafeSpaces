@@ -41,7 +41,7 @@ func TestIntegration_GetWorkspace_UUIDNameWithRow_Resolves(t *testing.T) {
 
 	_, err := svc.DB.ExecContext(ctx, `
 		INSERT INTO users (id, username, email, password_hash, role)
-		VALUES ($1, $1, $1 || '@example.test', 'unused-by-api-key-auth', 'user')
+		VALUES ($1::text, $1::text, $1::text || '@example.test', 'unused-by-api-key-auth', 'user')
 		ON CONFLICT (id) DO NOTHING
 	`, userID)
 	require.NoError(t, err, "seed the owner the way the harness does (FK target)")
