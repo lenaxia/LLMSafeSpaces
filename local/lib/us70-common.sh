@@ -143,6 +143,22 @@ harness_start() {
     warn "expected to run in agentd SIDECAR mode (the pull's primary surface); if the cluster is single-container this still validates the pull, but not the fleet regression"
 }
 
+
+# api_key_db_hash <plaintext> — the value the API stores/expects in
+# api_keys.key: sha256(plaintext) hex, matching validateAPIKey's
+# sha256.Sum256 -> hex.EncodeToString (auth.go). Pinned by
+# local/us70_common_test.go against an independent sha256.
+# >>> api-key-db-hash
+api_key_db_hash() {
+    local plaintext="$1" escaped
+    # SQL string doubling for embedded single quotes (correctness; the
+    # harness mints [A-Za-z0-9_] keys, but the helper must not corrupt
+    # or break on anything else).
+    escaped=${plaintext//\'/\'\'}
+    printf "encode(sha256(convert_to('%s', 'UTF8')), 'hex')" "${escaped}"
+}
+# <<< api-key-db-hash
+
 seed_user() { # user_id api_key
     local user_id="$1" api_key="$2"
     kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
@@ -151,8 +167,14 @@ INSERT INTO users (id, username, email, password_hash, role)
 VALUES ('${user_id}', '${user_id}', '${user_id}@example.test', 'unused-by-api-key-auth', 'user')
 ON CONFLICT (id) DO NOTHING;
 
+-- api_keys.key stores sha256(<plaintext>) hex (auth.go validateAPIKey:
+-- sha256.Sum256 -> GetUserByAPIKey(keyHash)); seeding the plaintext made
+-- bind_env (the first authenticated call) 401 — indistinguishable from
+-- the AC-1 404 in curl -sf output. Hash at insert time (pool runs 1-2),
+-- via the helper whose hash is pinned against Go's computation by
+-- local/us70_common_test.go.
 INSERT INTO api_keys (id, user_id, key, name, active)
-VALUES ('${user_id}-sd', '${user_id}', '${api_key}', 'e2e-sd-key', true)
+VALUES ('${user_id}-sd', '${user_id}', $(api_key_db_hash "${api_key}"), 'e2e-sd-key', true)
 ON CONFLICT (id) DO UPDATE SET key=EXCLUDED.key, active=true;
 " >/dev/null
 }
@@ -220,14 +242,18 @@ seed_workspace_metadata() { # ws user_id
 # bind_env ws VAR VALUE — create+bind one env-secret via the convenience
 # endpoint (server-side creates an env-secret and binds it atomically).
 bind_env() {
-    local ws="$1" var="$2" value="$3" body
+    local ws="$1" var="$2" value="$3" body resp code
     body=$(jq -nc --arg v "$var" --arg val "$value" '{vars:{($v):$val}}')
-    curl -sfm 30 -X PUT \
+    resp=$(curl -sm 30 -X PUT \
         -H "Authorization: Bearer ${API_KEY}" \
         -H "Content-Type: application/json" \
         -d "$body" \
-        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env" >/dev/null \
-        || die "bind_env ${var}=${value} on ${ws} failed"
+        -w '\n%{http_code}' \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env") \
+        || die "bind_env ${var}=${value} on ${ws}: curl transport failure"
+    code=$(printf '%s' "$resp" | tail -1)
+    [ "$code" = "200" ] || [ "$code" = "201" ] \
+        || die "bind_env ${var}=${value} on ${ws} failed: HTTP ${code} $(printf '%s' "$resp" | sed '$d' | head -c 200)"
 }
 
 # detect_runtime_class — gVisor feature-detection: is there a controllable
