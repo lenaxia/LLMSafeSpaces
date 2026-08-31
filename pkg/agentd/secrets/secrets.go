@@ -28,8 +28,9 @@
 //     readable with default umask.
 //   - Encodes the env-file value using shellquote.Bash (single-quoted with
 //     embedded single quotes escaped) so a malicious PLAINTEXT cannot
-//     break out of the bash `source` consumer at entrypoint-opencode.sh
-//     and at agentd buildEnv().
+//     break out of the bash `source` consumer at agentd buildEnvFrom
+//     (the entrypoint-opencode.sh consumer was deleted with the
+//     entrypoints, design 0053 S3).
 //   - Resolves mount paths via filepath.Clean + strict prefix containment
 //     against the secrets base directory.
 //   - Returns a typed *MaterializeResult that carries per-secret outcomes

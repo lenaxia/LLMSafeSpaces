@@ -199,7 +199,7 @@ func seedLocked(seed SessionSeed) *sessionRecord {
 // sessionSnapshotLocked renders one session's I12-complete snapshot:
 // status (busy-aware), in-flight parts with partials, pending inputs.
 // Queue depth is ledger-derived and lands with US-69.7.
-func sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.SessionSnapshot {
+func (a *Authority) sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.SessionSnapshot {
 	v := rec.view()
 	snap := &abiv1.SessionSnapshot{
 		SessionId:     id,
@@ -210,14 +210,17 @@ func sessionSnapshotLocked(id string, rec *sessionRecord) *abiv1.SessionSnapshot
 	if v.Busy {
 		snap.Status = abiv1.SessionStatus_SESSION_STATUS_BUSY
 	}
+	if a.ledger != nil {
+		snap.QueueDepth = int32(a.ledger.queueDepth(id)) //nolint:gosec // G115: bounded by delivery rate limits
+	}
 	return snap
 }
 
 // podSnapshotsLocked renders the pod-wide snapshot payload.
-func podSnapshotsLocked(sessions map[string]*sessionRecord) []*abiv1.SessionSnapshot {
-	out := make([]*abiv1.SessionSnapshot, 0, len(sessions))
-	for id, rec := range sessions {
-		out = append(out, sessionSnapshotLocked(id, rec))
+func (a *Authority) podSnapshotsLocked() []*abiv1.SessionSnapshot {
+	out := make([]*abiv1.SessionSnapshot, 0, len(a.sessions))
+	for id, rec := range a.sessions {
+		out = append(out, a.sessionSnapshotLocked(id, rec))
 	}
 	return out
 }

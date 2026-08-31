@@ -252,7 +252,8 @@ controller:
   #
   # binarySHA256* are optional per-image overrides (break-glass): set
   # BOTH or NEITHER. Hashes without an image, or a one-sided pair, fail
-  # the Helm render. Leave everything empty for legacy baked-in mode.
+  # the Helm render. Design 0053 §4.5: the image is MANDATORY — empty
+  # fails the render (no baked fallback exists).
   agentdDelivery:
     image: ""
     binarySHA256Amd64: ""
@@ -295,9 +296,8 @@ controller:
   #
   # binarySHA256* are optional per-image overrides (break-glass): set
   # BOTH or NEITHER. Hashes without an image, or a one-sided pair, fail
-  # the Helm render. Leave everything empty (default) to keep opencode
-  # baked into runtimes/base — S1 is opt-in and inert until the base
-  # strip (S3) makes the pin mandatory.
+  # the Helm render. Design 0053 §4.5: the image is MANDATORY — the
+  # base image carries no opencode; empty fails the render.
   opencodeDelivery:
     image: ""
     binarySHA256Amd64: ""

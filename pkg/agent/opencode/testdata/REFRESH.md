@@ -92,12 +92,13 @@ changes) — this section is the procedure the gates point at.
 
 ## Rollout coupling (release checklist)
 
-The event-system env flag lives in the runtime entrypoint
-(`runtimes/base/tools/entrypoints/entrypoint-opencode.sh`, relocated
-from the controller in #942) — so after a controller deploy that
-includes #942, **the matching runtime image must deploy in the same
-cycle**. Order: build + push the runtime image first, then roll the
-controller. A controller-only roll leaves NEW pods (old image) with the
+The event-system env flag lives in the supervisor's spawn seam
+(`opencodeChildEnv`, `cmd/workspace-agentd/managed_process.go` — moved
+off the deleted entrypoint in design 0053 S3, keeping the #942
+containment) — so it now ships with the **agentd delivery artifact**,
+not the runtime image. Order: build + push the agentd artifact (and
+bump the `agentdDelivery` digest), then roll the controller. A stale
+agentd artifact leaves NEW pods with the
 flag still in the pod spec (fine), and REBUILT pods on the new image
 with it in the entrypoint (fine) — but a controller roll of the
 flag-REMOVAL while workspaces still run a pre-#942 image build would
