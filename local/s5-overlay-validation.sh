@@ -439,10 +439,10 @@ else
       # An empty/short EXPECTED means the checksum FORMAT changed upstream
       # (fail with that diagnosis instead of a bare mismatch).
       EXPECTED=$(cut -d" " -f1 /tmp/runsc.sha512)
-      case "$EXPECTED" in
-        ????????????????????????????????????????????????????????????????????) ;;
-        *) echo "runsc.sha512 format changed upstream (got: $(cat /tmp/runsc.sha512))"; exit 1 ;;
-      esac
+      # sha512 hex is exactly 128 chars — a regex, not a glob (a miscounted
+      # '?' pattern false-positived on a perfectly good checksum in run 8).
+      [[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]] \
+        || { echo "runsc.sha512 format changed upstream (got: $(cat /tmp/runsc.sha512))"; exit 1; }
       ACTUAL=$(sha512sum /tmp/runsc | cut -d" " -f1)
       [ "$EXPECTED" = "$ACTUAL" ] || { echo "runsc sha512 mismatch"; exit 1; }
       install -m 0755 /tmp/runsc /usr/local/bin/runsc
