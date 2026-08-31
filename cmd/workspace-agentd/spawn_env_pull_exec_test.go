@@ -64,13 +64,6 @@ func pullEnvFor(addr string) []string {
 	}
 }
 
-func childEnviron(t *testing.T, pid int) string {
-	t.Helper()
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
-	require.NoError(t, err)
-	return string(data)
-}
-
 // TestSupervisorSubprocess_SpawnPull_FirstSpawnEnvAndRev (AC-1 analog):
 // cold boot with the mux already serving (the kubelet-gated sidecar is
 // up before the workspace container starts) → the FIRST child's environ
@@ -90,7 +83,7 @@ func TestSupervisorSubprocess_SpawnPull_FirstSpawnEnvAndRev(t *testing.T) {
 		return firstPID > 0
 	}, 15*time.Second, 100*time.Millisecond, "first spawn must happen (pull must not block it)")
 
-	environ := childEnviron(t, firstPID)
+	environ := liveChildEnviron(t, sp, cc)
 	require.Contains(t, environ, "PULL_PROBE=first-spawn-value\x00",
 		"the FIRST child must spawn with the pulled delta — the #1087-class boot loss is gone")
 	require.Contains(t, environ, "GO_TEST_SUPERVISOR=1",
@@ -124,7 +117,7 @@ func TestSupervisorSubprocess_SpawnPull_DeadMuxLoudNeverBlocks(t *testing.T) {
 	require.Less(t, time.Since(boot), 12*time.Second,
 		"spawn must proceed within the bounded wait, not hang")
 
-	environ := childEnviron(t, firstPID)
+	environ := liveChildEnviron(t, sp, cc)
 	require.Contains(t, environ, "GO_TEST_SUPERVISOR=1")
 	require.False(t, strings.Contains(environ, "PULL_PROBE="),
 		"platform-env-only is the degraded first-boot state")
@@ -153,7 +146,7 @@ func TestSupervisorSubprocess_SpawnPull_RecoveryAndLastGood(t *testing.T) {
 		firstPID = sp.childPIDOf(t, cc)
 		return firstPID > 0
 	}, 15*time.Second, 100*time.Millisecond)
-	require.Contains(t, childEnviron(t, firstPID), "PULL_PROBE=v1\x00")
+	require.Contains(t, liveChildEnviron(t, sp, cc), "PULL_PROBE=v1\x00")
 
 	// Corrupt the served delta source so pulls fail (handler 500s) — the
 	// mux stays reachable, exercising the degraded-response class. Each
@@ -175,7 +168,7 @@ func TestSupervisorSubprocess_SpawnPull_RecoveryAndLastGood(t *testing.T) {
 		secondPID = pid
 		return true
 	}, 15*time.Second, 100*time.Millisecond)
-	require.Contains(t, childEnviron(t, secondPID), "PULL_PROBE=v1\x00",
+	require.Contains(t, liveChildEnviron(t, sp, cc), "PULL_PROBE=v1\x00",
 		"the last-good delta from supervisor memory must survive a failed pull")
 	require.Eventually(t, func() bool {
 		st, err := cc.Status(context.Background())
@@ -203,6 +196,26 @@ func TestSupervisorSubprocess_SpawnPull_RecoveryAndLastGood(t *testing.T) {
 }
 
 // childEnvironRead is the non-failing variant for Eventually loops.
+// liveChildEnviron samples the CURRENT child's environ until it is a
+// live, fully-spawned process: a one-shot /proc read can race a
+// respawn/teardown window under load (a zombie's environ reads as
+// empty), which says nothing about the property under test. Waiting for
+// the parent-env marker keeps every assertion strict while tolerating
+// that window.
+func liveChildEnviron(t *testing.T, sp *supervisorProc, cc *controlClient) string {
+	t.Helper()
+	var env string
+	require.Eventually(t, func() bool {
+		pid := sp.childPIDOf(t, cc)
+		if pid <= 0 {
+			return false
+		}
+		env = childEnvironRead(pid)
+		return strings.Contains(env, "GO_TEST_SUPERVISOR=1\x00")
+	}, 15*time.Second, 100*time.Millisecond,
+		"child environ must become readable with the parent env marker")
+	return env
+}
 func childEnvironRead(pid int) string {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
 	if err != nil {
@@ -227,7 +240,7 @@ func TestSupervisorSubprocess_SpawnPull_RevocationIsAbsence(t *testing.T) {
 		firstPID = sp.childPIDOf(t, cc)
 		return firstPID > 0
 	}, 15*time.Second, 100*time.Millisecond)
-	require.Contains(t, childEnviron(t, firstPID), "REVOKED_PROBE=present\x00")
+	require.Contains(t, liveChildEnviron(t, sp, cc), "REVOKED_PROBE=present\x00")
 
 	// Unbind: the materializer's reset() removes the file entirely —
 	// the handler then serves the quiet empty delta.
@@ -271,7 +284,7 @@ func TestSupervisorSubprocess_SpawnPull_BadCredentialDegrades(t *testing.T) {
 		return firstPID > 0
 	}, 15*time.Second, 100*time.Millisecond, "an auth failure must never block the spawn")
 
-	require.False(t, strings.Contains(childEnviron(t, firstPID), "PULL_PROBE="))
+	require.False(t, strings.Contains(liveChildEnviron(t, sp, cc), "PULL_PROBE="))
 	require.Eventually(t, func() bool {
 		st, err := cc.Status(context.Background())
 		return err == nil && st.SpawnEnvDegraded && st.SpawnEnvReason == spawnEnvReasonUnauthorized
