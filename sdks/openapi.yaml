@@ -978,6 +978,30 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/contract-events:
+    get:
+      tags: [sessions]
+      summary: The contract event stream (design 0055 S3/D1-B, US-69.10)
+      description: |
+        Server-sent events of raw ABI StreamFrames (protojson, camelCase —
+        matches the generated TS types): a stamped snapshot first
+        (`{"snapshot":{"atSeq":"S",...}}`), then sequenced events
+        (`{"event":{"seq":"N",...}}`). Client rule: snapshot@S replaces
+        state and sets seq=S; apply events in order, discard seq ≤ S.
+        One upstream pod connection per workspace while subscribers are
+        attached; reconnect delivers a fresh snapshot. A named
+        `event: resync` means frames were dropped — re-subscribe.
+        Requires AGENTD_STATE_AUTHORITY (501 otherwise).
+      operationId: contractEvents
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: text/event-stream of ABI StreamFrames
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "501":
+          description: Requires AGENTD_STATE_AUTHORITY (D4 single regime)
   /workspaces/{id}/sessions/{sessionId}/actions:
     post:
       tags: [sessions]
