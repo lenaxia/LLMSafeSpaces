@@ -308,11 +308,14 @@ abi-codegen-tools:
 # abi-generate: regenerate all stubs. Requires buf + protoc plugins on PATH
 # (make tools-install) and frontend/node_modules for protoc-gen-es. The Go
 # output is piped through goimports so the generated tree satisfies the same
-# imports gate as hand-written code (and regen stays idempotent).
+# imports gate as hand-written code (and regen stays idempotent). The same
+# invocation regenerates pkg/session/contract_gen.go (sessiongen — ADR 0056
+# T3: the schema is the single source of truth for the session contract).
 abi-generate:
 	@export PATH="$$(go env GOPATH)/bin:$$PATH:frontend/node_modules/.bin"; \
 	buf generate pkg/abi && \
-	goimports -w pkg/abi/v1
+	goimports -w pkg/abi/v1 && \
+	go run ./cmd/sessiongen
 
 # abi-lint: buf STANDARD lint over the schema (exceptions documented in buf.yaml).
 abi-lint:
@@ -339,12 +342,15 @@ abi-breaking:
 
 # abi-check: the CI gate. Lint + breaking + Go regeneration freshness. (TS
 # freshness is verified in the CI abi job, which has npm; locally run
-# make abi-generate with frontend/node_modules present.)
+# make abi-generate with frontend/node_modules present.) The freshness diff
+# covers pkg/session/contract_gen.go too: a schema change that is not
+# regenerated into the session view fails CI (T3 — no drift by construction).
 abi-check: abi-lint abi-breaking
 	@export PATH="$$(go env GOPATH)/bin:$$PATH:frontend/node_modules/.bin"; \
 	buf generate pkg/abi && goimports -w pkg/abi/v1 && \
-	git diff --exit-code -- pkg/abi/v1 || \
-		{ echo "pkg/abi/v1 is stale (or a codegen tool is missing — run make abi-codegen-tools) — run make abi-generate and commit"; exit 1; }
+	go run ./cmd/sessiongen && \
+	git diff --exit-code -- pkg/abi/v1 pkg/session/contract_gen.go || \
+		{ echo "generated code is stale (or a codegen tool is missing — run make abi-codegen-tools) — run make abi-generate and commit"; exit 1; }
 	@echo "ABI schema gates passed."
 
 # check: run all the pre-merge quality gates locally. Mirrors what CI

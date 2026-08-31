@@ -5,48 +5,10 @@ package session
 
 import "time"
 
-// MessageType discriminates a Message. Agent/model switches and compaction are
-// transcript entries (not side-band config) so the timeline stays coherent
-// after a switch (design 0049 §4.5).
-type MessageType string
-
-const (
-	MessageUser        MessageType = "user"
-	MessageAssistant   MessageType = "assistant"
-	MessageShell       MessageType = "shell"
-	MessageAgentSwitch MessageType = "agent_switch"
-	MessageModelSwitch MessageType = "model_switch"
-	MessageCompaction  MessageType = "compaction"
-	MessageSystem      MessageType = "system"
-)
-
-// Message is one entry in a session transcript. It is a flat discriminated
-// struct: Type selects which payload fields are meaningful, and the rest are
-// omitted from the wire form. Constructors are the documented write path so
-// the Type<->field pairing is encoded in one place.
-type Message struct {
-	ID        string      `json:"id"`
-	SessionID string      `json:"sessionId,omitempty"`
-	Type      MessageType `json:"type"`
-	CreatedAt *time.Time  `json:"createdAt,omitempty"`
-
-	Parts []Part    `json:"parts,omitempty"`
-	Model *ModelRef `json:"model,omitempty"`
-	Cost  *Cost     `json:"cost,omitempty"`
-
-	Text string `json:"text,omitempty"`
-
-	Command  string `json:"command,omitempty"`
-	ExitCode *int   `json:"exitCode,omitempty"`
-
-	FromAgent string `json:"fromAgent,omitempty"`
-	ToAgent   string `json:"toAgent,omitempty"`
-
-	FromModel *ModelRef `json:"fromModel,omitempty"`
-	ToModel   *ModelRef `json:"toModel,omitempty"`
-
-	Error *Error `json:"error,omitempty"`
-}
+// Message and MessageType are generated into contract_gen.go from the
+// frozen ABI schema. The constructors below are the documented write path
+// (ADR 0056 T3: "thin wrappers where Go ergonomics demand constructors"):
+// they encode the Type<->payload-field pairing in one place.
 
 func newMessage(id string, t MessageType, createdAt time.Time) Message {
 	return Message{ID: id, Type: t, CreatedAt: &createdAt}
