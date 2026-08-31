@@ -134,6 +134,14 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{/* US-70.0 (#1182): deterministic API 500 fault injection for the
+                    e2e chaos harness ONLY — never set in production. Rendered
+                    solely when non-empty so the seam stays inert by default;
+                    a malformed rule makes the API refuse to boot. */}}
+            {{- if .Values.api.e2eFaultInjection }}
+            - name: LLMSAFESPACES_FAULT_INJECTION
+              value: {{ .Values.api.e2eFaultInjection | quote }}
+            {{- end }}
             {{- if .Values.turnstile.enabled }}
             # Turnstile (US-63.x) — enables the /register CAPTCHA middleware
             # in the API. The secret key is loaded via valueFrom.secretKeyRef

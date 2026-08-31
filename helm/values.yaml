@@ -35,6 +35,12 @@ api:
   #   - name: OPENCODE_V2_DELIVERY
   #     value: "1"
   extraEnv: []
+  # US-70.0 (#1182): deterministic API fault injection for the e2e chaos
+  # harness ONLY — never set in production. Rule format
+  # COUNT:METHOD:PATH_PREFIX (comma-separated), e.g.
+  # "5:POST:/internal/v1/pod-bootstrap". Empty (default) = feature absent;
+  # a malformed value makes the API fail to start.
+  e2eFaultInjection: ""
   # #1019 C: pod termination grace. Must cover a worst-case in-flight
   # outbox delivery (10m delivery + verify margin) so rolling deploys
   # never SIGKILL a delivering worker — that leaves the session's

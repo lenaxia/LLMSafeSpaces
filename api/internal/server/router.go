@@ -242,6 +242,13 @@ type RouterConfig struct {
 	UserTriggersHandler    *handlers.TriggersHandler
 	OrgTriggersHandler     *handlers.TriggersHandler
 	WebhookReceiverHandler *handlers.WebhookReceiverHandler
+
+	// FaultInjectionRules, when non-empty, installs the deterministic
+	// fault-injection middleware (Epic 70 US-70.0). Populated at app
+	// wire-up from LLMSAFESPACES_FAULT_INJECTION — a malformed value fails
+	// startup there. Empty means the feature is absent: no middleware is
+	// registered and the chain is byte-identical to before.
+	FaultInjectionRules []middleware.FaultInjectionRule
 }
 
 // cookieName returns the session cookie name, falling back to "lsp_session" when empty.
@@ -364,6 +371,17 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Aborts every request it handles; API traffic passes through.
 	if cfg.PreviewOriginHandler != nil {
 		router.Use(cfg.PreviewOriginHandler.Middleware())
+	}
+
+	// Epic 70 US-70.0 (#1182): deterministic fault injection for the e2e
+	// chaos harness. Registered only when the env parsed to at least one
+	// rule (app wire-up), engine-level so root-registered routes like
+	// POST /internal/v1/pod-bootstrap are covered, and before rate
+	// limiting/logging so harness retries neither consume the rate budget
+	// nor interleave with request logs — the middleware's own warn line is
+	// the one log entry per injected failure.
+	if len(cfg.FaultInjectionRules) > 0 {
+		router.Use(middleware.FaultInjectionMiddleware(logger, cfg.FaultInjectionRules))
 	}
 
 	router.Use(middleware.SecurityMiddleware(logger, cfg.SecurityConfig))

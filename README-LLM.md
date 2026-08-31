@@ -1506,6 +1506,16 @@ git commit -m "Update generated DeepCopy code"
 
 `pkg/types/types.go` contains API transfer objects only — no generated deepcopy. Manual `DeepCopy` methods are implemented only where needed (types passed by pointer across goroutine boundaries).
 
+### Delivery fault harness (Epic 70, US-70.0)
+
+**Fault seam:** the API accepts `LLMSAFESPACES_FAULT_INJECTION` (comma-separated rules `COUNT:METHOD:PATH_PREFIX`, e.g. `5:POST:/internal/v1/pod-bootstrap`) — the first COUNT matching requests fail with a 500 carrying the marker body `{"error":"fault injection: METHOD PREFIX"}`, then matching traffic passes through. Unset/empty = the middleware is not registered (zero behavior change); a malformed rule fails API startup naming the rule. Counters are per-process and atomic (a rollout resets the budget). This is an e2e/chaos harness surface only — never set it in production. Helm: `api.e2eFaultInjection` (default `""`) renders the env when non-empty.
+
+**Cluster suites** (`local/`):
+- `us-70-secret-delivery-e2e.sh` — happy-path delivery rows (AC-1/2/13/17/F + agent-kill chaos), nightly-wired with the bounded suspend variant; helpers live in `lib/us70-common.sh` (shared env contract: `SUSPEND_SECONDS`, `RESUME_SCALE`, `RESUME_SCALE_TIMEOUT_S`, `P95_BUDGET_MS`).
+- `us-70-faults-e2e.sh` — fault rows: injected 500s at boot (never-block-boot + autopush heal), API partition at resume via deployment scale-to-zero (W5), `user_keys.wrapped_dek` corruption fixtures (AC-9 loud-degrade half; restore + converge), SA-token rows via `kubectl create token --audience=llmsafespace-api` (tampered → 401; expired-by-own-JWT-exp → 401; fresh → passes), sidecar chaos kills via node-level `crictl stop`. Requires the seam armed (the pool arms it via `kubectl set env` between suites so the delivery suite stays seam-inert).
+- `us-70-delivery-pool.yml` (workflow) — weekly Sun 07:00 + dispatch, 300-minute budget: provisions runsc on the kind node (`lib/gvisor.sh`, the S5.6 recipe), runs the delivery suite with `SUSPEND_SECONDS=3600` (the ≥1h #1087 gate) and the runsc legs of AC-13, then arms the seam and runs the faults suite.
+- Every script is pinned by Go tests (`local/us70_harness_script_test.go`, `local/s5_kind_script_test.go`): bash syntax, checksum-guard execution, and cross-file consistency (fault-rule count lockstep between the workflow and the faults script).
+
 ---
 
 ## Authentication & Authorization

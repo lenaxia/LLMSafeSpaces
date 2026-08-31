@@ -24,6 +24,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
 	"github.com/lenaxia/llmsafespaces/api/internal/services"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
@@ -1325,6 +1326,20 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	if routerNamespace == "" {
 		routerNamespace = cfg.Kubernetes.Namespace
 	}
+
+	// Epic 70 US-70.0 (#1182): deterministic fault injection for the e2e
+	// chaos harness, gated by LLMSAFESPACES_FAULT_INJECTION. Read once at
+	// wire-up; a malformed rule list is a startup error ("loud or absent").
+	faultInjectionRules, err := middleware.ParseFaultInjectionRules(os.Getenv(middleware.FaultInjectionEnvVar))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("fault injection disabled, refusing to start: %w", err)
+	}
+	if len(faultInjectionRules) > 0 {
+		log.Warn("fault injection enabled — e2e chaos harness mode, never enable in production",
+			"rules", len(faultInjectionRules))
+	}
+
 	var relayAdminHandler *handlers.RelayAdminHandler
 	if llmClient, err := k8sClient.LlmsafespacesV1(); err == nil {
 		relayAdminHandler = handlers.NewRelayAdminHandler(
@@ -1406,6 +1421,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		WebhookReceiverHandler:          webhookReceiverHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
+		FaultInjectionRules:             faultInjectionRules,
 		Turnstile: server.TurnstileRouterConfig{
 			Enabled:   cfg.Turnstile.Enabled,
 			SecretKey: cfg.Turnstile.SecretKey,

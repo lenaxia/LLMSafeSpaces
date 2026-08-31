@@ -72,3 +72,31 @@ api:
 		require.NotNil(t, env)
 	})
 }
+
+// TestAPIE2EFaultInjectionEnv pins the US-70.0 fault-injection env wiring:
+// the LLMSAFESPACES_FAULT_INJECTION env var renders into the API container
+// ONLY when api.e2eFaultInjection is non-empty (e2e chaos harness only —
+// never set in production; the API fails to boot on a malformed rule).
+func TestAPIE2EFaultInjectionEnv(t *testing.T) {
+	t.Run("default renders no env", func(t *testing.T) {
+		env := apiEnvNamesAndValues(t, "")
+		assert.NotContains(t, env, "LLMSAFESPACES_FAULT_INJECTION",
+			"the fault seam must stay inert unless explicitly enabled")
+	})
+
+	t.Run("set value renders the env var", func(t *testing.T) {
+		env := apiEnvNamesAndValues(t, `
+api:
+  e2eFaultInjection: "5:POST:/internal/v1/pod-bootstrap"
+`)
+		assert.Equal(t, "5:POST:/internal/v1/pod-bootstrap", env["LLMSAFESPACES_FAULT_INJECTION"])
+	})
+
+	t.Run("explicit empty value renders no env", func(t *testing.T) {
+		env := apiEnvNamesAndValues(t, `
+api:
+  e2eFaultInjection: ""
+`)
+		assert.NotContains(t, env, "LLMSAFESPACES_FAULT_INJECTION")
+	})
+}
