@@ -951,10 +951,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entrypoints" class="md-nav__link">
+  <a href="#no-entrypoint-design-0053-s3" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entrypoints
+        No entrypoint (design 0053 S3)
       
     </span>
   </a>
@@ -2420,10 +2420,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#entrypoints" class="md-nav__link">
+  <a href="#no-entrypoint-design-0053-s3" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Entrypoints
+        No entrypoint (design 0053 S3)
       
     </span>
   </a>
@@ -2734,7 +2734,7 @@
 
 
 <h1 id="runtime-environments">Runtime Environments<a class="headerlink" href="#runtime-environments" title="Permanent link">&para;</a></h1>
-<p>This page covers the <code>RuntimeEnvironment</code> CRD and the container images it maps to: what the base runtime image contains, the language-specific runtimes (Python, Node.js, Go), how to build and register custom runtime images, and the registry allow-list that governs which images workspace creators may reference. A runtime environment is the mapping from a human-friendly name (like <code>python-3.11</code>) to a container image that runs <code>opencode serve</code> plus a language toolchain.</p>
+<p>This page covers the <code>RuntimeEnvironment</code> CRD and the container images it maps to: what the base runtime image contains, the language-specific runtimes (Python, Node.js, Go), how to build and register custom runtime images, and the registry allow-list that governs which images workspace creators may reference. A runtime environment is the mapping from a human-friendly name (like <code>python-3.11</code>) to a container image providing the dev-OS plus a language toolchain. The agent processes themselves (opencode, workspace-agentd) are NOT in the image — they arrive as two digest-pinned image volumes (design 0053) that the controller mounts into every pod.</p>
 <h2 id="on-this-page">On this page<a class="headerlink" href="#on-this-page" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="#what-a-runtimeenvironment-is">What a RuntimeEnvironment is</a></li>
@@ -2821,8 +2821,8 @@
 <tbody>
 <tr>
 <td><strong>opencode</strong></td>
-<td>1.18.10 (pinned)</td>
-<td>Downloaded over TLS; <strong>not checksum-verified</strong> (upstream does not publish checksums — gap G9, accepted). Pinned to a specific validated release.</td>
+<td>NOT in the image (design 0053 S3)</td>
+<td>Delivered as the <code>opencodeDelivery</code> digest-pinned image volume (<code>runtimes/opencode/Dockerfile</code>, pinned 1.18.15); the supervisor verifies its sha256 before spawn (exit 83/84).</td>
 </tr>
 <tr>
 <td><strong>gh</strong> (GitHub CLI)</td>
@@ -2846,17 +2846,18 @@
 </tr>
 <tr>
 <td><strong>workspace-agentd</strong></td>
-<td>built from source (this repo)</td>
-<td>Go-built in a multi-stage builder.</td>
+<td>NOT in the image (design 0053 S3)</td>
+<td>Delivered as the <code>agentdDelivery</code> digest-pinned image volume; self-verifies before any work (exit 81/82).</td>
 </tr>
 </tbody>
 </table>
-<h3 id="entrypoints">Entrypoints<a class="headerlink" href="#entrypoints" title="Permanent link">&para;</a></h3>
-<p>The image ships entrypoint scripts under <code>/tools/entrypoints/</code>:</p>
-<ul>
-<li><code>entrypoint-common.sh</code> — shared setup (env, path, security-policy file check).</li>
-<li><code>entrypoint-opencode.sh</code> — the main entrypoint. Sources <code>entrypoint-common.sh</code>, verifies/selects the agentd binary (overlay or baked), then execs it as the supervisor (<code>--supervise</code>, or <code>supervise-opencode</code> in sidecar mode) — the supervisor owns the opencode child.</li>
-</ul>
+<h3 id="no-entrypoint-design-0053-s3">No entrypoint (design 0053 S3)<a class="headerlink" href="#no-entrypoint-design-0053-s3" title="Permanent link">&para;</a></h3>
+<p>The entrypoint scripts are deleted. The pod spec execs the pinned agentd
+binary directly (<code>--supervise</code>, or <code>supervise-opencode</code> in sidecar mode);
+the supervisor self-verifies (exit 81), rebuilds mise shims, installs the
+redact PATH wrapper, and owns the opencode child (verify-before-spawn,
+exit 83/84). The image's ENV block is controller-injected pod env —
+nothing platform-contract-shaped lives in the image.</p>
 <h3 id="security-posture">Security posture<a class="headerlink" href="#security-posture" title="Permanent link">&para;</a></h3>
 <p>The base image is built to comply with the <code>restricted</code> Pod Security profile:</p>
 <ul>
@@ -2889,7 +2890,7 @@
 </span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c"># Pre-warm cargo registry / common crates if desired</span>
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="c"># ...</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c"># Entrypoint is inherited from base (entrypoint-opencode.sh)</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c"># No ENTRYPOINT — the pod spec's overlay supervisor command owns the process</span>
 </span></code></pre></div>
 <h3 id="2-build-and-push">2. Build and push<a class="headerlink" href="#2-build-and-push" title="Permanent link">&para;</a></h3>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>runtimes/rust/Dockerfile<span class="w"> </span><span class="se">\</span>
@@ -2977,7 +2978,7 @@
 <h3 id="what-the-runtime-image-must-provide">What the runtime image must provide<a class="headerlink" href="#what-the-runtime-image-must-provide" title="Permanent link">&para;</a></h3>
 <p>For a workspace pod to function, the runtime image must:</p>
 <ol>
-<li><strong>Run <code>opencode serve</code></strong> — the entrypoint must exec opencode on port 4096. The base entrypoint handles this; custom images extending the base inherit it.</li>
+<li><strong>No process contract</strong> — never install an ENTRYPOINT or bake platform binaries; the controller execs the pinned overlay supervisor into every container. Extending the base inherits exactly this shape.</li>
 <li><strong>Include <code>workspace-agentd</code></strong> — the sidecar binary. The base image includes it; custom images extending base inherit it.</li>
 <li><strong>Include <code>redact</code></strong> — the secret-redaction entry point (<code>workspace-agentd redact</code>, or the wrapper the base provides). Same inheritance.</li>
 <li><strong>Be <code>readOnlyRootFilesystem</code>-compatible</strong> — all writable paths must be mounted volumes (<code>/workspace</code>, <code>/home/sandbox</code>, <code>/tmp</code>, <code>/sandbox-cfg</code>, <code>/sandbox-runtime</code>).</li>
@@ -2994,9 +2995,9 @@
 </thead>
 <tbody>
 <tr>
-<td>opencode</td>
-<td>TLS download, version-pinned</td>
-<td>G9 (accepted) — no checksum/Sigstore (upstream doesn't publish)</td>
+<td>opencode artifact</td>
+<td>TLS download, version-pinned, digest-pinned delivery</td>
+<td>G9 (accepted) at BUILD (no upstream signatures); delivery integrity is the digest pin + supervisor sha256 verify</td>
 </tr>
 <tr>
 <td>gh</td>
@@ -3014,8 +3015,8 @@
 <td>None (G19 fixed)</td>
 </tr>
 <tr>
-<td>redact, agentd</td>
-<td>Built from source in multi-stage build (redact rides inside the agentd binary — S2)</td>
+<td>agentd artifact (redact inside)</td>
+<td>Built from source, digest-pinned delivery, supervisor self-verify</td>
 <td>None</td>
 </tr>
 </tbody>
@@ -3103,7 +3104,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 30, 2026 05:54:32 UTC"><span class="timeago" datetime="2026-08-30T05:54:32+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 30, 2026 05:54:32 UTC">2026-08-30</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 31, 2026 05:21:52 UTC"><span class="timeago" datetime="2026-08-31T05:21:52+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 31, 2026 05:21:52 UTC">2026-08-31</span>
   </span>
 
     
