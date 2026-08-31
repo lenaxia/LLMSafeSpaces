@@ -1,12 +1,12 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// The Epic 65 agent session contract (design 0049, mirrored in
-// pkg/session) expressed as ABI schema messages. Parity with pkg/session is
-// enforced field-by-field and enum-by-enum by TestPkgSessionContractParity.
-// Until the S2 freeze flips pkg/session to generated types (ADR 0056), these
-// two representations must stay equivalent — the parity test fails CI on
-// drift in either direction.
+// The Epic 65 agent session contract (design 0049) expressed as ABI schema
+// messages. The schema is the single source of truth (ADR 0056 T3, flipped
+// at the S2 freeze via issue #1161): pkg/session's Go view is GENERATED
+// from this file by cmd/sessiongen (`make abi-generate` regenerates; the
+// committed output is verified fresh by `make abi-check`), so the two
+// representations cannot drift.
 
 syntax = "proto3";
 
