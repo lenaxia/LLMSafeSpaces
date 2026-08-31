@@ -224,6 +224,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// the store). Off by default; requires opencode ≥ 1.18.15 (the
 	// V2 queue-drain fixes — the runtime pin's floor).
 	v2Delivery := strings.EqualFold(os.Getenv("OPENCODE_V2_DELIVERY"), "1") || strings.EqualFold(os.Getenv("OPENCODE_V2_DELIVERY"), "true")
+	// Epic 69 US-69.8 (design 0055 M4): the authority flag gates the
+	// outbox's terminus switch to the agentd delivery ledger. Illegal
+	// combination (authority on, V2 off) is a BOOT ERROR — a dual
+	// delivery regime is not maintained (D4).
+	stateAuthority := strings.EqualFold(os.Getenv("AGENTD_STATE_AUTHORITY"), "1") || strings.EqualFold(os.Getenv("AGENTD_STATE_AUTHORITY"), "true")
+	if err := handlers.ValidateDeliveryFlags(stateAuthority, v2Delivery); err != nil {
+		log.Error("FATAL: delivery flag matrix violation", err)
+		os.Exit(1)
+	}
 	var agentAdapter *agentoc.Adapter
 	if v2Delivery {
 		agentAdapter = agentoc.NewAdapter(
@@ -276,6 +285,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
 		if v2Delivery {
 			proxyHandler.SetV2Delivery(true)
+		}
+		// Epic 69 US-69.8: the terminus switch — when the authority flag
+		// is on, the outbox delivers via the agentd ledger (POST/poll,
+		// D1-B); the text-scan oracle path is bypassed entirely.
+		if stateAuthority {
+			proxyHandler.SetAgentdTerminus(true)
 		}
 		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 

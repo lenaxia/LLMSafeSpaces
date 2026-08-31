@@ -319,14 +319,20 @@ abi-lint:
 	@export PATH="$$(go env GOPATH)/bin:$$PATH"; \
 	buf lint
 
-# abi-breaking: run buf breaking IF the S2 freeze is armed (abi/FROZEN
-# records the baseline git ref). Before the freeze this is a no-op by
-# design (D5: the schema evolves freely during the S1 shadow).
+# abi-breaking: run buf breaking IF the S2 freeze is armed. abi/FROZEN
+# contains ONLY the baseline git ref (armed 2026-08-31 at US-69.8's
+# entrance, design 0055 D5): from there the schema is additive-only —
+# breaking changes require a design amendment.
 abi-breaking:
 	@export PATH="$$(go env GOPATH)/bin:$$PATH"; \
 	if [ -f abi/FROZEN ]; then \
 		echo "abi/FROZEN present — breaking gate ARMED against $$(cat abi/FROZEN)"; \
-		buf breaking pkg/abi --against "$$(cat abi/FROZEN)"; \
+		git fetch -q origin $$(cat abi/FROZEN) --depth=1 2>/dev/null || true; \
+		git worktree add -q "$${TMPDIR:-/tmp}/abi-frozen-baseline" $$(cat abi/FROZEN) 2>/dev/null || true; \
+		buf breaking --against "$${TMPDIR:-/tmp}/abi-frozen-baseline"; \
+		rc=$$?; \
+		git worktree remove --force "$${TMPDIR:-/tmp}/abi-frozen-baseline" 2>/dev/null || true; \
+		exit $$rc; \
 	else \
 		echo "abi/FROZEN absent — S1 evolution window, breaking gate advisory only (D5)"; \
 	fi
