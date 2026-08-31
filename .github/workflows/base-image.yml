@@ -174,8 +174,11 @@ jobs:
       - name: Generate SBOM
         if: steps.exists.outputs.exists == 'false'
         run: |
-          curl -fsSL https://github.com/anchore/syft/releases/latest/download/syft_linux_amd64.tar.gz | tar xz
-          ./syft "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" -o spdx-json > base-sbom.spdx.json
+          # syft release assets carry the version in the filename, so
+          # releases/latest/download cannot address them — use the
+          # documented installer (resolves latest itself).
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" -o spdx-json > base-sbom.spdx.json
           curl -fsSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign 2>/dev/null || true
           cosign attest --predicate base-sbom.spdx.json --type spdxjson \
             "${{ env.REGISTRY }}/${{ env.BASE_IMAGE }}:${{ steps.version.outputs.version }}" || \
