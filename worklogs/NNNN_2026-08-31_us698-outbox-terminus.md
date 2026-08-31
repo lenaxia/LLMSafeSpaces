@@ -32,7 +32,14 @@ Delivery = POST/poll, display = stream (D1-B): the outbox delivers via the pod's
 - Freeze marker documented in Makefile + the Epic 65 flip (#1161) referenced as the tracked follow-up (parity test guards meanwhile).
 
 ### Tests
-`TestAgentdDeliver_InlineFirstAdmission` (POST→poll→admitted; exactly one admission), `TestAgentdDeliver_RetryChecksPriorAttemptFirst` (admitted prior completes with NO attempt-2 row — I6), `TestAgentdDeliver_TimeoutIsLedgeredPoll` (retryable, not ambiguous), `TestAgentdDeliver_FailedAttemptReArms` (attempt+1 admits), `TestFlagMatrix_IllegalComboRejected` (boot error). Stub = real HTTP server speaking the Connect JSON envelope with an async admission driver + scriptable failures.
+`TestAgentdDeliver_InlineFirstAdmission` (POST→poll→admitted; exactly one admission), `TestAgentdDeliver_RetryChecksPriorAttemptFirst` (admitted prior completes with NO attempt-2 row — I6), `TestAgentdDeliver_TimeoutIsLedgeredPoll` (retryable, not ambiguous), `TestAgentdDeliver_FailedAttemptReArms` (attempt+1 admits), `TestFlagMatrix_IllegalComboRejected` (boot error), `TestStateMapping_Guard` (review round: the I10 table asserted exhaustively, the constants bound to the frozen ABI enum names, promoted-on-retry driven through the deliverer). Stub = real HTTP server speaking the Connect JSON envelope with an async admission driver + scriptable failures; stub state names shared by both handlers via `stubStates`.
+
+### Review round (PR #1172, bot CHANGES_REQUESTED ×3)
+The auto-reviewer's objection: "Closes #1142" while deferring 5 of 8 ACs. Reconciled per the epic table (the objection was really #1142's AC list over-reaching its own staging):
+- **#1142 edited**: every AC now carries an explicit disposition (delivered in #1172 / carried by #1140/#1144/#1145/#1147 with reason); the AC6-vs-out-of-scope contradiction (v2Shadow deletion vs "tracker deletion is US-69.11") resolved by naming the retirements as US-69.11's; test plan annotated the same way.
+- **#1147 cross-noted**: inherits the cluster-form crash matrix (agentd kill post-ack, API crash mid-forward, pod suspend), duplicate-contract under load, send-path p99 budget verification, flip-time capability predicate/mixed fleet.
+- **#1145 cross-noted**: inherits `v2Pending` wake migration, `v2Shadow` deletion, ledger-derived queue depth (UI half #1144) — named for traceability.
+- **Hardening from the review (the one valid robustness finding)**: production HTTP client bounded (`agentdHTTPClient`, per-request timeout = the inline window) — a hung agentd can no longer pin an outbox worker. The review's other robustness items were invalid (ctx deadlines already propagate via `NewRequestWithContext`; the poll `select` enforces cadence).
 
 ---
 
@@ -58,8 +65,10 @@ None in-repo. **Epic 65 flip (#1161) still open** — the parity test guards equ
 ## Tests Run
 
 - `go test ./api/internal/handlers/ ./api/internal/app/` — green (108s incl. all prior suites)
+- `go test -run "TestAgentdDeliver|TestFlagMatrix|TestStateMapping" -count=1 ./api/internal/handlers/` — green (review round, incl. the new guard)
 - `make abi-check` — freeze gate armed + green; break-probe caught
-- `golangci-lint --new-from-merge-base ./api/...` — 0 issues
+- `golangci-lint --new-from-merge-base ./api/...` — 0 issues (re-run after review-round changes)
+- CI round 3 on #1172 (commit d2958587): all checks green incl. full race suite
 
 ## Next Steps
 

@@ -109,11 +109,7 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 			stub.muxx.Unlock()
 			writeJSONBody(w, map[string]any{
 				"entryId": req.EntryId, "attempt": req.Attempt,
-				"state": map[string]string{
-					"ledgered": "LEDGER_STATE_LEDGERED",
-					"admitted": "LEDGER_STATE_ADMITTED",
-					"failed":   "LEDGER_STATE_FAILED",
-				}[state],
+				"state": stubStates[state],
 			})
 		case "/llmsafespaces.abi.v1.HarnessABIService/GetDeliveryStatus":
 			var req struct {
@@ -130,11 +126,7 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 			}
 			writeJSONBody(w, map[string]any{
 				"entryId": req.EntryId, "attempt": req.Attempt,
-				"state": map[string]string{
-					"ledgered": "LEDGER_STATE_LEDGERED",
-					"admitted": "LEDGER_STATE_ADMITTED",
-					"failed":   "LEDGER_STATE_FAILED",
-				}[state],
+				"state": stubStates[state],
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -146,6 +138,26 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 
 type simplePart struct {
 	Text string `json:"text"`
+}
+
+// stubStates maps the stub's internal row states to the frozen ABI enum
+// names (the wire form) — shared by both handlers so the Deliver ack and
+// the status poll can never disagree.
+var stubStates = map[string]string{
+	"ledgered":   ledgerStateLedgered,
+	"admitted":   ledgerStateAdmitted,
+	"failed":     ledgerStateFailed,
+	"promoted":   ledgerStatePromoted,
+	"turn-ended": ledgerStateTurnEnded,
+	"stalled":    ledgerStateStalled,
+}
+
+// rowState returns the wire state for a stub row ("" if unknown — itself
+// the unknown-state shape the guard test asserts never completes).
+func (s *ledgerStub) rowState(key string) string {
+	s.muxx.Lock()
+	defer s.muxx.Unlock()
+	return s.rows[key]
 }
 
 // driveAdmission simulates the agentd-side async admission driver: N
@@ -275,4 +287,65 @@ func TestFlagMatrix_IllegalComboRejected(t *testing.T) {
 	require.NoError(t, ValidateDeliveryFlags(true, true))
 	require.NoError(t, ValidateDeliveryFlags(false, true))
 	require.NoError(t, ValidateDeliveryFlags(false, false))
+}
+
+// TestStateMapping_Guard is the issue's `state_mapping_guard` (I10): the
+// guard itself is tested, not the convention — (1) the consumer-side
+// constants ARE the frozen ABI enum names, so schema drift breaks loudly
+// here (D5 freeze makes the seven states exhaustive); (2) the I10 table
+// completes on exactly the admission-implying states and NEVER on an
+// unknown/future state; (3) the retry path consults that same table: a
+// prior attempt observed at `promoted` (the inline window can span
+// promotion — promoted strictly implies admission per the M2 table)
+// completes without manufacturing an attempt-2 turn.
+func TestStateMapping_Guard(t *testing.T) {
+	// (1) wire-constant binding: any rename/reorder in the frozen enum
+	// fails here instead of silently strand- or double-completing rows.
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_UNSPECIFIED.String(), "LEDGER_STATE_UNSPECIFIED")
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_LEDGERED.String(), ledgerStateLedgered)
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_ADMITTED.String(), ledgerStateAdmitted)
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_PROMOTED.String(), ledgerStatePromoted)
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_TURN_ENDED.String(), ledgerStateTurnEnded)
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_STALLED.String(), ledgerStateStalled)
+	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_FAILED.String(), ledgerStateFailed)
+
+	// (2) the I10 table, exhaustively: admitted is the terminal 0052
+	// semantic; promoted/turn-ended/stalled strictly imply it; ledgered,
+	// failed, unspecified, and anything unknown never complete.
+	for state, want := range map[string]bool{
+		ledgerStateAdmitted:        true,
+		ledgerStatePromoted:        true,
+		ledgerStateTurnEnded:       true,
+		ledgerStateStalled:         true,
+		ledgerStateLedgered:        false,
+		ledgerStateFailed:          false,
+		"LEDGER_STATE_UNSPECIFIED": false,
+		"LEDGER_STATE_ANNULLED":    false, // a hypothetical future state: opt-in only
+		"":                         false,
+	} {
+		got, gotState := completionFor(state)
+		assert.Equal(t, want, got, "I10 mapping for %q", state)
+		assert.Equal(t, state, gotState, "mapping never rewrites the state")
+	}
+
+	// (3) through the terminus: promoted-on-retry completes without a
+	// second POST (no attempt-2 row) — the mapping is the one the
+	// deliverer actually consults, and it cannot invent an alternate one.
+	stub := newLedgerStub(t, 0)
+	stub.muxx.Lock()
+	stub.rows[rowKey("e-1", 1)] = "promoted" // prior attempt: promoted
+	stub.muxx.Unlock()
+	d := &agentdDeliverer{
+		baseURL: stub.server.URL,
+		client:  &http.Client{},
+		resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+			return stub.server.URL, "pw", nil
+		},
+		inlineWindow: 2 * time.Second,
+		pollEvery:    10 * time.Millisecond,
+	}
+	err := d.deliver(context.Background(), "ws1", "s1", outbox.Entry{ID: "e-1", Text: "hello", Attempts: 1})
+	require.NoError(t, err, "promoted implies admitted — completes (no live-lock across promotion)")
+	assert.Equal(t, "promoted", stub.rowState(rowKey("e-1", 1)), "prior row untouched")
+	assert.Empty(t, stub.rowState(rowKey("e-1", 2)), "no attempt-2 row: the mapping table is the single completion authority")
 }

@@ -135,11 +135,16 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 	return &retryableError{fmt.Errorf("agentd terminus: terminal state %s", st)}
 }
 
+// agentdHTTPClient bounds every pod-local request by the inline window: a
+// hung agentd connection can never pin an outbox worker indefinitely
+// (request contexts carry their own deadlines on top of this cap).
+var agentdHTTPClient = &http.Client{Timeout: agentdDeliverInlineWindow}
+
 func (d *agentdDeliverer) httpClient() *http.Client {
 	if d.client != nil {
 		return d.client
 	}
-	return http.DefaultClient
+	return agentdHTTPClient
 }
 
 // completionFor is the I10 mapping — the single place the ledger states
