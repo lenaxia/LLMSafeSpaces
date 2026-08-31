@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -355,7 +356,17 @@ func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
 //     the request — definitive, safe to retry. Anything else (timeout
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
+//
+// SetAgentdTerminus switches the outbox deliverer to the agentd ledger
+// (US-69.8, design 0055 M2/M4). Must be called before Start().
+func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
+	h.agentdTerminus = enabled
+}
+
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	if h.agentdTerminus {
+		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
+	}
 	if e.Attempts > 0 || e.VerifyAttempts > 0 {
 		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
 			return nil // prior attempt confirmed in the transcript — complete without re-sending
@@ -428,6 +439,33 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 		return outbox.Ambiguous(err)
 	}
 	return nil
+}
+
+// agentdTerminusDeliver is the US-69.8 terminus: resolve the pod's ABI
+// surface with the proxy's resume-safe semantics, then POST/poll the
+// ledger (the deliverer implements the I10 mapping).
+func (h *ProxyHandler) agentdTerminusDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	d := &agentdDeliverer{
+		resolve: func(ctx context.Context, ws, ses string) (string, string, error) {
+			pw, err := h.getPassword(ctx, ws)
+			if err != nil {
+				return "", "", err
+			}
+			v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
+			if v1Err != nil {
+				return "", "", v1Err
+			}
+			wsObj, err := v1Client.Workspaces(h.namespace).Get(ctx, ws, metav1.GetOptions{})
+			if err != nil {
+				return "", "", err
+			}
+			if wsObj.Status.PodIP == "" {
+				return "", "", fmt.Errorf("agentd terminus: no pod IP for %s (phase %s)", ws, wsObj.Status.Phase)
+			}
+			return fmt.Sprintf("http://%s:%d", wsObj.Status.PodIP, agentd.AgentdPort), pw, nil
+		},
+	}
+	return d.deliver(ctx, workspaceID, sessionID, e)
 }
 
 // SetV2Delivery enables V2 admit-and-return outbox delivery (design

@@ -135,6 +135,9 @@ type ProxyHandler struct {
 	// adapter MUST also read the V2 store (WithV2Store) — delivery
 	// completes at admission instead of turn completion.
 	v2Delivery bool
+	// agentdTerminus (US-69.8): the outbox delivers via the pod's ABI
+	// delivery ledger instead of the adapter + verify oracle.
+	agentdTerminus bool
 
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
