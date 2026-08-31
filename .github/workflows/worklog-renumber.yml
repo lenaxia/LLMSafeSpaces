@@ -83,10 +83,11 @@ jobs:
           # and failed the whole job). Prefer the trailing (#N) form; fall
           # back to any #N only if that's absent. The comment step
           # validates with gh pr view before commenting.
-          PR_NUM=$(git log -1 --pretty=%s | grep -oE '\(#[0-9]+\)$' | grep -oE '[0-9]+' || true)
-          if [ -z "$PR_NUM" ]; then
-            PR_NUM=$(git log -1 --pretty=%B | grep -oE '#[0-9]+' | tail -1 | tr -d '#' || true)
-          fi
+          # Extraction lives in scripts/renumber-pr-num.sh (pure, no git
+          # inside) with its regression suite pinning the exact bug shapes
+          # (scripts/renumber_pr_num_test.go) — including the residual one
+          # the suite caught: subject-before-body order in the fallback.
+          PR_NUM=$(./scripts/renumber-pr-num.sh "$(git log -1 --pretty=%s)" "$(git log -1 --pretty=%B)")
           echo "pr_num=$PR_NUM" >> "$GITHUB_OUTPUT"
 
           OUTPUT=$(./bin/repolint -fix-worklogs-only 2>&1) || true
