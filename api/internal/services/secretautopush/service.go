@@ -149,10 +149,10 @@ func (s *Service) OnWorkspaceUpdate(ws *v1.Workspace) {
 	}()
 }
 
-// autoPushTimeout bounds one auto-push attempt (bindings query + DEK
-// fetch + push HTTP call + optional cache writes). Set generously
-// relative to the underlying HTTP clients (agentpush uses 5s per
-// call; DEKRetriever's PG query is sub-100ms; bindings check is a
+// autoPushTimeout bounds one auto-push attempt (bindings query + batch
+// build + push HTTP call). Set generously relative to the underlying
+// HTTP clients (agentpush uses 5s per call; the builder's PG queries
+// are sub-100ms; bindings check is a
 // single indexed lookup): 30s covers the worst case plus retries
 // with margin. Not user-tunable — this is a defense-in-depth guard,
 // not a business-logic knob.

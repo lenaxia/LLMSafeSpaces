@@ -7,9 +7,10 @@ package handlers
 // path that production runs at pod boot:
 //
 //	provider_credentials (DB row)
-//	  → SecretService.InjectSecretsForPodBootstrap (best-effort user-DEK unwrap;
-//	                                                degrades to sessionless
-//	                                                on DEK-unavailable)
+//	  → SecretService.BuildWorkspaceBatch     (best-effort user-DEK unwrap
+//	                                            via GetDEKServerSide; user
+//	                                            entries degrade loudly on
+//	                                            DEK failure)
 //	  → PodBootstrapHandler.Bootstrap              (HTTP /internal/v1/pod-bootstrap)
 //	  → workspace-agentd bootstrap                 (subprocess: fetch + write secrets.json)
 //	  → workspace-agentd materialize               (subprocess: write agent-config.json)
@@ -50,10 +51,10 @@ import (
 
 // --- minimal stubs that let us construct a REAL *secrets.SecretService ---
 //
-// SecretService.InjectSecretsForPodBootstrap only touches:
+// SecretService.BuildWorkspaceBatch only touches:
 //   - the CredentialStore type assertion (H-3 path)
-//   - KeyService.GetDEKForUser (returns ErrDEKUnavailable when jwt_sessions
-//     enumerator not wired; degrades to InjectSessionlessSecrets)
+//   - KeyService.GetDEKServerSide (returns ErrDEKUnavailable when the
+//     master provider is not wired; user entries degrade loudly)
 //   - SecretStore.GetBindings (non-LLM path — empty in this test)
 //   - SecretStore.LogAudit (best-effort)
 //

@@ -57,7 +57,10 @@ type ManifestEntry struct {
 // CanonicalBatch returns the canonical JSON encoding of the batch's
 // entries: sorted by (Type, SecretID, Name), with object keys sorted by
 // encoding/json — deterministic under any entry order or map insertion
-// order (epic #1158 invariant I6). The revision stamp is deliberately
+// order (epic #1158 invariant I6). Per-entry metadata marshals as stored;
+// key order within it is stable because PG jsonb output and the sole
+// metadata-producing path (mcpServerMetadata, a Go map) both emit sorted
+// keys. The revision stamp is deliberately
 // excluded: canonical bytes describe content, not bookkeeping. The
 // input Batch is never mutated.
 func CanonicalBatch(batch Batch) []byte {

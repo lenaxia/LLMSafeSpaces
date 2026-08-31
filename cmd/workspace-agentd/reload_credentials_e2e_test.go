@@ -6,7 +6,7 @@ package main
 // reload_credentials_e2e_test.go exercises the LIVE credential reload path:
 //
 //	provider_credentials (DB row)
-//	  → SecretService.InjectSecrets   (decrypt + dedupe by provider)
+//	  → SecretService.BuildWorkspaceBatch  (decrypt + dedupe by provider)
 //	  → reloadSecretsHandler                        (HTTP POST /v1/reload-secrets)
 //	  → Materializer.Materialize → FlushProviders   (stages + writes agent-config.json)
 //	  → AgentConfigWriter.rebuild                   (atomic write)
@@ -135,7 +135,7 @@ func (s *reloadE2EStore) EnsureRevision(context.Context, string, string) (int64,
 // reloadE2EKeyStore holds a single user_keys record so the builder's
 // server-side DEK unwrap (GetDEKServerSide) can recover the fixture's
 // user DEK — the one-builder replacement for the deleted session-based
-// InjectSecrets call shape.
+// builder call shape.
 type reloadE2EKeyStore struct{ record *secrets.UserKeyRecord }
 
 func (s *reloadE2EKeyStore) GetUserKey(_ context.Context, _ string) (*secrets.UserKeyRecord, error) {
@@ -283,7 +283,7 @@ func readReloadAgentConfig(t *testing.T, path string) struct {
 
 // TestE2E_ReloadSecrets_AllOwnerTypesMaterialized is the reload-path twin of
 // TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized. It seeds org + admin
-// + user credentials, runs InjectSecrets → reloadSecretsHandler,
+// + user credentials, runs BuildWorkspaceBatch → reloadSecretsHandler,
 // and asserts all three providers appear in agent-config.json. A regression
 // where org credentials stop surviving the reload decrypt path fails here.
 func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
@@ -309,7 +309,7 @@ func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(cfg.Provider["anthropic"], &anthropicEntry))
 	assert.Equal(t, "sk-org", anthropicEntry.Options.APIKey,
-		"org apiKey must round-trip through InjectSecrets → reload → agent-config.json")
+		"org apiKey must round-trip through the batch builder → reload → agent-config.json")
 }
 
 // TestE2E_ReloadSecrets_OrgOnly pins that a sole org-scoped credential

@@ -323,6 +323,21 @@ jobs:
           P95_BUDGET_MS: 30000
         run: bash local/us-70-secret-delivery-e2e.sh
 
+      - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
+        # Two-tier-revision acceptance rows: v2 contract feature-detect
+        # (REV-0 — loud-skips ALL rows when the deployed API predates the
+        # envelope, so a mixed fleet / pre-merge nightly stays green),
+        # identical revisions from two API replicas (REV-1), conditional
+        # pull 304/ETag + monotonic seq (REV-2), anchored spawned_rev
+        # (REV-3), and pull-vs-push batch identity (REV-4). Scales the
+        # API deployment to 2 replicas mid-suite and restores it.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18084
+        run: bash local/us-70-revisions-e2e.sh
+
       - name: Run V2 session-queue behavioral e2e (US-63.3/63.4/63.9)
         # Hard-assert behavioral properties that unit tests cannot cover:
         #   US-63.3: enqueue while busy → runs after current turn
