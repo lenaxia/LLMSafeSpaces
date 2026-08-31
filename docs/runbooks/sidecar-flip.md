@@ -9,6 +9,8 @@
    - **K11** sidecar-restart idempotency guard,
    - **K13** degraded-base boot (the 2026-08-25 incident-class regression).
 3. Cluster ≥ 1.35 (native sidecars) — already the chart floor.
+4. **S5 overlay validation green** (`local/s5-overlay-validation.yml`) — design 0053: the stripped base + both mandatory overlay pins are now the ONLY mode; the flip rides on S5.2 (launch→ready), S5.5 (resume cost), and S5.6 (gVisor runsc leg — design 0051's open item).
+5. **US-70.1 deployed** (spawn-time env pull, #1164/design 0057) — the pre-70.1 sidecar boot deterministically lost env-class secrets (`pushInitialSpawnEnv` dialed the control socket before the workspace container existed); the pull closed that class.
 
 **Flip:** set `controller.agentdSidecar.enabled: true` in the release values. New and recreated pods get the sidecar spec; existing running pods keep their old spec until restarted (D6.1 convergence).
 
@@ -23,6 +25,6 @@
 3. **Suspended workspaces:** do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window.
 4. **Accepting force-upgrade semantics:** an in-flight session on a deleted pod is interrupted (~22s resume cost); PVCs retain all state; opencode.db replays via WAL.
 
-**Rollback:** flip the value back off. Per D6.1: recreated pods converge to the legacy single-container spec; Secrets carry extra keys that legacy readers ignore; file relocations re-converge via reset()+re-materialize. The legacy bash path and baked binary remain in the base image until migration step 5 (post-soak deletion) — that is exactly why they are retained.
+**Rollback:** flip the value back off. Recreated pods converge to the single-container spec (`--supervise`); Secrets carry extra keys that legacy readers ignore; file relocations re-converge via reset()+re-materialize.
 
-**Step 5 (separate, later):** after ≥1 soak cycle with zero platform-boot failures, delete the baked agentd + entrypoints + legacy bash init path from `runtimes/base/Dockerfile` and `pod_builder.go` (the `overlayOn=false` branch). Keep the prior base tag pullable as the rollback artifact. The `MinBaseVersion` floor then also ratchets to the release that makes baked-agentd absence universal.
+**Step 5 — DONE (design 0053, #1156):** the baked agentd + entrypoints + legacy bash init path were deleted from `runtimes/base/Dockerfile` and `pod_builder.go` (the `overlayOn` branch); `MinBaseVersion` was deleted outright (no baked contract remains to floor). The rollback artifact is the LAST pre-strip base tag (kept pullable; content-versioned rows start at `bookworm@2026.08.0`).
