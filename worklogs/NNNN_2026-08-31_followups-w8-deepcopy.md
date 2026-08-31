@@ -55,3 +55,15 @@ The 0870 finding, now root-caused and fixed: `hack/tools.go` pinned only `k8s.io
   observation left for follow-up: a failed batch IS persisted to the
   reload cache (replays loudly; harmless but burns tmpfs bytes for
   oversized entries — the API cap is the real gate).
+
+## Addendum 2 (review round 2): complete spawn-workflow rows + flake fix
+
+- `cmd/workspace-agentd/spawn_files_size_exec_test.go`: near-cap
+  (API-cap-sized) secret-file delivers byte-complete at spawn with the
+  mode contract; a refused whole-batch re-stage never retracts the
+  published last-good generation and the NEXT spawn still delivers it
+  (never-block-spawn holds) — the complete bind -> stage -> pull ->
+  deliver workflow under both W8 outcomes.
+- Cherry-picked the supervisor environ-read de-flake (liveChildEnviron)
+  from #1194 — the same load-induced flake (TestSupervisorSubprocess_
+  SpawnPull_RevocationIsAbsence) was failing this branch's full-suite CI.
