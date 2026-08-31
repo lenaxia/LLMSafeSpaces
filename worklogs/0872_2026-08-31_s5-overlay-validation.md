@@ -59,4 +59,4 @@ None (script cannot run on the authoring sandbox — no docker; CI executes it).
 
 - `local/s5-overlay-validation.sh` (new)
 - `.github/workflows/s5-overlay-validation.yml` (new)
-- `worklogs/NNNN_2026-08-31_s5-overlay-validation.md` (this file)
+- `worklogs/0872_2026-08-31_s5-overlay-validation.md` (this file)
