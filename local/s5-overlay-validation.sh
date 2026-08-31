@@ -423,19 +423,25 @@ if [ "${S5_SKIP_GVISOR:-0}" = "1" ]; then
 else
   log "S5.6: installing gVisor runsc on the kind node"
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
+  # gVisor's apt repository is gone upstream (404s on the suite, the key,
+  # and the pool — verified 2026-08-31). The direct release binaries remain:
+  # download runsc + its published sha512, verify, install to /usr/local/bin.
   if docker exec "$NODE" bash -c '
       set -e
       export DEBIAN_FRONTEND=noninteractive
       apt-get update -qq >/dev/null
-      apt-get install -y -qq gnupg curl ca-certificates >/dev/null
-      install -d -m 0755 /etc/apt/keyrings
-      curl -fsSL https://gvisor.dev/archives.asc -o /etc/apt/keyrings/gvisor.asc \
-        || curl -fsSL https://storage.googleapis.com/gvisor/archive/latest.key -o /etc/apt/keyrings/gvisor.asc
-      echo "deb [signed-by=/etc/apt/keyrings/gvisor.asc] https://storage.googleapis.com/gvisor/releases release main" > /etc/apt/sources.list.d/gvisor.list
-      apt-get update -qq >/dev/null
-      apt-get install -y -qq runsc >/dev/null
-      runsc --version >/dev/null
-      # Register the handler in containerd (config_v2 runtime table).
+      apt-get install -y -qq curl ca-certificates >/dev/null
+      BASE=https://storage.googleapis.com/gvisor/releases/release/latest/x86_64
+      curl -fsSL "$BASE/runsc" -o /tmp/runsc
+      curl -fsSL "$BASE/runsc.sha512" -o /tmp/runsc.sha512
+      # gVisor publishes "<sha512>  runsc" — verify the download against it.
+      EXPECTED=$(cut -d" " -f1 /tmp/runsc.sha512)
+      ACTUAL=$(sha512sum /tmp/runsc | cut -d" " -f1)
+      [ "$EXPECTED" = "$ACTUAL" ] || { echo "runsc sha512 mismatch"; exit 1; }
+      install -m 0755 /tmp/runsc /usr/local/bin/runsc
+      /usr/local/bin/runsc --version >/dev/null
+      # Register the handler in containerd (config_v2 runtime table);
+      # containerd resolves `runsc` from PATH (/usr/local/bin).
       CFG=/etc/containerd/config.toml
       grep -q "runsc" "$CFG" || {
         printf "\n[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runsc]\n  runtime_type = \"io.containerd.runsc.v1\"\n" >> "$CFG"
