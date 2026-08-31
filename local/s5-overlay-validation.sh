@@ -448,6 +448,17 @@ else
       install -m 0755 /tmp/runsc /usr/local/bin/runsc
       rm -f /tmp/runsc /tmp/runsc.sha512
       /usr/local/bin/runsc --version >/dev/null
+      # containerd also needs the SHIM binary (run 10: "runtime
+      # io.containerd.runsc.v1 binary not installed containerd-shim-runsc-v1").
+      $CURL "$BASE/containerd-shim-runsc-v1" -o /tmp/shim
+      $CURL "$BASE/containerd-shim-runsc-v1.sha512" -o /tmp/shim.sha512
+      EXPECTED=$(cut -d" " -f1 /tmp/shim.sha512)
+      [[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]] \
+        || { echo "shim.sha512 format changed upstream (got: $(cat /tmp/shim.sha512))"; exit 1; }
+      ACTUAL=$(sha512sum /tmp/shim | cut -d" " -f1)
+      [ "$EXPECTED" = "$ACTUAL" ] || { echo "shim sha512 mismatch"; exit 1; }
+      install -m 0755 /tmp/shim /usr/local/bin/containerd-shim-runsc-v1
+      rm -f /tmp/shim /tmp/shim.sha512
       # Register the handler in containerd (config_v2 runtime table);
       # containerd resolves `runsc` from PATH (/usr/local/bin).
       CFG=/etc/containerd/config.toml
