@@ -151,11 +151,16 @@ func TestIntegration_SpawnEnvHandoff_CrossesToRealChild(t *testing.T) {
 	// Route the wrapper through the adapter's base-factory seam with the
 	// harness's fake child (production composes on defaultOpencodeCmdFactory).
 	// The SOCKET server must speak to this adapter, so rebuild the server
-	// pair against it (same child, same port).
+	// pair against it (same child, same port) — wiring the adapter's
+	// composition as the process factory exactly as newSupervisorProcess
+	// does in production.
 	h.proc.mu.Lock()
 	base := h.proc.cmdFactory
 	h.proc.mu.Unlock()
 	adapter := &managedProcAdapter{p: h.proc, baseCmdFactory: base}
+	h.proc.mu.Lock()
+	h.proc.cmdFactory = adapter.composeChild
+	h.proc.mu.Unlock()
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", adapter)
 	go srv.serve()
 	cc := newControlClient(srv.addr())

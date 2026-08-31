@@ -63,6 +63,13 @@ type supervisorProc struct {
 // PATH limited to the stub dir (fake opencode + coreutils), socket on an
 // ephemeral port, output piped for failure diagnostics.
 func startSupervisorSubprocess(t *testing.T) *supervisorProc {
+	return startSupervisorSubprocessEnv(t)
+}
+
+// startSupervisorSubprocessEnv additionally appends extra env vars to
+// the supervisor's environment (the US-70.1 exec tests wire the
+// spawn-env pull address and credential this way).
+func startSupervisorSubprocessEnv(t *testing.T, extraEnv ...string) *supervisorProc {
 	t.Helper()
 	withTestLogger(t)
 
@@ -83,7 +90,7 @@ func startSupervisorSubprocess(t *testing.T) *supervisorProc {
 
 	//nolint:gosec // os.Args[0] is the trusted test binary path
 	cmd := exec.Command(os.Args[0], "-test.run=TestSupervisorHelperProcess", "-test.v")
-	cmd.Env = []string{
+	cmd.Env = append([]string{
 		"GO_TEST_SUPERVISOR=1",
 		"LLMSAFESPACES_CONTROL_SOCKET_ADDR=" + addr,
 		"PATH=" + stubDir + ":/usr/bin:/bin",
@@ -93,7 +100,7 @@ func startSupervisorSubprocess(t *testing.T) *supervisorProc {
 		// HOME/PATH away is not enough — the path is a const — so assert
 		// only on OUR handed env and ignore whatever else it carries.
 		"WORKSPACE_ID=supervisor-integration-test",
-	}
+	}, extraEnv...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	// Belt and braces: never let lingering child I/O outlive the test.
@@ -165,11 +172,12 @@ func TestSupervisorSubprocess_LifecycleAndContract(t *testing.T) {
 		return firstPID > 0
 	}, 10*time.Second, 100*time.Millisecond, "supervisor must spawn the (stub) opencode child")
 
-	// Degradation steady state (review round 1): the FIRST child —
-	// spawned before any spawn_env push — boots with the PLATFORM env
-	// only. This is exactly the sidecar-boot state when the push fails
-	// or the supervisor socket was not yet up: opencode runs, minus
-	// user env-secrets, until the next reload hands them off.
+	// Degradation steady state (review round 1): the FIRST child boots
+	// with the PLATFORM env only. This test env wires no pull credential
+	// (OPENCODE_SERVER_PASSWORD unset), so the US-70.1 spawn-time pull
+	// fast-fails with spawn_env_no_credential — the loud degraded boot.
+	// The healthy pulled-delta first spawn is pinned in
+	// spawn_env_pull_exec_test.go.
 	{
 		data, err := os.ReadFile("/proc/" + strconv.Itoa(firstPID) + "/environ")
 		require.NoError(t, err)
@@ -320,111 +328,11 @@ func TestSupervisorSubprocess_BadRequestOverWire(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestSidecarBootHelperProcess is the re-exec entry for the boot-ordering
-// test: it mirrors runSidecarCommand's boot order EXACTLY — resolve the
-// delta, push it over the socket, THEN serve — using the production
-// pushInitialSpawnEnv. The marker file is written by the push step's
-// caller (before the listener opens), so "mux accepting ⇒ marker exists"
-// is a causal ordering proof, not a timestamp race.
-func TestSidecarBootHelperProcess(t *testing.T) {
-	if os.Getenv("GO_TEST_SIDECAR_BOOT") != "1" {
-		return
-	}
-	addr := os.Getenv("BOOT_SUPERVISOR_ADDR")
-	envPath := os.Getenv("BOOT_SECRETS_ENV")
-	marker := os.Getenv("BOOT_MARKER")
-	muxPort := os.Getenv("BOOT_MUX_PORT")
-
-	cc := newControlClient(addr)
-	if err := pushInitialSpawnEnv(cc, envPath); err != nil {
-		fmt.Fprintf(os.Stderr, "boot helper: push failed: %v\n", err)
-	}
-	// Push step complete — record it, then (and only then) serve.
-	if err := os.WriteFile(marker, []byte("pushed"), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "boot helper: marker write failed: %v\n", err)
-		os.Exit(3)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:"+muxPort)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "boot helper: mux listen failed: %v\n", err)
-		os.Exit(4)
-	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		_, _ = conn.Write([]byte(`{"ok":true}`))
-		_ = conn.Close()
-	}
-}
-
-// TestSidecarBoot_PushPrecedesMuxServing pins the in-process half of the
-// #857-analogous boot guarantee: the sidecar's spawn-env handoff
-// completes BEFORE its muxes serve (hence before kubelet's startup probe
-// can pass). The kubelet half — probe-pass precedes the workspace
-// container's start — is pinned at L3 (K1: sidecar startedAt ≤ main
-// startedAt, green in the kind run). Chain: push < mux < probe < main
-// container < supervisor's first spawn.
-func TestSidecarBoot_PushPrecedesMuxServing(t *testing.T) {
-	withTestLogger(t)
-	// A REAL supervisor subprocess to receive the push.
-	sp := startSupervisorSubprocess(t)
-	cc := newControlClient(sp.addr)
-
-	// A real secrets-env with a delta to hand off (the materializer's
-	// canonical FormatEnvLine form — `export NAME='value'`).
-	envPath := writeSecretsEnv(t, t.TempDir(), "export BOOT_ORDER_DELTA='landed-before-mux'\n")
-
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "push-done")
-	muxPort := freeTCPPort(t)
-
-	//nolint:gosec // os.Args[0] is the trusted test binary path
-	helper := exec.Command(os.Args[0], "-test.run=TestSidecarBootHelperProcess", "-test.v")
-	helper.Env = append(os.Environ(),
-		"GO_TEST_SIDECAR_BOOT=1",
-		"BOOT_SUPERVISOR_ADDR="+sp.addr,
-		"BOOT_SECRETS_ENV="+envPath,
-		"BOOT_MARKER="+marker,
-		"BOOT_MUX_PORT="+strconv.Itoa(muxPort),
-	)
-	helper.Stdout = os.Stdout
-	helper.Stderr = os.Stderr
-	helper.WaitDelay = 5 * time.Second
-	require.NoError(t, helper.Start())
-	t.Cleanup(func() { _ = helper.Process.Kill() })
-
-	// Wait for the helper's mux to ACCEPT — the moment kubelet's probe
-	// could first pass.
-	deadline := time.Now().Add(10 * time.Second)
-	connected := false
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", muxPort), 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			connected = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	require.True(t, connected, "boot helper's mux never accepted")
-
-	// Causal ordering: the mux serving proves the push step already
-	// completed (the listener only opens after the marker is written,
-	// which only happens after pushInitialSpawnEnv returned).
-	require.FileExists(t, marker, "mux accepting ⇒ the spawn-env push already completed")
-
-	// Delivery receipt: the delta is stored in the REAL supervisor —
-	// proven by restarting and inspecting the new child's environ.
-	_, err := cc.Restart(context.Background(), "credential_reload", 5)
-	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		pid := sp.childPIDOf(t, cc)
-		if pid <= 0 || pid == 0 {
-			return false
-		}
-		data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
-		return err == nil && strings.Contains(string(data), "BOOT_ORDER_DELTA=landed-before-mux")
-	}, 10*time.Second, 100*time.Millisecond, "the boot-pushed delta must reach the next spawn")
-}
+// The US-4a boot-ordering tests (sidecar push precedes mux serving) were
+// removed with the push itself: under native-sidecar startup gating the
+// push dialed a control socket in a container that could not have
+// started yet — structurally always "connection refused" (US-70.1 /
+// design 0057 R2). The successor invariants — the FIRST spawn pulls the
+// delta from the sidecar mux, a dead mux degrades loudly, spawn never
+// blocks — are pinned in spawn_env_pull_exec_test.go against the REAL
+// subcommand.

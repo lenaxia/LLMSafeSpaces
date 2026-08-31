@@ -52,6 +52,12 @@ type controlStatus struct {
 	ChildState    string    `json:"child_state"`
 	Restarts      int       `json:"restarts"`
 	LastRestartAt time.Time `json:"-"`
+	// US-70.1 terminal-verified spawn-env state (design 0057 I4/I10):
+	// what the last-spawned child actually spawned with, plus the
+	// delivery degrade reason when incomplete.
+	SpawnedRev       string `json:"-"`
+	SpawnEnvDegraded bool   `json:"-"`
+	SpawnEnvReason   string `json:"-"`
 }
 
 type controlRestartResult struct {
@@ -129,15 +135,25 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 		return nil, err
 	}
 	raw := struct {
-		ChildPID      int    `json:"child_pid"`
-		ChildState    string `json:"child_state"`
-		Restarts      int    `json:"restarts"`
-		LastRestartAt string `json:"last_restart_at"`
+		ChildPID         int    `json:"child_pid"`
+		ChildState       string `json:"child_state"`
+		Restarts         int    `json:"restarts"`
+		LastRestartAt    string `json:"last_restart_at"`
+		SpawnedRev       string `json:"spawned_rev"`
+		SpawnEnvDegraded bool   `json:"spawn_env_degraded"`
+		SpawnEnvReason   string `json:"spawn_env_reason"`
 	}{}
 	if err := json.Unmarshal(mustMarshal(res), &raw); err != nil {
 		return nil, fmt.Errorf("control socket: status decode: %w", err)
 	}
-	st := &controlStatus{ChildPID: raw.ChildPID, ChildState: raw.ChildState, Restarts: raw.Restarts}
+	st := &controlStatus{
+		ChildPID:         raw.ChildPID,
+		ChildState:       raw.ChildState,
+		Restarts:         raw.Restarts,
+		SpawnedRev:       raw.SpawnedRev,
+		SpawnEnvDegraded: raw.SpawnEnvDegraded,
+		SpawnEnvReason:   raw.SpawnEnvReason,
+	}
 	if raw.LastRestartAt != "" {
 		t, err := time.Parse(time.RFC3339, raw.LastRestartAt)
 		if err != nil {

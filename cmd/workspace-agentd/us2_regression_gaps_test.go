@@ -26,6 +26,7 @@ package main
 //     Pin: each writer leaves group-readable files (shared gid 1000).
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,10 +45,10 @@ import (
 // --- Gap 1: adapter base-factory injection ---------------------------------
 
 // TestManagedProcAdapter_WrapperUsesInjectedBaseFactory is the CI-hang
-// regression: SetSpawnEnv's factory wrapper must build on the ADAPTER's
-// baseCmdFactory, not on defaultOpencodeCmdFactory. The factory product
-// is inspected structurally (no child spawned): Path must be the injected
-// base's path and Env must be exactly the spawn env. A regression to the
+// regression: the spawn composition must build on the ADAPTER's
+// baseCmdFactory, not on defaultOpencodeCmdFactory. The composed cmd is
+// inspected structurally (no child spawned): Path must be the injected
+// base's path and Env must be parent + spawn env. A regression to the
 // production factory shows up as Path=="opencode" — failing everywhere,
 // not only on runners without opencode installed.
 func TestManagedProcAdapter_WrapperUsesInjectedBaseFactory(t *testing.T) {
@@ -63,11 +64,9 @@ func TestManagedProcAdapter_WrapperUsesInjectedBaseFactory(t *testing.T) {
 	}
 	adapter.SetSpawnEnv(map[string]string{"HANDED": "env"})
 
-	factory := p.cmdFactory
-	require.NotNil(t, factory, "SetSpawnEnv must install a factory wrapper")
-	cmd := factory()
+	cmd := adapter.composeChild()
 	require.Equal(t, baseBinary, cmd.Path,
-		"the wrapper must compose on the injected baseCmdFactory — a Path of \"opencode\" is the CI-hang regression (#980 round 2)")
+		"the composition must build on the injected baseCmdFactory — a Path of \"opencode\" is the CI-hang regression (#980 round 2)")
 	// US-4a merge semantics: the delta rides ON TOP of the base env
 	// (platform vars win — A.4 forbids the sidecar composing the parent).
 	require.Contains(t, cmd.Env, "HANDED=env")
@@ -138,7 +137,7 @@ func TestManagedProcess_SkipHealthProbeSuppressesPostRestartProbe(t *testing.T) 
 // command's process construction: probe skipped, no session-tracker hook,
 // adapter pre-wired to the resolved spawn base.
 func TestNewSupervisorProcess_SupervisorModeFlags(t *testing.T) {
-	proc, adapter := newSupervisorProcess()
+	proc, adapter := newSupervisorProcess(context.Background())
 	require.True(t, proc.skipHealthProbe,
 		"the supervisor must not run the post-restart health probe (bearer-gated sidecar readyz; D1 token boundary)")
 	require.Nil(t, proc.onChildStarted,

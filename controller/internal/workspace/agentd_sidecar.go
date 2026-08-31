@@ -294,6 +294,12 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 	)
 
 	main := &pod.Spec.Containers[0]
+	// US-70.1 R3 matrix finding: the base build wires the admin-mux
+	// bearer into the main container for single-container mode (agentd
+	// runs there). In sidecar mode this container is the uid-1000
+	// supervisor + opencode, and design 0051 D1 keeps that bearer out of
+	// uid-1000 space (the sidecar gets it via env instead) — strip it.
+	main.Env = stripEnvVars(main.Env, "AGENTD_ADMIN_TOKEN", "AGENTD_ADMIN_TOKEN_FILE")
 	// Step-2 migration: the main container runs the overlay supervisor
 	// DIRECTLY — the baked entrypoint (runtime-image platform logic; the
 	// 2026-08-25 stale-base supply chain) is bypassed. Its env work
@@ -378,4 +384,22 @@ func initContainerByName(pod *corev1.Pod, name string) *corev1.Container {
 		}
 	}
 	return nil
+}
+
+// stripEnvVars removes the named variables from an env list, returning
+// the filtered copy (used by applyAgentdSidecar to keep single-container
+// credential wiring out of the uid-1000 supervisor's env).
+func stripEnvVars(env []corev1.EnvVar, names ...string) []corev1.EnvVar {
+	drop := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		drop[n] = struct{}{}
+	}
+	out := make([]corev1.EnvVar, 0, len(env))
+	for _, e := range env {
+		if _, banned := drop[e.Name]; banned {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }

@@ -28,11 +28,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"go.uber.org/zap"
 )
 
@@ -78,7 +77,7 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	proc, adapter := newSupervisorProcess()
+	proc, adapter := newSupervisorProcess(rootCtx)
 	proc.start()
 
 	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
@@ -119,45 +118,28 @@ func runSuperviseOpencodeCommand(_ []string) int {
 //
 // Design 0053 S1: the opencode spawn base (overlay verify + binary
 // resolution) is resolved ONCE here — before the socket, before any
-// child — and shared by the process and the adapter, so a socket spawn-env
-// push wraps the SAME verified factory instead of re-resolving or
+// child — and shared by the process and the adapter, so the spawn-env
+// composition wraps the SAME verified factory instead of re-resolving or
 // regressing to the PATH-lookup default. Verify failure exits 83/84 from
 // opencodeSpawnBaseFactory before this function returns.
-func newSupervisorProcess() (*managedProcess, *managedProcAdapter) {
-	return newSupervisorProcessPulling(newSpawnEnvPullerForPod())
-}
-
-// newSupervisorProcessPulling is newSupervisorProcess with the spawn-env
-// puller injected (tests pin the URL/bound; production resolves the pod
-// mux + §D1 credential from the workspace password file).
-func newSupervisorProcessPulling(puller *spawnEnvPuller) (*managedProcess, *managedProcAdapter) {
+//
+// US-70.1 (design 0057 R2): every spawn PULLS the secrets delta from the
+// sidecar user mux with a bounded wait (preSpawn, outside managedProcess
+// locks); composeChild merges the fresh-or-last-good delta onto the base
+// env and records spawned_rev at the point of consumption (I4).
+func newSupervisorProcess(ctx context.Context) (*managedProcess, *managedProcAdapter) {
 	base := opencodeSpawnBaseFactory()
-	// US-70.1 (design 0057 R2): every spawn PULLS the current delta
-	// (bounded wait + last-good memory cache) instead of consuming a
-	// boot-time push that structurally cannot land. Never-block-spawn:
-	// the bound holds under any mux failure mode.
-	proc := &managedProcess{cmdFactory: withSpawnEnvPull(base, puller)}
+	a := &managedProcAdapter{
+		baseCmdFactory: base,
+		puller:         newSpawnEnvPuller(spawnEnvPullAddr(), supervisorSpawnCredential()),
+		pullCtx:        ctx,
+	}
+	proc := &managedProcess{cmdFactory: a.composeChild, preSpawn: a.preSpawn}
 	proc.onChildStarted = nil
 	proc.skipHealthProbe = true
-	return proc, &managedProcAdapter{p: proc, baseCmdFactory: base, spawnPuller: puller}
+	a.p = proc
+	return proc, a
 }
-
-// newSpawnEnvPullerForPod resolves the production pull target: the pod's
-// user mux (single netns, both modes) with the §D1 workspace credential
-// read from the uid-1000-owned password file (A2: the supervisor reads
-// ONLY files it owns; the HTTP boundary carries the crossing).
-func newSpawnEnvPullerForPod() *spawnEnvPuller {
-	pw := ""
-	if b, err := os.ReadFile(agentd.PasswordPath); err == nil {
-		pw = strings.TrimSpace(string(b))
-	}
-	return newSpawnEnvPuller(fmt.Sprintf("http://127.0.0.1:%d", agentd.AgentdPort), pw, defaultSpawnPullBound)
-}
-
-// defaultSpawnPullBound bounds the spawn-time pull (never-block-spawn).
-// Generous vs a healthy mux (localhost, ms-scale) and vs the spawn path
-// overall; the last-good cache makes longer outages non-blocking.
-const defaultSpawnPullBound = 2 * time.Second
 
 // newSupervisorControlServer builds the supervisor's control socket with
 // the metrics source wired (US-2): the supervisor's own cgroup IS the
@@ -173,14 +155,27 @@ func newSupervisorControlServer(addr string, adapter *managedProcAdapter) (*cont
 	return srv, nil
 }
 
+// spawnEnvStateReport is the terminal-verified spawn-env state (US-70.1,
+// design 0057 I4/I10): the revision of the delta the last-spawned child
+// actually spawned with, plus the machine-readable degrade reason when
+// delivery is not complete. Crosses the control socket as part of
+// `status`; contains no env values (A.4 invariant 1).
+type spawnEnvStateReport struct {
+	SpawnedRev string
+	Degraded   bool
+	Reason     string
+}
+
 // managedProcAdapter maps control-socket vocabulary (Appendix A) onto
-// managedProcess. It holds no state of its own except the memory-only
-// spawn env (A.2).
+// managedProcess. It owns the US-70.1 spawn-time pull state: the
+// last-good delta and the spawned revision live here, in supervisor
+// memory only (design 0057 I7 — no PVC, no logs, no socket read-back of
+// values).
 type managedProcAdapter struct {
 	p *managedProcess
-	// baseCmdFactory builds the child the spawn-env wrapper composes on
-	// top of. Nil resolves to the overlay-aware production base at first
-	// use (opencodeSpawnBaseFactory — legacy PATH lookup, or the
+	// baseCmdFactory builds the child the spawn-env composition wraps.
+	// Nil resolves to the overlay-aware production base at first use
+	// (opencodeSpawnBaseFactory — legacy PATH lookup, or the
 	// sha256-verified overlay binary when OPENCODE_IMAGE_VOLUME=1);
 	// tests inject the fake-opencode factory so the wrapper does not
 	// silently switch the child to the production `opencode` binary
@@ -188,26 +183,17 @@ type managedProcAdapter struct {
 	// Start and restart blocks on upCh forever). Production
 	// (newSupervisorProcess) always sets it to the once-resolved base.
 	baseCmdFactory func() *exec.Cmd
-	// spawnEnv is the US-0.2(a) IPC-handed env delta: memory-only,
-	// write-only, last-write-wins. MERGED onto the base factory's env at
-	// the NEXT spawn (US-4a; wholesale replacement was US-2's interim
-	// shape). Never returned over the socket (A.4 invariant 1), never
-	// written to disk.
-	spawnEnv []string
-	// spawnPuller (US-70.1) surfaces spawned_rev + degraded reason for
-	// the status endpoint — terminal verification at the point of
-	// consumption (I4), loud degradation (I10).
-	spawnPuller *spawnEnvPuller
-}
 
-// SpawnStatus reports the terminal spawn-env state for the control
-// socket's status surface: the rev the child actually spawned with and
-// the active degrade reason ("" healthy).
-func (a *managedProcAdapter) SpawnStatus() (rev, degraded string) {
-	if a.spawnPuller == nil {
-		return "", ""
-	}
-	return a.spawnPuller.spawnedRev(), a.spawnPuller.degradedReason()
+	// pullMu guards the US-70.1 pull state below. Deliberately NOT
+	// managedProcess's mutex: preSpawn runs outside it (bounded I/O must
+	// never block restart/state/metrics readers), and the socket's
+	// spawn_env push can land between spawns.
+	pullMu         sync.Mutex
+	puller         *spawnEnvPuller
+	pullCtx        context.Context
+	currentDelta   map[string]string
+	degradedReason string
+	spawnedRev     string
 }
 
 func (a *managedProcAdapter) factory() func() *exec.Cmd {
@@ -251,26 +237,82 @@ func (a *managedProcAdapter) State() (pid int, state string, restarts int, lastR
 	return p, state, restarts, lastRestartAt
 }
 
-// SetSpawnEnv stores the composed child env (memory-only, A.2) and
-// installs the factory wrapper so the NEXT spawn uses it.
+// SetSpawnEnv stores a pushed secrets delta (the legacy US-0.2(a)/US-4a
+// push path — superseded by the spawn-time pull; demolition lands with
+// US-70.5). The delta composes onto the base env at the NEXT spawn; a
+// later successful pull supersedes it (pull is the sole correctness
+// source, I3). Memory-only (A.2): never returned over the socket, never
+// written to disk.
 func (a *managedProcAdapter) SetSpawnEnv(env map[string]string) {
-	flat := make([]string, 0, len(env))
-	for k, v := range env {
-		flat = append(flat, k+"="+v)
+	a.pullMu.Lock()
+	a.currentDelta = env
+	a.pullMu.Unlock()
+}
+
+// preSpawn is the US-70.1 spawn-time pull, invoked by the supervisor
+// loop before every child build (first boot, restarts, crash recovery).
+// A successful pull — including an EMPTY delta, which is revocation (I12:
+// absence is the delete) — becomes the current delta and clears any
+// degrade. A failed pull keeps the last-good delta from memory and marks
+// the degrade with a machine-readable reason. Never blocks beyond the
+// puller's bound: never-block-boot extends to never-block-spawn.
+func (a *managedProcAdapter) preSpawn() {
+	if a.puller == nil {
+		return
 	}
-	a.spawnEnv = flat
-	base := a.factory()
-	a.p.mu.Lock()
-	a.p.cmdFactory = func() *exec.Cmd {
-		cmd := base()
-		// US-4a merge semantics: the sidecar hands ONLY the secrets
-		// delta (A.4 forbids env OUT of the supervisor, so the sidecar
-		// cannot compose the parent); the supervisor composes parent +
-		// delta with platform vars winning — buildEnvFrom parity.
-		cmd.Env = parentPlusDelta(cmd.Env, env)
-		return cmd
+	res, reason, err := a.puller.pullBounded(a.pullCtx)
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	if err != nil {
+		if a.degradedReason != reason {
+			log.Warn("spawn-env pull failed; spawning with the last-good delta",
+				zap.String("reason", reason), zap.Error(err))
+		}
+		a.degradedReason = reason
+		return
 	}
-	a.p.mu.Unlock()
+	a.degradedReason = ""
+	a.currentDelta = res.Env
+}
+
+// composeChild builds the next child: the base factory's env with the
+// current delta merged (platform vars win — buildEnvFrom parity), and
+// records spawned_rev over the EFFECTIVE delta — the keys that actually
+// landed in the child's env — at the moment of composition (design 0057
+// I4: the revision the child actually spawns with, never a revision
+// observed at materialization or fetch, and never the server-advertised
+// one).
+func (a *managedProcAdapter) composeChild() *exec.Cmd {
+	cmd := a.factory()()
+	delta := a.snapshotDelta()
+	var effective map[string]string
+	if len(delta) > 0 {
+		effective = effectiveDelta(cmd.Env, delta)
+		cmd.Env = parentPlusDelta(cmd.Env, delta)
+	}
+	rev := spawnDeltaRev(effective)
+	a.pullMu.Lock()
+	a.spawnedRev = rev
+	a.pullMu.Unlock()
+	return cmd
+}
+
+func (a *managedProcAdapter) snapshotDelta() map[string]string {
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	return a.currentDelta
+}
+
+// SpawnEnvState reports the terminal-verified spawn-env state for the
+// control socket's status method (I10/I13: loud, machine-readable).
+func (a *managedProcAdapter) SpawnEnvState() spawnEnvStateReport {
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	return spawnEnvStateReport{
+		SpawnedRev: a.spawnedRev,
+		Degraded:   a.degradedReason != "",
+		Reason:     a.degradedReason,
+	}
 }
 
 // ensureMiseShims regenerates mise's shim directory (best-effort, never

@@ -24,6 +24,10 @@ type fakeRestartProc struct {
 	// overrideState, when set, is returned by State() verbatim — lets
 	// tests stage pid/boot-grace evidence for the vitals gatherer.
 	overrideState atomic.Pointer[procStateOverride]
+
+	// overrideSpawnEnv, when set, is returned by SpawnEnvState() — lets
+	// tests stage the US-70.1 terminal spawn-env state.
+	overrideSpawnEnv atomic.Pointer[spawnEnvStateReport]
 }
 
 // procStateOverride is the staged State() answer.
@@ -64,8 +68,11 @@ func (f *fakeRestartProc) SetSpawnEnv(env map[string]string) {
 	f.lastEnv.Store(&stored)
 }
 
-func (f *fakeRestartProc) SpawnStatus() (rev, degraded string) {
-	return "", ""
+func (f *fakeRestartProc) SpawnEnvState() spawnEnvStateReport {
+	if o := f.overrideSpawnEnv.Load(); o != nil {
+		return *o
+	}
+	return spawnEnvStateReport{}
 }
 
 // newControlSocketServerForTest builds a server on addr (":0" for

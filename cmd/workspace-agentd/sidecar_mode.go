@@ -198,23 +198,27 @@ func runSidecarCommand(_ []string) int {
 	// monitor, ops ticker, fillGaps, health watchdog (+reaper loop,
 	// which is a no-op — the sidecar spawns no children and never
 	// becomes a subreaper).
-	// US-4a boot handoff (US-0.2(a)): push the materializer's secrets
-	// delta BEFORE the muxes serve. The kubelet gates the workspace
-	// container on this sidecar's startup probe, so the push lands before
-	// the supervisor's first spawn. Failure is logged, not fatal — an
-	// empty or unreadable file means no env-secrets (safe degradation,
-	// same doctrine as buildEnvFrom's missing file).
-	if deps.reloadProc != nil {
-		if err := pushInitialSpawnEnv(newControlClient(ControlSocketAddr()), secretsEnvPathFromEnv()); err != nil {
-			log.Warn("sidecar: initial spawn-env handoff failed; child boots with the platform env only",
-				zap.String("path", secretsEnvPathFromEnv()), zap.Error(err))
-		}
-	}
+	//
+	// US-70.1 (design 0057 R2): the boot-time spawn-env PUSH is GONE —
+	// under native-sidecar startup gating it dialed a control socket in
+	// a container that could not have started yet ("connection refused",
+	// every boot). The supervisor now PULLS the delta from this sidecar's
+	// user mux at every spawn (bounded wait + last-good cache, served by
+	// /v1/spawn-env); a dead-sidecar boot degrades loudly via the
+	// supervisor-status poller below → healthz → CRD.
+
+	// US-70.1: mirror the supervisor's terminal-verified spawn-env state
+	// (spawned_rev + degrade reason) into healthz. Pull-only, periodic —
+	// healthz itself stays process-only (US-22.1) and reads the cached
+	// snapshot, never the socket.
+	supervisorStatus := &supervisorStatusStore{}
+	deps.spawnEnvSnapshot = supervisorStatus.spawnEnvHealth
 
 	if sidecarAuthority != nil {
 		startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonBoot)
 	}
 	startBackgroundLoops(bgCtx, &bgWg, deps)
+	startSupervisorStatusPoller(bgCtx, &bgWg, newControlClient(ControlSocketAddr()), supervisorStatus)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
@@ -241,27 +245,15 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	so := &socketOps{cc: cc}
 	startedAt := time.Now()
 	controlPlanePassword, _ := readSidecarControlPlanePasswordFromEnv()
-	// US-4a: the reload path's socket-backed restarter — pushes the fresh
-	// secrets-env delta, then requests the credential_reload restart.
-	reloadProc := newSocketReloadProc(cc, secretsEnvPathFromEnv())
-	// US-70.1: the sidecar relays the supervisor's terminal spawn state
-	// (I4/I10) through statusz — bounded-context cache: the deep-status
-	// poll cadence (60s) is the consumer, not the spawn path.
-	spawnStatusFn := func() (string, string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		st, err := cc.SpawnStatus(ctx)
-		if err != nil {
-			return "", ""
-		}
-		return st.SpawnedRev, st.Degraded
-	}
+	// US-70.1: the reload path's socket-backed restarter — restart only;
+	// the restarted child's spawn pulls the fresh delta from this
+	// sidecar's user mux.
+	reloadProc := newSocketReloadProc(cc)
 	return serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,
 		resolvedAdminToken:   cfg.adminToken,
 		reloadProc:           reloadProc,
-		spawnStatus:          spawnStatusFn,
 		startedAt:            startedAt,
 		cache:                &providerCache{},
 		sseTracker:           newSessionStatusTracker(),

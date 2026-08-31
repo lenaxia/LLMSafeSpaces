@@ -31,8 +31,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"go.uber.org/zap"
 )
 
 // parseSecretsEnvDelta returns the variables the bash-sourceable env
@@ -154,6 +152,13 @@ func scanShellquoteExports(data string) ([]nameValue, error) {
 	return order, nil
 }
 
+// pushInitialSpawnEnv is SUPERSEDED by the spawn-time pull (US-70.1,
+// design 0057 R2) and has no production caller: under native-sidecar
+// startup gating the push dialed a control socket in a container that
+// could not have started yet — structurally always "connection refused"
+// (2026-08-30 fleet audit: 3/6 pods, suspend/resume re-breaks). Deletion
+// lands with the US-70.5 demolition; no new code may call it.
+//
 // pushInitialSpawnEnv hands the boot-time secrets delta to the
 // supervisor. Failures are logged and swallowed: an empty or unreadable
 // file means no env-secrets — the pod still functions (same safe
@@ -172,33 +177,45 @@ func pushInitialSpawnEnv(cc *controlClient, path string) error {
 }
 
 // socketReloadProc is the reload path's restartableProcess in sidecar
-// mode: push the fresh secrets delta, then request the restart with the
-// closed reason enum. Re-reads the file AT RESTART TIME so deferred
-// (session-aware) restarts hand off the latest materialization.
+// mode. US-70.1: the pre-restart secrets-env PUSH is gone — the
+// supervisor pulls the fresh delta from the user mux at the moment the
+// restarted child spawns (bounded wait + last-good cache), so the
+// push-then-restart ordering and its dead-socket edge cases dissolve.
+// The restart itself keeps the closed reason enum.
 type socketReloadProc struct {
-	cc             *controlClient
-	secretsEnvPath string
+	cc *controlClient
 }
 
-func newSocketReloadProc(cc *controlClient, secretsEnvPath string) *socketReloadProc {
-	return &socketReloadProc{cc: cc, secretsEnvPath: secretsEnvPath}
+func newSocketReloadProc(cc *controlClient) *socketReloadProc {
+	return &socketReloadProc{cc: cc}
 }
 
 func (s *socketReloadProc) restart() {
-	if delta, err := parseSecretsEnvDelta(s.secretsEnvPath); err != nil {
-		log.Warn("sidecar reload: secrets-env re-read failed; restarting without a new env handoff",
-			zap.String("path", s.secretsEnvPath), zap.Error(err))
-	} else if len(delta) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := s.cc.SpawnEnv(ctx, delta); err != nil {
-			log.Warn("sidecar reload: spawn_env push failed; restart proceeds with the previous env",
-				zap.Error(err))
-		}
-		cancel()
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, _ = s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+}
+
+// effectiveDelta returns the subset of delta that parentPlusDelta will
+// actually append: keys absent from the parent env block. Platform vars
+// shadow delta keys (buildEnvFrom parity), and the shadowed keys drop
+// out of the effective revision the supervisor records (design 0057 I4
+// — the rev covers what actually landed in the child's env).
+func effectiveDelta(parent []string, delta map[string]string) map[string]string {
+	present := make(map[string]struct{}, len(parent))
+	for _, e := range parent {
+		if i := strings.IndexByte(e, '='); i > 0 {
+			present[e[:i]] = struct{}{}
+		}
+	}
+	out := make(map[string]string, len(delta))
+	for k, v := range delta {
+		if _, dup := present[k]; dup {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // parentPlusDelta merges a spawn delta onto a parent env block: parent
@@ -206,18 +223,10 @@ func (s *socketReloadProc) restart() {
 // user secrets — buildEnvFrom parity), delta keys absent from the parent
 // are appended.
 func parentPlusDelta(parent []string, delta map[string]string) []string {
-	present := make(map[string]struct{}, len(parent))
-	for _, e := range parent {
-		if i := strings.IndexByte(e, '='); i > 0 {
-			present[e[:i]] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(parent)+len(delta))
+	effective := effectiveDelta(parent, delta)
+	out := make([]string, 0, len(parent)+len(effective))
 	out = append(out, parent...)
-	for k, v := range delta {
-		if _, dup := present[k]; dup {
-			continue
-		}
+	for k, v := range effective {
 		out = append(out, k+"="+v)
 	}
 	return out

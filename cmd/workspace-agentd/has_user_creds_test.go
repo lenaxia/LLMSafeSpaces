@@ -113,7 +113,7 @@ func TestHealthzHandler_ReportsUserCredsPresent(t *testing.T) {
 	cachePath := filepath.Join(dir, "last-reload-secrets.json")
 
 	// Case 1: cache absent → healthz reports userCredsPresent=false.
-	handler := healthzHandler(time.Now(), cachePath, "")
+	handler := healthzHandler(time.Now(), cachePath, "", nil)
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -144,7 +144,7 @@ func TestHealthzHandler_ReportsUserCredsPresent(t *testing.T) {
 // kill the pod.
 func TestHealthzHandler_UserCredsPresentDoesNotBlockLiveness(t *testing.T) {
 	// Point at a path we can't read.
-	handler := healthzHandler(time.Now(), "/proc/1/root/etc/shadow-nonexistent", "")
+	handler := healthzHandler(time.Now(), "/proc/1/root/etc/shadow-nonexistent", "", nil)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()

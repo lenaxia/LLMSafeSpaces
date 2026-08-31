@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // US-1 adapter tests: managedProcAdapter maps Appendix-A vocabulary onto
@@ -35,15 +34,13 @@ func TestManagedProcAdapter_SetSpawnEnvMemoryOnlyNextFactory(t *testing.T) {
 
 	adapter.SetSpawnEnv(map[string]string{"GH_TOKEN": "ghp_x", "Y": "2"})
 
-	factory := adapter.p.cmdFactory
-	require.NotNil(t, factory, "SetSpawnEnv installs the factory wrapper")
-	cmd := factory()
+	cmd := adapter.composeChild()
 	assert.ElementsMatch(t, []string{"PARENT=kept", "GH_TOKEN=ghp_x", "Y=2"}, cmd.Env,
 		"merge: parent block retained, delta applied (US-4a; wholesale replacement was US-2's interim shape)")
 
-	// Memory-only (A.2/A.4): the adapter exposes no getter — enforce
-	// structurally: spawnEnv is only consumed via the factory closure.
-	// (The negative capability socket test covers the wire side.)
+	// Memory-only (A.2/A.4): the adapter exposes no value getter — the
+	// delta is only consumed via the composition path. (The negative
+	// capability socket test covers the wire side.)
 }
 
 func TestManagedProcAdapter_LastWriteWins(t *testing.T) {
@@ -54,7 +51,7 @@ func TestManagedProcAdapter_LastWriteWins(t *testing.T) {
 	adapter.SetSpawnEnv(map[string]string{"A": "1"})
 	adapter.SetSpawnEnv(map[string]string{"B": "2"})
 
-	cmd := adapter.p.cmdFactory()
+	cmd := adapter.composeChild()
 	assert.ElementsMatch(t, []string{"PARENT=kept", "B=2"}, cmd.Env,
 		"the LAST delta wins wholesale over previous deltas (A.3 last-write-wins), parent block always retained")
 }

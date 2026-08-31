@@ -102,10 +102,10 @@ func TestPushInitialSpawnEnv_EmptyFileNoPush(t *testing.T) {
 
 // --- supervisor-side merge semantics -----------------------------------------
 
-// TestManagedProcAdapter_SpawnEnvMergesWithParent: the wrapper composes
+// TestManagedProcAdapter_SpawnEnvMergesWithParent: the composition is
 // parent + delta (platform vars win, mirroring buildEnvFrom), NOT
-// wholesale replacement — the sidecar sends only the secrets delta
-// because A.4 forbids reading the supervisor's env back out.
+// wholesale replacement — the delta carries only the secrets because
+// A.4 forbids reading the supervisor's env back out.
 func TestManagedProcAdapter_SpawnEnvMergesWithParent(t *testing.T) {
 	p := &managedProcess{}
 	base := func() (env []string) { return []string{"PLATFORM_VAR=platform", "SHARED=parent-wins"} }
@@ -114,7 +114,7 @@ func TestManagedProcAdapter_SpawnEnvMergesWithParent(t *testing.T) {
 		"USER_SECRET": "delta-value",
 		"SHARED":      "delta-loses",
 	})
-	cmd := p.cmdFactory()
+	cmd := adapter.composeChild()
 	require.Contains(t, cmd.Env, "PLATFORM_VAR=platform", "parent platform vars retained")
 	require.Contains(t, cmd.Env, "USER_SECRET=delta-value", "delta applied")
 	require.Contains(t, cmd.Env, "SHARED=parent-wins", "parent wins on conflict (buildEnvFrom parity)")
@@ -130,34 +130,25 @@ func mkFactoryEnv(env func() []string) func() *exec.Cmd {
 	}
 }
 
-// --- reload path: push-then-restart at the moment of restart ------------------
+// --- reload path: restart-only (US-70.1 removed the pre-restart push —
+// the restarted child's spawn PULLS the fresh delta from the user mux) --
 
-// TestSocketReloadProc_PushesDeltaThenRestarts: the sidecar's reload
-// restarter re-reads the (fresh) secrets-env and pushes the delta BEFORE
-// requesting the credential_reload restart — over the real socket, so
-// the deferred-restart path (session-aware) hands off the LATEST env at
-// whatever moment the restart actually fires.
-func TestSocketReloadProc_PushesDeltaThenRestarts(t *testing.T) {
+// TestSocketReloadProc_RestartsWithClosedEnum: the sidecar's reload
+// restarter requests the credential_reload restart over the real socket
+// and pushes NOTHING — delta delivery is the supervisor's spawn-time
+// pull (pull-only correctness, design 0057 I3).
+func TestSocketReloadProc_RestartsWithClosedEnum(t *testing.T) {
 	withTestLogger(t)
 	proc := &fakeRestartProc{}
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 
-	dir := t.TempDir()
-	p := writeSecretsEnv(t, dir, "export RELOADED_SECRET='v1'\n")
-	rp := newSocketReloadProc(newControlClient(srv.addr()), p)
+	rp := newSocketReloadProc(newControlClient(srv.addr()))
 	rp.restart()
 
-	env := *proc.lastEnv.Load()
-	require.Equal(t, "v1", env["RELOADED_SECRET"], "delta pushed before the restart")
+	require.Nil(t, proc.lastEnv.Load(), "no spawn_env push on the reload path — the pull owns delivery")
 	require.Equal(t, "credential_reload", *proc.lastReason.Load(), "restart carries the closed reason enum")
 	require.Equal(t, int64(1), proc.restarts.Load())
-
-	// A changed file on the NEXT restart hands off the LATEST delta
-	// (last-write-wins per A.2/A.3 — the re-read happens at restart time).
-	require.NoError(t, os.WriteFile(p, []byte("export RELOADED_SECRET='v2'\n"), 0o600))
-	rp.restart()
-	require.Equal(t, "v2", (*proc.lastEnv.Load())["RELOADED_SECRET"])
 }
 
 // TestSidecarDeps_WireReloadProc: buildSidecarDeps must hand the reload
@@ -178,17 +169,13 @@ func TestSidecarDeps_WireReloadProc(t *testing.T) {
 	require.NotNil(t, deps.reloadProc,
 		"the sidecar's reload path needs a socket-backed restarter — nil means files apply but opencode never restarts")
 	require.Nil(t, deps.proc, "the sidecar must NOT own a managedProcess")
-
-	rp := deps.reloadProc.(*socketReloadProc)
-	require.NotNil(t, rp)
-	require.Equal(t, secretsEnvPathFromEnv(), rp.secretsEnvPath,
-		"the reload restarter reads the SAME (env-overridable) path the materializer writes")
 }
 
 // TestReloadHandler_SidecarEndToEnd: the REAL reload handler against the
 // socket-backed restarter — env-secret batch → materialized file, marker
-// written to the env-overridden (shared-tmpfs) path, delta pushed and
-// credential_reload restart requested over the real socket.
+// written to the env-overridden (shared-tmpfs) path, credential_reload
+// restart requested over the real socket (US-70.1: no push — the
+// restarted child's spawn pulls the fresh delta from the user mux).
 func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	withTestLogger(t)
 	dir := t.TempDir()
@@ -205,7 +192,7 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	proc := &fakeRestartProc{}
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
-	rp := newSocketReloadProc(newControlClient(srv.addr()), secretsEnv)
+	rp := newSocketReloadProc(newControlClient(srv.addr()))
 
 	deps := reloadSecretsDeps{
 		OpencodePassword: "pw",
@@ -223,13 +210,13 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	h(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
-	// The env-secret materialized to the (overridden) secrets-env path.
+	// The env-secret materialized to the (overridden) secrets-env path —
+	// this is what the supervisor's spawn-time pull will fetch.
 	require.FileExists(t, secretsEnv, "env-secret must materialize to the configured path")
 
-	// The delta crossed the socket and the restart fired with the enum.
-	require.NotNil(t, proc.lastEnv.Load())
-	require.Equal(t, "sk-live-123", (*proc.lastEnv.Load())["MY_PROVIDER_KEY"],
-		"materialized delta pushed over the socket before the restart")
+	// The restart fired with the enum; NOTHING was pushed — delivery is
+	// the pull at the next spawn (I3).
+	require.Nil(t, proc.lastEnv.Load(), "no spawn_env push on the reload path")
 	require.Equal(t, "credential_reload", *proc.lastReason.Load())
 	require.Equal(t, int64(1), proc.restarts.Load())
 
@@ -264,7 +251,7 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	proc := &fakeRestartProc{}
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
-	rp := newSocketReloadProc(newControlClient(srv.addr()), filepath.Join(dir, "secrets-env"))
+	rp := newSocketReloadProc(newControlClient(srv.addr()))
 
 	h := reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
 		OpencodePassword: "pw",
