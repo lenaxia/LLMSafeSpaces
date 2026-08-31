@@ -42,7 +42,7 @@
 # change that breaks v1-format session databases (fixed only in v1.18.19 by
 # upstream #42444) — existing pod session volumes would traverse the broken
 # migration. Jump .15 → .19+ in one hop if a later bump is ever needed.
-ARG OPENCODE_VERSION=1.18.15
+ARG OPENCODE_VERSION=1.18.25
 
 FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS fetch
 
