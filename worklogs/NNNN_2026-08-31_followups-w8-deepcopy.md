@@ -34,3 +34,24 @@ The 0870 finding, now root-caused and fixed: `hack/tools.go` pinned only `k8s.io
 - `pkg/secrets/secret_service.go` (MaxSecretValueBytes + validateValue), `secret_size_test.go` (new)
 - `pkg/agentd/secrets/staging.go` (per-entry + total), `secrets.go` (whole-batch guard), `cross_uid_test.go` (two W8 tests)
 - `hack/tools.go`, `hack/update-deepcopy.sh`, `hack/boilerplate.deepcopy.go.txt` (new), `Makefile` (target comment), `pkg/apis/.../zz_generated.deepcopy.go` (regenerated)
+
+## Addendum (2026-08-31, review round): integration + exec coverage
+
+- `api/internal/handlers/secrets_size_integration_test.go`: HTTP-surface
+  pins — create over-cap → 400 + `size_exceeded` (secret-file), at-cap →
+  201 boundary, update over-cap → 400 + `size_exceeded`, value-type sweep
+  (env-secret / git-credential / api-key).
+- `cmd/workspace-agentd/reload_size_test.go`: the materializer-bypass
+  rows against the REAL reload handler + materializer — mixed batch
+  (T5-tolerant: 500 at the HTTP surface, `"reloaded":1` in the body,
+  subset manifest, oversized entry never stages), all-failed batch (500 +
+  `size_exceeded` + honest `[]` manifest), whole-batch overage (500 +
+  `size_exceeded`, last-good manifest INTACT — the refusal runs
+  pre-publish). Adversarial note: an initial "refusal must not publish"
+  redesign was evaluated and REJECTED — the T5 tolerance and full-replace
+  semantics are the author's intended contract (unit tests pin them); the
+  observed `[]` on all-failed passes is full-replace honesty, with the
+  #443 cache preserving the batch for the next boot's loud replay. One
+  observation left for follow-up: a failed batch IS persisted to the
+  reload cache (replays loudly; harmless but burns tmpfs bytes for
+  oversized entries — the API cap is the real gate).
