@@ -23,134 +23,88 @@ import (
 // that the substring assertions in security_test.go don't catch.
 // =============================================================================
 
-// TestMaterialize_AllTypes_WriteToTmpfs verifies every credential type
-// writes its output to tmpfs targets, never to PVC paths. Each type uses
-// a different apply function + write mechanism:
-//   - ssh-key:      atomicWrite to SSHDir
-//   - git-credential: appendFile to GitCredsPath
-//   - secret-file:  atomicWrite to SecretsBaseDir/<mount_path>
-//   - env-secret:   appendFile to SecretsEnvPath
-//   - api-key:      appendFile to SecretsEnvPath
-func TestMaterialize_AllTypes_WriteToTmpfs(t *testing.T) {
+// TestMaterialize_AllTypes_NoPlaintextOnPVC (R2b): every credential type
+// lands either in the tmpfs staging tree (file classes) or the tmpfs
+// env/config files; the PVC walk stays clean for all of them.
+func TestMaterialize_AllTypes_NoPlaintextOnPVC(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
 	secretList := []Secret{
-		{
-			Type:      "ssh-key",
-			Name:      "deploy",
-			Plaintext: "SSH_KEY_PLAINTEXT",
-			Metadata:  map[string]string{"key_type": "ed25519"},
-		},
-		{
-			Type:      "git-credential",
-			Name:      "github",
-			Plaintext: "GIT_TOKEN_PLAINTEXT",
-			Metadata:  map[string]string{"host": "github.com", "protocol": "https"},
-		},
-		{
-			Type:      "secret-file",
-			Name:      "config",
-			Plaintext: "SECRET_FILE_PLAINTEXT",
-			Metadata:  map[string]string{"mount_path": "app/secrets.json"},
-		},
-		{
-			Type:      "env-secret",
-			Name:      "db",
-			Plaintext: "ENV_SECRET_PLAINTEXT",
-			Metadata:  map[string]string{"var_name": "DATABASE_URL"},
-		},
-		{
-			Type:      "api-key",
-			Name:      "custom",
-			Plaintext: `{"kind":"openai_compatible","slug":"custom"}`,
-		},
+		{Type: "ssh-key", Name: "deploy", Plaintext: "SSH_KEY_PLAINTEXT",
+			Metadata: map[string]string{"key_type": "ed25519"}},
+		{Type: "git-credential", Name: "github", Plaintext: "GIT_TOKEN_PLAINTEXT",
+			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
+		{Type: "secret-file", Name: "config", Plaintext: "SECRET_FILE_PLAINTEXT",
+			Metadata: map[string]string{"mount_path": "app/secrets.json"}},
+		{Type: "env-secret", Name: "db", Plaintext: "ENV_SECRET_PLAINTEXT",
+			Metadata: map[string]string{"var_name": "DATABASE_URL"}},
+		{Type: "api-key", Name: "custom", Plaintext: `{"kind":"openai_compatible","slug":"custom"}`},
 	}
 
 	result, err := m.Materialize(secretList)
 	require.NoError(t, err)
-	require.False(t, result.HasFailures(),
-		"all types must materialize; failures: %v", result.Results)
+	require.False(t, result.HasFailures(), "failures: %v", result.Results)
 
-	// Walk the PVC dir — no plaintext from any type must appear there.
 	for _, marker := range []string{
-		"SSH_KEY_PLAINTEXT",
-		"GIT_TOKEN_PLAINTEXT",
-		"SECRET_FILE_PLAINTEXT",
-		"ENV_SECRET_PLAINTEXT",
+		"SSH_KEY_PLAINTEXT", "GIT_TOKEN_PLAINTEXT",
+		"SECRET_FILE_PLAINTEXT", "ENV_SECRET_PLAINTEXT",
 	} {
 		err = filepath.Walk(sim.pvcDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 				return err
 			}
 			content, _ := os.ReadFile(path)
-			assert.NotContains(t, string(content), marker,
-				"PVC file %s must not contain plaintext for any credential type", path)
+			assert.NotContains(t, string(content), marker, "PVC file %s leaks plaintext", path)
 			return nil
 		})
 		require.NoError(t, err)
 	}
 
-	// Verify each type's output EXISTS in tmpfs.
-	// SSH key.
-	sshContent, err := os.ReadFile(filepath.Join(sim.paths.SSHDir, "id_ed25519_deploy"))
+	// Staged file classes carry the plaintext on tmpfs.
+	ssh, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "ssh", "id_ed25519_deploy"))
 	require.NoError(t, err)
-	assert.Contains(t, string(sshContent), "SSH_KEY_PLAINTEXT")
-
-	// Git credentials.
-	gitContent, err := os.ReadFile(sim.paths.GitCredsPath)
+	assert.Contains(t, string(ssh), "SSH_KEY_PLAINTEXT")
+	gitC, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "git-credentials"))
 	require.NoError(t, err)
-	assert.Contains(t, string(gitContent), "GIT_TOKEN_PLAINTEXT")
-
-	// Secret-file (resolved under SecretsBaseDir).
-	secretFileContent, err := os.ReadFile(filepath.Join(sim.paths.SecretsBaseDir, "app", "secrets.json"))
+	assert.Contains(t, string(gitC), "GIT_TOKEN_PLAINTEXT")
+	sf, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "secrets", "app", "secrets.json"))
 	require.NoError(t, err)
-	assert.Contains(t, string(secretFileContent), "SECRET_FILE_PLAINTEXT")
+	assert.Contains(t, string(sf), "SECRET_FILE_PLAINTEXT")
 
-	// Env secret + api-key (both append to SecretsEnvPath).
+	// Env classes still land in secrets-env (direct write, tmpfs).
 	envContent, err := os.ReadFile(sim.paths.SecretsEnvPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "ENV_SECRET_PLAINTEXT")
 	assert.Contains(t, string(envContent), "API_KEY_CUSTOM")
 }
 
-// TestMaterialize_FilePermissionsOnTmpfs verifies credential files written
-// through symlinks have mode 0600 on the tmpfs target (not the symlink inode).
-// OpenSSH rejects keys with permissions too open — this invariant must hold
-// through the symlink indirection.
-func TestMaterialize_FilePermissionsOnTmpfs(t *testing.T) {
+// TestMaterialize_StagedModeContract (R2b): staged bytes carry the
+// per-type mode contract; delivered modes are applied by the delivery
+// side from the manifest (pinned in cmd/workspace-agentd).
+func TestMaterialize_StagedModeContract(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
 	_, err := m.Materialize([]Secret{
 		{Type: "ssh-key", Name: "deploy", Plaintext: "key-data",
 			Metadata: map[string]string{"key_type": "ed25519"}},
-	})
-	require.NoError(t, err)
-
-	// Check the tmpfs target (not the PVC symlink).
-	keyPath := filepath.Join(sim.paths.SSHDir, "id_ed25519_deploy")
-	info, err := os.Stat(keyPath)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(),
-		"SSH key on tmpfs must have mode 0600 (OpenSSH strict modes)")
-
-	// Secret-file permissions.
-	_, err = m.Materialize([]Secret{
 		{Type: "secret-file", Name: "config", Plaintext: "secret-data",
 			Metadata: map[string]string{"mount_path": "cfg.json"}},
 	})
 	require.NoError(t, err)
-	sfInfo, err := os.Stat(filepath.Join(sim.paths.SecretsBaseDir, "cfg.json"))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), sfInfo.Mode().Perm(),
-		"secret-file on tmpfs must have mode 0600")
 
-	// SecretsBaseDir and SSHDir must be 0700.
-	sshDirInfo, err := os.Stat(sim.paths.SSHDir)
+	info, err := os.Stat(filepath.Join(sim.paths.StagingDir, "ssh", "id_ed25519_deploy"))
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), sshDirInfo.Mode().Perm(),
-		"SSH dir on tmpfs must have mode 0700")
+	assert.Equal(t, os.FileMode(ModeSSHPrivateKey), info.Mode().Perm())
+
+	sf, err := os.Stat(filepath.Join(sim.paths.StagingDir, "secrets", "cfg.json"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(ModeSecretFile), sf.Mode().Perm())
+
+	mi, err := os.Stat(filepath.Join(sim.paths.StagingDir, ManifestName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), mi.Mode().Perm())
 }
 
 // TestAuthJSON_WriteThroughSymlink verifies the relay injector's auth.json

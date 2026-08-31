@@ -76,6 +76,7 @@ func newSymlinkFarmSim(t *testing.T) symlinkFarmSim {
 		AgentConfigPath: filepath.Join(tmpfsDir, "agent-config.json"),
 		SecretsEnvPath:  filepath.Join(tmpfsDir, "secrets-env"),
 		GitCredsPath:    filepath.Join(rtDir, "git-credentials"),
+		StagingDir:      filepath.Join(tmpfsDir, "staged-secret-files"),
 	}
 
 	return symlinkFarmSim{pvcDir: pvcDir, tmpfsDir: tmpfsDir, paths: paths}
@@ -121,151 +122,111 @@ func TestReset_PreservesPVCSymlinks(t *testing.T) {
 	assertPVCPathsAreSymlinks(t, sim)
 }
 
-// TestReset_CleansTmpfsTargets verifies reset() actually wipes the tmpfs
-// content (not just leaves it alone). Old credentials from a prior reload
-// must not survive into the next cycle.
-func TestReset_CleansTmpfsTargets(t *testing.T) {
+// TestReset_NeverTouchesConsumedTmpfs (R2b, #1165): reset() must NOT
+// remove consumed-dir content — uid-1000-owned user state (known_hosts,
+// user keys) and the delivered credential files live there, and their
+// lifecycle is owned by the delivery side's ledger. reset() clears only
+// the staging scratch trees and the env/config files.
+func TestReset_NeverTouchesConsumedTmpfs(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
-	// Pre-seed tmpfs with stale content.
-	staleKey := filepath.Join(sim.paths.SSHDir, "id_rsa_old")
-	require.NoError(t, os.WriteFile(staleKey, []byte("stale-key"), 0o600))
-	staleSecret := filepath.Join(sim.paths.SecretsBaseDir, "old-secret.txt")
-	require.NoError(t, os.WriteFile(staleSecret, []byte("stale-secret"), 0o600))
+	userKey := filepath.Join(sim.paths.SSHDir, "known_hosts")
+	require.NoError(t, os.WriteFile(userKey, []byte("github.com ssh-ed25519 AAAA"), 0o600))
+	require.NoError(t, os.WriteFile(sim.paths.GitCredsPath, []byte("stale"), 0o600))
 
 	require.NoError(t, m.reset())
 
-	// Stale files must be gone.
-	_, err := os.Stat(staleKey)
-	assert.True(t, os.IsNotExist(err), "stale SSH key must be removed by reset()")
-	_, err = os.Stat(staleSecret)
-	assert.True(t, os.IsNotExist(err), "stale secret file must be removed by reset()")
+	data, err := os.ReadFile(userKey)
+	require.NoError(t, err, "user-owned known_hosts must survive reset")
+	assert.Contains(t, string(data), "ssh-ed25519")
+	_, err = os.Stat(sim.paths.GitCredsPath)
+	require.NoError(t, err, "delivered files are delivery-side state; reset never removes them")
 
-	// Directories must exist (recreated by MkdirAll after RemoveAll).
-	fi, err := os.Stat(sim.paths.SSHDir)
-	require.NoError(t, err)
-	assert.True(t, fi.IsDir(), "SSH dir must be recreated as directory after reset()")
-	fi, err = os.Stat(sim.paths.SecretsBaseDir)
-	require.NoError(t, err)
-	assert.True(t, fi.IsDir(), "SecretsBaseDir must be recreated after reset()")
+	// Staging scratch IS reset-scope.
+	// (scratch lifecycle covered by TestR2B_ReloadReplacesStagingAtomically)
 }
 
-// TestMaterialize_WritesThroughSymlinkToTmpfs verifies that a Materialize
-// call writes credential bytes to the tmpfs targets, not to the PVC paths.
-// This is the end-to-end write-path test.
-func TestMaterialize_WritesThroughSymlinkToTmpfs(t *testing.T) {
+// TestMaterialize_StagesFileClass_NeverWritesConsumed (R2b): Materialize
+// stages file-class bytes in the tmpfs staging tree; the consumed tmpfs
+// targets are NOT written (the uid-1000 delivery side owns them), and the
+// PVC keeps only symlink inodes.
+func TestMaterialize_StagesFileClass_NeverWritesConsumed(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
 	secretList := []Secret{
-		{
-			Type:      "ssh-key",
-			Name:      "github",
-			Plaintext: "-----BEGIN OPENSSH PRIVATE KEY-----\nfake-key\n-----END OPENSSH PRIVATE KEY-----",
-			Metadata: map[string]string{
-				"key_type": "ed25519",
-			},
-		},
-		{
-			Type:      "git-credential",
-			Name:      "github",
-			Plaintext: "ghp_test_token_12345",
-			Metadata:  map[string]string{"host": "github.com", "protocol": "https"},
-		},
-		{
-			Type:      "llm-provider",
-			Name:      "anthropic",
-			Plaintext: `{"kind":"anthropic","slug":"anthropic","apiKey":"sk-ant-test"}`,
-		},
+		{Type: "ssh-key", Name: "github", Plaintext: "fake-key",
+			Metadata: map[string]string{"key_type": "ed25519"}},
+		{Type: "git-credential", Name: "github", Plaintext: "ghp_test_token_12345",
+			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
+		{Type: "llm-provider", Name: "anthropic",
+			Plaintext: `{"kind":"anthropic","slug":"anthropic","apiKey":"sk-ant-test"}`},
 	}
 
 	result, err := m.Materialize(secretList)
 	require.NoError(t, err)
 	require.False(t, result.HasFailures(), "all secrets should materialize")
 
-	// Verify SSH key landed in tmpfs (through the symlink).
-	sshKey := filepath.Join(sim.paths.SSHDir, "id_ed25519_github")
-	content, err := os.ReadFile(sshKey)
-	require.NoError(t, err, "SSH key must be written to tmpfs target")
-	assert.Contains(t, string(content), "fake-key")
+	// Staged bytes exist under tmpfs staging.
+	key, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "ssh", "id_ed25519_github"))
+	require.NoError(t, err)
+	assert.Contains(t, string(key), "fake-key")
+	git, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "git-credentials"))
+	require.NoError(t, err)
+	assert.Contains(t, string(git), "ghp_test_token_12345")
 
-	// Verify git credential landed in tmpfs.
-	gitCreds := sim.paths.GitCredsPath
-	gitContent, err := os.ReadFile(gitCreds)
-	require.NoError(t, err, "git credentials must be written to tmpfs target")
-	assert.Contains(t, string(gitContent), "ghp_test_token_12345")
+	// Consumed targets untouched by the materializer.
+	for _, p := range []string{
+		filepath.Join(sim.paths.SSHDir, "id_ed25519_github"),
+		sim.paths.GitCredsPath,
+	} {
+		_, err := os.Lstat(p)
+		assert.True(t, os.IsNotExist(err), "%s must be delivery-side state only", p)
+	}
 
-	// PVC-side paths must still be symlinks (not real files with plaintext).
-	assertPVCPathsAreSymlinks(t, sim)
-
-	// Read through the symlink to verify it resolves to the same tmpfs content.
-	pvcSSHKey := filepath.Join(sim.paths.Home, ".ssh", "id_ed25519_github")
-	contentViaSymlink, err := os.ReadFile(pvcSSHKey)
-	require.NoError(t, err, "reading through PVC symlink must work")
-	assert.Equal(t, string(content), string(contentViaSymlink),
-		"symlink must resolve to the same tmpfs content")
-
-	// PVC-side paths must still be symlinks (not real files with plaintext).
 	assertPVCPathsAreSymlinks(t, sim)
 }
 
-// TestSimulatedPodDeath_NoPlaintextOnPVC is the CORE SECURITY PROPERTY test.
-// After "pod death" (tmpfs removed), the PVC must contain only dangling
-// symlinks — no plaintext credential bytes recoverable.
+// TestSimulatedPodDeath_NoPlaintextOnPVC is the CORE SECURITY PROPERTY
+// test. Staged and delivered plaintext live on tmpfs; after "pod death"
+// the PVC contains only dangling symlinks — no credential bytes anywhere.
 func TestSimulatedPodDeath_NoPlaintextOnPVC(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
-	// Materialize credentials (writes plaintext to tmpfs).
-	secretList := []Secret{
+	_, err := m.Materialize([]Secret{
 		{Type: "ssh-key", Name: "github", Plaintext: "SECRET_SSH_KEY_BYTES",
 			Metadata: map[string]string{"key_type": "ed25519"}},
 		{Type: "git-credential", Name: "github", Plaintext: "SECRET_GHP_TOKEN_abc123",
 			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
-	}
-	_, err := m.Materialize(secretList)
+	})
 	require.NoError(t, err)
 
-	// Verify plaintext exists while pod is alive (in tmpfs).
-	liveContent, _ := os.ReadFile(filepath.Join(sim.paths.SSHDir, "id_ed25519_github"))
-	require.Contains(t, string(liveContent), "SECRET_SSH_KEY_BYTES",
-		"plaintext must exist in tmpfs while pod is alive")
+	// Plaintext exists while the pod is alive — in the tmpfs staging tree.
+	staged, _ := os.ReadFile(filepath.Join(sim.paths.StagingDir, "ssh", "id_ed25519_github"))
+	require.Contains(t, string(staged), "SECRET_SSH_KEY_BYTES")
 
-	// SIMULATE POD DEATH: remove the entire tmpfs directory.
-	// This is what happens when the pod's cgroup is destroyed — the kernel
-	// unmounts and discards all Memory-backed emptyDir content.
-	require.NoError(t, os.RemoveAll(sim.tmpfsDir),
-		"failed to simulate pod death (remove tmpfs)")
+	require.NoError(t, os.RemoveAll(sim.tmpfsDir), "failed to simulate pod death")
 
-	// WALK THE PVC: assert no file contains plaintext credential bytes.
 	err = filepath.Walk(sim.pvcDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil || info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return err
-		}
-		// Skip symlink inodes themselves (they contain only path strings, not
-		// credential data). We care about regular files with plaintext content.
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil
 		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return nil // unreadable, skip
+			return nil
 		}
 		s := string(content)
-		assert.NotContains(t, s, "SECRET_SSH_KEY_BYTES",
-			"PVC file %s must not contain plaintext SSH key after pod death", path)
-		assert.NotContains(t, s, "SECRET_GHP_TOKEN",
-			"PVC file %s must not contain plaintext git token after pod death", path)
+		assert.NotContains(t, s, "SECRET_SSH_KEY_BYTES", "PVC file %s leaks ssh key", path)
+		assert.NotContains(t, s, "SECRET_GHP_TOKEN", "PVC file %s leaks git token", path)
 		return nil
 	})
 	require.NoError(t, err)
 
-	// PVC-side symlinks must now be dangling (target removed).
 	pvcSymlink := filepath.Join(sim.paths.Home, ".ssh")
 	target, err := os.Readlink(pvcSymlink)
 	require.NoError(t, err)
 	_, statErr := os.Stat(target)
-	assert.True(t, os.IsNotExist(statErr),
-		"PVC symlink target must be dangling (tmpfs gone) after pod death")
+	assert.True(t, os.IsNotExist(statErr), "PVC symlink must dangle after pod death")
 }

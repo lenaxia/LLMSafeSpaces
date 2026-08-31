@@ -40,17 +40,18 @@
 // Threat-model invariants this package enforces:
 //
 //	T1 No interpretation of secret values by the shell.
-//	T2 No file ever exists on disk with mode > 0600 for credential material.
-//	   (Design-0051 exceptions, both gid-1000-scoped: (a) agent-config.json
-//	   ALWAYS 0640 — written by the uid-2000 sidecar, read by uid-1000
-//	   opencode, ruled uid-1000-readable BY NECESSITY (the embedded MCP
-//	   Basic header is a documented residual); (b) US-4b, CrossUID mode
-//	   ONLY: the tool-consumed rt/* stores go 0640/0770 — the sidecar's
-//	   reload re-materializes them uid-2000-owned while uid-1000 tools
-//	   (git/ssh/user processes, shared gid 1000) remain their readers per
-//	   the US-35.7 class-C ruling. gid 1000 is exactly that reader set,
-//	   nothing wider.)
-//	T3 No path written outside SecretsBasePath, $HOME/.ssh, or AgentConfigPath.
+//	T2 No DELIVERED credential file exists with a mode outside its
+//	   consumer contract, and every delivered file is written by the
+//	   consuming uid (R2b, #1165 — ownership by construction). Residual
+//	   gid-1000-scoped exceptions: (a) agent-config.json ALWAYS 0640
+//	   (uid-2000 sidecar writer, uid-1000 opencode reader, ruled
+//	   uid-1000-readable BY NECESSITY — the embedded MCP Basic header is a
+//	   documented residual); (b) secrets-env 0640 under CROSS_UID (init
+//	   uid-1000 writer, sidecar uid-2000 boot-handoff reader — a platform
+//	   parser with no ownership semantics).
+//	T3 No path staged or delivered outside the staging tree, SecretsBasePath,
+//	   $HOME/.ssh, or AgentConfigPath; the delivery side additionally
+//	   confines every manifest target to its configured roots.
 //	T4 No env-file line that does not round-trip cleanly through `source`.
 //	T5 An invalid secret skips that secret only; the rest still materialize.
 //
@@ -277,6 +278,11 @@ type Paths struct {
 	AgentConfigPath string // opencode config (/sandbox-runtime/agent-config.json)
 	SecretsEnvPath  string // env-file (/sandbox-runtime/secrets-env)
 	GitCredsPath    string // git-credentials file (/sandbox-runtime/rt/git-credentials)
+	// StagingDir is the R2b staging tree: canonical bytes + manifest for
+	// file-class credentials, published by the materializer and served by
+	// the pull endpoint. The consumed paths above are written ONLY by the
+	// uid-1000 supervisor (#1165: ownership by construction).
+	StagingDir string // default /sandbox-runtime/staged-secret-files
 }
 
 // DefaultPaths returns production paths derived from the agentd package
@@ -296,6 +302,7 @@ func DefaultPaths(home string) Paths {
 		AgentConfigPath: agentd.AgentConfigPath,
 		SecretsEnvPath:  agentd.SecretsEnvPath,
 		GitCredsPath:    "/sandbox-runtime/rt/git-credentials",
+		StagingDir:      "/sandbox-runtime/staged-secret-files",
 	}
 }
 
@@ -467,6 +474,7 @@ type Materializer struct {
 	CrossUID         bool
 	stagedProviders  []sec.LLMProviderData
 	stagedMCPServers []StagedMCPServer
+	sshBlocks        []string
 }
 
 // secretDirMode is the mode for materialized credential DIRECTORIES.
@@ -508,15 +516,41 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 		m.Paths = DefaultPaths(os.Getenv("HOME"))
 	}
 
-	// Full replace of the materialized state.
+	// Full replace of the materializer-owned state. The consumed
+	// file-class paths (SSHDir, SecretsBaseDir, GitCredsPath) are NOT
+	// reset here — R2b (#1165): they are written and ledger-scoped-reset
+	// by the uid-1000 supervisor on the pull side. This pass owns the
+	// staging tree, the env file, and the agent config only.
 	if err := m.reset(); err != nil {
 		return nil, fmt.Errorf("reset: %w", err)
 	}
 
+	staging := newStageBuilder(m.stagingPath())
+	m.sshBlocks = nil
+
 	result := &MaterializeResult{Results: make([]SecretResult, 0, len(secrets))}
 	for _, s := range secrets {
-		result.Results = append(result.Results, m.applyOne(s))
+		result.Results = append(result.Results, m.applyOne(s, staging))
 	}
+
+	// The ssh config is one staged file assembled from this pass's key
+	// blocks: the Include line gives user fragments a home reloads
+	// provably never touch (the config.d dir is created by the delivery
+	// side and is never a manifest target).
+	if len(m.sshBlocks) > 0 {
+		cfg := "Include config.d/*\n" + strings.Join(m.sshBlocks, "")
+		if err := staging.add("ssh/config", filepath.Join(m.Paths.SSHDir, "config"), ModeSSHConfig, []byte(cfg)); err != nil {
+			return nil, fmt.Errorf("stage ssh config: %w", err)
+		}
+	}
+
+	// Publish is part of the pass: a staging build that never publishes
+	// leaves the endpoint serving the previous tree — stale, but complete
+	// and loudly superseded on the next successful pass.
+	if err := staging.publish(); err != nil {
+		return nil, fmt.Errorf("publish staging: %w", err)
+	}
+
 	if result.HasFailures() {
 		return result, ErrPartialFailure
 	}
@@ -538,28 +572,37 @@ func (m *Materializer) reset() error {
 	m.stagedProviders = nil
 	m.stagedMCPServers = nil
 
-	if err := m.FS.RemoveAll(m.Paths.SecretsBaseDir); err != nil && !os.IsNotExist(err) {
+	// R2b (#1165): the materializer no longer resets the consumed
+	// file-class paths (SSHDir, SecretsBaseDir, GitCredsPath) — their
+	// contents are written and ledger-scoped-reset by the uid-1000
+	// supervisor on the pull side, and a blanket RemoveAll here is what
+	// destroyed uid-1000-owned user state (known_hosts, user keys) on
+	// every reload. This pass owns the staging tree's scratch areas, the
+	// env file, and the agent config.
+	stageCleanup(m.stagingPath())
+	if err := m.FS.RemoveAll(m.stagingPath() + ".tmp"); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := m.mkdirExact(m.Paths.SecretsBaseDir, m.secretDirMode()); err != nil {
+	if err := m.mkdirExact(m.stagingPath()+".tmp", 0o700); err != nil {
 		return err
 	}
-	if err := m.FS.RemoveAll(m.Paths.SSHDir); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := m.mkdirExact(m.Paths.SSHDir, m.secretDirMode()); err != nil {
-		return err
-	}
-	// These three are best-effort; absence is fine.
-	_ = m.FS.Remove(m.Paths.GitCredsPath)
+	// These two are best-effort; absence is fine.
 	_ = m.FS.Remove(m.Paths.AgentConfigPath)
 	_ = m.FS.Remove(m.Paths.SecretsEnvPath)
 	return nil
 }
 
+// stagingPath resolves the staging dir, defaulting when unset.
+func (m *Materializer) stagingPath() string {
+	if m.Paths.StagingDir != "" {
+		return m.Paths.StagingDir
+	}
+	return "/sandbox-runtime/staged-secret-files"
+}
+
 // applyOne dispatches by Type and returns a SecretResult. Errors are
 // captured into Reason; the function never returns an error.
-func (m *Materializer) applyOne(s Secret) SecretResult {
+func (m *Materializer) applyOne(s Secret, staging *stageBuilder) SecretResult {
 	r := SecretResult{Type: s.Type, Name: s.Name}
 
 	if s.MetadataInvalid != "" {
@@ -592,11 +635,11 @@ func (m *Materializer) applyOne(s Secret) SecretResult {
 	case "llm-provider":
 		err = m.applyLLMProvider(s)
 	case "ssh-key":
-		err = m.applySSHKey(s)
+		err = m.applySSHKey(s, staging)
 	case "git-credential":
-		err = m.applyGitCredential(s)
+		err = m.applyGitCredential(s, staging)
 	case "secret-file":
-		err = m.applySecretFile(s)
+		err = m.applySecretFile(s, staging)
 	case "env-secret":
 		err = m.applyEnvSecret(s)
 	case "mcp-server":
@@ -655,7 +698,7 @@ func (m *Materializer) applyAPIKey(s Secret) error {
 	return appendFile(m.FS, m.Paths.SecretsEnvPath, []byte(line), m.secretFileMode())
 }
 
-func (m *Materializer) applySSHKey(s Secret) error {
+func (m *Materializer) applySSHKey(s Secret, staging *stageBuilder) error {
 	keyType := s.Metadata["key_type"]
 	if keyType == "" {
 		keyType = "ed25519"
@@ -674,20 +717,27 @@ func (m *Materializer) applySSHKey(s Secret) error {
 		return newValidationError("ssh-key plaintext is empty")
 	}
 
-	keyPath := filepath.Join(m.Paths.SSHDir, "id_"+keyType+"_"+s.Name)
-	if err := atomicWrite(m.FS, keyPath, []byte(s.Plaintext), m.secretFileMode()); err != nil {
+	// R2b (#1165): the key and its config block are STAGED, not written.
+	// The uid-1000 supervisor delivers them into ~/.ssh (uid-1000-owned
+	// 0600) — ssh's ownership check on the config and its private-key
+	// permission check are satisfied by construction, because the
+	// consumer-side process is the writer.
+	keyName := "id_" + keyType + "_" + s.Name
+	keyPath := filepath.Join(m.Paths.SSHDir, keyName)
+	if err := staging.add("ssh/"+keyName, keyPath, ModeSSHPrivateKey, []byte(s.Plaintext)); err != nil {
 		return err
 	}
 
-	// Append a config block. host and keyPath are validated; nothing the
+	// Append a config block (assembled into one staged config at the end
+	// of the pass). host and keyName are validated/sanitized; nothing the
 	// caller controls can introduce a newline that would inject another
 	// directive.
-	configPath := filepath.Join(m.Paths.SSHDir, "config")
 	block := "Host " + host + "\n    IdentityFile " + keyPath + "\n    StrictHostKeyChecking accept-new\n"
-	return appendFile(m.FS, configPath, []byte(block), m.secretFileMode())
+	m.sshBlocks = append(m.sshBlocks, block)
+	return nil
 }
 
-func (m *Materializer) applyGitCredential(s Secret) error {
+func (m *Materializer) applyGitCredential(s Secret, staging *stageBuilder) error {
 	host := s.Metadata["host"]
 	if host == "" {
 		host = "github.com"
@@ -720,20 +770,29 @@ func (m *Materializer) applyGitCredential(s Secret) error {
 			return newValidationError("git-credential token contains a non-URL-safe character at offset %d", i)
 		}
 	}
+	// R2b (#1165): staged, delivered uid-1000-owned 0600 by the pull side.
 	line := protocol + "://oauth2:" + s.Plaintext + "@" + host + "\n"
-	return appendFile(m.FS, m.Paths.GitCredsPath, []byte(line), m.secretFileMode())
+	return staging.add("git-credentials", m.Paths.GitCredsPath, ModeGitCredential, []byte(line))
 }
 
-func (m *Materializer) applySecretFile(s Secret) error {
+func (m *Materializer) applySecretFile(s Secret, staging *stageBuilder) error {
 	mountPath := s.Metadata["mount_path"]
 	resolved, err := resolveMountPath(m.Paths.SecretsBaseDir, mountPath)
 	if err != nil {
 		return newValidationError("%s", err.Error())
 	}
-	if err := m.mkdirExact(filepath.Dir(resolved), m.secretDirMode()); err != nil {
+	mode, err := resolveSecretFileMode(s.Metadata)
+	if err != nil {
+		return newValidationError("%s", err.Error())
+	}
+	// R2b (#1165): staged; the consumer's uid writes the delivered file.
+	// The staged rel mirrors the target's path under the base dir so the
+	// manifest stays self-describing.
+	rel, err := filepath.Rel(m.Paths.SecretsBaseDir, resolved)
+	if err != nil {
 		return err
 	}
-	return atomicWrite(m.FS, resolved, []byte(s.Plaintext), m.secretFileMode())
+	return staging.add(filepath.ToSlash(filepath.Join("secrets", rel)), resolved, mode, []byte(s.Plaintext))
 }
 
 func (m *Materializer) applyEnvSecret(s Secret) error {

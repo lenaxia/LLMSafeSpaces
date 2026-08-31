@@ -40,106 +40,83 @@ func TestReset_Idempotent(t *testing.T) {
 	assertPVCPathsAreSymlinks(t, sim)
 }
 
-// TestReset_TmpfsNotYetCreated verifies reset() works when the tmpfs
-// directories don't exist yet (first-ever reset before init container
-// has created /sandbox-runtime/rt/*). This can happen if materialize
-// runs before the init script's mkdir completes (race on fast systems).
+// TestReset_TmpfsNotYetCreated (R2b): reset() succeeds when nothing exists
+// yet — it creates only its own staging scratch; the consumed dirs are
+// created later by the delivery side, not by reset.
 func TestReset_TmpfsNotYetCreated(t *testing.T) {
 	tmpfsDir := t.TempDir()
-	pvcDir := t.TempDir()
-	homeDir := filepath.Join(pvcDir, "home")
-	require.NoError(t, os.MkdirAll(homeDir, 0o755))
-
-	// Point paths at tmpfs targets that DON'T exist yet.
 	paths := Paths{
-		Home:            homeDir,
+		Home:            filepath.Join(t.TempDir(), "home"),
 		SecretsBaseDir:  filepath.Join(tmpfsDir, "rt", "secrets"),
 		SSHDir:          filepath.Join(tmpfsDir, "rt", "ssh"),
 		AgentConfigPath: filepath.Join(tmpfsDir, "agent-config.json"),
 		SecretsEnvPath:  filepath.Join(tmpfsDir, "secrets-env"),
 		GitCredsPath:    filepath.Join(tmpfsDir, "rt", "git-credentials"),
+		StagingDir:      filepath.Join(tmpfsDir, "staged-secret-files"),
 	}
-
 	m := &Materializer{FS: RealFS(), Paths: paths}
-
-	// reset must not panic or error — RemoveAll handles ENOENT, MkdirAll
-	// creates the path (including parents).
 	require.NoError(t, m.reset())
 
-	// Directories must now exist (created by reset's MkdirAll, including parents).
-	_, err := os.Stat(paths.SSHDir)
-	require.NoError(t, err, "SSH dir must exist after reset created it")
+	_, err := os.Stat(paths.StagingDir + ".tmp")
+	require.NoError(t, err, "reset creates its own staging scratch dir")
+	_, err = os.Stat(paths.SSHDir)
+	assert.True(t, os.IsNotExist(err), "consumed dirs are delivery-side state — reset never creates them")
 }
 
-// TestMaterialize_EmptyBatch_LeavesNoFiles verifies that materializing an
-// empty secret batch after reset leaves no credential files behind. This
-// is the unbind-all path: a user removes all credentials, the reload pushes
-// an empty batch, and the workspace must not retain stale plaintext.
-func TestMaterialize_EmptyBatch_LeavesNoFiles(t *testing.T) {
+// TestMaterialize_EmptyBatch_LeavesEmptyManifest (R2b): the unbind-all
+// path publishes an EMPTY staging manifest (absence is the delete — the
+// delivery side's ledger-scoped reset removes the delivered files; that
+// half is pinned in cmd/workspace-agentd). No consumed file is written or
+// removed by the materializer either way.
+func TestMaterialize_EmptyBatch_LeavesEmptyManifest(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
-	// First materialize with real secrets.
 	_, err := m.Materialize([]Secret{
 		{Type: "ssh-key", Name: "github", Plaintext: "secret-key-data",
 			Metadata: map[string]string{"key_type": "ed25519"}},
 	})
 	require.NoError(t, err)
 
-	// Verify file exists.
-	keyPath := filepath.Join(sim.paths.SSHDir, "id_ed25519_github")
-	_, err = os.Stat(keyPath)
-	require.NoError(t, err, "key must exist after first materialize")
-
-	// Second materialize with empty batch (unbind-all).
 	result, err := m.Materialize([]Secret{})
 	require.NoError(t, err)
 	require.False(t, result.HasFailures())
 
-	// Old key must be gone (reset wiped it, empty batch didn't re-create it).
-	_, err = os.Stat(keyPath)
-	assert.True(t, os.IsNotExist(err),
-		"stale SSH key must not survive an empty materialize (unbind-all)")
+	manifest := filepath.Join(sim.paths.StagingDir, "manifest.json")
+	data, err := os.ReadFile(manifest)
+	require.NoError(t, err, "empty batch still publishes a manifest")
+	assert.Equal(t, "[]", string(data), "unbind-all → empty manifest (revocation is absence)")
 
-	// PVC symlinks must survive.
 	assertPVCPathsAreSymlinks(t, sim)
 }
 
-// TestGitCredentials_WrittenThroughDanglingSymlink verifies that git-credentials
-// is created on first write even when the symlink target doesn't exist yet
-// (dangling symlink). This is the production boot path: the init container
-// creates the symlink but does NOT pre-create the target file (no `touch` —
-// a zero-byte file would break JSON parsers for auth.json).
-func TestGitCredentials_WrittenThroughDanglingSymlink(t *testing.T) {
+// TestGitCredentials_StagedWhileTargetDangling (R2b): the materializer
+// stages git-credentials while the $HOME symlink stays dangling — the
+// target file is created by the uid-1000 delivery side (pinned in
+// cmd/workspace-agentd), which resolves the symlink by writing the
+// target it points at.
+func TestGitCredentials_StagedWhileTargetDangling(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 
-	// git-credentials target is a dangling symlink at this point (init created
-	// the symlink, but not the target file).
 	gitCredsSymlink := filepath.Join(sim.paths.Home, ".git-credentials")
 	target, err := os.Readlink(gitCredsSymlink)
 	require.NoError(t, err)
 	_, err = os.Stat(target)
-	require.True(t, os.IsNotExist(err),
-		"git-credentials target must not exist yet (dangling symlink)")
+	require.True(t, os.IsNotExist(err), "target must dangle before delivery")
 
-	// Materialize must create the file through the dangling symlink.
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 	_, err = m.Materialize([]Secret{
-		{Type: "git-credential", Name: "github",
-			Plaintext: "test_token_abc123",
-			Metadata:  map[string]string{"host": "github.com", "protocol": "https"}},
+		{Type: "git-credential", Name: "github", Plaintext: "test_token_abc123",
+			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
 	})
 	require.NoError(t, err)
 
-	// File must now exist at the tmpfs target.
-	content, err := os.ReadFile(sim.paths.GitCredsPath)
-	require.NoError(t, err, "git-credentials must be created through dangling symlink")
-	assert.Contains(t, string(content), "test_token_abc123")
-
-	// And must be readable through the PVC-side symlink.
-	contentViaSymlink, err := os.ReadFile(gitCredsSymlink)
+	staged, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "git-credentials"))
 	require.NoError(t, err)
-	assert.Equal(t, string(content), string(contentViaSymlink))
+	assert.Contains(t, string(staged), "test_token_abc123")
+
+	_, err = os.Stat(target)
+	assert.True(t, os.IsNotExist(err), "materializer never resolves the symlink — delivery does")
 }
 
 // TestAgentConfig_PathIsTmpfsNotPVC verifies agent-config.json is written
@@ -170,46 +147,29 @@ func TestAgentConfig_PathIsTmpfsNotPVC(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestReset_DoubleMaterializeSimulatesReloadCycle simulates the full reload
-// lifecycle: boot materialize → live reload → live reload. Verifies that
-// each cycle cleanly replaces credentials without accumulating stale files
-// and without touching PVC symlinks.
+// TestReset_DoubleMaterializeSimulatesReloadCycle (R2b): reload cycles
+// replace the STAGED generation wholesale; consumed-side generation
+// replacement is the delivery ledger's job (cmd tests pin it).
 func TestReset_DoubleMaterializeSimulatesReloadCycle(t *testing.T) {
 	sim := newSymlinkFarmSim(t)
 	m := &Materializer{FS: RealFS(), Paths: sim.paths}
 
-	// Boot: materialize initial credentials.
 	_, err := m.Materialize([]Secret{
 		{Type: "ssh-key", Name: "github", Plaintext: "KEY_V1",
 			Metadata: map[string]string{"key_type": "ed25519"}},
-		{Type: "git-credential", Name: "github", Plaintext: "TOKEN_V1_abc123",
-			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
 	})
 	require.NoError(t, err)
 
-	// Reload 1: replace credentials with new values.
 	_, err = m.Materialize([]Secret{
 		{Type: "ssh-key", Name: "github", Plaintext: "KEY_V2",
 			Metadata: map[string]string{"key_type": "ed25519"}},
-		{Type: "git-credential", Name: "github", Plaintext: "TOKEN_V2_xyz789",
-			Metadata: map[string]string{"host": "github.com", "protocol": "https"}},
 	})
 	require.NoError(t, err)
 
-	// V1 must be gone, V2 must be present.
-	sshKey := filepath.Join(sim.paths.SSHDir, "id_ed25519_github")
-	content, err := os.ReadFile(sshKey)
+	key, err := os.ReadFile(filepath.Join(sim.paths.StagingDir, "ssh", "id_ed25519_github"))
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "KEY_V2")
-	assert.NotContains(t, string(content), "KEY_V1",
-		"old SSH key must not survive reload")
+	assert.Contains(t, string(key), "KEY_V2")
+	assert.NotContains(t, string(key), "KEY_V1", "old staged generation must not survive reload")
 
-	gitContent, err := os.ReadFile(sim.paths.GitCredsPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(gitContent), "TOKEN_V2_xyz789")
-	assert.NotContains(t, string(gitContent), "TOKEN_V1_abc123",
-		"old git token must not survive reload")
-
-	// PVC symlinks must survive the full reload cycle.
 	assertPVCPathsAreSymlinks(t, sim)
 }

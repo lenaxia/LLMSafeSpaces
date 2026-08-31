@@ -214,6 +214,8 @@ func (s *controlSocketServer) status(id *int64) controlResponse {
 			"spawned_rev":        spawn.SpawnedRev,
 			"spawn_env_degraded": spawn.Degraded,
 			"spawn_env_reason":   spawn.Reason,
+			"files_rev":          spawn.FilesRev,
+			"spawn_files_reason": spawn.FilesReason,
 		}}
 }
 

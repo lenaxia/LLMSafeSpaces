@@ -140,6 +140,13 @@ type SpawnEnvHealth struct {
 	SpawnedRev string `json:"spawnedRev,omitempty"`
 	Degraded   bool   `json:"degraded"`
 	Reason     string `json:"reason,omitempty"`
+	// FilesRev / FilesDegraded / FilesReason (R2b, #1165): the file-class
+	// delivery slice — the terminal revision over the files the uid-1000
+	// supervisor actually wrote, and its machine-readable degrade reason
+	// ("" healthy).
+	FilesRev      string `json:"filesRev,omitempty"`
+	FilesDegraded bool   `json:"filesDegraded,omitempty"`
+	FilesReason   string `json:"filesReason,omitempty"`
 }
 
 // ReadyzResponse is the response for GET /v1/readyz.

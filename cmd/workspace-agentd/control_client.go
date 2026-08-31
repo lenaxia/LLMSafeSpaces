@@ -58,6 +58,10 @@ type controlStatus struct {
 	SpawnedRev       string `json:"-"`
 	SpawnEnvDegraded bool   `json:"-"`
 	SpawnEnvReason   string `json:"-"`
+	// R2b (#1165): the file-class delivery state — terminal rev over the
+	// files the uid-1000 supervisor wrote, plus its degrade reason.
+	FilesRev         string `json:"-"`
+	SpawnFilesReason string `json:"-"`
 }
 
 type controlRestartResult struct {
@@ -142,6 +146,8 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 		SpawnedRev       string `json:"spawned_rev"`
 		SpawnEnvDegraded bool   `json:"spawn_env_degraded"`
 		SpawnEnvReason   string `json:"spawn_env_reason"`
+		FilesRev         string `json:"files_rev"`
+		SpawnFilesReason string `json:"spawn_files_reason"`
 	}{}
 	if err := json.Unmarshal(mustMarshal(res), &raw); err != nil {
 		return nil, fmt.Errorf("control socket: status decode: %w", err)
@@ -153,6 +159,8 @@ func (c *controlClient) Status(ctx context.Context) (*controlStatus, error) {
 		SpawnedRev:       raw.SpawnedRev,
 		SpawnEnvDegraded: raw.SpawnEnvDegraded,
 		SpawnEnvReason:   raw.SpawnEnvReason,
+		FilesRev:         raw.FilesRev,
+		SpawnFilesReason: raw.SpawnFilesReason,
 	}
 	if raw.LastRestartAt != "" {
 		t, err := time.Parse(time.RFC3339, raw.LastRestartAt)

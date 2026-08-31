@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -133,6 +134,8 @@ func newSupervisorProcess(ctx context.Context) (*managedProcess, *managedProcAda
 		baseCmdFactory: base,
 		puller:         newSpawnEnvPuller(spawnEnvPullAddr(), supervisorSpawnCredential()),
 		pullCtx:        ctx,
+		filesPuller:    newSpawnFilesPuller(spawnEnvPullAddr(), supervisorSpawnCredential()),
+		delivery:       fileDeliveryFromEnv(),
 	}
 	proc := &managedProcess{cmdFactory: a.composeChild, preSpawn: a.preSpawn}
 	proc.onChildStarted = nil
@@ -164,6 +167,11 @@ type spawnEnvStateReport struct {
 	SpawnedRev string
 	Degraded   bool
 	Reason     string
+	// R2b (#1165): the file-class delivery state — the terminal revision
+	// over the files actually written by this uid and its degrade reason
+	// ("" healthy).
+	FilesRev    string
+	FilesReason string
 }
 
 // managedProcAdapter maps control-socket vocabulary (Appendix A) onto
@@ -194,6 +202,14 @@ type managedProcAdapter struct {
 	currentDelta   map[string]string
 	degradedReason string
 	spawnedRev     string
+
+	// R2b (#1165) file-class delivery state, same locking discipline as
+	// the env pull state (preSpawn is the sole writer; SpawnEnvState the
+	// sole reader of record).
+	filesPuller *spawnEnvPuller
+	delivery    fileDelivery
+	filesRev    string
+	filesReason string
 }
 
 func (a *managedProcAdapter) factory() func() *exec.Cmd {
@@ -256,32 +272,60 @@ func (a *managedProcAdapter) SetSpawnEnv(env map[string]string) {
 // degrade. A failed pull keeps the last-good delta from memory and marks
 // the degrade with a machine-readable reason. Never blocks beyond the
 // puller's bound: never-block-boot extends to never-block-spawn.
+// preSpawn is the US-70.1 spawn-time pull (env) plus the R2b file-class
+// delivery, invoked by the supervisor loop before every child build.
+// Env: a successful pull — including an EMPTY delta (revocation, I12) —
+// becomes the current delta; failure keeps the last-good delta in memory
+// and degrades loudly. Files: the pulled manifest is applied by THIS uid
+// (ownership by construction); the on-disk delivered set is the
+// last-good cache — a failed pull keeps it and degrades loudly, and
+// tools read files at invocation time, so the next successful apply
+// heals without losing the session. Never blocks beyond the bounds.
 func (a *managedProcAdapter) preSpawn() {
-	if a.puller == nil {
-		return
-	}
-	res, reason, err := a.puller.pullBounded(a.pullCtx)
-	a.pullMu.Lock()
-	defer a.pullMu.Unlock()
-	if err != nil {
-		if a.degradedReason != reason {
-			log.Warn("spawn-env pull failed; spawning with the last-good delta",
-				zap.String("reason", reason), zap.Error(err))
+	if a.puller != nil {
+		res, reason, err := a.puller.pullBounded(a.pullCtx)
+		a.pullMu.Lock()
+		if err != nil {
+			if a.degradedReason != reason {
+				log.Warn("spawn-env pull failed; spawning with the last-good delta",
+					zap.String("reason", reason), zap.Error(err))
+			}
+			a.degradedReason = reason
+		} else {
+			a.degradedReason = ""
+			a.currentDelta = res.Env
 		}
-		a.degradedReason = reason
-		return
+		a.pullMu.Unlock()
 	}
-	a.degradedReason = ""
-	a.currentDelta = res.Env
+
+	if a.filesPuller != nil {
+		files, reason, err := a.filesPuller.pullFilesBounded(a.pullCtx)
+		a.pullMu.Lock()
+		if err != nil {
+			if a.filesReason != reason {
+				log.Warn("spawn-files pull failed; keeping the delivered set",
+					zap.String("reason", reason), zap.Error(err))
+			}
+			a.filesReason = reason
+		} else if rev, applyErr := a.delivery.apply(files.Files); applyErr != nil {
+			if errors.Is(applyErr, errBadDeliveryPath) {
+				reason = spawnFilesReasonBadPath
+			} else {
+				reason = spawnFilesReasonUnavailable
+			}
+			if a.filesReason != reason {
+				log.Warn("spawn-files delivery failed; keeping the delivered set",
+					zap.String("reason", reason), zap.Error(applyErr))
+			}
+			a.filesReason = reason
+		} else {
+			a.filesReason = ""
+			a.filesRev = rev
+		}
+		a.pullMu.Unlock()
+	}
 }
 
-// composeChild builds the next child: the base factory's env with the
-// current delta merged (platform vars win — buildEnvFrom parity), and
-// records spawned_rev over the EFFECTIVE delta — the keys that actually
-// landed in the child's env — at the moment of composition (design 0057
-// I4: the revision the child actually spawns with, never a revision
-// observed at materialization or fetch, and never the server-advertised
-// one).
 func (a *managedProcAdapter) composeChild() *exec.Cmd {
 	cmd := a.factory()()
 	delta := a.snapshotDelta()
@@ -309,9 +353,11 @@ func (a *managedProcAdapter) SpawnEnvState() spawnEnvStateReport {
 	a.pullMu.Lock()
 	defer a.pullMu.Unlock()
 	return spawnEnvStateReport{
-		SpawnedRev: a.spawnedRev,
-		Degraded:   a.degradedReason != "",
-		Reason:     a.degradedReason,
+		SpawnedRev:  a.spawnedRev,
+		Degraded:    a.degradedReason != "" || a.filesReason != "",
+		Reason:      a.degradedReason,
+		FilesRev:    a.filesRev,
+		FilesReason: a.filesReason,
 	}
 }
 

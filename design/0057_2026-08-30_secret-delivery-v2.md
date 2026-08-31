@@ -36,7 +36,7 @@
 |---|---|---|
 | US-70.0 | delivery test harness (fault injection, suspend/resume, gVisor) | open |
 | US-70.1 | spawn-time env pull (R2) + `spawned_rev` + degrade codes + A2 + R3 matrix | **landed** (cluster e2e + surface completion via #1164) |
-| #1165 fix | file-class ownership flip (R2b) + manifest-scoped reset + `files_rev` + R3 schema growth | open — blocks US-70.5 |
+| #1165 fix | file-class ownership flip (R2b) + manifest-scoped reset + `files_rev` + R3 schema growth | **landed 2026-08-31** |
 | US-70.2 | one builder + two-tier revisions (R1, covers the file manifest) + conditional pull endpoint | open |
 | US-70.3 | notify-pull + reconcile loop + revocation + `secrets_resync`; consumes `files_rev` | open |
 | US-70.4 | login-independent re-wrap reconciler | open |

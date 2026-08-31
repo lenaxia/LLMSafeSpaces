@@ -349,9 +349,15 @@ type AgentSessionStatus struct {
 // spawn_env_bad_response). Mirrored by the controller from agentd's
 // /v1/healthz. Empty DegradedReason means converged; the reconcile loop
 // that consumes this for convergence lands with US-70.3.
+//
+// FilesRev (R2b, #1165): the terminal revision over the file-class
+// credential set the uid-1000 supervisor actually wrote (ssh keys/config,
+// git-credentials, secret-files) — ownership-by-construction delivery;
+// its degrade rides DegradedReason with the spawn_files_* code family.
 type SecretsDeliveryStatus struct {
 	SpawnedRev     string `json:"spawnedRev,omitempty"`
 	DegradedReason string `json:"degradedReason,omitempty"`
+	FilesRev       string `json:"filesRev,omitempty"`
 }
 
 // WorkspaceStatus defines the observed state of a Workspace.

@@ -226,7 +226,16 @@ spec:
                         Machine-readable reason when delivery is
                         incomplete (spawn_env_unavailable,
                         spawn_env_unauthorized, spawn_env_no_credential,
-                        spawn_env_bad_response). Empty means converged.
+                        spawn_env_bad_response; R2b adds the
+                        spawn_files_* family for file-class delivery).
+                        Empty means converged.
+                    filesRev:
+                      type: string
+                      description: |
+                        Terminal revision over the file-class credential
+                        set the uid-1000 supervisor actually wrote (R2b,
+                        #1165 — ownership-by-construction delivery of
+                        ssh keys/config, git-credentials, secret-files).
                 conditions:
                   type: array
                   items:
