@@ -88,6 +88,13 @@ async function setupBase(page: Page, opts: {
   // Workspace-scoped SSE — silent keep-alive
   await page.route(`${API}/workspaces/*/session-events`, (r: Route) =>
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
+
+  // Contract stream (US-69.10 cutover: ChatPage consumes session state via
+  // /contract-events) — minimal idle snapshot; every body must open with a
+  // snapshot frame or the client reconnects.
+  await page.route(`${API}/workspaces/*/contract-events`, (r: Route) =>
+    r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      body: `data: ${JSON.stringify({ snapshot: { atSeq: "1", snapshot: { sessions: [{ sessionId: SESS_A1, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }] } } })}\n\n` }));
 }
 
 // ---------------------------------------------------------------------------

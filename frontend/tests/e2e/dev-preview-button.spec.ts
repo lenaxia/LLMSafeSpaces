@@ -67,6 +67,11 @@ async function setupAPIMocks(page: Page, messages: unknown[], apiBaseUrl = "/api
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(messages) }));
   await page.route(`${API}/workspaces/${WORKSPACE_ID}/session-events`, (r: Route) =>
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await page.route(`${API}/workspaces/${WORKSPACE_ID}/contract-events`, (r: Route) =>
+    r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+      body: `data: ${JSON.stringify({ snapshot: { atSeq: "1", snapshot: { sessions: [{ sessionId: SESSION_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }] } } })}\n\n` }));
 }
 
 test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {

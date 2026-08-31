@@ -20,7 +20,6 @@ vi.mock("../api/workspaces", () => ({
     ensureSession: vi.fn(),
     renameSession: vi.fn().mockResolvedValue(undefined),
     abortSession: vi.fn(),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined).mockResolvedValue({}),
     deleteSession: vi.fn().mockResolvedValue({}),
     listModels: vi.fn().mockResolvedValue({ models: [], currentModel: "" }),
     setModel: vi.fn().mockResolvedValue({ model: "", applied: false }),

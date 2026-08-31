@@ -44,6 +44,15 @@ async function setupMockWorkspace(page: Page, workspaceId: string) {
       body: `data: ${JSON.stringify({ type: "workspace.phase", phase: "Active" })}\n\n`,
     });
   });
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await page.route(`**/api/v1/workspaces/${workspaceId}/contract-events`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({ snapshot: { atSeq: "1", snapshot: { sessions: [{ sessionId: "sess-auto-1", status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }] } } })}\n\n`,
+    });
+  });
 }
 
 async function loginAs(page: import("@playwright/test").Page, username: string, password: string) {

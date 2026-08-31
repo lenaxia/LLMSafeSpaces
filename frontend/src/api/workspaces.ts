@@ -81,12 +81,6 @@ export const workspacesApi = {
     api.delete<void>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
   abortSession: (workspaceId: string, sessionId: string) =>
     api.post<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/abort`),
-  // D10: triggers an input-snapshot flight (begin → pending events →
-  // complete with snapshot_ok) on the user stream. Used when reconnect mode
-  // arms without an SSE reconnect (in-workspace session switch), so the
-  // stuck-session auto-abort gate has fresh snapshot evidence.
-  requestInputSnapshot: (workspaceId: string) =>
-    api.post<void>(`/workspaces/${workspaceId}/input-snapshot`),
   reloadAgent: (workspaceId: string) =>
     api.post<{ disposed: boolean; lastDisposedAt?: string; warning?: string }>(
       `/workspaces/${workspaceId}/agent/reload`

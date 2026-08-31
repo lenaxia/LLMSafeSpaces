@@ -247,72 +247,13 @@ export interface WorkspacePhaseEvent {
   phase: string;
 }
 
+// The tracker's session-state event still rides the workspace/user
+// streams until US-69.11 retires the API-side emitter; the chat render
+// path no longer consumes it (contract SESSION_STATUS replaced it).
 export interface SessionStatusEvent {
   type: "session.status";
   session_id: string;
-  // The proxy synthesizes string "idle" | "busy" for this field; "retry"
-  // carries the full backoff detail in data (platform shape, US-65.8).
   status: "idle" | "busy" | "retry";
-  data?: RetryInfo;
-}
-
-/**
- * A pkg/session contract Event delivered over the workspace SSE stream
- * (US-65.8: clients consume contract shapes only — never agent wire
- * shapes). Mirrors pkg/session/event.go's JSON.
- */
-export interface SessionContractEvent {
-  type: "session.event";
-  session_id?: string;
-  data: ContractEvent;
-}
-
-export interface ContractEvent {
-  type: string;
-  timestamp?: string;
-  sessionId?: string;
-  messageId?: string;
-  partId?: string;
-  status?: string;
-  session?: ContractSession;
-  part?: ContractPart;
-  delta?: string;
-  error?: { code?: string; message: string };
-}
-
-export interface ContractSession {
-  id: string;
-  title?: string;
-  parentId?: string;
-  contextUsage?: { used: number; window?: number };
-}
-
-/** One part snapshot in a contract part.end event (5-type union). */
-export interface ContractPart {
-  type: "text" | "reasoning" | "tool" | "file-change" | "custom";
-  id?: string;
-  text?: string;
-  reasoning?: string;
-  tool?: {
-    name: string;
-    callId?: string;
-    input?: unknown;
-    output?: unknown;
-    state?: {
-      status?: "pending" | "running" | "completed" | "error";
-      error?: string;
-      startedAt?: string;
-      completedAt?: string;
-    };
-  };
-  custom?: { kind: string; data?: unknown };
-}
-
-export interface RetryInfo {
-  attempt: number;
-  message: string;
-  next: number;
-  action: string;
 }
 
 // --- Agent input request types (Epic 16) ---
@@ -406,13 +347,16 @@ export interface WorkspaceAlertEvent {
 }
 
 /**
- * Discriminated union of all event types delivered over the workspace SSE stream.
+ * Discriminated union of the event types delivered over the workspace/user SSE
+ * streams. Contract session-state events do NOT ride these streams for the
+ * chat render path — they arrive as ABI frames on /contract-events
+ * (US-69.10). The tracker's session.status and agent.* events remain here
+ * (user-stream consumers own them until US-69.11).
  * Narrow on `type` to access type-specific fields.
  */
 export type WorkspaceStreamEvent =
   | WorkspacePhaseEvent
   | SessionStatusEvent
-  | SessionContractEvent
   | AgentQuestionEvent
   | AgentQuestionResolvedEvent
   | AgentPermissionEvent

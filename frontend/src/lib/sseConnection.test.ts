@@ -396,3 +396,97 @@ describe("createSSEConnection", () => {
     conn.destroy();
   });
 });
+
+describe("createSSEConnection named events (contract stream)", () => {
+  let fetchRestore: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    fetchRestore = globalThis.fetch;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = fetchRestore;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("delivers the event name alongside the parsed data", async () => {
+    const reader = makeMockReader({
+      chunks: [
+        `event: resync\ndata: {"reason":"dropped"}\n\n`,
+        `data: {"seq":"8"}\n\n`,
+      ],
+    });
+    globalThis.fetch = makeMockFetch(reader);
+    const onEvent = vi.fn();
+    const conn = createSSEConnection({ url: "/test", onEvent });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onEvent).toHaveBeenCalledTimes(2);
+    expect(onEvent).toHaveBeenNthCalledWith(1, { reason: "dropped" }, "resync");
+    expect(onEvent).toHaveBeenNthCalledWith(2, { seq: "8" });
+    conn.destroy();
+  });
+
+  it("a nameless block after a named one is default again (no leak)", async () => {
+    const reader = makeMockReader({
+      chunks: [`event: resync\ndata: {}\n\ndata: {"a":1}\n\n`],
+    });
+    globalThis.fetch = makeMockFetch(reader);
+    const onEvent = vi.fn();
+    const conn = createSSEConnection({ url: "/test", onEvent });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onEvent).toHaveBeenNthCalledWith(2, { a: 1 });
+    conn.destroy();
+  });
+
+  it("event name set before any data in the same block only", async () => {
+    const reader = makeMockReader({
+      // An event: line in a block WITHOUT a data line is ignored entirely.
+      chunks: [`event: resync\n\n`, `data: {"b":2}\n\n`],
+    });
+    globalThis.fetch = makeMockFetch(reader);
+    const onEvent = vi.fn();
+    const conn = createSSEConnection({ url: "/test", onEvent });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith({ b: 2 });
+    conn.destroy();
+  });
+
+  it("reconnect() aborts the current fetch and reconnects immediately with reset backoff", async () => {
+    const reader1 = makeMockReader({ hangForever: true });
+    const reader2 = makeMockReader({ hangForever: true });
+    const mock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, body: { getReader: () => reader1 } })
+      .mockResolvedValueOnce({ ok: true, status: 200, body: { getReader: () => reader2 } });
+    globalThis.fetch = mock;
+    const conn = createSSEConnection({ url: "/test", onEvent: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mock).toHaveBeenCalledTimes(1);
+
+    conn.reconnect();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(mock).toHaveBeenCalledTimes(2);
+    // A fresh AbortSignal per connection.
+    expect(mock.mock.calls[1]?.[1]?.signal).not.toBe(mock.mock.calls[0]?.[1]?.signal);
+    conn.destroy();
+  });
+
+  it("reconnect() on a destroyed connection is a no-op", async () => {
+    const reader = makeMockReader({ hangForever: true });
+    const mock = makeMockFetch(reader);
+    globalThis.fetch = mock;
+    const conn = createSSEConnection({ url: "/test", onEvent: vi.fn() });
+    await vi.advanceTimersByTimeAsync(0);
+    conn.destroy();
+    conn.reconnect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+});

@@ -58,7 +58,6 @@ vi.mock("../api/workspaces", () => ({
     renameWorkspace: vi.fn().mockResolvedValue({}),
     renameSession: vi.fn().mockResolvedValue({}),
     abortSession: vi.fn(),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined).mockResolvedValue({}),
     getSession: vi.fn().mockResolvedValue({ title: "" }),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
@@ -130,6 +129,42 @@ function makeQC() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
 }
 
+/**
+ * Extracts ChatPage's component body: from the function declaration to the
+ * render-path early return (`if (!workspaceId) {` — note the brace: inline
+ * guards like `if (!workspaceId) return;` inside callbacks must NOT match),
+ * with comments stripped so commented-out hook names don't count.
+ */
+function chatPageBody(src: string): { body: string; afterEarlyReturn: string } {
+  const fnStart = src.indexOf("export function ChatPage()");
+  expect(fnStart).toBeGreaterThan(0);
+  const earlyReturnIdx = src.indexOf("if (!workspaceId) {", fnStart);
+  expect(earlyReturnIdx).toBeGreaterThan(fnStart);
+
+  const noComments = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+
+  const bodyStart = noComments.indexOf("export function ChatPage()");
+  const guardStart = noComments.indexOf("if (!workspaceId) {", bodyStart);
+  const closingBrace = noComments.indexOf("\n  }", guardStart);
+  return {
+    body: noComments.slice(bodyStart, guardStart),
+    afterEarlyReturn: noComments.slice(closingBrace + 4),
+  };
+}
+
+/** Any hook-like call: `useXxx(` or `useXxx<...>(` (generic hooks such as
+ * useState<Message[]> / useRef<Map<...>> must count too). */
+const HOOK_CALL = /\buse[A-Z][A-Za-z0-9]*\s*[<(]/g;
+
+// ChatPage's hook-call count before the early return (US-69.10 state:
+// useContractStream added; input-snapshot refs/state removed). If you
+// intentionally add or remove a hook in ChatPage, update this number —
+// an unexpected change means hooks moved across the early-return guard
+// or the hook order was accidentally restructured.
+const EXPECTED_HOOK_CALLS = 67;
+
 describe("ChatPage hook count stability (React error #310 regression guard)", () => {
   beforeEach(() => {
     paramsRef = {};
@@ -143,18 +178,24 @@ describe("ChatPage hook count stability (React error #310 regression guard)", ()
       path.resolve(__dirname, "ChatPage.tsx"),
       "utf-8",
     );
-    const earlyReturnIdx = src.indexOf("if (!workspaceId)");
-    expect(earlyReturnIdx).toBeGreaterThan(0);
 
-    // Find the end of the early return block (closing brace on its own line)
-    // by scanning for `}` after the early return.
-    const afterGuard = src.slice(earlyReturnIdx);
-    const closingBrace = afterGuard.indexOf("\n  }");
-    const afterEarlyReturn = afterGuard.slice(closingBrace + 4); // past `\n  }`
-
-    // No hook calls should appear after the early return
+    const { afterEarlyReturn } = chatPageBody(src);
     const hookPattern = /\buse(Effect|State|Ref|Callback|Memo|LayoutEffect)\s*\(/;
     expect(hookPattern.test(afterEarlyReturn)).toBe(false);
+  });
+
+  it("calls exactly the expected number of hooks before the early return", () => {
+    // Asserts hook-call stability: every hook must be registered before the
+    // early return on EVERY render path. A count drift means a hook was
+    // added/removed/moved — update EXPECTED_HOOK_CALLS deliberately.
+    const src = fs.readFileSync(
+      path.resolve(__dirname, "ChatPage.tsx"),
+      "utf-8",
+    );
+
+    const { body } = chatPageBody(src);
+    const calls = body.match(HOOK_CALL) ?? [];
+    expect(calls).toHaveLength(EXPECTED_HOOK_CALLS);
   });
 
   it("renders without crashing when params change from empty to workspace+session", async () => {

@@ -105,6 +105,14 @@ async function mockAuthAndWorkspace(page: Page, opts: { phase?: string } = {}) {
       body: `data: ${JSON.stringify({ type: "workspace.phase", phase })}\n\n`,
     });
   });
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await page.route(`${API}/workspaces/${WS_ID}/contract-events`, async (route: Route) => {
+    await route.fulfill({
+      status: 200, contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({ snapshot: { atSeq: "1", snapshot: { sessions: [{ sessionId: SES_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }] } } })}\n\n`,
+    });
+  });
   await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/queue`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ messages: [] }) });
   });

@@ -11,6 +11,10 @@ import { ChatHistoryErrorBanner } from "../components/chat/ChatHistoryErrorBanne
 import { useActivateWorkspace } from "../hooks/useActivateWorkspace";
 import { useChatStream } from "../hooks/useChatStream";
 import { useEventStream } from "../hooks/useEventStream";
+import { useContractStream } from "../hooks/useContractStream";
+import type { Event, InputRequest } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import { EventType, InputKind, MessageType, SessionStatus } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { Part } from "../abi/llmsafespaces/abi/v1/contract_pb";
 import { useSessionTitle } from "../hooks/useSessionTitle";
 import { useMessageQueue } from "../hooks/useMessageQueue";
 import { useComposerAttachments } from "../hooks/useComposerAttachments";
@@ -21,32 +25,22 @@ import { ChatView } from "../components/chat/ChatView";
 import { SuspendedBanner } from "../components/chat/SuspendedBanner";
 import { AtCapBanner } from "../components/chat/AtCapBanner";
 import { HealthBanner } from "../components/chat/HealthBanner";
-import { SessionRetryBanner, type RetryStatus } from "../components/chat/SessionRetryBanner";
 import { AgentReloadBanner } from "../components/workspace/AgentReloadBanner";
 import { DiskUsageBar } from "../components/workspace/DiskUsageBar";
 import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
 import { sessionsApi } from "../api/sessions";
-import type { Message, SessionListItem, WorkspaceStreamEvent, SessionContractEvent, SessionStatusEvent, ContractEvent, QuestionRequest, PermissionRequest, WorkspaceAlertEvent } from "../api/types";
+import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWorkspaceInputSnapshot } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
 
-type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
-
-// Reconnect-mode activation window. Reconnect mode ("mounted into an
-// in-progress run") may only ARM within this long of the page mounting into
-// the session (or an SSE reconnect) — never from a mid-session busy
-// transition (e.g. the 60s send timeout dropping localStreaming while the
-// session legitimately stays busy waiting for an answer). Without the
-// window, that mid-session transition armed the stuck-session auto-abort
-// against live prompts (the "Session was interrupted" false positive).
-const RECONNECT_ACTIVATION_WINDOW_MS = 15_000;
+type StreamPart = { type: "text" | "thinking" | "tool"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
 // Dwell before the stuck-session auto-abort fires once all evidence
-// conditions hold. Guards the sub-second race where a question registers in
-// opencode's queue between the snapshot fetch and its marker.
+// conditions hold. Guards the sub-second race where a question registers
+// in the projection between the stamped snapshot and its observation.
 const AUTO_ABORT_DWELL_MS = 1_500;
 
 // messageIdentityKey returns a stable identity for a chat message, used to tell
@@ -72,12 +66,102 @@ function messageIdentityKey(m: Message): string {
   return `${m.role}|${text}`;
 }
 
+// partToStreamPart maps an ABI Part (contract 5-type union) onto the chat
+// renderer's streaming bubble shape. file-change and custom parts render
+// from history only (Epic 65 has no live renderer branch for them yet).
+function partToStreamPart(part: Part, messageID: string | undefined): StreamPart | null {
+  switch (part.payload.case) {
+    case "text":
+      return { type: "text", text: part.payload.value, partID: part.id, messageID };
+    case "reasoning":
+      return { type: "thinking", text: part.payload.value, partID: part.id, messageID };
+    case "tool": {
+      const tool = part.payload.value;
+      return {
+        type: "tool",
+        text: tool.name || "",
+        partID: part.id,
+        toolState: toolStateLabel(tool.state?.status),
+        toolCallID: tool.callId || undefined,
+        toolInput: toolJsonBytes(tool.input),
+        toolOutput: toolOutputText(tool.output),
+        toolStartedAt: timestampToISO(tool.state?.startedAt),
+        messageID,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+// protobuf Timestamp → ISO string (the elapsed badge's anchor).
+function timestampToISO(ts: { seconds: bigint; nanos: number } | undefined): string | undefined {
+  if (!ts) return undefined;
+  const ms = Number(ts.seconds) * 1000 + Math.floor(ts.nanos / 1_000_000);
+  if (!Number.isFinite(ms) || ms <= 0) return undefined;
+  return new Date(ms).toISOString();
+}
+
+// ABI tool input/output are raw-JSON bytes on the wire; the renderers
+// expect a parsed object (input) and display text (output). A JSON
+// string literal unwraps to its value — history's adapter path delivers
+// the same text unquoted.
+function toolJsonBytes(b: Uint8Array | undefined): unknown {
+  if (!b || b.length === 0) return undefined;
+  try {
+    return JSON.parse(new TextDecoder().decode(b));
+  } catch {
+    return undefined;
+  }
+}
+
+function toolOutputText(b: Uint8Array | undefined): string | undefined {
+  if (!b || b.length === 0) return undefined;
+  const text = new TextDecoder().decode(b);
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "string") return parsed;
+  } catch {
+    // not JSON — display the raw text
+  }
+  return text;
+}
+
+function toolStateLabel(status: number | undefined): string {
+  switch (status) {
+    case 1: return "pending";
+    case 2: return "running";
+    case 3: return "completed";
+    case 4: return "error";
+    default: return "";
+  }
+}
+
+// Maps known error codes to actionable user-facing messages.
+function sessionErrorText(code: string, rawMessage: string): string {
+  if (code === "ContextOverflowError") {
+    return "Context limit reached — type /compact to summarize the conversation and continue";
+  }
+  if (code === "MessageOutputLengthError") {
+    return "Response was too long for this model's output limit";
+  }
+  if (code === "ProviderAuthError") {
+    return rawMessage
+      ? `Authentication failed: ${rawMessage} — check the API key in Settings`
+      : "The configured provider rejected the request — check the API key in Settings";
+  }
+  if (code === "ProviderRateLimitError" || /rate limit/i.test(rawMessage)) {
+    return "The provider rate-limited this workspace — retrying shortly";
+  }
+  return rawMessage || code || "The agent hit an unexpected error";
+}
+
 export function ChatPage() {
   const { workspaceId, sessionId } = useParams();
   const navigate = useNavigate();
   const { confirm: confirmDelete, dialog: confirmDialog } = useConfirmDialog();
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
-  // sessionErrors holds error messages surfaced by session.error SSE events.
+  // sessionErrors holds error messages surfaced by contract ERROR events.
   // Kept separate from localMessages so they survive between send and idle.
   // Cleared in reconcileOnIdle (session goes idle → history is authoritative)
   // and on session change.
@@ -88,7 +172,6 @@ export function ChatPage() {
     setLocalMessages([]);
     setSessionErrors([]);
     setSseStreamParts([]);
-    setRetryStatus(null);
     // Pending prompt content is NOT cleared here — it lives in the global
     // SessionActivityProvider (keyed by requestId) so it survives within-tab
     // navigation between a parent session and its subtasks (issue #346).
@@ -328,43 +411,23 @@ export function ChatPage() {
 
   const idCounterRef = useRef(0);
 
-  const { send, streaming, localStreaming, notifySessionIdle, error: chatError, clearError, atCapRetryAfter, clearAtCap, streamTimedOut, clearStreamTimedOut } = useChatStream(activeWorkspaceId, sessionId, isSessionBusy);
+  const { send, streaming, notifySessionIdle, error: chatError, clearError, atCapRetryAfter, clearAtCap, streamTimedOut, clearStreamTimedOut } = useChatStream(activeWorkspaceId, sessionId, isSessionBusy);
 
-  // Ref mirrors so async continuations (reconcileOnIdle's post-refetch
-  // code) read the CURRENT busy/streaming state rather than the stale
-  // closure captured when the callback was created.
-  const isSessionBusyRef = useRef(false);
-  isSessionBusyRef.current = isSessionBusy;
-  const localStreamingRef = useRef(false);
-  localStreamingRef.current = localStreaming;
-  const [retryStatus, setRetryStatus] = useState<RetryStatus | null>(null);
   const sessionTitle = useSessionTitle(activeWorkspaceId, sessionId, isReady, streaming);
 
-  // US-15.3: Compute historyPartIds from fetched history for boundary detection.
-  // Holds BOTH part ids and tool call ids — events are matched on either —
-  // because a history part and its live event share the call id even when
-  // the part id is unavailable on one side.
-  const historyPartIds = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const ids = new Set<string>();
-    if (history) {
-      for (const msg of history) {
-        for (const part of msg.parts) {
-          if (part.id) ids.add(part.id);
-          if (part.toolCallId) ids.add(part.toolCallId);
-        }
-      }
-    }
-    historyPartIds.current = ids;
-  }, [history]);
-
-  // US-15.4: Reconnect mode — active when page loads into a busy session
-  const isReconnectMode = useRef(false);
-  const knownLivePartIds = useRef<Set<string>>(new Set());
+  // US-15.4/US-69.10: the fold tracks the streaming render buffer keys.
+  // knownUserMessageIds gates user-echo parts (I12: the user message's id
+  // arrives via MESSAGE_START(type USER); its part echoes are dropped by
+  // entity ID, not by text matching).
+  const knownUserMessageIds = useRef<Set<string>>(new Set());
+  // Timestamp of the last contract-stream snapshot application — the
+  // auto-abort's evidence gate (replaces the D9/D10 input-snapshot flight:
+  // a stamped snapshot is authoritative for pending inputs, I12).
+  const lastContractSnapshotAtRef = useRef(0);
   // Dwell anchor: set when all abort evidence first holds; cleared when any
   // evidence breaks (or on session change — evidence is per-session).
   // A persistent anchor (not a fresh timer) means frequent effect re-runs
-  // (history refetches on SSE reconnect churn) cannot defer the abort
+  // (history refetches on reconnect churn) cannot defer the abort
   // indefinitely — each timer schedules only the REMAINING dwell.
   const abortDwellStartRef = useRef<number | null>(null);
   // Last-known history for the stuck-tool check. A workspace-status refetch
@@ -374,85 +437,32 @@ export function ChatPage() {
   // Reset on session change (N4): stale transcripts must never satisfy the
   // stuck-tool check for the newly-viewed session.
   const lastHistoryRef = useRef<Message[] | null>(null);
-  // F1 fix: activation is only permitted within RECONNECT_ACTIVATION_WINDOW_MS
-  // of mount/session-change or an SSE reconnect. sessionMountedAt feeds the
-  // auto-abort snapshot gate (only snapshots newer than this page's view of
-  // the session count as evidence) — it is intentionally STABLE across SSE
-  // reconnect churn: a per-reconnect reset livelocks against the user
-  // stream's own reconnect cadence (each re-arm would demand a newer
-  // snapshot, perpetually clearing the abort dwell anchor).
-  const reconnectWindowOpenRef = useRef(true);
   const sessionMountedAtRef = useRef(0); // set in the session-change effect (runs on mount) — keeps render pure
-  const reconnectWindowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const armReconnectWindow = useCallback(() => {
-    reconnectWindowOpenRef.current = true;
-    if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
-    reconnectWindowTimerRef.current = setTimeout(() => {
-      reconnectWindowOpenRef.current = false;
-    }, RECONNECT_ACTIVATION_WINDOW_MS);
-  }, []);
 
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
   const [agentDiedMessage, setAgentDiedMessage] = useState<string | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
-  // Reset reconnect state on session change — MUST be defined before the
-  // reconnect-mode activation effect below so it runs first on mount.
+  // Reset per-session state on session change.
   useEffect(() => {
-    isReconnectMode.current = false;
     hasAutoAbortedRef.current = false;
-    knownLivePartIds.current.clear();
-    // Queued-text echo tracking is per-session: entries in another
-    // session's outbox deliver there, and their echoes must never strip
-    // this session's stream. Deliberately NOT cleared on reconcile — a
-    // mid-turn SSE reconnect between enqueue and late delivery must not
-    // lose the strip (the reconnect boundary gate only covers parts
-    // already in history at refetch time).
-    pendingQueuedTextsRef.current.clear();
+    knownUserMessageIds.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
     setAgentDiedMessage(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
-    // F1 fix: open the activation window for the newly-mounted session and
-    // stamp this view's mount time (auto-abort snapshot-evidence gate).
+    // Stamp this view's mount time (auto-abort snapshot-evidence gate):
+    // only a snapshot received AFTER this page started viewing the session
+    // counts as evidence.
     sessionMountedAtRef.current = Date.now();
-    // N4: per-session abort state must not leak across the switch — see the
-    // lastHistoryRef declaration comment above.
+    // Per-session abort state must not leak across the switch — see the
+    // lastHistoryRef declaration below.
     lastHistoryRef.current = null;
     abortDwellStartRef.current = null;
-    armReconnectWindow();
-    return () => {
-      if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
-
-  // Enter reconnect mode when session is busy — MUST be after the session-change
-  // reset effect so it runs second on mount and isn't cleared.
-  // F1 fix: only while the activation window is open (mount / SSE reconnect).
-  // R1 (review round 3): sessionId is a dep — a busy→busy same-workspace
-  // switch (isSessionBusy never transitions) must re-run the effect to
-  // re-arm after the session-change reset cleared isReconnectMode, or the
-  // stuck-session recovery never fires for the newly-viewed session.
-  useEffect(() => {
-    if (reconnectWindowOpenRef.current && isSessionBusy && !localStreaming) {
-      if (!isReconnectMode.current) {
-        isReconnectMode.current = true;
-        // F1/C3: guarantee a fresh input-snapshot flight exists after arming.
-        // Page loads and SSE reconnects fire one server-side, but an
-        // in-workspace session switch arms reconnect mode with no stream
-        // (re)connect — without this trigger the auto-abort gate would wait
-        // on a stale snapshot forever.
-        if (workspaceId) {
-          workspacesApi.requestInputSnapshot(workspaceId).catch(() => {});
-        }
-      }
-    }
-  }, [isSessionBusy, localStreaming, workspaceId, sessionId]);
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
   const reconcileOnIdle = useCallback(async () => {
@@ -477,37 +487,7 @@ export function ChatPage() {
         const historyKeys = new Set(msgs.map(messageIdentityKey));
         setLocalMessages((prev) => prev.filter((m) => !historyKeys.has(messageIdentityKey(m))));
       }
-      // Rebuild the boundary-gate ID set SYNCHRONOUSLY from the fresh
-      // transcript. The [history] effect runs on the next commit — without
-      // this, resumed SSE events arriving in that window are matched
-      // against the pre-refetch (stale) set and re-append parts history
-      // already renders (the duplicate-bubble bug: one bash run rendering
-      // as both a history bubble and a stream bubble after reconnect).
-      const freshIds = new Set<string>();
-      for (const msg of msgs) {
-        for (const part of msg.parts) {
-          if (part.id) freshIds.add(part.id);
-          if (part.toolCallId) freshIds.add(part.toolCallId);
-        }
-      }
-      historyPartIds.current = freshIds;
       setSessionErrors([]);
-      knownLivePartIds.current.clear();
-      sentTextRef.current = "";
-      activePartTypeRef.current = null;
-      currentThinkingIdxRef.current = -1;
-      currentTextIdxRef.current = -1;
-      if (isSessionBusyRef.current || localStreamingRef.current) {
-        // The session is STILL in flight (this reconcile came from an SSE
-        // reconnect mid-turn, not a genuine idle). History now renders the
-        // in-flight messages, so keep the boundary gate ARMED: resumed
-        // part events for parts already in history must be dropped, or
-        // they re-enter sseStreamParts as duplicates. Disarmed normally
-        // by doSendNow (new user send) and the session-change reset.
-        isReconnectMode.current = true;
-      } else {
-        isReconnectMode.current = false;
-      }
       if (freshHistory) {
         void queue.refreshQueue();
       }
@@ -516,29 +496,111 @@ export function ChatPage() {
     }
   }, [workspaceId, sessionId, queryClient, queue]);
 
-  // Auto-abort sessions that are stuck on a question/permission tool that opencode
-  // lost from its queue (e.g. due to opencode restarting while a question was pending).
+  // The contract stream: snapshot-first sync + discard rule + live events
+  // (the only agent-derived consumption path after the hard cutover).
+  const contractStream = useContractStream(sseWorkspaceId, {
+    onEvent: (evt) => handleContractABIEvent(evt),
+    onSnapshot: () => { lastContractSnapshotAtRef.current = Date.now(); },
+    onReconnect: () => {
+      // A stream gap may have missed MESSAGE_END events whose messages
+      // are already persisted — refetch page 1 so the transcript catches
+      // up; the fresh snapshot replaces in-flight state exactly.
+      if (workspaceId) {
+        queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
+      }
+      void queue.refreshQueue();
+      void reconcileOnIdle();
+    },
+  });
+
+  // I12 prompt sync (pod-wide fold): the fold's pendingInputs are the
+  // projection-authoritative standing prompts — seeded from the snapshot
+  // alone (no extra fetch) and kept current by INPUT_REQUEST/RESOLVED
+  // events. The fold is pod-wide, so subtask sessions' prompts are
+  // included; root routing (a subtask's prompt bubbling to the parent
+  // view) resolves through the loaded sessions list's parentId chain —
+  // the same resolution the API-side emitter performed for the retired
+  // user-stream copies (US-69.11 deletes those emitters).
+  const resolvedInputIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!workspaceId || !sessionId) return;
+
+    const parentOf = (sid: string): string | undefined =>
+      sessionsListData?.find((s) => s.id === sid)?.parentId;
+    // Inputs visible from this view: the viewed session's own, and any
+    // session whose parent is the viewed session (subtask bubbling).
+    const visibleInputs: Array<{ input: InputRequest; rootSessionId: string }> = [];
+    for (const [sid, snap] of contractStream.sessions) {
+      const root = sid === sessionId ? sid : parentOf(sid) === sessionId ? sessionId : undefined;
+      if (root === undefined) continue;
+      for (const input of snap.pendingInputs) visibleInputs.push({ input, rootSessionId: root });
+    }
+
+    for (const { input, rootSessionId } of visibleInputs) {
+      // An input the user just answered in this view: do not re-add from
+      // the fold until the projection drops it (INPUT_RESOLVED / fresh
+      // snapshot) — that is the answer→event latency window.
+      if (resolvedInputIdsRef.current.has(input.id)) continue;
+      if (input.kind === InputKind.PERMISSION) {
+        addPendingPermission(workspaceId, {
+          id: input.id,
+          session_id: input.sessionId,
+          root_session_id: rootSessionId,
+          permission: input.permission,
+          patterns: [...input.patterns],
+          always: [...input.always],
+          ...(input.tool ? { tool: { message_id: input.tool.messageId, call_id: input.tool.callId } } : {}),
+        });
+      } else {
+        addPendingQuestion(workspaceId, {
+          id: input.id,
+          session_id: input.sessionId,
+          root_session_id: rootSessionId,
+          questions: [{
+            question: input.question,
+            header: input.header,
+            options: input.options.map((o) => ({ label: o.label, description: o.description })),
+            multiple: input.multiple,
+          }],
+          ...(input.tool ? { tool: { message_id: input.tool.messageId, call_id: input.tool.callId } } : {}),
+        });
+      }
+    }
+
+    // Removals: prompts visible from this view that the fold no longer
+    // carries were resolved outside this view's event flow. A resolved-id
+    // latch clears once the fold drops the input.
+    const pendingIds = new Set(visibleInputs.map((v) => v.input.id));
+    for (const id of [...resolvedInputIdsRef.current]) {
+      if (!pendingIds.has(id)) resolvedInputIdsRef.current.delete(id);
+    }
+    const isOwn = (sid: string) => sid === sessionId || parentOf(sid) === sessionId;
+    for (const q of pendingQuestions) {
+      if (isOwn(q.session_id) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) removePendingAction(q.id);
+    }
+    for (const perm of pendingPermissions) {
+      if (isOwn(perm.session_id) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) removePendingAction(perm.id);
+    }
+    // The sync is idempotent (adds are first-wins by request id; removals
+    // key off the fold), so re-running on prompt-store changes converges.
+  }, [workspaceId, sessionId, contractStream, sessionsListData, pendingQuestions, pendingPermissions, addPendingQuestion, addPendingPermission, removePendingAction]);
+
+  // Auto-abort sessions stuck on a question/permission tool that the agent
+  // lost from its queue (e.g. the harness restarting while a question was
+  // pending; agentd reseeds its projection from the store on boot, so a
+  // lost question is absent from the fold by construction — I3/I12).
   //
-  // Trigger: reconnect mode (busy at page load / SSE reconnect) + history has
-  // loaded + last assistant message ends with a question or permission tool in
-  // "running" state + no pending questions/permissions arrived via SSE.
-  //
-  // F2 fix: additionally requires a SUCCESSFUL input snapshot
-  // (agent.input.snapshot_complete ok:true) received AFTER reconnect mode
-  // armed — opencode's queue was actually consulted and reports nothing
-  // pending. A failed fetch (ok:false, e.g. opencode mid-restart) or a
-  // pre-arming snapshot is not evidence. A short dwell then guards the
-  // fetch→marker race where a just-asked question isn't in the fetched set.
+  // Trigger: the fold says the viewed session is BUSY + history has loaded
+  // + the last assistant message ends with a question/permission tool in
+  // "running" state + no pending inputs in the fold (projection-authoritative)
+  // + no prompts in the provider store + a stamped snapshot received AFTER
+  // this page started viewing the session. A short dwell then guards the
+  // cut→observe race where a just-asked question is not yet in the fold.
   //
   // After abort we reconcile history and surface an "interrupted" banner.
   const pendingPromptCount = pendingQuestions.length + pendingPermissions.length;
-  const inputSnapshot = useWorkspaceInputSnapshot(workspaceId ?? "");
+  const foldViewedSession = sessionId ? contractStream.sessions.get(sessionId) : undefined;
   useEffect(() => {
-    // Strong evidence: the conditions that, if they break, genuinely
-    // invalidate the stuck-session diagnosis. The dwell ANCHOR survives
-    // transient flips of isReconnectMode (reconcileOnIdle clears it on every
-    // SSE reconnect; the window re-arms immediately) — otherwise reconnect
-    // churn faster than the dwell would clear the anchor forever.
     const stuckToolPresent = (() => {
       const h = history ?? lastHistoryRef.current;
       if (!h || h.length === 0) return false;
@@ -558,8 +620,9 @@ export function ChatPage() {
       stuckToolPresent &&
       !hasAutoAbortedRef.current &&
       pendingPromptCount === 0 &&
-      !!inputSnapshot?.ok &&
-      inputSnapshot.at > sessionMountedAtRef.current;
+      foldViewedSession?.status === SessionStatus.BUSY &&
+      (foldViewedSession?.pendingInputs.length ?? 0) === 0 &&
+      lastContractSnapshotAtRef.current > sessionMountedAtRef.current;
     if (!strongEvidenceHold) {
       abortDwellStartRef.current = null;
       return;
@@ -568,34 +631,23 @@ export function ChatPage() {
       abortDwellStartRef.current = Date.now();
     }
 
-    // All evidence holds — dwell briefly so a question registering in
-    // opencode's queue between the snapshot fetch and its marker (which
-    // would arrive as an agent.question event and break the evidence,
-    // clearing the anchor) cannot be killed.
-    //
-    // The timer is scheduled even while reconnect mode is momentarily
-    // disarmed (reconcile churn clears it; a user send disarms it
-    // permanently) — the CALLBACK re-checks isReconnectMode at fire time so
-    // a disarmed state fails safe (no abort). Scheduling here rather than
-    // only-when-armed matters: effect cleanups clear the timer on every dep
-    // churn, so an armed-only schedule would silently cancel the dwell the
-    // first time a render happens while disarmed.
+    // All evidence holds — dwell briefly so a question registering in the
+    // projection between the snapshot cut and its fold publication (which
+    // would arrive as an INPUT_REQUEST and break the evidence, clearing
+    // the anchor) cannot be killed.
     const remaining = Math.max(0, AUTO_ABORT_DWELL_MS - (Date.now() - abortDwellStartRef.current));
     const timer = setTimeout(() => {
       if (hasAutoAbortedRef.current) return;
       if (abortDwellStartRef.current === null) return;
-      // B (review round 4): a user send during the dwell disarms reconnect
-      // mode (doSendNow) — this session is actively in use, not stuck. The
-      // anchor persists across reconnect churn by design, so the disarm must
-      // be re-checked here, not only via effect deps (a send changes no dep).
-      if (!isReconnectMode.current) return;
+      // A user send during the dwell resets the abort anchor (doSendNow)
+      // — this session is actively in use, not stuck.
       hasAutoAbortedRef.current = true;
       workspacesApi.abortSession(workspaceId!, sessionId!)
         .then(() => { setSessionWasInterrupted(true); reconcileOnIdle(); })
         .catch(() => { setSessionWasInterrupted(true); reconcileOnIdle(); });
     }, remaining);
     return () => clearTimeout(timer);
-  }, [workspaceId, sessionId, history, pendingPromptCount, inputSnapshot, reconcileOnIdle]);
+  }, [workspaceId, sessionId, history, pendingPromptCount, foldViewedSession, reconcileOnIdle]);
   const hasAutoRenamedRef = useRef(false);
   useEffect(() => {
     if (!sessionTitle || !workspaceName || !workspaceId || hasAutoRenamedRef.current) return;
@@ -612,254 +664,163 @@ export function ChatPage() {
     }
   }, [sessionTitle, workspaceName, workspaceId, queryClient]);
   const [sseStreamParts, setSseStreamParts] = useState<StreamPart[]>([]);
-  // Store the text the user just sent so we can strip the user echo from
-  // the SSE stream. Opencode echoes the user's message as the first
-  // message.part.updated event(s) before the assistant response begins.
-  const sentTextRef = useRef<string>("");
-  // Texts enqueued through the D3 queue that have not been observed in
-  // the stream yet, with multiplicity (duplicate texts queue as
-  // separate entries and each gets its own echo). The queue path skips
-  // doSendNow (which primes sentTextRef), so without this map the
-  // user-echo of a late-delivered queued message falls through to the
-  // assistant stream buffer and renders the user's own text as an agent
-  // bubble (suspend/resume casualty: entries park while the agent is
-  // unreachable, then drain after resume). Matching an echo also clears
-  // the pending pill — the agent owns the message now, it is in the
-  // conversation, not the queue (TUI parity).
-  const pendingQueuedTextsRef = useRef<Map<string, number>>(new Map());
-  // Tracks which buffer to route message.part.delta events to.
-  const activePartTypeRef = useRef<"user-echo" | "reasoning" | "text" | null>(null);
-  const currentThinkingIdxRef = useRef<number>(-1);
-  const currentTextIdxRef = useRef<number>(-1);
 
-  // Returns the queued text this echo matches — exact, or composed with
-  // a pure attachment manifest (Epic 67: echoes of sends with files come
-  // back as prose + manifest) — decrementing its multiplicity; undefined
-  // when the echo belongs to no pending queued message.
-  const matchQueuedEcho = useCallback((echoText: string): string | undefined => {
-    const pending = pendingQueuedTextsRef.current;
-    if (pending.size === 0 || !echoText) return undefined;
-    const take = (text: string) => {
-      const n = pending.get(text) ?? 0;
-      if (n <= 1) pending.delete(text);
-      else pending.set(text, n - 1);
-      return text;
-    };
-    if (pending.has(echoText)) return take(echoText);
-    for (const t of pending.keys()) {
-      if (echoText.startsWith(t)) {
-        const remainder = echoText.slice(t.length);
-        const parsedRemainder = parseAttachments(remainder);
-        if (parsedRemainder.attachments !== null && parsedRemainder.text === "") {
-          return take(t);
+  // upsertStreamPart applies one rendered part bubble keyed by entity ID
+  // (part id, or the tool call id for tool parts): the I12 stitch rule for
+  // the live buffer — START/END replace, nothing matches on text.
+  const upsertStreamPart = useCallback((next: StreamPart) => {
+    setSseStreamParts((prev) => {
+      const keyOf = (p: StreamPart) => p.type === "tool" ? (p.toolCallID ?? `tool:${p.partID ?? ""}`) : (p.partID ?? `${p.type}:${prev.indexOf(p)}`);
+      const target = next.type === "tool" ? (next.toolCallID ?? `tool:${next.partID ?? ""}`) : next.partID;
+      if (target !== undefined) {
+        const idx = prev.findIndex((p) => keyOf(p) === target);
+        if (idx >= 0) {
+          const updated = [...prev];
+          // The agent rewrites the tool start time on later part
+          // snapshots; anchor to the FIRST-seen value so the elapsed
+          // badge doesn't reset.
+          updated[idx] = { ...next, toolStartedAt: prev[idx]!.toolStartedAt ?? next.toolStartedAt };
+          return updated;
         }
       }
-    }
-    return undefined;
+      return [...prev, next];
+    });
   }, []);
 
-  // handleContractEvent renders one CONTRACT event (US-65.8: clients
-  // consume pkg/session shapes only — the agent's wire names, envelopes,
-  // and part shapes are translated server-side behind the adapter seam).
-  const handleContractEvent = useCallback((ce: ContractEvent, currentSessionId: string) => {
-    if (!ce?.type) return;
-    if (ce.sessionId && ce.sessionId !== currentSessionId) return;
+  const appendStreamDelta = useCallback((partId: string, delta: string, messageID: string | undefined) => {
+    if (!delta) return;
+    setSseStreamParts((prev) => {
+      const idx = prev.findIndex((p) => p.partID === partId);
+      if (idx < 0) {
+        // Mirror the server projection: a delta for an unseen part id
+        // materializes the streaming text part.
+        return [...prev, { type: "text", text: delta, partID: partId, messageID }];
+      }
+      const updated = [...prev];
+      updated[idx] = { ...updated[idx]!, text: updated[idx]!.text + delta };
+      return updated;
+    });
+  }, []);
 
-    // US-15.4 boundary gate: in reconnect mode, ignore events for parts
-    // already rendered from history. Tool events match on the call id too
-    // (part id may be absent on either side; call id is shared).
-    if (isReconnectMode.current) {
-      const livePartId = ce.partId || ce.part?.id;
-      const liveCallId = ce.part?.tool?.callId;
-      const inHistory = (id: string | undefined) => !!id && historyPartIds.current.has(id);
-      if (ce.type === "part.delta") {
-        if (inHistory(livePartId)) return;
-        if (!knownLivePartIds.current.has(livePartId ?? "")) return;
-      } else if (inHistory(livePartId) || inHistory(liveCallId)) {
+  // handleContractABIEvent renders one ABI contract event (US-69.10: the
+  // /contract-events stream is the only agent-derived stream the chat
+  // consumes; events arrive post-discard-rule, in seq order).
+  const handleContractABIEvent = useCallback((evt: Event) => {
+    if (evt.sessionId && sessionId && evt.sessionId !== sessionId) {
+      // Session-scoped events for other sessions only feed the sidebar
+      // title (updated below); the viewed session's renderer ignores them.
+      if (evt.type === EventType.SESSION_UPDATED && evt.session?.title && workspaceId) {
+        queryClient.setQueryData<SessionListItem[]>(["sessions", workspaceId], (old) => {
+          if (!old) return old;
+          return old.map((s) => s.id === evt.sessionId ? { ...s, title: evt.session!.title } : s);
+        });
+      }
+      return;
+    }
+
+    switch (evt.type) {
+      case EventType.SESSION_STATUS: {
+        if (!workspaceId) return;
+        queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+        if (evt.status === SessionStatus.IDLE) {
+          notifySessionIdle(evt.sessionId);
+          clearStreamTimedOut();
+          setHungAlert((prev) => (prev && prev.session_id === evt.sessionId ? null : prev));
+          reconcileOnIdle();
+          queue.refreshQueue();
+          // US-16.12: Clear stale prompts on session idle (global, scoped to
+          // this session — survives across views, cleared when idle).
+          clearSessionPendingPrompts(evt.sessionId);
+        }
         return;
       }
-      if (livePartId) knownLivePartIds.current.add(livePartId);
-    }
-
-    if (ce.type === "part.delta") {
-      const delta = ce.delta;
-      if (!delta) return;
-      const target = activePartTypeRef.current;
-      if (target === "reasoning" || target === "text") {
-        const expectedType = target === "reasoning" ? "thinking" : "text";
-        setSseStreamParts((prev) => {
-          if (prev.length === 0) return prev;
-          const last: StreamPart | undefined = prev[prev.length - 1];
-          if (!last || last.type !== expectedType) return prev;
-          return [...prev.slice(0, -1), { ...last, text: last.text + delta }];
-        });
-      }
-      // "user-echo" and null: discard
-    } else if (ce.type === "part.end") {
-      const part = ce.part;
-      if (!part) return;
-      const partMessageID = ce.messageId || undefined;
-
-      if (part.type === "reasoning") {
-        activePartTypeRef.current = "reasoning";
-        const text = part.reasoning ?? "";
-        if (text) {
-          const idx = currentThinkingIdxRef.current;
-          setSseStreamParts((prev) => {
-            if (idx >= 0 && idx < prev.length && prev[idx]!.type === "thinking") {
-              const updated = [...prev];
-              updated[idx] = { ...updated[idx]!, type: "thinking", text, messageID: partMessageID ?? prev[idx]!.messageID };
-              return updated;
-            }
-            return [...prev, { type: "thinking", text, messageID: partMessageID }];
-          });
-        } else {
-          setSseStreamParts((prev) => {
-            currentThinkingIdxRef.current = prev.length;
-            return [...prev, { type: "thinking", text: "", messageID: partMessageID }];
+      case EventType.SESSION_UPDATED: {
+        const title = evt.session?.title;
+        if (title && workspaceId) {
+          queryClient.setQueryData<SessionListItem[]>(["sessions", workspaceId], (old) => {
+            if (!old) return old;
+            return old.map((s) => s.id === evt.sessionId ? { ...s, title } : s);
           });
         }
-      } else if (part.type === "text") {
-        const text = part.text ?? "";
-        // Queued-path echo: the user's own message landing in the
-        // stream after outbox delivery. Strip it from the assistant
-        // buffer AND clear its pending pill — the agent owns it now.
-        const queuedEchoText = matchQueuedEcho(text);
-        if (queuedEchoText !== undefined) {
-          activePartTypeRef.current = "user-echo";
-          queue.removeFirstByText(queuedEchoText);
-        } else if (sentTextRef.current && text === sentTextRef.current) {
-          activePartTypeRef.current = "user-echo";
-        } else if (sentTextRef.current && text.startsWith(sentTextRef.current)) {
-          // Epic 68 D11: with attached files the user echo comes back as the
-          // composed text (prose + manifest). A remainder that is ONLY a
-          // manifest block is still the user echo — never streamed as
-          // assistant content.
-          const remainder = text.slice(sentTextRef.current.length);
-          const parsedRemainder = parseAttachments(remainder);
-          if (parsedRemainder.attachments !== null && parsedRemainder.text === "") {
-            activePartTypeRef.current = "user-echo";
-          } else {
-            activePartTypeRef.current = "text";
-            const stripped = remainder;
-            const idx = currentTextIdxRef.current;
-            setSseStreamParts((prev) => {
-              if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
-                const updated = [...prev];
-                updated[idx] = { ...updated[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
-                return updated;
-              }
-              return [...prev, { type: "text", text: stripped, messageID: partMessageID }];
-            });
-          }
-        } else {
-          activePartTypeRef.current = "text";
-          if (text) {
-            const idx = currentTextIdxRef.current;
-            setSseStreamParts((prev) => {
-              if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
-                const updated = [...prev];
-                updated[idx] = { ...updated[idx]!, type: "text", text, messageID: partMessageID ?? prev[idx]!.messageID };
-                return updated;
-              }
-              return [...prev, { type: "text", text, messageID: partMessageID }];
-            });
-          } else {
-            setSseStreamParts((prev) => {
-              currentTextIdxRef.current = prev.length;
-              return [...prev, { type: "text", text: "", messageID: partMessageID }];
-            });
+        return;
+      }
+      case EventType.MESSAGE_START: {
+        if (evt.message?.type === MessageType.USER && evt.message.id) {
+          knownUserMessageIds.current.add(evt.message.id);
+        }
+        return;
+      }
+      case EventType.MESSAGE_END: {
+        // Real-time context usage (per-step occupancy semantics): the
+        // ABI translator never maps session-updated tokens to
+        // contextUsage (they are cumulative); the step's tokens are the
+        // numerator — same rule the old US-65.8 bridge guaranteed.
+        const cost = evt.message?.cost;
+        if (evt.sessionId && cost) {
+          const used = Number(cost.inputTokens) + Number(cost.cacheReadTokens) + Number(cost.cacheWriteTokens);
+          if (used > 0) {
+            contextBySessionRef.current.set(evt.sessionId, used);
+            setContextVersion((v) => v + 1);
           }
         }
-      } else if (part.type === "tool" && part.tool) {
-        // Flat contract ToolPart (mirrors api/messages.ts history
-        // rendering): name/input/output on the tool; state carries
-        // status + ISO startedAt — no agent-shape parsing.
-        const tool = part.tool;
-        const toolName = tool.name || "";
-        const toolState = tool.state?.status || "";
-        const callID = tool.callId;
-        const toolInput = tool.input;
-        const toolOutput = typeof tool.output === "string" ? tool.output : undefined;
-        const toolStartedAt = tool.state?.startedAt;
-        setSseStreamParts((prev) => {
-          if (callID) {
-            const existingIdx = prev.findIndex((p: StreamPart) => p.type === "tool" && p.toolCallID === callID);
-            if (existingIdx >= 0) {
-              const updated = [...prev];
-              updated[existingIdx] = {
-                ...prev[existingIdx]!,
-                type: "tool",
-                text: toolName || prev[existingIdx]!.text,
-                toolState,
-                toolCallID: callID,
-                toolInput,
-                toolOutput,
-                messageID: partMessageID ?? prev[existingIdx]!.messageID,
-                // The agent rewrites the tool start time on every part
-                // snapshot (verified live against opencode 1.18.10: same
-                // part, start moved 75.7s between updates) — it is the
-                // snapshot time, not the call start. Anchor to the
-                // FIRST-seen value so the elapsed badge doesn't reset on
-                // every output line.
-                toolStartedAt: prev[existingIdx]!.toolStartedAt ?? toolStartedAt,
-              };
-              return updated;
-            }
-          }
-          return [...prev, { type: "tool", text: toolName, toolState, toolStartedAt, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
-        });
-        activePartTypeRef.current = null;
+        return;
       }
-      // file-change / custom parts: rendered from history on reconcile;
-      // no live streaming treatment.
+      case EventType.PART_START:
+      case EventType.PART_END: {
+        // Echo gate (I12): parts belonging to a known USER message are the
+        // harness echoing the user's own text — dropped by message ID.
+        if (evt.messageId && knownUserMessageIds.current.has(evt.messageId)) return;
+        const part = evt.part;
+        if (!part) return;
+        const bubble = partToStreamPart(part, evt.messageId || undefined);
+        if (bubble) upsertStreamPart(bubble);
+        return;
+      }
+      case EventType.PART_DELTA: {
+        if (evt.messageId && knownUserMessageIds.current.has(evt.messageId)) return;
+        if (evt.partId) appendStreamDelta(evt.partId, evt.delta, evt.messageId || undefined);
+        return;
+      }
+      case EventType.ERROR: {
+        if (!sessionId) return;
+        const code = evt.error?.code ?? "";
+        const rawMessage = evt.error?.message ?? "";
+        setSessionErrors((prev) => [...prev, {
+          id: `error-${++idCounterRef.current}`,
+          role: "assistant",
+          parts: [{ type: "error" as const, text: `⚠️ ${sessionErrorText(code, rawMessage)}` }],
+        }]);
+        // US-16.12: Clear stale prompts on session error (global, scoped).
+        clearSessionPendingPrompts(sessionId);
+        return;
+      }
+      default:
+        return;
     }
-  }, [queue, matchQueuedEcho]);
+  }, [workspaceId, sessionId, queryClient, notifySessionIdle, reconcileOnIdle, queue, clearSessionPendingPrompts, clearStreamTimedOut, upsertStreamPart, appendStreamDelta]);
 
+  // Platform events only: the workspace stream's session-state dialect is
+  // deleted (hard cutover); workspace.phase/alert, queue.update, and
+  // agent_died are API-owned platform events with no contract-stream
+  // equivalent yet (tracker retirement is US-69.11).
   const handleSSEEvent = useCallback((data: unknown) => {
     const event = data as WorkspaceStreamEvent;
     if (!event?.type) return;
 
     if (event.type === "workspace.phase") {
       queue.onPhaseChange(event.phase);
+      return;
     }
 
     // D6 (#998): notify-only hung-session escalation. Banner until
-    // dismissed; a later session.status=idle for the same session
+    // dismissed; a contract SESSION_STATUS idle for the same session
     // auto-clears it (the hang resolved).
     if (event.type === "workspace.alert" && event.data?.alert === "session_hung") {
       setHungAlert(event);
+      return;
     }
 
-    if (event.type === "session.status" && workspaceId) {
-      queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
-      if (event.session_id === sessionId) {
-        if (event.status === "idle") {
-          notifySessionIdle(event.session_id);
-          setRetryStatus(null);
-          clearStreamTimedOut();
-          setHungAlert((prev) => (prev && prev.session_id === event.session_id ? null : prev));
-          reconcileOnIdle();
-          queue.refreshQueue();
-          // US-16.12: Clear stale prompts on session idle (global, scoped to
-          // this session — survives across views, cleared when idle).
-          clearSessionPendingPrompts(event.session_id);
-        } else if (event.status === "busy") {
-          setRetryStatus(null);
-        } else if (event.status === "retry") {
-          // Platform retry payload (translated server-side, US-65.8).
-          const r = (event as SessionStatusEvent).data;
-          if (r) {
-            setRetryStatus({
-              attempt: typeof r.attempt === "number" ? r.attempt : 1,
-              message: typeof r.message === "string" ? r.message : "",
-              next: typeof r.next === "number" ? r.next : Date.now(),
-              action: r.action as unknown as RetryStatus["action"],
-            });
-          }
-        }
-      }
-    } else if (event.type === "queue.update" && workspaceId) {
+    if (event.type === "queue.update" && workspaceId) {
       const qe = (event.data ?? {}) as { event?: string; messageID?: string; error?: string };
       if (qe.event === "sent") {
         // Targeted removal first (instant), then the refresh as
@@ -878,106 +839,29 @@ export function ChatPage() {
       } else if (qe.event === "dismissed" && qe.messageID) {
         queue.removeById(qe.messageID);
       }
-    } else if (event.type === "session.event" && workspaceId) {
-      // US-65.8: contract events — the only agent-derived stream the
-      // client consumes. Agent wire shapes are translated server-side.
-      const ce = (event as SessionContractEvent).data;
-      if (!ce) return;
+      return;
+    }
 
-      if (ce.type === "session.updated" && ce.session) {
-        // Sidebar title in real time
-        if (ce.session.title) {
-          const sid = ce.session.id;
-          const title = ce.session.title;
-          queryClient.setQueryData<SessionListItem[]>(["sessions", workspaceId], (old) => {
-            if (!old) return old;
-            return old.map((s) => s.id === sid ? { ...s, title } : s);
-          });
-        }
-        // Real-time context usage (per-step occupancy semantics — the
-        // contract guarantees session.updated tokens are NEVER mapped to
-        // contextUsage, so this value is always the correct numerator).
-        if (ce.session.contextUsage && ce.session.id) {
-          contextBySessionRef.current.set(ce.session.id, ce.session.contextUsage.used);
-          setContextVersion((v) => v + 1);
-        }
-      } else if (ce.type === "error" && sessionId && ce.sessionId === sessionId) {
-        // Map known error codes to actionable user-facing messages.
-        const code = ce.error?.code ?? "";
-        const rawMessage = ce.error?.message ?? "";
-        let text: string;
-        if (code === "ContextOverflowError") {
-          text = "Context limit reached — type /compact to summarize the conversation and continue";
-        } else if (code === "MessageOutputLengthError") {
-          text = "Response was too long for this model's output limit";
-        } else if (code === "ProviderAuthError") {
-          text = rawMessage
-            ? `Authentication failed: ${rawMessage} — check the API key in Settings`
-            : "The configured provider rejected the request — check the API key in Settings";
-        } else if (code === "ProviderRateLimitError" || /rate limit/i.test(rawMessage)) {
-          text = "The provider rate-limited this workspace — retrying shortly";
-        } else {
-          text = rawMessage || code || "The agent hit an unexpected error";
-        }
-        setSessionErrors((prev) => [...prev, {
-          id: `error-${++idCounterRef.current}`,
-          role: "assistant",
-          parts: [{ type: "error" as const, text: `⚠️ ${text}` }],
-        }]);
-        // US-16.12: Clear stale prompts on session error (global, scoped).
-        clearSessionPendingPrompts(sessionId ?? "");
-      }
-
-      // Route streaming events to the active session renderer
-      if (sessionId) {
-        handleContractEvent(ce, sessionId);
-      }
-    } else if (event.type === "agent.question") {
-      const req = event.data as QuestionRequest;
-      // Store content globally (keyed by requestId); the selector filters by
-      // session at render. Storing unconditionally (not gated by the viewed
-      // session) means the prompt survives navigation to/from this session.
-      addPendingQuestion(workspaceId ?? "", req);
-    } else if (event.type === "agent.question.resolved") {
-      const { request_id } = event.data as { request_id: string };
-      removePendingAction(request_id);
-    } else if (event.type === "agent.permission") {
-      const req = event.data as PermissionRequest;
-      addPendingPermission(workspaceId ?? "", req);
-    } else if (event.type === "agent.permission.resolved") {
-      const { request_id } = event.data as { request_id: string };
-      removePendingAction(request_id);
-    } else if (event.type === "agent_died") {
+    if (event.type === "agent_died") {
       setAgentDied(true);
       if (event.data?.message) setAgentDiedMessage(event.data.message);
-    } else {
-      console.debug("[ChatPage] unhandled SSE event type:", event.type);
+      return;
     }
-  }, [queryClient, workspaceId, sessionId, handleContractEvent, notifySessionIdle, reconcileOnIdle, queue, addPendingQuestion, addPendingPermission, removePendingAction, clearSessionPendingPrompts, clearStreamTimedOut]);
 
-  // US-15.2: On SSE reconnect, re-poll status to catch missed transitions.
-  // Also resync the transcript: opencode history is authoritative after an
-  // SSE gap (e.g. in-place opencode restart for credential reload, OOM, or
-  // crash). reconcileOnIdle refetches history and clears stale local state;
-  // idempotent if the transcript is already current. Closes issue 440's
-  // "silent hang" symptom — the reconnect now actively recovers rather than
-  // leaving the user on a stale, possibly-interrupted transcript.
-  const handleSSEReconnect = useCallback(() => {
-    if (workspaceId) {
-      queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
-    }
-    void queue.refreshQueue();
-    void reconcileOnIdle();
-    // F1 fix: an SSE gap means we may have missed part events — re-arm the
-    // reconnect activation window so boundary detection gates the resumed
-    // stream. The auto-abort remains snapshot-gated, so re-arming cannot
-    // reintroduce false aborts.
-    armReconnectWindow();
-  }, [queryClient, workspaceId, queue, reconcileOnIdle, armReconnectWindow]);
+    console.debug("[ChatPage] unhandled platform event type:", event.type);
+  }, [workspaceId, queue]);
 
-  // Connect SSE unconditionally (even before workspace is Active) so we can
-  // detect the Pending→Active phase transition and auto-create a session.
-  useEventStream(sseWorkspaceId, handleSSEEvent, { onReconnect: handleSSEReconnect });
+  // Connect the platform stream unconditionally (even before workspace is
+  // Active) so we can detect the Pending→Active phase transition and
+  // auto-create a session.
+  useEventStream(sseWorkspaceId, handleSSEEvent, {
+    onReconnect: () => {
+      if (workspaceId) {
+        queryClient.invalidateQueries({ queryKey: ["workspace-status", workspaceId] });
+      }
+      void queue.refreshQueue();
+    },
+  });
 
   // doSendNow MUST be defined before the early return below.
   // Placing any hook after an early return violates the Rules of Hooks — React
@@ -1000,18 +884,11 @@ export function ChatPage() {
     })();
 
     setSseStreamParts([]);
-    sentTextRef.current = text;
-    activePartTypeRef.current = null;
-    currentThinkingIdxRef.current = -1;
-    currentTextIdxRef.current = -1;
-    isReconnectMode.current = false;
-    reconnectWindowOpenRef.current = false;
-    if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
+    knownUserMessageIds.current.clear();
     // A send is active use — drop the abort anchor outright (review round 5
     // recommendation). If stuck evidence genuinely re-establishes later, it
     // re-anchors and re-dwells from scratch; no zero-dwell carryover.
     abortDwellStartRef.current = null;
-    knownLivePartIds.current.clear();
     const userMsg: Message = {
       id: `local-${++idCounterRef.current}`,
       role: "user",
@@ -1067,13 +944,6 @@ export function ChatPage() {
     // requires a server-side check in SendPromptAsync — out of scope for
     // this fix.
     if (isSessionBusy || streaming || queue.queuedMessages.some((m) => m.status === "pending")) {
-      // Track the text so the user echo of the LATE delivery is
-      // stripped (and its pill cleared) instead of rendering the
-      // user's own words as an agent bubble.
-      pendingQueuedTextsRef.current.set(
-        text,
-        (pendingQueuedTextsRef.current.get(text) ?? 0) + 1,
-      );
       queue.enqueue(text, files);
       composerAttachments.clearAttached();
       return;
@@ -1249,10 +1119,6 @@ export function ChatPage() {
         <AtCapBanner retryAfter={atCapRetryAfter} onRetry={clearAtCap} />
       )}
 
-      {retryStatus && (
-        <SessionRetryBanner status={retryStatus} />
-      )}
-
       {hungAlert && (
         <div className="flex items-center justify-between gap-2 border-b border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
           <span>
@@ -1332,11 +1198,11 @@ export function ChatPage() {
                 <>
                   {pendingQuestions.map((q) => (
                     <QuestionPrompt key={q.id} workspaceId={workspaceId!} request={q}
-                      onResolved={() => removePendingAction(q.id)} />
+                      onResolved={() => { resolvedInputIdsRef.current.add(q.id); removePendingAction(q.id); }} />
                   ))}
                   {pendingPermissions.map((p) => (
                     <PermissionPrompt key={p.id} workspaceId={workspaceId!} request={p}
-                      onResolved={() => removePendingAction(p.id)} />
+                      onResolved={() => { resolvedInputIdsRef.current.add(p.id); removePendingAction(p.id); }} />
                   ))}
                 </>
               ) : undefined

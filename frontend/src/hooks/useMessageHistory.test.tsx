@@ -29,66 +29,62 @@ describe("useMessageHistory", () => {
     expect(result.current.isFetching).toBe(false);
   });
 
-  it("sorts by createdAt with backend order as tiebreaker", async () => {
+  it("preserves within-page order regardless of createdAt values", async () => {
+    // US-69.10 I12 stitch: transcript order is the backend's own order —
+    // within a page, array order is preserved verbatim and createdAt is
+    // never consulted. The timestamps below deliberately contradict the
+    // array order to prove no timestamp sorting exists.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
-        { id: "zz", role: "assistant", parts: [{ type: "text", text: "later" }], createdAt: "1970-01-01T00:00:02.000Z" },
-        { id: "aa", role: "user", parts: [{ type: "text", text: "earlier" }], createdAt: "1970-01-01T00:00:01.000Z" },
+        { id: "zz", role: "assistant", parts: [{ type: "text", text: "first in page" }], createdAt: "1970-01-01T00:00:02.000Z" },
+        { id: "aa", role: "user", parts: [{ type: "text", text: "second in page" }], createdAt: "1970-01-01T00:00:01.000Z" },
       ],
       nextCursor: undefined,
     });
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toHaveLength(2);
-    expect(result.current.data![0]!.id).toBe("aa");
-    expect(result.current.data![1]!.id).toBe("zz");
+    expect(result.current.data![0]!.id).toBe("zz");
+    expect(result.current.data![1]!.id).toBe("aa");
   });
 
-  it("preserves backend order as tiebreaker when createdAt is equal", async () => {
-    // The tiebreaker is now stable-sort by original array index (the order
-    // the backend returned), NOT lex ID comparison. Pre-fix used
-    // id.localeCompare which broke for opencode-format IDs that don't
-    // lex-sort by creation time (worklog 0555).
+  it("dedupes repeated ids within a page, keeping the first occurrence", async () => {
+    // Messages reconcile by entity ID (store IDs are preserved through
+    // translation); a duplicate id in the same page collapses to the
+    // first-seen occurrence.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
-        { id: "b", role: "assistant", parts: [{ type: "text", text: "second in array" }], createdAt: "1970-01-01T00:00:01.000Z" },
-        { id: "a", role: "user", parts: [{ type: "text", text: "first in array" }], createdAt: "1970-01-01T00:00:01.000Z" },
+        { id: "a", role: "user", parts: [{ type: "text", text: "first copy" }] },
+        { id: "b", role: "assistant", parts: [{ type: "text", text: "unique" }] },
+        { id: "a", role: "user", parts: [{ type: "text", text: "duplicate copy" }] },
       ],
       nextCursor: undefined,
     });
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toHaveLength(2);
-    // Stable: b stays before a because that's the order they arrived.
-    expect(result.current.data![0]!.id).toBe("b");
-    expect(result.current.data![1]!.id).toBe("a");
+    expect(result.current.data![0]!.id).toBe("a");
+    expect(result.current.data![0]!.parts[0]!.text).toBe("first copy");
+    expect(result.current.data![1]!.id).toBe("b");
   });
 
-  it("sorts queued messages (msg_q_*) correctly among native messages", async () => {
-    // Regression for issue #387: when timestamps differ, sort by time
-    // regardless of ID format. The lex tiebreaker previously placed
-    // msg_q_* IDs after msg_e* IDs even when their timestamps said
-    // otherwise. With the stable-index tiebreaker, timestamps always win.
+  it("keeps all messages that lack an id (nothing to dedupe on)", async () => {
+    // Messages without ids must not collide on a shared undefined key.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
-        { id: "msg_q_ccc", role: "user", parts: [{ type: "text", text: "interjection" }], createdAt: "1970-01-01T00:00:01.500Z" },
-        { id: "msg_eAAA", role: "assistant", parts: [{ type: "text", text: "first response" }], createdAt: "1970-01-01T00:00:01.000Z" },
-        { id: "msg_q_bbb", role: "user", parts: [{ type: "text", text: "second interjection" }], createdAt: "1970-01-01T00:00:02.000Z" },
+        { role: "user", parts: [{ type: "text", text: "one" }] },
+        { role: "assistant", parts: [{ type: "text", text: "two" }] },
       ],
       nextCursor: undefined,
     });
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toHaveLength(3);
-    expect(result.current.data![0]!.id).toBe("msg_eAAA");
-    expect(result.current.data![1]!.id).toBe("msg_q_ccc");
-    expect(result.current.data![2]!.id).toBe("msg_q_bbb");
+    expect(result.current.data).toHaveLength(2);
   });
 
   it("preserves backend order when createdAt is missing for all messages", async () => {
-    // When every message lacks createdAt, the primary sort key is uniform
-    // (all 0) so the stable-index tiebreaker fully controls order. This
-    // matches the backend's oldest-first delivery.
+    // Guards against re-introducing createdAt stitching that chokes on
+    // absent timestamps — the select must not depend on them at all.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "c", role: "assistant", parts: [{ type: "text", text: "msg c" }] },
@@ -100,7 +96,6 @@ describe("useMessageHistory", () => {
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toHaveLength(3);
-    // Stable order: c, a, b (as-delivered from backend).
     expect(result.current.data![0]!.id).toBe("c");
     expect(result.current.data![1]!.id).toBe("a");
     expect(result.current.data![2]!.id).toBe("b");

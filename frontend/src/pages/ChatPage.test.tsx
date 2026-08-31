@@ -8,6 +8,8 @@ import { ThemeProvider } from "../providers/ThemeProvider";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
 import { ApiClientError } from "../api/client";
+import type { Event } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { SessionSnapshot } from "../abi/llmsafespaces/abi/v1/abi_pb";
 
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
@@ -21,7 +23,6 @@ vi.mock("../api/workspaces", () => ({
     suspend: vi.fn().mockResolvedValue({}),
     deleteSession: vi.fn().mockResolvedValue(undefined),
     abortSession: vi.fn().mockResolvedValue(undefined),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
   },
@@ -50,6 +51,22 @@ vi.mock("../api/messages", () => {
 });
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
+
+// Capture the contract-stream options ChatPage registers with
+// useContractStream (ABI contract events), and expose a controllable fold
+// state — same shape as ChatPage.sse.test.tsx.
+let capturedContractOptions: {
+  onEvent: (event: Event, seq: bigint) => void;
+  onSnapshot: (state: { seq: bigint; sessions: ReadonlyMap<string, SessionSnapshot> }) => void;
+  onReconnect: () => void;
+} | null = null;
+let contractState: { seq: bigint; sessions: Map<string, SessionSnapshot> };
+vi.mock("../hooks/useContractStream", () => ({
+  useContractStream: vi.fn((_workspaceId: string | undefined, options: Record<string, unknown>) => {
+    capturedContractOptions = options as typeof capturedContractOptions;
+    return contractState;
+  }),
+}));
 
 import { workspacesApi } from "../api/workspaces";
 import { messagesApi } from "../api/messages";
@@ -80,12 +97,31 @@ function renderChatPage(path = "/chat") {
 describe("ChatPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
     (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    // clearAllMocks does not reset implementations set by earlier tests
+    // (e.g. the cursor-keyed two-page mocks below) — re-establish the
+    // default single-page wrapper every run.
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      messages: await (messagesApi.getHistory as ReturnType<typeof vi.fn>)(),
+      nextCursor: undefined,
+    }));
   });
   it("shows empty state when no workspace selected", () => {
     renderChatPage("/chat");
     expect(screen.getByText("Select a workspace to start chatting")).toBeInTheDocument();
+  });
+
+  it("registers ABI contract-stream handlers (US-69.10 cutover)", async () => {
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    renderChatPage("/chat/ws-1/sess-1");
+    await waitFor(() => {
+      expect(capturedContractOptions?.onEvent).toBeTypeOf("function");
+      expect(capturedContractOptions?.onSnapshot).toBeTypeOf("function");
+      expect(capturedContractOptions?.onReconnect).toBeTypeOf("function");
+    });
   });
 
   it("shows workspace name in header", async () => {
@@ -132,13 +168,35 @@ describe("ChatPage", () => {
     await waitFor(() => expect(screen.getByLabelText("Actions")).toBeInTheDocument());
   });
 
-  it("renders messages in chronological order regardless of API response order", async () => {
+  it("renders messages in backend order regardless of createdAt values", async () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    // API returns newest-first (as opencode does with paginated queries)
+    // US-69.10 I12 stitch: transcript order is the backend's own order
+    // (pages newest-first, reversed; within-page order preserved). createdAt
+    // is deliberately scrambled to contradict the page order — timestamps
+    // must never be consulted for ordering.
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-03T00:00:00.000Z" },
+      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-02T00:00:00.000Z" },
+    ]);
+    renderChatPage("/chat/ws-1/sess-1");
+    await waitFor(() => {
+      const bubbles = screen.getAllByText(/First|Second|Third/);
+      expect(bubbles).toHaveLength(3);
+      expect(bubbles[0]).toHaveTextContent("First");
+      expect(bubbles[1]).toHaveTextContent("Second");
+      expect(bubbles[2]).toHaveTextContent("Third");
+    });
+  });
+
+  it("preserves the page's order when the API returns oldest-first", async () => {
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    // Within-page order is preserved verbatim — an oldest-first page renders
+    // oldest-first without any client-side reversal or sorting.
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
     ]);
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => {
@@ -149,63 +207,98 @@ describe("ChatPage", () => {
     });
   });
 
-  it("renders messages in chronological order when API returns oldest-first", async () => {
+  it("dedupes messages whose ids repeat across pages, keeping the oldest-page occurrence", async () => {
+    const user = userEvent.setup();
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    // API returns oldest-first (possible in some opencode versions)
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
-    ]);
+    // Page 1 (newest) carries a copy of msg_dup; the older page carries
+    // another. selectByIdentity walks pages oldest-first, so the oldest-page
+    // occurrence is the "first" seen and the newest-page copy is dropped.
+    const pagesByCursor: Record<string, { messages: unknown[]; nextCursor?: string }> = {
+      initial: {
+        messages: [
+          { id: "msg_dup", role: "user", parts: [{ type: "text", text: "dup from newest page" }], createdAt: "2026-01-03T00:00:00.000Z" },
+          { id: "msg_new", role: "assistant", parts: [{ type: "text", text: "Latest" }], createdAt: "2026-01-04T00:00:00.000Z" },
+        ],
+        nextCursor: "msg_dup",
+      },
+      "msg_dup": {
+        messages: [
+          { id: "msg_old", role: "user", parts: [{ type: "text", text: "Oldest" }], createdAt: "2026-01-01T00:00:00.000Z" },
+          { id: "msg_dup", role: "user", parts: [{ type: "text", text: "dup from oldest page" }], createdAt: "2026-01-02T00:00:00.000Z" },
+        ],
+        nextCursor: undefined,
+      },
+    };
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, _ses: string, opts?: { before?: string }) =>
+        pagesByCursor[opts?.before ?? "initial"]!,
+    );
+
     renderChatPage("/chat/ws-1/sess-1");
+    await waitFor(() => expect(screen.getByText("Latest")).toBeInTheDocument());
+
+    // Load the older page through the real ChatView button.
+    await user.click(screen.getByText("Load earlier messages"));
+
     await waitFor(() => {
-      const bubbles = screen.getAllByText(/First|Second|Third/);
-      expect(bubbles[0]).toHaveTextContent("First");
-      expect(bubbles[1]).toHaveTextContent("Second");
-      expect(bubbles[2]).toHaveTextContent("Third");
+      const bubbles = screen.getAllByText(/Oldest|dup from|Latest/);
+      expect(bubbles).toHaveLength(3);
+      expect(bubbles[0]).toHaveTextContent("Oldest");
+      expect(bubbles[1]).toHaveTextContent("dup from oldest page");
+      expect(bubbles[2]).toHaveTextContent("Latest");
     });
+    expect(screen.queryByText("dup from newest page")).not.toBeInTheDocument();
   });
 
-  it("renders messages in chronological order when API returns shuffled order", async () => {
+  it("newest messages stay at the bottom when an older page loads", async () => {
+    const user = userEvent.setup();
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    // Arbitrary/scrambled order
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
-      { id: "dd0000000004abcdef", role: "assistant", parts: [{ type: "text", text: "Fourth" }], createdAt: "2026-01-04T00:00:00.000Z" },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
-    ]);
+    // Pages arrive newest-first; select reverses them so the transcript is
+    // stable as older pages prepend at the top — the newest stays last.
+    const pagesByCursor: Record<string, { messages: unknown[]; nextCursor?: string }> = {
+      initial: {
+        messages: [
+          { id: "n-2", role: "user", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
+          { id: "n-3", role: "assistant", parts: [{ type: "text", text: "Fourth (newest)" }], createdAt: "2026-01-04T00:00:00.000Z" },
+        ],
+        nextCursor: "n-2",
+      },
+      "n-2": {
+        messages: [
+          { id: "o-1", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
+          { id: "o-2", role: "assistant", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+        ],
+        nextCursor: undefined,
+      },
+    };
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, _ses: string, opts?: { before?: string }) =>
+        pagesByCursor[opts?.before ?? "initial"]!,
+    );
+
     renderChatPage("/chat/ws-1/sess-1");
+    await waitFor(() => {
+      const bubbles = screen.getAllByText(/Third|Fourth/);
+      expect(bubbles[bubbles.length - 1]).toHaveTextContent("Fourth (newest)");
+    });
+
+    await user.click(screen.getByText("Load earlier messages"));
+
     await waitFor(() => {
       const bubbles = screen.getAllByText(/First|Second|Third|Fourth/);
+      expect(bubbles).toHaveLength(4);
+      // Older page prepended at the top; newest still last (bottom).
       expect(bubbles[0]).toHaveTextContent("First");
-      expect(bubbles[1]).toHaveTextContent("Second");
-      expect(bubbles[2]).toHaveTextContent("Third");
-      expect(bubbles[3]).toHaveTextContent("Fourth");
-    });
-  });
-
-  it("newest message always renders at the bottom after history refresh", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    // Simulate post-reconcile: newest message has highest ID
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "ff0000000006abcdef", role: "assistant", parts: [{ type: "text", text: "Latest response" }], createdAt: "2026-01-03T00:00:00.000Z" },
-      { id: "ee0000000005abcdef", role: "user", parts: [{ type: "text", text: "Latest question" }], createdAt: "2026-01-02T00:00:00.000Z" },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First message" }], createdAt: "2026-01-01T00:00:00.000Z" },
-    ]);
-    renderChatPage("/chat/ws-1/sess-1");
-    await waitFor(() => {
-      const bubbles = screen.getAllByText(/First message|Latest question|Latest response/);
-      // Newest must be last (bottom)
-      expect(bubbles[bubbles.length - 1]).toHaveTextContent("Latest response");
-      // Oldest must be first (top)
-      expect(bubbles[0]).toHaveTextContent("First message");
+      expect(bubbles[bubbles.length - 1]).toHaveTextContent("Fourth (newest)");
     });
   });
 
   it("local optimistic message appears after history messages", async () => {
     const user = userEvent.setup();
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    // History page arrives newest-first; within-page order is preserved
+    // (Hi before Hello), and the optimistic local message appends after
+    // all history messages.
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "bb0000000002abcdef", role: "assistant", parts: [{ type: "text", text: "Hi" }], createdAt: "2026-01-02T00:00:00.000Z" },
       { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "Hello" }], createdAt: "2026-01-01T00:00:00.000Z" },
@@ -219,10 +312,9 @@ describe("ChatPage", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
-      // The new local message should render after the history messages
       const allTexts = screen.getAllByText(/Hello|Hi|New message/);
-      expect(allTexts[0]).toHaveTextContent("Hello");
-      expect(allTexts[1]).toHaveTextContent("Hi");
+      expect(allTexts[0]).toHaveTextContent("Hi");
+      expect(allTexts[1]).toHaveTextContent("Hello");
       expect(allTexts[allTexts.length - 1]).toHaveTextContent("New message");
     });
   });
@@ -349,6 +441,12 @@ describe("ChatPage", () => {
 describe("ChatPage — session delete", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      messages: await (messagesApi.getHistory as ReturnType<typeof vi.fn>)(),
+      nextCursor: undefined,
+    }));
     (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({
       items: [{ id: "ws-1", name: "Test", phase: "Active" }],
       pagination: { limit: 20, offset: 0, total: 1 },

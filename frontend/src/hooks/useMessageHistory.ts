@@ -7,29 +7,22 @@ interface InfiniteData {
   pageParams: (string | undefined)[];
 }
 
-function selectChronological(data: InfiniteData): Message[] {
-  // Pair each message with its original index in the flattened array so
-  // the sort can fall back to backend-provided order when timestamps tie.
-  // The backend returns pages oldest-first within each page and the
-  // infinite-query concatenates pages newest-page-first; the flattened
-  // order is therefore a meaningful "as-delivered" sequence that
-  // reflects the backend's view of chronology even when two messages
-  // share a createdAt millisecond.
-  //
-  // Pre-fix the tiebreaker was `a.id.localeCompare(b.id)`, which broke
-  // for opencode-format IDs that don't lex-sort by creation time
-  // (worklog 0564). Using the flattened index makes the sort stable
-  // and immune to ID format changes.
-  const indexed = data.pages.flatMap((p, pageIdx) =>
-    p.messages.map((m, msgIdx) => ({ m, origIdx: pageIdx * 100000 + msgIdx })),
-  );
-  indexed.sort((a, b) => {
-    const aTime = a.m.createdAt ? new Date(a.m.createdAt).getTime() : 0;
-    const bTime = b.m.createdAt ? new Date(b.m.createdAt).getTime() : 0;
-    if (aTime !== bTime) return aTime - bTime;
-    return a.origIdx - b.origIdx;
-  });
-  return indexed.map((x) => x.m);
+// I12 stitch (US-69.10): transcript order is the backend's own order —
+// pages arrive newest-page-first and each page is oldest-first within
+// itself, so chronological order is the page-reversed concatenation.
+// Messages reconcile by entity ID (store IDs are preserved through
+// translation); timestamps are never used for stitching.
+function selectByIdentity(data: InfiniteData): Message[] {
+  const seen = new Set<string>();
+  const out: Message[] = [];
+  for (const page of [...data.pages].reverse()) {
+    for (const m of page.messages) {
+      if (m.id && seen.has(m.id)) continue;
+      if (m.id) seen.add(m.id);
+      out.push(m);
+    }
+  }
+  return out;
 }
 
 export function useMessageHistory(workspaceId: string | undefined, sessionId: string | undefined) {
@@ -42,6 +35,6 @@ export function useMessageHistory(workspaceId: string | undefined, sessionId: st
     enabled: !!workspaceId && !!sessionId,
     staleTime: 10_000,
     refetchOnWindowFocus: false,
-    select: selectChronological,
+    select: selectByIdentity,
   });
 }
