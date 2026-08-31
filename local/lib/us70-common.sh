@@ -267,13 +267,19 @@ seed_workspace_metadata() { # ws user_id
 bind_env() {
     local ws="$1" var="$2" value="$3" body
     body=$(jq -nc --arg v "$var" --arg val "$value" '{vars:{($v):$val}}')
-    local code body_out
+    local code body_out attempt
     body_out=$(mktemp)
-    code=$(curl -sm 30 -o "${body_out}" -w '%{http_code}' -X PUT \
-        -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
-        -H "Content-Type: application/json" \
-        -d "$body" \
-        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env")
+    for attempt in 1 2; do
+        code=$(curl -sm 30 -o "${body_out}" -w '%{http_code}' -X PUT \
+            -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env")
+        [[ "${code}" == "401" && "${attempt}" == "1" ]] || break
+        # JWT expiry mid-suite: re-login once and retry — the pool's
+        # multi-hour dwells can outlive a short token TTL.
+        login_harness_user
+    done
     if [[ "${code}" != 2* ]]; then
         die "bind_env ${var}=${value} on ${ws} failed: HTTP ${code}: $(head -c 400 "${body_out}")"
     fi
