@@ -408,10 +408,10 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 		t.Fatalf("SetBindings: %v", err)
 	}
 
-	// Inject
-	data, err := svc.InjectSecrets(ctx, userID, "e2e-session", nil, wsID)
+	// Build the batch (the one builder) and render the legacy body.
+	data, err := injectJSONChecked(svc, ctx, userID, wsID)
 	if err != nil {
-		t.Fatalf("InjectSecrets: %v", err)
+		t.Fatalf("BuildWorkspaceBatch: %v", err)
 	}
 	var injected []InjectedSecret
 	json.Unmarshal(data, &injected)

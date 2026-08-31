@@ -423,17 +423,19 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cfg := loadMaterializeConfig()
+	anchorPath := revAnchorPath(cfg.toPaths().SecretsEnvPath)
 
-	// Load the base batch from secrets.json (written by the init container's
-	// bootstrap — server-KEK creds only). Absent is the zero-credential /
-	// pre-first-bind state and is handled as an empty batch below.
-	baseSecrets, err := secrets.LoadSecretsFile(*from)
+	// Load the base batch from the bootstrap-written file — a v2 envelope
+	// (entries + revision) or the legacy bare array. Absent is the
+	// zero-credential / pre-first-bind state and is handled as an empty
+	// batch below.
+	baseFile, err := secrets.LoadBatchFile(*from)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), "no such file") {
 			_, _ = fmt.Fprintf(stderr, "materialize: %v\n", err)
 			return 2
 		}
-		baseSecrets = nil
+		baseFile = secrets.BatchFile{}
 	}
 
 	// Replay the last reload-secrets batch (survives container restart on the
@@ -444,8 +446,24 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	cachedSecrets := loadReloadSecretsCache(cfg.reloadCachePath, stderr)
 
 	// Merge: base (server-KEK) + cache (last live state). The cache is the
-	// newer ground truth — it wins on any duplicate Type+Name.
-	secretsList := mergeSecretBatches(baseSecrets, cachedSecrets)
+	// newer ground truth — it wins on any duplicate Type+Name. The pulled
+	// revision survives ONLY when the cache is empty (the effective set is
+	// then exactly the revisioned pull).
+	secretsList, effectiveRev := secrets.MergeBatchFile(baseFile, cachedSecrets)
+
+	// W2 apply-guard: a PULLED batch whose seq is ≤ the seq recorded as
+	// applied must not re-materialize (idempotent-equal is a no-op; a lower
+	// seq is a stale/out-of-order replica race). Legacy effective batches
+	// (no revision — pushes, overlays) bypass the guard below and
+	// invalidate the anchor. Pod death wipes anchor and state together, so
+	// a present anchor always describes present state.
+	if effectiveRev != nil {
+		if anchor, aErr := readRevAnchor(anchorPath); aErr == nil && anchor.AppliedSeq > 0 && effectiveRev.Seq <= anchor.AppliedSeq {
+			_, _ = fmt.Fprintf(stderr, "materialize: batch seq %d not newer than applied seq %d — keeping applied state\n",
+				effectiveRev.Seq, anchor.AppliedSeq)
+			return 0
+		}
+	}
 
 	if len(secretsList) == 0 {
 		// No credentials at all (first boot, zero-credential user, and no
@@ -460,10 +478,11 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 			return 3
 		}
 		applyWorkspaceConfig(cfg.toPaths().AgentConfigPath, *from)
+		setRevAnchorAfterApply(anchorPath, effectiveRev, stderr)
 		return 0
 	}
 
-	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
+	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID, Revision: effectiveRev}
 	result, err := m.Materialize(secretsList)
 	reportResult(stderr, result)
 
@@ -563,6 +582,7 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Skips are intentional; do not fail the boot.
+	setRevAnchorAfterApply(anchorPath, effectiveRev, stderr)
 	return 0
 }
 
@@ -953,6 +973,15 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 		m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
 		result, mErr := m.Materialize(batch)
 
+		// A push is a legacy batch: whatever revisioned pull the live
+		// state came from, the pushed set supersedes it — invalidate the
+		// anchor (US-70.2 W2: legacy batches bypass the guard and reset
+		// the marker to unknown) so the served spawn revs and the next
+		// boot's guard describe the push, not a stale pull.
+		if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
+			removeRevAnchor(revAnchorPath(cfg.toPaths().SecretsEnvPath))
+		}
+
 		// R2b (#1165): single-container reload (crossUID false) runs as
 		// the consuming uid — deliver now. Sidecar reload only STAGES;
 		// the uid-1000 supervisor pull delivers at the next spawn.
@@ -1161,42 +1190,6 @@ func hasLLMProviders(batch []secrets.Secret) bool {
 		}
 	}
 	return false
-}
-
-// mergeSecretBatches combines a base batch with a layered batch, resolving
-// duplicates in favor of the layered batch. The dedup key is Type+Name —
-// the materializer's identity for a secret within a workspace. Metadata and
-// Plaintext from the layered entry replace the base entry wholesale.
-//
-// Used at boot (#443): base = /sandbox-cfg/secrets.json (server-KEK creds),
-// layered = the last reload-secrets cache (the newer, complete live state).
-// The cache wins because a reload is a full-replace and therefore holds the
-// most recent intended credential set.
-func mergeSecretBatches(base, layered []secrets.Secret) []secrets.Secret {
-	if len(base) == 0 {
-		return layered
-	}
-	if len(layered) == 0 {
-		return base
-	}
-
-	seen := make(map[string]int, len(base)+len(layered))
-	merged := make([]secrets.Secret, 0, len(base)+len(layered))
-	key := func(s secrets.Secret) string { return s.Type + "\x00" + s.Name }
-
-	for _, s := range base {
-		seen[key(s)] = len(merged)
-		merged = append(merged, s)
-	}
-	for _, s := range layered {
-		if idx, ok := seen[key(s)]; ok {
-			merged[idx] = s
-			continue
-		}
-		seen[key(s)] = len(merged)
-		merged = append(merged, s)
-	}
-	return merged
 }
 
 // writeReloadSecretsCache atomically writes the batch as JSON to path with

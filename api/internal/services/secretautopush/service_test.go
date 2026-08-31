@@ -19,22 +19,6 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// fakeDEKRetriever satisfies secretautopush.DEKRetriever with a
-// scriptable return value + call recorder.
-type fakeDEKRetriever struct {
-	calls      atomic.Int64
-	returnDEK  []byte
-	returnJTI  string
-	returnErr  error
-	lastUserID atomic.Value // string
-}
-
-func (f *fakeDEKRetriever) GetDEKForUser(_ context.Context, userID string) ([]byte, string, error) {
-	f.calls.Add(1)
-	f.lastUserID.Store(userID)
-	return f.returnDEK, f.returnJTI, f.returnErr
-}
-
 // fakeBindingsChecker satisfies secretautopush.BindingsChecker.
 type fakeBindingsChecker struct {
 	returnExists bool
@@ -50,7 +34,6 @@ type fakePusher struct {
 	calls        atomic.Int64
 	sawUserID    atomic.Value // string
 	sawWorkspace atomic.Value // string
-	sawSessionID atomic.Value // string
 	returnErr    error
 	// If nonzero, sleep for this duration before returning — used to
 	// exercise the in-flight-lock contract.
@@ -61,9 +44,6 @@ func (f *fakePusher) Push(ctx context.Context, userID, workspaceID string) error
 	f.calls.Add(1)
 	f.sawUserID.Store(userID)
 	f.sawWorkspace.Store(workspaceID)
-	if sess, ok := ctx.Value(sessionIDKeyForTest{}).(string); ok {
-		f.sawSessionID.Store(sess)
-	}
 	if f.block > 0 {
 		select {
 		case <-time.After(f.block):
@@ -73,11 +53,6 @@ func (f *fakePusher) Push(ctx context.Context, userID, workspaceID string) error
 	}
 	return f.returnErr
 }
-
-// sessionIDKeyForTest is a private context-key type the tests use to
-// verify that the auth ctx built by secretautopush actually carries
-// the jti as sessionID.
-type sessionIDKeyForTest struct{}
 
 func mustWs(name, userID string, phase v1.WorkspacePhase, userCredsPresent *bool) *v1.Workspace {
 	return &v1.Workspace{
@@ -111,24 +86,19 @@ func waitForCalls(t *testing.T, calls *atomic.Int64, n int64, timeout time.Durat
 }
 
 // TestOnWorkspaceUpdate_FiresWhenAllConditionsMet is the load-bearing
-// case: Active + UserCredsPresent=false + bindings-exist + DEK
-// retrievable → push fires exactly once.
+// case: Active + UserCredsPresent=false + bindings-exist → push fires
+// exactly once. The builder is session-independent (US-70.2), so no
+// DEK priming happens before the push.
 func TestOnWorkspaceUpdate_FiresWhenAllConditionsMet(t *testing.T) {
-	dek := &fakeDEKRetriever{
-		returnDEK: []byte("dek-plaintext"),
-		returnJTI: "jti-abc",
-	}
 	bindings := &fakeBindingsChecker{returnExists: true}
 	pusher := &fakePusher{}
 
-	svc := secretautopush.New(dek, bindings, pusher)
+	svc := secretautopush.New(bindings, pusher)
 	svc.OnWorkspaceUpdate(mustWs("ws-1", "user-1", v1.WorkspacePhaseActive, boolPtr(false)))
 
 	waitForCalls(t, &pusher.calls, 1, 2*time.Second)
 	assert.Equal(t, "user-1", pusher.sawUserID.Load())
 	assert.Equal(t, "ws-1", pusher.sawWorkspace.Load())
-	assert.Equal(t, int64(1), dek.calls.Load(), "DEK MUST have been fetched")
-	assert.Equal(t, "user-1", dek.lastUserID.Load())
 }
 
 // TestOnWorkspaceUpdate_SkipsIfUserCredsPresentTrue proves the
@@ -137,30 +107,25 @@ func TestOnWorkspaceUpdate_FiresWhenAllConditionsMet(t *testing.T) {
 // and would show up in api_secret_auto_push_total{outcome="success"}
 // noise.
 func TestOnWorkspaceUpdate_SkipsIfUserCredsPresentTrue(t *testing.T) {
-	dek := &fakeDEKRetriever{}
 	bindings := &fakeBindingsChecker{returnExists: true}
 	pusher := &fakePusher{}
 
-	svc := secretautopush.New(dek, bindings, pusher)
+	svc := secretautopush.New(bindings, pusher)
 	svc.OnWorkspaceUpdate(mustWs("ws-1", "user-1", v1.WorkspacePhaseActive, boolPtr(true)))
 
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, int64(0), pusher.calls.Load(),
-		"UserCredsPresent=true MUST short-circuit before any DEK fetch")
-	assert.Equal(t, int64(0), dek.calls.Load(),
-		"skipping the push MUST also skip the DEK fetch — otherwise "+
-			"we waste a PG round-trip and cache write on every watch event")
+		"UserCredsPresent=true MUST short-circuit before any push")
 }
 
 // TestOnWorkspaceUpdate_SkipsIfUserCredsPresentNil covers the pre-scrape
 // state: controller hasn't reported yet. The callback MUST NOT fire —
 // nil is "unknown," not "false."
 func TestOnWorkspaceUpdate_SkipsIfUserCredsPresentNil(t *testing.T) {
-	dek := &fakeDEKRetriever{}
 	bindings := &fakeBindingsChecker{returnExists: true}
 	pusher := &fakePusher{}
 
-	svc := secretautopush.New(dek, bindings, pusher)
+	svc := secretautopush.New(bindings, pusher)
 	// UserCredsPresent = nil (default) — not yet scraped.
 	svc.OnWorkspaceUpdate(mustWs("ws-1", "user-1", v1.WorkspacePhaseActive, nil))
 
@@ -188,7 +153,6 @@ func TestOnWorkspaceUpdate_SkipsIfNotActive(t *testing.T) {
 		t.Run(string(phase), func(t *testing.T) {
 			pusher := &fakePusher{}
 			svc := secretautopush.New(
-				&fakeDEKRetriever{},
 				&fakeBindingsChecker{returnExists: true},
 				pusher,
 			)
@@ -209,7 +173,6 @@ func TestOnWorkspaceUpdate_SkipsIfNotActive(t *testing.T) {
 func TestOnWorkspaceUpdate_SkipsIfNoBindings(t *testing.T) {
 	pusher := &fakePusher{}
 	svc := secretautopush.New(
-		&fakeDEKRetriever{},
 		&fakeBindingsChecker{returnExists: false},
 		pusher,
 	)
@@ -227,7 +190,6 @@ func TestOnWorkspaceUpdate_SkipsIfNoBindings(t *testing.T) {
 func TestOnWorkspaceUpdate_SkipsIfBindingsCheckErrors(t *testing.T) {
 	pusher := &fakePusher{}
 	svc := secretautopush.New(
-		&fakeDEKRetriever{},
 		&fakeBindingsChecker{returnErr: errors.New("pg down")},
 		pusher,
 	)
@@ -237,20 +199,18 @@ func TestOnWorkspaceUpdate_SkipsIfBindingsCheckErrors(t *testing.T) {
 		"bindings-query error MUST skip — retry on the next watch event")
 }
 
-// TestOnWorkspaceUpdate_SkipsIfDEKUnavailable covers the case where
-// no active JWT session exists for the user (they've been logged out
-// too long, all sessions expired). The push cannot succeed; skip.
-func TestOnWorkspaceUpdate_SkipsIfDEKUnavailable(t *testing.T) {
+// TestOnWorkspaceUpdate_StillFiresWithNoSession is the US-70.2 pin:
+// the auto-push no longer gates on a DEK being retrievable — the
+// builder decrypts user entries server-side, so a logged-out owner's
+// recreated pod still receives its secrets.
+func TestOnWorkspaceUpdate_StillFiresWithNoSession(t *testing.T) {
 	pusher := &fakePusher{}
 	svc := secretautopush.New(
-		&fakeDEKRetriever{returnErr: errors.New("dek unavailable")},
 		&fakeBindingsChecker{returnExists: true},
 		pusher,
 	)
 	svc.OnWorkspaceUpdate(mustWs("ws-1", "user-1", v1.WorkspacePhaseActive, boolPtr(false)))
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, int64(0), pusher.calls.Load(),
-		"no DEK available MUST skip — nothing to unwrap secrets with")
+	waitForCalls(t, &pusher.calls, 1, 2*time.Second)
 }
 
 // TestOnWorkspaceUpdate_InFlightLockPreventsDoubleFire is the
@@ -260,7 +220,6 @@ func TestOnWorkspaceUpdate_SkipsIfDEKUnavailable(t *testing.T) {
 func TestOnWorkspaceUpdate_InFlightLockPreventsDoubleFire(t *testing.T) {
 	pusher := &fakePusher{block: 100 * time.Millisecond}
 	svc := secretautopush.New(
-		&fakeDEKRetriever{returnDEK: []byte("dek"), returnJTI: "jti"},
 		&fakeBindingsChecker{returnExists: true},
 		pusher,
 	)
@@ -296,7 +255,6 @@ func TestOnWorkspaceUpdate_InFlightLockPreventsDoubleFire(t *testing.T) {
 func TestOnWorkspaceUpdate_LockReleasesAfterPushCompletes(t *testing.T) {
 	pusher := &fakePusher{}
 	svc := secretautopush.New(
-		&fakeDEKRetriever{returnDEK: []byte("dek"), returnJTI: "jti"},
 		&fakeBindingsChecker{returnExists: true},
 		pusher,
 	)
@@ -334,16 +292,12 @@ func ensureLockReleased(t *testing.T, timeout time.Duration, fn func() bool) err
 // subsequent watch event can retry. Without lock release, a single
 // failed push would permanently wedge the workspace.
 func TestOnWorkspaceUpdate_PushErrorEmitsMetricAndReleasesLock(t *testing.T) {
-	dek := &fakeDEKRetriever{
-		returnDEK: []byte("dek"),
-		returnJTI: "jti-abc",
-	}
 	bindings := &fakeBindingsChecker{returnExists: true}
 	pusher := &fakePusher{returnErr: errors.New("agentd unreachable")}
 
 	var outcomes []string
 	var outcomesMu sync.Mutex
-	svc := secretautopush.New(dek, bindings, pusher,
+	svc := secretautopush.New(bindings, pusher,
 		secretautopush.WithMetricsHook(func(outcome string) {
 			outcomesMu.Lock()
 			outcomes = append(outcomes, outcome)

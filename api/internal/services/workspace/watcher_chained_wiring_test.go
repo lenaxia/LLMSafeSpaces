@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
@@ -23,25 +22,22 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 )
 
-// TestChainedWiring_WatcherToSecretautopush is the end-to-end
-// wiring test the bot's review pass 3 requested: drive a real K8s
-// watch event through the real Watcher, into the real
-// secretautopush.Service (installed via SetWorkspaceUpdateCallback),
-// through the real agentpush.WithAuth-equivalent adapter, into a
-// probe pusher. This closes the last observability gap: a future
-// refactor that wires the callback incorrectly at the watcher level
-// (or breaks the through-chain) would fail this test.
+// TestChainedWiring_WatcherToSecretautopush is the end-to-end wiring
+// test: drive a real K8s watch event through the real Watcher, into
+// the real secretautopush.Service (installed via
+// SetWorkspaceUpdateCallback), into a probe pusher. This closes the
+// last observability gap: a future refactor that wires the callback
+// incorrectly at the watcher level (or breaks the through-chain) would
+// fail this test.
 //
 // This is the "connected chain" test. Every hop is real EXCEPT:
-//   - DEKRetriever (fake — real one queries jwt_sessions + KeyService)
 //   - BindingsChecker (fake — real one queries SecretStore)
-//   - SecretPusher (fake — real one HTTP-POSTs to agentd)
+//   - SecretPusher (fake — real one builds the batch + HTTP-POSTs to agentd)
 //
 // The tested chain: watch event → Watcher.handleWatchEvent →
 // onWorkspaceUpdate → secretautopush.Service.OnWorkspaceUpdate →
-// filter → DEKRetriever.GetDEKForUser (fake) → AuthContexter.WithAuth
-// (real agentpush.WithAuth via a mini-adapter) → SecretPusher.Push
-// (fake) → agentpush.AuthFromContext round-trip.
+// filter → SecretPusher.Push (fake). US-70.2 removed the DEK-priming
+// and auth-ctx hops — the pusher is session-independent.
 func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 	// --- Set up the real Watcher.
 	k8s := k8smocks.NewMockKubernetesClient()
@@ -59,13 +55,9 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 	require.NoError(t, err)
 
 	// --- Set up the real secretautopush.Service.
-	const wantJTI = "jti-chained-wiring"
-	dek := &chainedFakeDEK{returnDEK: []byte("dek"), returnJTI: wantJTI}
 	bindings := &chainedFakeBindings{returnExists: true}
 	pusher := &chainedFakePusher{}
-	svc := secretautopush.New(dek, bindings, pusher,
-		secretautopush.WithAuthContexter(chainedAgentpushAuther{}),
-	)
+	svc := secretautopush.New(bindings, pusher)
 
 	// Wire secretautopush's OnWorkspaceUpdate as the watcher's
 	// per-CRD-event callback. This is the exact wiring app.New does.
@@ -77,8 +69,7 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 	// --- Drive a Modified event through the fakeWatch. The Watcher's
 	// watch goroutine should invoke onWorkspaceUpdate → svc.OnWorkspaceUpdate
 	// → filter passes (Active + UserCredsPresent=false + owner set) →
-	// fake DEK returns → chainedAgentpushAuther builds ctx → fake pusher
-	// records it.
+	// fake pusher records it.
 	ws := &v1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: "ws-chain", Namespace: "default", ResourceVersion: "1"},
 		Spec: v1.WorkspaceSpec{
@@ -109,23 +100,12 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 		return pusher.lastCtx.Load() != nil && pusher.calls.Load() >= 1
 	}, 5*time.Second, 10*time.Millisecond,
 		"pusher MUST have been called through the full chain "+
-			"(watcher event → callback → filter → DEK fetch → push)")
+			"(watcher event → callback → filter → push)")
 	require.EqualValues(t, 1, pusher.calls.Load(),
 		"pusher MUST have been called exactly once through the full chain "+
-			"(watcher event → callback → filter → DEK fetch → push)")
+			"(watcher event → callback → filter → push)")
 
-	// The auth ctx must carry the jti as sessionID (via agentpush.WithAuth
-	// invoked inside chainedAgentpushAuther, verified via
-	// agentpush.AuthFromContext).
-	gotCtx := pusher.lastCtx.Load()
-	require.NotNil(t, gotCtx)
-	sessionID, _ := agentpush.AuthFromContext(gotCtx.(context.Context))
-	assert.Equal(t, wantJTI, sessionID,
-		"end-to-end chain MUST thread the DEKRetriever's jti through "+
-			"AuthContexter into the pusher's ctx — this is the exact "+
-			"integration point the bot's review pass 3 requested coverage for")
-
-	// Also confirm the pusher received the correct user/workspace IDs.
+	// Confirm the pusher received the correct user/workspace IDs.
 	assert.Equal(t, "user-chain", pusher.sawUserID.Load())
 	assert.Equal(t, "ws-chain", pusher.sawWorkspaceID.Load())
 }
@@ -133,15 +113,6 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 // --- fixtures ---
 
 func chainedBoolPtr(b bool) *bool { return &b }
-
-type chainedFakeDEK struct {
-	returnDEK []byte
-	returnJTI string
-}
-
-func (f *chainedFakeDEK) GetDEKForUser(_ context.Context, _ string) ([]byte, string, error) {
-	return f.returnDEK, f.returnJTI, nil
-}
 
 type chainedFakeBindings struct{ returnExists bool }
 
@@ -167,15 +138,6 @@ func (f *chainedFakePusher) Push(ctx context.Context, userID, workspaceID string
 	f.lastCtx.Store(ctx)
 	f.calls.Add(1)
 	return nil
-}
-
-// chainedAgentpushAuther mirrors the production adapter
-// (agentpushAuthCtxBuilder in api/internal/app/secrets_adapters.go).
-// Kept local to this test file to avoid an app-package import cycle.
-type chainedAgentpushAuther struct{}
-
-func (chainedAgentpushAuther) WithAuth(ctx context.Context, sessionID string, _ []byte) context.Context {
-	return agentpush.WithAuth(ctx, sessionID, nil)
 }
 
 // testLogger is a minimal no-op implementation of

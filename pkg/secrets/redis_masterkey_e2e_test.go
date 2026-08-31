@@ -112,9 +112,9 @@ func TestE2E_MasterKey_FullLifecycle(t *testing.T) {
 
 	// === Phase 5: Prepare injection (proves full flow works) ===
 	_, _ = secretSvc.SetBindings(ctx, userID, "ws-mk-test", []string{created.ID})
-	injData, err := secretSvc.InjectSecrets(ctx, userID, sessionID, nil, "ws-mk-test")
+	injData, err := injectJSONChecked(secretSvc, ctx, userID, "ws-mk-test")
 	if err != nil {
-		t.Fatalf("InjectSecrets: %v", err)
+		t.Fatalf("BuildWorkspaceBatch: %v", err)
 	}
 	var injected []InjectedSecret
 	json.Unmarshal(injData, &injected)

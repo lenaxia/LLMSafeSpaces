@@ -57,3 +57,22 @@ type SecretStore interface {
 	LogAudit(ctx context.Context, entry *AuditEntry) error
 	QueryAudit(ctx context.Context, userID string, query AuditQuery) ([]*AuditEntry, error)
 }
+
+// RevisionStore abstracts the per-workspace secret-delivery revision row
+// (US-70.2, design 0057 R1). The DB row is the single writer of the
+// monotonic seq — API replicas never mint seqs on their own.
+//
+// workspaceID is the workspace identifier the delivery path actually
+// uses (the CR name), NOT the uuid workspaces.id.
+type RevisionStore interface {
+	// CurrentRevision returns the stored revision for a workspace.
+	// ok=false (with nil error) means no revision row exists yet.
+	CurrentRevision(ctx context.Context, workspaceID string) (seq int64, manifestHash string, ok bool, err error)
+
+	// EnsureRevision converges the workspace's revision to manifestHash:
+	// when the stored hash already equals manifestHash the stored seq is
+	// returned unchanged; otherwise the row's conditional UPDATE mints
+	// the next seq. Concurrent callers racing different manifests each
+	// receive distinct, monotonically increasing seqs.
+	EnsureRevision(ctx context.Context, workspaceID, manifestHash string) (int64, error)
+}

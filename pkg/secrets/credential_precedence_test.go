@@ -40,15 +40,18 @@ func TestCredentialPrecedence_AdminFreeTierOverrideByUser(t *testing.T) {
 		adminKEK[i] = byte(i + 1)
 	}
 
-	// Setup user DEK.
+	// Setup the owner's server-recoverable DEK: user_keys wraps the DEK
+	// under the master provider, which is how the builder reaches it.
 	userID := "user-1"
-	sessionID := "sess-1"
 	workspaceID := "ws-1"
-	userDEK := make([]byte, 32)
-	for i := range userDEK {
-		userDEK[i] = byte(i + 100)
+	masterKey := make([]byte, 32)
+	for i := range masterKey {
+		masterKey[i] = byte(i + 150)
 	}
-	dekCache.CacheDEK(context.Background(), sessionID, userDEK, time.Hour) //nolint:errcheck
+	keyService.SetAPIKeyStore(nil, mustStaticProvider(t, masterKey))
+	require.NoError(t, keyService.InitializeUserKeysServerKEK(context.Background(), userID, "server_kek"))
+	userDEK, _, err := keyService.GetDEKServerSide(context.Background(), userID)
+	require.NoError(t, err)
 
 	// Create encrypted credentials.
 	adminPlaintext, _ := json.Marshal(LLMProviderData{Kind: "anthropic", Slug: "anthropic", APIKey: "admin-key"})
@@ -66,13 +69,13 @@ func TestCredentialPrecedence_AdminFreeTierOverrideByUser(t *testing.T) {
 		},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
 	ctx := context.Background()
-	result, err := svc.InjectSecrets(ctx, userID, sessionID, nil, workspaceID)
+	result, err := buildInjectedJSON(t, svc, ctx, userID, workspaceID)
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -119,12 +122,12 @@ func TestCredentialPrecedence_ModelAllowlistFiltering(t *testing.T) {
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -164,12 +167,12 @@ func TestCredentialPrecedence_ModelAllowlistFallback(t *testing.T) {
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -211,12 +214,12 @@ func TestCredentialPrecedence_DecryptionFailureFallback(t *testing.T) {
 		},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -252,13 +255,13 @@ func TestCredentialPrecedence_AdminOnlyNoSession(t *testing.T) {
 		},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
 	ctx := context.Background()
-	result, err := svc.InjectSecrets(ctx, "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, ctx, "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -286,6 +289,7 @@ func filterByType(secrets []InjectedSecret, typ SecretType) []InjectedSecret {
 
 type mockCredentialStore struct {
 	bindings []CredentialBinding
+	mcpRows  []MCPServerBindingRow
 }
 
 func (m *mockCredentialStore) GetWorkspaceCredentials(_ context.Context, _ string) ([]CredentialBinding, error) {
@@ -304,13 +308,26 @@ func (m *mockCredentialStore) HasUserProviderCredential(_ context.Context, _, _ 
 }
 
 func (m *mockCredentialStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]MCPServerBindingRow, error) {
-	return nil, nil
+	return m.mcpRows, nil
 }
 
-// combinedTestStore satisfies both SecretStore and CredentialStore via embedding.
+// combinedTestStore satisfies SecretStore + CredentialStore + RevisionStore
+// via embedding, so it exercises the full builder surface.
 type combinedTestStore struct {
 	SecretStore
 	CredentialStore
+	*fakeRevisionStore
+}
+
+// buildInjectedJSON runs the one builder and renders the mixed-fleet
+// wire body — the successor of the deleted InjectSecrets call shape.
+func buildInjectedJSON(t *testing.T, svc *SecretService, ctx context.Context, userID, workspaceID string) ([]byte, error) {
+	t.Helper()
+	batch, _, err := svc.BuildWorkspaceBatch(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return LegacyBatchJSON(*batch), nil
 }
 
 type testDEKCache struct {
@@ -340,23 +357,24 @@ func (c *testDEKCache) GetDEK(_ context.Context, sessionID string) ([]byte, erro
 
 func (c *testDEKCache) EvictDEK(_ context.Context, _ string) error { return nil }
 
-// TestAsyncAuditLogger_ImplementsCredentialStore verifies that the type assertion
-// in the injector methods (InjectSecrets / InjectSessionlessSecrets) succeeds
-// when store is *AsyncAuditLogger.
+// TestAsyncAuditLogger_ImplementsCredentialStore verifies that the type assertions
+// in the batch builder (CredentialStore / RevisionStore) succeed when store is
+// *AsyncAuditLogger.
 func TestAsyncAuditLogger_ImplementsCredentialStore(t *testing.T) {
 	inner := newMockSecretStore()
 	logger := &asyncAuditTestLogger{}
 	audit := NewAsyncAuditLogger(inner, 16, logger)
 	defer audit.Stop()
 
-	// Type assertion must succeed.
 	_, ok := interface{}(audit).(CredentialStore)
-	require.True(t, ok, "AsyncAuditLogger must implement CredentialStore for injection path to activate")
+	require.True(t, ok, "AsyncAuditLogger must implement CredentialStore for the builder path to activate")
+	_, ok = interface{}(audit).(RevisionStore)
+	require.True(t, ok, "AsyncAuditLogger must implement RevisionStore for the builder path to activate")
 }
 
-// TestInjectSecrets_ViaAsyncAuditLogger ensures the new path
+// TestBuildWorkspaceBatch_ViaAsyncAuditLogger ensures the builder path
 // activates when store is wrapped in AsyncAuditLogger (production configuration).
-func TestInjectSecrets_ViaAsyncAuditLogger(t *testing.T) {
+func TestBuildWorkspaceBatch_ViaAsyncAuditLogger(t *testing.T) {
 	// Inner store implements both SecretStore and CredentialStore.
 	innerSecret := newMockSecretStore()
 	adminKEK := make([]byte, 32)
@@ -375,7 +393,7 @@ func TestInjectSecrets_ViaAsyncAuditLogger(t *testing.T) {
 			{ID: "c1", OwnerType: "admin", OwnerID: "_platform", Kind: "opencode", Slug: "opencode", Ciphertext: cipher, SourceType: "auto"},
 		},
 	}
-	combined := &combinedTestStore{SecretStore: innerSecret, CredentialStore: mockCred}
+	combined := &combinedTestStore{SecretStore: innerSecret, CredentialStore: mockCred, fakeRevisionStore: &fakeRevisionStore{}}
 
 	logger := &asyncAuditTestLogger{}
 	audit := NewAsyncAuditLogger(combined, 16, logger)
@@ -389,7 +407,7 @@ func TestInjectSecrets_ViaAsyncAuditLogger(t *testing.T) {
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
 	ctx := context.Background()
-	result, err := svc.InjectSecrets(ctx, "user-1", "sess-1", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, ctx, "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -430,12 +448,12 @@ func TestCredentialPrecedence_AllowlistOnlyDefaultID(t *testing.T) {
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -477,12 +495,12 @@ func TestCredentialPrecedence_AllowlistMixedValidAndInvalid(t *testing.T) {
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -549,12 +567,12 @@ func TestCredentialPrecedence_ModelContextLimits_InjectedIntoLLMModelConfig(t *t
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -622,12 +640,12 @@ func TestCredentialPrecedence_ModelContextLimits_DoesNotOverrideExisting(t *test
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, adminKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -675,11 +693,11 @@ func TestCredentialPrecedence_OrgCredentialViaServerKEK(t *testing.T) {
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetOrgProvider(mustStaticProvider(t, orgKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -736,12 +754,12 @@ func TestCredentialPrecedence_DomainSeparation_AdminAndOrgDistinctKeys(t *testin
 		},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, adminKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, orgKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret
@@ -790,12 +808,12 @@ func TestCredentialPrecedence_OrgCredential_WrongKEK_FailsAndFallsBack(t *testin
 		}},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, deriveKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, deriveKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err, "fail-soft: decrypt failure must not error the whole call")
 
 	var injected []InjectedSecret
@@ -862,12 +880,12 @@ func TestCredentialPrecedence_SameKind_DifferentSlugs_BothMaterialize(t *testing
 		},
 	}
 
-	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore}
+	combinedStore := &combinedTestStore{SecretStore: secretStore, CredentialStore: mockCredStore, fakeRevisionStore: &fakeRevisionStore{}}
 	svc := NewSecretService(keyService, combinedStore)
 	svc.SetAdminProvider(mustStaticProvider(t, orgKEK))
 	svc.SetOrgProvider(mustStaticProvider(t, orgKEK))
 
-	result, err := svc.InjectSecrets(context.Background(), "user-1", "no-session", nil, "ws-1")
+	result, err := buildInjectedJSON(t, svc, context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	var injected []InjectedSecret

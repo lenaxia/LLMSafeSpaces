@@ -43,6 +43,9 @@ func (m *mockSecretStore) CreateSecret(_ context.Context, secret *UserSecret) er
 	if secret.ID == "" {
 		secret.ID = "sec-" + secret.Name // deterministic for tests
 	}
+	if secret.Version == 0 {
+		secret.Version = 1 // mirrors the DB column default (US-70.2)
+	}
 	cp := *secret
 	m.secrets[secret.ID] = &cp
 	return nil
@@ -103,10 +106,12 @@ func (m *mockSecretStore) ListGlobalDefaultSecrets(_ context.Context, userID str
 func (m *mockSecretStore) UpdateSecret(_ context.Context, secret *UserSecret) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.secrets[secret.ID]; !ok {
+	existing, ok := m.secrets[secret.ID]
+	if !ok {
 		return &notFoundError{id: secret.ID}
 	}
 	cp := *secret
+	cp.Version = existing.Version + 1 // mirrors the DB's unconditional bump (US-70.2)
 	m.secrets[secret.ID] = &cp
 	return nil
 }
@@ -284,7 +289,11 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	keySvc := NewKeyService(keyStore, dekCache)
 	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
+	svc := NewSecretService(keySvc, &builderTestStore{
+		SecretStore:       secretStore,
+		CredentialStore:   &mockCredentialStore{},
+		fakeRevisionStore: &fakeRevisionStore{},
+	})
 
 	ctx := context.Background()
 	userID := "user-1"

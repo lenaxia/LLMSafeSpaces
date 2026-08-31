@@ -914,11 +914,11 @@ func classifyPushOutcome(err error) string {
 	if errors.Is(err, agentpush.ErrNoRunningPod) {
 		return "no_pod"
 	}
-	// The "inject secrets" prefix is the sentinel documented on
-	// agentpush.Service.Push — every InjectSecrets failure is wrapped
-	// with this prefix. Anything else is a reload-side failure
-	// (network, non-2xx from agentd, malformed response).
-	if strings.HasPrefix(err.Error(), "inject secrets") {
+	// The "build workspace batch" prefix is the sentinel documented on
+	// agentpush.Service.Push — every builder failure is wrapped with
+	// this prefix. Anything else is a reload-side failure (network,
+	// non-2xx from agentd, malformed response).
+	if strings.HasPrefix(err.Error(), "build workspace batch") {
 		return "inject_failed"
 	}
 	return "reload_failed"
@@ -955,18 +955,4 @@ func (b *bindingsCheckerAdapter) UserHasBoundSecrets(ctx context.Context, worksp
 		return false, err
 	}
 	return len(list) > 0, nil
-}
-
-// agentpushAuthCtxBuilder satisfies secretautopush.AuthContexter via
-// agentpush.WithAuth. Kept in the app package so secretautopush
-// doesn't import agentpush (DIP — secretautopush depends on an
-// interface, not the concrete type).
-type agentpushAuthCtxBuilder struct{}
-
-func (agentpushAuthCtxBuilder) WithAuth(ctx context.Context, sessionID string, _ []byte) context.Context {
-	// The DEK arg on agentpush.WithAuth is `matchedSigningKey` — nil
-	// is fine because the DEK is already cached in Redis under the
-	// jti-as-sessionID by KeyService.GetDEKForUser. Downstream
-	// InjectSecrets → GetDEK(jti, nil) will hit the Redis cache.
-	return agentpush.WithAuth(ctx, sessionID, nil)
 }

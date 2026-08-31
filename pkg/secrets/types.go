@@ -107,6 +107,7 @@ type UserSecret struct {
 	Type          SecretType      `json:"type"`
 	Ciphertext    []byte          `json:"-"` // never exposed via API
 	KeyVersion    int             `json:"keyVersion"`
+	Version       int64           `json:"version"` // value-version counter (US-70.2): create = 1, every value-affecting mutation bumps
 	Metadata      json.RawMessage `json:"metadata"`
 	GlobalDefault bool            `json:"globalDefault"`
 	CreatedAt     time.Time       `json:"createdAt"`

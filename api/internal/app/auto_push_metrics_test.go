@@ -17,14 +17,19 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// stubInjector satisfies agentpush.SecretInjector by returning a
-// fixed payload.
+// stubInjector satisfies agentpush.BatchBuilder by returning a fixed
+// batch rendered as the legacy payload.
 type stubInjector struct{ payload []byte }
 
-func (s *stubInjector) InjectSecrets(_ context.Context, _, _ string, _ []byte, _ string) ([]byte, error) {
-	return s.payload, nil
+func (s *stubInjector) BuildWorkspaceBatch(_ context.Context, _, _ string) (*secrets.Batch, *secrets.BuildDegrade, error) {
+	batch := &secrets.Batch{Entries: []secrets.BatchEntry{{
+		SecretID: "sec-stub", Version: 1, Type: secrets.SecretTypeEnvSecret,
+		Name: "STUB", Value: string(s.payload),
+	}}}
+	return batch, nil, nil
 }
 
 // stubResolverAdapter satisfies agentpush.PodIPResolver by returning a
@@ -79,8 +84,8 @@ func TestClassifyPushOutcome(t *testing.T) {
 			"no_pod",
 		},
 		{
-			"inject secrets failure",
-			errors.New("inject secrets: dek unavailable"),
+			"builder failure",
+			errors.New("build workspace batch: revision store down"),
 			"inject_failed",
 		},
 		{

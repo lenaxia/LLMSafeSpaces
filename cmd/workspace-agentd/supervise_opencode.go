@@ -202,6 +202,11 @@ type managedProcAdapter struct {
 	currentDelta   map[string]string
 	degradedReason string
 	spawnedRev     string
+	// servedEnvRevAnchor is the "<seq>:<manifestHash>" prefix of the last
+	// successfully pulled served rev (US-70.2): composeChild anchors
+	// spawned_rev with it while the content hash stays self-computed
+	// (I4). Empty for legacy (content-hash-only) served revs.
+	servedEnvRevAnchor string
 
 	// R2b (#1165) file-class delivery state, same locking discipline as
 	// the env pull state (preSpawn is the sole writer; SpawnEnvState the
@@ -209,7 +214,10 @@ type managedProcAdapter struct {
 	filesPuller *spawnEnvPuller
 	delivery    fileDelivery
 	filesRev    string
-	filesReason string
+	// servedFilesRevAnchor anchors files_rev the same way
+	// servedEnvRevAnchor anchors spawned_rev.
+	servedFilesRevAnchor string
+	filesReason          string
 }
 
 func (a *managedProcAdapter) factory() func() *exec.Cmd {
@@ -294,6 +302,7 @@ func (a *managedProcAdapter) preSpawn() {
 		} else {
 			a.degradedReason = ""
 			a.currentDelta = res.Env
+			a.servedEnvRevAnchor = anchoredPrefix(res.Rev)
 		}
 		a.pullMu.Unlock()
 	}
@@ -320,7 +329,8 @@ func (a *managedProcAdapter) preSpawn() {
 			a.filesReason = reason
 		} else {
 			a.filesReason = ""
-			a.filesRev = rev
+			a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
+			a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
 		}
 		a.pullMu.Unlock()
 	}
@@ -336,7 +346,7 @@ func (a *managedProcAdapter) composeChild() *exec.Cmd {
 	}
 	rev := spawnDeltaRev(effective)
 	a.pullMu.Lock()
-	a.spawnedRev = rev
+	a.spawnedRev = anchoredSpawnRev(a.servedEnvRevAnchor, rev)
 	a.pullMu.Unlock()
 	return cmd
 }

@@ -30,8 +30,8 @@ func NewPgSecretStore(pool *pgxpool.Pool) *PgSecretStore {
 
 func (s *PgSecretStore) CreateSecret(ctx context.Context, secret *UserSecret) error {
 	row := s.pool.QueryRow(ctx,
-		`INSERT INTO user_secrets (user_id, name, type, ciphertext, key_version, metadata, global_default)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO user_secrets (user_id, name, type, ciphertext, key_version, version, metadata, global_default)
+		 VALUES ($1, $2, $3, $4, $5, 1, $6, $7)
 		 RETURNING id, created_at, updated_at`,
 		secret.UserID, secret.Name, secret.Type, secret.Ciphertext, secret.KeyVersion, secret.Metadata, secret.GlobalDefault)
 
@@ -50,11 +50,11 @@ func (s *PgSecretStore) CreateSecret(ctx context.Context, secret *UserSecret) er
 
 func (s *PgSecretStore) GetSecret(ctx context.Context, userID, secretID string) (*UserSecret, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, name, type, ciphertext, key_version, metadata, global_default, created_at, updated_at
+		`SELECT id, user_id, name, type, ciphertext, key_version, version, metadata, global_default, created_at, updated_at
 		 FROM user_secrets WHERE id = $1 AND user_id = $2`, secretID, userID)
 
 	var sec UserSecret
-	err := row.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt)
+	err := row.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Version, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -66,11 +66,11 @@ func (s *PgSecretStore) GetSecret(ctx context.Context, userID, secretID string) 
 
 func (s *PgSecretStore) GetSecretByName(ctx context.Context, userID, name string) (*UserSecret, error) {
 	row := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, name, type, ciphertext, key_version, metadata, global_default, created_at, updated_at
+		`SELECT id, user_id, name, type, ciphertext, key_version, version, metadata, global_default, created_at, updated_at
 		 FROM user_secrets WHERE user_id = $1 AND name = $2`, userID, name)
 
 	var sec UserSecret
-	err := row.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt)
+	err := row.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Version, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -82,7 +82,7 @@ func (s *PgSecretStore) GetSecretByName(ctx context.Context, userID, name string
 
 func (s *PgSecretStore) ListSecrets(ctx context.Context, userID string) ([]*UserSecret, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, name, type, ciphertext, key_version, metadata, global_default, created_at, updated_at
+		`SELECT id, user_id, name, type, ciphertext, key_version, version, metadata, global_default, created_at, updated_at
 		 FROM user_secrets WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list user_secrets: %w", err)
@@ -92,7 +92,7 @@ func (s *PgSecretStore) ListSecrets(ctx context.Context, userID string) ([]*User
 	var secrets []*UserSecret
 	for rows.Next() {
 		var sec UserSecret
-		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
+		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Version, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan user_secrets: %w", err)
 		}
 		secrets = append(secrets, &sec)
@@ -104,7 +104,7 @@ func (s *PgSecretStore) ListSecrets(ctx context.Context, userID string) ([]*User
 // global_default=true. Used when seeding bindings on workspace creation.
 func (s *PgSecretStore) ListGlobalDefaultSecrets(ctx context.Context, userID string) ([]*UserSecret, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, name, type, ciphertext, key_version, metadata, global_default, created_at, updated_at
+		`SELECT id, user_id, name, type, ciphertext, key_version, version, metadata, global_default, created_at, updated_at
 		 FROM user_secrets WHERE user_id = $1 AND global_default = true ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list global default user_secrets: %w", err)
@@ -114,7 +114,7 @@ func (s *PgSecretStore) ListGlobalDefaultSecrets(ctx context.Context, userID str
 	var secrets []*UserSecret
 	for rows.Next() {
 		var sec UserSecret
-		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
+		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Version, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan global default user_secrets: %w", err)
 		}
 		secrets = append(secrets, &sec)
@@ -124,7 +124,8 @@ func (s *PgSecretStore) ListGlobalDefaultSecrets(ctx context.Context, userID str
 
 func (s *PgSecretStore) UpdateSecret(ctx context.Context, secret *UserSecret) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE user_secrets SET ciphertext = $1, key_version = $2, metadata = $3, global_default = $4, updated_at = $5
+		`UPDATE user_secrets SET ciphertext = $1, key_version = $2, metadata = $3, global_default = $4, updated_at = $5,
+		 version = version + 1
 		 WHERE id = $6 AND user_id = $7`,
 		secret.Ciphertext, secret.KeyVersion, secret.Metadata, secret.GlobalDefault, secret.UpdatedAt, secret.ID, secret.UserID)
 	return err
@@ -395,7 +396,7 @@ func (s *PgSecretStore) AddBindings(ctx context.Context, workspaceID string, sec
 
 func (s *PgSecretStore) GetBindings(ctx context.Context, workspaceID string) ([]*UserSecret, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT s.id, s.user_id, s.name, s.type, s.ciphertext, s.key_version, s.metadata, s.global_default, s.created_at, s.updated_at
+		`SELECT s.id, s.user_id, s.name, s.type, s.ciphertext, s.key_version, s.version, s.metadata, s.global_default, s.created_at, s.updated_at
 		 FROM user_secrets s
 		 JOIN user_secret_bindings b ON b.secret_id = s.id
 		 WHERE b.workspace_id = $1
@@ -408,7 +409,7 @@ func (s *PgSecretStore) GetBindings(ctx context.Context, workspaceID string) ([]
 	var secrets []*UserSecret
 	for rows.Next() {
 		var sec UserSecret
-		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
+		if err := rows.Scan(&sec.ID, &sec.UserID, &sec.Name, &sec.Type, &sec.Ciphertext, &sec.KeyVersion, &sec.Version, &sec.Metadata, &sec.GlobalDefault, &sec.CreatedAt, &sec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		secrets = append(secrets, &sec)
@@ -697,9 +698,8 @@ func (l *AsyncAuditLogger) QueryAudit(ctx context.Context, userID string, query 
 }
 
 // --- CredentialStore delegation (Epic 30) ---
-// AsyncAuditLogger must satisfy CredentialStore so the type assertion in
-// the injector methods (InjectSecrets / InjectSessionlessSecrets) succeeds.
-// All methods delegate to the inner store.
+// AsyncAuditLogger must satisfy CredentialStore so the batch builder's
+// type assertion succeeds. All methods delegate to the inner store.
 
 func (l *AsyncAuditLogger) GetWorkspaceCredentials(ctx context.Context, workspaceID string) ([]CredentialBinding, error) {
 	if cs, ok := l.store.(CredentialStore); ok {
@@ -744,6 +744,26 @@ func (l *AsyncAuditLogger) GetWorkspaceMCPServers(ctx context.Context, workspace
 		return cs.GetWorkspaceMCPServers(ctx, workspaceID)
 	}
 	return nil, nil
+}
+
+// CurrentRevision delegates to the inner store's revision row when it
+// implements RevisionStore (production wraps PgSecretStore). Required so
+// the batch builder's RevisionStore assertion succeeds through the
+// AsyncAuditLogger wrapper.
+func (l *AsyncAuditLogger) CurrentRevision(ctx context.Context, workspaceID string) (int64, string, bool, error) {
+	if rs, ok := l.store.(RevisionStore); ok {
+		return rs.CurrentRevision(ctx, workspaceID)
+	}
+	return 0, "", false, nil
+}
+
+// EnsureRevision delegates to the inner store's revision mint when it
+// implements RevisionStore.
+func (l *AsyncAuditLogger) EnsureRevision(ctx context.Context, workspaceID, manifestHash string) (int64, error) {
+	if rs, ok := l.store.(RevisionStore); ok {
+		return rs.EnsureRevision(ctx, workspaceID, manifestHash)
+	}
+	return 0, fmt.Errorf("inner store does not implement RevisionStore")
 }
 
 // ReEncryptOrgCredentials re-encrypts all provider_credentials rows where

@@ -612,12 +612,11 @@ func (s *KeyService) DEKAvailable(ctx context.Context, sessionID string) bool {
 // but do not run in an authenticated user-request context.
 //
 // Returns (dek, jti, error). The jti is the jwt_sessions row's
-// primary key — callers use it as a sessionID when building an
-// agentpush.WithAuth context so that InjectSecrets' subsequent
-// GetDEK(sessionID, matchedSigningKey) call hits the Redis cache
-// this method just populated. Without returning jti, the caller
-// would have no way to reference the DEK just cached, and would
-// re-execute the unwrap on every downstream call.
+// primary key under which the DEK is cached. Batch construction no
+// longer consumes the jti (the builder uses GetDEKServerSide);
+// GetDEKForUser survives as the heal source inside GetDEKServerSide's
+// legacy-row recovery and for any caller that still needs a
+// session-indexed handle.
 //
 // Resolution order (worklog 0590):
 //
@@ -779,7 +778,7 @@ const jwtSessionUserLookupLimit = 5
 
 // serverSideDEKCacheTTL bounds the synthetic cache handle GetDEKServerSide
 // writes. The handle only needs to outlive one request chain (bootstrap
-// or push: unwrap → InjectSecrets → decryptBinding's GetDEK); five
+// or push: unwrap → batch build); five
 // minutes is generous margin while keeping stray handles short-lived.
 // The synthetic jti has no jwt_sessions row, so an expired handle can
 // never be rehydrated — single-use by design.
@@ -808,9 +807,9 @@ const serverSideDEKCacheTTL = 5 * time.Minute
 // DEK is still delivered this boot; the next attempt retries.
 //
 // Returns (dek, jti, error). The jti is a fresh UUID referencing the
-// Redis cache entry this method populates; callers pass it as the
-// sessionID to InjectSecrets so the downstream GetDEK(jti) call hits
-// the cache — the same handoff pattern GetDEKForUser established.
+// Redis cache entry this method populates; callers that need a
+// session-indexed handle may use it with GetDEK(jti). The batch
+// builder consumes the returned dek directly.
 //
 // Failure semantics (each degrades the caller to sessionless):
 //
@@ -822,8 +821,8 @@ const serverSideDEKCacheTTL = 5 * time.Minute
 //     session-fallback error when the self-heal path also found no
 //     session DEK
 //   - cache write failure      → error (without the handle,
-//     InjectSecrets cannot reach the DEK; one clean degrade beats
-//     per-binding audit noise)
+//     session-indexed consumers cannot reach the DEK; one clean
+//     degrade beats per-binding audit noise)
 func (s *KeyService) GetDEKServerSide(ctx context.Context, userID string) (dek []byte, jti string, err error) {
 	if s.rootKeyProvider == nil {
 		return nil, "", ErrServerKEKUnavailable

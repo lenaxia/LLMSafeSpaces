@@ -325,6 +325,9 @@ var implOnlyAllowlist = map[route]bool{
 	// GET /api/v1/internal/orgs/:orgID/status — X-Internal-Token.
 	{method: "GET", path: "/api/v1/internal/orgs/:orgID/status"}: true,
 	// POST /internal/v1/pod-bootstrap — K8s projected SA token (TokenReview).
+	// US-70.2: contract-versioned requests negotiate conditional delivery
+	// (304 + ETag on an unchanged manifest); the route/method and the
+	// legacy response shape are unchanged, so the contract row is not.
 	{method: "POST", path: "/internal/v1/pod-bootstrap"}: true,
 	// POST /internal/image-factory/builds/:id/callback — constant-time
 	// per-build callback token; the builder is the only caller.

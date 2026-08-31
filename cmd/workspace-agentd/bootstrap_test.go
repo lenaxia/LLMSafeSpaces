@@ -51,9 +51,10 @@ func TestRunBootstrapCommand_Success(t *testing.T) {
 		require.Equal(t, "/internal/v1/pod-bootstrap", r.URL.Path)
 		require.Equal(t, "Bearer fake-token", r.Header.Get("Authorization"))
 
-		var body map[string]string
+		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		assert.Equal(t, "ws-123", body["workspaceID"])
+		assert.EqualValues(t, 2, body["contractVersion"], "the client negotiates contract v2")
 
 		resp := bootstrapResponse{
 			Secrets:         rawJSON(t, secretsPayload),

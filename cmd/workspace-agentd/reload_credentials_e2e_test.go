@@ -125,14 +125,30 @@ func (s *reloadE2EStore) GetBindingsForSecret(_ context.Context, _ string) ([]st
 func (s *reloadE2EStore) QueryAudit(_ context.Context, _ string, _ secrets.AuditQuery) ([]*secrets.AuditEntry, error) {
 	panic("unexpected QueryAudit")
 }
-
-type reloadE2EKeyStore struct{}
-
-func (reloadE2EKeyStore) GetUserKey(_ context.Context, _ string) (*secrets.UserKeyRecord, error) {
-	return nil, nil
+func (s *reloadE2EStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
 }
-func (reloadE2EKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord) error { return nil }
-func (reloadE2EKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
+func (s *reloadE2EStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
+
+// reloadE2EKeyStore holds a single user_keys record so the builder's
+// server-side DEK unwrap (GetDEKServerSide) can recover the fixture's
+// user DEK — the one-builder replacement for the deleted session-based
+// InjectSecrets call shape.
+type reloadE2EKeyStore struct{ record *secrets.UserKeyRecord }
+
+func (s *reloadE2EKeyStore) GetUserKey(_ context.Context, _ string) (*secrets.UserKeyRecord, error) {
+	if s.record == nil {
+		return nil, nil
+	}
+	cp := *s.record
+	return &cp, nil
+}
+func (s *reloadE2EKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord) error {
+	return nil
+}
+func (s *reloadE2EKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
 	return nil
 }
 
@@ -167,7 +183,14 @@ func deterministicKeyReload(seed byte) []byte {
 func buildReloadSecretService(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg bool) *secrets.SecretService {
 	t.Helper()
 	userDEK := deterministicKeyReload(0x03)
-	keySvc := secrets.NewKeyService(reloadE2EKeyStore{}, &reloadE2EDEKCache{dek: userDEK})
+	masterProv, err := secrets.NewStaticKeyProvider(deterministicKeyReload(0x10))
+	require.NoError(t, err)
+	wrappedUserDEK, err := masterProv.Encrypt(context.Background(), userDEK)
+	require.NoError(t, err)
+	keySvc := secrets.NewKeyService(&reloadE2EKeyStore{record: &secrets.UserKeyRecord{
+		UserID: "user-e2e", KeyVersion: 1, WrappedDEK: wrappedUserDEK, DEKSource: "server_kek",
+	}}, &reloadE2EDEKCache{dek: userDEK})
+	keySvc.SetAPIKeyStore(nil, masterProv)
 
 	credBindings := make([]secrets.CredentialBinding, 0, len(bindings))
 	for _, b := range bindings {
@@ -187,7 +210,8 @@ func buildReloadSecretService(t *testing.T, bindings []reloadBinding, wireAdmin,
 		cipher, err := secrets.EncryptSecret(kek, plaintext)
 		require.NoError(t, err)
 		credBindings = append(credBindings, secrets.CredentialBinding{
-			OwnerType: b.ownerType, Kind: b.provider, Slug: b.provider, Ciphertext: cipher, SourceType: "auto",
+			ID: "cred-" + b.ownerType + "-" + b.provider, OwnerType: b.ownerType,
+			Kind: b.provider, Slug: b.provider, Ciphertext: cipher, Version: 1, SourceType: "auto",
 		})
 	}
 	store := &reloadE2EStore{cred: &reloadE2ECredStore{bindings: credBindings}}
@@ -206,9 +230,9 @@ func buildReloadSecretService(t *testing.T, bindings []reloadBinding, wireAdmin,
 }
 
 // runReloadE2E is the shared harness: builds the real SecretService, calls
-// InjectSecrets to produce the decrypted secrets JSON, then POSTs
-// it to the real reloadSecretsHandler and returns the materialized
-// agent-config.json path + HTTP status + body.
+// the one builder to produce the decrypted secrets JSON (legacy wire
+// shape), then POSTs it to the real reloadSecretsHandler and returns the
+// materialized agent-config.json path + HTTP status + body.
 func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg bool) (agentCfgPath string, httpStatus int, httpBody string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -225,9 +249,11 @@ func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg boo
 	svc := buildReloadSecretService(t, bindings, wireAdmin, wireOrg)
 
 	// Real decrypt: the seam that broke for org credentials.
-	secretsJSON, err := svc.InjectSecrets(context.Background(), "user-e2e", "sess-e2e", nil, "ws-e2e")
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-e2e", "ws-e2e")
 	require.NoError(t, err)
-	require.NotEmpty(t, secretsJSON, "InjectSecrets must return non-empty JSON for non-empty bindings")
+	require.Nil(t, degrade, "all fixture credentials must decrypt")
+	secretsJSON := secrets.LegacyBatchJSON(*batch)
+	require.NotEmpty(t, secretsJSON, "the builder must return non-empty JSON for non-empty bindings")
 
 	// Real reloadSecretsHandler: materialize → enrich → flush → writer rebuild.
 	writer := opencode.NewConfigWriter(agentCfgPath)
@@ -327,10 +353,11 @@ func TestE2E_ReloadSecrets_OrgProviderUnwired_OrgAbsentButReloadSucceeds(t *test
 // degradation contract for the reload path: an empty decrypted batch must
 // return 200, not 500. This is the "user has no credentials yet" case.
 func TestE2E_ReloadSecrets_EmptyBindings_Returns200(t *testing.T) {
-	// InjectSecrets on empty bindings returns "[]".
+	// The builder on empty bindings returns "[]".
 	svc := buildReloadSecretService(t, nil, true, true)
-	secretsJSON, err := svc.InjectSecrets(context.Background(), "user-e2e", "sess-e2e", nil, "ws-e2e")
+	batch, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-e2e", "ws-e2e")
 	require.NoError(t, err)
+	secretsJSON := secrets.LegacyBatchJSON(*batch)
 
 	dir := t.TempDir()
 	agentCfgPath := filepath.Join(dir, "agent-config.json")

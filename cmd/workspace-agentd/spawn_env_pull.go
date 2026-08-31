@@ -77,10 +77,14 @@ type spawnEnvResponse struct {
 	Rev string            `json:"rev"`
 }
 
-// spawnDeltaRev derives the terminal revision of a spawn delta: hex
-// SHA-256 over the canonical serialization (sorted `k=v` lines joined
+// spawnDeltaRev derives the terminal content revision of a spawn delta:
+// hex SHA-256 over the canonical serialization (sorted `k=v` lines joined
 // by `\n`). Map iteration order, timestamps, and replica identity never
-// affect it (design 0057 I6 until US-70.2's two-tier model lands).
+// affect it (design 0057 I6). US-70.2: when the materialized batch
+// carried a delivery revision this hash becomes the final component of
+// the anchored rev ("<seq>:<manifestHash>:<contentHash>") — the
+// self-computed terminal-verification layer over the server's
+// revision identity.
 func spawnDeltaRev(delta map[string]string) string {
 	keys := make([]string, 0, len(delta))
 	for k := range delta {
@@ -121,6 +125,11 @@ func supervisorSpawnCredential() string {
 // spawnEnvHandler serves GET /v1/spawn-env on the user mux (4097): the
 // current materialized secrets-env delta and its revision. Auth is the
 // §D1 Basic pair (either credential) — identical gate to reload-secrets.
+//
+// The rev is revision-anchored ("<seq>:<manifestHash>:<contentHash>",
+// US-70.2) when the materialized batch carried a delivery revision
+// (the <secrets-env>.rev sibling anchor); the content hash stays
+// self-computed over the served delta (I4).
 func spawnEnvHandler(password, controlPlanePassword, secretsEnvPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuthAny(r, controlPlanePassword, password) {
@@ -139,9 +148,21 @@ func spawnEnvHandler(password, controlPlanePassword, secretsEnvPath string) http
 			http.Error(w, "secrets-env unreadable", http.StatusInternalServerError)
 			return
 		}
+		anchor := servedEnvRevAnchor(secretsEnvPath)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(spawnEnvResponse{Env: delta, Rev: spawnDeltaRev(delta)})
+		_ = json.NewEncoder(w).Encode(spawnEnvResponse{Env: delta, Rev: anchoredSpawnRev(anchor, spawnDeltaRev(delta))})
 	}
+}
+
+// servedEnvRevAnchor reads the <secrets-env>.rev sibling (written by the
+// materialize path when the applied batch carried a revision). Absent
+// or unreadable is the unanchored (legacy) rev — never a failed serve.
+func servedEnvRevAnchor(secretsEnvPath string) string {
+	anchor, err := readRevAnchor(revAnchorPath(secretsEnvPath))
+	if err != nil {
+		return ""
+	}
+	return anchor.Rev
 }
 
 // spawnEnvPuller is the supervisor-side client. All fields are mutable

@@ -18,6 +18,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -49,22 +50,36 @@ type bootstrapSettingsReader interface {
 	GetStrings(ctx context.Context, key string) ([]string, error)
 }
 
-// bootstrapInjector prepares decrypted secrets for pod injection.
+// bootstrapInjector prepares the workspace secret batch for pod
+// injection.
 //
-// This is the PodBootstrapSecretInjector contract from pkg/secrets: the
-// init container has no user session, but the bootstrap path attempts a
-// best-effort user-DEK unwrap via GetDEKForUser so user-owned env-secrets
-// and SSH keys are available at first opencode spawn (design 0045). On
-// DEK-unavailable, the implementation degrades to sessionless behavior
-// (user-DEK bindings audited-and-skipped, server-KEK-only payload
-// returned). Either way, the auto-push flow continues to deliver
-// user-DEK secrets on runtime credential changes.
+// This is the one-builder contract from pkg/secrets (US-70.2): the init
+// container has no user session, and none is needed — user-owned
+// env-secrets and SSH keys decrypt via the server-side DEK unwrap
+// (GetDEKServerSide), so they are available at first opencode spawn
+// (design 0045, design 0052 §4.1). On DEK-tier failure the build
+// degrades loudly: server-KEK entries plus a machine-readable
+// BuildDegrade reason, with every skipped user row audited.
 //
 // Production wiring passes *secrets.SecretService, which satisfies
-// secrets.PodBootstrapSecretInjector via InjectSecretsForPodBootstrap.
+// secrets.WorkspaceBatchBuilder via BuildWorkspaceBatch.
 type bootstrapInjector interface {
-	InjectSecretsForPodBootstrap(ctx context.Context, userID, workspaceID string) ([]byte, error)
+	BuildWorkspaceBatch(ctx context.Context, userID, workspaceID string) (*secrets.Batch, *secrets.BuildDegrade, error)
 }
+
+// bootstrapManifestSource is the decrypt-free seam the conditional
+// (304) decision runs on (US-70.2 Part 2). Optional by type assertion:
+// an injector without it (mixed fleet inside the API process) keeps
+// serving today's legacy shape to every client, and the v2 bootstrap
+// client consumes both shapes.
+type bootstrapManifestSource interface {
+	ManifestFor(ctx context.Context, ownerUserID, workspaceID string) (manifestHash string, err error)
+	CurrentRevision(ctx context.Context, workspaceID string) (seq int64, manifestHash string, ok bool, err error)
+}
+
+// bootstrapContractV2 is the negotiated delivery contract version: the
+// client understands the revisioned envelope + conditional 304s.
+const bootstrapContractV2 = 2
 
 // bootstrapWorkspaceLookup resolves workspace metadata for bootstrap.
 type bootstrapWorkspaceLookup interface {
@@ -214,7 +229,9 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	}
 
 	var req struct {
-		WorkspaceID string `json:"workspaceID"`
+		WorkspaceID        string `json:"workspaceID"`
+		ContractVersion    int    `json:"contractVersion"`
+		ClientManifestHash string `json:"clientManifestHash"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || req.WorkspaceID == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspaceID required"})
@@ -239,7 +256,48 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		return
 	}
 
-	secretsJSON, err := h.injector.InjectSecretsForPodBootstrap(c.Request.Context(), ws.UserID, req.WorkspaceID)
+	// US-70.2 conditional pull: a contract-v2 client presenting its last
+	// manifest hash gets a decrypt-free compare first. The manifest tier
+	// is rows + hashing (SecretService.ManifestFor never touches a
+	// ciphertext, the DEK key store, or the root providers), so an
+	// unchanged workspace short-circuits to 304 with zero decrypts and
+	// no batch build. Non-v2 clients (and injectors without the seam)
+	// skip this entirely — their response is byte-shape-identical to the
+	// pre-negotiation handler (W15).
+	if req.ContractVersion == bootstrapContractV2 {
+		if ms, ok := h.injector.(bootstrapManifestSource); ok {
+			manifestHash, err := ms.ManifestFor(c.Request.Context(), ws.UserID, req.WorkspaceID)
+			if err != nil {
+				if h.logger != nil {
+					h.logger.Error("pod-bootstrap: manifest resolution failed", err,
+						"workspaceID", req.WorkspaceID, "userID", ws.UserID)
+				}
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "secret preparation failed"})
+				return
+			}
+			if req.ClientManifestHash != "" && req.ClientManifestHash == manifestHash {
+				seq, storedHash, ok, err := ms.CurrentRevision(c.Request.Context(), req.WorkspaceID)
+				if err != nil {
+					if h.logger != nil {
+						h.logger.Error("pod-bootstrap: revision read failed", err,
+							"workspaceID", req.WorkspaceID)
+					}
+					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "secret preparation failed"})
+					return
+				}
+				if ok && storedHash == manifestHash {
+					c.Header("ETag", fmt.Sprintf(`"%d:%s"`, seq, manifestHash))
+					c.Status(http.StatusNotModified)
+					return
+				}
+				// Hash matches the rows but the revision row disagrees or is
+				// absent: fall through to the build — the DB row is the only
+				// seq writer, and the 200 path mints through it.
+			}
+		}
+	}
+
+	batch, degrade, err := h.injector.BuildWorkspaceBatch(c.Request.Context(), ws.UserID, req.WorkspaceID)
 	if err != nil {
 		// Surface the underlying error to operators. The user-facing body
 		// stays generic ("secret preparation failed") to avoid leaking
@@ -255,8 +313,27 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "secret preparation failed"})
 		return
 	}
-	if len(secretsJSON) == 0 {
-		secretsJSON = []byte("[]")
+	// A degraded build still boots the pod (server-KEK subset); the
+	// builder already audited the DEK failure and every skipped row
+	// (pod_bootstrap_dek_failed / *_skipped_no_session). Log the reason
+	// here so the boot path carries the same signal as the push path.
+	if degrade != nil && h.logger != nil {
+		h.logger.Warn("pod-bootstrap: secret batch degraded",
+			"workspaceID", req.WorkspaceID, "reason", degrade.Reason)
+	}
+	var secretsJSON json.RawMessage
+	if req.ContractVersion == bootstrapContractV2 {
+		// v2: the self-describing envelope (entries in construction order
+		// + the two-tier revision). The pod persists it verbatim; the
+		// revision rides inside.
+		envelope, mErr := json.Marshal(batch)
+		if mErr != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "secret preparation failed"})
+			return
+		}
+		secretsJSON = envelope
+	} else {
+		secretsJSON = secrets.LegacyBatchJSON(*batch)
 	}
 
 	resp := bootstrapAPIResponse{Secrets: secretsJSON}

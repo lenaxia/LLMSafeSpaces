@@ -47,6 +47,33 @@ type StagedEntry struct {
 	File   string `json:"file"`
 }
 
+// stagingManifest is the revisioned manifest shape (US-70.2): when the
+// materialized batch carries a revision, publish writes this object
+// with rev = "<seq>:<manifestHash>"; without a revision the manifest
+// stays the legacy bare array (byte-compat — old readers never see a
+// shape change for legacy batches).
+type stagingManifest struct {
+	Rev     string        `json:"rev,omitempty"`
+	Entries []StagedEntry `json:"entries"`
+}
+
+// ReadStagingManifest parses manifest bytes of EITHER shape into rows
+// plus the revision anchor ("" for the legacy array).
+func ReadStagingManifest(data []byte) ([]StagedEntry, string, error) {
+	var entries []StagedEntry
+	if err := json.Unmarshal(data, &entries); err == nil {
+		return entries, "", nil
+	}
+	var m stagingManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, "", err
+	}
+	if m.Entries == nil {
+		return nil, "", fmt.Errorf("staging manifest has no entries")
+	}
+	return m.Entries, m.Rev, nil
+}
+
 // File-mode contracts (design 0057 R2b): one table, the single place that
 // knows what each file class's consumer requires. Owner-only modes are
 // correct because the DELIVERED files are written by the uid-1000
@@ -103,6 +130,10 @@ type stageBuilder struct {
 	dir     string
 	entries []StagedEntry
 	total   int
+	// rev is the revision anchor ("<seq>:<manifestHash>") stamped into
+	// the published manifest when the materialized batch carried a
+	// revision; empty publishes the legacy bare array.
+	rev string)
 }
 
 func newStageBuilder(fs Filesystem, stagingDir string) *stageBuilder {
@@ -167,7 +198,14 @@ func (b *stageBuilder) publish() error {
 		// depend on JSON null handling.
 		entries = []StagedEntry{}
 	}
-	manifest, err := json.Marshal(sortedEntries(entries))
+	deterministic := sortedEntries(entries)
+	var manifest []byte
+	var err error
+	if b.rev == "" {
+		manifest, err = json.Marshal(deterministic)
+	} else {
+		manifest, err = json.Marshal(stagingManifest{Rev: b.rev, Entries: deterministic})
+	}
 	if err != nil {
 		return err
 	}

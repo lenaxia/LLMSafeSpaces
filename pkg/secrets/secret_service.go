@@ -37,17 +37,16 @@ func NewSecretService(keys *KeyService, store SecretStore) *SecretService {
 }
 
 // SetAdminProvider installs the RootKeyProvider for admin (owner_type='admin')
-// provider credentials. When non-nil, the injector methods (InjectSecrets and
-// InjectSessionlessSecrets) decrypt admin bindings through it; when nil, admin
-// bindings are skipped with an audit event.
+// provider credentials. When non-nil, the batch builder decrypts admin
+// bindings through it; when nil, admin bindings are skipped with an audit
+// event.
 func (s *SecretService) SetAdminProvider(p RootKeyProvider) {
 	s.adminProvider = p
 }
 
 // SetOrgProvider installs the RootKeyProvider for org (owner_type='org') provider
-// credentials. When non-nil, the injector methods (InjectSecrets and
-// InjectSessionlessSecrets) decrypt org bindings through it; when nil, org
-// bindings are skipped with an audit event.
+// credentials. When non-nil, the batch builder decrypts org bindings through
+// it; when nil, org bindings are skipped with an audit event.
 func (s *SecretService) SetOrgProvider(p RootKeyProvider) {
 	s.orgProvider = p
 }

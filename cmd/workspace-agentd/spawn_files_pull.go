@@ -128,7 +128,10 @@ func spawnFilesHandler(password, controlPlanePassword, stagingDir string) http.H
 
 // loadStagedFiles reads the staging tree fresh at request time. Absent
 // tree/manifest is the quiet empty manifest (law 5); any manifest row
-// whose staged bytes cannot be read is corruption (false).
+// whose staged bytes cannot be read is corruption (false). The served
+// rev is revision-anchored ("<seq>:<manifestHash>:<contentHash>") when
+// the published manifest carries the US-70.2 rev anchor, else today's
+// bare content hash.
 func loadStagedFiles(stagingDir string) (spawnFilesResponse, bool) {
 	empty := spawnFilesResponse{Files: []spawnFileEntry{}, Rev: spawnFilesRev(nil)}
 	manifestPath := filepath.Join(stagingDir, secrets.ManifestName)
@@ -139,8 +142,8 @@ func loadStagedFiles(stagingDir string) (spawnFilesResponse, bool) {
 		}
 		return spawnFilesResponse{}, false
 	}
-	var staged []secrets.StagedEntry
-	if err := json.Unmarshal(data, &staged); err != nil {
+	staged, revAnchor, err := secrets.ReadStagingManifest(data)
+	if err != nil {
 		return spawnFilesResponse{}, false
 	}
 	if staged == nil {
@@ -154,7 +157,7 @@ func loadStagedFiles(stagingDir string) (spawnFilesResponse, bool) {
 		}
 		files = append(files, spawnFileEntry{Path: e.Target, Mode: e.Mode, Content: content})
 	}
-	return spawnFilesResponse{Files: files, Rev: spawnFilesRev(files)}, true
+	return spawnFilesResponse{Files: files, Rev: anchoredSpawnRev(revAnchor, spawnFilesRev(files))}, true
 }
 
 // errPullUnauthorized is the shared transport-level sentinel: 401 is

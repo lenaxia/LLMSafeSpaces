@@ -120,6 +120,12 @@ func (s *e2eSecretStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]
 func (s *e2eSecretStore) GetBindings(_ context.Context, _ string) ([]*secrets.UserSecret, error) {
 	return nil, nil // no non-LLM secrets in this test
 }
+func (s *e2eSecretStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+func (s *e2eSecretStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
 func (s *e2eSecretStore) LogAudit(_ context.Context, _ *secrets.AuditEntry) error { return nil }
 func (s *e2eSecretStore) CreateSecret(_ context.Context, _ *secrets.UserSecret) error {
 	panic("unexpected CreateSecret in bootstrap e2e")

@@ -33,10 +33,18 @@ type bootstrapResponse struct {
 	AllowedExternalDirectories []string        `json:"allowedExternalDirectories,omitempty"`
 }
 
-// bootstrapRequest is the JSON body POSTed to the API.
+// bootstrapRequest is the JSON body POSTed to the API. ContractVersion
+// 2 negotiates the revisioned envelope + conditional 304s
+// (US-70.2); ClientManifestHash presents the prior envelope's manifest
+// hash when one exists (empty on first boot / legacy prior file).
 type bootstrapRequest struct {
-	WorkspaceID string `json:"workspaceID"`
+	WorkspaceID        string `json:"workspaceID"`
+	ContractVersion    int    `json:"contractVersion,omitempty"`
+	ClientManifestHash string `json:"clientManifestHash,omitempty"`
 }
+
+// bootstrapContractV2 is the delivery contract this client speaks.
+const bootstrapContractV2 = 2
 
 // runBootstrapCommand implements the `workspace-agentd bootstrap` subcommand.
 // It fetches decrypted secrets from the API using a projected ServiceAccount
@@ -86,17 +94,40 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	priorHash, hasPriorBatch := readPriorBatch(*out)
+
 	token, err := os.ReadFile(*tokenFile)
 	if err != nil {
+		if hasPriorBatch {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: token file unreadable (%s): %v; keeping last-good batch at %s\n", *tokenFile, err, *out)
+			return 0
+		}
 		_, _ = fmt.Fprintf(stderr, "bootstrap: token file unreadable (%s): %v\n", *tokenFile, err)
 		writeEmptySecrets(*out, stderr)
 		return 0
 	}
 
-	secrets, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token))
+	secrets, notModified, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token), priorHash)
 	if err != nil {
+		if hasPriorBatch {
+			// Resume-within-pod doctrine (US-70.2): a prior batch on disk is
+			// the last-good state — a failed pull keeps it; only the absence
+			// of any prior batch degrades to an empty one.
+			_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v; keeping last-good batch at %s\n", err, *out)
+			return 0
+		}
 		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v\n", err)
 		writeEmptySecrets(*out, stderr)
+		return 0
+	}
+
+	if notModified {
+		// The manifest is unchanged since the revision inside the prior
+		// envelope: the file stays byte-for-byte, and nothing else is
+		// written — workspace-config / admin-prompt / allowed-dirs changes
+		// ride a fresh 200 (mid-life prompt changes already require a
+		// restart today).
+		_, _ = fmt.Fprintf(stderr, "bootstrap: secrets unchanged (304), keeping %s\n", *out)
 		return 0
 	}
 
@@ -135,10 +166,18 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, json.RawMessage, string, []string, error) {
-	body, err := json.Marshal(bootstrapRequest{WorkspaceID: workspaceID})
+// fetchBootstrapSecrets POSTs the conditional bootstrap request. It
+// returns notModified=true on 304 (caller keeps the prior file); the
+// secrets payload of a 200 is written verbatim by the caller — envelope
+// or legacy bare array, both are the exact bytes to persist.
+func fetchBootstrapSecrets(apiURL, workspaceID, token, clientManifestHash string) (json.RawMessage, bool, json.RawMessage, string, []string, error) {
+	body, err := json.Marshal(bootstrapRequest{
+		WorkspaceID:        workspaceID,
+		ContractVersion:    bootstrapContractV2,
+		ClientManifestHash: clientManifestHash,
+	})
 	if err != nil {
-		return nil, nil, "", nil, err
+		return nil, false, nil, "", nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -147,7 +186,7 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 	//nolint:gosec // G704: apiURL is controller-set via LLMSAFESPACE_API_URL env var, not user-controllable
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/internal/v1/pod-bootstrap", bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, "", nil, err
+		return nil, false, nil, "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -156,23 +195,49 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 	//nolint:gosec // G704: apiURL is controller-set, not user-controllable
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, "", nil, err
+		return nil, false, nil, "", nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == http.StatusNotModified {
+		return nil, true, nil, "", nil, nil
+	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", nil, fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, false, nil, "", nil, fmt.Errorf("API returned %d", resp.StatusCode)
 	}
 
 	var result bootstrapResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, nil, "", nil, fmt.Errorf("decode response: %w", err)
+		return nil, false, nil, "", nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(result.Secrets) == 0 {
 		result.Secrets = json.RawMessage("[]")
 	}
-	return result.Secrets, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, nil
+	return result.Secrets, false, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, nil
+}
+
+// readPriorBatch inspects the existing batch file in one read:
+// exists reports whether a non-empty batch (envelope or legacy) is on
+// disk — the last-good state a failed pull must keep — and manifestHash
+// carries the prior ENVELOPE revision's manifest hash for the
+// conditional presentation ("" for legacy arrays, absent files, and
+// unparseable content — nothing to present, the 200 overwrites).
+func readPriorBatch(path string) (manifestHash string, exists bool) {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", false
+	}
+	var envelope struct {
+		Entries  json.RawMessage `json:"entries"`
+		Revision *struct {
+			ManifestHash string `json:"manifestHash"`
+		} `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Entries == nil || envelope.Revision == nil {
+		return "", true
+	}
+	return envelope.Revision.ManifestHash, true
 }
 
 func writeEmptySecrets(path string, stderr io.Writer) {

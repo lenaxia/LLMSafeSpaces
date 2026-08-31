@@ -366,36 +366,36 @@ func (h *SecretsHandler) GetBindings(c *gin.Context) {
 }
 
 // ReloadSecrets handles POST /api/v1/workspaces/:id/reload-secrets
-// Decrypts bound secrets and pushes them to the running pod's agentd.
+// Builds the workspace secret batch (session-independent — the one
+// builder decrypts user entries via the server-side DEK unwrap) and
+// pushes it to the running pod's agentd.
 //
 // Two failure classes get different HTTP status codes:
 //
-//   - InjectSecrets failures (bad workspaceID, DEK unavailable, wrapped
-//     ciphertext corrupted) are mapped by handleSecretError to 400/403/500.
+//   - Build failures (bad workspaceID, store errors) are mapped by
+//     handleSecretError to 400/403/500.
 //   - Push transport / agentd failures map to 503/409/502.
 //
 // Both flow through the same shared agentpush.Service (constructed once
 // by the wiring layer, reused across every request) so on-wire behavior
-// matches SetBindings and the workspace-service auto-push exactly.
-// agentpush wraps InjectSecrets errors with "inject secrets: %w", so we
-// can unwrap to recover the typed error for handleSecretError.
+// matches SetBindings and the auto-push exactly. agentpush wraps builder
+// errors with "build workspace batch: %w", so we can unwrap to recover
+// the typed error for handleSecretError.
 func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
-	userID, sessionID := extractAuth(c)
+	userID, _ := extractAuth(c)
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
 
 	workspaceID := c.Param("id")
-	ctx := agentpush.WithAuth(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
-	result, err := h.getPusher().Push(ctx, userID, workspaceID)
+	result, err := h.getPusher().Push(c.Request.Context(), userID, workspaceID)
 	if err != nil {
-		// Inject-side failures need the typed-error mapping to 400/403/500.
-		// agentpush wraps them with "inject secrets:" so we can unwrap the
-		// original SecretService error and route it through the shared
-		// handler. This avoids a second, redundant InjectSecrets call in
-		// this endpoint.
-		if inner := errors.Unwrap(err); inner != nil && strings.HasPrefix(err.Error(), "inject secrets") {
+		// Build-side failures need the typed-error mapping to 400/403/500.
+		// agentpush wraps them with "build workspace batch:" so we can
+		// unwrap the original SecretService error and route it through
+		// the shared handler.
+		if inner := errors.Unwrap(err); inner != nil && strings.HasPrefix(err.Error(), "build workspace batch") {
 			handleSecretError(c, inner)
 			return
 		}
@@ -427,25 +427,19 @@ type reloadResult struct {
 // push to running pods. Credentials bound during suspend are picked up at the
 // next pod boot via the bootstrap endpoint.
 //
-// SOLID note (PR #407 review pass 2): the push path always calls
-// InjectSecrets — there is no branch on sessionID. Both callers (JWT
-// auth and API-key auth) flow through the same method because
-// InjectSecrets internally degrades user-DEK lookups to skip-with-audit
-// when the DEK is unavailable (real session expired, API-key pseudo-
-// session, or no session at all).
+// The push path builds the workspace batch through the one builder —
+// session identity plays no role in what decrypts, so JWT and API-key
+// callers flow through the same code (US-70.2).
 //
 // The live push sends the payload even when it is the empty array '[]' — the
 // agent uses this to CLEAR its in-memory secret materialisations. Without
 // this an unbind leaves the live pod with stale plaintext until restart.
 //
 // Delegates to agentpush.Service (extracted for the pod-recreation auto-push
-// path in worklog 0589) so both handler-driven pushes and the
-// workspace.Service.GetWorkspaceStatus-driven auto-push share one code path.
+// path in worklog 0589) so handler-driven pushes and the watcher-driven
+// auto-push share one code path.
 func (h *SecretsHandler) pushSecretsToAgent(c *gin.Context, userID, workspaceID string) {
-	_, sessionID := extractAuth(c)
-	ctx := agentpush.WithAuth(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
-
-	_, err := h.getPusher().Push(ctx, userID, workspaceID)
+	_, err := h.getPusher().Push(c.Request.Context(), userID, workspaceID)
 	if err == nil {
 		return
 	}

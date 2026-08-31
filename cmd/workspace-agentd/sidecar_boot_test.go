@@ -33,6 +33,7 @@ package main
 //   - Fail-fast: whatever materialize returns, the sidecar returns.
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -112,36 +113,93 @@ func TestSidecarBootSecrets_FreshBoot_FetchesAndMaterializes(t *testing.T) {
 	assert.Contains(t, string(env), "export MY_VAR=")
 }
 
-// TestSidecarBootSecrets_RestartGuard_SkipsRefetch: mid-pod-lifetime
-// restart — secrets.json already on the tmpfs (emptyDir survives
-// container restart), the projected SA token is long expired, the API
-// may be down. The guard must skip the fetch entirely; materialize
-// re-runs idempotently; exit 0.
-func TestSidecarBootSecrets_RestartGuard_SkipsRefetch(t *testing.T) {
+// TestSidecarBootSecrets_PriorEnvelope_RepullsConditionally: the old
+// restart guard (skip the API on ANY existing batch) is superseded by
+// conditional semantics — a prior envelope ALWAYS re-attempts the pull
+// (cheap when unchanged: the server answers 304 without decrypting).
+// On 304 the prior file stays byte-identical and materialize replays
+// idempotently.
+func TestSidecarBootSecrets_PriorEnvelope_RepullsConditionally(t *testing.T) {
 	dir := t.TempDir()
 	setSidecarMaterializeEnv(t, dir)
 
 	var hits atomic.Int32
-	srv := bootstrapAPIServer(t, &hits)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		var req struct {
+			ClientManifestHash string `json:"clientManifestHash"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if req.ClientManifestHash != "mh-9" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("ETag", `"9:mh-9"`)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(srv.Close)
 
+	prior := `{"entries":[{"secretId":"s1","version":1,"type":"env-secret","name":"e","value":"restart_value","metadata":{"var_name":"MY_VAR"}}],"revision":{"seq":9,"manifestHash":"mh-9","batchHash":"bh"}}`
 	secretsOut := filepath.Join(dir, "rt", "secrets.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(secretsOut), 0o755))
-	require.NoError(t, os.WriteFile(secretsOut, []byte(`[{"type":"env-secret","name":"e","metadata":{"var_name":"MY_VAR"},"plaintext":"restart_value"}]`), 0o600))
+	require.NoError(t, os.WriteFile(secretsOut, []byte(prior), 0o600))
 
-	// No token file at all: expired projection.
+	tokenFile := filepath.Join(dir, "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("projected-sa-token"), 0o600))
+
 	exit := runSidecarBootSecrets(sidecarBootOpts{
 		WorkspaceID: "ws-test",
 		APIURL:      srv.URL,
-		TokenFile:   filepath.Join(dir, "no-such-token"),
+		TokenFile:   tokenFile,
 		SecretsOut:  secretsOut,
 		Stderr:      io.Discard,
 	})
-	require.Equal(t, 0, exit, "restart with existing secrets must boot clean")
-	require.Zero(t, hits.Load(), "the guard must not hit the bootstrap API on restart")
+	require.Equal(t, 0, exit)
+	require.Equal(t, int32(1), hits.Load(), "a prior envelope must re-attempt the conditional pull")
+
+	got, err := os.ReadFile(secretsOut)
+	require.NoError(t, err)
+	assert.Equal(t, prior, string(got), "304 keeps the prior envelope byte-for-byte")
 
 	env, err := os.ReadFile(filepath.Join(dir, "secrets-env"))
 	require.NoError(t, err)
 	assert.Contains(t, string(env), "restart_value", "materialize replayed the persisted batch")
+}
+
+// TestSidecarBootSecrets_APIDown_PriorEnvelope_KeepsLastGood: API
+// unreachable with a prior envelope on disk — the last-good batch is
+// kept (resume-within-pod), materialize replays it, boot proceeds.
+func TestSidecarBootSecrets_APIDown_PriorEnvelope_KeepsLastGood(t *testing.T) {
+	dir := t.TempDir()
+	setSidecarMaterializeEnv(t, dir)
+
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+
+	prior := `{"entries":[{"secretId":"s1","version":1,"type":"env-secret","name":"e","value":"v","metadata":{"var_name":"MY_VAR"}}],"revision":{"seq":1,"manifestHash":"mh","batchHash":"bh"}}`
+	secretsOut := filepath.Join(dir, "rt", "secrets.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(secretsOut), 0o755))
+	require.NoError(t, os.WriteFile(secretsOut, []byte(prior), 0o600))
+
+	exit := runSidecarBootSecrets(sidecarBootOpts{
+		WorkspaceID: "ws-test",
+		APIURL:      closed.URL,
+		TokenFile:   filepath.Join(dir, "no-such-token"),
+		SecretsOut:  secretsOut,
+		Stderr:      io.Discard,
+	})
+	require.Equal(t, 0, exit, "API down with a prior batch must never block boot")
+
+	got, err := os.ReadFile(secretsOut)
+	require.NoError(t, err)
+	assert.Equal(t, prior, string(got), "the prior envelope is the last-good state")
+
+	env, err := os.ReadFile(filepath.Join(dir, "secrets-env"))
+	require.NoError(t, err)
+	assert.Contains(t, string(env), "MY_VAR")
 }
 
 // TestSidecarBootSecrets_APIDown_FreshBoot_StillBoots: the never-block-
@@ -197,7 +255,7 @@ func TestSidecarBootSecrets_CrossUIDWriteProfile(t *testing.T) {
 
 			exit := runSidecarBootSecrets(sidecarBootOpts{
 				WorkspaceID: "ws-test",
-				APIURL:      "http://127.0.0.1:1", // unreachable — guard skips (batch exists)
+				APIURL:      "http://127.0.0.1:1", // unreachable — failed pull keeps the prior batch (last-good)
 				TokenFile:   filepath.Join(dir, "token"),
 				SecretsOut:  secretsOut,
 				Stderr:      io.Discard,
@@ -212,15 +270,16 @@ func TestSidecarBootSecrets_CrossUIDWriteProfile(t *testing.T) {
 }
 
 // TestSidecarBootSecrets_MaterializeFailure_Propagates: a structurally
-// malformed batch (API-server bug class) makes materialize exit 2 —
-// the sidecar must propagate it so kubelet surfaces CrashLoopBackOff
-// with a reason instead of a never-Ready zombie.
+// malformed prior batch (API-server bug class) plus an unreachable API
+// (the failed pull keeps the malformed last-good file) makes materialize
+// exit 2 — the sidecar must propagate it so kubelet surfaces
+// CrashLoopBackOff with a reason instead of a never-Ready zombie.
 func TestSidecarBootSecrets_MaterializeFailure_Propagates(t *testing.T) {
 	dir := t.TempDir()
 	setSidecarMaterializeEnv(t, dir)
 
-	var hits atomic.Int32
-	srv := bootstrapAPIServer(t, &hits) // must NOT be hit — guard skips
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
 
 	secretsOut := filepath.Join(dir, "rt", "secrets.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(secretsOut), 0o755))
@@ -228,11 +287,14 @@ func TestSidecarBootSecrets_MaterializeFailure_Propagates(t *testing.T) {
 
 	exit := runSidecarBootSecrets(sidecarBootOpts{
 		WorkspaceID: "ws-test",
-		APIURL:      srv.URL,
+		APIURL:      closed.URL,
 		TokenFile:   filepath.Join(dir, "token"),
 		SecretsOut:  secretsOut,
 		Stderr:      io.Discard,
 	})
 	assert.Equal(t, 2, exit, "materialize's structural-failure exit code must propagate (fail fast)")
-	require.Zero(t, hits.Load(), "existing batch means no refetch even on the failure path")
+
+	got, err := os.ReadFile(secretsOut)
+	require.NoError(t, err)
+	assert.Equal(t, "[42]", string(got), "the malformed prior file is kept verbatim by the failed pull")
 }

@@ -19,27 +19,36 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// fakeInjector records the sessionID + matchedSigningKey it saw so tests
-// can verify context-carried auth was correctly extracted.
-type fakeInjector struct {
-	returnJSON     []byte
+// fakeBuilder records what it saw so tests can verify the builder
+// contract, and returns a scriptable batch / degrade / error.
+type fakeBuilder struct {
+	returnBatch    *secrets.Batch
+	returnDegrade  *secrets.BuildDegrade
 	returnErr      error
-	sawSession     string
-	sawKey         []byte
 	sawUserID      string
 	sawWorkspaceID string
 	calls          int
 }
 
-func (f *fakeInjector) InjectSecrets(ctx context.Context, userID, sessionID string, matchedSigningKey []byte, workspaceID string) ([]byte, error) {
+func (f *fakeBuilder) BuildWorkspaceBatch(_ context.Context, userID, workspaceID string) (*secrets.Batch, *secrets.BuildDegrade, error) {
 	f.calls++
-	f.sawSession = sessionID
-	f.sawKey = matchedSigningKey
 	f.sawUserID = userID
 	f.sawWorkspaceID = workspaceID
-	return f.returnJSON, f.returnErr
+	if f.returnBatch == nil {
+		f.returnBatch = &secrets.Batch{}
+	}
+	return f.returnBatch, f.returnDegrade, f.returnErr
+}
+
+// batchWithEnvSecret builds a one-entry batch for wire assertions.
+func batchWithEnvSecret(name string) *secrets.Batch {
+	return &secrets.Batch{Entries: []secrets.BatchEntry{{
+		SecretID: "sec-1", Version: 1, Type: secrets.SecretTypeEnvSecret,
+		Name: name, Value: "v-" + name,
+	}}}
 }
 
 type fakeResolver struct {
@@ -91,7 +100,7 @@ func TestPush_HappyPath(t *testing.T) {
 	transport := &rewritingTransport{target: server.URL}
 
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[{"type":"env-secret","name":"OPENAI_KEY"}]`)},
+		&fakeBuilder{returnBatch: batchWithEnvSecret("OPENAI_KEY")},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(&fakeCache{}),
 		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
@@ -106,34 +115,64 @@ func TestPush_HappyPath(t *testing.T) {
 	assert.Contains(t, string(receivedBody), "OPENAI_KEY")
 }
 
-// TestPush_PassesAuthFromContext proves the WithAuth/AuthFromContext
-// round-trip: the service must read sessionID and matchedSigningKey out
-// of ctx and pass them into InjectSecrets so the user's DEK is available.
-// Without this, non-handler callers (workspace status reader) would
-// silently degrade to skip-with-audit for every user-DEK entry.
-func TestPush_PassesAuthFromContext(t *testing.T) {
-	injector := &fakeInjector{returnJSON: []byte(`[]`)}
+// TestPush_PostsLegacyBodyOfBuiltBatch proves the mixed-fleet wire
+// contract: the posted body is exactly LegacyBatchJSON of the batch the
+// builder returned — identified entries in, legacy bare array out
+// (W15). Also verifies the builder saw the caller's user/workspace.
+func TestPush_PostsLegacyBodyOfBuiltBatch(t *testing.T) {
+	var receivedBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		receivedBody = buf
 		_, _ = w.Write([]byte(`{"reloaded":0,"restarted":false}`))
 	}))
 	defer server.Close()
 
+	builder := &fakeBuilder{returnBatch: batchWithEnvSecret("OPENAI_KEY")}
 	svc := agentpush.New(
-		injector,
+		builder,
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
 		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
-	ctx := agentpush.WithAuth(context.Background(), "sess-42", []byte("signing-key"))
-
-	_, err := svc.Push(ctx, "user-abc", "ws-abc")
+	_, err := svc.Push(context.Background(), "user-abc", "ws-abc")
 	require.NoError(t, err)
 
-	assert.Equal(t, "sess-42", injector.sawSession)
-	assert.Equal(t, []byte("signing-key"), injector.sawKey)
-	assert.Equal(t, "user-abc", injector.sawUserID)
-	assert.Equal(t, "ws-abc", injector.sawWorkspaceID)
+	assert.Equal(t, string(secrets.LegacyBatchJSON(*builder.returnBatch)), string(receivedBody))
+	assert.Equal(t, "user-abc", builder.sawUserID)
+	assert.Equal(t, "ws-abc", builder.sawWorkspaceID)
+}
+
+// TestPush_DegradedBuildStillPushesServerKEKSubset pins the I10 push
+// behavior: a degraded build (user DEK unavailable) does not fail the
+// push — the server-KEK subset keeps platform providers alive on the
+// pod while the degrade reason surfaces in logs and audits.
+func TestPush_DegradedBuildStillPushesServerKEKSubset(t *testing.T) {
+	var receivedBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		receivedBody = buf
+		_, _ = w.Write([]byte(`{"reloaded":1,"restarted":false}`))
+	}))
+	defer server.Close()
+
+	svc := agentpush.New(
+		&fakeBuilder{
+			returnBatch:   batchWithEnvSecret("platform-openai"),
+			returnDegrade: &secrets.BuildDegrade{Reason: secrets.DegradeDEKUnwrapFailed},
+		},
+		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
+		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
+	)
+
+	result, err := svc.Push(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err, "a degraded build must still push the server-KEK subset")
+	assert.Equal(t, 1, result.Reloaded)
+	assert.Contains(t, string(receivedBody), "platform-openai")
 }
 
 // TestPush_NoPodIPReturnsErrNoRunningPod covers the transient case where
@@ -143,7 +182,7 @@ func TestPush_PassesAuthFromContext(t *testing.T) {
 func TestPush_NoPodIPReturnsErrNoRunningPod(t *testing.T) {
 	var recordedOutcome string
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: ""}),
 		agentpush.WithMetricsHook(func(o string) { recordedOutcome = o }),
 	)
@@ -156,20 +195,20 @@ func TestPush_NoPodIPReturnsErrNoRunningPod(t *testing.T) {
 }
 
 // TestPush_InjectFailureSurfacesAsInjectFailedMetric proves the outcome
-// classification: an InjectSecrets error is inject_failed, distinct from
+// classification: a builder error is inject_failed, distinct from
 // reload_failed. Ops dashboards depend on this split (see worklog 0589
 // adversarial section).
 func TestPush_InjectFailureSurfacesAsInjectFailedMetric(t *testing.T) {
 	var recordedOutcome string
 	svc := agentpush.New(
-		&fakeInjector{returnErr: errors.New("dek unavailable")},
+		&fakeBuilder{returnErr: errors.New("revision store down")},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithMetricsHook(func(o string) { recordedOutcome = o }),
 	)
 
 	_, err := svc.Push(context.Background(), "user-1", "ws-1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "inject secrets")
+	assert.Contains(t, err.Error(), "build workspace batch")
 	assert.Equal(t, "inject_failed", recordedOutcome)
 }
 
@@ -185,7 +224,7 @@ func TestPush_ReloadHTTPFailureSurfacesAsReloadFailedMetric(t *testing.T) {
 
 	var recordedOutcome string
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithMetricsHook(func(o string) { recordedOutcome = o }),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
@@ -202,7 +241,7 @@ func TestPush_ReloadHTTPFailureSurfacesAsReloadFailedMetric(t *testing.T) {
 // contract: constructing a Service without a resolver and then calling
 // Push is a bug that should surface loudly, not silently succeed.
 func TestPush_MissingResolverReturnsNoPodIPResolver(t *testing.T) {
-	svc := agentpush.New(&fakeInjector{returnJSON: []byte(`[]`)})
+	svc := agentpush.New(&fakeBuilder{})
 	_, err := svc.Push(context.Background(), "user-1", "ws-1")
 	assert.ErrorIs(t, err, agentpush.ErrNoPodIPResolver)
 }
@@ -219,7 +258,7 @@ func TestPush_SuccessEvictsModelCache(t *testing.T) {
 
 	cache := &fakeCache{}
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(cache),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
@@ -242,7 +281,7 @@ func TestPush_FailureDoesNotEvictModelCache(t *testing.T) {
 
 	cache := &fakeCache{}
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(cache),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
@@ -301,7 +340,7 @@ func TestPush_SendsBasicAuth(t *testing.T) {
 	transport := &rewritingTransport{target: server.URL}
 
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
 		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw-7"}),
@@ -314,7 +353,7 @@ func TestPush_SendsBasicAuth(t *testing.T) {
 
 func TestPush_MissingPasswordProviderErrors(t *testing.T) {
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 	)
 	_, err := svc.Push(context.Background(), "user-1", "ws-9")
@@ -323,7 +362,7 @@ func TestPush_MissingPasswordProviderErrors(t *testing.T) {
 
 func TestPush_PasswordProviderErrorSurfaces(t *testing.T) {
 	svc := agentpush.New(
-		&fakeInjector{returnJSON: []byte(`[]`)},
+		&fakeBuilder{},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithPasswordProvider(&fakePasswordProvider{err: errors.New("secret gone")}),
 	)

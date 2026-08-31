@@ -11,16 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestInjectSecrets_MCPViaAsyncAuditLogger proves the production injection
-// path works: SecretService with AsyncAuditLogger wrapping a store that
-// implements CredentialStore. This would have caught the original critical
-// bug where loadMCPServers type-asserted *PgSecretStore instead of
-// CredentialStore (the assertion failed silently under AsyncAuditLogger).
+// TestBuildWorkspaceBatch_MCPViaAsyncAuditLogger proves the production
+// builder path works: SecretService with AsyncAuditLogger wrapping a store
+// that implements CredentialStore + RevisionStore. This would have caught
+// the original critical bug where the MCP load type-asserted
+// *PgSecretStore instead of CredentialStore (the assertion failed
+// silently under AsyncAuditLogger).
 //
 // The test verifies that GetWorkspaceMCPServers is actually called through
 // the AsyncAuditLogger wrapper — the type assertion succeeds and the MCP
 // query reaches the inner store. The decrypt step is tested separately.
-func TestInjectSecrets_MCPViaAsyncAuditLogger(t *testing.T) {
+func TestBuildWorkspaceBatch_MCPViaAsyncAuditLogger(t *testing.T) {
 	mockStore := &mcpInjectionMockStore{}
 
 	// Wrap in AsyncAuditLogger (production configuration).
@@ -28,23 +29,23 @@ func TestInjectSecrets_MCPViaAsyncAuditLogger(t *testing.T) {
 	defer auditStore.Stop()
 	svc := NewSecretService(nil, auditStore)
 
-	// Verify the type assertion succeeds — this is the regression guard.
-	// Before the fix, s.store was *AsyncAuditLogger, not *PgSecretStore,
-	// so the assertion always failed and GetWorkspaceMCPServers was never called.
+	// Verify the type assertions succeed — this is the regression guard.
 	_, ok := svc.store.(CredentialStore)
-	require.True(t, ok, "AsyncAuditLogger must implement CredentialStore so loadMCPServers works")
+	require.True(t, ok, "AsyncAuditLogger must implement CredentialStore so the builder's MCP load works")
+	_, ok = svc.store.(RevisionStore)
+	require.True(t, ok, "AsyncAuditLogger must implement RevisionStore so the builder mints revisions")
 
-	// Call the sessionless injection path — exercises loadMCPServers.
-	_, err := svc.InjectSessionlessSecrets(context.Background(), "user-1", "ws-1")
+	// Call the builder — exercises the MCP load through the wrapper.
+	_, _, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 
 	// Verify GetWorkspaceMCPServers was called (the query reached the inner store).
 	assert.True(t, mockStore.mcpQueryCalled, "GetWorkspaceMCPServers must be called through AsyncAuditLogger")
 }
 
-// mcpInjectionMockStore implements SecretStore + CredentialStore for the
-// injection-path test. Only the methods touched by InjectSessionlessSecrets
-// return real values; the rest panic to surface drift.
+// mcpInjectionMockStore implements SecretStore + CredentialStore +
+// RevisionStore for the builder-path test. Only the methods touched by
+// BuildWorkspaceBatch return real values; the rest panic to surface drift.
 type mcpInjectionMockStore struct {
 	mcpQueryCalled bool
 }
@@ -104,4 +105,12 @@ func (m *mcpInjectionMockStore) ListGlobalDefaultSecrets(_ context.Context, _ st
 }
 func (m *mcpInjectionMockStore) QueryAudit(_ context.Context, _ string, _ AuditQuery) ([]*AuditEntry, error) {
 	return nil, nil
+}
+
+func (m *mcpInjectionMockStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+
+func (m *mcpInjectionMockStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
 }

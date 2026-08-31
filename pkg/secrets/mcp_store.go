@@ -32,6 +32,7 @@ type MCPServerRow struct {
 	TimeoutMs  *int
 	Ciphertext []byte
 	KeyVersion int
+	Version    int64 // value-version counter (US-70.2): create = 1, every value-affecting mutation bumps
 	Enabled    bool
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -50,6 +51,7 @@ type MCPServerBindingRow struct {
 	Ciphertext []byte
 	OwnerType  string
 	KeyVersion int
+	Version    int64 // value-version counter (US-70.2)
 	Enabled    bool
 	SourceType string
 }
@@ -63,8 +65,8 @@ func (s *PgSecretStore) CreateMCPServer(ctx context.Context, row *MCPServerRow) 
 	// when the INSERT omits the column entirely (not when nil is passed).
 	args, _ := json.Marshal(row.Args)
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO mcp_servers (id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, enabled, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		INSERT INTO mcp_servers (id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, version, enabled, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 1, $12, $13, $14)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Transport, row.URL, row.Command, args, row.TimeoutMs, row.Ciphertext, row.KeyVersion, row.Enabled, row.CreatedAt, row.UpdatedAt)
 	return err
 }
@@ -73,7 +75,7 @@ func (s *PgSecretStore) CreateMCPServer(ctx context.Context, row *MCPServerRow) 
 // ordered by created_at ASC. Never decrypts — display fields only.
 func (s *PgSecretStore) ListMCPServers(ctx context.Context, ownerType, ownerID string) ([]*MCPServerRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, enabled, created_at, updated_at
+		SELECT id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, version, enabled, created_at, updated_at
 		FROM mcp_servers WHERE owner_type = $1 AND owner_id = $2
 		ORDER BY created_at ASC
 	`, ownerType, ownerID)
@@ -88,7 +90,7 @@ func (s *PgSecretStore) ListMCPServers(ctx context.Context, ownerType, ownerID s
 // or nil if not found.
 func (s *PgSecretStore) GetMCPServer(ctx context.Context, ownerType, ownerID, serverID string) (*MCPServerRow, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, enabled, created_at, updated_at
+		SELECT id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, version, enabled, created_at, updated_at
 		FROM mcp_servers WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 	`, serverID, ownerType, ownerID)
 	r, err := scanMCPServerRow(row)
@@ -103,6 +105,8 @@ func (s *PgSecretStore) GetMCPServer(ctx context.Context, ownerType, ownerID, se
 // rewritten when non-nil (secret rotation). Args is only rewritten when non-nil
 // (a nil []string is passed as SQL NULL so the CASE preserves the existing value;
 // passing JSON "null" would overwrite args with JSONB null — see review finding).
+// Every update bumps the value-version counter (US-70.2) — the manifest tier
+// must see any config-affecting mutation.
 func (s *PgSecretStore) UpdateMCPServer(ctx context.Context, ownerType, ownerID, serverID string, row *MCPServerRow) error {
 	var argsJSON any
 	if row.Args != nil {
@@ -117,7 +121,8 @@ func (s *PgSecretStore) UpdateMCPServer(ctx context.Context, ownerType, ownerID,
 		    timeout_ms = CASE WHEN $8::int IS NULL THEN timeout_ms ELSE $8 END,
 		    enabled = CASE WHEN $9::boolean IS NULL THEN enabled ELSE $9 END,
 		    ciphertext = CASE WHEN $10::bytea IS NOT NULL THEN $10 ELSE ciphertext END,
-		    key_version = CASE WHEN $10::bytea IS NOT NULL THEN $11 ELSE key_version END
+		    key_version = CASE WHEN $10::bytea IS NOT NULL THEN $11 ELSE key_version END,
+		    version = version + 1
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING updated_at
 	`, serverID, ownerType, ownerID, row.Name, row.URL, row.Command, argsJSON, row.TimeoutMs, boolPtr(row.Enabled), row.Ciphertext, row.KeyVersion).Scan(&row.UpdatedAt)
@@ -185,7 +190,7 @@ func (s *PgSecretStore) GetWorkspaceUserIDForMCP(ctx context.Context, workspaceI
 func (s *PgSecretStore) GetWorkspaceMCPServers(ctx context.Context, workspaceID string) ([]MCPServerBindingRow, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT s.id, s.name, s.transport, s.url, s.command, s.args, s.timeout_ms,
-		       s.ciphertext, s.owner_type, s.key_version, b.source_type
+		       s.ciphertext, s.owner_type, s.key_version, s.version, b.source_type
 		FROM mcp_server_bindings b
 		JOIN mcp_servers s ON s.id = b.server_id
 		WHERE b.workspace_id = $1 AND s.enabled = true
@@ -200,7 +205,7 @@ func (s *PgSecretStore) GetWorkspaceMCPServers(ctx context.Context, workspaceID 
 	for rows.Next() {
 		var r MCPServerBindingRow
 		var argsJSON []byte
-		if err := rows.Scan(&r.ServerID, &r.Name, &r.Transport, &r.URL, &r.Command, &argsJSON, &r.TimeoutMs, &r.Ciphertext, &r.OwnerType, &r.KeyVersion, &r.SourceType); err != nil {
+		if err := rows.Scan(&r.ServerID, &r.Name, &r.Transport, &r.URL, &r.Command, &argsJSON, &r.TimeoutMs, &r.Ciphertext, &r.OwnerType, &r.KeyVersion, &r.Version, &r.SourceType); err != nil {
 			return nil, fmt.Errorf("scan mcp binding: %w", err)
 		}
 		if argsJSON != nil {
@@ -415,7 +420,7 @@ type mcpRowScanner interface {
 func scanMCPServerRow(row mcpRowScanner) (*MCPServerRow, error) {
 	var r MCPServerRow
 	var argsJSON []byte
-	if err := row.Scan(&r.ID, &r.OwnerType, &r.OwnerID, &r.Name, &r.Transport, &r.URL, &r.Command, &argsJSON, &r.TimeoutMs, &r.Ciphertext, &r.KeyVersion, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.OwnerType, &r.OwnerID, &r.Name, &r.Transport, &r.URL, &r.Command, &argsJSON, &r.TimeoutMs, &r.Ciphertext, &r.KeyVersion, &r.Version, &r.Enabled, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if argsJSON != nil {
