@@ -477,14 +477,6 @@ type Materializer struct {
 	sshBlocks        []string
 }
 
-// secretDirMode is the mode for materialized credential DIRECTORIES.
-func (m *Materializer) secretDirMode() os.FileMode {
-	if m.CrossUID {
-		return 0o770
-	}
-	return 0o700
-}
-
 // secretFileMode is the mode for materialized credential FILES in the
 // tool-consumed rt/* stores (T2 exception, design 0051 US-4b: gid 1000
 // is exactly the uid-1000 reader set, nothing wider).

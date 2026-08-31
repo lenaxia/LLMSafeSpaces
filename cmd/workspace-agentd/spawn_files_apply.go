@@ -229,6 +229,12 @@ func deliverStaged(cfg materializeConfig) error {
 	if cfg.crossUID {
 		return nil
 	}
+	if cfg.secretsEnvPath == "" {
+		// An empty config is not a delivery context (handler-level tests
+		// construct bare configs; the staging root would be relative to
+		// the CWD). Skip rather than write to an unintended location.
+		return nil
+	}
 	staging := cfg.stagingDir
 	if staging == "" {
 		staging = stagingDirFor(cfg.secretsEnvPath, cfg.crossUID)
