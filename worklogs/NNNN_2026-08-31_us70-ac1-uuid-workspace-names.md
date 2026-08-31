@@ -68,3 +68,12 @@ None. Pool re-dispatch after merge (then W8 #1184, then #1194 — operator Rev-5
 - `local/lib/us70-common.sh` (WS_BASE UUID default, ws_id, seed_workspace_metadata wiring)
 - `local/us-70-faults-e2e.sh` (WS_BASE default + doc)
 - `local/us70_harness_script_test.go` (TestUS70WorkspaceNamesAreUUIDs)
+
+## Addendum (review round): executable resolution-contract pins
+
+`api/internal/services/database/workspace_resolution_integration_test.go`
+(integration tag, testharness PG): UUID name + seeded row → resolves with
+ownership; non-UUID CR name → cannot resolve (the 22P02 failure mode,
+documented); valid UUID without a row → nil/not-found (the 404 failure
+mode). Both AC-1 failure modes are now pinned as executable truth, not
+harness convention.
