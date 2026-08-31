@@ -372,6 +372,25 @@ fi
 kubectl -n "$NS" delete workspace "$WS_BAD_OC" --wait=false >/dev/null 2>&1 || true
 
 log "restoring correct pins (controller rolls in background; S5.5 waits for readiness)"
+wait_webhook_ready() {
+  for i in $(seq 1 60); do
+    [ -n "$(kubectl -n "$NS" get endpoints "$WEBHOOK_SVC" -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+patch_workspace_retry() {
+  # Webhook-facing patch with retry: admission transience (endpoints
+  # re-pointing during a controller roll) must not fail the check
+  # (runs 10-11 flake: suspend patch hit the webhook mid-roll).
+  local name=$1 body=$2 i
+  for i in 1 2 3 4 5; do
+    kubectl -n "$NS" patch workspace "$name" --type=merge -p "$body" >/dev/null 2>&1 && return 0
+    log "patch $name failed (attempt $i) - retrying"
+    sleep 5
+  done
+  return 1
+}
 helm upgrade --install "$RELEASE" helm -n "$NS" \
   "${HELM_LEAN_ARGS[@]}" "${HELM_PIN_ARGS[@]}" >/dev/null 2>&1 \
   || log "restore upgrade reported an error (continuing)"
@@ -381,16 +400,25 @@ kubectl -n "$NS" rollout status deployment/"${RELEASE}-llmsafespaces-controller"
 # --- S5.5: resume-path pull cost (cold-node overlay re-pull) ------------------
 
 log "S5.5: suspend → evict overlay images from the node → activate (cold pull)"
-if wait_phase "$WS_MAIN" Active 60 \
-   && kubectl -n "$NS" patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":true}}' >/dev/null \
-   && wait_phase "$WS_MAIN" Suspended 300; then
+S5_5_OK=1
+if ! wait_webhook_ready; then
+  fail S5.5 "webhook endpoints never returned after the restore rollout"; S5_5_OK=0
+elif ! wait_phase "$WS_MAIN" Active 60; then
+  fail S5.5 "main workspace not Active before suspend"; S5_5_OK=0
+elif ! patch_workspace_retry "$WS_MAIN" '{"spec":{"suspend":true}}'; then
+  fail S5.5 "suspend patch kept failing (webhook transience beyond retries)"; S5_5_OK=0
+elif ! wait_phase "$WS_MAIN" Suspended 300; then
+  fail S5.5 "workspace never reached Suspended"; S5_5_OK=0
+fi
+if [ "$S5_5_OK" = "1" ]; then
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
   for img in "$AGENTD_REF" "$OPENCODE_REF"; do
     docker exec "$NODE" crictl rmi "$img" >/dev/null 2>&1 || true
   done
   T0=$(date +%s)
-  kubectl -n "$NS" patch workspace "$WS_MAIN" --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
-  if wait_phase "$WS_MAIN" Active 600; then
+  patch_workspace_retry "$WS_MAIN" '{"spec":{"suspend":false}}' \
+    || { fail S5.5 "activate patch kept failing"; S5_5_OK=0; }
+  if [ "$S5_5_OK" = "1" ] && wait_phase "$WS_MAIN" Active 600; then
     T1=$(date +%s)
     RESUME=$((T1 - T0))
     {
