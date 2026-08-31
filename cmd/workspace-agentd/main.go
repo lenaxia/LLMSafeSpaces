@@ -213,7 +213,7 @@ func main() {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
 		// US-69.12: the stall watchdog + metric refresh (seq stall, ledger
 		// funnel, promotion stall; wake failures escalate via alerts).
-		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority)
+		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority, time.Minute)
 	}
 
 	startedAt := time.Now()

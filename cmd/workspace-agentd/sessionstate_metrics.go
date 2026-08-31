@@ -113,14 +113,15 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 }
 
 // runSessionStateWatchdog drives the stall detector + gauge refresh: one
-// pass per minute (the promotion deadline is 10m — the cadence sees a
-// stall within ~1m of crossing it). Wake failures increment the counter
-// per errored attempt (the escalation signal).
-func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *sessionstate.Authority) {
+// pass per interval (production: 1m — the promotion deadline is 10m, so
+// the cadence sees a stall within ~1m of crossing it; tests shrink it).
+// Wake failures increment the counter per errored attempt (the
+// escalation signal).
+func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *sessionstate.Authority, every time.Duration) {
 	if a == nil {
 		return
 	}
-	ticker := time.NewTicker(time.Minute)
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	for {
 		select {
