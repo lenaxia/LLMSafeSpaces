@@ -895,7 +895,6 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-email-reset/
 
-
       - name: Go canary — S-WS-QUOTA
         env:
           LLMSAFESPACES_URL: http://localhost:8080
@@ -1509,76 +1508,13 @@ jobs:
           context: .
           file: runtimes/base/Dockerfile
           platforms: ${{ matrix.platform }}
-          push: ${{ github.event_name != 'pull_request' }}
+          # Design 0053 D5: the base publishes ONLY via base-image.yml
+          # (content-triggered, CalVer tag). This job is build validation.
+          push: false
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
 
-      - name: Export digest
-        if: github.event_name != 'pull_request'
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v7
-        with:
-          name: runtime-digests-${{ matrix.runner }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge-runtime:
-    name: Merge Runtime Manifest
-    needs: [build-runtime, prepare]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Download digests
-        uses: actions/download-artifact@v8
-        with:
-          path: /tmp/digests
-          pattern: runtime-digests-*
-          merge-multiple: true
-
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/metadata-action@v6
-        id: meta
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}
-          tags: |
-            type=sha,prefix=sha-
-            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
-            type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}@sha256:%s ' *)
-
-  # #863: standalone agentd image for image-volume delivery. FROM scratch,
-  # single binary. The merge job additionally extracts the per-arch BINARY
-  # sha256s (what the chart's agentdDelivery.binarySHA256* values need —
-  # binary hashes, not image digests) and prints the ready-to-paste Helm
-  # values block on non-PR events.
   build-agentd:
     name: Build Agentd (${{ matrix.platform }})
     needs: [test, test-full, prepare]
@@ -1765,7 +1701,6 @@ jobs:
               # binarySHA256Arm64: "${arm64}"
           EOF
 
-
   # #863: standalone agentd image for image-volume delivery. FROM scratch,
   # single binary. The merge job additionally extracts the per-arch BINARY
   # sha256s (what the chart's agentdDelivery.binarySHA256* values need —
@@ -1870,7 +1805,6 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
-
 
   merge-opencode:
     name: Merge Opencode Manifest
@@ -2069,4 +2003,5 @@ jobs:
   # path filter (fast path) AND a 6-hour schedule trigger (self-healing
   # catch-up) so any future [skip ci] bypass is recovered within 6h.
   # See worklog 0552/0553 for the incident and resolution.
+
 
