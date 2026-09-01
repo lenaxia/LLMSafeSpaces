@@ -67,6 +67,23 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			if h.activityTracker != nil {
 				h.activityTracker.Delete(workspace.Name)
 			}
+			// #1119 (from the #1211 F2 triage): a deleted Workspace CR
+			// left orphaned outbox keys — no agent to verify against, no
+			// queue UI to dismiss from, no expiry; the rows inflated the
+			// outbox gauges forever. Terminal phases clean the residue
+			// (idempotent — a missed sweep retries on the next one).
+			if h.outbox != nil {
+				wsName := workspace.Name
+				go func() {
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 15*time.Second)
+					defer cancel()
+					if n, err := h.outbox.CleanupWorkspace(sctx, wsName); err != nil {
+						h.logger.Warn("outbox cleanup on termination failed", "error", err, "workspace_id", wsName)
+					} else if n > 0 {
+						h.logger.Info("outbox cleanup on termination removed keys", "count", n, "workspace_id", wsName)
+					}
+				}()
+			}
 		}
 		return
 	}

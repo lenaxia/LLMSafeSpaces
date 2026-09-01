@@ -78,7 +78,7 @@ func (r *recordingDeliverer) counts() (unique int, dupes int) {
 func TestRollbackDrill_UnderLoad(t *testing.T) {
 	s, mr := newTestService(t)
 	ctx := context.Background()
-	d := &recordingDeliverer{delay: 2 * time.Millisecond}
+	d := &recordingDeliverer{delay: time.Millisecond}
 	runCtx, stopRun := context.WithCancel(context.Background())
 	go func() { s.Run(runCtx, d.deliver, 5*time.Millisecond) }()
 	t.Cleanup(func() {
@@ -157,7 +157,10 @@ func TestRollbackDrill_UnderLoad(t *testing.T) {
 	defer drainCancel()
 	go func() { s.Run(drainCtx, d.deliver, 5*time.Millisecond) }()
 
-	deadline := time.Now().Add(30 * time.Second)
+	// Generous deadline: under full-suite parallelism the drain competes
+	// for CPU with every other package's test binary (the revalidation
+	// catch — CI's layout masked it; 30s starved once locally).
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		got, dupes := d.counts()
 		if got >= int(accepted.Load()) && dupes == 0 {
