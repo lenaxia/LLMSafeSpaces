@@ -215,6 +215,17 @@ spec:
             ) < 0.99
             and on() (count(max by (workspace_id) (llmsafespaces_secrets_delivery_converged{job=~"{{ $apiJob }}"})) > 0)
           for: 5m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
+            description: >-
+              Only {{ `{{ $value | humanizePercentage }}` }} of Active workspaces are converged —
+              below the 99% SLO for 5m. Fleet-wide divergence usually means the API's
+              reconcile loop, the pods' resync endpoint, or the bootstrap pull path is
+              unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.
+
         {{- /* US-70.4 (#1208): a verify-after-write failure or a W9 source
               disagreement means the reconciler refused to commit a wrap it
               could not prove correct — should-never-fire (the halt gauge
@@ -228,12 +239,12 @@ spec:
             severity: warning
             component: api
           annotations:
-            summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
+            summary: "Key re-wrap reconciler refused to commit unverified wraps"
             description: >-
-              Only {{ `{{ $value | humanizePercentage }}` }} of Active workspaces are converged —
-              below the 99% SLO for 5m. Fleet-wide divergence usually means the API's
-              reconcile loop, the pods' resync endpoint, or the bootstrap pull path is
-              unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.
+              Re-wrap attempts failed verify-after-write or source agreement in the
+              last 10m. Rows were left untouched by design — investigate the master
+              KEK health and the session-cache DEK source before the halt threshold
+              trips.
 
         {{- /* US-70.3 loop health: no successful reconcile pass in 3x the
               default 60s period (LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL
@@ -245,12 +256,17 @@ spec:
           expr: |
             (time() - max(llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job=~"{{ $apiJob }}"})) > 180
             or absent(llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job=~"{{ $apiJob }}"})
-            summary: "Key re-wrap reconciler refused to commit unverified wraps"
+          for: 5m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Secrets reconcile loop stalled"
             description: >-
-              Re-wrap attempts failed verify-after-write or source agreement in the
-              last 10m. Rows were left untouched by design — investigate the master
-              KEK health and the session-cache DEK source before the halt threshold
-              trips.
+              The secrets-delivery reconcile loop has not completed a successful pass
+              in over 3 minutes (3x the default period) — or has never reported one.
+              Divergent workspaces will not converge until it recovers. Check the
+              API's K8s client and the loop's error logs.
 
         {{- /* US-70.4: the reconciler halted its batch walk this pass (≥3
               verify failures) — blast-radius control engaged. Sustained
@@ -265,12 +281,6 @@ spec:
             severity: critical
             component: api
           annotations:
-            summary: "Secrets reconcile loop stalled"
-            description: >-
-              The secrets-delivery reconcile loop has not completed a successful pass
-              in over 3 minutes (3x the default period) — or has never reported one.
-              Divergent workspaces will not converge until it recovers. Check the
-              API's K8s client and the loop's error logs.
             summary: "Key re-wrap reconciler halted"
             description: >-
               The user_keys re-wrap reconciler has been halted for 5m — verify-after-write
