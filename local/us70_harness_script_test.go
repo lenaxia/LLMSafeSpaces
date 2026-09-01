@@ -13,6 +13,8 @@ package local_test
 // key-corruption assertions so rows cannot be silently dropped.
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +73,176 @@ func TestUS70WorkspaceNamesAreUUIDs(t *testing.T) {
 	}
 	if !strings.Contains(script, "INSERT INTO workspaces (id, name, user_id") {
 		t.Fatal("us70-common.sh must seed the workspaces metadata row — WorkspaceAccessMiddleware resolves through PostgreSQL; a CR-only workspace cannot bind")
+	}
+}
+
+// TestUS70Harness_SessionAuthPins pins the DEK-gate fix layer: secret
+// authoring (bind_env, AC-F create/bind) must ride the JWT session —
+// CreateSecret resolves the user DEK through the session cache and an
+// API-key request carries none (ErrDEKUnavailable -> 500). The lib must
+// register/login (OWNER_ID is the API-minted users.id UUID, not the
+// username) and the scripts' secret-creating calls must use AUTH_TOKEN.
+func TestUS70Harness_SessionAuthPins(t *testing.T) {
+	lib := mustRead(t, us70CommonScript)
+	for _, pin := range []string{
+		"login_harness_user()",
+		"seed_session()",
+		"OWNER_ID=$(curl",
+		"Bearer ${AUTH_TOKEN:?}",
+	} {
+		if !strings.Contains(lib, pin) {
+			t.Fatalf("us70-common.sh must keep %q — the DEK-gated authoring path depends on it", pin)
+		}
+	}
+	if strings.Contains(lib, "password_hash, role)") {
+		t.Fatal("the lib must not psql-insert the user row (dummy hash): registration through the API provisions user_keys + a real hash")
+	}
+	delivery := mustRead(t, us70DeliveryScript)
+	sfCreate := strings.Count(delivery, "Bearer ${AUTH_TOKEN}")
+	if sfCreate < 2 {
+		t.Fatalf("AC-F secret create + bind must use the JWT session (got %d AUTH_TOKEN uses)", sfCreate)
+	}
+}
+
+// TestUS70Harness_SessionBootstrap_UnhappyPaths executes the extracted
+// session helpers against a dead port: login must yield an empty
+// AUTH_TOKEN without killing the caller (the register fallback depends
+// on that), and seed_session must die loudly naming the failure.
+func TestUS70Harness_SessionBootstrap_UnhappyPaths(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	extract := func(name string) string {
+		m := regexp.MustCompile(`(?s)(?m)^` + name + `\(\) \{.*?^\}`).FindString(lib)
+		if m == "" {
+			t.Fatalf("us70-common.sh must define %s()", name)
+		}
+		return m
+	}
+
+	out, err := exec.Command(bash, "-c",
+		`PORTFWD_PORT=1; AUTH_TOKEN=sentinel; `+extract("login_harness_user")+`; printf '|%s', "${AUTH_TOKEN}"`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("login against a dead port must not kill the caller: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "|,") && !strings.HasSuffix(strings.TrimSpace(string(out)), ",") {
+		t.Fatalf("failed login must leave AUTH_TOKEN empty, got: %q", out)
+	}
+
+	out, err = exec.Command(bash, "-c",
+		`set -u; PORTFWD_PORT=1; USER_ID=dead; API_KEY=k; PGPOD=x; PG_PWD=x; `+
+			`die() { printf '%s' "$*" >&2; exit 1; }; `+
+			extract("login_harness_user")+`; `+extract("seed_session")+
+			`; seed_session dead-user 2>&1; exit $?`).CombinedOutput()
+	if err == nil {
+		t.Fatalf("seed_session with both register and login failing must exit non-zero, got: %q", out)
+	}
+	if !strings.Contains(string(out), "harness register/login failed") {
+		t.Fatalf("the loud failure must name the problem, got: %q", out)
+	}
+}
+
+// TestUS70Harness_SessionBootstrap_FakeAPI drives the extracted session
+// helpers against a scripted fake API — the register-failure and
+// /auth/me-failure die paths, deterministically (the e2e unhappy rows
+// for the bootstrap, executable without a cluster).
+func TestUS70Harness_SessionBootstrap_FakeAPI(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	extract := func(name string) string {
+		m := regexp.MustCompile(`(?s)(?m)^` + name + `\(\) \{.*?^\}`).FindString(lib)
+		if m == "" {
+			t.Fatalf("us70-common.sh must define %s()", name)
+		}
+		return m
+	}
+
+	runSeedSession := func(handler http.HandlerFunc) (string, error) {
+		srv := httptest.NewServer(http.HandlerFunc(handler))
+		defer srv.Close()
+		port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+		cmd := exec.Command(bash, "-c",
+			`set -u; PORTFWD_PORT=`+port+`; USER_ID=fake; API_KEY=k; PGPOD=x; PG_PWD=x; HARNESS_PASSWORD=fake-pw-2026; `+
+				`die() { printf '%s' "$*" >&2; exit 1; }; `+
+				extract("login_harness_user")+`; `+extract("seed_session")+
+				`; seed_session fake-user 2>&1; exit $?`)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("register 500 and login 401 die loudly", func(t *testing.T) {
+		out, err := runSeedSession(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/login") {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+		})
+		if err == nil {
+			t.Fatalf("must exit non-zero, got: %q", out)
+		}
+		if !strings.Contains(out, "harness register/login failed") {
+			t.Fatalf("must name the failure, got: %q", out)
+		}
+	})
+
+	t.Run("auth/me failure dies naming the id resolution", func(t *testing.T) {
+		out, err := runSeedSession(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/login"):
+				_, _ = w.Write([]byte(`{"token":"jwt"}`))
+			case strings.HasSuffix(r.URL.Path, "/me"):
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{}`))
+			}
+		})
+		if err == nil {
+			t.Fatalf("must exit non-zero, got: %q", out)
+		}
+		if !strings.Contains(out, "could not resolve the harness user's id") {
+			t.Fatalf("must name the id-resolution failure, got: %q", out)
+		}
+	})
+}
+
+// TestUS70Harness_BindEnv_ReloginsOn401 pins the JWT-expiry robustness:
+// one 401 triggers a re-login and the retried bind succeeds — pool
+// dwells can outlive a short token TTL.
+func TestUS70Harness_BindEnv_ReloginsOn401(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	bindFn := regexp.MustCompile(`(?s)(?m)^bind_env\(\) \{.*?^\}`).FindString(lib)
+	if bindFn == "" {
+		t.Fatal("us70-common.sh must define bind_env()")
+	}
+	logins := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/login"):
+			logins++
+			_, _ = w.Write([]byte(`{"token":"jwt-refreshed"}`))
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/env"):
+			if r.Header.Get("Authorization") == "Bearer jwt-refreshed" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer srv.Close()
+	port := srv.URL[strings.LastIndex(srv.URL, ":")+1:]
+
+	out, err := exec.Command(bash, "-c",
+		`set -u; PORTFWD_PORT=`+port+`; USER_ID=fake; AUTH_TOKEN=jwt-1; API_KEY=k; HARNESS_PASSWORD=fake-pw-2026; `+
+			`die() { printf '%s' "$*" >&2; exit 1; }; `+
+			regexp.MustCompile(`(?s)(?m)^login_harness_user\(\) \{.*?^\}`).FindString(lib)+`; `+
+			bindFn+`; bind_env ws1 VAR v 2>&1; exit $?`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the retried bind must succeed after re-login: %v\n%s", err, out)
+	}
+	if logins < 1 {
+		t.Fatalf("a 401 must trigger exactly one re-login; logins=%d", logins)
 	}
 }
 

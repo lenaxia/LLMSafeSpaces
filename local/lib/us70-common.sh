@@ -133,8 +133,8 @@ harness_start() {
     [[ -n "${PGPOD}" ]] || die "postgres pod not found"
     PG_PWD="${PG_PWD:-$(kc get secret llmsafespaces-credentials -o jsonpath='{.data.postgres-password}' 2>/dev/null | base64 -d 2>/dev/null || echo changeme)}"
 
-    seed_user "${USER_ID}" "${API_KEY}"
-    ok "user + api key seeded"
+    seed_session "${USER_ID}"
+    ok "harness session seeded (OWNER_ID=${OWNER_ID}; API key for resolution ops, JWT for DEK-gated secret authoring)"
 
     # The spawn-time pull is the critical regression surface for the sidecar
     # fleet (this is the mode where the old boot push deterministically lost
@@ -159,28 +159,51 @@ api_key_db_hash() {
 }
 # <<< api-key-db-hash
 
-seed_user() { # user_id api_key
-    local user_id="$1" api_key="$2"
+# seed_session registers the harness user through the API when needed and
+# logs in. Secret AUTHORING (CreateSecret) resolves the user's DEK via the
+# session cache — an API-key request carries no session, so binds would 500
+# with ErrDEKUnavailable. Registration also provisions user_keys under the
+# server KEK (the epic-58 default), and with no email verifier wired the
+# user is email_verified immediately. OWNER_ID is the users.id UUID the API
+# mints — ownership (api_keys, workspaces, CR spec.owner) must carry it,
+# not the username. The API-key row stores the sha256 hash
+# (api_key_db_hash) — the plaintext never authenticates.
+HARNESS_PASSWORD="${HARNESS_PASSWORD:-us70-pool-pw-2026}"
+AUTH_TOKEN=""
+OWNER_ID=""
+
+login_harness_user() {
+    AUTH_TOKEN=$(curl -sfm 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/auth/login" \
+        -H "Content-Type: application/json" \
+        -d "{\"email\":\"${USER_ID}@example.test\",\"password\":\"${HARNESS_PASSWORD}\"}" \
+        | jq -r '.token // empty' 2>/dev/null) || AUTH_TOKEN=""
+}
+
+seed_session() { # user_id
+    local user_id="$1"
+    login_harness_user
+    if [[ -z "${AUTH_TOKEN}" ]]; then
+        local reg
+        reg=$(curl -sm 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/auth/register" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${user_id}\",\"email\":\"${user_id}@example.test\",\"password\":\"${HARNESS_PASSWORD}\"}" || true)
+        login_harness_user
+        [[ -n "${AUTH_TOKEN}" ]] || die "harness register/login failed: ${reg:-no body}"
+    fi
+    OWNER_ID=$(curl -sfm 15 "http://127.0.0.1:${PORTFWD_PORT}/api/v1/auth/me" \
+        -H "Authorization: Bearer ${AUTH_TOKEN}" | jq -r '.user.id // .id // empty' 2>/dev/null) || OWNER_ID=""
+    [[ -n "${OWNER_ID}" ]] || die "could not resolve the harness user's id"
+
     kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
         psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 -c "
-INSERT INTO users (id, username, email, password_hash, role)
-VALUES ('${user_id}', '${user_id}', '${user_id}@example.test', 'unused-by-api-key-auth', 'user')
-ON CONFLICT (id) DO NOTHING;
-
--- api_keys.key stores sha256(<plaintext>) hex (auth.go validateAPIKey:
--- sha256.Sum256 -> GetUserByAPIKey(keyHash)); seeding the plaintext made
--- bind_env (the first authenticated call) 401 — indistinguishable from
--- the AC-1 404 in curl -sf output. Hash at insert time (pool runs 1-2),
--- via the helper whose hash is pinned against Go's computation by
--- local/us70_common_test.go.
 INSERT INTO api_keys (id, user_id, key, name, active)
-VALUES ('${user_id}-sd', '${user_id}', $(api_key_db_hash "${api_key}"), 'e2e-sd-key', true)
+VALUES ('${OWNER_ID}-sd', '${OWNER_ID}', $(api_key_db_hash "${API_KEY}"), 'e2e-sd-key', true)
 ON CONFLICT (id) DO UPDATE SET key=EXCLUDED.key, active=true;
 " >/dev/null
 }
 
-seed_workspace() { # ws user_id [runtime_class]
-    local ws="$1" user_id="$2" rc="${3:-}"
+seed_workspace() { # ws [runtime_class] — owned by the harness session user
+    local ws="$1" user_id="${OWNER_ID:?harness_start must run first}" rc="${2:-}"
     kc delete workspace "${ws}" --ignore-not-found >/dev/null 2>&1 || true
     if [[ -n "${rc}" ]]; then
         # spec.runtimeClass is admin-gated: the Workspace validating
@@ -242,18 +265,25 @@ seed_workspace_metadata() { # ws user_id
 # bind_env ws VAR VALUE — create+bind one env-secret via the convenience
 # endpoint (server-side creates an env-secret and binds it atomically).
 bind_env() {
-    local ws="$1" var="$2" value="$3" body resp code
+    local ws="$1" var="$2" value="$3" body
     body=$(jq -nc --arg v "$var" --arg val "$value" '{vars:{($v):$val}}')
-    resp=$(curl -sm 30 -X PUT \
-        -H "Authorization: Bearer ${API_KEY}" \
-        -H "Content-Type: application/json" \
-        -d "$body" \
-        -w '\n%{http_code}' \
-        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env") \
-        || die "bind_env ${var}=${value} on ${ws}: curl transport failure"
-    code=$(printf '%s' "$resp" | tail -1)
-    [ "$code" = "200" ] || [ "$code" = "201" ] \
-        || die "bind_env ${var}=${value} on ${ws} failed: HTTP ${code} $(printf '%s' "$resp" | sed '$d' | head -c 200)"
+    local code body_out attempt
+    body_out=$(mktemp)
+    for attempt in 1 2; do
+        code=$(curl -sm 30 -o "${body_out}" -w '%{http_code}' -X PUT \
+            -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
+            -H "Content-Type: application/json" \
+            -d "$body" \
+            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/env")
+        [[ "${code}" == "401" && "${attempt}" == "1" ]] || break
+        # JWT expiry mid-suite: re-login once and retry — the pool's
+        # multi-hour dwells can outlive a short token TTL.
+        login_harness_user
+    done
+    if [[ "${code}" != 2* ]]; then
+        die "bind_env ${var}=${value} on ${ws} failed: HTTP ${code}: $(head -c 400 "${body_out}")"
+    fi
+    rm -f "${body_out}"
 }
 
 # detect_runtime_class — gVisor feature-detection: is there a controllable
