@@ -16,10 +16,21 @@ func MaskSensitiveFieldsWithList(data map[string]interface{}, sensitiveFields []
 		}
 	}
 
-	// Also check nested maps
+	// Also recurse into nested maps and arrays (#1214: the masker was
+	// array-blind — the pod-bootstrap payload nests credentials at
+	// secrets.entries[].value, an array of objects, so "value" keys
+	// inside array elements were never reached and plaintext secrets
+	// reached INFO logs).
 	for _, v := range data {
-		if nestedMap, ok := v.(map[string]interface{}); ok {
-			MaskSensitiveFieldsWithList(nestedMap, sensitiveFields)
+		switch typed := v.(type) {
+		case map[string]interface{}:
+			MaskSensitiveFieldsWithList(typed, sensitiveFields)
+		case []interface{}:
+			for _, elem := range typed {
+				if elemMap, ok := elem.(map[string]interface{}); ok {
+					MaskSensitiveFieldsWithList(elemMap, sensitiveFields)
+				}
+			}
 		}
 	}
 }
