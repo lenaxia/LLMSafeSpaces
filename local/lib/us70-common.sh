@@ -169,6 +169,10 @@ api_key_db_hash() {
 # not the username. The API-key row stores the sha256 hash
 # (api_key_db_hash) — the plaintext never authenticates.
 HARNESS_PASSWORD="${HARNESS_PASSWORD:-us70-pool-pw-2026}"
+# Direct image ref the controller can resolve on its own (loaded onto the
+# kind node by the pool workflow). NOT a catalog name like python:3.11 —
+# those resolve only through the API's create path (pool run 5 lesson).
+RUNTIME_REF="${RUNTIME_REF:-ghcr.io/lenaxia/llmsafespaces/runtime-base:${IMAGE_TAG:-ci}}"
 AUTH_TOKEN=""
 OWNER_ID=""
 
@@ -227,7 +231,7 @@ metadata:
 spec:
   owner:
     userID: ${user_id}
-  runtime: python:3.11
+  runtime: ${RUNTIME_REF}
   runtimeClass: ${rc}
   storage:
     size: 1Gi
@@ -244,7 +248,7 @@ metadata:
 spec:
   owner:
     userID: ${user_id}
-  runtime: python:3.11
+  runtime: ${RUNTIME_REF}
   storage:
     size: 1Gi
     accessMode: ReadWriteOnce
@@ -262,7 +266,7 @@ seed_workspace_metadata() { # ws user_id
     local ws="$1" user_id="$2"
     [[ -n "${PGPOD:-}" && -n "${PG_PWD:-}" ]] || die "seed_workspace_metadata: harness_start must run first (PGPOD/PG_PWD unset)"
     kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 \
-        -c "INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size) VALUES ('${ws}', 'us70-${ws}', '${user_id}', '${NS}', 'python:3.11', '1Gi') ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id, deleted_at = NULL" >/dev/null
+        -c "INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size) VALUES ('${ws}', 'us70-${ws}', '${user_id}', '${NS}', '${RUNTIME_REF}', '1Gi') ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id, deleted_at = NULL" >/dev/null
 }
 
 # bind_env ws VAR VALUE — create+bind one env-secret via the convenience
