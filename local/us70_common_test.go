@@ -109,3 +109,28 @@ func TestUS70_APIKeyInsertIDFitsColumn(t *testing.T) {
 		}
 	}
 }
+
+func TestUS70_WorkspaceRuntimeIsDirectImageRef(t *testing.T) {
+	// Pool run 5: spec.runtime="python:3.11" — a bare name needing a
+	// RuntimeEnvironment CRD that kubectl-created clusters don't have
+	// (controller: "no RuntimeEnvironment found matching
+	// workspace.spec.runtime"). The seeded runtime must be a direct
+	// image ref (contains "/") in BOTH CR templates and the DB mirror.
+	raw, err := exec.Command("cat", us70Lib).CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if strings.Contains(src, "runtime: python:3.11") {
+		t.Fatal("bare catalog-style runtime in a CR template — the controller cannot resolve it without a RuntimeEnvironment CRD (pool run 5)")
+	}
+	if strings.Contains(src, "'python:3.11', '1Gi'") {
+		t.Fatal("bare runtime name in the DB mirror INSERT — mirror must match the CR's direct image ref")
+	}
+	if !strings.Contains(src, "runtime: ${RUNTIME_REF}") {
+		t.Fatal("CR templates must seed runtime from ${RUNTIME_REF}")
+	}
+	if !strings.Contains(src, `RUNTIME_REF="${RUNTIME_REF:-ghcr.io/lenaxia/llmsafespaces/runtime-base:${IMAGE_TAG:-ci}}"`) {
+		t.Fatal("RUNTIME_REF default missing — the direct-ref contract is unpinned")
+	}
+}
