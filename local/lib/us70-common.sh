@@ -196,8 +196,11 @@ seed_session() { # user_id
 
     kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
         psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 -c "
+-- api_keys.id is varchar(36) (uuid-shaped): '${OWNER_ID}-sd' is 36+3 =
+-- 39 chars -> 'value too long' (pool run 4). A short literal id is
+-- unique in the pool's dedicated DB and keeps ON CONFLICT idempotent.
 INSERT INTO api_keys (id, user_id, key, name, active)
-VALUES ('${OWNER_ID}-sd', '${OWNER_ID}', $(api_key_db_hash "${API_KEY}"), 'e2e-sd-key', true)
+VALUES ('us70-harness-apikey', '${OWNER_ID}', $(api_key_db_hash "${API_KEY}"), 'e2e-sd-key', true)
 ON CONFLICT (id) DO UPDATE SET key=EXCLUDED.key, active=true;
 " >/dev/null
 }
