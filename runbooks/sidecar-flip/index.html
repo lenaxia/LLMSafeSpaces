@@ -1954,10 +1954,15 @@
 <li><code>BootReady=True</code> condition on the Workspace;</li>
 <li>sidecar Ready, opencode session smoke (chat round-trip);</li>
 <li>env-secrets/SSH key still land (cross-uid 0640 profile — K3's <code>secrets-env</code> mode).</li>
-<li><strong>Batch:</strong> delete pods of Active workspaces in batches (≤25% per wave), same verification per wave. Watch <code>llmsafespaces_workspace_platform_boot_failures_total</code> — any non-zero value STOPS the rollout (page; it is a platform regression, not load).</li>
-<li><strong>Suspended workspaces:</strong> do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window.</li>
-<li><strong>Accepting force-upgrade semantics:</strong> an in-flight session on a deleted pod is interrupted (~22s resume cost); PVCs retain all state; opencode.db replays via WAL.</li>
+<li><strong>Batch:</strong> delete pods of Active workspaces in batches (≤25% per wave), same verification per wave. Watch the stop-condition metrics — <strong>any non-zero value STOPS the rollout</strong> (page; it is a platform regression, not load):</li>
+<li><code>llmsafespaces_workspace_platform_boot_failures_total</code></li>
+<li><code>llmsafespaces_workspace_agentd_verify_failures_total</code></li>
+<li><code>llmsafespaces_workspace_opencode_verify_failures_total</code></li>
 </ol>
+<p><strong>CounterVec semantics (verified live, #1211 F4): these metrics are ABSENT from <code>/metrics</code> while failures are zero</strong> — a Prometheus CounterVec emits nothing until its first increment. Absence is the healthy state, not a missing/rename. The positive health signals are <code>llmsafespaces_agentd_gate_duration_seconds{gate=…}</code> (count ≥ 1 = every gate passed) and <code>llmsafespaces_stalled_entries 0</code>.</p>
+<p><strong>Scrape method:</strong> port-forward the controller's metrics port (<code>kubectl -n llmsafespaces port-forward deploy/llmsafespaces-controller 8080:8080</code>) — the controller image ships no wget/curl, so <code>kubectl exec … -- wget</code> is a false negative.
+3. <strong>Suspended workspaces:</strong> do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window. <strong>Spot-resume caveat (#1211 F3):</strong> a workspace idle longer than the auto-suspend timeout resumes, verifies, then re-suspends in ~a minute (Creating → OpencodeVerified → "idle timeout exceeded") — functionally correct, but refresh <code>status.lastActivityAt</code> first if you want a resumed workspace to stay up (the F2 drain used exactly this).
+4. <strong>Accepting force-upgrade semantics:</strong> an in-flight session on a deleted pod is interrupted (~22s resume cost); PVCs retain all state; opencode.db replays via WAL.</p>
 <p><strong>Rollback:</strong> flip the value back off. Recreated pods converge to the single-container spec (<code>--supervise</code>); Secrets carry extra keys that legacy readers ignore; file relocations re-converge via reset()+re-materialize.</p>
 <p><strong>Step 5 — DONE (design 0053, #1156):</strong> the baked agentd + entrypoints + legacy bash init path were deleted from <code>runtimes/base/Dockerfile</code> and <code>pod_builder.go</code> (the <code>overlayOn</code> branch); <code>MinBaseVersion</code> was deleted outright (no baked contract remains to floor). The rollback artifact is the LAST pre-strip base tag (kept pullable; content-versioned rows start at <code>bookworm@2026.08.0</code>).</p>
 
@@ -1982,7 +1987,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 31, 2026 06:35:45 UTC"><span class="timeago" datetime="2026-08-31T06:35:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 31, 2026 06:35:45 UTC">2026-08-31</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 17:41:58 UTC"><span class="timeago" datetime="2026-09-01T17:41:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 17:41:58 UTC">2026-09-01</span>
   </span>
 
     
