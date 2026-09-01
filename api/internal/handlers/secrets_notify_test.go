@@ -543,7 +543,7 @@ func mustEnvService(t *testing.T, store *notifyPathStore) *secrets.SecretService
 	t.Helper()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(newTestKeyStore(), dekCache)
-	require.NoError(t, dekCache.CacheDEK(context.Background(), "session-1", []byte("notify-test-dek"), time.Hour),
+	require.NoError(t, dekCache.CacheDEK(context.Background(), "session-1", make([]byte, 32), time.Hour),
 		"the env path authors through the session DEK — pre-cache it like login would")
 	return secrets.NewSecretService(keySvc, store)
 }
