@@ -153,6 +153,12 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     let turnOver = false;
     await setupChatMocks(page, {
       history: () => (turnOver ? [userHistoryMessage("draft the release notes"), assistantHistoryMessage("Hello world")] : [userHistoryMessage("draft the release notes")]),
+      // The provider's busy map follows the user stream: busy while the
+      // turn is live, idle once the store owns it (production
+      // dual-publishes the same shape).
+      userStream: () => (turnOver
+        ? `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "idle" })}\n\n`
+        : `data: ${JSON.stringify({ type: "session.status", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, status: "busy" })}\n\n`),
     });
 
     let contractHits = 0;
@@ -206,9 +212,12 @@ test.describe("contract stream reconnects (US-69.10, mocked backend)", () => {
     await expect(page.getByText("Hello world").first()).toBeVisible({ timeout: 15000 });
     await expect(page.getByText("STALE-DUPLICATE")).toHaveCount(0);
     await expect(page.getByText("draft the release notes")).toHaveCount(1);
-    // After idle, the history (store) owns the turn: still exactly one.
-    await page.waitForTimeout(2000);
-    expect(await page.getByText("Hello world").count()).toBe(1);
+    // After idle, the history (store) owns the turn and the streaming
+    // bubble yields: exactly one. Poll — the reconcile refetch and the
+    // provider busy-clear race under CI load.
+    await expect
+      .poll(async () => page.getByText("Hello world").count(), { timeout: 15000 })
+      .toBe(1);
   });
 
   test("standing_question_reconnect_e2e: question answerable from the snapshot alone", async ({ page }) => {
