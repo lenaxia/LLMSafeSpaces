@@ -246,6 +246,29 @@ func TestUS70Harness_BindEnv_ReloginsOn401(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_FailureDiagnostics pins the diagnose-dump contract:
+// a wait_phase timeout must dump CR status, pod describe, container logs,
+// controller tail, and events — pool runs 4-5 each burned ~40 minutes on
+// illegible failures before this existed.
+func TestUS70Harness_FailureDiagnostics(t *testing.T) {
+	lib := mustRead(t, us70CommonScript)
+	for _, pin := range []string{
+		"diagnose_workspace()",
+		"wait_phase",
+		"--- CR status",
+		"--- container logs",
+		"--- controller tail",
+		"--- recent events",
+	} {
+		if !strings.Contains(lib, pin) {
+			t.Fatalf("us70-common.sh must keep %q — failures must be legible in the run log", pin)
+		}
+	}
+	if !strings.Contains(lib, `diagnose_workspace "${ws}"`) {
+		t.Fatal("wait_phase's timeout path must call diagnose_workspace")
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {

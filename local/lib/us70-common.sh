@@ -71,7 +71,39 @@ wait_phase() { # ws phase timeout_s
         sleep 3
     done
     warn "workspace ${ws} never reached phase=${want} (last: ${phase:-<empty>})"
+    diagnose_workspace "${ws}"
     return 1
+}
+
+# diagnose_workspace dumps why a workspace is stuck: CR status/conditions,
+# pod state, container logs (agentd first — the sidecar gates the main
+# container), controller tail, and recent events. Diverging blind
+# retry-fix cycles (pool runs 4-5) each cost ~40 minutes; this makes the
+# next failure legible in the log itself.
+diagnose_workspace() { # ws
+    local ws="$1" pod
+    pod=$(pod_of "${ws}")
+    {
+        echo "===== DIAGNOSE ${ws} ====="
+        echo "--- CR status"
+        kc get workspace "${ws}" -o yaml 2>/dev/null | sed -n '/^status:/,$p'
+        echo "--- pod ${pod:-<none>}"
+        [[ -n "${pod}" ]] && kc describe pod "${pod}" 2>/dev/null | tail -45
+        echo "--- container logs"
+        if [[ -n "${pod}" ]]; then
+            for c in agentd workspace opencode platform-bootstrap platform-init platform-materialize; do
+                if kc logs "${pod}" -c "${c}" --tail=60 2>/dev/null; then
+                    echo "--- (container ${c} above)"
+                    break
+                fi
+            done
+        fi
+        echo "--- controller tail"
+        kc logs deployment/llmsafespaces-controller --tail=50 2>/dev/null
+        echo "--- recent events"
+        kc get events --sort-by=.lastTimestamp 2>/dev/null | tail -25
+        echo "===== END DIAGNOSE ====="
+    } >&2
 }
 
 # secrets_converged ws timeout_s — waits until the controller has mirrored a
