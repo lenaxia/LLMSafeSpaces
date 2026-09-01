@@ -134,3 +134,21 @@ func TestUS70_WorkspaceRuntimeIsDirectImageRef(t *testing.T) {
 		t.Fatal("RUNTIME_REF default missing — the direct-ref contract is unpinned")
 	}
 }
+
+func TestUS70_ScaleBatchSetsMinimalResources(t *testing.T) {
+	// Pool run 6: 100 scale workspaces with default requests (500m/1Gi)
+	// = ~50 cores demand on a single-node kind runner -> unschedulable.
+	// The scale batch must pin minimal requests (AC-13 measures resume
+	// latency, not resource contention).
+	raw, err := exec.Command("cat", "us-70-secret-delivery-e2e.sh").CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "SCALE_RES=") {
+		t.Fatal("AC-13 batch must define SCALE_RES (pool run 6: unschedulable at default requests)")
+	}
+	if !strings.Contains(src, `seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"`) {
+		t.Fatal("AC-13 batch must pass SCALE_RES to seed_workspace")
+	}
+}

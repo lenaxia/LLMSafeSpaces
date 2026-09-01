@@ -152,8 +152,18 @@ if (( SCALE > 0 )); then
     done
 
     ok "seeding + binding ${#WSBATCH[@]} workspaces (this is the slow part; parallelizable in pool)"
+    # Pool run 6: 100 workspaces x default requests (500m/1Gi from the
+    # instance defaults) = ~50 cores of demand -> "Pod unschedulable" on
+    # the single-node kind runner; the controller's unschedulable->
+    # recovery path fired correctly. AC-13 measures resume latency and
+    # rev convergence, not resource contention: minimal requests keep
+    # the 100-concurrency semantics on the pool's hardware.
+    SCALE_RES="    cpu: 50m
+    memory: 128Mi
+    cpuLimit: "1"
+    memoryLimit: 512Mi"
     for ws in "${WSBATCH[@]}"; do
-        seed_workspace "${ws}" "${RUNTIME_CLASS}"
+        seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
         bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
     done
     for ws in "${WSBATCH[@]}"; do
