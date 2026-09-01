@@ -5,6 +5,7 @@ package contractstream
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,10 +23,14 @@ import (
 // fresh snapshot, slow consumers dropped to a Resync without blocking
 // anyone else. ---
 
-// fakeSource is an injectable pod stream.
+// fakeSource is an injectable pod stream. close is Once-guarded: the
+// connect factory spawns a closer per (re)connection, and a select/
+// default pair is not atomic against a concurrent second closer (the
+// reconnect race the Subscribe reordering exposed).
 type fakeSource struct {
-	frames chan *abiv1.StreamFrame
-	closed chan struct{}
+	frames    chan *abiv1.StreamFrame
+	closeOnce sync.Once
+	closed    chan struct{}
 }
 
 func newFakeSource() *fakeSource {
@@ -37,11 +42,7 @@ func (f *fakeSource) Err() error                        { return nil }
 
 func closeSource(t *testing.T, f *fakeSource) {
 	t.Helper()
-	select {
-	case <-f.closed:
-	default:
-		close(f.closed)
-	}
+	f.closeOnce.Do(func() { close(f.closed) })
 }
 
 func snapshotFrame(seq uint64) *abiv1.StreamFrame {
