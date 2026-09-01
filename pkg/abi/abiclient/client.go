@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	abiconnect "github.com/lenaxia/llmsafespaces/pkg/abi/v1/abiconnect"
 )
@@ -189,11 +190,43 @@ func receiveOne(ctx context.Context, s *connect.ServerStreamForClient[abiv1.Stre
 	}
 }
 
+// StreamOption tunes Stream's callbacks (US-69.11).
+type StreamOption func(*streamOptions)
+
+type streamOptions struct {
+	appliedEvents func(evt *abiv1.Event, seq uint64)
+}
+
+// AppliedEventsOf composes opts into the single applied-events callback
+// they configure (nil when none). Consumers that wrap Stream with their
+// own event dispatch (the API's usagestream consumer and its test fake)
+// read the seam through this instead of re-implementing option plumbing.
+func AppliedEventsOf(opts []StreamOption) func(evt *abiv1.Event, seq uint64) {
+	var so streamOptions
+	for _, o := range opts {
+		o(&so)
+	}
+	return so.appliedEvents
+}
+
+// WithAppliedEvents registers a callback invoked for every event the
+// fold ACCEPTED (post discard rule), in stream order, with its seq —
+// exactly-once-per-seq delivery across reconnects. Consumers that need
+// event payloads (usage metering, state bridges) use this instead of
+// re-implementing the fold.
+func WithAppliedEvents(fn func(evt *abiv1.Event, seq uint64)) StreamOption {
+	return func(o *streamOptions) { o.appliedEvents = fn }
+}
+
 // Stream keeps the folded state current: it applies the snapshot, then live
 // events, invoking onUpdate after each applied frame. On
 // projection.reseeded (mandatory re-snapshot) it transparently reconnects.
 // Runs until ctx is canceled; returns the ctx error.
-func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState)) error {
+func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState), opts ...StreamOption) error {
+	var so streamOptions
+	for _, o := range opts {
+		o(&so)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -243,7 +276,11 @@ func (c *Client) Stream(ctx context.Context, onUpdate func(*SessionState)) error
 				_ = s.Close()
 				break
 			}
-			applyEvent(st, f.GetEvent())
+			seqed := f.GetEvent()
+			applyEvent(st, seqed)
+			if so.appliedEvents != nil && seqed != nil && seqed.GetEvent() != nil {
+				so.appliedEvents(seqed.GetEvent(), seqed.GetSeq())
+			}
 			if onUpdate != nil {
 				onUpdate(st.clone())
 			}

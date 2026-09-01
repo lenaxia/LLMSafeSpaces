@@ -19,6 +19,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
@@ -59,7 +61,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Compile-time check that *WorkspaceClient satisfies the caller-shaped
@@ -1579,10 +1580,23 @@ func (a *App) Run() error {
 		}
 	}
 
-	// Epic 26 / billing: wire inference callback and session metrics unconditionally.
-	// Previously nested inside the agentReloadHandler guard, which meant if the
-	// workspace service type assertion failed (or the handler wasn't created),
-	// SetOnInference was never called and inference metrics remained permanently zero.
+	// US-69.11: wire the usage stream's billing sinks (the busy-gated ABI
+	// consumer replaces the SSE tracker as the token-usage source; the
+	// deterministic idempotency keys make multi-replica billing
+	// exactly-once via usage_events' unique constraint).
+	if metricsSvc, ok := a.services.Metrics.(*metrics.Service); ok {
+		meteringSvc := a.services.Metering
+		ph := a.proxyHandler
+		ph.SetUsageBilling(func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64) {
+			metricsSvc.RecordInference(modelID, providerID, inputTokens, outputTokens, costDollars)
+		}, func(evt types.UsageEvent) {
+			if meteringSvc == nil {
+				return
+			}
+			meteringSvc.Record(evt)
+		})
+	}
+
 	if tracker := a.proxyHandler.GetSSETracker(); tracker != nil {
 		if metricsSvc, ok := a.services.Metrics.(*metrics.Service); ok {
 			meteringSvc := a.services.Metering

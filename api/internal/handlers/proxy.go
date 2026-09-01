@@ -139,6 +139,11 @@ type ProxyHandler struct {
 	// delivery ledger instead of the adapter + verify oracle.
 	agentdTerminus bool
 
+	// Usage billing sinks (SetUsageBilling; guarded by usageBillingMu).
+	usageBillingMu sync.Mutex
+	usageInference func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64)
+	usageMetering  func(types.UsageEvent)
+
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
 	requestBuffer *requestBuffer

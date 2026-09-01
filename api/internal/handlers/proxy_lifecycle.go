@@ -75,6 +75,7 @@ func (h *ProxyHandler) Start() error {
 		// watches have no transition event to re-arm them. The reconciler
 		// heals missing watches; see its doc comment for scope limits.
 		go h.sseWatchReconciler(sseWatchReconcileInterval)
+		go h.stateReconciler(sseWatchReconcileInterval)
 
 		// D3 (#907): the outbox delivery worker — detached from any
 		// request context; survives client disconnects (the incident's
@@ -524,6 +525,12 @@ func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID 
 // SSE that clears the frontend pill deterministically (#987 — the
 // outbox path previously never emitted it).
 func (h *ProxyHandler) outboxOnDelivered(workspaceID, sessionID string, e outbox.Entry) {
+	// US-69.11: a confirmed delivery means a turn may start — arm the
+	// busy-gated usage stream so billing + the state bridge see it. The
+	// gate drops itself after the idle settle window.
+	if h.agentdTerminus {
+		h.UsageStream().Open(workspaceID)
+	}
 	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
 	h.publishQueueEvent(workspaceID, sessionID, "sent", e.ID, "")
 }
