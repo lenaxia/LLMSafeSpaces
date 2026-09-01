@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -145,18 +144,6 @@ func (m *mockAdapter) RetryFromEvent(string, string) (string, *agent.ClientRetry
 
 // newUsageStubAdapter returns an adapter stub whose ContextUsageFromEvent
 // answers with fixed values keyed by sessionID substring in the raw payload.
-// Handler-level wiring tests use it; the real wire→usage translation (both
-// opencode shapes and its math) is pinned in pkg/agent/opencode tests.
-func newUsageStubAdapter(mapping map[string]int64) *mockAdapter {
-	return &mockAdapter{contextUsageFn: func(eventType string, rawData string) (string, *session.ContextUsage, bool) {
-		for sid, used := range mapping {
-			if strings.Contains(string(rawData), sid) {
-				return sid, &session.ContextUsage{Used: used}, true
-			}
-		}
-		return "", nil, false
-	}}
-}
 func (m *mockAdapter) Capabilities() []session.Capability { return nil }
 func (m *mockAdapter) FormatProviderConfig(p []agent.LLMProviderData) ([]byte, error) {
 	if m.formatProviderCfgFn != nil {

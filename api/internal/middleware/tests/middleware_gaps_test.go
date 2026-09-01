@@ -17,10 +17,11 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
-	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
+	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
 )
 
 // === MISSINGTESTS Item 1: Middleware Chaining ===

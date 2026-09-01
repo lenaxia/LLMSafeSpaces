@@ -69,7 +69,7 @@ func (h *ProxyHandler) Start() error {
 		h.phaseSource = watcher
 		// #902 semantics live on in the state reconciler: gates that die
 		// (pod churn) heal on its tick; usage-gate Open is idempotent.
-		go h.stateReconciler(sseWatchReconcileInterval)
+		go h.stateReconciler(stateReconcileInterval)
 
 		// D3 (#907): the outbox delivery worker — detached from any
 		// request context; survives client disconnects (the incident's
@@ -93,21 +93,10 @@ func (h *ProxyHandler) Start() error {
 	return startErr
 }
 
-// sseWatchReconcileInterval is how often the SSE watch reconciler re-arms
-// watches for Active workspaces. Var for tests.
-var sseWatchReconcileInterval = 60 * time.Second
+// stateReconcileInterval is the state reconciler's tick (gate arming,
+// D6 sweep, statusz self-heal). Var for tests.
+var stateReconcileInterval = 60 * time.Second
 
-// sseWatchReconciler periodically re-arms SSE tracker watches for every
-// Active workspace (#902). It heals MISSING watches — a seed skipped via
-// Redis-persisted prior-phase, an armed watch whose subscribe goroutine
-// exited, a future bug — converting permanent event-blindness into at
-// most one interval. Scope limits, stated plainly (#903 review):
-//   - It only adds watches (EnsureWatching is an idempotent map check);
-//     it never tears down or resets connections.
-//   - It cannot see ARMED-BUT-FAILING watches (goroutine alive,
-//     connectAndRead failing forever at Warn with backoff — e.g. a stale
-//     podIP). That class needs the tracker-state signal from #901
-//     (G1/G11), not this reconciler.
 func (h *ProxyHandler) Stop() error {
 	h.stopOnce.Do(func() {
 		if h.stopCh != nil {

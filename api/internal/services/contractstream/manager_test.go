@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
 // --- US-69.10: the on-demand contract-stream proxy (D1-B). The

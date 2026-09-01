@@ -8,9 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lenaxia/llmsafespaces/pkg/email"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/email"
 )
 
 // fakeProvider captures the last message handed to Send. Returns the

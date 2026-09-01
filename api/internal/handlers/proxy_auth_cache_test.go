@@ -339,9 +339,9 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 	consumer, _, resolved := newRecordingGateConsumer(nil)
 	t.Cleanup(injectUsageStream(consumer))
 
-	orig := sseWatchReconcileInterval
-	sseWatchReconcileInterval = 20 * time.Millisecond
-	t.Cleanup(func() { sseWatchReconcileInterval = orig })
+	orig := stateReconcileInterval
+	stateReconcileInterval = 20 * time.Millisecond
+	t.Cleanup(func() { stateReconcileInterval = orig })
 
 	stopCh := make(chan struct{})
 	env.handler.stopCh = stopCh
@@ -354,7 +354,7 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 		"ws-susp":    "Suspended",
 		"ws-created": "Creating",
 	}
-	go env.handler.stateReconciler(sseWatchReconcileInterval)
+	go env.handler.stateReconciler(stateReconcileInterval)
 
 	require.Eventually(t, func() bool {
 		for _, id := range *resolved {

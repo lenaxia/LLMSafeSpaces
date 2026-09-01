@@ -7,8 +7,9 @@ import (
 	"context"
 	"testing"
 
-	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/stretchr/testify/require"
+
+	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 )
 
 // TestWorkflowAgentdExecutor_PasswordProviderWired is the wiring guard for

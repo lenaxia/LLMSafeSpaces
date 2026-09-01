@@ -84,9 +84,9 @@ func (l *e2eLogger) dump(t *testing.T) {
 // flips (the pod-IP-empty unhappy path).
 func startFullWiring(t *testing.T, wsName, podIP, priorPhase string, reconcileInterval time.Duration, ipReady <-chan struct{}) (*ProxyHandler, *gateTestClient) {
 	t.Helper()
-	orig := sseWatchReconcileInterval
-	sseWatchReconcileInterval = reconcileInterval
-	t.Cleanup(func() { sseWatchReconcileInterval = orig })
+	orig := stateReconcileInterval
+	stateReconcileInterval = reconcileInterval
+	t.Cleanup(func() { stateReconcileInterval = orig })
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK) // statusz reconcile probe target (silent)

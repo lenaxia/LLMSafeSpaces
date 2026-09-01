@@ -7,9 +7,10 @@ import (
 	"context"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/stretchr/testify/mock"
 )
 
 type MockMeteringService struct {

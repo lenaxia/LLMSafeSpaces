@@ -277,9 +277,9 @@ func TestEscalateHungs_ReconcilerTickIntegration(t *testing.T) {
 	origCooldown := busyAlertCooldown
 	busyAlertCooldown = time.Hour
 	t.Cleanup(func() { busyAlertCooldown = origCooldown })
-	origInterval := sseWatchReconcileInterval
-	sseWatchReconcileInterval = 20 * time.Millisecond
-	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+	origInterval := stateReconcileInterval
+	stateReconcileInterval = 20 * time.Millisecond
+	t.Cleanup(func() { stateReconcileInterval = origInterval })
 
 	var sawBearer atomic.Bool
 	env, broker := newD6Env(t, func(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +313,7 @@ func TestEscalateHungs_ReconcilerTickIntegration(t *testing.T) {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(stateReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
 		<-done
@@ -374,9 +374,9 @@ func TestD6_E2E_DetectionToHistory(t *testing.T) {
 	origCooldown := busyAlertCooldown
 	busyAlertCooldown = time.Hour
 	t.Cleanup(func() { busyAlertCooldown = origCooldown })
-	origInterval := sseWatchReconcileInterval
-	sseWatchReconcileInterval = 20 * time.Millisecond
-	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+	origInterval := stateReconcileInterval
+	stateReconcileInterval = 20 * time.Millisecond
+	t.Cleanup(func() { stateReconcileInterval = origInterval })
 
 	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + time.Minute).Seconds())))
 
@@ -414,7 +414,7 @@ func TestD6_E2E_DetectionToHistory(t *testing.T) {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(stateReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
 		<-done
@@ -442,9 +442,9 @@ func TestD6_E2E_PanicIsolation_ReconcilerSurvives(t *testing.T) {
 	origCooldown := busyAlertCooldown
 	busyAlertCooldown = time.Hour
 	t.Cleanup(func() { busyAlertCooldown = origCooldown })
-	origInterval := sseWatchReconcileInterval
-	sseWatchReconcileInterval = 15 * time.Millisecond
-	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+	origInterval := stateReconcileInterval
+	stateReconcileInterval = 15 * time.Millisecond
+	t.Cleanup(func() { stateReconcileInterval = origInterval })
 
 	env, _ := newD6Env(t, hungStatusz(99999))
 	alerts := &mockSessionAlerts{}
@@ -463,7 +463,7 @@ func TestD6_E2E_PanicIsolation_ReconcilerSurvives(t *testing.T) {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(stateReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
 		<-done

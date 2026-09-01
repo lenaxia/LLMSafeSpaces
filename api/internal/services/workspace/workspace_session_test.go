@@ -11,10 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // mockSessionIndex implements interfaces.SessionIndexService for testing.

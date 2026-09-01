@@ -53,32 +53,6 @@ func (h *ProxyHandler) v2Client(ctx context.Context, workspaceID string) (V2Sess
 }
 
 // ---------------------------------------------------------------------------
-// US-63.5: SSE Event Bridge — V2 events → queue.update
-// ---------------------------------------------------------------------------
-
-// Spike-verified V2 event wire types (worklog NNNN_us-63.1-v2-spike, F14):
-//
-//	session.next.prompt.admitted → queue.update/enqueued
-//	session.next.prompted        → queue.update/sent
-//
-// Both carry properties.{messageID, sessionID, delivery}. Only
-// delivery:"queue" inputs are bridged — delivery:"steer" inputs are
-// mid-turn injections, not queue entries the frontend tracks as pills.
-const (
-	v2EventPromptAdmitted = "session.next.prompt.admitted"
-	v2EventPrompted       = "session.next.prompted"
-)
-
-// ---------------------------------------------------------------------------
-// US-63.9: Stranded-Input Recovery — wake on reconnect
-// ---------------------------------------------------------------------------
-
-const (
-	v2EventStepEnded  = "session.next.step.ended"
-	v2EventStepFailed = "session.next.step.failed"
-)
-
-// ---------------------------------------------------------------------------
 // US-63.3: Enqueue path (delivery:queue)
 // ---------------------------------------------------------------------------
 

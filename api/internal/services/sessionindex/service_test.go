@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func TestRecordMessage_NonBlocking(t *testing.T) {

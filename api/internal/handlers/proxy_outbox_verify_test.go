@@ -326,24 +326,6 @@ func newVerifyEnv(t *testing.T, backend *fakeAgentBackend, v2 ...bool) *e2eEnv {
 	return env
 }
 
-// subscribeStatusEvents captures session.status events for ws-1 (the
-// R5 bridge's derived turn lifecycle).
-func subscribeStatusEvents(t *testing.T, env *e2eEnv) <-chan apitypes.WorkspaceSSEEvent {
-	t.Helper()
-	sub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	require.NoError(t, err)
-	t.Cleanup(func() { env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub) })
-	out := make(chan apitypes.WorkspaceSSEEvent, 16)
-	go func() {
-		for e := range sub.Ch {
-			if e.Type == "session.status" {
-				out <- e
-			}
-		}
-	}()
-	return out
-}
-
 // subscribeQueueUpdates captures queue.update events for ws-1.
 func subscribeQueueUpdates(t *testing.T, env *e2eEnv) <-chan apitypes.WorkspaceSSEEvent {
 	t.Helper()
