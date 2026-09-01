@@ -21,7 +21,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/filediff"
@@ -1224,74 +1223,6 @@ func TestAdapterContextUsageFromEvent(t *testing.T) {
 }
 
 // --- MeteringFromEvent (the seam's billing decode contract) ---
-
-func TestAdapterMeteringFromEvent(t *testing.T) {
-	core, logs := observer.New(zap.WarnLevel)
-	a := NewAdapter(nil, nil, zap.New(core))
-
-	t.Run("non-metering event is nil/false, silent", func(t *testing.T) {
-		logs.TakeAll()
-		u, ok, err := a.MeteringFromEvent("message.part.updated", []byte(`{"sessionID":"s","part":{"type":"text"}}`))
-		assert.NoError(t, err)
-		assert.False(t, ok)
-		assert.Nil(t, u)
-		assert.Empty(t, logs.All(), "non-metering traffic must never warn")
-	})
-
-	t.Run("info-less session.updated routes to zero-value/true (incomplete-fields path)", func(t *testing.T) {
-		// The round-2 contract: ok=false is reserved for "not a metering
-		// event". An info-less session.updated IS one, with missing
-		// fields — the caller's incomplete-fields warn depends on this.
-		logs.TakeAll()
-		u, ok, err := a.MeteringFromEvent("session.updated", []byte(`{"properties":{"sessionID":"s"}}`))
-		require.NoError(t, err)
-		require.True(t, ok)
-		require.NotNil(t, u)
-		assert.Empty(t, *u, "zero-value usage: caller's incomplete-fields warn fires")
-	})
-
-	t.Run("undecodable metering event errors AND warns (sole drift signal)", func(t *testing.T) {
-		logs.TakeAll()
-		// The adapter takes envelope-stripped properties; a non-object
-		// properties value is the drift case.
-		u, ok, err := a.MeteringFromEvent("session.updated", []byte(`[1,2]`))
-		require.Error(t, err)
-		assert.False(t, ok)
-		assert.Nil(t, u)
-		found := false
-		for _, e := range logs.All() {
-			if e.Message == "opencode metering event claims usage but fails to decode — wire drift?" {
-				found = true
-			}
-		}
-		assert.True(t, found, "the adapter warn is the sole surviving metering-drift signal (tracker returns silently)")
-	})
-
-	t.Run("full decode carries attribution", func(t *testing.T) {
-		logs.TakeAll()
-		raw := `{"sessionID":"ses_a","info":{"id":"ses_a","cost":0.042,"tokens":{"input":1000,"output":500},"model":{"id":"glm-5.3","providerID":"thekaocloud"}}}`
-		u, ok, err := a.MeteringFromEvent("session.updated", []byte(raw))
-		require.NoError(t, err)
-		require.True(t, ok)
-		require.NotNil(t, u)
-		assert.Equal(t, "ses_a", u.SessionID)
-		assert.Equal(t, "glm-5.3", u.ModelID)
-		assert.Equal(t, "thekaocloud", u.ProviderID)
-		assert.Equal(t, int64(1000), u.InputTokens)
-		assert.Equal(t, int64(500), u.OutputTokens)
-		assert.InDelta(t, 0.042, u.CostUSD, 1e-9)
-		assert.False(t, u.CostMalformed)
-	})
-
-	t.Run("suffixed type decodes (store surface)", func(t *testing.T) {
-		raw := `{"sessionID":"s","info":{"id":"s","cost":0,"tokens":{"input":5,"output":5},"model":{"id":"m","provider":"p"}}}`
-		u, ok, err := a.MeteringFromEvent("session.updated.1", []byte(raw))
-		require.NoError(t, err)
-		require.True(t, ok)
-		assert.Equal(t, "m", u.ModelID)
-		assert.Equal(t, "p", u.ProviderID, "provider fallback applies")
-	})
-}
 
 // --- ClientEventsFromEvent / RetryFromEvent (US-65.8 client bridge) ---
 

@@ -1137,9 +1137,6 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 			return
 		}
-		if h.v2Pending != nil {
-			h.v2Pending.remove(wid, sid)
-		}
 		c.Status(http.StatusNoContent)
 		return
 	}
@@ -1459,23 +1456,6 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 		return
 	}
 
-	// Legacy: Redis-backed V2 shadow marker.
-	if h.v2Shadow != nil {
-		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
-		result := make([]queuedMessageResponse, 0, len(entries))
-		for _, e := range entries {
-			result = append(result, queuedMessageResponse{
-				ID:          e.ID,
-				Text:        e.Text,
-				SessionID:   sid,
-				WorkspaceID: wid,
-				EnqueuedAt:  time.Unix(e.EnqueuedAt, 0).UTC().Format(time.RFC3339),
-			})
-		}
-		c.JSON(http.StatusOK, queueListResponse{Messages: result})
-		return
-	}
-
 	c.JSON(http.StatusOK, queueListResponse{Messages: []queuedMessageResponse{}})
 }
 
@@ -1504,11 +1484,6 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 		return
 	}
 
-	// US-63.10// US-63.10: remove from the shadow marker. Dismissed messages must not
-	// reappear on fresh load.
-	if h.v2Shadow != nil {
-		h.v2Shadow.Remove(c.Request.Context(), wid, sid, msgID)
-	}
 	h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
 	c.Status(http.StatusNoContent)
 }

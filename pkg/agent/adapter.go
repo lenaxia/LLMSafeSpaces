@@ -168,23 +168,6 @@ type Adapter interface {
 	// code never inspects the raw bytes.
 	ContextUsageFromEvent(eventType string, rawData string) (sessionID string, usage *session.ContextUsage, ok bool)
 
-	// MeteringFromEvent translates one raw agent SSE event (already
-	// envelope-stripped: eventType + properties) into the session's
-	// CUMULATIVE usage and model attribution — the metering/billing
-	// decode. ok=false means strictly "not a metering event" — callers
-	// skip silently; that is the majority of stream traffic, never a
-	// warn. A metering-TYPED event with incomplete fields (missing info
-	// block) returns ok=true with a zero-value usage so the caller's
-	// incomplete-fields handling fires. err is non-nil only for
-	// metering-bearing payloads that fail to decode (wire drift) — and
-	// implementations MUST log a warn before returning that error:
-	// callers return silently on err and depend on this for the drift
-	// signal. Delta/dedup computation is the caller's policy, never the
-	// adapter's. Like ContextUsageFromEvent, this keeps agent wire
-	// shapes behind the seam so platform code never imports an agent
-	// implementation package (design 0049 §91).
-	MeteringFromEvent(eventType string, props []byte) (usage *SessionUsage, ok bool, err error)
-
 	// ClientEventsFromEvent translates one raw agent SSE event into
 	// zero or more CONTRACT events (pkg/session) for client
 	// consumption — the US-65.8 bridge. Clients render contract shapes
@@ -198,14 +181,6 @@ type Adapter interface {
 	// the platform retry shape. Retry detail is UI-shaped and rides the
 	// platform session.status SSE event rather than the contract.
 	RetryFromEvent(eventType string, rawData string) (sessionID string, retry *ClientRetryStatus, ok bool)
-
-	// IsKnownEventType reports whether eventType belongs to the agent's
-	// pinned event taxonomy (the adapter tolerates the agent's internal
-	// naming variants). Observability support (#739 Gap 2): consumers
-	// count known types per name, count-and-warn on unknown types, so a
-	// taxonomy rename upstream is visible instead of silently dropping
-	// events. Unknown is not an error — it is the drift signal.
-	IsKnownEventType(eventType string) bool
 
 	// SetModel changes the session's active model. Subsequent Send
 	// calls use the new model.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
 )
 

@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	dto "github.com/prometheus/client_model/go"
+
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 type Service struct {
@@ -229,11 +230,6 @@ var (
 		Name: "llmsafespaces_workspace_phase_transitions_total",
 		Help: "Workspace phase transitions observed by the API server CRD watcher.",
 	}, []string{"from_phase", "to_phase"})
-
-	agentEventsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "llmsafespaces_agent_events_total",
-		Help: "Agent SSE events processed by the API tracker, by event type. The unknown label buckets every type outside the adapter's pinned taxonomy — a rename or removal upstream shows as a known type's series flatlining while unknown grows (#739 Gap 2 drift signal).",
-	}, []string{"event_type"})
 )
 
 // RecordInference records a completed inference event at the fleet level.
@@ -257,18 +253,6 @@ func (s *Service) RecordInference(modelID, providerID string, inputTokens, outpu
 	}
 	if costDollars > 0 {
 		inferenceCostDollarsTotal.WithLabelValues(modelID, providerID, tier).Add(costDollars)
-	}
-}
-
-// RecordAgentEvent counts one agent SSE event for drift observability.
-// The caller classifies via Adapter.IsKnownEventType and passes the type
-// name only when known; unknown types must pass "" so the label set
-// stays bounded by the taxonomy (O(types), not O(upstream creativity)).
-func (s *Service) RecordAgentEvent(eventType string, known bool) {
-	if known {
-		agentEventsTotal.WithLabelValues(eventType).Inc()
-	} else {
-		agentEventsTotal.WithLabelValues("unknown").Inc()
 	}
 }
 

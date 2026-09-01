@@ -14,9 +14,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 // fakeCredentialStore implements handlers.CredentialStore for testing. It is

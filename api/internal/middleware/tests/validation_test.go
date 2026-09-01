@@ -13,9 +13,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
-	"github.com/stretchr/testify/assert"
 )
 
 // Test model for validation

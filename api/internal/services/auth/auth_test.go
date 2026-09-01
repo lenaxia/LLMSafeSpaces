@@ -14,17 +14,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	pkgutil "github.com/lenaxia/llmsafespaces/pkg/utilities"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 )
 
 func TestNew(t *testing.T) {

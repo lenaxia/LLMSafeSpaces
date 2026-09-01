@@ -9,8 +9,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/unrolled/secure"
+
+	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 // SecurityConfig defines configuration for the security middleware

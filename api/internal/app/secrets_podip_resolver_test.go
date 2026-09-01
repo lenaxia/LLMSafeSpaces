@@ -9,11 +9,12 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // fakeWorkspaceCRDGetter is a stub workspaceCRDGetter for resolver tests.

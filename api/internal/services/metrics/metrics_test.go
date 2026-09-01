@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 )
 
 var metricsService *Service
@@ -160,23 +161,6 @@ func getCounterValue(c prometheus.Counter) float64 {
 		return 0
 	}
 	return d.Counter.GetValue()
-}
-
-func TestRecordAgentEvent(t *testing.T) {
-	// Known types count under their own name; unknown types count under
-	// the single bounded "unknown" label (cardinality = taxonomy, not
-	// upstream creativity).
-	metricsService.RecordAgentEvent("session.updated", true)
-	metricsService.RecordAgentEvent("session.updated", true)
-	metricsService.RecordAgentEvent("brand.new.event", false)
-
-	m, err := agentEventsTotal.GetMetricWithLabelValues("session.updated")
-	assert.NoError(t, err)
-	assert.Equal(t, 2.0, counterValue(m))
-
-	u, err := agentEventsTotal.GetMetricWithLabelValues("unknown")
-	assert.NoError(t, err)
-	assert.Equal(t, 1.0, counterValue(u))
 }
 
 func TestRecordUploadRequest_IncrementsCounter(t *testing.T) {

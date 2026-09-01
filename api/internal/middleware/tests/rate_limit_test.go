@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
 	"github.com/lenaxia/llmsafespaces/pkg/utilities"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
 
 func TestRateLimitMiddleware_TokenBucket(t *testing.T) {

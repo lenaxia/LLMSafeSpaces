@@ -14,12 +14,13 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"k8s.io/apimachinery/pkg/watch"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
-	"k8s.io/apimachinery/pkg/watch"
 )
 
 // TestChainedWiring_WatcherToSecretautopush is the end-to-end wiring

@@ -2558,14 +2558,13 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesHighInferenceCostRate",
 		"LLMSafeSpacesWorkspaceDiskUsageHigh",
 		"LLMSafeSpacesLegacyAPIKeysRemaining",
-		// #901: the halting-sessions incident class.
-		"LLMSafeSpacesSSETrackerWatchesZero",
-		"LLMSafeSpacesSSETrackerUpstreamSilent",
+		// US-69.11: the SSE-tracker alerts (WatchesZero, UpstreamSilent,
+		// WatchFailing) were deleted with the tracker — no successor API-side
+		// alert by design; see the succession note in prometheus-rules.yaml.
 		"LLMSafeSpacesWatchdogSuppressing",
 		"LLMSafeSpacesTrackerBusyResetRate",
 		"LLMSafeSpacesRestartMarkerWriteFailed",
 		"LLMSafeSpacesRelayInjectorDegraded",
-		"LLMSafeSpacesSSETrackerWatchFailing",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],
@@ -2577,6 +2576,16 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"old warning-tier LLMSafeSpacesHighAPIErrorRate must be removed (replaced by LLMSafeSpacesLowAvailability)")
 	require.False(t, alertNames["LLMSafeSpacesHighAPIErrorRateCritical"],
 		"old critical-tier LLMSafeSpacesHighAPIErrorRateCritical must be removed (replaced by LLMSafeSpacesLowAvailability)")
+
+	// US-69.11: the retired SSE tracker's alerts must stay gone.
+	for _, gone := range []string{
+		"LLMSafeSpacesSSETrackerWatchesZero",
+		"LLMSafeSpacesSSETrackerUpstreamSilent",
+		"LLMSafeSpacesSSETrackerWatchFailing",
+	} {
+		require.False(t, alertNames[gone],
+			"retired tracker alert %q must not render (tracker deleted, US-69.11)", gone)
+	}
 }
 
 // TestMonitoring_DatasourceConfigMap_RendersWithLabel verifies the

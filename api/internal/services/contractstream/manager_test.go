@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
 // --- US-69.10: the on-demand contract-stream proxy (D1-B). The
@@ -226,4 +227,45 @@ func TestManager_SlowConsumerGetsResyncNotBlock(t *testing.T) {
 	// The fast subscriber was never dropped nor starved.
 	assert.Zero(t, atomic.LoadInt64(&fastResynced), "the fast consumer must never be dropped")
 	assert.GreaterOrEqual(t, atomic.LoadInt64(&fastCount), int64(10), "fast subscriber kept receiving")
+}
+
+// TestManager_UpstreamChangeHook (US-69.11): the optional metrics seam
+// fires open=true exactly once per upstream creation (not per attach) and
+// open=false exactly once on last detach — the scale-to-zero observable's
+// event source. Reconnects never re-fire (the map entry persists).
+func TestManager_UpstreamChangeHook(t *testing.T) {
+	m, _, _ := newTestManager(t)
+
+	events := make(chan bool, 8)
+	m.SetOnUpstreamChange(func(ws string, open bool) {
+		assert.Equal(t, "ws-1", ws)
+		events <- open
+	})
+
+	_, unsub1, err := m.Subscribe(context.Background(), "ws-1")
+	require.NoError(t, err)
+	require.True(t, <-events, "first attach opens the upstream")
+
+	_, unsub2, err := m.Subscribe(context.Background(), "ws-1")
+	require.NoError(t, err)
+	select {
+	case v := <-events:
+		t.Fatalf("second attach must not re-fire the hook, got %v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unsub1()
+	select {
+	case v := <-events:
+		t.Fatalf("detach with a subscriber remaining must not close, got %v", v)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unsub2() // last detach
+	select {
+	case open := <-events:
+		require.False(t, open, "last detach closes the upstream")
+	case <-time.After(2 * time.Second):
+		t.Fatal("last detach never fired the close hook")
+	}
 }

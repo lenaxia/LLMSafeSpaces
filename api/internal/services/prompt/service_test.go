@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // mockPromptStore implements promptStore for testing.

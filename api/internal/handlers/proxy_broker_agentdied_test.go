@@ -5,9 +5,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -15,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
@@ -36,7 +32,7 @@ func TestProxy_OnAgentDied_PublishesAgentDiedToBroker(t *testing.T) {
 	require.NoError(t, subErr)
 	defer handler.userBroker.UnsubscribeWorkspace("ws-died", sub)
 
-	handler.onAgentDied("ws-died")
+	(&usageBridge{h: handler}).AgentDied("ws-died")
 
 	select {
 	case got := <-sub.Ch:
@@ -59,7 +55,7 @@ func TestProxy_OnAgentDied_NilBrokerDoesNotPanic(t *testing.T) {
 
 	handler.userBroker = nil
 
-	assert.NotPanics(t, func() { handler.onAgentDied("ws-x") })
+	assert.NotPanics(t, func() { (&usageBridge{h: handler}).AgentDied("ws-x") })
 }
 
 // TestProxy_OnAgentDied_AlsoPublishedToUserChannel (worklog 371 M2) verifies
@@ -80,7 +76,7 @@ func TestProxy_OnAgentDied_AlsoPublishedToUserChannel(t *testing.T) {
 	require.NoError(t, subErr)
 	defer handler.userBroker.UnsubscribeUser("user-m2", userSub)
 
-	handler.onAgentDied("ws-m2")
+	(&usageBridge{h: handler}).AgentDied("ws-m2")
 
 	select {
 	case got := <-userSub.Ch:
@@ -108,7 +104,7 @@ func TestProxy_OnAgentDied_UserChannelReplaySurvivesReconnect(t *testing.T) {
 
 	// Fire agent_died with NO active user subscriber (simulates: user is
 	// disconnected at the moment of death).
-	handler.onAgentDied("ws-m2r")
+	(&usageBridge{h: handler}).AgentDied("ws-m2r")
 
 	// Now the user "reconnects": subscribe fresh.
 	reconnectedSub, subErr := handler.userBroker.SubscribeUser("user-m2r")
@@ -153,54 +149,8 @@ func TestProxy_OnAgentDied_EventShapeMatchesFrontendContract(t *testing.T) {
 		string(raw))
 }
 
-// TestProxy_TrackerToBroker_AgentDied_E2E is the end-to-end integration test
-// for US-44.1c: it wires a real *sse.Tracker to a real ProxyHandler's
-// onAgentDied callback (the single SetOnAgentDied wiring line), with a real
-// UserEventBroker + workspace subscriber, then kills the upstream SSE stream
-// (EOF after data) and asserts the subscriber receives a WorkspaceSSEEvent with
-// Type="agent_died". This proves the full chain tracker -> onAgentDied ->
-// publishWorkspaceEvent -> userBroker.PublishToWorkspace -> subscriber.
-func TestProxy_TrackerToBroker_AgentDied_E2E(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		flusher := w.(http.Flusher)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "data: %s\n\n", `{"type":"session.status","properties":{"sessionID":"sess-1","status":{"type":"busy"}}}`)
-		flusher.Flush()
-	}))
-	t.Cleanup(server.Close)
-
-	httpClient := &http.Client{
-		Transport: &redirectTransport{server: server},
-		Timeout:   5 * time.Second,
-	}
-
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	handler.userBroker = eventbroker.NewUserEventBroker()
-
-	sub, subErr := handler.userBroker.SubscribeWorkspace("ws-e2e")
-	require.NoError(t, subErr)
-	defer handler.userBroker.UnsubscribeWorkspace("ws-e2e", sub)
-
-	tracker := sse.NewTracker(httpClient, &testLogger{}, func(workspaceID, sessionID string) {})
-	tracker.SetPasswordGetter(fakePWProvider{pw: "test-pw"})
-	tracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-	tracker.SetOnAgentDied(handler.onAgentDied)
-	t.Cleanup(tracker.Stop)
-
-	tracker.EnsureWatching("ws-e2e")
-
-	select {
-	case got := <-sub.Ch:
-		assert.Equal(t, "agent_died", got.Type)
-		assert.Equal(t, "ws-e2e", got.WorkspaceID)
-		raw, mErr := json.Marshal(got.Data)
-		require.NoError(t, mErr)
-		assert.JSONEq(t, `{"reason":"unknown"}`, string(raw))
-	case <-time.After(3 * time.Second):
-		t.Fatal("broker subscriber must receive agent_died after upstream SSE EOF post-data")
-	}
-}
+// US-69.11: the tracker→broker agent_died E2E was deleted with the
+// tracker. The equivalent chain (pod stream dies after frames →
+// consumer → Bridge.AgentDied) is pinned by the usagestream consumer
+// test TestStreamErrorAfterFramesSignalsDeathAndRetries plus the
+// bridge-level tests above.

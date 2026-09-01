@@ -89,74 +89,21 @@ spec:
               The SSE event broker has dropped {{ `{{ $value | humanize }}` }} events/s over the
               last 5 minutes. Subscribers may not be consuming fast enough.
 
-        # #901 G1: a replica watching zero workspaces serves event-blind
-        # streams (the 2026-08-16 halting-sessions incident shape).
-        - alert: LLMSafeSpacesSSETrackerWatchesZero
-          expr: |
-            (min(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) == 0)
-            and (sum(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
-          for: 5m
-          labels:
-            severity: critical
-            component: api
-          annotations:
-            summary: "An API replica holds zero SSE tracker watches"
-            description: >-
-              At least one API replica has watched zero workspaces for 5m — its client
-              streams are event-blind (users halt while sends succeed). Check tracker
-              Warn logs and the watch reconciler.
-
-        # #901 G3: connected-but-silent upstream — tracker watch alive but
-        # no agent events for 10m on an Active workspace.
-        - alert: LLMSafeSpacesSSETrackerUpstreamSilent
-          expr: |
-            max by (workspace_id) (llmsafespaces_sse_tracker_last_event_age_seconds{job=~"{{ $apiJob }}"}) > 600
-            and on(workspace_id)
-            max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 1
-          for: 5m
-          labels:
-            severity: warning
-            component: api
-          annotations:
-            summary: "SSE tracker upstream silent >10m on a watched workspace"
-            description: >-
-              A watched workspace has received no upstream agent events for over 10
-              minutes. Either the workspace is idle (benign) or the tracker connection
-              is dead-but-open (see #901 G11). Correlate with workspace activity.
-
-        # #901 G1: armed-but-failing — the watch exists but no /event
-        # stream is open (empty podIP, connectAndRead failing in backoff;
-        # or never-connected since arm). The connected series is
-        # initialized AT ARM TIME and deleted on StopWatching, so a
-        # PRESENT series implies armed — connected == 0 is the complete
-        # failing-watch signal (absent series = not watched = correctly
-        # not alerting). min by (workspace_id), NOT max: series are
-        # per-replica and the default topology runs 2 API replicas — max
-        # would let a healthy replica mask a dead watch on its sibling
-        # (the partial-failure variant of the incident class; #906 r7).
-        # min fires when ANY replica's armed watch is dead; absent series
-        # don't participate; boot jitter is absorbed by for: 10m.
-        # Guarded by the unlabeled watched-count > 0 so an idle replica
-        # with zero watches cannot fire it. Verified by promtool rule
-        # tests incl. a two-instance split scenario — earlier versions
-        # joined an unlabeled gauge against labeled series (could never
-        # fire) and aggregated max (replica-blind); both caught by the
-        # harness (#906 review F1, r7).
-        - alert: LLMSafeSpacesSSETrackerWatchFailing
-          expr: |
-            (min by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
-            and on() (max(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
-          for: 10m
-          labels:
-            severity: critical
-            component: api
-          annotations:
-            summary: "SSE watch armed but not connected for {{ `{{ $labels.workspace_id }}` }}"
-            description: >-
-              The tracker holds a watch for this workspace but has no open /event
-              stream for 10m — connectAndRead is failing in a backoff loop or has
-              never connected since arm (check Warn logs: empty podIP, refused
-              connection). Users on this replica are event-blind.
+        # #901 G1/G3/G11 (US-69.11): the three SSE-tracker alerts
+        # (SSETrackerWatchesZero, SSETrackerUpstreamSilent,
+        # SSETrackerWatchFailing) were deleted with the tracker — the
+        # busy-gated usage stream (llmsafespaces_usage_stream_gates) and
+        # the browser-refcounted contract stream
+        # (llmsafespaces_contract_stream_upstreams) replaced its
+        # connections. NO successor alert is defined here deliberately:
+        # gates/upstreams held open for a long window is NOT an error
+        # (long turns are legal, and Prometheus cannot join a gate gauge
+        # against workspace phase to distinguish idle-stuck from busy).
+        # The liveness signal successor is the agentd-side seq-stall
+        # family from US-69.12 — LLMSafeSpacesSeqStalled,
+        # LLMSafeSpacesStalledEntries, LLMSafeSpacesWakeFailures below
+        # (a silent upstream manifests as a stalled projection with
+        # pending ledger work, which those alerts already correlate).
 
         # #892 D1: sustained watchdog suppression = chronic starvation or a
         # wedged-but-alive agent (policy: notify, never kill).

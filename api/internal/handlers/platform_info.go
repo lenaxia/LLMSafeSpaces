@@ -9,10 +9,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
-	versionpkg "github.com/lenaxia/llmsafespaces/pkg/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	versionpkg "github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 // settingGetter is the minimal slice of InstanceService the handler needs

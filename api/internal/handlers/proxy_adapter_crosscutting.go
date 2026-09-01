@@ -144,11 +144,11 @@ func (h *ProxyHandler) postAdapterSuccess(c *gin.Context, workspace *v1.Workspac
 	}
 }
 
-// adapterEnsureSSEWatch ensures the SSE tracker is watching the workspace
-// so events flow through onRawEvent → persistContextFromEvent and the
-// real-time event stream reaches the frontend.
+// adapterEnsureSSEWatch arms the busy-gated usage stream for the
+// workspace (adapter write ops may start a turn — billing and the state
+// bridge must see it; the gate drops itself after the idle window).
 func (h *ProxyHandler) adapterEnsureSSEWatch(workspaceID string) {
-	if h.sseTracker != nil {
-		h.sseTracker.EnsureWatching(workspaceID)
+	if h.agentdTerminus {
+		h.UsageStream().Open(workspaceID)
 	}
 }

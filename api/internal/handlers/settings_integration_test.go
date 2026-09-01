@@ -12,11 +12,12 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // TestIntegration_FullSettingsLifecycle exercises the complete flow:

@@ -9,19 +9,18 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // --- SendMessage adapter cross-cutting tests ---
@@ -383,110 +382,10 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 
 // --- SSE watch regression tests (#755 stuck-busy root cause) ---
 //
-// The adapter read paths (GetHistory, GetSession, ListSessions) must
-// call adapterEnsureSSEWatch so the SSE tracker starts watching the
-// workspace. Without this, opening a busy session never receives the
-// session.status=idle event when the LLM finishes, and the session
-// appears stuck busy forever.
-
-func TestAdapterPath_GetHistory_TriggersSSEWatch(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	env := newTestEnv(t)
-
-	env.handler.adapter = &mockAdapter{
-		getHistoryFn: func(_ context.Context, _, _, _ string) ([]session.Message, error) {
-			return []session.Message{}, nil
-		},
-	}
-
-	// Verify SSE watch is triggered by checking the tracker's internal
-	// subscriptions map after the call.
-	env.handler.sseTracker = sse.NewTracker(&http.Client{Timeout: 5 * time.Second}, &testLogger{}, nil)
-	env.handler.sseTracker.SetPasswordGetter(env.handler)
-	env.handler.sseTracker.SetPodIPResolver(func(string) string { return "" })
-
-	env.wsMock.On("Get", mock.Anything, "ws-ready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-ready", Namespace: "default"},
-		Status: v1.WorkspaceStatus{
-			Phase:   v1.WorkspacePhaseActive,
-			PodIP:   "10.0.0.1",
-			PodName: "test-pod",
-		},
-	}, nil)
-	env.setupPasswordWithT(t, "ws-ready", "test-password")
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-ready/sessions/ses_1/message", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.True(t, env.handler.sseTracker.IsWatching("ws-ready"),
-		"GetHistory must trigger SSE watch")
-}
-
-func TestAdapterPath_GetSession_TriggersSSEWatch(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	env := newTestEnv(t)
-
-	env.handler.adapter = &mockAdapter{
-		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
-			return &session.Session{ID: "ses_1"}, nil
-		},
-	}
-
-	env.handler.sseTracker = sse.NewTracker(&http.Client{Timeout: 5 * time.Second}, &testLogger{}, nil)
-	env.handler.sseTracker.SetPasswordGetter(env.handler)
-	env.handler.sseTracker.SetPodIPResolver(func(string) string { return "" })
-
-	env.wsMock.On("Get", mock.Anything, "ws-ready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-ready", Namespace: "default"},
-		Status: v1.WorkspaceStatus{
-			Phase:   v1.WorkspacePhaseActive,
-			PodIP:   "10.0.0.1",
-			PodName: "test-pod",
-		},
-	}, nil)
-	env.setupPasswordWithT(t, "ws-ready", "test-password")
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-ready/sessions/ses_1", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.True(t, env.handler.sseTracker.IsWatching("ws-ready"),
-		"GetSession must trigger SSE watch")
-}
-
-func TestAdapterPath_ListSessions_TriggersSSEWatch(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	env := newTestEnv(t)
-
-	env.handler.adapter = &mockAdapter{
-		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
-			return []session.Session{}, nil
-		},
-	}
-
-	env.handler.sseTracker = sse.NewTracker(&http.Client{Timeout: 5 * time.Second}, &testLogger{}, nil)
-	env.handler.sseTracker.SetPasswordGetter(env.handler)
-	env.handler.sseTracker.SetPodIPResolver(func(string) string { return "" })
-
-	env.wsMock.On("Get", mock.Anything, "ws-ready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-ready", Namespace: "default"},
-		Status: v1.WorkspaceStatus{
-			Phase:   v1.WorkspacePhaseActive,
-			PodIP:   "10.0.0.1",
-			PodName: "test-pod",
-		},
-	}, nil)
-	env.setupPasswordWithT(t, "ws-ready", "test-password")
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-ready/sessions", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.True(t, env.handler.sseTracker.IsWatching("ws-ready"),
-		"ListSessions must trigger SSE watch")
-}
+// US-69.11: the read-path SSE-watch trigger tests were deleted with the
+// tracker — read paths now arm the busy-gated usage stream
+// (adapterEnsureSSEWatch's replacement), covered by the gate-arming
+// tests in proxy_902_e2e_test.go and proxy_auth_cache_test.go.
 
 // TestAdapterPath_SendPromptAsync_PolicyDenied_ReleasesSessionSlot pins
 // round-3 finding 4: the 403 policy denial must release the active-session

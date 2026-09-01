@@ -23,7 +23,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -53,11 +52,6 @@ type ProxyHandler struct {
 	namespace         string
 	dialect           agent.Dialect
 	agentStateChecker AgentStateChecker
-	// v2Busy tracks bridge-derived busy states for the G2 reaper
-	// (design 0054: a busy whose terminal event is lost must decay to
-	// idle in bounded time, not hang the indicator forever).
-	v2Busy v2BusySessions
-
 	// stateStore holds the per-workspace state that was previously kept
 	// in process-local maps on ProxyHandler (activeSess, deletedSessions,
 	// pwCache, wsConfig, priorPhase, parentBackfilled). Externalizing it
@@ -83,16 +77,11 @@ type ProxyHandler struct {
 	phaseSource interface {
 		GetAllKnownPhases() map[string]string
 	}
-	sseTracker     *sse.Tracker
 	sessionIndex   interfaces.SessionIndexService
 	userBroker     *eventbroker.UserEventBroker
 	sessionParents *sessionParentCache
 
 	meteringSvc interfaces.MeteringService
-
-	// tokenSeenStore persists per-session cumulative usage dedup state
-	// across tracker restarts (#759); nil = in-memory only (dev/test).
-	tokenSeenStore sse.TokenSeenStore
 
 	// versionSyncCb is the callback wired into the CRD watcher to persist
 	// runtime version info (imageTag) to the DB whenever a workspace becomes
@@ -117,19 +106,6 @@ type ProxyHandler struct {
 	// file does not import pkg/agent/opencode.
 	v2ClientConcreteFactory func(baseURL, password string) (agent.V2SessionClient, error)
 
-	// v2Pending tracks sessions with undrained V2 queue-delivered input.
-	// Used by US-63.9 (stranded-input recovery) to identify sessions
-	// needing a wake after pod restart. Initialized in NewProxyHandler
-	// (in-memory); app.go swaps in Redis-backed when a client is available
-	// so multi-replica deployments share the pending set.
-	v2Pending v2PendingTracker
-
-	// v2Shadow is a Redis-backed view-cache of pending V2 queue messages
-	// per session for fresh-load pill visibility (US-63.10). nil when no
-	// Redis client is available (shadow disabled; ListQueue returns empty
-	// under V2). Set via SetV2QueueShadow before Start().
-	v2Shadow *V2QueueShadow
-
 	// v2Delivery routes outbox delivery through the V2 admit-and-return
 	// prompt endpoint (design 0052, OPENCODE_V2_DELIVERY). When on, the
 	// adapter MUST also read the V2 store (WithV2Store) — delivery
@@ -138,6 +114,11 @@ type ProxyHandler struct {
 	// agentdTerminus (US-69.8): the outbox delivers via the pod's ABI
 	// delivery ledger instead of the adapter + verify oracle.
 	agentdTerminus bool
+
+	// Usage billing sinks (SetUsageBilling; guarded by usageBillingMu).
+	usageBillingMu sync.Mutex
+	usageInference func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64)
+	usageMetering  func(types.UsageEvent)
 
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
@@ -234,7 +215,6 @@ func NewProxyHandler(
 		connCount:     make(map[string]int),
 		busyAlerts:    make(map[string]time.Time),
 		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
-		v2Pending:     newV2PendingSessions(),
 	}, nil
 }
 
@@ -332,19 +312,6 @@ func (h *ProxyHandler) SetStateStore(store wsstate.Store) {
 		panic("SetStateStore called after Start — request goroutines may already be reading stateStore")
 	}
 	h.stateStore = store
-}
-
-// SetTokenSeenStore wires the persistent session-usage dedup store
-// (#759). The SSE tracker consumes it at construction; panics after
-// Start for the same race-safety reason as SetStateStore.
-func (h *ProxyHandler) SetTokenSeenStore(store sse.TokenSeenStore) {
-	if store == nil {
-		return
-	}
-	if h.started {
-		panic("SetTokenSeenStore called after Start — the tracker may already be reading it")
-	}
-	h.tokenSeenStore = store
 }
 
 func (h *ProxyHandler) proxyToWorkspace(c *gin.Context, targetPath string, isWriteOp bool, sessionID string) {
@@ -453,8 +420,8 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 		}
 	}
 
-	if isWriteOp && sessionID != "" && h.sseTracker != nil {
-		h.sseTracker.EnsureWatching(workspaceID)
+	if isWriteOp && sessionID != "" {
+		h.UsageStream().Open(workspaceID)
 	}
 
 	var bodyBytes []byte

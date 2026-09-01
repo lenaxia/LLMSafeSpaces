@@ -13,8 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 // G35: the terminal WebSocket Upgrader has historically used

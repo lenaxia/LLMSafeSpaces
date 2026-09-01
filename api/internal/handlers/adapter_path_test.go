@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
@@ -28,7 +30,6 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // US-65.4 handler-level adapter path tests. PR #717 review requested

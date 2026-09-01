@@ -24,7 +24,6 @@ import (
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -387,10 +386,8 @@ func TestE2E_DrainMode_AlreadyIdle(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	pods := &e2ePodResolver{ips: map[string]string{"ws-1": "192.0.2.1"}}
-	tracker := sse.NewTracker(nil, nil, nil)
 
 	handler := NewAgentReloadHandler(wsSvc, agentDB, pods, &http.Client{Timeout: 100 * time.Millisecond}, nil)
-	handler.SetSSETracker(tracker)
 	handler.SetPasswordGetter(fakePWProvider{pw: "test-pw"})
 	handler.SetStatusCheckerFactory(func(podIP, password string) SessionStatusChecker {
 		return opencode.NewClient(opencodeSrv.URL, password, zaptest.NewLogger(t))
@@ -417,11 +414,13 @@ func TestE2E_DrainMode_AlreadyIdle(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-func TestE2E_DrainMode_WithRealTracker(t *testing.T) {
+// TestE2E_DrainMode_StatusCheckerDrain exercises the poll-based
+// WaitUntilIdle integration using a mock opencode that reports all
+// sessions idle (US-69.11: the tracker subscription is retired; the
+// agent's /session/status is the authority).
+func TestE2E_DrainMode_StatusCheckerDrain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// This test exercises the WaitUntilIdle + SSETracker integration
-	// using a mock opencode that reports all sessions idle.
 	opencodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pw, ok := r.BasicAuth()
 		if !ok || user != "opencode" || pw != "test-pw" {
@@ -437,11 +436,9 @@ func TestE2E_DrainMode_WithRealTracker(t *testing.T) {
 	}))
 	defer opencodeSrv.Close()
 
-	tracker := sse.NewTracker(nil, nil, nil)
-
-	// Use the opencode client directly to test WaitUntilIdle
+	// The opencode client satisfies SessionStatusChecker directly.
 	client := opencode.NewClient(opencodeSrv.URL, "test-pw", zaptest.NewLogger(t))
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(context.Background(), "ws-1", client, 5*time.Second)
 	assert.NoError(t, err, "WaitUntilIdle should return immediately when no sessions exist")
 }
 

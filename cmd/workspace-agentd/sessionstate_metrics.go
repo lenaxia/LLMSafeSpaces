@@ -13,6 +13,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -23,18 +24,19 @@ import (
 )
 
 var sessionStateMetrics = struct {
-	seqStall        *prometheus.GaugeVec
-	ledgerDepth     *prometheus.GaugeVec
-	stalledEntries  prometheus.Gauge
-	promotionStall  *prometheus.GaugeVec
-	snapshotSize    prometheus.Histogram
-	snapshotLatency prometheus.Histogram
-	deliveryLatency prometheus.Histogram
-	wakeFailures    prometheus.Counter
-	droppedEvents   prometheus.Gauge
-	parserFailures  prometheus.Gauge
-	panicsContained prometheus.Gauge
-	subscribers     prometheus.Gauge
+	seqStall          *prometheus.GaugeVec
+	ledgerDepth       *prometheus.GaugeVec
+	stalledEntries    prometheus.Gauge
+	promotionStall    *prometheus.GaugeVec
+	snapshotSize      prometheus.Histogram
+	snapshotLatency   prometheus.Histogram
+	deliveryLatency   prometheus.Histogram
+	wakeFailures      prometheus.Counter
+	droppedEvents     prometheus.Gauge
+	parserFailures    prometheus.Gauge
+	panicsContained   prometheus.Gauge
+	subscribers       prometheus.Gauge
+	customValveEvents prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -87,6 +89,35 @@ var sessionStateMetrics = struct {
 		Name: "llmsafespaces_sessionstate_subscribers",
 		Help: "Active ABI stream subscribers (on-demand consumption health, D1-B).",
 	}),
+	customValveEvents: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_custom_valve_events_total",
+		Help: "Custom (PART_TYPE_CUSTOM) part applications folded into the projection — the unknown-taxonomy drift signal's agentd successor (US-69.11): growth means extension kinds the pinned taxonomy does not name are flowing through the valve.",
+	}),
+}
+
+// customValveLast carries the last cumulative per-workspace snapshot so
+// the prometheus counter advances by DELTAS — Metrics() exposes
+// cumulative counts and the watchdog scrapes repeatedly; re-Adding the
+// cumulative value each pass would over-count. A monotonicity break
+// (authority recreated) resets the baseline instead.
+var customValveLast = struct {
+	mu sync.Mutex
+	m  map[string]int64
+}{m: map[string]int64{}}
+
+func customValveDelta(workspaceID string, cumulative int64) int64 {
+	customValveLast.mu.Lock()
+	defer customValveLast.mu.Unlock()
+	prev, seen := customValveLast.m[workspaceID]
+	if !seen || cumulative < prev {
+		customValveLast.m[workspaceID] = cumulative
+		if !seen {
+			return cumulative
+		}
+		return 0 // baseline reset after authority recreation: no double count
+	}
+	customValveLast.m[workspaceID] = cumulative
+	return cumulative - prev
 }
 
 // recordSessionStateMetrics pulls one Metrics() snapshot into the gauges.
@@ -105,6 +136,9 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	sessionStateMetrics.parserFailures.Set(float64(m.ParserFailures))
 	sessionStateMetrics.panicsContained.Set(float64(m.PanicsContained))
 	sessionStateMetrics.subscribers.Set(float64(m.Subscribers))
+	if d := customValveDelta(workspaceID, m.CustomValveEvents); d > 0 {
+		sessionStateMetrics.customValveEvents.Add(float64(d))
+	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.
 	for state, n := range m.LedgerDepths {

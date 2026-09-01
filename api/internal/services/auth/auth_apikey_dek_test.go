@@ -10,15 +10,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	pkgutil "github.com/lenaxia/llmsafespaces/pkg/utilities"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 func newDEKTestService(t *testing.T) (*Service, *mocks.MockDatabaseService, *mocks.MockCacheService, *dekJKeyService) {

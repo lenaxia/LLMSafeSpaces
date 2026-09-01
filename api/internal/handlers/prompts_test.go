@@ -28,9 +28,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // mockPromptHandlerStore implements promptStore (defined in prompts.go) for

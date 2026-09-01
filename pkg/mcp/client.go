@@ -15,6 +15,10 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"google.golang.org/protobuf/encoding/protojson"
+
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
 const (
@@ -382,8 +386,10 @@ func (c *HTTPClient) GetHistory(ctx context.Context, workspaceID, sessionID stri
 	return msgs, nil
 }
 
-// SendMessage sends a prompt via prompt_async, then subscribes to SSE events
-// until session.idle is received or timeout expires.
+// SendMessage sends a prompt via prompt_async, then subscribes to the
+// ABI contract stream (GET /workspaces/:id/contract-events — protojson
+// StreamFrames, US-69.11) until the target session goes IDLE or the
+// agent asks for input.
 func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error) {
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return "", err
@@ -403,108 +409,240 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 		return "", err
 	}
 
-	// 2. Subscribe to SSE events and wait for session.idle. The
-	// workspace-scoped stream lives at /session-events (Epic 28 renamed
-	// the old /events route out of existence).
+	// 2. Consume the contract stream until the turn completes. The
+	// sseCtx bounds the whole wait (including reconnects); the parent
+	// ctx stays alive for the history fallback and the async
+	// permission auto-approve.
 	sseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	eventsURL := fmt.Sprintf("%s/api/v1/workspaces/%s/session-events", c.BaseURL, workspaceID)
-	req, err := http.NewRequestWithContext(sseCtx, http.MethodGet, eventsURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("create SSE request: %w", err)
-	}
-	req.Header.Set("Accept", "text/event-stream")
-	if c.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		// SSE failed or timed out — fall back to polling history
-		return c.fallbackHistory(ctx, workspaceID, sessionID)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
-
-	var response strings.Builder
-	for scanner.Scan() {
-		// Guard against unbounded accumulation
-		if response.Len() > maxSSETotal {
-			break
-		}
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			var event struct {
-				Type      string          `json:"type"`
-				SessionID string          `json:"session_id"`
-				Status    string          `json:"status"`
-				EventType string          `json:"event_type"`
-				Data      json.RawMessage `json:"data"`
-			}
-			if json.Unmarshal([]byte(data), &event) == nil {
-				// Detect session idle: direct session.status event from broker
-				if event.Type == "session.status" && event.Status == "idle" && event.SessionID == sessionID {
-					break
-				}
-
-				// Detect question asked: agent is waiting for user input
-				if event.Type == "agent.question" {
-					// Verify it's for our session by checking the data
-					var qData struct {
-						SessionID string `json:"session_id"`
-					}
-					if json.Unmarshal(event.Data, &qData) == nil && qData.SessionID == sessionID {
-						// Return structured question result
-						result := questionEventResult{
-							Type:    "question",
-							Request: json.RawMessage(event.Data),
-						}
-						out, _ := json.Marshal(result)
-						return string(out), nil
-					}
-				}
-
-				// Detect permission asked: auto-approve in headless mode
-				if event.Type == "agent.permission" {
-					var pData struct {
-						ID        string `json:"id"`
-						SessionID string `json:"session_id"`
-					}
-					if json.Unmarshal(event.Data, &pData) == nil && pData.SessionID == sessionID {
-						go func() { _ = c.PermissionReply(ctx, workspaceID, pData.ID, "always", "") }()
-					}
-				}
-
-				// Live content: session.event envelopes carry the
-				// contract event in data; part.delta streams the
-				// assistant text (#1053 — the old read of a top-level
-				// "content" field never existed on the broker envelope,
-				// so live accumulation was dead code).
-				if event.Type == "session.event" && len(event.Data) > 0 {
-					var ce struct {
-						Type      string `json:"type"`
-						SessionID string `json:"sessionId,omitempty"`
-						Delta     string `json:"delta,omitempty"`
-					}
-					if json.Unmarshal(event.Data, &ce) == nil && ce.Delta != "" &&
-						(ce.SessionID == "" || ce.SessionID == sessionID) {
-						response.WriteString(ce.Delta)
-					}
-				}
-			}
+	text, question, _ := c.awaitTurnCompletion(sseCtx, ctx, workspaceID, sessionID)
+	if question != nil {
+		out, merr := json.Marshal(question)
+		if merr == nil {
+			return string(out), nil
 		}
 	}
-
-	if response.Len() > 0 {
-		return response.String(), nil
+	if text != "" {
+		// Live text wins — including partial text when the wait budget
+		// expired mid-turn (the history fallback would answer with a
+		// stale prior message).
+		return text, nil
 	}
 
 	// Fallback: poll history (using parent context, not the timed-out SSE context)
 	return c.fallbackHistory(ctx, workspaceID, sessionID)
+}
+
+// errContractUnseeded marks a stream that ended before delivering its
+// snapshot frame — a broken endpoint (or a pre-snapshot cut). Retrying
+// cannot help within a call; the history fallback answers instead.
+var errContractUnseeded = fmt.Errorf("contract stream ended without a snapshot frame")
+
+// contractReconnectPause spaces reconnect attempts so a wedged endpoint
+// cannot be hot-looped for the whole wait budget.
+const contractReconnectPause = 200 * time.Millisecond
+
+// awaitTurnCompletion drives the contract-stream client rules (snapshot
+// first, seq discard, resync → reconnect) against the three outcomes
+// SendMessage cares about: the target session going IDLE (done), an
+// input request (question result / headless permission auto-approve),
+// and PART_DELTA accumulation for live text. replyCtx outlives the
+// stream context and backs the async permission replies.
+func (c *HTTPClient) awaitTurnCompletion(ctx, replyCtx context.Context, workspaceID, sessionID string) (string, *questionEventResult, error) {
+	var response strings.Builder
+	var lastSeq uint64
+
+	for {
+		if ctx.Err() != nil {
+			return response.String(), nil, ctx.Err()
+		}
+
+		url := fmt.Sprintf("%s/api/v1/workspaces/%s/contract-events", c.BaseURL, workspaceID)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return response.String(), nil, fmt.Errorf("create stream request: %w", err)
+		}
+		req.Header.Set("Accept", "text/event-stream")
+		if c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			// Stream failed or timed out — surface partial text; the
+			// caller falls back to history otherwise.
+			return response.String(), nil, err
+		}
+
+		read := c.readContractStream(resp.Body, workspaceID, sessionID, &lastSeq, &response, replyCtx)
+		_ = resp.Body.Close()
+
+		if read.question != nil || read.idle {
+			return response.String(), read.question, nil
+		}
+		if read.reconnect {
+			// Explicit resync/reseed notice, or a non-snapshot first
+			// frame (protocol violation — possibly before seeding):
+			// reconnect for a fresh stamped snapshot.
+			select {
+			case <-ctx.Done():
+				return response.String(), nil, ctx.Err()
+			case <-time.After(contractReconnectPause):
+			}
+			continue
+		}
+		if !read.seeded {
+			return response.String(), nil, errContractUnseeded
+		}
+
+		// Seeded but the stream ended (cut mid-wait): reconnect — a
+		// fresh connection delivers a fresh stamped snapshot and the
+		// seq discard rule dedups replayed events.
+		select {
+		case <-ctx.Done():
+			return response.String(), nil, ctx.Err()
+		case <-time.After(contractReconnectPause):
+		}
+	}
+}
+
+// contractStreamRead is one connection's outcome.
+type contractStreamRead struct {
+	seeded    bool
+	idle      bool
+	question  *questionEventResult
+	reconnect bool
+}
+
+// readContractStream parses the SSE body (data/event/comment lines,
+// per the SSE framing) and folds ABI StreamFrames until the target
+// session goes IDLE, an input request arrives, or the body ends.
+// Parse errors on individual frames are tolerated (skipped) — one bad
+// frame never kills the wait.
+func (c *HTTPClient) readContractStream(body io.Reader, workspaceID, sessionID string, lastSeq *uint64, response *strings.Builder, replyCtx context.Context) contractStreamRead {
+	var read contractStreamRead
+	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
+
+	handle := func(eventName, data string) {
+		// The slow-consumer sentinel: drop everything and reconnect for
+		// a fresh stamped snapshot.
+		if eventName == "resync" {
+			read.reconnect = true
+			return
+		}
+		var frame abiv1.StreamFrame
+		if err := unmarshal.Unmarshal([]byte(data), &frame); err != nil {
+			return // tolerated
+		}
+		switch f := frame.GetFrame().(type) {
+		case *abiv1.StreamFrame_Snapshot:
+			snap := f.Snapshot
+			read.seeded = true
+			if snap.GetAtSeq() > *lastSeq {
+				*lastSeq = snap.GetAtSeq()
+			}
+			// A snapshot whose target session is already IDLE completes
+			// the wait immediately (checked before any event).
+			for _, s := range snap.GetSnapshot().GetSessions() {
+				if s.GetSessionId() == sessionID && s.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+					read.idle = true
+					return
+				}
+			}
+		case *abiv1.StreamFrame_Event:
+			if !read.seeded {
+				// Non-snapshot first frame violates the protocol —
+				// reconnect (the Go reference client's rule).
+				read.reconnect = true
+				return
+			}
+			seqed := f.Event
+			if seqed.GetSeq() <= *lastSeq {
+				return // discard rule: seq ≤ snapshot stamp / already applied
+			}
+			*lastSeq = seqed.GetSeq()
+			evt := seqed.GetEvent()
+			if evt == nil {
+				return
+			}
+			sid := evt.GetSessionId()
+			if sid == "" && evt.GetInput() != nil {
+				sid = evt.GetInput().GetSessionId()
+			}
+			if sid != sessionID {
+				return // other sessions on the pod-wide stream never bleed in
+			}
+			switch evt.GetType() {
+			case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
+				if evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE {
+					read.idle = true
+				}
+			case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
+				if in := evt.GetInput(); in != nil {
+					if in.GetKind() == abiv1.InputKind_INPUT_KIND_PERMISSION {
+						// Headless auto-approve (unchanged flow): the
+						// reply POST rides replyCtx, not the stream ctx.
+						inID := in.GetId()
+						go func() { _ = c.PermissionReply(replyCtx, workspaceID, inID, "always", "") }()
+						return
+					}
+					// QUESTION (or unspecified — surface it rather than
+					// hang the turn): structured result for the caller.
+					if raw, merr := protojson.Marshal(in); merr == nil {
+						read.question = &questionEventResult{Type: "question", Request: raw}
+					}
+				}
+			case abiv1.EventType_EVENT_TYPE_PART_DELTA:
+				response.WriteString(evt.GetDelta())
+			}
+		case *abiv1.StreamFrame_Reseeded:
+			// Mandatory re-snapshot (I3): reconnect for a fresh snapshot.
+			read.reconnect = true
+		}
+	}
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
+
+	var eventName string
+	var data strings.Builder
+	dispatch := func() {
+		if data.Len() > 0 || eventName != "" {
+			handle(eventName, data.String())
+		}
+		eventName = ""
+		data.Reset()
+	}
+	for scanner.Scan() {
+		// Guard against unbounded accumulation
+		if response.Len() > maxSSETotal {
+			return read
+		}
+		line := scanner.Text()
+		switch {
+		case line == "":
+			dispatch()
+			if read.idle || read.question != nil || read.reconnect {
+				return read
+			}
+		case strings.HasPrefix(line, ":"):
+			// comment / heartbeat
+		case strings.HasPrefix(line, "event:"):
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			d := strings.TrimPrefix(line, "data:")
+			d = strings.TrimPrefix(d, " ")
+			if data.Len() > 0 {
+				data.WriteByte('\n')
+			}
+			data.WriteString(d)
+		default:
+			// retry: and unknown fields are ignored
+		}
+	}
+	dispatch()
+	return read
 }
 
 func (c *HTTPClient) fallbackHistory(ctx context.Context, workspaceID, sessionID string) (string, error) {

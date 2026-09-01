@@ -17,13 +17,14 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // --- Terminal test infrastructure ---

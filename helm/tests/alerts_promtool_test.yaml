@@ -6,148 +6,17 @@
 # A previous version of WatchFailing joined an unlabeled gauge against
 # labeled series and could NEVER fire — twice reviewed, shipped dead.
 # These scenarios execute the real expressions (#906 review F1).
+#
+# US-69.11: the SSE-tracker alert scenarios (WatchesZero, UpstreamSilent,
+# WatchFailing) were deleted with the tracker and its metrics — see the
+# succession note in helm/templates/prometheus-rules.yaml (the agentd-side
+# seq-stall alerts below carry the liveness signal now).
 rule_files:
   - rendered_rules.yaml
 
 evaluation_interval: 1m
 
 tests:
-  # ── WatchFailing (the incident's invisible class) ─────────────────────
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-blind"}'
-        values: '0+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchFailing
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              component: api
-              workspace_id: ws-blind
-            exp_annotations:
-              summary: "SSE watch armed but not connected for ws-blind"
-              description: 'The tracker holds a watch for this workspace but has no open /event stream for 10m — connectAndRead is failing in a backoff loop or has never connected since arm (check Warn logs: empty podIP, refused connection). Users on this replica are event-blind.'
-
-  # Two-instance split (#906 r7 finding 4): replica A connected, replica
-  # B's armed watch dead — max would mask B (== 1); min must fire.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="a"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="b"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="a"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="b"}'
-        values: '0+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchFailing
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              component: api
-              workspace_id: ws-split
-            exp_annotations:
-              summary: "SSE watch armed but not connected for ws-split"
-              description: 'The tracker holds a watch for this workspace but has no open /event stream for 10m — connectAndRead is failing in a backoff loop or has never connected since arm (check Warn logs: empty podIP, refused connection). Users on this replica are event-blind.'
-
-  # Two instances, both healthy: min == 1, must not fire.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-both-ok",instance="a"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-both-ok",instance="b"}'
-        values: '1+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchFailing
-        exp_alerts: []
-
-  # connected == 1: healthy, must not fire.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api"}'
-        values: '1+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-ok"}'
-        values: '1+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchFailing
-        exp_alerts: []
-
-  # No connected series at all (not watched): absent ≠ 0, must not fire.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api"}'
-        values: '1+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchFailing
-        exp_alerts: []
-
-  # ── WatchesZero (guarded: no critical on empty fleets) ────────────────
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api"}'
-        values: '0+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchesZero
-        exp_alerts: []
-
-  # One replica at zero while the fleet watches: fires.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="a"}'
-        values: '0+0x20'
-      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="b"}'
-        values: '3+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerWatchesZero
-        exp_alerts:
-          - exp_labels:
-              severity: critical
-              component: api
-            exp_annotations:
-              summary: "An API replica holds zero SSE tracker watches"
-              description: "At least one API replica has watched zero workspaces for 5m — its client streams are event-blind (users halt while sends succeed). Check tracker Warn logs and the watch reconciler."
-
-  # ── UpstreamSilent (guarded by connected == 1) ────────────────────────
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_last_event_age_seconds{job="test-release-llmsafespaces-api",workspace_id="ws-silent"}'
-        values: '700+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-silent"}'
-        values: '1+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerUpstreamSilent
-        exp_alerts:
-          - exp_labels:
-              severity: warning
-              component: api
-              workspace_id: ws-silent
-            exp_annotations:
-              summary: "SSE tracker upstream silent >10m on a watched workspace"
-              description: 'A watched workspace has received no upstream agent events for over 10 minutes. Either the workspace is idle (benign) or the tracker connection is dead-but-open (see #901 G11). Correlate with workspace activity.'
-
-  # Suspended workspace: age stale but connected == 0 → not firing.
-  - interval: 1m
-    input_series:
-      - series: 'llmsafespaces_sse_tracker_last_event_age_seconds{job="test-release-llmsafespaces-api",workspace_id="ws-susp"}'
-        values: '700+0x20'
-      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-susp"}'
-        values: '0+0x20'
-    alert_rule_test:
-      - eval_time: 12m
-        alertname: LLMSafeSpacesSSETrackerUpstreamSilent
-        exp_alerts: []
-
   # ── RelayInjectorDegraded (both outcome flavors) ──────────────────────
   - interval: 1m
     input_series:

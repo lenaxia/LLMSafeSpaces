@@ -13,11 +13,12 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
-	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	logmock "github.com/lenaxia/llmsafespaces/mocks/logger"
+	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 func TestParseFaultInjectionRules_ValidSingleRule(t *testing.T) {

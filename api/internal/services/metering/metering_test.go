@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
+	testifymock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/stretchr/testify/assert"
-	testifymock "github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 func setupTestService(t *testing.T) (*Service, sqlmock.Sqlmock, func()) {

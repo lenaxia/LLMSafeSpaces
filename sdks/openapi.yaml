@@ -1158,19 +1158,17 @@ paths:
   /workspaces/{id}/session-events:
     get:
       tags: [sessions]
-      summary: SSE event stream from the workspace agent
+      summary: SSE stream of platform events for the workspace
       description: |
         Server-Sent Events stream. Not usable by generated SDK clients — use
         language-specific SSE libraries (EventSource in browsers, httpx-sse in Python, etc.).
         Content-Type: text/event-stream.
 
-        Event channels (US-65.8): `session.event` carries a
-        ContractEvent payload (pkg/session shapes — the only
-        agent-derived channel clients consume; agent wire shapes are
-        translated server-side). `session.status` carries platform
-        idle/busy strings and retry payloads. Other channels
-        (agent.question, agent.permission, queue.update, workspace.phase,
-        agent_died) are platform-defined.
+        Platform events only (US-69.11): `workspace.phase`, `workspace.alert`,
+        `queue.update`, and `agent_died`. Agent-derived session state no
+        longer travels here — session-state consumers subscribe to
+        /workspaces/{id}/contract-events instead (raw ABI StreamFrames: a
+        stamped snapshot, then sequenced events).
       operationId: streamEvents
       x-opencode-proxy: true
       parameters:
@@ -8291,9 +8289,11 @@ components:
     ContractEvent:
       type: object
       description: |
-        A pkg/session streaming Event, delivered to clients on the
-        session.event SSE channel (US-65.8). type selects which fields are
-        meaningful; the rest omit.
+        A pkg/session streaming Event (US-65.8 shapes, retained for SDK
+        typing). Not delivered on /session-events — that channel is
+        platform-events-only as of US-69.11; session-state consumers read
+        /workspaces/{id}/contract-events (raw ABI StreamFrames). type
+        selects which fields are meaningful; the rest omit.
       required: [type]
       properties:
         type:

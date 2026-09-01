@@ -11,9 +11,10 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/billing"
 )
 
 // fakeUsageReporter captures the events it would report to a billing provider.

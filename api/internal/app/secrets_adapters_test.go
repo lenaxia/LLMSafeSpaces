@@ -10,11 +10,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // US-50.8: the static root-key-provider deprecation warning must fire on the

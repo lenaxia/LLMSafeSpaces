@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
 	"github.com/lenaxia/llmsafespaces/pkg/types"

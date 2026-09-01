@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"time"
-
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 )
 
 // SessionStatusChecker returns the current status map for all sessions
@@ -30,80 +28,64 @@ func (e *ErrDrainTimeout) Error() string {
 }
 
 // WaitUntilIdle blocks until all sessions in the workspace are idle,
-// the context is canceled, or the deadline fires.
+// the context is canceled, or the deadline fires. US-69.11: the retired
+// SSE tracker's drain subscription is replaced by a bounded statusz
+// poll — the agent's own status is the authority, and drain windows are
+// multi-second, so polling is equivalent without a held stream.
 func WaitUntilIdle(
 	ctx context.Context,
 	workspaceID string,
-	tracker *sse.Tracker,
 	statusChecker SessionStatusChecker,
 	timeout time.Duration,
 ) error {
 	drainCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	type event struct {
-		sessionID string
-		idle      bool
-	}
-	events := make(chan event, 64)
+	ticker := time.NewTicker(drainPollInterval)
+	defer ticker.Stop()
 
-	// Subscribe BEFORE snapshot to avoid missing transitions.
-	unsub := tracker.SubscribeDrain(workspaceID,
-		func(_, sid string) {
-			select {
-			case events <- event{sid, true}:
-			default:
-			}
-		},
-		func(_, sid string) {
-			select {
-			case events <- event{sid, false}:
-			default:
-			}
-		},
-	)
-	defer unsub()
-
-	// Authoritative snapshot from the agent.
-	statuses, err := statusChecker.GetSessionStatuses(drainCtx)
-	if err != nil {
-		return fmt.Errorf("WaitUntilIdle: snapshot: %w", err)
-	}
-
-	// Seed the busy set.
-	busy := make(map[string]struct{})
-	for id, typ := range statuses {
-		if typ != "idle" {
-			busy[id] = struct{}{}
+	// busy reports the still-busy sessions; ok=false means the statusz
+	// read failed — an unavailable authority is NOT drain completion
+	// (a broken statusz must not yield a false "drained" verdict).
+	busy := func() (remaining []string, ok bool) {
+		statuses, err := statusChecker.GetSessionStatuses(drainCtx)
+		if err != nil {
+			return nil, false // transient: retry on the next tick
 		}
-	}
-
-	if len(busy) == 0 {
-		return nil
-	}
-
-	// Event loop.
-	for {
-		select {
-		case e := <-events:
-			if e.idle {
-				delete(busy, e.sessionID)
-			} else {
-				busy[e.sessionID] = struct{}{}
-			}
-			if len(busy) == 0 {
-				return nil
-			}
-		case <-drainCtx.Done():
-			remaining := make([]string, 0, len(busy))
-			for id := range busy {
+		for id, typ := range statuses {
+			if typ != "idle" {
 				remaining = append(remaining, id)
 			}
-			sort.Strings(remaining)
+		}
+		sort.Strings(remaining)
+		return remaining, true
+	}
+
+	if remaining, ok := busy(); ok && len(remaining) == 0 {
+		return nil
+	}
+	for {
+		select {
+		case <-drainCtx.Done():
+			remaining, ok := busy()
+			if ok && len(remaining) == 0 {
+				return nil // idle on the final check
+			}
 			if drainCtx.Err() == context.DeadlineExceeded {
-				return &ErrDrainTimeout{BusySessions: remaining}
+				if ok {
+					return &ErrDrainTimeout{BusySessions: remaining}
+				}
+				return &ErrDrainTimeout{BusySessions: nil}
 			}
 			return drainCtx.Err()
+		case <-ticker.C:
+			if remaining, ok := busy(); ok && len(remaining) == 0 {
+				return nil
+			}
 		}
 	}
 }
+
+// drainPollInterval balances drain latency against statusz load (one
+// request per active drain per tick).
+const drainPollInterval = 500 * time.Millisecond

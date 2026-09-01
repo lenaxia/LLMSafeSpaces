@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
-	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 )
 
 func TestMetricsMiddleware_RecordRequest(t *testing.T) {

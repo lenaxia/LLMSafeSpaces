@@ -19,6 +19,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v5/pgxpool"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
@@ -43,7 +45,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
@@ -59,7 +60,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Compile-time check that *WorkspaceClient satisfies the caller-shaped
@@ -283,7 +283,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	proxyHandler.SetSessionAlerts(sessionAlertsSvc)
 
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
-		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
 		if v2Delivery {
 			proxyHandler.SetV2Delivery(true)
 		}
@@ -293,7 +292,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if stateAuthority {
 			proxyHandler.SetAgentdTerminus(true)
 		}
-		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 
 		// US-45.2..US-45.8: swap the in-memory state store for a Redis-backed
 		// one so multi-replica deployments share all per-workspace state
@@ -305,14 +303,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.With("component", "wsstate"),
 		)
 		proxyHandler.SetStateStore(redisStateStore)
-
-		// #759: persist per-session cumulative usage dedup state on the
-		// shared cache so an API pod restart never re-bills a session's
-		// cumulative input tokens.
-		proxyHandler.SetTokenSeenStore(sse.NewRedisTokenSeenStore(
-			cacheSvc.GetClient(),
-			sse.DefaultTokenSeenTTL,
-		))
 
 		// D3 (design 0050 §D3, #907): the durable-prompt outbox — same
 		// Valkey instance (AOF-persisted); accepts survive client
@@ -1562,15 +1552,9 @@ func (a *App) Run() error {
 		return fmt.Errorf("failed to start proxy handler: %w", err)
 	}
 
-	// Epic 27a/27b: Wire drain mode dependencies now that proxyHandler.Start()
-	// has initialized the SSETracker.
+	// Epic 27a/27b: wire the broker into the reload handlers (drain mode
+	// polls statusz since the tracker retirement).
 	if a.agentReloadHandler != nil {
-		if tracker := a.proxyHandler.GetSSETracker(); tracker != nil {
-			a.agentReloadHandler.SetSSETracker(tracker)
-			if a.bulkReloadHandler != nil {
-				a.bulkReloadHandler.SetSSETracker(tracker)
-			}
-		}
 		if b := a.proxyHandler.GetBroker(); b != nil {
 			a.agentReloadHandler.SetBrokerPublisher(b)
 			if a.bulkReloadHandler != nil {
@@ -1579,57 +1563,23 @@ func (a *App) Run() error {
 		}
 	}
 
-	// Epic 26 / billing: wire inference callback and session metrics unconditionally.
-	// Previously nested inside the agentReloadHandler guard, which meant if the
-	// workspace service type assertion failed (or the handler wasn't created),
-	// SetOnInference was never called and inference metrics remained permanently zero.
-	if tracker := a.proxyHandler.GetSSETracker(); tracker != nil {
-		if metricsSvc, ok := a.services.Metrics.(*metrics.Service); ok {
-			meteringSvc := a.services.Metering
-			ph := a.proxyHandler
-			tracker.SetOnInference(func(workspaceID, modelID, providerID string, inputTokens, outputTokens int64, costDollars float64) {
-				metricsSvc.RecordInference(modelID, providerID, inputTokens, outputTokens, costDollars)
-				if meteringSvc == nil {
-					return
-				}
-				ownerID := ph.GetWorkspaceOwner(workspaceID)
-				if ownerID == "" {
-					return
-				}
-				owner := types.BillingOwner{ID: ownerID, Type: types.OwnerTypeUser}
-				meteringSvc.Record(types.UsageEvent{
-					IdempotencyKey: fmt.Sprintf("tokens:%s:%s:in:%d", workspaceID, modelID, time.Now().UnixNano()),
-					Owner:          owner,
-					ActorID:        ownerID,
-					WorkspaceID:    workspaceID,
-					EventType:      "llm_tokens",
-					EventSubtype:   "input",
-					Quantity:       inputTokens,
-					Source:         "api",
-					EventTime:      time.Now(),
-					Metadata:       map[string]any{"model_id": modelID, "provider_id": providerID},
-				})
-				if outputTokens > 0 {
-					meteringSvc.Record(types.UsageEvent{
-						IdempotencyKey: fmt.Sprintf("tokens:%s:%s:out:%d", workspaceID, modelID, time.Now().UnixNano()),
-						Owner:          owner,
-						ActorID:        ownerID,
-						WorkspaceID:    workspaceID,
-						EventType:      "llm_tokens",
-						EventSubtype:   "output",
-						Quantity:       outputTokens,
-						Source:         "api",
-						EventTime:      time.Now(),
-						Metadata:       map[string]any{"model_id": modelID, "provider_id": providerID},
-					})
-				}
-			})
-			tracker.SetSessionMetrics(metricsSvc)
-			// #739 Gap 2: per-type agent-event counters + unknown-type
-			// warns (classifier wired at tracker construction).
-			tracker.SetEventMetrics(metricsSvc)
-		}
+	// US-69.11: wire the usage stream's billing sinks (the busy-gated ABI
+	// consumer replaces the SSE tracker as the token-usage source; the
+	// deterministic idempotency keys make multi-replica billing
+	// exactly-once via usage_events' unique constraint).
+	if metricsSvc, ok := a.services.Metrics.(*metrics.Service); ok {
+		meteringSvc := a.services.Metering
+		ph := a.proxyHandler
+		ph.SetUsageBilling(func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64) {
+			metricsSvc.RecordInference(modelID, providerID, inputTokens, outputTokens, costDollars)
+		}, func(evt types.UsageEvent) {
+			if meteringSvc == nil {
+				return
+			}
+			meteringSvc.Record(evt)
+		})
 	}
+
 	// Epic 27b US-27b.5: Wire agent state checker into proxy for chat error enrichment.
 	// dbSvc is referenced via services; use a type assertion to get the concrete type
 	// which implements AgentStateChecker (GetLastCredentialChangedAt).

@@ -13,10 +13,11 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // mockRoleStore implements roleStore for agent-role handler tests.

@@ -14,9 +14,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // --- fakes ---

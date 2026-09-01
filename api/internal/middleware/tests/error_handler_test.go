@@ -12,11 +12,12 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+
 	apiErrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	mocklogger "github.com/lenaxia/llmsafespaces/mocks/logger"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
 
 func TestErrorHandlerMiddleware_APIError(t *testing.T) {

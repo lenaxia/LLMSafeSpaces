@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
-	"github.com/lenaxia/llmsafespaces/pkg/email"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
+	"github.com/lenaxia/llmsafespaces/pkg/email"
 )
 
 // fakeEmailProvider captures the last message and returns the configured

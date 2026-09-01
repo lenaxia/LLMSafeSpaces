@@ -141,3 +141,40 @@ func TestCheckStalls_NoLedgerIsNoOp(t *testing.T) {
 	m := a.Metrics()
 	assert.Nil(t, m.LedgerDepths, "no funnel without a ledger")
 }
+
+// customPartEvent builds a part-carrying event of the given part type.
+func customPartEvent(t abiv1.EventType, sid, pid string, pt abiv1.PartType) *abiv1.Event {
+	evt := &abiv1.Event{Type: t, SessionId: sid, PartId: pid}
+	switch pt {
+	case abiv1.PartType_PART_TYPE_CUSTOM:
+		evt.Part = &abiv1.Part{Id: pid, Type: pt,
+			Payload: &abiv1.Part_Custom{Custom: &abiv1.CustomPart{Kind: "ext.marker"}}}
+	default:
+		evt.Part = &abiv1.Part{Id: pid, Type: pt, Payload: &abiv1.Part_Text{Text: "text"}}
+	}
+	return evt
+}
+
+// TestMetrics_CustomValveCounter (US-69.11): every CUSTOM part application
+// through the projection counts once — PART_START/PART_END upserts and
+// message-carried parts alike — while named types do not. The retired
+// API-side unknown-taxonomy counter's agentd successor.
+func TestMetrics_CustomValveCounter(t *testing.T) {
+	a, p := newEventAuthority(t, nil)
+
+	feed(t, a, p, customPartEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "p1", abiv1.PartType_PART_TYPE_CUSTOM))
+	assert.EqualValues(t, 1, a.Metrics().CustomValveEvents, "PART_START of a custom part counts")
+
+	feed(t, a, p, customPartEvent(abiv1.EventType_EVENT_TYPE_PART_END, "s1", "p1", abiv1.PartType_PART_TYPE_CUSTOM))
+	assert.EqualValues(t, 2, a.Metrics().CustomValveEvents, "PART_END re-application counts again")
+
+	feed(t, a, p, customPartEvent(abiv1.EventType_EVENT_TYPE_PART_START, "s1", "p2", abiv1.PartType_PART_TYPE_TEXT))
+	assert.EqualValues(t, 2, a.Metrics().CustomValveEvents, "named taxonomy types never count")
+
+	feed(t, a, p, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_MESSAGE_END, SessionId: "s1", MessageId: "m1",
+		Message: &abiv1.Message{Id: "m1", Parts: []*abiv1.Part{
+			{Id: "p3", Type: abiv1.PartType_PART_TYPE_TEXT, Payload: &abiv1.Part_Text{Text: "hi"}},
+			{Id: "p4", Type: abiv1.PartType_PART_TYPE_CUSTOM, Payload: &abiv1.Part_Custom{Custom: &abiv1.CustomPart{Kind: "ext.other"}}},
+		}}})
+	assert.EqualValues(t, 3, a.Metrics().CustomValveEvents, "message-carried custom parts count via the same upsert")
+}

@@ -37,7 +37,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 )
 
@@ -967,132 +966,15 @@ func TestProxy_ConnectionCountTracking(t *testing.T) {
 	assert.Equal(t, 0, h.connectionCount("ws-1"))
 }
 
-func TestProxy_E2E_SSEDrivenSessionLifecycle(t *testing.T) {
-	idleSignal := make(chan struct{}, 1)
-
-	sseBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/event" {
-			flusher := w.(http.Flusher)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			select {
-			case <-idleSignal:
-				// Emit real opencode flat-format session.status event
-				type statusObj struct {
-					Type string `json:"type"`
-				}
-				type sessionStatusProps struct {
-					SessionID string    `json:"sessionID"`
-					Status    statusObj `json:"status"`
-				}
-				payload := struct {
-					Type       string             `json:"type"`
-					Properties sessionStatusProps `json:"properties"`
-				}{
-					Type:       "session.status",
-					Properties: sessionStatusProps{SessionID: "s1", Status: statusObj{Type: "idle"}},
-				}
-				data, _ := json.Marshal(payload)
-				fmt.Fprintf(w, "data: %s\n\n", data)
-				flusher.Flush()
-			case <-r.Context().Done():
-			}
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}))
-	defer sseBackend.Close()
-
-	transport := &redirectTransport{server: sseBackend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	ws := makeWorkspaceCRD("ws-1", 1)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil,
-	)
-
-	handler.sseTracker = sse.NewTracker(httpClient, &testLogger{}, handler.onSessionIdle)
-	handler.sseTracker.SetPasswordGetter(handler)
-	handler.sseTracker.SetPodIPResolver(handler.getPodIPForSSE)
-	handler.sseTracker.SetOnSessionActive(handler.onSessionActive)
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	proxy := router.Group("/api/v1/workspaces/:id")
-	proxy.POST("/sessions/:sessionId/message", handler.SendMessage)
-
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil,
-	)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"msg":"hi"}`))
-	router.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, 1, handler.activeSessionCount(context.Background(), "ws-1"), "session s1 should be active")
-
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil,
-	)
-
-	w2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s2/message", strings.NewReader(`{"msg":"hi"}`))
-	router.ServeHTTP(w2, req2)
-	assert.Equal(t, http.StatusTooManyRequests, w2.Code, "limit of 1 should reject second session")
-
-	idleSignal <- struct{}{}
-
-	require.Eventually(t, func() bool {
-		return handler.activeSessionCount(context.Background(), "ws-1") == 0
-	}, 3*time.Second, 50*time.Millisecond, "SSE idle event should clear session s1")
-
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil,
-	)
-
-	handler.sseTracker.StopWatching("ws-1")
-
-	w3 := httptest.NewRecorder()
-	req3 := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s2/message", strings.NewReader(`{"msg":"hi"}`))
-	router.ServeHTTP(w3, req3)
-	assert.Equal(t, http.StatusOK, w3.Code, "after SSE idle, new session should succeed")
-}
-
-func TestProxy_E2E_SSEBusyEventAddsActiveSession(t *testing.T) {
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	handler.SetWorkspaceConfigForTest("ws-1", wsstate.Config{MaxActiveSessions: 5})
-
-	handler.onSessionActive("ws-1", "s1")
-	assert.Equal(t, 1, handler.activeSessionCount(context.Background(), "ws-1"), "busy event should add session s1")
-
-	handler.onSessionActive("ws-1", "s1")
-	assert.Equal(t, 1, handler.activeSessionCount(context.Background(), "ws-1"), "duplicate busy should not double-count")
-
-	handler.onSessionActive("ws-1", "s2")
-	assert.Equal(t, 2, handler.activeSessionCount(context.Background(), "ws-1"), "second busy session should be counted")
-}
+// US-69.11: the SSE-driven lifecycle tests (tracker subscription
+// arming/reset/teardown, onSessionActive/onSessionIdle callbacks) were
+// deleted with the tracker. Surviving intents live elsewhere:
+//   - session limits + stale-busy clearing via statusz —
+//     authoritative_status_test.go, proxy_session_status_test.go
+//   - gate arming/reset/teardown on phase transitions (#902) —
+//     proxy_auth_cache_test.go, proxy_902_e2e_test.go
+//   - phase-change cache preservation —
+//     TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState below.
 
 func TestProxy_SessionLeak_NotOnConnectionCeilingReject(t *testing.T) {
 	env := newTestEnv(t)
@@ -1152,7 +1034,10 @@ func TestProxy_SessionLeak_CleanedUpOn503(t *testing.T) {
 		"active session should be cleaned up when proxy fails with 503")
 }
 
-func TestProxy_GetPodIPForSSE_RunningReturnsIP(t *testing.T) {
+// --- statuszPodIP (US-69.11: the tracker's pod-IP resolver, kept for
+// the D6 sweep and the statusz reconcile pass) ---
+
+func TestProxy_StatuszPodIP_RunningReturnsIP(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
 	wsMock := k8smocks.NewMockWorkspaceInterface()
@@ -1166,11 +1051,11 @@ func TestProxy_GetPodIPForSSE_RunningReturnsIP(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.getPodIPForSSE("ws-1")
+	ip := handler.statuszPodIP("ws-1")
 	assert.Equal(t, "10.0.0.1", ip)
 }
 
-func TestProxy_GetPodIPForSSE_SuspendedReturnsEmpty(t *testing.T) {
+func TestProxy_StatuszPodIP_SuspendedReturnsEmpty(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
 	wsMock := k8smocks.NewMockWorkspaceInterface()
@@ -1184,11 +1069,11 @@ func TestProxy_GetPodIPForSSE_SuspendedReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.getPodIPForSSE("ws-1")
+	ip := handler.statuszPodIP("ws-1")
 	assert.Equal(t, "", ip)
 }
 
-func TestProxy_GetPodIPForSSE_NotFoundReturnsEmpty(t *testing.T) {
+func TestProxy_StatuszPodIP_NotFoundReturnsEmpty(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
 	wsMock := k8smocks.NewMockWorkspaceInterface()
@@ -1201,125 +1086,20 @@ func TestProxy_GetPodIPForSSE_NotFoundReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.getPodIPForSSE("sb-missing")
+	ip := handler.statuszPodIP("sb-missing")
 	assert.Equal(t, "", ip)
 }
 
-func TestProxy_OnPhaseChange_SuspendingStopsSSE(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
+// US-69.11: the OnPhaseChange tracker-lifecycle tests (SuspendingStops,
+// RunningKeeps, CreatingToActive reset, ActiveToActive no-reset, seed
+// arming) were deleted with the tracker. The equivalent gate semantics
+// (arm on every Active event, fresh gate on transition, teardown on
+// suspend, reconciler healing) are pinned in proxy_auth_cache_test.go
+// and proxy_902_e2e_test.go.
 
-	handler.sseTracker = sse.NewTracker(
-		&http.Client{},
-		&testLogger{},
-		func(workspaceID, sessionID string) {},
-	)
-	handler.sseTracker.SetPasswordGetter(fakePWProvider{pw: "pw"})
-	handler.sseTracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-
-	handler.sseTracker.EnsureWatching("ws-1")
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount())
-
-	phases := []string{phaseSuspending, phaseSuspended, phaseTerminating, phaseTerminated}
-	for _, phase := range phases {
-		handler.sseTracker.EnsureWatching("ws-1")
-		sb := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", phase, "ws-1")
-		handler.onPhaseChange(sb)
-		assert.Equal(t, 0, handler.sseTracker.SubscriptionCount(),
-			"SSE subscription should be stopped on phase %s", phase)
-	}
-}
-
-func TestProxy_OnPhaseChange_RunningKeepsSSE(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-
-	handler.sseTracker = sse.NewTracker(
-		&http.Client{},
-		&testLogger{},
-		func(workspaceID, sessionID string) {},
-	)
-	handler.sseTracker.SetPasswordGetter(fakePWProvider{pw: "pw"})
-	handler.sseTracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-
-	handler.sseTracker.EnsureWatching("ws-1")
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount())
-
-	// Set prior to Active — this is the Active→Active reconcile path. The subscription
-	// must NOT be reset (no Stop+EnsureWatching) because the workspace hasn't changed phase.
-	handler.SetPriorPhaseForTest("ws-1", string(phaseActive))
-
-	sb := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(phaseActive), "ws-1")
-	handler.onPhaseChange(sb)
-
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount(),
-		"SSE subscription should NOT be stopped on Active→Active reconcile")
-}
-
-// TestProxy_OnPhaseChange_CreatingToActive_ResetsSSETracker verifies that when
-// the workspace transitions from Creating (or any non-Active phase) to Active,
-// the SSE tracker subscription is reset (Stop + EnsureWatching) so that any
-// backoff accumulated during the Creating phase is cleared immediately.
-//
-// Regression test for: workspace becomes Active but SSETracker is mid-backoff
-// (30s max) from repeated "no pod IP" failures during Creating phase. User
-// sends a message within the backoff window → idle event never reaches broker
-// → response doesn't appear until page reload.
-func TestProxy_OnPhaseChange_CreatingToActive_ResetsSSETracker(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-
-	handler.sseTracker = sse.NewTracker(
-		&http.Client{},
-		&testLogger{},
-		func(workspaceID, sessionID string) {},
-	)
-	handler.sseTracker.SetPasswordGetter(fakePWProvider{pw: "pw"})
-	handler.sseTracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-
-	// Simulate the scenario: subscription is already running (started while
-	// workspace was Creating) and has been backed off.
-	handler.sseTracker.EnsureWatching("ws-1")
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount(), "subscription must exist before transition")
-
-	// Record the subscription cancel func address before the transition so we
-	// can verify it was replaced (Stop + re-EnsureWatching creates a new one).
-	// We can't directly inspect the cancel func, but we can verify the count
-	// stays at 1 (Stop decrements to 0, EnsureWatching brings back to 1).
-
-	// Set prior phase to Creating to trigger the reset path.
-	handler.SetPriorPhaseForTest("ws-1", "Creating")
-
-	sb := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(phaseActive), "ws-1")
-	handler.onPhaseChange(sb)
-
-	// Subscription must still exist (was reset, not stopped permanently).
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount(),
-		"SSE subscription must be re-established after Creating→Active transition")
-}
-
-// TestProxy_OnPhaseChange_ActiveToActive_NoReset verifies that Active→Active
-// reconcile calls (no phase transition) do NOT reset the SSE tracker, since
-// the subscription is already healthy.
-func TestProxy_OnPhaseChange_ActiveToActive_NoReset(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-
-	handler.sseTracker = sse.NewTracker(
-		&http.Client{},
-		&testLogger{},
-		func(workspaceID, sessionID string) {},
-	)
-	handler.sseTracker.SetPasswordGetter(fakePWProvider{pw: "pw"})
-	handler.sseTracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-
-	handler.sseTracker.EnsureWatching("ws-1")
-	// Prime the cache with Active so onPhaseChange sees Active→Active.
-	handler.SetPriorPhaseForTest("ws-1", string(phaseActive))
-
-	sb := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(phaseActive), "ws-1")
-	handler.onPhaseChange(sb)
-
-	// Subscription must still exist and must NOT have been reset.
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount(),
-		"Active→Active reconcile must not reset the SSE subscription")
-}
+// US-69.11: TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState
+// (the US-45.1 regression) remains below — it pins phase-change cache
+// semantics that survived the tracker retirement.
 
 // TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState is the
 // regression test for a US-45.1 bug that almost shipped: the new
@@ -1333,6 +1113,7 @@ func TestProxy_OnPhaseChange_ActiveToActive_NoReset(t *testing.T) {
 // proving that the second call (which goes through the prior==Active
 // branch) preserves the state the first call established.
 func TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState(t *testing.T) {
+	t.Cleanup(stubUsageStream())
 	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
 
 	// Seed state that the first onPhaseChange(Active) would naturally
@@ -1365,32 +1146,6 @@ func TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState(t *testing.
 	_, pwOk := handler.GetCachedPasswordForTest("ws-1")
 	assert.True(t, pwOk,
 		"Active→Active reconcile must preserve password cache (regression: extra K8s Secret fetches on every redundant watch event)")
-}
-
-// TestProxy_OnPhaseChange_SeedCallActive_StartsSSETracker verifies that when onPhaseChange
-// is called for an Active workspace with no prior phase (prior=="", the seed case fired by
-// seedResourceVersion on API restart), the SSE tracker starts a new subscription.
-// This is the regression test for the startup race where EnsureWatching was never called for
-// already-Active workspaces because the watcher goroutine seeded knownPhases asynchronously.
-func TestProxy_OnPhaseChange_SeedCallActive_StartsSSETracker(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-
-	handler.sseTracker = sse.NewTracker(
-		&http.Client{},
-		&testLogger{},
-		func(workspaceID, sessionID string) {},
-	)
-	handler.sseTracker.SetPasswordGetter(fakePWProvider{pw: "pw"})
-	handler.sseTracker.SetPodIPResolver(func(workspaceID string) string { return "10.0.0.1" })
-
-	// No prior phase set — this is the seed call path.
-	assert.Equal(t, 0, handler.sseTracker.SubscriptionCount(), "no subscription before seed")
-
-	ws := makeWorkspaceCRDWithStatus("ws-seed", "10.0.0.1", string(phaseActive), "ws-seed")
-	handler.onPhaseChange(ws)
-
-	assert.Equal(t, 1, handler.sseTracker.SubscriptionCount(),
-		"SSE subscription must be started for Active workspace on seed call (prior==\"\")")
 }
 
 func TestProxy_ActivityNotRecordedOnProxyFailure(t *testing.T) {
@@ -1485,21 +1240,11 @@ func TestProxy_ActivityRecordedOnSuccess(t *testing.T) {
 		"activity should be recorded (pending for flush) when proxy succeeds")
 }
 
-func TestProxy_OnSessionIdle_RecordsActivityWithoutWsConfig(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-
-	tracker := activity.NewActivityTracker(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default")
-	handler.activityTracker = tracker
-
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	handler.onSessionIdle("ws-1", "s1")
-
-	assert.Equal(t, 1, tracker.PendingCount(),
-		"activity should be recorded on idle even without wsConfig entry (US-6.5 fix)")
-	assert.Equal(t, 0, handler.activeSessionCount(context.Background(), "ws-1"),
-		"session should still be removed from active set")
-}
+// US-69.11: TestProxy_OnSessionIdle_RecordsActivityWithoutWsConfig was
+// deleted with onSessionIdle — activity recording now happens on the
+// proxy request paths (TestProxy_ActivityRecordedOnSuccess above) and
+// idle transitions arrive via the usage bridge
+// (proxy_usagestream_test.go).
 
 // --- Epic 25 B2: mid-stream upstream read error → SSE error event ---
 
@@ -2124,80 +1869,40 @@ func TestProxy_DeleteSession_DeepNestingEndpointMapping(t *testing.T) {
 	assert.Equal(t, "/session/sess_abc-123", capturedPath)
 }
 
-func TestProxy_DeleteSession_SuppressesLateSSEUpserts(t *testing.T) {
-	si := &recordingActivitySessionIndex{}
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
-	})
-	env.handler.SetSessionIndex(si)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
+// US-69.11: title/context persistence for deleted sessions moved from
+// the tracker's dialect callbacks to the usage bridge — the tombstone
+// guard (no zombie session_index rows from late events) survives on the
+// new seam.
 
-	// Delete the session
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+// US-69.11: TestProxy_DeleteSession_SuppressesLateSSEUpserts /
+// AllowsNonDeletedSessionUpserts were deleted with onSessionIdle — the
+// tombstone-vs-live-session split is pinned by the two bridge tests
+// below plus TestBridgeContextUsed_Persists (opencode_upgrade_test.go).
 
-	// Verify the session is marked as deleted
-	assert.True(t, env.handler.isSessionDeleted("ws-1", "s1"))
-
-	// Simulate a late idle event — onSessionIdle should NOT call RecordMessage
-	env.handler.onSessionIdle("ws-1", "s1")
-
-	si.mu.Lock()
-	assert.Empty(t, si.recorded, "RecordMessage should not be called for deleted session")
-	si.mu.Unlock()
-}
-
-func TestProxy_DeleteSession_AllowsNonDeletedSessionUpserts(t *testing.T) {
-	si := &recordingActivitySessionIndex{}
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
-	})
-	env.handler.SetSessionIndex(si)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	// Delete session s1
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	// Late idle for a DIFFERENT session should still work
-	env.handler.onSessionIdle("ws-1", "s2")
-
-	si.mu.Lock()
-	assert.Len(t, si.recorded, 1, "RecordMessage should be called for non-deleted session")
-	si.mu.Unlock()
-}
-
-func TestProxy_PersistTitleFromEvent_SkipsDeletedSession(t *testing.T) {
+func TestProxy_BridgeSessionTitle_SkipsDeletedSession(t *testing.T) {
 	si := &recordingActivitySessionIndex{}
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {})
 	env.handler.SetSessionIndex(si)
+	t.Cleanup(stubUsageStream())
 
 	env.handler.MarkSessionDeletedForTest("ws-1", "s1")
 
-	rawData := `{"properties":{"sessionID":"s1","info":{"id":"s1","title":"Late Title"}}}`
-	env.handler.persistTitleFromEvent("ws-1", rawData)
+	(&usageBridge{h: env.handler}).SessionTitle("ws-1", "s1", "Late Title")
 
 	si.mu.Lock()
 	assert.Empty(t, si.titleUpserts, "UpsertTitle should be skipped for deleted session")
 	si.mu.Unlock()
 }
 
-func TestProxy_PersistContextFromEvent_SkipsDeletedSession(t *testing.T) {
+func TestProxy_BridgeContextUsed_SkipsDeletedSession(t *testing.T) {
 	si := &recordingActivitySessionIndex{}
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {})
 	env.handler.SetSessionIndex(si)
+	t.Cleanup(stubUsageStream())
 
 	env.handler.MarkSessionDeletedForTest("ws-1", "s1")
-	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"s1": 100}))
 
-	rawData := `{"properties":{"sessionID":"s1","tokens":{"input":100,"cache":{"read":0,"write":0}}}}`
-	env.handler.persistContextFromEvent("ws-1", "session.next.step.ended", rawData)
+	(&usageBridge{h: env.handler}).ContextUsed("ws-1", "s1", 100)
 
 	si.mu.Lock()
 	assert.Empty(t, si.contextUpserts, "UpsertContextUsed should be skipped for deleted session")
@@ -2284,93 +1989,12 @@ func (r *recordingActivitySessionIndex) UpsertContextUsed(_ context.Context, wor
 func (r *recordingActivitySessionIndex) Start() error { return nil }
 func (r *recordingActivitySessionIndex) Stop() error  { return nil }
 
-func TestProxy_OnSessionIdle_RecordsSessionIndexWithoutWsConfig(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
-	llmMock.On("Workspaces", "default").Return(wsMock).Maybe()
-	ws := makeWorkspaceCRDWithStatus("ws-1", "", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil).Maybe()
-	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-
-	tracker := activity.NewActivityTracker(k8sMock, &testLogger{}, "default")
-	handler.activityTracker = tracker
-	si := &recordingActivitySessionIndex{}
-	handler.sessionIndex = si
-
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	handler.onSessionIdle("ws-1", "s1")
-
-	si.mu.Lock()
-	assert.Len(t, si.recorded, 1, "session index RecordMessage should be called once")
-	if len(si.recorded) > 0 {
-		assert.Equal(t, "ws-1", si.recorded[0].workspaceID)
-		assert.Equal(t, "s1", si.recorded[0].sessionID)
-	}
-	si.mu.Unlock()
-
-	assert.Equal(t, 1, tracker.PendingCount(), "activity tracker should record activity")
-	assert.Equal(t, 0, handler.activeSessionCount(context.Background(), "ws-1"), "session should be removed from active set")
-}
-
-func TestProxy_OnSessionIdle_FetchAndPersistTitleWithoutWsConfig(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/session/s1" {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]string{"title": "Test Session", "parentID": "p1"})
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	transport := &redirectTransport{server: backend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-
-	ws := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err = k8sMock.Clientset().CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	tracker := activity.NewActivityTracker(k8sMock, &testLogger{}, "default")
-	handler.activityTracker = tracker
-	si := &recordingActivitySessionIndex{}
-	handler.sessionIndex = si
-
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	handler.onSessionIdle("ws-1", "s1")
-
-	assert.Eventually(t, func() bool {
-		si.mu.Lock()
-		defer si.mu.Unlock()
-		return len(si.titleUpserts) > 0
-	}, 2*time.Second, 10*time.Millisecond, "fetchAndPersistTitle should upsert title")
-
-	si.mu.Lock()
-	assert.Len(t, si.titleUpserts, 1)
-	if len(si.titleUpserts) > 0 {
-		assert.Equal(t, "ws-1", si.titleUpserts[0].workspaceID)
-		assert.Equal(t, "s1", si.titleUpserts[0].sessionID)
-		assert.Equal(t, "Test Session", si.titleUpserts[0].title)
-	}
-	si.mu.Unlock()
-}
+// US-69.11: the three TestProxy_OnSessionIdle_* tests were deleted with
+// onSessionIdle — idle-side activity recording, RecordMessage, and the
+// idle title fetch were tracker-callback behaviors. Title and context
+// persistence now flow from the usage bridge (proxy_usagestream_test.go
+// and the bridge tests above); activity recording from the request
+// paths (TestProxy_ActivityRecordedOnSuccess).
 
 func TestProxy_IsSessionActive_ReturnsFalseForUnknownWorkspace(t *testing.T) {
 	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
@@ -2402,29 +2026,6 @@ func TestProxy_SendPromptAsync_409DoesNotAffectSendMessage(t *testing.T) {
 
 	assert.NotEqual(t, http.StatusConflict, w.Code,
 		"SendMessage (synchronous) should NOT get 409 guard")
-}
-
-func TestProxy_OnSessionIdle_SessionIndexIndependentOfActivityTracker(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
-	llmMock.On("Workspaces", "default").Return(wsMock).Maybe()
-	ws := makeWorkspaceCRDWithStatus("ws-1", "", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil).Maybe()
-
-	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-
-	si := &recordingActivitySessionIndex{}
-	handler.sessionIndex = si
-
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	handler.onSessionIdle("ws-1", "s1")
-
-	si.mu.Lock()
-	assert.Len(t, si.recorded, 1, "sessionIndex.RecordMessage must fire even when activityTracker is nil")
-	si.mu.Unlock()
 }
 
 func TestProxy_ProxyToWorkspace_NoDoubleReleaseOnMaxSessions(t *testing.T) {
@@ -2468,6 +2069,7 @@ func TestProxy_IsSessionActive_ConcurrentReads(t *testing.T) {
 }
 
 func TestProxy_OnPhaseChange_RecordsLifecycleEvent(t *testing.T) {
+	t.Cleanup(stubUsageStream())
 	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
 
 	meteringSvc := new(mocks.MockMeteringService)
@@ -2511,6 +2113,7 @@ func TestProxy_OnPhaseChange_RecordsLifecycleEvent(t *testing.T) {
 // Regression test for the billing regression introduced by the `prior != ""` guard that was
 // present in an earlier version of this fix and removed.
 func TestProxy_OnPhaseChange_CreatingToActive_AfterRestart_RecordsLifecycleEvent(t *testing.T) {
+	t.Cleanup(stubUsageStream())
 	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
 
 	meteringSvc := new(mocks.MockMeteringService)
@@ -2548,6 +2151,7 @@ func TestProxy_OnPhaseChange_CreatingToActive_AfterRestart_RecordsLifecycleEvent
 }
 
 func TestProxy_OnPhaseChange_NoMeteringService_NoPanic(t *testing.T) {
+	t.Cleanup(stubUsageStream())
 	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
 
 	ws := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "user-1")
