@@ -226,6 +226,26 @@ spec:
               reconcile loop, the pods' resync endpoint, or the bootstrap pull path is
               unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.
 
+        {{- /* US-70.4 (#1208): a verify-after-write failure or a W9 source
+              disagreement means the reconciler refused to commit a wrap it
+              could not prove correct — should-never-fire (the halt gauge
+              below catches the spike). Emitted by the API service
+              (api/internal/services/keyrewrap). */}}
+        - alert: LLMSafeSpacesKeyRewrapVerifyFailures
+          expr: |
+            sum(increase(llmsafespaces_key_rewrap_rows_total{job=~"{{ $apiJob }}", outcome=~"verify_failed|source_disagreement"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Key re-wrap reconciler refused to commit unverified wraps"
+            description: >-
+              Re-wrap attempts failed verify-after-write or source agreement in the
+              last 10m. Rows were left untouched by design — investigate the master
+              KEK health and the session-cache DEK source before the halt threshold
+              trips.
+
         {{- /* US-70.3 loop health: no successful reconcile pass in 3x the
               default 60s period (LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL
               overrides the period — scale the threshold accordingly). The
@@ -247,6 +267,47 @@ spec:
               in over 3 minutes (3x the default period) — or has never reported one.
               Divergent workspaces will not converge until it recovers. Check the
               API's K8s client and the loop's error logs.
+
+        {{- /* US-70.4: the reconciler halted its batch walk this pass (≥3
+              verify failures) — blast-radius control engaged. Sustained
+              halting means the fleet-wide-corruption guard is keeping the
+              reconciler from writing at all; the underlying provider/key
+              problem needs an operator. */}}
+        - alert: LLMSafeSpacesKeyRewrapHalted
+          expr: |
+            max(llmsafespaces_key_rewrap_halted{job=~"{{ $apiJob }}"}) > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Key re-wrap reconciler halted"
+            description: >-
+              The user_keys re-wrap reconciler has been halted for 5m — verify-after-write
+              failures reached the blast-radius threshold and further batches are
+              being skipped. The KEK/provider that produced non-round-tripping wraps
+              must be investigated; heals resume on the next pass once it recovers.
+
+        {{- /* US-70.4: rows that recover from no source (owner offline, no
+              session) or have no secret to verify against. Chronic-state
+              style (like LLMSafeSpacesLegacyAPIKeysRemaining): info-tier,
+              sustained window — per-user strand signal, not a page. The
+              per-user detail is in secret_audit_log
+              (action=key_rewrap_unwrappable). */}}
+        - alert: LLMSafeSpacesKeyRewrapUnwrappable
+          expr: |
+            sum(increase(llmsafespaces_key_rewrap_rows_total{job=~"{{ $apiJob }}", outcome=~"unwrappable_no_source|unwrappable_no_secret"}[1h])) > 0
+          for: 1h
+          labels:
+            severity: info
+            component: api
+          annotations:
+            summary: "user_keys rows surfaced unwrappable"
+            description: >-
+              user_keys rows could not be healed in the last hour — no recovery
+              source (owner offline, no session) or no secret to verify a recovered
+              DEK against (never healed unverified, by design). Check
+              secret_audit_log action=key_rewrap_unwrappable for the affected users.
 
     - name: llmsafespaces.controller
       rules:

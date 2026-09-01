@@ -35,6 +35,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/keyrewrap"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
@@ -91,6 +92,7 @@ type App struct {
 	jwtSessionJanitor  *secrets.JWTSessionJanitor // Epic 56: prunes expired jwt_sessions rows
 	secretsReconcile   *secretsreconcile.Service  // US-70.3: level-triggered secrets-delivery reconcile loop
 	agentPusher        *agentpush.Service         // US-70.3 M2: shared notifier; Stop() cancels pending deferred 429 retries on shutdown
+	keyRewrapSvc       *keyrewrap.Service         // US-70.4: login-independent user_keys re-wrap reconciler
 	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
 	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
 	invitationsHandler *handlers.InvitationsHandler
@@ -431,6 +433,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var orgCredBinder *secrets.PgSecretStore
 	var keyService *secrets.KeyService
 	var jwtSessionJanitor *secrets.JWTSessionJanitor // populated when secrets are enabled; goroutine started below
+	var keyRewrapSvc *keyrewrap.Service              // populated when secrets are enabled; goroutine started below
 	var policySvc *policy.Service
 	var policyHandler *handlers.PolicyHandler
 	var promptSvc *prompt.Service
@@ -842,6 +845,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// call stack.
 			keyService.SetSigningKeyEnumerator(authSvc)
 		}
+
+		// US-70.4: the login-independent re-wrap reconciler. Same master
+		// provider as KeyService's server-side unwrap path (apiKeyProv,
+		// AuditedProvider-wrapped so the walk's decrypts are attributed per
+		// user), the session-cache DEK walk as the recovery source, the
+		// PgSecretStore for the W9 source-agreement listing, and the async
+		// audit seam. Env-only config (period / batch size / kill switch —
+		// see api/internal/services/keyrewrap). Started in Run() after the
+		// secrets services; stopped by the root-context cancel in Shutdown.
+		keyRewrapSvc = keyrewrap.New(
+			secrets.NewPgKeyStore(secretsPool),
+			keyService,
+			apiKeyProv,
+			pgStore,
+			asyncAudit,
+			log,
+			keyrewrap.ConfigFromEnv(),
+		)
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
@@ -1485,6 +1506,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		jwtSessionJanitor:  jwtSessionJanitor,
 		secretsReconcile:   secretsReconcileSvc,
 		agentPusher:        agentPusherSvc,
+		keyRewrapSvc:       keyRewrapSvc,
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
 		invitationsHandler: invitationsHandler,
@@ -1535,6 +1557,17 @@ func (a *App) Run() error {
 	if a.jwtSessionJanitor != nil {
 		go a.jwtSessionJanitor.Run(a.ctx)
 		a.logger.Info("jwt_sessions janitor started", "interval", secrets.DefaultJWTSessionJanitorInterval.String())
+	}
+
+	// US-70.4: start the user_keys re-wrap reconciler (immediate startup
+	// pass + one pass per configured period). Ordering: after the
+	// secrets services above; when US-70.3's secrets reconcile loop
+	// lands in this tree, this must remain AFTER it so healed rows
+	// converge through the delivery reconcile in the same boot. Stop is
+	// the root-context cancel in Shutdown (the janitor lifecycle
+	// pattern — no explicit Stop call needed).
+	if a.keyRewrapSvc != nil {
+		go a.keyRewrapSvc.Run(a.ctx)
 	}
 
 	// Epic 64: Start the workflow engine (reconciler + scheduler) as background

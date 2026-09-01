@@ -62,8 +62,14 @@ const (
 
 // reservedTables are never truncated by Reset. schema_migrations is
 // golang-migrate's version bookkeeping; wiping it forces re-application or
-// marks the DB dirty.
-var reservedTables = map[string]bool{"schema_migrations": true}
+// marks the DB dirty. image_factory_platform_config is the migration-seeded
+// platform singleton (migration 000013) — truncating it on the SHARED test
+// DB poisons every later reader on that DB (TestIntegration_IF_PlatformConfig
+// asserts the seeded row), and the singleton carries no per-test state.
+var reservedTables = map[string]bool{
+	"schema_migrations":             true,
+	"image_factory_platform_config": true,
+}
 
 // Harness holds the Postgres and Redis handles for one integration test.
 //
