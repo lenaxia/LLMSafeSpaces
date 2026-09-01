@@ -633,52 +633,6 @@ func Upstream5xxCounter() *prometheus.CounterVec {
 	return upstream5xxTotal
 }
 
-// --- worklog 0589 / #493: Pod-recreation auto-push metrics ---
-
-var (
-	// secretAutoPushTotal counts fire-and-forget notify attempts triggered
-	// by the workspace-status pod-identity detector. Outcome label
-	// values are exhaustively enumerated: "success", "no_pod",
-	// "notify_failed" (US-70.3: the pod-recreation path notifies; the
-	// pod re-pulls). Operators alert on non-zero {outcome!="success"}
-	// sustained rate.
-	//
-	// This is distinct from llmsafespaces_agent_reload_total (which
-	// counts user-initiated dispose+restart via POST /agent/reload) and
-	// from llmsafespaces_secrets_notify_total (every notify dispatch,
-	// any caller) — the three paths have different observability
-	// requirements and different SLOs. Combining them would prevent
-	// operators from telling "user hit reload button 50x in an hour"
-	// (support signal) from "50 pods auto-recovered after a node
-	// failure" (infrastructure signal).
-	secretAutoPushTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "api_secret_auto_push_total",
-			Help: "Total pod-recreation auto-notify attempts by outcome (success, no_pod, notify_failed).",
-		},
-		[]string{"outcome"},
-	)
-)
-
-// RecordSecretAutoPush increments the counter for a single pod-recreation
-// auto-notify attempt outcome. outcome must be one of "success",
-// "no_pod", "notify_failed". Called from app.recordAutoPushOutcome
-// (the process-wide callback used by wsAgentPusherAdapter, the sole
-// emission point for this metric — see the adapter's doc for the
-// rationale).
-func RecordSecretAutoPush(outcome string) {
-	if outcome == "" {
-		outcome = "unknown"
-	}
-	secretAutoPushTotal.WithLabelValues(outcome).Inc()
-}
-
-// SecretAutoPushCounter exposes the underlying CounterVec so tests can
-// reset it between cases and assert on labeled values.
-func SecretAutoPushCounter() *prometheus.CounterVec {
-	return secretAutoPushTotal
-}
-
 // --- Epic 53: MCP server metrics ---
 
 var (

@@ -6,21 +6,18 @@ package main
 // Integration tests for issue #443: container restart must not wipe
 // user-DEK credentials.
 //
-// These exercise the full boot-time materialize subcommand as a real
-// subprocess (mirroring TestMaterializeSubcommand_*), driving the
-// persist-and-replay contract end to end:
+// US-70.5 deleted the reload-cache replay (#443's original mechanism).
+// The durable state is now the BATCH FILE the resync pull persists on
+// every applied revision (resync_secrets.go writes the fetched envelope
+// verbatim before applying). A container restart re-runs the
+// materialize subcommand against that file — re-materialization is by
+// pull, by design:
 //
-//   1. A reload-secrets push persists the batch to the cache file.
-//   2. A subsequent `materialize` boot (container restart) replays the
-//      cache merged on top of the base secrets.json.
-//   3. Pod recreation (cache absent) falls back to base-only.
-//
-// After design 0045 Change 1, the "user-owned creds do not materialize at
-// first boot" invariant is inverted: pod-bootstrap now attempts best-effort
-// user-DEK unwrap and delivers user-DEK secrets when the workspace owner's
-// jwt_sessions row is unwrappable. When unwrap fails (owner offline past the
-// jwt_session TTL), pod-bootstrap degrades to sessionless and the tests
-// below still hold (base-only materialization).
+//  1. A resync pull applies a revisioned envelope and persists it.
+//  2. A subsequent `materialize` boot (container restart; tmpfs wiped)
+//     re-applies the persisted envelope.
+//  3. Revocation converges the same way: a newer, smaller envelope
+//     replaces the file and the restart materializes only what remains.
 
 import (
 	"bytes"
@@ -29,30 +26,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// cacheMaterializeEnv returns the LLMSAFESPACES_* env additions for the
-// materialize subprocess, including the new RELOAD_CACHE_PATH override.
-func cacheMaterializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds, cachePath string) []string {
+// materializeEnv returns the LLMSAFESPACES_* env additions for the
+// materialize subprocess.
+func materializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds string) []string {
 	return []string{
 		"LLMSAFESPACES_SECRETS_BASE_DIR=" + secretsBase,
 		"LLMSAFESPACES_SSH_DIR=" + sshDir,
 		"LLMSAFESPACES_AGENT_CONFIG_PATH=" + agentCfg,
 		"LLMSAFESPACES_SECRETS_ENV_PATH=" + envPath,
 		"LLMSAFESPACES_GIT_CREDS_PATH=" + gitCreds,
-		"LLMSAFESPACES_RELOAD_CACHE_PATH=" + cachePath,
 		"HOME=" + filepath.Dir(sshDir),
 	}
 }
 
-// runCacheMaterialize runs `workspace-agentd materialize --from <path>` with
-// the reload-cache override, returning exit code + stderr.
-func runCacheMaterialize(t *testing.T, bin, secretsPath string, env []string) (int, string) {
+// runMaterialize runs `workspace-agentd materialize --from <path>`,
+// returning exit code + stderr.
+func runMaterialize(t *testing.T, bin, secretsPath string, env []string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(bin, "materialize", "--from", secretsPath)
 	cmd.Env = append(os.Environ(), env...)
@@ -69,97 +65,42 @@ func runCacheMaterialize(t *testing.T, bin, secretsPath string, env []string) (i
 	return exit, stderr.String()
 }
 
-// TestMaterialize_WritesCacheOnBoot is the regression test for design 0045
-// Change 3: the init-container's materialize subcommand must persist its
-// applied batch to the reload cache so agentd's hasUserCreds probe reports
-// UserCredsPresent=true from the first healthz call.
-//
-// Without this write, the pre-existing hasUserCreds implementation
-// (healthz.go) reads only the reload-cache path — the cache is empty on
-// a fresh pod, so UserCredsPresent=false, so the API's watcher fires a
-// spurious auto-push ~30s into pod life. Auto-push applies the same batch
-// pod-bootstrap already delivered (design 0045 Change 1) and triggers a
-// wasteful opencode restart.
-//
-// With this write, hasUserCreds returns true on the first healthz call,
-// secretautopush observes UserCredsPresent=true, emits skipped_ucp_true,
-// and no restart fires.
-func TestMaterialize_WritesCacheOnBoot(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	dir := t.TempDir()
+// pullAndApply drives the real resyncSecretsHandler against a fake
+// bootstrap API serving the given envelope — the pull path that
+// replaces the deleted reload push.
+func pullAndApply(t *testing.T, cfg materializeConfig, batchPath, envelope string) {
+	t.Helper()
+	withTestLogger(t)
+	tokenPath := filepath.Join(filepath.Dir(batchPath), "token")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("restart-pin-tok"), 0o600))
 
-	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+	api := &mutableBootstrapAPI{}
+	apiSrv := httptest.NewServer(http.HandlerFunc(api.serve))
+	t.Cleanup(apiSrv.Close)
+	api.set(http.StatusOK, `{"secrets":`+envelope+`}`)
 
-	// Simulate pod-bootstrap having delivered user-DEK secrets (design 0045
-	// Change 1). Both server-KEK and user-DEK entries arrive together.
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
-		{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok-boot-value"},
-		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
-	]`), 0o600))
-
-	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
-
-	// Pre-condition: no cache on a fresh pod.
-	_, err := os.Stat(cachePath)
-	require.True(t, os.IsNotExist(err))
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
-
-	// Post-condition: cache exists. This is what hasUserCreds reads.
-	require.FileExists(t, cachePath,
-		"materialize must persist the reload cache so hasUserCreds reports "+
-			"UserCredsPresent=true on the first healthz — preventing the spurious "+
-			"auto-push that would otherwise trigger a wasteful opencode restart")
-
-	cacheContent, err := os.ReadFile(cachePath)
-	require.NoError(t, err)
-	assert.Contains(t, string(cacheContent), "GH_TOKEN",
-		"cache must include the user-DEK env-secret to reflect what was materialized")
-	assert.Contains(t, string(cacheContent), "tok-boot-value")
-	assert.Contains(t, string(cacheContent), "SERVER_CFG")
+	handler := resyncSecretsHandler(resyncDeps{
+		cfg:         cfg,
+		apply:       applySecretsDeps{OpencodePassword: resyncTestPassword},
+		apiURL:      apiSrv.URL,
+		workspaceID: "ws-restart-pin",
+		tokenPath:   tokenPath,
+		batchPath:   batchPath,
+		minInterval: time.Nanosecond,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/resync-secrets", nil)
+	req.Header.Set("Authorization", "Basic "+basicAuth(resyncTestPassword))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "resync pull failed: %s", rec.Body.String())
 }
 
-// TestMaterialize_EmptySecrets_DoesNotWriteCache verifies the empty-batch
-// short-circuit: a workspace with no bindings must not write an empty
-// cache file. hasUserCreds would return true on a zero-length batch (via
-// len(batch) > 0 == false), so the cache-absent state and the empty-cache
-// state are semantically equivalent — but writing an empty file costs a
-// tmpfs I/O and clutters the fs unnecessarily.
-func TestMaterialize_EmptySecrets_DoesNotWriteCache(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	dir := t.TempDir()
-
-	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[]`), 0o600))
-
-	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
-
-	_, err := os.Stat(cachePath)
-	assert.True(t, os.IsNotExist(err),
-		"empty secrets batch must not write an empty cache file")
-}
-
-// TestContainerRestart_ReplaysUserDEKCreds is THE regression test for #443.
-// It simulates the exact production sequence:
-//
-//	(a) boot pod with base secrets.json (server-KEK env-secret ONLY),
-//	(b) live reload-secrets push delivers a user-DEK env-secret (GH_TOKEN),
-//	(c) container restarts → materialize re-runs → BOTH creds must survive.
-//
-// Pre-fix, step (c) wiped GH_TOKEN because reset() nukes /sandbox-runtime and
-// the base secrets.json never contained it.
-func TestContainerRestart_ReplaysUserDEKCreds(t *testing.T) {
+// TestContainerRestart_PulledEnvelopeReapplied is THE #443 regression,
+// post-US-70.5: the resync pull persists its applied envelope to the
+// batch file, and a container restart (tmpfs wiped — simulated by
+// removing the env file) re-materializes BOTH the user-DEK env-secret
+// and the base server-KEK env-secret from that file alone.
+func TestContainerRestart_PulledEnvelopeReapplied(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
 
@@ -168,318 +109,159 @@ func TestContainerRestart_ReplaysUserDEKCreds(t *testing.T) {
 	agentCfg := filepath.Join(dir, "agent-config.json")
 	envPath := filepath.Join(dir, "env")
 	gitCreds := filepath.Join(dir, ".git-credentials")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+	batchPath := filepath.Join(dir, "secrets.json")
 
-	// (a) Base secrets.json: only a server-KEK env-secret (as bootstrap writes).
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
+	// (a) Boot: base secrets.json carries a server-KEK env-secret only
+	// (as the bootstrap init container's first pull wrote it).
+	require.NoError(t, os.WriteFile(batchPath, []byte(`[
 		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
 	]`), 0o600))
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds, cachePath))
+	exit, stderr := runMaterialize(t, bin, batchPath,
+		materializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds))
 	require.Equal(t, 0, exit, "first boot failed; stderr=%q", stderr)
 	requireEnvHasVar(t, envPath, "SERVER_CFG")
 
-	// (b) Live reload-secrets push delivers a user-DEK env-secret (GH_TOKEN).
-	// This represents POST /v1/reload-secrets from the API after a user binds
-	// a credential. The handler must persist the batch to the cache file.
+	// (b) Bind: the resync pull delivers a user-DEK env-secret and
+	// persists the new envelope over the batch file.
 	cfg := materializeConfig{
-		secretsBaseDir:  secretsBase,
-		sshDir:          sshDir,
-		agentConfigPath: agentCfg,
-		secretsEnvPath:  envPath,
-		gitCredsPath:    gitCreds,
-		home:            dir,
-		reloadCachePath: cachePath,
+		secretsBaseDir:   secretsBase,
+		sshDir:           sshDir,
+		agentConfigPath:  agentCfg,
+		secretsEnvPath:   envPath,
+		gitCredsPath:     gitCreds,
+		home:             dir,
+		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
-	reloadBody := `[{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok-12345"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(reloadBody))
-	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
-	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, "reload failed: %s", rec.Body.String())
+	pullAndApply(t, cfg, batchPath,
+		`{"entries":[{"secretId":"s1","version":1,"type":"env-secret","name":"base","value":"server-val","metadata":{"var_name":"SERVER_CFG"}},{"secretId":"s2","version":1,"type":"env-secret","name":"gh","value":"tok-12345","metadata":{"var_name":"GH_TOKEN"}}],"revision":{"seq":2,"manifestHash":"mh-2","batchHash":"bh-2"}}`)
 
-	// The reload is a full-replace: its cache represents the complete live
-	// state. GH_TOKEN must be present in the cache file.
-	require.FileExists(t, cachePath, "reload must persist the cache (the fix)")
+	raw, err := os.ReadFile(batchPath)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), "GH_TOKEN", "the resync pull must persist the applied envelope (the restart surface)")
 
-	// (c) Simulate the container restart: materialize re-runs from scratch on
-	// the SAME tmpfs (cache survives) but reset() has just wiped /sandbox-runtime.
-	// Simulate the wipe by removing the env file (reset would do this).
+	// (c) Container restart: reset() wiped the tmpfs (env file + rev
+	// anchor gone — both live beside it on /sandbox-runtime in
+	// production); materialize re-applies the persisted envelope.
 	require.NoError(t, os.Remove(envPath))
-
-	exit, stderr = runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds, cachePath))
+	require.NoError(t, os.Remove(revAnchorPath(envPath)))
+	exit, stderr = runMaterialize(t, bin, batchPath,
+		materializeEnv(secretsBase, sshDir, agentCfg, envPath, gitCreds))
 	require.Equal(t, 0, exit, "restart boot failed; stderr=%q", stderr)
 
-	// BOTH creds must be present: the user-DEK GH_TOKEN (from cache replay)
-	// AND the server-KEK SERVER_CFG (from base). Pre-fix, GH_TOKEN was GONE.
 	envContent, err := os.ReadFile(envPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "export GH_TOKEN=",
-		"user-DEK env-secret must survive container restart via cache replay (#443)")
-	assert.Contains(t, string(envContent), "tok-12345",
-		"the replayed value must be the cache value, not a stale default")
+		"user-DEK env-secret must survive container restart via the pulled envelope (#443, now by pull)")
+	assert.Contains(t, string(envContent), "tok-12345")
 	assert.Contains(t, string(envContent), "export SERVER_CFG=",
-		"server-KEK env-secret from base must also be present")
+		"server-KEK env-secret must also survive the restart")
 }
 
-// TestContainerRestart_NoCache_FallsBackToBaseOnly pins the boot-with-no-cache
-// path: when the cache is absent (fresh tmpfs) and the base secrets.json
-// contains no user-DEK content (owner offline / jwt_sessions unwrappable
-// at pod-bootstrap time), only server-KEK content materializes. After
-// design 0045 Change 1, user-DEK content CAN appear in the base
-// secrets.json when unwrap succeeds — but this test explicitly exercises
-// the degrade path where it doesn't.
-func TestContainerRestart_NoCache_FallsBackToBaseOnly(t *testing.T) {
+// TestContainerRestart_BootWithNoUserDEKContent pins the degrade-free
+// base path: a batch file with server-KEK content only (owner offline
+// at pull time, or no bindings) materializes exactly that — no phantom
+// user-DEK content, no failure.
+func TestContainerRestart_BootWithNoUserDEKContent(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json") // deliberately NOT created
-
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
+	batchPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(batchPath, []byte(`[
 		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
 	]`), 0o600))
 
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-			filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath))
+	exit, stderr := runMaterialize(t, bin, batchPath,
+		materializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
+			filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials")))
 	require.Equal(t, 0, exit, "stderr=%q", stderr)
 
 	envContent, err := os.ReadFile(envPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "export SERVER_CFG=")
 	assert.NotContains(t, string(envContent), "GH_TOKEN",
-		"no cache + no user-DEK in base secrets.json → no user-DEK creds")
+		"no user-DEK content in the batch file → no user-DEK creds materialized")
 }
 
-// TestContainerRestart_CorruptCache_FallsBackToBase verifies graceful
-// degradation: a corrupt cache file must NOT crash the boot; it warns and
-// falls back to base-only materialization.
-func TestContainerRestart_CorruptCache_FallsBackToBase(t *testing.T) {
+// TestContainerRestart_RevocationConvergesByPull locks down the unbind
+// path: a newer, smaller envelope replaces the batch file, and the
+// restart materializes only the retained credential — the removed one
+// must NOT reappear (the file is the full truth, not an overlay).
+func TestContainerRestart_RevocationConvergesByPull(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
 
 	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-	require.NoError(t, os.WriteFile(cachePath, []byte("{{not json"), 0o600))
-
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
-		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
-	]`), 0o600))
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-			filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath))
-
-	require.Equal(t, 0, exit, "corrupt cache must not fail the boot; stderr=%q", stderr)
-	assert.Contains(t, stderr, "last-reload-secrets",
-		"corrupt cache must warn so the missing creds are diagnosable")
-
-	envContent, err := os.ReadFile(envPath)
-	require.NoError(t, err)
-	assert.Contains(t, string(envContent), "export SERVER_CFG=",
-		"base creds must still materialize despite corrupt cache")
-}
-
-// TestContainerRestart_PodRecreation_WipesCache pins US-35.7: on full pod
-// recreation (not container restart) the tmpfs is wiped, so the cache is
-// absent on the first materialize call. The security invariant (no
-// plaintext user creds on the PVC at rest) is preserved because both
-// /sandbox-cfg and /sandbox-runtime are memory-backed emptyDirs.
-//
-// After design 0045 Change 3, materialize *does* write the cache during
-// the first boot on the fresh pod. The test verifies the pre-boot state
-// (cache absent) and asserts server-KEK-only base creds materialize
-// without user-DEK bleed-through.
-func TestContainerRestart_PodRecreation_WipesCache(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	dir := t.TempDir()
-
-	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
-		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
-	]`), 0o600))
-
-	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
-
-	// Pre-boot: no cache (fresh pod).
-	_, err := os.Stat(cachePath)
-	require.True(t, os.IsNotExist(err), "fresh pod must have no cache before first materialize")
-
-	// First boot on the fresh pod (pod-bootstrap here degraded to server-KEK
-	// only — user's jwt_session absent). Base creds materialize.
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
-
-	// User-DEK creds absent (base secrets.json here has server-KEK only).
-	envContent, err := os.ReadFile(envPath)
-	require.NoError(t, err)
-	assert.NotContains(t, string(envContent), "GH_TOKEN",
-		"pod-bootstrap-degrade path materializes no user-DEK content")
-}
-
-// TestContainerRestart_SSHKeySurvivesRestart verifies the replay path for a
-// non-env credential type (SSH key), ensuring the merge + replay covers all
-// user-DEK credential categories, not just env-secrets.
-func TestContainerRestart_SSHKeySurvivesRestart(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	dir := t.TempDir()
-
-	sshDir := filepath.Join(dir, ".ssh")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-
-	// Base is empty (user has no server-KEK creds).
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[]`), 0o600))
-
-	// Live push delivers an SSH key.
+	batchPath := filepath.Join(dir, "secrets.json")
 	cfg := materializeConfig{
-		secretsBaseDir:  filepath.Join(dir, "secrets"),
-		sshDir:          sshDir,
-		agentConfigPath: filepath.Join(dir, "agent-config.json"),
-		secretsEnvPath:  filepath.Join(dir, "env"),
-		gitCredsPath:    filepath.Join(dir, ".git-credentials"),
-		home:            dir,
-		reloadCachePath: cachePath,
-	}
-	reloadBody := `[{"type":"ssh-key","name":"id_ed25519","metadata":{"key_type":"ed25519"},"plaintext":"ssh-ed25519 AAAA..."}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(reloadBody))
-	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
-	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-
-	// Wipe ssh dir (simulating reset() on restart).
-	require.NoError(t, os.RemoveAll(sshDir))
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(cfg.secretsBaseDir, sshDir, cfg.agentConfigPath, cfg.secretsEnvPath, cfg.gitCredsPath, cachePath))
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
-
-	entries, err := os.ReadDir(sshDir)
-	require.NoError(t, err)
-	require.NotEmpty(t, entries, "SSH key must survive container restart via cache replay")
-}
-
-// TestContainerRestart_CredentialRemoval_NotReplayed locks down the unbind
-// path: a reload with a SMALLER batch (user removed a credential) must result
-// in the removed credential being absent after restart. Because reload is a
-// full-replace and the cache holds the latest complete state, replay rebuilds
-// from the merged batch (cache wins) and the removed cred must NOT reappear.
-// Without this test, a regression that breaks reset() for the removal case
-// would go undetected.
-func TestContainerRestart_CredentialRemoval_NotReplayed(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	dir := t.TempDir()
-
-	envPath := filepath.Join(dir, "env")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[]`), 0o600))
-
-	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
-		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
-
-	cfg := materializeConfig{
-		secretsBaseDir:  filepath.Join(dir, "secrets"),
-		sshDir:          filepath.Join(dir, ".ssh"),
-		agentConfigPath: filepath.Join(dir, "agent-config.json"),
-		secretsEnvPath:  envPath,
-		gitCredsPath:    filepath.Join(dir, ".git-credentials"),
-		home:            dir,
-		reloadCachePath: cachePath,
+		home:             dir,
+		secretsBaseDir:   filepath.Join(dir, "secrets"),
+		sshDir:           filepath.Join(dir, ".ssh"),
+		agentConfigPath:  filepath.Join(dir, "agent-config.json"),
+		secretsEnvPath:   envPath,
+		gitCredsPath:     filepath.Join(dir, ".git-credentials"),
+		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
 
-	// Initial live state: two env-secrets bound.
-	first := `[{"type":"env-secret","name":"keep","metadata":{"var_name":"KEEP"},"plaintext":"1"},{"type":"env-secret","name":"remove","metadata":{"var_name":"REMOVE"},"plaintext":"2"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(first))
-	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
-	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	pullAndApply(t, cfg, batchPath,
+		`{"entries":[{"secretId":"s1","version":1,"type":"env-secret","name":"keep","value":"1","metadata":{"var_name":"KEEP"}},{"secretId":"s2","version":1,"type":"env-secret","name":"remove","value":"2","metadata":{"var_name":"REMOVE"}}],"revision":{"seq":3,"manifestHash":"mh-3","batchHash":"bh-3"}}`)
 
-	// User unbinds "remove": the new reload batch omits it. The cache must now
-	// reflect ONLY "keep" — reload is a full-replace, so the cache is overwritten.
-	second := `[{"type":"env-secret","name":"keep","metadata":{"var_name":"KEEP"},"plaintext":"1"}]`
-	req = httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(second))
-	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
-	rec = httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	// User unbinds "remove": the newer envelope omits it.
+	pullAndApply(t, cfg, batchPath,
+		`{"entries":[{"secretId":"s1","version":2,"type":"env-secret","name":"keep","value":"1","metadata":{"var_name":"KEEP"}}],"revision":{"seq":4,"manifestHash":"mh-4","batchHash":"bh-4"}}`)
 
-	// Simulate the container restart: reset() wipes the env file.
+	// Container restart (tmpfs wiped: env file + anchor).
 	require.NoError(t, os.Remove(envPath))
-
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
+	require.NoError(t, os.Remove(revAnchorPath(envPath)))
+	exit, stderr := runMaterialize(t, bin, batchPath,
+		materializeEnv(cfg.secretsBaseDir, cfg.sshDir, cfg.agentConfigPath, envPath, cfg.gitCredsPath))
+	require.Equal(t, 0, exit, "restart boot failed; stderr=%q", stderr)
 
 	envContent, err := os.ReadFile(envPath)
 	require.NoError(t, err)
 	require.Contains(t, string(envContent), "export KEEP=",
-		"retained credential must be replayed after restart")
+		"retained credential must survive the restart")
 	assert.NotContains(t, string(envContent), "export REMOVE=",
-		"unbound credential must NOT reappear after restart (cache reflects the full-replace reload)")
+		"unbound credential must NOT reappear after restart (the batch file is full-replace)")
 }
 
-// TestContainerRestart_LLMProviderSurvivesRestart covers the provider code
-// path (FlushProviders/FormatProviders → agent-config.json), which is distinct
-// from the env-secret/ssh-key paths. A user-owned LLM provider bound after
-// boot must survive a container restart via cache replay and land in
-// agent-config.json.
+// TestContainerRestart_LLMProviderSurvivesRestart covers the provider
+// code path (FlushProviders → agent-config.json): a user-owned LLM
+// provider delivered by pull must land in agent-config.json again after
+// the restart re-materializes from the persisted envelope.
 func TestContainerRestart_LLMProviderSurvivesRestart(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
 
 	agentCfg := filepath.Join(dir, "agent-config.json")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
-	baseSecretsPath := filepath.Join(dir, "secrets.json")
-	// Base is empty — no server-KEK providers.
-	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[]`), 0o600))
-
+	envPath := filepath.Join(dir, "env")
+	batchPath := filepath.Join(dir, "secrets.json")
 	cfg := materializeConfig{
-		secretsBaseDir:  filepath.Join(dir, "secrets"),
-		sshDir:          filepath.Join(dir, ".ssh"),
-		agentConfigPath: agentCfg,
-		secretsEnvPath:  filepath.Join(dir, "env"),
-		gitCredsPath:    filepath.Join(dir, ".git-credentials"),
-		home:            dir,
-		reloadCachePath: cachePath,
+		home:             dir,
+		secretsBaseDir:   filepath.Join(dir, "secrets"),
+		sshDir:           filepath.Join(dir, ".ssh"),
+		agentConfigPath:  agentCfg,
+		secretsEnvPath:   envPath,
+		gitCredsPath:     filepath.Join(dir, ".git-credentials"),
+		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
 
-	// A user-owned LLM provider (delivered with a session DEK, hence absent
-	// from base secrets.json and only present via the reload push).
-	provider := `{"type":"llm-provider","name":"user-openai","plaintext":"{\"kind\":\"openai\",\"slug\":\"user-openai\",\"apiKey\":\"sk-user-123\"}"}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("["+provider+"]"))
-	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
-	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	pullAndApply(t, cfg, batchPath,
+		`{"entries":[{"secretId":"p1","version":1,"type":"llm-provider","name":"user-openai","value":"{\"kind\":\"openai\",\"slug\":\"user-openai\",\"apiKey\":\"sk-user-123\"}"}],"revision":{"seq":5,"manifestHash":"mh-5","batchHash":"bh-5"}}`)
 
-	// Simulate the restart: reset() would wipe agent-config.json. In this test
-	// the handler runs without an AgentConfigWriter (nil), so the handler never
-	// wrote agent-config.json — RemoveAll tolerates absence, matching reset().
+	// Simulate the restart: reset() wipes agent-config.json and the rev
+	// anchor with the rest of the tmpfs.
 	require.NoError(t, os.RemoveAll(agentCfg))
+	require.NoError(t, os.Remove(revAnchorPath(envPath)))
 
-	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath,
-		cacheMaterializeEnv(cfg.secretsBaseDir, cfg.sshDir, agentCfg, cfg.secretsEnvPath, cfg.gitCredsPath, cachePath))
-	require.Equal(t, 0, exit, "stderr=%q", stderr)
+	exit, stderr := runMaterialize(t, bin, batchPath,
+		materializeEnv(cfg.secretsBaseDir, cfg.sshDir, agentCfg, envPath, cfg.gitCredsPath))
+	require.Equal(t, 0, exit, "restart boot failed; stderr=%q", stderr)
 
-	// agent-config.json must contain the replayed provider. The provider key
-	// is the slug (Epic 55) — pre-fix, a restart would leave agent-config.json
-	// empty because reset() wiped it and the base secrets.json had no providers.
 	raw, err := os.ReadFile(agentCfg)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "user-openai",
-		"user-owned LLM provider must survive container restart via cache replay (#443)")
+		"user-owned LLM provider must survive container restart via the pulled envelope (#443, now by pull)")
 }
 
 // requireEnvHasVar asserts the materialized env file contains an export line

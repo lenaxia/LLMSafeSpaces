@@ -8,7 +8,7 @@ package main
 // driving the full conditional-pull → apply → anchor → restart-decision
 // cycle across multiple resyncs, then replaying a container restart via
 // the real materialize subcommand (container_restart_test pattern) to
-// prove the resync's cache write feeds #443 replay.
+// prove the resync's persisted envelope feeds #443 replay.
 
 import (
 	"encoding/json"
@@ -80,7 +80,6 @@ func TestResync_ExecRound_AppliesThenNotModifiedThenEvolves(t *testing.T) {
 		agentConfigPath:  filepath.Join(dir, "agent-config.json"),
 		secretsEnvPath:   filepath.Join(dir, "secrets-env"),
 		gitCredsPath:     filepath.Join(dir, "git-credentials"),
-		reloadCachePath:  filepath.Join(dir, "last-reload-secrets.json"),
 		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
 	proc := &recordingProc{}
@@ -91,7 +90,7 @@ func TestResync_ExecRound_AppliesThenNotModifiedThenEvolves(t *testing.T) {
 
 	baseDeps := resyncDeps{
 		cfg: cfg,
-		reload: reloadSecretsDeps{
+		apply: applySecretsDeps{
 			Proc:             proc,
 			OpencodePassword: resyncTestPassword,
 		},
@@ -132,9 +131,9 @@ func TestResync_ExecRound_AppliesThenNotModifiedThenEvolves(t *testing.T) {
 	assert.Equal(t, "6:mh-6", anchor.Rev)
 	assert.Equal(t, int64(6), anchor.AppliedSeq)
 
-	// Container-restart replay (#443): the resync's cache write must
-	// feed the boot-time materialize replay — the real subcommand run
-	// over the SAME batch path keeps the applied env var.
+	// Container-restart replay (#443, now by pull): the resync's
+	// persisted envelope must feed the boot-time materialize — the real
+	// subcommand run over the SAME batch path keeps the applied env var.
 	bin := buildAgentdBinary(t)
 	exit, _, stderr := runMaterializeSubcommand(t, bin, batchPath,
 		cfg.secretsBaseDir, cfg.sshDir, cfg.agentConfigPath, cfg.secretsEnvPath, cfg.gitCredsPath,
@@ -143,7 +142,7 @@ func TestResync_ExecRound_AppliesThenNotModifiedThenEvolves(t *testing.T) {
 	envOut, err = os.ReadFile(cfg.secretsEnvPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(envOut), "EXEC_VAR=",
-		"the resync-applied batch survives a container restart via the reload cache")
+		"the resync-applied envelope survives a container restart by re-materialization from the batch file")
 
 	// 2. Unchanged manifest: 304 is a strict no-op — no apply, no
 	// restart, appliedRev still the anchor's truth.
@@ -188,7 +187,6 @@ func TestResync_ExecRound_EmptyEnvelopeRevokesByAbsence(t *testing.T) {
 		agentConfigPath:  filepath.Join(dir, "agent-config.json"),
 		secretsEnvPath:   filepath.Join(dir, "secrets-env"),
 		gitCredsPath:     filepath.Join(dir, "git-credentials"),
-		reloadCachePath:  filepath.Join(dir, "last-reload-secrets.json"),
 		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
 	tokenPath := filepath.Join(dir, "token")
@@ -201,7 +199,7 @@ func TestResync_ExecRound_EmptyEnvelopeRevokesByAbsence(t *testing.T) {
 
 	handler := resyncSecretsHandler(resyncDeps{
 		cfg:         cfg,
-		reload:      reloadSecretsDeps{OpencodePassword: resyncTestPassword},
+		apply:       applySecretsDeps{OpencodePassword: resyncTestPassword},
 		apiURL:      apiSrv.URL,
 		workspaceID: "ws-revoke",
 		tokenPath:   tokenPath,

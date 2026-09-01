@@ -24,7 +24,7 @@ import (
 // serverDeps bundles the runtime collaborators shared across the
 // background loops and HTTP servers. agentd constructs it once at boot
 // and threads it through the handlers and goroutines that need it,
-// mirroring the reloadSecretsDeps pattern.
+// mirroring the applySecretsDeps pattern.
 type serverDeps struct {
 	client          *OpenCodeClient
 	cache           *providerCache
@@ -73,7 +73,7 @@ type serverDeps struct {
 	// accepted on control-plane routes alongside the workspace password
 	// (D6.1 mixed-generation window). Empty in single-container mode.
 	controlPlanePassword string
-	// reloadProc is the reload-secrets path's restarter for sidecar mode
+	// reloadProc is the secrets-apply path's restarter for sidecar mode
 	// (US-4a; US-70.1 removed the pre-restart push — the restarted
 	// child's spawn pulls the fresh delta from the user mux). Used only
 	// when proc is nil (single-container mode keeps the in-process
@@ -337,7 +337,7 @@ func requireBearerToken(token string, h http.Handler) http.Handler {
 }
 
 // buildUserMux assembles the user-mux (port 4097) routes — the
-// control-plane surface the API server calls (reload-secrets, agent
+// control-plane surface the API server calls (resync-secrets, agent
 // reload, workflow dispatch, MCP proxy, dev-preview tunnel, and the
 // Epic 68 file-ingest endpoint). Extracted from wireHTTPServers so the
 // registration path itself is testable without binding real ports.
@@ -364,7 +364,7 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 
 	// Typed-nil guard: `restartableProcess(deps.proc)` with a nil
 	// *managedProcess yields a NON-nil interface (the classic trap) and
-	// the reload would silently no-op in sidecar mode. Compare the
+	// the apply would silently no-op in sidecar mode. Compare the
 	// CONCRETE pointer, then convert.
 	var reloadProc restartableProcess
 	if deps.proc != nil {
@@ -398,10 +398,9 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// them into the consumed paths itself (ownership by construction).
 	userMux.HandleFunc("/v1/spawn-files", spawnFilesHandler(deps.password, deps.controlPlanePassword, stagingDirPath()))
 
-	// US-70.3: the reload-secrets push path and the resync-secrets pull
-	// path share this deps bundle — same §D1 gate, same apply pipeline,
-	// same restart machinery.
-	reloadDeps := reloadSecretsDeps{
+	// The resync-secrets pull path's deps bundle — §D1 gate, apply
+	// pipeline, restart machinery.
+	applyDeps := applySecretsDeps{
 		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,
 		ControlPlanePassword: deps.controlPlanePassword,
@@ -411,16 +410,14 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 		Lister:               liveSessions,
 		AgentConfigWriter:    deps.agentConfigWriter,
 	}
-	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadDeps))
-
 	// US-70.3 (design 0057 law 1): the notify-pull target. Bind/rotate
 	// handlers and the secrets_resync MCP tool call this instead of
 	// receiving pushed batch bodies — the conditional re-pull runs
 	// in-process with a fresh projected SA token (304 = no-op). Same §D1
-	// gate and the same apply pipeline as reload-secrets.
+	// gate and the same apply pipeline.
 	userMux.HandleFunc("/v1/resync-secrets", resyncSecretsHandler(resyncDeps{
 		cfg:         loadMaterializeConfig(),
-		reload:      reloadDeps,
+		apply:       applyDeps,
 		apiURL:      os.Getenv("LLMSAFESPACE_API_URL"),
 		workspaceID: os.Getenv("WORKSPACE_ID"),
 		tokenPath:   bootstrapTokenPathFromEnv(),
@@ -430,7 +427,7 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
-	// user mux, symmetric with reload-secrets (design epic-68 D1) — the
+	// user mux, symmetric with the control-plane routes (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
 	userMux.HandleFunc("/v1/files", uploadFilesHandler(log, uploadConfigFromEnv(), deps.password, deps.controlPlanePassword))
 
@@ -461,7 +458,7 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 // US-22.8: two separate http.Server instances eliminate listener-layer
 // head-of-line blocking. Admin port serves health probes (kubelet,
 // controller) on a dedicated goroutine pool; user port serves
-// reload-secrets and future proxy endpoints independently.
+// the resync and future proxy endpoints independently.
 func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) (adminSrv, userSrv *http.Server, srvErr chan error) {
 	adminMux := http.NewServeMux()
 
@@ -469,7 +466,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, reloadCachePathFromEnv(), modelWarnPathFromEnv(), deps.spawnEnvSnapshot))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 

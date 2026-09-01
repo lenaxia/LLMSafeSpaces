@@ -791,11 +791,9 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// (server-KEK-only). Key rotation is now operator-side via rotate-kek CLI.
 
 	// Soft-unlock endpoint (Epic 56). Behind AuthMiddleware so the
-	// middleware stashes the matched JWT signing key on the gin context —
-	// the handler then forwards it to KeyService.UnlockDEKWithSigningKey
-	// to rewrap the durable jwt_sessions row under the SAME key the
-	// JWT validated under (not the active signing key — see the [HIGH]
-	// regression case from PR #411 review pass 1 and worklog 0550).
+	// middleware stashes the session jti and the JWT's remaining
+	// lifetime on the gin context — the handler re-derives the DEK
+	// server-side and re-caches it under that jti.
 	if cfg.UnlockDEKHandler != nil {
 		unlockGroup := router.Group("/api/v1/auth")
 		unlockGroup.Use(services.GetAuth().AuthMiddleware())

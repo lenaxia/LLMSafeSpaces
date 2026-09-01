@@ -152,30 +152,6 @@ func scanShellquoteExports(data string) ([]nameValue, error) {
 	return order, nil
 }
 
-// pushInitialSpawnEnv is SUPERSEDED by the spawn-time pull (US-70.1,
-// design 0057 R2) and has no production caller: under native-sidecar
-// startup gating the push dialed a control socket in a container that
-// could not have started yet — structurally always "connection refused"
-// (2026-08-30 fleet audit: 3/6 pods, suspend/resume re-breaks). Deletion
-// lands with the US-70.5 demolition; no new code may call it.
-//
-// pushInitialSpawnEnv hands the boot-time secrets delta to the
-// supervisor. Failures are logged and swallowed: an empty or unreadable
-// file means no env-secrets — the pod still functions (same safe
-// degradation as buildEnvFrom's missing file).
-func pushInitialSpawnEnv(cc *controlClient, path string) error {
-	delta, err := parseSecretsEnvDelta(path)
-	if err != nil {
-		return err
-	}
-	if len(delta) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return cc.SpawnEnv(ctx, delta)
-}
-
 // socketReloadProc is the reload path's restartableProcess in sidecar
 // mode. US-70.1: the pre-restart secrets-env PUSH is gone — the
 // supervisor pulls the fresh delta from the user mux at the moment the

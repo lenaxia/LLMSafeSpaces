@@ -480,7 +480,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 
 		// Kill opencode — the supervisor restarts it and reads the new config.
 		// The relay state is already stored in the ConfigWriter (set above
-		// via SetRelay), so reloadSecretsHandler's Rebuild() will preserve it.
+		// via SetRelay), so the secrets apply pipeline's Rebuild() will preserve it.
 		//
 		// Metric note: "success" counts config APPLICATIONS (relay block
 		// written + auth.json updated). The actual process restart may be

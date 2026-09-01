@@ -31,17 +31,10 @@ func allowedDirsPathFromEnv() string {
 }
 
 // secretsEnvPathFromEnv is the secrets-env coordinate (the spawn_env
-// consumer, the reload path, and the materializer share it — one
+// consumer, the resync apply path, and the materializer share it — one
 // coordinate, so US-4b's relocation is a controller env change).
 func secretsEnvPathFromEnv() string {
 	return envOrDefault("LLMSAFESPACES_SECRETS_ENV_PATH", agentd.SecretsEnvPath)
-}
-
-// reloadCachePathFromEnv is the reload-cache coordinate (healthz's
-// user_creds_present reader + the materializer's writer/load path share
-// it via loadMaterializeConfig).
-func reloadCachePathFromEnv() string {
-	return envOrDefault("LLMSAFESPACES_RELOAD_CACHE_PATH", agentd.ReloadSecretsCachePath)
 }
 
 // modelWarnPathFromEnv keeps the model-resolution-warning marker colocated

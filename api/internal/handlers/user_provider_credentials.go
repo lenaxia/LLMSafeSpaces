@@ -131,7 +131,7 @@ func (h *UserProviderCredentialsHandler) Create(c *gin.Context) {
 			return
 		}
 		// Defense-in-depth: KeyService.GetDEK currently maps every
-		// failure to ErrDEKUnavailable via rehydrateDEKFromJWTSession
+		// failure to ErrDEKUnavailable via the session-cache lookup
 		// (key_service.go:525-595 catches Redis errors, missing rows,
 		// expired rows, unwrap failures, and wrong-signing-key rows
 		// and returns ErrDEKUnavailable in every case). This branch

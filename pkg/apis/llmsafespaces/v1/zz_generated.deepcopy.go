@@ -677,11 +677,6 @@ func (in *WorkspaceStatus) DeepCopyInto(out *WorkspaceStatus) {
 		*out = make([]AgentSessionStatus, len(*in))
 		copy(*out, *in)
 	}
-	if in.UserCredsPresent != nil {
-		in, out := &in.UserCredsPresent, &out.UserCredsPresent
-		*out = new(bool)
-		**out = **in
-	}
 	if in.SecretsDelivery != nil {
 		in, out := &in.SecretsDelivery, &out.SecretsDelivery
 		*out = new(SecretsDeliveryStatus)

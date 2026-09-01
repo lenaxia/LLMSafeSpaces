@@ -264,10 +264,7 @@ func (a realKeyServiceAdapter) InitializeUserKeysServerKEK(ctx context.Context, 
 	return a.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }
 func (a realKeyServiceAdapter) UnlockDEK(ctx context.Context, userID string, pw []byte, sid string, ttl time.Duration) error {
-	return a.inner.UnlockDEKWithSigningKey(ctx, userID, pw, sid, ttl, nil)
-}
-func (a realKeyServiceAdapter) UnlockDEKWithSigningKey(ctx context.Context, userID string, pw []byte, sid string, ttl time.Duration, sk []byte) error {
-	return a.inner.UnlockDEKWithSigningKey(ctx, userID, pw, sid, ttl, sk)
+	return a.inner.UnlockDEK(ctx, userID, pw, sid, ttl)
 }
 func (a realKeyServiceAdapter) DeleteDurableSessionsForUser(_ context.Context, _ string) error {
 	return nil

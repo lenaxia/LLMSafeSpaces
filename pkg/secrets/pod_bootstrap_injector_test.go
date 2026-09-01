@@ -8,7 +8,7 @@ package secrets
 //
 // Contract under test: the batch includes user-DEK bindings whenever the
 // master RootKeyProvider can unwrap the owner's user_keys record — with
-// NO dependence on jwt_sessions state. The former GetDEKForUser session
+// NO dependence on jwt_sessions state. The former session-walk
 // walk is not consulted at all.
 //
 // Test coverage:
@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,30 +160,6 @@ func TestBuildWorkspaceBatch_EmptyJWTSessionsTable_DeliversUserSecrets(t *testin
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 	svc.keys.SetJWTSessionStore(newMockJWTSessionStore()) // wired, empty
-	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("test-signing-key")}})
-
-	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
-	assertGHTokenDelivered(t, batch, degrade, err)
-}
-
-// TestBuildWorkspaceBatch_UnwrappableRows_DeliversUserSecrets asserts
-// delivery when the only jwt_sessions rows are wrapped under signing
-// keys outside the enumerator's retention window — the server-side
-// unwrap must not care.
-func TestBuildWorkspaceBatch_UnwrappableRows_DeliversUserSecrets(t *testing.T) {
-	svc, _, sessionID := setupSecretService(t)
-	bindGHTokenEnvSecret(t, svc, sessionID)
-
-	jwtStore := newMockJWTSessionStore()
-	svc.keys.SetJWTSessionStore(jwtStore)
-	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("enumerator-knows-this")}})
-
-	// Seed a durable row wrapped under a signing key the enumerator
-	// does NOT know — hostile session state by construction.
-	err := svc.keys.UnlockDEKWithSigningKey(context.Background(), "user-1", nil,
-		"550e8400-e29b-41d4-a716-446655440001", time.Hour, []byte("rotated-out-signing-key"))
-	require.NoError(t, err, "seeding the hostile jwt_sessions row must succeed")
-	require.NotZero(t, jwtStore.WriteCount, "hostile jwt_sessions row must exist")
 
 	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
 	assertGHTokenDelivered(t, batch, degrade, err)
@@ -203,23 +180,32 @@ func TestBuildWorkspaceBatch_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets(t *t
 // TestBuildWorkspaceBatch_LegacyRowHeal_DeliversAndRewraps is the
 // 2026-08-28 incident as a unit test: the user_keys row is wrapped under a
 // key the current provider cannot unwrap (the June-era legacy blob), but a
-// live jwt_sessions row still carries the DEK. GetDEKServerSide must (a)
-// recover the DEK from the session source, (b) deliver the bound secrets,
-// and (c) re-wrap the row at the active version with verify-after-write —
-// so the NEXT build decrypts directly and the heal is one-shot.
+// warm session cache entry is still reachable through an enumerated
+// jwt_sessions row. GetDEKServerSide must (a) recover the DEK from the
+// warm cache (GetCachedDEKForUser — US-70.5's only recovery source),
+// (b) deliver the bound secrets, and (c) re-wrap the row at the active
+// version with verify-after-write — so the NEXT build decrypts directly
+// and the heal is one-shot.
 func TestBuildWorkspaceBatch_LegacyRowHeal_DeliversAndRewraps(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 
-	// Wire a durable session row carrying the REAL DEK (mirrors what the
-	// owner's Aug-02 login left behind on the incident user).
+	// Wire an enumerated session row + a warm cache entry carrying the
+	// REAL DEK (mirrors what the owner's Aug-02 login left behind on the
+	// incident user: K1 cache entry reachable via the jwt_sessions index).
 	jwtStore := newMockJWTSessionStore()
 	svc.keys.SetJWTSessionStore(jwtStore)
-	signingKey := []byte("legacy-era-signing-key")
-	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{signingKey}})
 	legacyJTI := "550e8400-e29b-41d4-a716-446655440002"
-	require.NoError(t, svc.keys.UnlockDEKWithSigningKey(context.Background(), "user-1", nil,
-		legacyJTI, time.Hour, signingKey), "seeding the durable session row must succeed")
+	legacyUUID, err := uuid.Parse(legacyJTI)
+	require.NoError(t, err)
+	jwtStore.seed(&JWTSession{
+		JTI: legacyUUID, UserID: "user-1",
+		WrappedDEK: []byte("historical"), KEKSalt: []byte("historical"),
+		CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Hour),
+	})
+	realDEK, err := svc.keys.cache.GetDEK(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NoError(t, svc.keys.cache.CacheDEK(context.Background(), legacyJTI, realDEK, time.Hour))
 
 	// Corrupt the user_keys row into the legacy shape AND put a REAL crypto
 	// provider behind the master seat. The fixture's recordingProvider is a
@@ -230,8 +216,6 @@ func TestBuildWorkspaceBatch_LegacyRowHeal_DeliversAndRewraps(t *testing.T) {
 	realProv, err := NewStaticKeyProvider(deterministicTestKey(t, 0xE1))
 	require.NoError(t, err)
 	alienProv, err := NewStaticKeyProvider(deterministicTestKey(t, 0xEE))
-	require.NoError(t, err)
-	realDEK, err := svc.keys.cache.GetDEK(context.Background(), legacyJTI)
 	require.NoError(t, err)
 	alienWrap, err := alienProv.Encrypt(context.Background(), realDEK)
 	require.NoError(t, err)

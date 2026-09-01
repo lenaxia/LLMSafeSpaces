@@ -102,7 +102,7 @@ func stagingDirPath() string {
 
 // spawnFilesHandler serves GET /v1/spawn-files on the user mux: the
 // current staging manifest with contents inlined. Auth is the §D1 Basic
-// pair — identical gate to /v1/spawn-env and reload-secrets.
+// pair — identical gate to /v1/spawn-env and the other control-plane routes.
 func spawnFilesHandler(password, controlPlanePassword, stagingDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !checkBasicAuthAny(r, controlPlanePassword, password) {

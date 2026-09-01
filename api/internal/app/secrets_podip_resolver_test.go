@@ -73,7 +73,7 @@ func activeWorkspace(podIP string) *v1.Workspace {
 // TestSecretsPodIPResolver_OwnerActive_ReturnsPodIP is the happy-path
 // regression test for Bug 1 (worklog 0085): the resolver must return the
 // pod IP when the caller owns an Active workspace, otherwise the
-// reload-secrets endpoint cannot reach agentd.
+// API-side reload-secrets endpoint cannot reach agentd.
 func TestSecretsPodIPResolver_OwnerActive_ReturnsPodIP(t *testing.T) {
 	r := newSecretsPodIPResolver(
 		&fakeWorkspaceCRDGetter{ws: activeWorkspace("10.0.1.42")},

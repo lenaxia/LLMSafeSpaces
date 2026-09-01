@@ -3,7 +3,7 @@
 
 package main
 
-// Tests for the materialize subcommand and reload-secrets HTTP handler.
+// Tests for the materialize subcommand and the shared secrets apply pipeline.
 //
 // These tests are written TDD-style: they were authored before the
 // implementation and exercise the contract that the implementation must
@@ -13,7 +13,7 @@ package main
 //     path given by --from) and applies it via pkg/agentd/secrets.
 //   - Exit status: 0 if all secrets materialized OR all skipped (i.e. the
 //     batch is structurally valid). Non-zero only if I/O failures occur.
-//   - The reload-secrets handler accepts the same JSON shape over HTTP,
+//   - The apply pipeline accepts the same JSON shape,
 //     applies it, and returns a structured per-secret outcome list.
 //   - buildEnv() uses pkg/agentd/secrets.ParseEnvLine so payloads that
 //     contain shell metacharacters round-trip into opencode's env.
@@ -113,7 +113,6 @@ func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDi
 		"LLMSAFESPACES_AGENT_CONFIG_PATH="+agentCfg,
 		"LLMSAFESPACES_SECRETS_ENV_PATH="+envPath,
 		"LLMSAFESPACES_GIT_CREDS_PATH="+gitCreds,
-		"LLMSAFESPACES_RELOAD_CACHE_PATH="+filepath.Join(filepath.Dir(secretsBase), "nonexistent-reload-cache.json"),
 		// Neutralize the ambient pod env: when the suite runs inside a
 		// sidecar-mode workspace pod, CROSS_UID=1 would flip the
 		// subcommand to stage-only (R2b) and starve the delivery asserts.
@@ -372,11 +371,11 @@ func TestReloadSecretsHandler_HappyPath(t *testing.T) {
 	}
 
 	body := `[{"type":"env-secret","name":"x","metadata":{"var_name":"X"},"plaintext":"v"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp struct {
@@ -394,22 +393,22 @@ func TestReloadSecretsHandler_HappyPath(t *testing.T) {
 // TestReloadSecretsHandler_BadJSON returns 400.
 func TestReloadSecretsHandler_BadJSON(t *testing.T) {
 	cfg := materializeConfig{}
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("not json"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader("not json"))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 // TestReloadSecretsHandler_WrongMethod returns 405.
 func TestReloadSecretsHandler_WrongMethod(t *testing.T) {
 	cfg := materializeConfig{}
-	req := httptest.NewRequest(http.MethodGet, "/v1/reload-secrets", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/apply-batch", nil)
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 }
 
@@ -549,11 +548,11 @@ func TestReloadSecretsHandler_LLMProvider_CallsOpenCodeClient(t *testing.T) {
 	// the handler's response indicates configReloaded=true when the
 	// provider is staged and FlushProviders succeeds.
 	body := `[{"type":"llm-provider","name":"anthropic","plaintext":"{\"kind\":\"anthropic\",\"slug\":\"anthropic\",\"apiKey\":\"sk-ant-test\"}"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
 
 	// Handler should succeed (materializer and flush work in-process)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -593,7 +592,7 @@ func TestReloadSecretsHandler_WriterRebuildFailure_Returns500(t *testing.T) {
 	}
 
 	body := `[{"type":"llm-provider","name":"p","plaintext":"{\"kind\":\"openai\",\"slug\":\"openai\",\"apiKey\":\"sk-oai\"}"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
@@ -603,7 +602,7 @@ func TestReloadSecretsHandler_WriterRebuildFailure_Returns500(t *testing.T) {
 	unwritableDir := filepath.Join(dir, "nodir", "subdir")
 	badWriter := opencode.NewConfigWriter(filepath.Join(unwritableDir, "agent-config.json"))
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: badWriter})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: badWriter})(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code,
 		"writer rebuild failure must return 500 to prevent restart with no config")
@@ -632,11 +631,11 @@ func TestReloadSecretsHandler_MixedBatch_LLMAndEnv(t *testing.T) {
 		{"type":"llm-provider","name":"p","plaintext":"{\"kind\":\"anthropic\",\"slug\":\"anthropic\",\"apiKey\":\"sk-1\"}"},
 		{"type":"env-secret","name":"e","metadata":{"var_name":"MY_VAR"},"plaintext":"my_value"}
 	]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -675,12 +674,12 @@ func TestReloadSecretsHandler_EnvOnly_NoConfigReload(t *testing.T) {
 	}
 
 	body := `[{"type":"env-secret","name":"x","metadata":{"var_name":"X"},"plaintext":"v"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
 	// proc=nil means restart won't actually fire, but we can check the response
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	var resp struct {
@@ -721,11 +720,11 @@ func TestReloadSecretsHandler_PreservesRelayViaWriter(t *testing.T) {
 	})
 
 	body := `[{"type":"llm-provider","name":"thekao","plaintext":"{\"kind\":\"thekao\",\"slug\":\"thekao\",\"apiKey\":\"sk-test\",\"baseURL\":\"https://ai.thekao.cloud/v1\"}"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	// agent-config.json must contain both the credential provider (thekao)
@@ -770,11 +769,11 @@ func TestReloadSecretsHandler_NoRelay_NoDisabledProviders(t *testing.T) {
 	writer := opencode.NewConfigWriter(agentCfg) // no relay set
 
 	body := `[{"type":"llm-provider","name":"openai","plaintext":"{\"kind\":\"openai\",\"slug\":\"openai\",\"apiKey\":\"sk-personal\"}"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	cfgData, err := os.ReadFile(agentCfg)
@@ -1070,7 +1069,7 @@ func TestResolveModelWithProvider_Collision(t *testing.T) {
 }
 
 // TestReloadSecretsHandler_ConcurrentCalls_NoRace verifies that concurrent
-// reloadSecretsHandler calls do not race on the filesystem (SecretsEnvPath,
+// applyBatchHandler calls do not race on the filesystem (SecretsEnvPath,
 // AgentConfigPath). The test must be run with -race to catch data races.
 // It also verifies that both calls return 200 — no request is starved.
 func TestReloadSecretsHandler_ConcurrentCalls_NoRace(t *testing.T) {
@@ -1085,7 +1084,7 @@ func TestReloadSecretsHandler_ConcurrentCalls_NoRace(t *testing.T) {
 		enricherCacheDir: filepath.Join(dir, "cache"),
 	}
 
-	handler := reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})
+	handler := applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})
 	body := `[{"type":"env-secret","name":"FOO","metadata":{"var_name":"FOO"},"plaintext":"bar"}]`
 
 	var wg sync.WaitGroup
@@ -1095,7 +1094,7 @@ func TestReloadSecretsHandler_ConcurrentCalls_NoRace(t *testing.T) {
 		idx := i
 		go func() {
 			defer wg.Done()
-			req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+			req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 			req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 			rec := httptest.NewRecorder()
 			handler(rec, req)
@@ -1110,7 +1109,7 @@ func TestReloadSecretsHandler_ConcurrentCalls_NoRace(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// H2 (worklog 371): reloadSecretsHandler records secret-change restarts in
+// H2 (worklog 371): applyBatchHandler records secret-change restarts in
 // the workspace_restarts_total Prometheus counter.
 // ---------------------------------------------------------------------------
 
@@ -1146,10 +1145,10 @@ func TestReloadSecretsHandler_H2_EnvSecretRecordsRestartMetric(t *testing.T) {
 	before := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-h2-env", "env_secrets"))
 
 	body := `[{"type":"env-secret","name":"x","metadata":{"var_name":"X"},"plaintext":"v"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{
+	applyBatchHandler(cfg, applySecretsDeps{
 		OpencodePassword: "test-pw",
 		Proc:             proc,
 		Tracker:          tracker,
@@ -1186,10 +1185,10 @@ func TestReloadSecretsHandler_H2_APIKeyRecordsRestartMetric(t *testing.T) {
 	before := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-h2-apikey", "api_key"))
 
 	body := `[{"type":"api-key","name":"k","plaintext":"secret"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{
+	applyBatchHandler(cfg, applySecretsDeps{
 		OpencodePassword: "test-pw",
 		Proc:             proc,
 		Tracker:          tracker,
@@ -1247,10 +1246,10 @@ func TestReloadSecretsHandler_H2_MetricRecordedEvenWhenMarkerWriteFails(t *testi
 	before := testutil.ToFloat64(pkgOpsMetrics.restartsTotal.WithLabelValues("ws-h2-markerfail", "env_secrets"))
 
 	body := `[{"type":"env-secret","name":"x","metadata":{"var_name":"X"},"plaintext":"v"}]`
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{
+	applyBatchHandler(cfg, applySecretsDeps{
 		OpencodePassword:        "test-pw",
 		Proc:                    proc,
 		Tracker:                 tracker,
@@ -1265,23 +1264,23 @@ func TestReloadSecretsHandler_H2_MetricRecordedEvenWhenMarkerWriteFails(t *testi
 		"the restart must still proceed despite the marker write failure")
 }
 
-// --- #848: reload-secrets auth enforcement ---
+// --- #848: control-plane auth enforcement (via the apply-batch test seam) ---
 
 func TestReloadSecrets_RequiresAuth(t *testing.T) {
 	cfg := loadMaterializeConfig()
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("[]"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader("[]"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
-	require.Equal(t, http.StatusUnauthorized, rec.Code, "unauthenticated reload-secrets must be rejected")
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "unauthenticated apply-batch must be rejected")
 	require.Equal(t, `Basic realm="agentd"`, rec.Header().Get("WWW-Authenticate"))
 }
 
 func TestReloadSecrets_WrongPassword(t *testing.T) {
 	cfg := loadMaterializeConfig()
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("[]"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader("[]"))
 	req.Header.Set("Authorization", "Basic "+basicAuth("wrong"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 

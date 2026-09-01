@@ -17,18 +17,18 @@ func TestJWTSessionJanitor_RunOnce_PrunesExpiredRows(t *testing.T) {
 	now := time.Now()
 	expired := uuid.New()
 	active := uuid.New()
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: expired, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(-time.Hour)})
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: active, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
+	store.seed(&JWTSession{JTI: expired, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(-time.Hour)})
+	store.seed(&JWTSession{JTI: active, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
 
 	j := NewJWTSessionJanitor(store, 0, nil)
 	n := j.runOnce(context.Background())
 	if n != 1 {
 		t.Errorf("runOnce pruned %d, want 1", n)
 	}
-	if got, _ := store.GetJWTSession(context.Background(), expired); got != nil {
+	if store.has(expired) {
 		t.Errorf("expired row should be gone")
 	}
-	if got, _ := store.GetJWTSession(context.Background(), active); got == nil {
+	if !store.has(active) {
 		t.Errorf("active row should remain")
 	}
 }

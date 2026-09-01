@@ -9,7 +9,7 @@
 //
 //   - Boot-time: `workspace-agentd materialize --from /sandbox-cfg/secrets.json`
 //     invoked from the runtime entrypoint script before opencode starts.
-//   - Reload: the agentd HTTP handler `/v1/reload-secrets` calls Materialize
+//   - Apply: the agentd secrets pipeline calls Materialize
 //     directly with the request body.
 //
 // Before this package existed, materialization was duplicated across a bash
@@ -103,7 +103,7 @@ type Secret struct {
 	//
 	// Wire persistence: round-tripped through the reserved
 	// "metadata_invalid" JSON key (MarshalJSON emits it; UnmarshalJSON
-	// reads it) so the reload-secrets cache replays the skip verdict
+	// reads it) so a replayed batch preserves the skip verdict
 	// identically — without it the cached entry marshals with
 	// "metadata":null, the flag is lost, and a restart materializes the
 	// rejected secret with defaults (T5 violation; review N1 on #871).

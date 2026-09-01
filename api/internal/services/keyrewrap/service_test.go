@@ -142,7 +142,7 @@ type fakeRecoverer struct {
 	calls int
 }
 
-func (f *fakeRecoverer) GetDEKForUser(_ context.Context, _ string) ([]byte, string, error) {
+func (f *fakeRecoverer) GetCachedDEKForUser(_ context.Context, _ string) ([]byte, string, error) {
 	f.calls++
 	return f.dek, f.jti, f.err
 }
@@ -658,8 +658,11 @@ func TestNilLoggerSafe(t *testing.T) {
 	assert.NotPanics(t, func() { s.runPass(context.Background()) })
 }
 
-// Compile-time interface check against the production store contract.
+// Compile-time interface checks against the production contracts —
+// including the real KeyService recovery seam (US-70.5: warm-cache walk).
 var _ secrets.ReconcileKeyStore = (*fakeReconcileStore)(nil)
+var _ DEKRecoverer = (*fakeRecoverer)(nil)
+var _ DEKRecoverer = (*secrets.KeyService)(nil)
 
 // Metadata must stay JSON (the audit column is jsonb).
 func TestAuditMetadataIsJSON(t *testing.T) {

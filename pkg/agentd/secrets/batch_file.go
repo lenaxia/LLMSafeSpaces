@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"reflect"
 
 	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
@@ -113,52 +112,4 @@ func revisionAnchor(rev *sec.BatchRevision) string {
 		return ""
 	}
 	return fmt.Sprintf("%d:%s", rev.Seq, rev.ManifestHash)
-}
-
-// MergeBatchFile merges the boot base (a pulled batch, possibly an
-// envelope) with the reload-secrets cache (the newer live state,
-// always legacy-shaped). The cache wins per Type+Name.
-//
-// Revision semantics: the revision describes the PULLED set. An empty
-// cache leaves the effective set equal to the pull — the revision is
-// kept. Any cache overlay that changes the effective set (replacement
-// or addition) produces a set the revision does not describe — it is
-// dropped, and the effective batch behaves legacy (no anchoring, no
-// apply-guard).
-func MergeBatchFile(base BatchFile, cache []Secret) ([]Secret, *sec.BatchRevision) {
-	if len(cache) == 0 {
-		return base.Secrets, base.Revision
-	}
-	merged := MergeSecretBatches(base.Secrets, cache)
-	if base.Revision != nil && reflect.DeepEqual(base.Secrets, merged) {
-		return merged, base.Revision
-	}
-	return merged, nil
-}
-
-// MergeSecretBatches combines a base batch with a layered batch,
-// resolving duplicates in favor of the layered batch (the dedup key is
-// Type+Name — the materializer's identity for a secret within a
-// workspace). Base order is preserved; layered replacements land in
-// place, layered additions append.
-func MergeSecretBatches(base, layered []Secret) []Secret {
-	if len(base) == 0 {
-		return layered
-	}
-	seen := make(map[string]int, len(base)+len(layered))
-	merged := make([]Secret, 0, len(base)+len(layered))
-	key := func(s Secret) string { return s.Type + "\x00" + s.Name }
-	for _, s := range base {
-		seen[key(s)] = len(merged)
-		merged = append(merged, s)
-	}
-	for _, s := range layered {
-		if idx, ok := seen[key(s)]; ok {
-			merged[idx] = s
-			continue
-		}
-		seen[key(s)] = len(merged)
-		merged = append(merged, s)
-	}
-	return merged
 }

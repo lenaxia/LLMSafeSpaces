@@ -114,7 +114,7 @@ func TestSpawnEnvWarning_MachineReadable(t *testing.T) {
 
 func TestHealthzHandler_SpawnEnvFieldAndWarning(t *testing.T) {
 	handlerFor := func(fn func() *agentd.SpawnEnvHealth) agentd.HealthzResponse {
-		h := healthzHandler(time.Now(), "", "", fn)
+		h := healthzHandler(time.Now(), "", fn)
 		rec := httptest.NewRecorder()
 		h(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 		var resp agentd.HealthzResponse

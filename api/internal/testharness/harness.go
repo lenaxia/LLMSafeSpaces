@@ -424,8 +424,11 @@ func newLogger() (*zap.Logger, *observer.ObservedLogs) {
 	return zap.New(core), logs
 }
 
-var idCounter uint64
+var (
+	idCounter    uint64
+	harnessEpoch = time.Now().UnixNano()
+)
 
 func newID() string {
-	return fmt.Sprintf("h%d", atomic.AddUint64(&idCounter, 1))
+	return fmt.Sprintf("h%d-%d", harnessEpoch, atomic.AddUint64(&idCounter, 1))
 }

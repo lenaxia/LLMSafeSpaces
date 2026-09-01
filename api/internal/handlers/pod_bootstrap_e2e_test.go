@@ -188,7 +188,7 @@ func (s *e2eKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte,
 
 // newE2EKeyService builds the production-shaped KeyService for bootstrap
 // e2e: a user_keys record wrapping userDEK under a static master
-// RootKeyProvider (key 0x05), so InjectSecretsForPodBootstrap's
+// RootKeyProvider (key 0x05), so the bootstrap builder's
 // server-side unwrap delivers user-DEK bindings with no session state —
 // the "pod exists ⟹ secrets" contract.
 func newE2EKeyService(t *testing.T, userDEK []byte) *secrets.KeyService {
@@ -223,10 +223,10 @@ func (c *e2eDEKCache) EvictDEK(_ context.Context, _ string) error         { retu
 
 // e2eJWTSessionStore is a minimal in-memory JWTSessionStore for exercising
 // the design-0045 Change 1 happy path: pod-bootstrap unwraps a jwt_sessions
-// row via GetDEKForUser and returns user-DEK secrets alongside server-KEK
+// rows via the warm-cache walk and returns user-DEK secrets alongside server-KEK
 // secrets. See TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider.
 //
-// Only ListActiveJWTSessionsForUser (the read path GetDEKForUser uses) is
+// Only ListActiveJWTSessionsForUser (the read path GetCachedDEKForUser uses) is
 // meaningfully implemented; the other methods panic if called so a future
 // change that reaches for them surfaces here instead of silently no-op'ing.
 type e2eJWTSessionStore struct {
@@ -248,12 +248,6 @@ func (s *e2eJWTSessionStore) ListActiveJWTSessionsForUser(_ context.Context, use
 	return out, nil
 }
 
-func (s *e2eJWTSessionStore) GetJWTSession(_ context.Context, _ uuid.UUID) (*secrets.JWTSession, error) {
-	panic("e2eJWTSessionStore.GetJWTSession not implemented — only ListActiveJWTSessionsForUser is used by design-0045 path")
-}
-func (s *e2eJWTSessionStore) WriteJWTSession(_ context.Context, _ *secrets.JWTSession) error {
-	panic("e2eJWTSessionStore.WriteJWTSession not implemented")
-}
 func (s *e2eJWTSessionStore) DeleteJWTSession(_ context.Context, _ uuid.UUID) error {
 	panic("e2eJWTSessionStore.DeleteJWTSession not implemented")
 }
@@ -264,40 +258,17 @@ func (s *e2eJWTSessionStore) DeleteExpiredJWTSessions(_ context.Context, _ time.
 	panic("e2eJWTSessionStore.DeleteExpiredJWTSessions not implemented")
 }
 
-// e2eSigningKeys is a minimal SigningKeyEnumerator wrapping a static list.
-// Iteration order matches the slice; return false from fn to stop
-// (matching KeyService.tryUnwrapRowWithKnownKeys's contract).
-type e2eSigningKeys struct {
-	keys [][]byte
-}
-
-func (e *e2eSigningKeys) EachSigningKey(fn func(key []byte) bool) {
-	for _, k := range e.keys {
-		if !fn(k) {
-			return
-		}
-	}
-}
-
-// seedJWTSession creates a jwt_sessions row wrapping the given DEK under a
-// KEK derived from signingKey || jti (matching KeyService's login-time
-// contract at key_service.go:UnlockDEKWithSigningKey). Returns the row so
-// tests can assert on jti. Mirrors the pattern in
-// pkg/secrets/key_service_get_dek_for_user_test.go's fixture.
-func seedJWTSession(t *testing.T, userID string, dek, signingKey []byte, expiresAt time.Time) *secrets.JWTSession {
+// seedJWTSession creates a plain jwt_sessions row — post-US-70.5 the
+// enumeration walk never reads the wrap columns, so interference-guard
+// rows carry historical-shaped bytes only.
+func seedJWTSession(t *testing.T, userID string, expiresAt time.Time) *secrets.JWTSession {
 	t.Helper()
 	jti := uuid.New()
 
 	kekSalt, err := secrets.GenerateSalt()
 	require.NoError(t, err)
 
-	keyMaterial := make([]byte, 0, len(signingKey)+36)
-	keyMaterial = append(keyMaterial, signingKey...)
-	keyMaterial = append(keyMaterial, []byte(jti.String())...)
-	kek, err := secrets.DeriveKEKFromKey(keyMaterial, kekSalt, secrets.JWTSessionKEKInfo)
-	require.NoError(t, err)
-
-	wrapped, err := secrets.EncryptSecret(kek, dek)
+	wrapped, err := secrets.EncryptSecret(bytes.Repeat([]byte{0xEE}, 32), []byte("e2e-dek"))
 	require.NoError(t, err)
 
 	return &secrets.JWTSession{
@@ -525,10 +496,8 @@ func runBootstrapMaterializeE2EWith(t *testing.T, cfg bootstrapE2EConfig) (agent
 	// (server-side unwrap), but hostile/redundant session state must not
 	// break delivery — so the flag stays as an interference guard.
 	if cfg.wireJWTSessions {
-		signingKey := deterministicKey(0x04)
-		row := seedJWTSession(t, "user-e2e", userDEK, signingKey, time.Now().Add(time.Hour))
+		row := seedJWTSession(t, "user-e2e", time.Now().Add(time.Hour))
 		keySvc.SetJWTSessionStore(&e2eJWTSessionStore{rows: []*secrets.JWTSession{row}})
-		keySvc.SetSigningKeyEnumerator(&e2eSigningKeys{keys: [][]byte{signingKey}})
 	}
 
 	credBindings := make([]secrets.CredentialBinding, 0, len(cfg.bindings))
@@ -601,7 +570,6 @@ func runBootstrapMaterializeE2EWith(t *testing.T, cfg bootstrapE2EConfig) (agent
 			"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, ".ssh"),
 			"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, "env"),
 			"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, ".git-credentials"),
-			"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, "last-reload-secrets.json"),
 			"HOME":                            dir,
 		},
 	)
@@ -638,7 +606,7 @@ func readAgentConfig(t *testing.T, path string) struct {
 // The openai assertion is the #1087 regression gate: pre-fix, a
 // suspend/resume that outlived every jwt_sessions row stripped the
 // workspace's user-owned credentials at boot, and the auto-push
-// UserCredsPresent skip prevented any later recovery.
+// user-creds skip prevented any later recovery (removed by US-70.5).
 //
 // A break at any seam fails this test:
 //   - SecretService not wired with SetOrgProvider → org provider missing
@@ -713,7 +681,7 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_NoActiveSession(t *t
 // redundant-session-state interference guard.
 //
 // It fails if any of:
-//   - InjectSecretsForPodBootstrap stops unwrapping the DEK server-side;
+//   - the batch builder stops unwrapping the DEK server-side;
 //   - the synthetic Redis handle handoff (GetDEKServerSide → GetDEK(jti))
 //     breaks;
 //   - the bootstrap→materialize handoff drops user-DEK entries from the
@@ -749,7 +717,7 @@ func TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider(t 
 		"user-owned provider MUST materialize at boot — the pod exists, so it has its secrets")
 
 	// The user apiKey plaintext must survive the full round-trip:
-	// user-KEK encrypt → DB → GetDEKForUser unwrap → InjectSecrets decrypt
+	// user-KEK encrypt → DB → session-walk unwrap → builder decrypt
 	// → bootstrap wire → materialize → agent-config.json.
 	var openaiEntry struct {
 		Options struct {
@@ -783,7 +751,7 @@ func TestE2E_BootstrapMaterialize_OrgOnly(t *testing.T) {
 // TestE2E_BootstrapMaterialize_ZeroCredentials_StillBoots pins the
 // graceful-degradation contract: a workspace with no credential bindings must
 // still exit 0 on both subcommands so the pod boots and the live
-// /v1/reload-secrets push path can deliver credentials later.
+// resync pull path can deliver credentials later.
 func TestE2E_BootstrapMaterialize_ZeroCredentials_StillBoots(t *testing.T) {
 	_, bootstrapExit, materializeExit, bootstrapStderr, materializeStderr :=
 		runBootstrapMaterializeE2E(t, nil, "")
@@ -830,7 +798,7 @@ func TestE2E_BootstrapMaterialize_OrgProviderUnwired_OrgDegradesGracefully(t *te
 // TestE2E_BootstrapMaterialize_TokenRejected_StillBoots pins the contract that
 // a rejected SA token (forged, expired, wrong audience) degrades to an empty
 // secrets array (bootstrap.go:78-79) rather than failing the pod. The live
-// /v1/reload-secrets push path delivers credentials on first activation.
+// resync pull path delivers credentials on first activation.
 func TestE2E_BootstrapMaterialize_TokenRejected_StillBoots(t *testing.T) {
 	agentCfgPath, _, materializeExit, _, _ :=
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
@@ -983,7 +951,6 @@ func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 				"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, label+"-ssh"),
 				"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, label+"-env"),
 				"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, label+"-git"),
-				"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, label+"-last-reload-secrets.json"),
 				"HOME":                            dir,
 			})
 		require.Equal(t, 0, mExit, "materialize failed (%s); stderr=%s", label, mStderr)
@@ -1069,7 +1036,6 @@ func TestE2E_PasswordReset_FullPurgeThenBoot_NoProviders(t *testing.T) {
 			"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, "ssh"),
 			"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, "env"),
 			"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, "git"),
-			"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, "last-reload-secrets.json"),
 			"HOME":                            dir,
 		})
 	require.Equal(t, 0, mExit, "materialize must succeed on empty secrets; stderr=%s", mStderr)

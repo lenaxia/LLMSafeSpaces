@@ -6,9 +6,8 @@
 // re-pull: Notify posts an EMPTY, authenticated request to the pod's
 // agentd /v1/resync-secrets endpoint and the pod re-pulls its batch
 // through the conditional bootstrap path (fresh SA token, apply-guard,
-// terminal rev anchoring). The pod-side legacy /v1/reload-secrets body
-// endpoint remains for mixed-fleet compatibility but has no in-tree
-// caller (US-70.5 demolishes it).
+// terminal rev anchoring). The pod-side legacy batch-body push endpoint
+// was deleted by the US-70.5 demolition.
 //
 // Notify exists as a service (not a handler method) because multiple
 // call sites need it:
@@ -17,7 +16,7 @@
 //   - ReloadSecrets (handler) — explicit POST /workspaces/:id/reload-secrets.
 //   - workspace env mutations (handler) — env vars are bound secrets.
 //   - MCP server bind/mutation handlers.
-//   - secretautopush — watcher-driven notify after pod recreation.
+
 //   - secretsreconcile — the level-triggered reconcile loop.
 //   - ForceRevokeSecret fan-out — revocation is absence (I12).
 //

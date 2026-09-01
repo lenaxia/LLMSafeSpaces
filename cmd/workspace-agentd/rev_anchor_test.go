@@ -139,34 +139,6 @@ func TestMaterialize_ApplyGuard_HigherSeq_Applies(t *testing.T) {
 	assert.EqualValues(t, 8, anchor.AppliedSeq)
 }
 
-// TestMaterialize_CacheOverlay_DropsRevisionAndGuard: an envelope base
-// with a reload-cache overlay is an effective-legacy batch: no guard
-// (even an equal-seq anchor must not skip it) and the anchor is removed.
-func TestMaterialize_CacheOverlay_DropsRevisionAndGuard(t *testing.T) {
-	dir := t.TempDir()
-	setSidecarMaterializeEnv(t, dir)
-	from := filepath.Join(dir, "secrets.json")
-	envPath := filepath.Join(dir, "secrets-env")
-	cachePath := filepath.Join(dir, "reload-cache.json")
-
-	envelope := `{"entries":[{"secretId":"s1","version":1,"type":"env-secret","name":"db","value":"v1","metadata":{"var_name":"DB"}}],"revision":{"seq":4,"manifestHash":"mh-4","batchHash":"bh"}}`
-	require.NoError(t, os.WriteFile(from, []byte(envelope), 0o600))
-	cache := `[{"type":"env-secret","name":"db","metadata":{"var_name":"DB"},"plaintext":"pushed"}]`
-	require.NoError(t, os.WriteFile(cachePath, []byte(cache), 0o600))
-	// The env var override points the loader at the cache file.
-	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", cachePath)
-	require.NoError(t, writeRevAnchor(revAnchorPath(envPath), revAnchor{Rev: "4:mh-4", AppliedSeq: 4}))
-
-	require.Equal(t, 0, runMaterializeCommand([]string{"--from", from}, nil, io.Discard))
-
-	env, err := os.ReadFile(envPath)
-	require.NoError(t, err, "the overlay bypasses the equal-seq guard and materializes")
-	assert.Contains(t, string(env), "pushed")
-
-	_, err = os.Stat(revAnchorPath(envPath))
-	assert.True(t, os.IsNotExist(err), "the effective set is not the revisioned pull — anchor removed")
-}
-
 // --- spawn seams: served rev composition ----------------------------------
 
 // TestSpawnEnvHandler_AnchoredRevWhenAnchorPresent: with a

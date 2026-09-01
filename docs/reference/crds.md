@@ -156,7 +156,6 @@ Controller-owned except where noted. Each field has exactly one writer (US-23.3 
 | `cpuUsageMicros` | int64 | controller | Cumulative CPU microseconds (cgroup v2 `cpu.stat`). |
 | `cpuLimitMicrosPerSec` | int64 | controller | CPU limit. |
 | `contextUsed` / `contextTotal` | int64 | controller | Agent context window usage. |
-| `userCredsPresent` | *bool | controller | Tri-state: whether agentd's reload-replay cache indicates user-DEK content is materialized. `nil` = unknown, `true` = present, `false` = absent (API may auto-push). |
 | `pendingAt` | *metav1.Time | controller | Startup-latency anchor (prefers the `requested-at` annotation). |
 | `resumedAt` | *metav1.Time | controller | Resume-latency anchor. |
 

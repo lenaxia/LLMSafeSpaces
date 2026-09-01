@@ -43,7 +43,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretsreconcile"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
@@ -679,9 +678,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// place to change delivery semantics.
 		//
 		// llmsafespaces_secrets_notify_total is emitted from the shared
-		// notifier itself (every dispatch, every caller);
-		// api_secret_auto_push_total stays scoped to the pod-recreation
-		// adapter (see wsAgentPusherAdapter).
+		// notifier itself (every dispatch, every caller).
 		agentPusher := agentpush.New(
 			agentpush.WithPodIPResolver(secretsPodResolver),
 			agentpush.WithPasswordProvider(proxyHandler),
@@ -706,30 +703,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			userMcpHandler.SetSecretPusher(mcpPushAdapter)
 		}
 		workspaceEnvHandler.SetNotifier(mcpPushAdapter)
-
-		// worklog 0591: watcher-driven auto-push. Uses the shared
-		// agentpush.Service + a KeyService.GetDEKForUser retrieval to
-		// deliver user-DEK content after a pod recreation (silent or
-		// user-initiated), without depending on a live user-request
-		// context. Wired into the workspace watcher's per-CRD-event
-		// callback via proxyHandler.SetWorkspaceUpdateCallback.
-		//
-		// Metric emission is handled by the wsAgentPusherAdapter's
-		// existing recordAutoPushOutcome call (see adapter.Push in
-		// secrets_adapters.go). We intentionally do NOT install a
-		// secondary metric hook on secretautopush itself — that would
-		// double-count api_secret_auto_push_total every time the
-		// watcher-driven push succeeded. The adapter's emission is
-		// authoritative.
-		//
-		// US-70.2: no DEK priming / auth ctx — the builder is
-		// session-independent and decrypts user entries server-side.
-		autoPushSvc := secretautopush.New(
-			&bindingsCheckerAdapter{store: pgStore},
-			&wsAgentPusherAdapter{pusher: agentPusher},
-			secretautopush.WithLogger(log),
-		)
-		proxyHandler.SetWorkspaceUpdateCallback(autoPushSvc.OnWorkspaceUpdate)
 
 		// US-70.3: the level-triggered reconcile loop. Notify shrinks
 		// latency; this loop is the correctness path — every period it
@@ -765,16 +738,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if authSvc, ok := svc.Auth.(*auth.Service); ok {
 			secretsHandler.SetPasswordVerifier(authSvc)
 		}
-		// Workspace-ownership enforcement for the bindings / env / reload-secrets
+		// Workspace-ownership enforcement for the bindings / env / reload-secrets (API-side route)
 		// routes lives in WorkspaceAccessMiddleware (design 0041 D1+D5). The
 		// SecretService trusts that decision and no longer carries its own
 		// verifier — see pkg/secrets/secret_service.go.
 		secretService.SetAdminProvider(providerCredsProv)
 		secretService.SetOrgProvider(orgCredsProv)
-		// Epic 56: soft-unlock handler — same KeyService backing
-		// UnlockDEKWithSigningKey for rewriting the durable jwt_sessions
-		// row when a Valkey miss + missing/stale durable row needs the
-		// user to re-enter their password.
+		// Epic 56: soft-unlock handler — re-derives the DEK from user_keys
+		// server-side and re-populates the Redis session cache when a
+		// Valkey miss needs it mid-session.
 		unlockDEKHandler = handlers.NewUnlockDEKHandler(keyService)
 
 		rkp := newRootKeyProvider(cfg, log)
@@ -835,24 +807,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				authSvc.SetRootKeyProvider(apiKeyProv)
 			}
 
-			// worklog 0590: expose the API's active JWT signing keys
-			// (primary + previous) to KeyService so GetDEKForUser can
-			// unwrap a durable jwt_sessions row on behalf of a user in a
-			// background context (no request-time matchedSigningKey).
-			// This gives the background auto-push path (follow-up PR)
-			// the same DEK-access capability every user request already
-			// has, without needing to pass session state through the
-			// call stack.
-			keyService.SetSigningKeyEnumerator(authSvc)
 		}
 
 		// US-70.4: the login-independent re-wrap reconciler. Same master
 		// provider as KeyService's server-side unwrap path (apiKeyProv,
 		// AuditedProvider-wrapped so the walk's decrypts are attributed per
-		// user), the session-cache DEK walk as the recovery source, the
-		// PgSecretStore for the W9 source-agreement listing, and the async
-		// audit seam. Env-only config (period / batch size / kill switch —
-		// see api/internal/services/keyrewrap). Started in Run() after the
+		// user), the warm-cache DEK walk as the recovery source
+		// (GetCachedDEKForUser, US-70.5), the PgSecretStore for the W9
+		// source-agreement listing, and the async audit seam. Env-only
+		// config (period / batch size / kill switch — see
+		// api/internal/services/keyrewrap). Started in Run() after the
 		// secrets services; stopped by the root-context cancel in Shutdown.
 		keyRewrapSvc = keyrewrap.New(
 			secrets.NewPgKeyStore(secretsPool),

@@ -109,12 +109,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 	if err != nil {
 		ws.Status.ConsecutiveHealthFailures++
-		// Pod unreachable — clear UserCredsPresent so a stale "true"
-		// from a previous pod doesn't suppress the API's auto-push
-		// after recreation (worklog 0591). The field reflects the
-		// CURRENT pod's state; unreachable means we don't know it.
-		ws.Status.UserCredsPresent = nil
-		// Same doctrine for the terminal-verified delivery state
+		// Pod unreachable — clear the terminal-verified delivery state
 		// (US-70.1): no evidence from a dead pod beats stale evidence.
 		ws.Status.SecretsDelivery = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
@@ -134,7 +129,6 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		ws.Status.ConsecutiveHealthFailures++
 		// Response undecodable: same reasoning as unreachable — we
 		// can't trust any prior value, clear to nil.
-		ws.Status.UserCredsPresent = nil
 		ws.Status.SecretsDelivery = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
@@ -143,8 +137,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 	if !healthResp.Healthy {
 		ws.Status.ConsecutiveHealthFailures++
-		// Agent reports unhealthy: don't trust its cache-file signal.
-		ws.Status.UserCredsPresent = nil
+		// Agent reports unhealthy: don't trust its delivery signal.
 		ws.Status.SecretsDelivery = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
 			v1.ReasonAgentUnhealthy, "agent process not responding")
@@ -156,12 +149,8 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		return
 	}
 
-	// Liveness passed — reset failure counter and mirror the
-	// user-creds signal onto CRD status so the API's workspace
-	// watcher can consume it (worklog 0591).
+	// Liveness passed — reset failure counter.
 	ws.Status.ConsecutiveHealthFailures = 0
-	ucp := healthResp.UserCredsPresent
-	ws.Status.UserCredsPresent = &ucp
 	// US-70.1 (design 0057 I4/I10): mirror the terminal-verified
 	// spawn-env delivery state. Set only when the agentd reports it —
 	// a healthy scrape from a pre-US-70.1 runtime (mixed fleet, W15)

@@ -32,25 +32,14 @@ const (
 	// materializer's per-entry and whole-batch checks are the
 	// defense-in-depth ceiling (size_exceeded).
 	StagedFilesMaxBytes = 8 << 20
-	// ReloadSecretsCachePath is where reloadSecretsHandler persists the last
-	// reload-secrets batch so it can be replayed after a main-container restart
-	// (#443). It lives on the /sandbox-runtime tmpfs emptyDir (Memory medium):
-	// it survives a container restart (kubelet respawns the main container on
-	// the same pod without touching the emptyDir) but is wiped on pod death —
-	// preserving the US-35.7 "no plaintext on PVC at rest" invariant. The base
-	// /sandbox-cfg/secrets.json (written by the init container) only ever
-	// contains server-KEK creds; user-DEK creds (env-secrets, SSH keys, user
-	// LLM providers) are live-pushed after boot and would otherwise be lost on
-	// every container restart.
-	ReloadSecretsCachePath = "/sandbox-runtime/last-reload-secrets.json"
 	// AllowedDirsPath is where the bootstrap subcommand writes the instance's
 	// allowedExternalDirectories setting (a JSON array of glob patterns). The
 	// AgentConfigWriter reads it once at init and merges each pattern into
 	// agent-config.json's mode.permissions.external_directory as an "allow"
 	// rule, so agents stop prompting for /tmp/* on every session. Lives on
-	// /sandbox-runtime tmpfs for the same reasons as ReloadSecretsCachePath —
-	// survives container restart, wiped on pod death, no plaintext-on-PVC
-	// concern (it's a list of public path globs, not secrets).
+	// /sandbox-runtime tmpfs: survives container restart, wiped on pod
+	// death, no plaintext-on-PVC concern (it's a list of public path
+	// globs, not secrets).
 	AllowedDirsPath = "/sandbox-runtime/allowed-dirs.json"
 	// ModelResolutionWarningPath is where the materialize subcommand records
 	// that the workspace's persisted default model could not be resolved to
@@ -61,7 +50,7 @@ const (
 	// session fails with ProviderModelNotFoundError until the pod rebuilds).
 	// agentd's healthz/statusz read this marker so the controller can relay
 	// the condition into the AgentHealthy condition message the user sees.
-	// Same tmpfs lifecycle as ReloadSecretsCachePath; removed by the next
+	// Same tmpfs lifecycle as agent-config.json; removed by the next
 	// successful resolution.
 	ModelResolutionWarningPath = "/sandbox-runtime/model-resolution-warning.json"
 	// SidecarRestartMarkerPath is where the restart-reason marker lives
@@ -81,34 +70,31 @@ const (
 // Ports and network constants shared between agentd and the controller.
 const (
 	AgentPort       = 4096 // opencode serve listens here
-	AgentdPort      = 4097 // agentd user-facing HTTP API (reload-secrets, future proxy)
+	AgentdPort      = 4097 // agentd user-facing HTTP API (resync-secrets, future proxy)
 	AgentdAddr      = "0.0.0.0:4097"
 	AgentdAdminPort = 4098 // agentd admin HTTP API (healthz, readyz, statusz) — US-22.8
 	AgentdAdminAddr = "0.0.0.0:4098"
 	AuthUsername    = "opencode" // Basic Auth username for opencode
 )
 
+// DeliveryCapability is this build's secret-delivery generation (US-70.5
+// fleet-version evidence): "v2" marks the conditional-pull stack — the v2
+// bootstrap envelope contract, revision anchoring, the resync endpoint,
+// and spawn-rev terminal verification. Pre-US-70.2 runtimes omit the
+// healthz delivery field entirely, so a fleet scrape can count pods still
+// on the legacy stack (the W15 mixed-fleet gauge). It is a capability
+// statement only — convergence is still judged from the revision signals
+// (spawned_rev), never from this field.
+const DeliveryCapability = "v2"
+
 // HealthzResponse is the response for GET /v1/healthz.
-//
-// UserCredsPresent (worklog 0591) is TRUE when agentd's
-// last-reload-secrets.json cache exists AND parses AND contains at
-// least one entry — i.e., a prior successful reload push delivered
-// user-DEK content that is currently materialized on disk. FALSE on
-// fresh pod boot (no prior push), on empty batch (user unbound all
-// secrets), on cache-read failure, or on corrupt cache. The API's
-// workspace watcher reads this field via the controller's
-// scrape-and-mirror pattern to decide whether to fire a
-// background auto-push after pod recreation.
-//
-// This field is observability data, not a liveness gate. A hasUserCreds
-// failure does NOT block the healthz response — healthy stays true so
-// kubelet's liveness probe doesn't cascade to pod-kill from an unrelated
-// cache-read fault.
 type HealthzResponse struct {
-	Healthy          bool   `json:"healthy"`
-	Version          string `json:"version"`
-	UptimeSeconds    int    `json:"uptime_seconds"`
-	UserCredsPresent bool   `json:"userCredsPresent"`
+	Healthy       bool   `json:"healthy"`
+	Version       string `json:"version"`
+	UptimeSeconds int    `json:"uptime_seconds"`
+	// Delivery is the build's delivery capability marker
+	// (DeliveryCapability; absent on pre-US-70.2 runtimes).
+	Delivery string `json:"delivery,omitempty"`
 	// CommitSHA is the git commit this agentd binary was built from
 	// (pkg/version, -ldflags injected; buildinfo vcs fallback). Surfaced
 	// so a deployed agentd can be traced to source without binary

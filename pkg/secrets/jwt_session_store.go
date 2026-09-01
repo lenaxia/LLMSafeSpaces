@@ -5,12 +5,10 @@ package secrets
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -21,9 +19,9 @@ import (
 //	jwt_sessions(jti UUID PK, user_id TEXT FK, wrapped_dek BYTEA,
 //	             kek_salt BYTEA, created_at TIMESTAMPTZ, expires_at TIMESTAMPTZ)
 //
-// WrappedDEK is the user's DEK encrypted under a KEK derived from
-// (matched_jwt_signing_key || jti) via HKDF-SHA256 with the
-// llmsafespaces-jwt-session-dek-kek info string. See Epic 56 design.
+// Rows are written only by pre-US-70.5 logins (the durable write half
+// is deleted); WrappedDEK/KEKSalt are historical columns kept for the
+// age-out window and never unwrapped by current code.
 //
 // JTI is the canonical UUID form that auth.go generates via
 // uuid.New().String() and embeds in the JWT's "jti" claim.
@@ -37,23 +35,11 @@ type JWTSession struct {
 }
 
 // JWTSessionStore abstracts the durable jwt_sessions table for tests.
-//
-// All methods are best-effort writes from the caller's perspective:
-// login's hot path tolerates write failure (Redis cache still works),
-// the revocation paths tolerate delete failure (Redis revocation is
-// authoritative), and the janitor tolerates failure (it retries on the
-// next tick). The DAL itself returns the underlying error verbatim so
-// callers can log it without changing the surface.
+// US-70.5 deleted the write and rehydrate halves; the remaining surface
+// enumerates live sessions (for the warm-cache walk) and drives the
+// table toward empty (revocation deletes + the janitor) as
+// pre-demolition rows age out.
 type JWTSessionStore interface {
-	// GetJWTSession fetches the durable row for jti. Returns (nil, nil)
-	// when no row exists (the rehydrate path uses this signal — pre-feature
-	// JWTs, expired-and-pruned rows, soft-unlock backfill cases).
-	GetJWTSession(ctx context.Context, jti uuid.UUID) (*JWTSession, error)
-	// WriteJWTSession upserts the row. Used by login (initial write) and
-	// soft-unlock (backfill / US-50.4 rewrite). ON CONFLICT (jti) DO UPDATE
-	// because a soft-unlock re-issues a fresh kek_salt + wrapped_dek for an
-	// existing jti.
-	WriteJWTSession(ctx context.Context, session *JWTSession) error
 	// DeleteJWTSession removes the row for a specific jti. Used by EvictDEK
 	// (logout, cache miss handling, etc.) so the durable row does not
 	// outlive its Redis counterpart.
@@ -72,12 +58,9 @@ type JWTSessionStore interface {
 	// (limit <= 0 means unlimited-per-caller-convention, though the
 	// caller MUST supply a sensible bound in production).
 	//
-	// Used by KeyService.GetDEKForUser to retrieve a durable DEK-wrapping
-	// row when the caller doesn't have a specific sessionID + matched
-	// signing key (background paths: workspace watcher, auto-push
-	// triggered by phase change or pod recreation). Every row for a
-	// given user wraps the SAME DEK (user_keys has one row per user);
-	// the caller only needs one row to unwrap.
+	// Used by KeyService.GetCachedDEKForUser to enumerate candidate jtis
+	// for the warm-cache walk (US-70.5: the rows are an index of live
+	// sessions; the DEK itself is read from the Redis cache only).
 	//
 	// "Active" means expires_at is strictly AFTER the store's clock
 	// (SQL: expires_at > NOW()). A row at the exact expires_at is
@@ -88,8 +71,7 @@ type JWTSessionStore interface {
 	// required at current data scale).
 	//
 	// Returns nil (or []) with nil error when no matching rows exist —
-	// callers use empty to signal "no live session; fall back to
-	// SessionlessInject or ErrDEKUnavailable."
+	// callers use empty to signal "no live session" (ErrDEKUnavailable).
 	ListActiveJWTSessionsForUser(ctx context.Context, userID string, limit int) ([]*JWTSession, error)
 }
 
@@ -101,47 +83,6 @@ type PgJWTSessionStore struct {
 // NewPgJWTSessionStore creates a new PostgreSQL-backed JWTSessionStore.
 func NewPgJWTSessionStore(pool *pgxpool.Pool) *PgJWTSessionStore {
 	return &PgJWTSessionStore{pool: pool}
-}
-
-// GetJWTSession returns the durable row for jti, or (nil, nil) when none exists.
-func (s *PgJWTSessionStore) GetJWTSession(ctx context.Context, jti uuid.UUID) (*JWTSession, error) {
-	row := s.pool.QueryRow(ctx,
-		`SELECT jti, user_id, wrapped_dek, kek_salt, created_at, expires_at
-		 FROM jwt_sessions WHERE jti = $1`, jti)
-
-	var r JWTSession
-	err := row.Scan(&r.JTI, &r.UserID, &r.WrappedDEK, &r.KEKSalt, &r.CreatedAt, &r.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("query jwt_sessions: %w", err)
-	}
-	return &r, nil
-}
-
-// WriteJWTSession upserts the row. The primary key is jti, so duplicate
-// writes for the same jti (soft-unlock backfill, US-50.4 rewrite, or two
-// near-simultaneous logins racing on the same uuid — astronomically
-// unlikely but defended against) overwrite the previous wrapped_dek and
-// kek_salt. user_id and created_at are preserved on conflict because
-// they describe identity, not state; only the KEK material rotates.
-func (s *PgJWTSessionStore) WriteJWTSession(ctx context.Context, session *JWTSession) error {
-	if session == nil {
-		return errors.New("write jwt_session: nil session")
-	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO jwt_sessions (jti, user_id, wrapped_dek, kek_salt, created_at, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 ON CONFLICT (jti) DO UPDATE SET
-		   wrapped_dek = EXCLUDED.wrapped_dek,
-		   kek_salt    = EXCLUDED.kek_salt,
-		   expires_at  = EXCLUDED.expires_at`,
-		session.JTI, session.UserID, session.WrappedDEK, session.KEKSalt, session.CreatedAt, session.ExpiresAt)
-	if err != nil {
-		return fmt.Errorf("upsert jwt_sessions: %w", err)
-	}
-	return nil
 }
 
 // DeleteJWTSession removes the row for jti. Idempotent: deleting a
@@ -189,14 +130,11 @@ func (s *PgJWTSessionStore) DeleteExpiredJWTSessions(ctx context.Context, before
 //
 // The NOW() comparison is inline in the SQL so the database's clock
 // is authoritative — same source of truth the janitor uses when it
-// prunes. Fetching a "just barely expired" row and having the caller
-// discover it a millisecond later would waste a signing-key iteration
-// and produce a misleading warn log.
+// prunes.
 //
 // When limit <= 0, no LIMIT clause is added. Callers should always
-// pass a sensible bound (KeyService.GetDEKForUser passes 5, per
-// jwtSessionUserLookupLimit — covers multi-row fallback while
-// preventing pathological unwrap-loops on users with many sessions).
+// pass a sensible bound (KeyService.GetCachedDEKForUser passes 5, per
+// jwtSessionUserLookupLimit).
 func (s *PgJWTSessionStore) ListActiveJWTSessionsForUser(ctx context.Context, userID string, limit int) ([]*JWTSession, error) {
 	query := `SELECT jti, user_id, wrapped_dek, kek_salt, created_at, expires_at
 	          FROM jwt_sessions

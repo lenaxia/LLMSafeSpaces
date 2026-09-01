@@ -339,6 +339,15 @@ func runGinSetMode(root string) int {
 		fmt.Fprintln(os.Stderr, fbRep.String())
 		os.Exit(exitFailures)
 	}
+	dsRep, dsErr := repolint.DeletedSymbolsCheck(root)
+	if dsErr != nil {
+		fmt.Fprintf(os.Stderr, "deleted-symbols check failed: %v\n", dsErr)
+		os.Exit(exitInternal)
+	}
+	if !dsRep.OK() {
+		fmt.Fprintln(os.Stderr, dsRep.String())
+		os.Exit(exitFailures)
+	}
 	rep, err := repolint.GinSetModeCheck(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL  gin.SetMode parallel-race check: %v\n", err)

@@ -15,8 +15,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 func writeBatchFile(t *testing.T, body string) string {
@@ -95,102 +93,4 @@ func TestLoadBatchFile_Malformed(t *testing.T) {
 func TestLoadBatchFile_Absent(t *testing.T) {
 	_, err := LoadBatchFile(filepath.Join(t.TempDir(), "absent.json"))
 	require.ErrorIs(t, err, os.ErrNotExist)
-}
-
-// --- merge semantics -------------------------------------------------------
-//
-// Envelope base + legacy reload cache: the cache is the newer live
-// state and wins per Type+Name. The envelope's revision survives ONLY
-// when the effective set is the envelope's set (empty cache); any cache
-// overlay that changes the set drops it — a merged set is no longer the
-// revisioned pull.
-
-func TestMergeBatchFile_EmptyCache_KeepsRevision(t *testing.T) {
-	base := BatchFile{
-		Secrets:  []Secret{{Type: "env-secret", Name: "db", Plaintext: "v"}},
-		Revision: &sec.BatchRevision{Seq: 3, ManifestHash: "mh"},
-	}
-	got, rev := MergeBatchFile(base, nil)
-	assert.Equal(t, base.Secrets, got)
-	assert.NotNil(t, rev, "empty cache ⇒ the revisioned pull IS the effective set")
-	assert.EqualValues(t, 3, rev.Seq)
-}
-
-func TestMergeBatchFile_CacheOverlay_DropsRevision(t *testing.T) {
-	base := BatchFile{
-		Secrets:  []Secret{{Type: "env-secret", Name: "db", Plaintext: "old"}},
-		Revision: &sec.BatchRevision{Seq: 3, ManifestHash: "mh"},
-	}
-	cache := []Secret{{Type: "env-secret", Name: "db", Plaintext: "new"}}
-
-	got, rev := MergeBatchFile(base, cache)
-	require.Len(t, got, 1)
-	assert.Equal(t, "new", got[0].Plaintext, "cache wins on Type+Name")
-	assert.Nil(t, rev, "overlay changed the effective set ⇒ revision dropped")
-}
-
-func TestMergeBatchFile_CacheAdditive_DropsRevision(t *testing.T) {
-	base := BatchFile{
-		Secrets:  []Secret{{Type: "env-secret", Name: "db", Plaintext: "v"}},
-		Revision: &sec.BatchRevision{Seq: 3, ManifestHash: "mh"},
-	}
-	cache := []Secret{{Type: "ssh-key", Name: "k", Plaintext: "kk"}}
-
-	got, rev := MergeBatchFile(base, cache)
-	require.Len(t, got, 2)
-	assert.Nil(t, rev, "an additive overlay changes the effective set ⇒ revision dropped")
-}
-
-func TestMergeBatchFile_LegacyBase_StaysLegacy(t *testing.T) {
-	base := BatchFile{Secrets: []Secret{{Type: "env-secret", Name: "db", Plaintext: "v"}}}
-	cache := []Secret{{Type: "env-secret", Name: "db", Plaintext: "new"}}
-
-	got, rev := MergeBatchFile(base, cache)
-	require.Len(t, got, 1)
-	assert.Equal(t, "new", got[0].Plaintext)
-	assert.Nil(t, rev)
-}
-
-// --- MergeSecretBatches: the Type+Name overlay (ported from the deleted
-// cmd-local copy; cache wins on duplicate, distinct entries all present) ---
-
-func TestMergeSecretBatches_CacheWinsOnDuplicate(t *testing.T) {
-	base := []Secret{
-		{Type: "env-secret", Name: "gh", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "base-value"},
-		{Type: "ssh-key", Name: "k", Metadata: map[string]string{"key_type": "ed25519"}, Plaintext: "base-ssh"},
-	}
-	cache := []Secret{
-		{Type: "env-secret", Name: "gh", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "cache-value"},
-	}
-
-	merged := MergeSecretBatches(base, cache)
-
-	require.Len(t, merged, 2)
-	assert.Equal(t, "cache-value", merged[0].Plaintext, "cache must win for duplicate Type+Name")
-	assert.Equal(t, "base-ssh", merged[1].Plaintext, "non-duplicated base entries survive")
-}
-
-func TestMergeSecretBatches_NoDuplicate_AllPresent(t *testing.T) {
-	base := []Secret{{Type: "llm-provider", Name: "anthropic", Plaintext: `{}`}}
-	cache := []Secret{
-		{Type: "env-secret", Name: "gh", Plaintext: "tok"},
-		{Type: "git-credential", Name: "g", Plaintext: "user:pass"},
-	}
-	assert.Len(t, MergeSecretBatches(base, cache), 3, "all distinct entries from both batches must be present")
-}
-
-func TestMergeSecretBatches_EmptyBaseAndLayered(t *testing.T) {
-	assert.Empty(t, MergeSecretBatches(nil, nil))
-	assert.Empty(t, MergeSecretBatches([]Secret{}, []Secret{}))
-	assert.Equal(t, []Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}},
-		MergeSecretBatches([]Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}}, nil))
-	assert.Equal(t, []Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}},
-		MergeSecretBatches(nil, []Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}}))
-}
-
-func TestMergeSecretBatches_SameTypeDifferentName_BothKept(t *testing.T) {
-	base := []Secret{{Type: "env-secret", Name: "a", Plaintext: "1"}}
-	cache := []Secret{{Type: "env-secret", Name: "b", Plaintext: "2"}}
-	assert.Len(t, MergeSecretBatches(base, cache), 2,
-		"different Name under the same Type is NOT a duplicate")
 }

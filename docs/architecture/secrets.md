@@ -248,32 +248,25 @@ sequenceDiagram
 | **PostgreSQL** (`user_secrets`) | Encrypted ciphertext (user secrets) | Yes (it's the DB) | Yes (AES-256-GCM under per-user DEK) |
 | **PostgreSQL** (`provider_credentials`, `api_keys`, `org_sso_configs`) | KEK-protected ciphertext (platform secrets) | Yes | Yes (under master KEK via HKDF purposes) |
 | **K8s Secret** (`workspace-secrets-<ws>`, `workspace-pw-<ws>`) | Decrypted workspace runtime credentials + workspace password | Yes (until workspace deleted) | Only if etcd encryption at rest is configured (A1) |
-| **tmpfs** `/sandbox-runtime` | Live agent config, secrets-env, auth.json symlink, admin-prompt.md, reload-replay cache | **No** — wiped on pod death | N/A (RAM) |
+| **tmpfs** `/sandbox-runtime` | Live agent config, secrets-env, auth.json symlink, admin-prompt.md | **No** — wiped on pod death | N/A (RAM) |
 | **emptyDir** `/sandbox-cfg` | secrets.json, workspace-config.json, password (from init) | No (ephemeral per pod) | N/A |
 | **PVC** `/workspace`, `/home/sandbox`, `/tmp` | Session history, project files, package caches, **dangling symlinks** for credential paths | Yes | N/A (operator responsibility — A1) |
 
 The critical property: **plaintext credentials never touch the PVC.** The `$HOME`-relative credential paths (`.ssh`, `.secrets`, `.git-credentials`, `auth.json`) are symlinks created by the init container pointing into `/sandbox-runtime/rt/*` (tmpfs). On pod death, tmpfs is wiped and the PVC retains only dangling symlinks — no plaintext bytes.
 
-### The reload-replay cache (worklog #443)
+### Container-restart re-materialization (worklog #443; replay cache demolished by US-70.5)
 
-User-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) are delivered via the live `/v1/reload-secrets` push, not the bootstrap init container (which only carries server-KEK creds). Without a cache, a main-container restart (OOM, panic, kubelet restart) would wipe them — the boot-time `reset()` clears tmpfs, and the base `secrets.json` never contained them.
+User-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) are delivered by the server-built batch (one builder, US-70.2) and applied by the resync pull (US-70.3). A main-container restart (OOM, panic, kubelet restart) re-materializes them from the batch file: every resync-applied revision is persisted verbatim to `/sandbox-cfg/secrets.json` (emptyDir — survives container restart, wiped on pod death), and the next boot's materialize re-applies it (US-70.5).
 
-The fix: after every successful reload, agentd writes the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs). On the next boot, the materialize subcommand:
-
-1. Loads base `/sandbox-cfg/secrets.json` (server-KEK creds from bootstrap).
-2. Loads `/sandbox-runtime/last-reload-secrets.json` (cached user-DEK creds), merged on top — cache wins on duplicate `Type+Name`.
-3. `reset()` wipes tmpfs credential files.
-4. `Materialize(merged)` re-applies both base + cached user-DEK creds.
-
-Absent cache = first boot (base only). Corrupt cache = warn + base only. The cache is written after `Materialize` succeeds, never on a hard failure (500), and degrades to base-only on a corrupt read.
+The restart sequence is the pull itself: `reset()` wipes tmpfs credential files, then `Materialize(batch)` re-applies the persisted envelope — full-replace, so revoked credentials do not reappear.
 
 ### Live reload without pod restart
 
-`POST /api/v1/workspaces/:id/reload-secrets` (proxied to agentd's `/v1/reload-secrets` on `:4097`) hot-reloads credentials into a running pod:
+`POST /api/v1/workspaces/:id/reload-secrets` notifies the pod's resync endpoint; the pod re-pulls its batch through the conditional bootstrap path (fresh SA token, apply-guard, terminal rev anchoring) and applies it in-process:
 
-1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → `FormatProviders()`.
+1. `applyMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → `FormatProviders()`.
 2. `writer.SetProviders(formatted)` + `writer.Rebuild()` merges with existing model + relay sources → atomic write of `agent-config.json`.
-3. `writeReloadSecretsCache()` persists the batch to the reload-replay cache.
+3. The fetched envelope is persisted verbatim to the batch file (the restart surface).
 4. `proc.restart()` reboots opencode with the updated config (opencode doesn't hot-reload `agent-config.json`).
 
 This is how adding a new secret to a workspace takes effect without a full suspend/resume cycle.

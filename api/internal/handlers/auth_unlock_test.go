@@ -23,22 +23,20 @@ import (
 // captureUnlocker is a DEKUnlocker spy that records the call args and
 // returns a configurable error.
 type captureUnlocker struct {
-	err            error
-	calls          int
-	lastUserID     string
-	lastSessionID  string
-	lastPassword   []byte
-	lastTTL        time.Duration
-	lastSigningKey []byte
+	err           error
+	calls         int
+	lastUserID    string
+	lastSessionID string
+	lastPassword  []byte
+	lastTTL       time.Duration
 }
 
-func (c *captureUnlocker) UnlockDEKWithSigningKey(_ context.Context, userID string, password []byte, sessionID string, ttl time.Duration, activeSigningKey []byte) error {
+func (c *captureUnlocker) UnlockDEK(_ context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error {
 	c.calls++
 	c.lastUserID = userID
 	c.lastSessionID = sessionID
 	c.lastPassword = append([]byte{}, password...)
 	c.lastTTL = ttl
-	c.lastSigningKey = append([]byte{}, activeSigningKey...)
 	return c.err
 }
 
@@ -90,8 +88,7 @@ func doUnlockRequest(t *testing.T, r *gin.Engine, body any) *httptest.ResponseRe
 
 func TestUnlockDEK_HappyPath(t *testing.T) {
 	unlocker := &captureUnlocker{err: nil}
-	matchedKey := []byte("matched-signing-key-32-bytes-pad")
-	r := setupUnlockRouter(t, unlocker, "u-1", "11111111-2222-3333-4444-555555555555", matchedKey)
+	r := setupUnlockRouter(t, unlocker, "u-1", "11111111-2222-3333-4444-555555555555", nil)
 
 	rec := doUnlockRequest(t, r, nil)
 
@@ -99,7 +96,6 @@ func TestUnlockDEK_HappyPath(t *testing.T) {
 	assert.Equal(t, 1, unlocker.calls)
 	assert.Equal(t, "u-1", unlocker.lastUserID)
 	assert.Equal(t, "11111111-2222-3333-4444-555555555555", unlocker.lastSessionID)
-	assert.Equal(t, matchedKey, unlocker.lastSigningKey, "soft-unlock MUST wrap under matched key, not active")
 	assert.Greater(t, unlocker.lastTTL, time.Duration(0))
 }
 
@@ -113,19 +109,6 @@ func TestUnlockDEK_Unauthenticated_Returns401(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Equal(t, 0, unlocker.calls)
-}
-
-func TestUnlockDEK_NoMatchedSigningKey_Returns400(t *testing.T) {
-	// Legacy cache hit, broken middleware, or test missing jwt_signing_key:
-	// the soft-unlock has no key to wrap the durable row under. Reject
-	// rather than producing a Redis-only unlock (no durable persistence).
-	unlocker := &captureUnlocker{}
-	r := setupUnlockRouter(t, unlocker, "u-3", "11111111-2222-3333-4444-555555555555", nil)
-
-	rec := doUnlockRequest(t, r, nil)
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "requires a JWT session")
 }
 
 func TestUnlockDEK_APIKeySession_Returns400(t *testing.T) {
@@ -162,25 +145,6 @@ func TestUnlockDEK_StatusError_MapsToStatusFromError(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	assert.Contains(t, rec.Body.String(), "key provider down")
 }
-
-func TestUnlockDEK_RegressionForRotatedJWT_WrapsUnderMatchedKey(t *testing.T) {
-	// The #411 [HIGH] regression case: JWT signed under key A, B is
-	// active. Soft-unlock MUST wrap with A (matched key), not B (active).
-	// AuthMiddleware extracts A and stashes on context under
-	// "jwt_signing_key". The handler passes that same A to the
-	// unlocker. After a Valkey restart, the rehydrate path under
-	// the same JWT (still validating against A) derives the same KEK
-	// and recovers the DEK.
-	keyA := []byte("previous-signing-key-A-32-bytes!")
-	unlocker := &captureUnlocker{}
-	r := setupUnlockRouter(t, unlocker, "u-rot", "11111111-2222-3333-4444-555555555555", keyA)
-
-	rec := doUnlockRequest(t, r, nil)
-
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, keyA, unlocker.lastSigningKey, "regression: soft-unlock must wrap under matched key A, not the (test) active key")
-}
-
 func TestUnlockDEK_DurableRowTTLMatchesJWTRemaining(t *testing.T) {
 	// soft-unlock at hour 1 of a 24h JWT should produce a durable row
 	// with ~23h TTL — NOT a hardcoded 1h. Pin the contract: TTL must

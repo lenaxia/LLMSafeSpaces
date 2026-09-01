@@ -59,7 +59,7 @@ type WorkspaceReconciler struct {
 	// fetch decrypted credentials via POST /internal/v1/pod-bootstrap. Same
 	// value as --api-service-url (also used for OrgStatusClient). When empty,
 	// the bootstrap subcommand degrades gracefully (empty secrets, pod boots
-	// without credentials; live /reload-secrets push handles delivery).
+	// without credentials; the notify-pull path handles delivery).
 	APIServiceURL string
 
 	// PreviewOriginBaseDomain (Epic 66 Phase 1): when non-empty, workspace
