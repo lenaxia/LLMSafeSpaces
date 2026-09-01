@@ -2564,7 +2564,7 @@
 <ul>
 <li><strong><code>workspace-setup</code></strong> (only when <code>spec.packages</code> or <code>spec.initScript</code> are set) — installs declared packages to <code>/workspace/packages</code> and runs the user's init script. Idempotent, so it's safe to rerun on every pod start (including resume).</li>
 <li><strong><code>credential-setup</code></strong> — mounts the credentials Secret and password Secret via <strong>projected volumes</strong> (the kubelet mounts the data; the pod's SA has no Secret RBAC) and writes them to the shared <code>emptyDir</code> at <code>/sandbox-cfg</code>.</li>
-<li><strong><code>bootstrap</code></strong> (agentd subcommand, Epic 35) — presents a projected SA token to the API's <code>/internal/v1/pod-bootstrap</code> and fetches decrypted credentials. Never blocks pod boot; degrades to empty on failure and the live <code>/v1/reload-secrets</code> push handles delivery.</li>
+<li><strong><code>bootstrap</code></strong> (agentd subcommand, Epic 35) — presents a projected SA token to the API's <code>/internal/v1/pod-bootstrap</code> and fetches decrypted credentials. Never blocks pod boot; degrades to empty on failure and the notify-pull/reconcile path converges delivery.</li>
 </ul>
 <h3 id="main-container">Main container<a class="headerlink" href="#main-container" title="Permanent link">&para;</a></h3>
 <p>Runs <code>opencode serve --hostname 0.0.0.0 --port 4096</code> as a persistent HTTP server. The entrypoint sets <code>XDG_DATA_HOME=/workspace/.local</code> so session history persists to the PVC, and <code>OPENCODE_CONFIG=/sandbox-runtime/agent-config.json</code> so the relay-injected provider config always wins opencode's config merge (it's appended last).</p>
@@ -2573,9 +2573,8 @@
 <p><code>workspace-agentd</code> (<code>cmd/workspace-agentd</code>) supervises <code>opencode</code>:</p>
 <ul>
 <li><strong>Admin port <code>:4098</code></strong> — <code>/v1/healthz</code>, <code>/v1/statusz</code>, <code>/v1/readyz</code>, <code>/v1/metrics</code>. The controller polls these for health and metric enrichment; Prometheus scrapes <code>/metrics</code>. Token-gated.</li>
-<li><strong>User port <code>:4097</code></strong> — <code>/v1/reload-secrets</code> (live credential reload without pod restart). <em>Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).</em></li>
+<li><strong>User port <code>:4097</code></strong> — <code>/v1/resync-secrets</code> (credential re-pull without pod restart). <em>Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).</em></li>
 <li>Owns the single <code>AgentConfigWriter</code> that builds <code>/sandbox-runtime/agent-config.json</code> atomically (temp-file + <code>os.Rename</code>), merging providers + model + relay sources. The one-shot relay injector runs ~T+7s after boot to discover free-tier models.</li>
-<li>Owns the reload-replay cache (<code>/sandbox-runtime/last-reload-secrets.json</code>) so user-DEK credentials survive a main-container restart (OOM, panic, kubelet restart) — without it, the boot-time <code>reset()</code> would wipe them.</li>
 </ul>
 <h2 id="postgresql">PostgreSQL<a class="headerlink" href="#postgresql" title="Permanent link">&para;</a></h2>
 <p>External; the chart does not bundle it (CloudNativePG, Bitnami postgresql, or raw manifests all work). The API connects via <code>pgx</code> with a connection pool (<code>postgresql.maxOpenConns: 25</code>).</p>
@@ -2665,7 +2664,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
   </span>
 
     

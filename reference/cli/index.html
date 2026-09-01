@@ -2451,7 +2451,7 @@
 <tbody>
 <tr>
 <td><code>materialize</code></td>
-<td>Reads <code>/sandbox-cfg/secrets.json</code> (server-KEK creds) + replays <code>/sandbox-runtime/last-reload-secrets.json</code> (cached user-DEK creds), then applies via <code>pkg/agentd/secrets</code>. Runs before agentd in the init container. Replaces the legacy bash secret-loop (Epic 17 G2/G20).</td>
+<td>Applies <code>/sandbox-cfg/secrets.json</code> (the batch file — a v2 envelope or the legacy bare array; every resync-applied revision overwrites it) via <code>pkg/agentd/secrets</code>. Runs before agentd in the init container. A container restart re-materializes the same file. Replaces the legacy bash secret-loop (Epic 17 G2/G20).</td>
 </tr>
 <tr>
 <td><code>bootstrap</code></td>
@@ -2480,7 +2480,7 @@
 </tr>
 <tr>
 <td><code>:4097</code></td>
-<td>User port — <code>/v1/reload-secrets</code> (live credential reload)</td>
+<td>User port — <code>/v1/resync-secrets</code> (credential re-pull)</td>
 <td><strong>None (G40 accepted)</strong> — NetworkPolicy is the trust boundary (only API server pods can reach port 4097)</td>
 </tr>
 <tr>
@@ -2496,7 +2496,7 @@
 <li><code>/v1/readyz</code> — readiness including <code>RelayInjected</code> signal (used by the API to annotate the model catalog).</li>
 <li><code>/v1/statusz</code> — sessions, disk/memory/CPU/context metrics (scraped by the controller for CRD status enrichment).</li>
 <li><code>/v1/metrics</code> — Prometheus metrics (<code>workspace_restarts_total</code>, <code>workspace_memory_bytes</code>, <code>workspace_active_sessions</code>, <code>workspace_context_tokens</code>, <code>workspace_oom_kills_total</code>).</li>
-<li><code>/v1/reload-secrets</code> — live credential reload without pod restart (user port, G40).</li>
+<li><code>/v1/resync-secrets</code> — credential re-pull without pod restart (user port, G40).</li>
 </ul>
 <p><strong>When you'd run it manually:</strong> never in production. For development debugging of the materialize/bootstrap subcommands against a test pod.</p>
 <hr />
@@ -2900,7 +2900,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 30, 2026 05:54:32 UTC"><span class="timeago" datetime="2026-08-30T05:54:32+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 30, 2026 05:54:32 UTC">2026-08-30</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
   </span>
 
     

@@ -2636,7 +2636,7 @@
 <li><strong>SSH keys / git credentials</strong> as symlinks — the symlink target lives in tmpfs and is wiped on pod death, so the PVC retains only a dangling symlink with <strong>no plaintext bytes</strong>.</li>
 </ul>
 <h3 id="what-does-not-survive-tmpfs">What does NOT survive (tmpfs)<a class="headerlink" href="#what-does-not-survive-tmpfs" title="Permanent link">&para;</a></h3>
-<p><code>/sandbox-runtime</code> (the agent's live config: <code>agent-config.json</code>, <code>secrets-env</code>, <code>admin-prompt.md</code>, the <code>auth.json</code> symlink target, the reload-replay cache) is a <code>tmpfs</code> (RAM-backed emptyDir). On pod death it's wiped. The next pod's init containers re-materialize everything from the K8s Secret and, for user-DEK credentials, the reload-replay cache (<code>/sandbox-runtime/last-reload-secrets.json</code>) — which itself is tmpfs, so a <em>hard</em> pod death loses user-DEK credentials until the next <code>/v1/reload-secrets</code> push.</p>
+<p><code>/sandbox-runtime</code> (the agent's live config: <code>agent-config.json</code>, <code>secrets-env</code>, <code>admin-prompt.md</code>, the <code>auth.json</code> symlink target) is a <code>tmpfs</code> (RAM-backed emptyDir). On pod death it's wiped. The next pod's init containers re-pull the batch file (<code>/sandbox-cfg/secrets.json</code>, an emptyDir that survives container restarts) and re-materialize from it; the reconcile loop re-notifies any pod that boots stale.</p>
 <p>This is deliberate: it keeps plaintext credentials off the PVC at rest. See <a href="../secrets/">secrets</a>.</p>
 <h2 id="pod-death-and-recovery">Pod death and recovery<a class="headerlink" href="#pod-death-and-recovery" title="Permanent link">&para;</a></h2>
 <p>When a pod dies (crash, OOM, node loss), the controller doesn't just blindly recreate it. It classifies the failure and applies a recovery policy.</p>
@@ -2746,7 +2746,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
   </span>
 
     

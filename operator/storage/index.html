@@ -2776,7 +2776,7 @@
 <td><code>/sandbox-runtime</code></td>
 <td>emptyDir (<code>Medium: Memory</code>, 96Mi, RW)</td>
 <td>No</td>
-<td><code>agent-config.json</code>, <code>secrets-env</code>, <code>admin-prompt.md</code>, reload-replay cache, symlink targets</td>
+<td><code>agent-config.json</code>, <code>secrets-env</code>, <code>admin-prompt.md</code>, symlink targets</td>
 </tr>
 </tbody>
 </table>
@@ -2824,13 +2824,12 @@
 <li><code>agent-config.json</code> — the file opencode reads for provider credentials. Written atomically by <code>AgentConfigWriter.Rebuild()</code> (temp-file + <code>os.Rename</code>).</li>
 <li><code>secrets-env</code> — environment variables for env-secret-type credentials.</li>
 <li><code>admin-prompt.md</code> — the merged platform→org→role→user system prompt.</li>
-<li><code>last-reload-secrets.json</code> — the reload-replay cache that restores user-DEK credentials after a container restart (OOM, panic, kubelet restart).</li>
 <li><code>rt/*</code> — symlink targets for <code>$HOME</code>-relative credential paths (<code>.ssh</code>, <code>.secrets</code>, <code>.git-credentials</code>, <code>auth.json</code>).</li>
 </ul>
 <p>The symlink architecture is key: <code>$HOME</code>-relative credential paths are symlinks created by the init container pointing into <code>/sandbox-runtime/rt/*</code>. On pod death, tmpfs is wiped and the PVC retains only dangling symlinks.</p>
 <details class="info">
-<summary>The reload-replay cache</summary>
-<p><code>last-reload-secrets.json</code> is what lets user-DEK credentials (env-secrets like <code>GH_TOKEN</code>, SSH keys, user LLM providers) survive a main-container restart. Without it, the next boot's <code>reset()</code> would wipe them and the base <code>secrets.json</code> (bootstrap, sessionless) never contained them. The cache is written after <code>Materialize</code> succeeds, is never written on a hard failure (500), and degrades to base-only on a corrupt read.</p>
+<summary>Container-restart re-materialization (US-70.5)</summary>
+<p>User-DEK credentials (env-secrets like <code>GH_TOKEN</code>, SSH keys, user LLM providers) survive a main-container restart because every resync-applied revision is persisted verbatim to the batch file (<code>/sandbox-cfg/secrets.json</code>, an emptyDir that survives container restarts and is wiped on pod death); the next boot's materialize re-applies it. The old reload-replay cache (<code>last-reload-secrets.json</code>) was demolished.</p>
 </details>
 <hr />
 <h2 id="storageclass-selection">StorageClass selection<a class="headerlink" href="#storageclass-selection" title="Permanent link">&para;</a></h2>
@@ -3121,7 +3120,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
   </span>
 
     
