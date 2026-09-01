@@ -158,9 +158,14 @@ if (( SCALE > 0 )); then
     # recovery path fired correctly. AC-13 measures resume latency and
     # rev convergence, not resource contention: minimal requests keep
     # the 100-concurrency semantics on the pool's hardware.
+    # Single-quoted YAML scalars: inside the double-quoted shell
+    # assignment, inner double quotes are STRIPPED by bash — the previous
+    # cpuLimit: "1" rendered as the integer 1, which the CRD's
+    # string-typed spec.resources.cpuLimit rejects (pool runs 7+ failed
+    # at the seed step). Single quotes survive the assignment verbatim.
     SCALE_RES="    cpu: 50m
     memory: 128Mi
-    cpuLimit: "1"
+    cpuLimit: '1'
     memoryLimit: 512Mi"
     for ws in "${WSBATCH[@]}"; do
         seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
