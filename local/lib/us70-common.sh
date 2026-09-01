@@ -121,6 +121,9 @@ diagnose_workspace() { # ws
 
 # secrets_converged ws timeout_s — waits until the controller has mirrored a
 # HEALTHY secretsDelivery (spawnedRev present, degradedReason empty).
+# Empty rev + empty reason means the controller has not successfully scraped
+# the pod's healthz yet (or cleared it as unreachable) — under pool-scale
+# load the serial scrape cycle can lag well behind wait_phase Active.
 secrets_converged() {
     local ws="$1" timeout_s="$2" i rev reason
     for ((i = 0; i < timeout_s; i += 3)); do
@@ -132,6 +135,7 @@ secrets_converged() {
         sleep 3
     done
     warn "workspace ${ws} secretsDelivery not healthy (rev='${rev:-<empty>}' reason='${reason:-<empty>}')"
+    diagnose_workspace "${ws}"
     return 1
 }
 

@@ -211,7 +211,7 @@ if (( SCALE > 0 )); then
     done
     for ws in "${WSBATCH[@]}"; do
         wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
-        secrets_converged "${ws}" 120 || die "AC-13: ${ws} pre-suspend unhealthy"
+        secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
     done
 
     ok "suspending ${#WSBATCH[@]} workspaces"
