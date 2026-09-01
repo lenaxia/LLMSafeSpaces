@@ -459,30 +459,17 @@ func translateMessageABI(info json.RawMessage) (*abiv1.Message, error) {
 	return msg, nil
 }
 
-type partInfo struct {
-	ID        string `json:"id"`
-	MessageID string `json:"messageID"`
-	SessionID string `json:"sessionID"`
-	Type      string `json:"type"`
-	Text      string `json:"text"`
-	CallID    string `json:"callID"`
-	Tool      string `json:"tool"`
-	State     *struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
-	} `json:"state"`
-	Input  json.RawMessage `json:"input"`
-	Output json.RawMessage `json:"output"`
-}
-
 // translatePart maps opencode part shapes onto the closed 5-type contract
-// union. Unknown part types ride the Custom valve (Kind
-// "opencode.part.<type>", original payload preserved).
+// union. Decoding goes through ocPart — the same shape normalizer the
+// US-65.8 path uses — so both tool wire shapes (1.18 flat and legacy
+// nested) and the state.time.{start,end} epoch anchors translate
+// identically on both paths. Unknown part types ride the Custom valve
+// (Kind "opencode.part.<type>", original payload preserved).
 func translatePartABI(raw json.RawMessage) (*abiv1.Part, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	var p partInfo
+	var p ocPart
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
@@ -498,10 +485,36 @@ func translatePartABI(raw json.RawMessage) (*abiv1.Part, error) {
 		out.Type = abiv1.PartType_PART_TYPE_REASONING
 		out.Payload = &abiv1.Part_Reasoning{Reasoning: p.Text}
 	case "tool":
+		if p.Tool == nil {
+			return nil, nil
+		}
 		out.Type = abiv1.PartType_PART_TYPE_TOOL
-		tool := &abiv1.ToolPart{CallId: p.CallID, Name: p.Tool, Input: p.Input, Output: p.Output}
-		if p.State != nil {
-			tool.State = &abiv1.ToolState{Status: mapToolStatus(p.State.Status), Error: p.State.Error}
+		input, output := p.Tool.Input, p.Tool.Output
+		if len(input) == 0 || len(output) == 0 {
+			// Some flat-shape versions hoist input/output to the part
+			// level instead of inside state; fall back to them.
+			var hoisted struct {
+				Input  json.RawMessage `json:"input"`
+				Output json.RawMessage `json:"output"`
+			}
+			if json.Unmarshal(raw, &hoisted) == nil {
+				if len(input) == 0 {
+					input = hoisted.Input
+				}
+				if len(output) == 0 {
+					output = hoisted.Output
+				}
+			}
+		}
+		tool := &abiv1.ToolPart{CallId: p.Tool.CallID, Name: p.Tool.Name, Input: input, Output: output}
+		if p.Tool.State != nil {
+			tool.State = &abiv1.ToolState{Status: mapToolStatus(p.Tool.State.Status), Error: p.Tool.State.Error}
+			if p.Tool.State.StartedAt != nil {
+				tool.State.StartedAt = timestamppb.New(*p.Tool.State.StartedAt)
+			}
+			if p.Tool.State.CompletedAt != nil {
+				tool.State.CompletedAt = timestamppb.New(*p.Tool.State.CompletedAt)
+			}
 		}
 		out.Payload = &abiv1.Part_Tool{Tool: tool}
 	default:

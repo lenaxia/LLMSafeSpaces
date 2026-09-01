@@ -18,6 +18,7 @@
  * silent to avoid interfering with the chat UI.
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 const WS_A = "ws-sa-a";   // workspace A — active session
 const WS_B = "ws-sa-b";   // workspace B — unread session
@@ -85,9 +86,9 @@ async function setupBase(page: Page, opts: {
   await page.route(`${API}/workspaces/*/sessions/*/seen`, (r: Route) =>
     r.fulfill({ status: 204, body: "" }));
 
-  // Workspace-scoped SSE — silent keep-alive
-  await page.route(`${API}/workspaces/*/session-events`, (r: Route) =>
-    r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
+  // Contract stream (US-69.10 cutover: ChatPage consumes session state via
+  // /contract-events) — minimal idle snapshot, delivered then held.
+  await mockIdleContractStream(page, `${API}/workspaces/*/contract-events`, SESS_A1);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +112,9 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
     await setupBase(page);
 
     let userSSEFulfill: ((body: string) => void) | null = null;
+    // Read through an indirection: TS control-flow can't see the route
+    // callback's assignment from this scope.
+    const fireUserSSE = (body: string): void => userSSEFulfill?.(body);
     await page.route(`${API}/events`, async (r: Route) => {
       await new Promise<void>((resolve) => {
         userSSEFulfill = (body: string) => {
@@ -124,7 +128,7 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
     await expect(page.getByText("Task Alpha")).toBeVisible({ timeout: 10_000 });
 
     // Emit session.status busy via user SSE
-    userSSEFulfill?.(
+    fireUserSSE(
       `data: ${JSON.stringify({ type: "session.status", workspace_id: WS_A, session_id: SESS_A1, status: "busy" })}\n\n`,
     );
 

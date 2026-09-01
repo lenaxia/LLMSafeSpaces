@@ -18,7 +18,7 @@ const DEFAULT_MAX_RECONNECT_MS = 30_000;
 export interface SSEConnectionConfig {
   url: string;
   headers?: Record<string, string>;
-  onEvent: (data: unknown) => void;
+  onEvent: (data: unknown, eventName?: string) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
   /** Label for wsLog (e.g. "sse" or "user_stream") */
@@ -32,6 +32,11 @@ export interface SSEConnectionConfig {
 
 export interface SSEConnection {
   destroy: () => void;
+  /** Abort the current fetch and reconnect immediately (backoff reset).
+   * For protocol-level resync signals (e.g. the contract stream's named
+   * `resync` event) where waiting out the read timeout would stall the
+   * fold. No-op on a destroyed connection. */
+  reconnect: () => void;
 }
 
 export function createSSEConnection(config: SSEConnectionConfig): SSEConnection {
@@ -52,6 +57,10 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
   let retryDelay = minReconnectMs;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let abortCtrl = new AbortController();
+  // Generation guard: an explicit reconnect() (or a newer scheduled
+  // connect) invalidates older read loops — their teardown must not
+  // schedule a stacked second connection.
+  let generation = 0;
 
   function jitteredDelay(base: number): number {
     // Jitter: [0.5, 1.5] × base — prevents thundering herd
@@ -72,6 +81,7 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
 
   async function connect() {
     if (cancelled) return;
+    const gen = ++generation;
 
     wsLog(`${logPrefix}.connecting`, logId, `url=${url}`);
 
@@ -88,7 +98,7 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
 
       if (!res.ok || !res.body) {
         wsLog(`${logPrefix}.connect_failed`, logId, `http_status=${res.status}`);
-        scheduleReconnect();
+        if (!cancelled && gen === generation) scheduleReconnect();
         return;
       }
 
@@ -131,14 +141,25 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
             // Skip heartbeat comments (bare ":")
             if (block.trim() === ":") continue;
 
+            // Collect the block's event name (if named) and its data
+            // payload — a named event applies only within its block.
+            let eventName: string | undefined;
+            const dataLines: string[] = [];
             for (const line of block.split("\n")) {
-              if (line.startsWith("data: ")) {
-                try {
-                  onEvent(JSON.parse(line.slice(6)));
-                } catch {
-                  // Ignore malformed JSON
-                }
+              if (line.startsWith("event: ")) {
+                eventName = line.slice(7).trim();
+              } else if (line.startsWith("data: ")) {
+                dataLines.push(line.slice(6));
               }
+            }
+            if (dataLines.length === 0) continue;
+
+            try {
+              const parsed = JSON.parse(dataLines.join("\n"));
+              if (eventName !== undefined) onEvent(parsed, eventName);
+              else onEvent(parsed);
+            } catch {
+              // Ignore malformed JSON
             }
           }
         }
@@ -152,11 +173,17 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
       wsLog(`${logPrefix}.error`, logId, `err=${String(err)}`);
     }
 
-    if (!cancelled) {
+    if (!cancelled && gen === generation) {
       wsLog(`${logPrefix}.disconnected`, logId);
       onDisconnect?.();
       scheduleReconnect();
     }
+  }
+
+  function dropConnection() {
+    abortCtrl.abort();
+    abortCtrl = new AbortController();
+    retryDelay = minReconnectMs;
   }
 
   connect();
@@ -167,6 +194,13 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
       if (retryTimer !== null) clearTimeout(retryTimer);
       abortCtrl.abort();
       wsLog(`${logPrefix}.teardown`, logId);
+    },
+    reconnect() {
+      if (cancelled) return;
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      generation++; // invalidate the current read loop's teardown
+      dropConnection();
+      connect();
     },
   };
 }

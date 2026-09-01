@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 async function setupMockWorkspace(page: Page, workspaceId: string) {
   // Intercept workspace list to return one workspace
@@ -44,6 +45,9 @@ async function setupMockWorkspace(page: Page, workspaceId: string) {
       body: `data: ${JSON.stringify({ type: "workspace.phase", phase: "Active" })}\n\n`,
     });
   });
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await mockIdleContractStream(page, `**/api/v1/workspaces/${workspaceId}/contract-events`, "sess-auto-1");
 }
 
 async function loginAs(page: import("@playwright/test").Page, username: string, password: string) {

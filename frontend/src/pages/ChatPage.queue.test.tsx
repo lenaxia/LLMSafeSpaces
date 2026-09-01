@@ -2,25 +2,31 @@
  * Integration tests for ChatPage message queue (backend-backed).
  *
  * Messages are enqueued via POST /queue (Redis-backed). The backend drains
- * the queue on session idle and publishes queue.update SSE events (sent/error).
- * The frontend manages display state (pills) locally, synced via SSE.
+ * the queue on session idle and publishes queue.update events on the
+ * PLATFORM stream (workspace SSE); session lifecycle transitions arrive as
+ * ABI contract events via useContractStream (US-69.10 hard cutover).
+ *
+ * A queued message's pill clears via queue.update "sent"/"delivering"
+ * events (removeById + refreshQueue) — the queued-echo strip is deleted.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor, act , fireEvent } from "@testing-library/react";
+import { screen, waitFor, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { create } from "@bufbuild/protobuf";
 import { ThemeProvider } from "../providers/ThemeProvider";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
+import type { Event } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import { EventSchema, EventType, MessageSchema, MessageType, PartSchema, PartType, SessionStatus } from "../abi/llmsafespaces/abi/v1/contract_pb";
 
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
     getStatus: vi.fn(),
     activate: vi.fn(),
     abortSession: vi.fn(),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
     list: vi.fn().mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } }),
     renameSession: vi.fn(),
     renameWorkspace: vi.fn().mockResolvedValue({}),
@@ -28,6 +34,9 @@ vi.mock("../api/workspaces", () => ({
     getSessions: vi.fn().mockResolvedValue([]),
   },
 }));
+
+// Busy state for the mocked provider (ChatPage's queue gate and the Stop
+// button read it; contract SESSION_STATUS events no longer drive it here).
 const mockBusyState = vi.hoisted(() => {
   let val = false;
   const listeners = new Set<(v: boolean) => void>();
@@ -81,15 +90,32 @@ vi.mock("../api/messages", () => ({
 }));
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 
-let capturedSSEHandler: ((data: unknown) => void) | null = null;
+// Platform stream: queue.update / workspace.alert / workspace.phase live here.
+let capturedPlatformHandler: ((data: unknown) => void) | null = null;
 vi.mock("../hooks/useEventStream", () => ({
   useEventStream: vi.fn((_workspaceId: string | undefined, handler: (data: unknown) => void) => {
-    capturedSSEHandler = handler;
+    capturedPlatformHandler = handler;
+  }),
+}));
+
+// Contract stream: session lifecycle events (SESSION_STATUS IDLE etc.).
+let capturedContractOptions: {
+  onEvent: (event: Event, seq: bigint) => void;
+  onSnapshot: (state: unknown) => void;
+  onReconnect: () => void;
+} | null = null;
+let contractState: { seq: bigint; sessions: Map<string, unknown> };
+vi.mock("../hooks/useContractStream", () => ({
+  useContractStream: vi.fn((_workspaceId: string | undefined, options: Record<string, unknown>) => {
+    capturedContractOptions = options as typeof capturedContractOptions;
+    return contractState;
   }),
 }));
 
 import { workspacesApi } from "../api/workspaces";
 import { messagesApi } from "../api/messages";
+
+// --- Helpers ---
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -116,36 +142,89 @@ function renderChat(qc: QueryClient, path: string) {
   );
 }
 
-function sendSSE(event: Record<string, unknown>) {
-  if (event.type === "session.status") {
-    mockBusyState.set(event.status === "busy");
-  }
-  act(() => { capturedSSEHandler?.(event); });
+function sendPlatform(event: Record<string, unknown>) {
+  act(() => { capturedPlatformHandler?.(event); });
 }
+
+function setBusy(v: boolean) {
+  act(() => { mockBusyState.set(v); });
+}
+
+function abiEvent(partial: Partial<Event>): Event {
+  return create(EventSchema, { sessionId: "ses_1", ...partial } as Parameters<typeof create>[1]);
+}
+
+function sendContractEvent(evt: Event, seq: bigint = 1n) {
+  act(() => { capturedContractOptions?.onEvent(evt, seq); });
+}
+
+function sessionStatusEvent(sessionId: string, status: SessionStatus): Event {
+  return abiEvent({ type: EventType.SESSION_STATUS, sessionId, status });
+}
+
+function messageStartUser(messageId: string): Event {
+  return abiEvent({
+    type: EventType.MESSAGE_START,
+    messageId,
+    message: create(MessageSchema, { id: messageId, sessionId: "ses_1", type: MessageType.USER }),
+  });
+}
+
+function textPartEnd(partId: string, text: string, messageId?: string): Event {
+  return abiEvent({
+    type: EventType.PART_END,
+    partId,
+    messageId,
+    part: create(PartSchema, { id: partId, type: PartType.TEXT, payload: { case: "text", value: text } }),
+  });
+}
+
+function textDelta(partId: string, delta: string, messageId?: string): Event {
+  return abiEvent({ type: EventType.PART_DELTA, partId, messageId, delta });
+}
+
+/** All agent-side bubble text currently rendered. */
+function agentBubbleText() {
+  return Array.from(document.querySelectorAll(".justify-start")).map((el) => el.textContent ?? "").join("\n");
+}
+
+async function renderReady(qc = makeQueryClient(), path = "/chat/ws-1/ses_1") {
+  const utils = renderChat(qc, path);
+  await waitFor(() => {
+    expect(capturedPlatformHandler).not.toBeNull();
+    expect(capturedContractOptions).not.toBeNull();
+    expect(document.querySelector("textarea")).not.toBeDisabled();
+  });
+  return utils;
+}
+
+// --- Tests ---
 
 describe("ChatPage message queue (backend-backed)", () => {
   beforeEach(() => {
-    capturedSSEHandler = null;
+    capturedPlatformHandler = null;
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
     mockBusyState.reset();
     vi.clearAllMocks();
-    // resetAllMocks is needed because some tests use mockImplementation
-    // (not mockReturnValue), which clearAllMocks doesn't reset.
+    // Re-establish implementations: clearAllMocks keeps them, but tests
+    // that override getQueue/queueMessage with mockImplementation must not
+    // leak into later tests.
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
-    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_q_test" });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
     (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it("sends immediately when not busy", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
+    await renderReady();
     await user.type(document.querySelector("textarea")!, "hello");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => {
       expect(messagesApi.sendAsync).toHaveBeenCalledWith("ws-1", "ses_1", {
         parts: [{ type: "text", text: "hello" }],
@@ -154,25 +233,18 @@ describe("ChatPage message queue (backend-backed)", () => {
     });
   });
 
-  it("textarea stays enabled during streaming", async () => {
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+  it("textarea stays enabled while the session is busy", async () => {
+    await renderReady();
+    setBusy(true);
     expect(document.querySelector("textarea")).not.toBeDisabled();
   });
 
   it("holds message in queue when busy — calls queueMessage not sendAsync", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "queued msg");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => {
       expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "queued msg", [] as string[]);
     });
@@ -181,21 +253,12 @@ describe("ChatPage message queue (backend-backed)", () => {
     expect(messagesApi.sendAsync).not.toHaveBeenCalled();
   });
 
-  it("holds message in queue when queue is non-empty, even after session goes idle", async () => {
-    // Regression: without checking queue.queuedMessages.length, a direct
-    // send races ahead of the draining queue when the session transitions
-    // busy→idle. opencode assigns the direct send an earlier
-    // info.time.created than the still-draining queued message, so on
-    // reload selectChronological places the queued message AFTER the
-    // direct send — out of FIFO order.
-    //
-    // The race window is: idle event arrives → reconcileOnIdle calls
-    // refreshQueue → GET /queue returns [A] (server hasn't drained yet)
-    // → pill stays visible → user clicks send for B. In this window,
-    // isSessionBusy=false and streaming=false, so without the fix,
-    // handleSend would route to doSendNow (direct send).
+  it("holds message in queue when queue is non-empty, even after the session goes idle", async () => {
+    // Regression: without checking queue.queuedMessages for pending
+    // entries, a direct send races ahead of the draining queue when the
+    // session transitions busy→idle (FIFO violation on reload).
     const user = userEvent.setup();
-    // Stateful getQueue mock: returns empty until user enqueues A, then
+    // Stateful getQueue: returns empty until the user enqueues A, then
     // returns [A] to simulate the drain window (Redis still holds A).
     let userEnqueuedA = false;
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
@@ -210,27 +273,26 @@ describe("ChatPage message queue (backend-backed)", () => {
         }] : [],
       });
     });
-    // queueMessage flips the flag so subsequent refreshQueue calls return [A]
     (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
       userEnqueuedA = true;
       return Promise.resolve({ messageID: "msg_q_test" });
     });
 
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+    await renderReady();
 
     // 1. Session busy → enqueue message A
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "message A");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    // 2. Session goes idle — server-side drain starts but Redis still holds A.
-    //    refreshQueue (triggered by reconcileOnIdle) keeps the pill visible
-    //    because getQueue now returns [A].
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "idle" });
+    // 2. Session goes idle (contract SESSION_STATUS) — the server-side
+    //    drain starts but Redis still holds A; the refresh triggered by
+    //    reconcileOnIdle keeps the pill visible.
+    setBusy(false);
+    sendContractEvent(sessionStatusEvent("ses_1", SessionStatus.IDLE));
 
-    // 3. User sends message B during the drain window.
+    // 3. User sends message B during the drain window → queue path.
     await user.type(document.querySelector("textarea")!, "message B");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
@@ -240,38 +302,54 @@ describe("ChatPage message queue (backend-backed)", () => {
     expect(messagesApi.sendAsync).not.toHaveBeenCalled();
   });
 
-  it("queue pill is removed when backend sends (queue.update sent event)", async () => {
+  it("a queued message's pill clears via queue.update sent (removeById + refresh)", async () => {
+    // The sent announcement carries the messageID: the targeted removal is
+    // instant and the follow-up refresh is authoritative catch-up (the GET
+    // can transiently race the server-side LRem).
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+    let enqueued = false;
+    let sentAnnounced = false;
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      return Promise.resolve({
+        messages: enqueued && !sentAnnounced ? [{
+          id: "msg_q_test",
+          text: "queued msg",
+          session_id: "ses_1",
+          status: "pending",
+        }] : [],
+      });
+    });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      enqueued = true;
+      return Promise.resolve({ messageID: "msg_q_test" });
+    });
 
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "queued msg");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "sent", messageID: "msg_q_test" } });
+    sentAnnounced = true;
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "sent", messageID: "msg_q_test" } });
 
     await waitFor(() => {
       expect(screen.queryByText(/queued/)).not.toBeInTheDocument();
     });
+    // ... and stays cleared once the refresh lands.
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(screen.queryByText(/queued/)).not.toBeInTheDocument();
   });
 
   it("queue pill shows error on queue.update error event", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "will fail");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "send failed" } });
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "send failed" } });
 
     await waitFor(() => {
       expect(screen.getByLabelText("Retry")).toBeInTheDocument();
@@ -279,68 +357,32 @@ describe("ChatPage message queue (backend-backed)", () => {
     });
   });
 
-  it("abort clears all queue pills", async () => {
+  it("stop button is shown while the session is busy", async () => {
+    await renderReady();
+    setBusy(true);
+    await waitFor(() => expect(screen.getByLabelText("Stop generating")).toBeInTheDocument());
+  });
+
+  it("abort click calls abortSession", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "first");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await user.type(document.querySelector("textarea")!, "second");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
-    await waitFor(() => {
-      expect(screen.getByText("2 messages queued")).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText("2 messages queued")).toBeInTheDocument());
 
     await user.click(screen.getByLabelText("Stop generating"));
-
     expect(workspacesApi.abortSession).toHaveBeenCalledWith("ws-1", "ses_1");
-  });
-
-  it("stop button is shown during streaming", async () => {
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
-    await waitFor(() => expect(screen.getByLabelText("Stop generating")).toBeInTheDocument());
-  });
-
-  it("dismiss removes error pill", async () => {
-    const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
-    await user.type(document.querySelector("textarea")!, "msg");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-
-    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
-
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "fail" } });
-
-    await waitFor(() => expect(screen.getByLabelText("Dismiss")).toBeInTheDocument());
-    await user.click(screen.getByLabelText("Dismiss"));
-
-    await waitFor(() => {
-      expect(screen.queryByLabelText("Dismiss")).not.toBeInTheDocument();
-    });
   });
 
   it("abort deletes queued messages from Redis via clearAll", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "queued msg");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
     await user.click(screen.getByLabelText("Stop generating"));
@@ -350,23 +392,37 @@ describe("ChatPage message queue (backend-backed)", () => {
     });
   });
 
-  it("queue.update dismissed event removes error pill via removeById", async () => {
+  it("dismiss removes the error pill and deletes server-side", async () => {
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-
-    await user.type(document.querySelector("textarea")!, "will error");
+    await renderReady();
+    setBusy(true);
+    await user.type(document.querySelector("textarea")!, "msg");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "failed" } });
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "fail" } });
 
     await waitFor(() => expect(screen.getByLabelText("Dismiss")).toBeInTheDocument());
+    await user.click(screen.getByLabelText("Dismiss"));
 
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "dismissed", messageID: "msg_q_test" } });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Dismiss")).not.toBeInTheDocument();
+    });
+    expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "msg_q_test");
+  });
+
+  it("queue.update dismissed event removes the error pill via removeById", async () => {
+    const user = userEvent.setup();
+    await renderReady();
+    setBusy(true);
+    await user.type(document.querySelector("textarea")!, "will error");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
+
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "error", messageID: "msg_q_test", error: "failed" } });
+    await waitFor(() => expect(screen.getByLabelText("Dismiss")).toBeInTheDocument());
+
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "dismissed", messageID: "msg_q_test" } });
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Dismiss")).not.toBeInTheDocument();
@@ -375,14 +431,26 @@ describe("ChatPage message queue (backend-backed)", () => {
 });
 
 // D6 (#998): the hung-session alert banner. workspace.alert/session_hung
-// renders the amber banner; session.status=idle for that session
-// auto-clears it (the hang resolved); dismissal works.
+// (platform stream) renders the amber banner; a contract SESSION_STATUS
+// idle for that session auto-clears it (the hang resolved); dismissal works.
 describe("D6 hung-session alert banner (#998)", () => {
-  it("renders the banner on workspace.alert and auto-clears on idle", async () => {
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+  beforeEach(() => {
+    capturedPlatformHandler = null;
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
+    mockBusyState.reset();
+    vi.clearAllMocks();
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
+  });
 
-    sendSSE({
+  it("renders the banner on workspace.alert and auto-clears on contract idle", async () => {
+    await renderReady();
+
+    sendPlatform({
       type: "workspace.alert",
       workspace_id: "ws-1",
       session_id: "ses_1",
@@ -393,18 +461,17 @@ describe("D6 hung-session alert banner (#998)", () => {
     const banner = await screen.findByText(/busy for 16 min without/i);
     expect(banner).toBeInTheDocument();
 
-    // The hang resolves: idle for the same session clears it.
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "idle" });
+    // The hang resolves: contract SESSION_STATUS idle for the same session.
+    sendContractEvent(sessionStatusEvent("ses_1", SessionStatus.IDLE));
     await waitFor(() => {
       expect(screen.queryByText(/busy for 16 min without/i)).not.toBeInTheDocument();
     });
   });
 
   it("banner is dismissable", async () => {
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+    await renderReady();
 
-    sendSSE({
+    sendPlatform({
       type: "workspace.alert",
       workspace_id: "ws-1",
       session_id: "ses_1",
@@ -422,30 +489,33 @@ describe("D6 hung-session alert banner (#998)", () => {
 
 describe("queue-path regressions (suspend/resume casualties)", () => {
   beforeEach(() => {
-    capturedSSEHandler = null;
+    capturedPlatformHandler = null;
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
     mockBusyState.reset();
     vi.clearAllMocks();
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
-    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_q_test" });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
     (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (workspacesApi.getSessions as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
   it("parked ERROR entries do not force the queue path — direct send still used", async () => {
     // The suspend/resume casualty: entries parked as "delivery
     // unverifiable" stay in the queue forever until Retry/Dismiss.
     // Counting them as "queue busy" permanently reroutes every new send
-    // through enqueue (which skips the user-echo strip and mis-renders).
+    // through enqueue (which skips the direct-send flow).
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "q-err-1", text: "old stranded message", status: "error", lastError: "delivery unverifiable: agent unreachable", session_id: "ses_1" },
       ],
     });
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+    await renderReady();
     // Wait for the queue refresh to land the error entry in state.
     await waitFor(() => expect(screen.getByText("old stranded message")).toBeInTheDocument());
 
@@ -461,68 +531,11 @@ describe("queue-path regressions (suspend/resume casualties)", () => {
     expect(messagesApi.queueMessage).not.toHaveBeenCalled();
   });
 
-  it("user echo of a QUEUED message is NOT rendered as an assistant bubble", async () => {
-    // Busy → send → enqueue. Then the outbox delivers later: the agent
-    // echoes the user turn as a part.end text event. Without echo
-    // tracking on the queue path, that text lands in the assistant
-    // streaming buffer (ChatView hardcodes role=assistant).
-    const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-    await user.type(document.querySelector("textarea")!, "queued hello");
-    await user.click(screen.getByRole("button", { name: "Send message" }));
-    await waitFor(() => expect(messagesApi.queueMessage).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
-
-    // Agent reachable again; the outbox delivers the queued message and
-    // a NEW turn starts. The turn echoes the user text first, then the
-    // assistant answer streams — both while the stream is live.
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-    sendSSE({
-      type: "session.event",
-      session_id: "ses_1",
-      data: {
-        type: "part.end",
-        sessionId: "ses_1",
-        messageId: "msg_user_echo",
-        part: { id: "pt_1", type: "text", text: "queued hello" },
-      },
-    });
-    sendSSE({
-      type: "session.event",
-      session_id: "ses_1",
-      data: {
-        type: "part.end",
-        sessionId: "ses_1",
-        messageId: "msg_reply",
-        part: { id: "pt_2", type: "text", text: "the answer" },
-      },
-    });
-
-    // Sanity: the assistant stream IS rendering (the answer shows on
-    // the agent side) — proving the echo check below is not vacuous.
-    await waitFor(() => {
-      const bubbles = Array.from(document.querySelectorAll(".justify-start"));
-      expect(bubbles.some((el) => el.textContent?.includes("the answer"))).toBe(true);
-    });
-    // The user echo must NOT appear in any agent-side bubble.
-    const agentBubbles = Array.from(document.querySelectorAll(".justify-start"));
-    const leak = agentBubbles.find((el) => el.textContent?.includes("queued hello"));
-    expect(leak).toBeUndefined();
-    // The echo also clears the pending pill: the agent owns the message
-    // now, it is in the conversation, not the queue.
-    await waitFor(() => {
-      expect(screen.queryByText("1 message queued")).not.toBeInTheDocument();
-    });
-  });
-
   it("a delivering entry is invisible — the pill clears when the worker picks it up", async () => {
     // The outbox delivery send is synchronous turn-to-completion, so an
     // entry stays staged as delivering for the WHOLE multi-minute turn.
-    // The pill must not render "Sending…" for that window (TUI parity:
-    // once the agent owns the message it is in the conversation).
+    // The pill must not render "queued" for that window (TUI parity: once
+    // the agent owns the message it is in the conversation).
     let enqueued = false;
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
       return Promise.resolve({
@@ -537,77 +550,59 @@ describe("queue-path regressions (suspend/resume casualties)", () => {
     });
 
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    await renderReady();
+    setBusy(true);
     await user.type(document.querySelector("textarea")!, "long turn message");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    // The worker stages the entry out (POST in flight) and the bridge
-    // announces it; the refresh that follows must drop the pill even
-    // though GET /queue still REPORTS the delivering entry.
-    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "delivering", messageID: "msg_q_test" } });
+    // The worker stages the entry out (POST in flight) and the platform
+    // stream announces it; the refresh that follows must drop the pill
+    // even though GET /queue still REPORTS the delivering entry.
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "delivering", messageID: "msg_q_test" } });
 
     await waitFor(() => {
       expect(screen.queryByText("1 message queued")).not.toBeInTheDocument();
     });
     expect(screen.queryByText("Sending…")).not.toBeInTheDocument();
   });
-});
 
-describe("V2 delivery: live streaming through the session.next sequence (#1112)", () => {
-  beforeEach(() => {
-    capturedSSEHandler = null;
-    mockBusyState.reset();
-    vi.clearAllMocks();
-    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
-    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
-    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-  });
-
-  it("streams assistant text incrementally — not only at block end", async () => {
-    // Regression for the #1110 post-merge gap: the prompted user echo
-    // leaves the delta buffer in "user-echo" (discard) mode; without
-    // the text.started priming part.end, deltas were dropped and the
-    // text appeared only at text.ended.
+  it("queued send: user echo dropped by the MESSAGE_START gate; assistant deltas stream incrementally", async () => {
+    // Regression for the #1110/#1112 live-streaming gap, driven through
+    // ABI contract events while a message sits in the queue: the user
+    // echo of the queued text must not render agent-side (MESSAGE_START
+    // USER primes the gate), deltas render incrementally (not only at
+    // block end), the final snapshot replaces without duplicating, and
+    // the pill clears via queue.update (the queued-echo strip is gone).
     const user = userEvent.setup();
-    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
-    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
-
-    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
-    await user.type(document.querySelector("textarea")!, "stream me live");
+    await renderReady();
+    setBusy(true);
+    await user.type(document.querySelector("textarea")!, "queued hello");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(messagesApi.queueMessage).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
-    const agentBubbleText = () =>
-      Array.from(document.querySelectorAll(".justify-start")).map((el) => el.textContent ?? "").join("\n");
-
-    // The translated V2 sequence: user echo → priming (empty part.end)
-    // → deltas → final snapshot. All as session.event contract events.
-    const ce = (data: unknown) =>
-      sendSSE({ type: "session.event", session_id: "ses_1", data });
-
-    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_u", part: { type: "text", text: "stream me live" } });
-    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", part: { id: "text-0", type: "text", text: "" } });
-
-    ce({ type: "part.delta", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", delta: "Hello " });
+    // The outbox delivers; the harness echoes the user's turn first...
+    sendContractEvent(messageStartUser("msg_u"));
+    sendContractEvent(textPartEnd("up_1", "queued hello", "msg_u"));
+    // ...then the assistant streams: priming snapshot, deltas, final.
+    sendContractEvent(textPartEnd("text-0", "", "msg_a"));
+    sendContractEvent(textDelta("text-0", "Hello ", "msg_a"));
     await waitFor(() => expect(agentBubbleText()).toContain("Hello"));
 
-    ce({ type: "part.delta", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", delta: "world" });
+    sendContractEvent(textDelta("text-0", "world", "msg_a"));
     await waitFor(() => expect(agentBubbleText()).toContain("Hello world"));
 
     // The final snapshot replaces the buffer without duplicating.
-    ce({ type: "part.end", sessionId: "ses_1", messageId: "msg_a", partId: "text-0", part: { id: "text-0", type: "text", text: "Hello world" } });
+    sendContractEvent(textPartEnd("text-0", "Hello world", "msg_a"));
     await waitFor(() => expect(agentBubbleText().match(/Hello world/g)?.length).toBe(1));
 
-    // The user echo never renders agent-side, and the pill cleared.
-    expect(agentBubbleText()).not.toContain("stream me live");
+    // The user echo never rendered agent-side.
+    expect(agentBubbleText()).not.toContain("queued hello");
+
+    // The pill clears via the platform queue.update announcement.
+    sendPlatform({ type: "queue.update", session_id: "ses_1", data: { event: "sent", messageID: "msg_q_test" } });
     await waitFor(() => expect(screen.queryByText("1 message queued")).not.toBeInTheDocument());
   });
 });
+

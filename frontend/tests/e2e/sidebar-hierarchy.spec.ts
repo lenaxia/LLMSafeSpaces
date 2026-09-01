@@ -10,6 +10,7 @@
  */
 import { test, expect } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 const WORKSPACE_ID = "ws-hierarchy-e2e";
 const ROOT_SESSION = "ses_root";
@@ -48,9 +49,12 @@ async function setupAPIMocks(page: Page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
   // SSE: keep alive, send nothing.
-  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route) => {
     await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" });
   });
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, ROOT_SESSION);
 }
 
 test.describe("Sidebar hierarchy", () => {

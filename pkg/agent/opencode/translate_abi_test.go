@@ -135,6 +135,25 @@ func TestTranslateABI_PartVariants(t *testing.T) {
 				assert.NotNil(t, tool.Input)
 				assert.JSONEq(t, `"ok"`, string(tool.Output), "output preserved as raw JSON")
 			}},
+		{"tool flat-shape time anchors the elapsed badge (#892)", `{"id":"p5","type":"tool","callID":"call2","tool":"bash","state":{"status":"running","time":{"start":1756684800123,"end":0}},"messageID":"m1","sessionID":"s1"}`, abiv1.PartType_PART_TYPE_TOOL,
+			func(t *testing.T, p *abiv1.Part) {
+				tool := p.GetTool()
+				require.NotNil(t, tool)
+				require.NotNil(t, tool.State)
+				require.NotNil(t, tool.State.StartedAt, "state.time.start (epoch millis) must populate started_at — the live elapsed badge anchors on it")
+				assert.Equal(t, int64(1756684800), tool.State.StartedAt.AsTime().Unix())
+				assert.Equal(t, 123000000, tool.State.StartedAt.AsTime().Nanosecond())
+			}},
+		{"tool legacy nested shape still translates", `{"id":"p6","type":"tool","tool":{"name":"edit","callID":"call3","state":{"status":"completed","startedAt":"2026-08-31T12:00:00Z"}},"messageID":"m1","sessionID":"s1"}`, abiv1.PartType_PART_TYPE_TOOL,
+			func(t *testing.T, p *abiv1.Part) {
+				tool := p.GetTool()
+				require.NotNil(t, tool)
+				assert.Equal(t, "edit", tool.Name)
+				assert.Equal(t, "call3", tool.CallId)
+				require.NotNil(t, tool.State)
+				assert.Equal(t, abiv1.ToolStatus_TOOL_STATUS_COMPLETED, tool.State.Status)
+				assert.Equal(t, int64(1788177600), tool.State.StartedAt.AsTime().Unix())
+			}},
 		{"unknown_part_custom_valve", `{"id":"p4","type":"sonic-boom","weird":true,"messageID":"m1","sessionID":"s1"}`, abiv1.PartType_PART_TYPE_CUSTOM,
 			func(t *testing.T, p *abiv1.Part) {
 				c := p.GetCustom()

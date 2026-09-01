@@ -1,78 +1,47 @@
 /**
- * Regression tests for the "just-sent user message vanishes from chat" bug.
+ * Regression tests for the "just-sent user message vanishes from chat"
+ * bug (#447) — post US-69.10 hard cutover framing.
  *
  * Symptom (observed in production, chat.safespaces.dev session
  * ses_0ee4e1e45ffeKs0bu7oNQTnKLD): after the user sends a message, the
  * assistant receives it and starts responding, but the user's own bubble
- * never appears in the rendered chat list (it is missing from the DOM, not
- * merely below the scroll fold — the rendered `role="log"` element had no
- * trailing user bubble).
+ * never appears in the rendered chat list.
  *
- * Suspected root cause: `reconcileOnIdle` (ChatPage.tsx) clears
- * `localMessages` whenever its refetched history has any messages
- * (`if (msgs.length > 0) setLocalMessages([])`). This fires from two
- * triggers — `session.status=idle` SSE and `handleSSEReconnect` (issue 440).
- * If either fires after `doSendNow` appended the optimistic user message
- * but before opencode's GET /message returns that message back, the
- * optimistic bubble is wiped while history is still stale.
+ * Root cause: `reconcileOnIdle` (ChatPage.tsx) cleared ALL optimistic
+ * localMessages whenever its refetched history had any messages. It
+ * fires from two triggers — a contract SESSION_STATUS IDLE event and a
+ * contract-stream reconnect (issue 440). If either fires after
+ * doSendNow appended the optimistic user message but before opencode's
+ * history returns that message back, the optimistic bubble was wiped
+ * while history was still stale.
  *
- * These tests assert the user's own outgoing bubble must remain visible
- * across both triggers, even when the refetched history does not yet
- * include the just-sent message.
+ * The fix: reconcileOnIdle only drops optimistic messages whose
+ * messageIdentityKey (role + manifest-stripped text) is present in the
+ * refetched history — the server has demonstrably caught up with those.
+ *
+ * These tests assert the user's own outgoing bubble remains visible
+ * across both triggers when the refetched history does not yet include
+ * the just-sent message, and that it is safely de-duplicated when it
+ * does. Session-idle is driven by contract SESSION_STATUS events through
+ * the mocked useContractStream (the old SSE status dialect is deleted).
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, waitFor, act, screen } from "@testing-library/react";
+import { render, waitFor, act, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
-import type { WorkspaceStreamEvent, SessionStatusEvent } from "../api/types";
+import { create } from "@bufbuild/protobuf";
+import {
+  EventSchema,
+  EventType,
+  SessionStatus,
+} from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { Event } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { SessionSnapshot } from "../abi/llmsafespaces/abi/v1/abi_pb";
 
-// --- Mocks (mirroring ChatPage.reconnect.test.tsx for consistency) ---
-
-const mockBusyState = vi.hoisted(() => {
-  let val = false;
-  const listeners = new Set<(v: boolean) => void>();
-  return {
-    get: () => val,
-    set: (v: boolean) => { val = v; listeners.forEach((l) => l(v)); },
-    subscribe: (l: (v: boolean) => void) => { listeners.add(l); },
-    unsubscribe: (l: (v: boolean) => void) => { listeners.delete(l); },
-    reset: () => { val = false; listeners.clear(); },
-  };
-});
-
-vi.mock("../providers/SessionActivityProvider", async () => {
-  const { useState, useEffect } = await vi.importActual<typeof import("react")>("react");
-  return {
-    useClearPendingUnread: () => () => {},
-    useIsSessionBusy: () => {
-      const [val, setVal] = useState(mockBusyState.get());
-      useEffect(() => {
-        mockBusyState.subscribe(setVal);
-        return () => { mockBusyState.unsubscribe(setVal); };
-      }, []);
-      return val;
-    },
-    useIsSessionUnread: () => false,
-    useWorkspaceBusyCount: () => 0,
-    useWorkspaceHung: () => false,
-    useIsSessionPendingAction: () => false,
-    useSessionPendingActions: () => new Set<string>(),
-    useAddPendingAction: () => () => {},
-    useRemovePendingAction: () => () => {},
-    useAddPendingQuestion: () => () => {},
-    useAddPendingPermission: () => () => {},
-    usePendingQuestionsForSession: () => [],
-    usePendingPermissionsForSession: () => [],
-    useClearSessionPendingPrompts: () => () => {},
-    useWorkspaceInputSnapshot: () => undefined,
-    useSessionStatus: () => "idle",
-    resolveSessionStatus: () => "idle",
-    SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  };
-});
+// --- Mocks (mirroring ChatPage.sse.test.tsx, the reference pattern) ---
 
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
@@ -83,9 +52,27 @@ vi.mock("../api/workspaces", () => ({
     renameSession: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
-    abortSession: vi.fn(),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
+    abortSession: vi.fn().mockResolvedValue(undefined),
   },
+}));
+
+vi.mock("../providers/SessionActivityProvider", () => ({
+  useClearPendingUnread: () => () => {},
+  useIsSessionBusy: () => false,
+  useIsSessionUnread: () => false,
+  useWorkspaceBusyCount: () => 0,
+  useWorkspaceHung: () => false,
+  useIsSessionPendingAction: () => false,
+  useSessionPendingActions: () => new Set<string>(),
+  useAddPendingAction: () => () => {},
+  useRemovePendingAction: () => () => {},
+  useAddPendingQuestion: () => () => {},
+  useAddPendingPermission: () => () => {},
+  usePendingQuestionsForSession: () => [],
+  usePendingPermissionsForSession: () => [],
+  useClearSessionPendingPrompts: () => () => {},
+  useWorkspaceInputSnapshot: () => undefined,
+  SessionActivityProvider: ({ children }: { children: any }) => <>{children}</>,
 }));
 
 vi.mock("../api/messages", () => {
@@ -107,13 +94,23 @@ vi.mock("../api/messages", () => {
 
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 
-// Capture SSE handler + onReconnect from useEventStream
-let capturedSSEHandler: ((data: unknown) => void) | null = null;
-let capturedOnReconnect: (() => void) | null = null;
+// Platform stream — mocked inert; it carries platform events only after
+// the cutover.
 vi.mock("../hooks/useEventStream", () => ({
-  useEventStream: vi.fn((_workspaceId: string | undefined, handler: (data: unknown) => void, options?: { onReconnect?: () => void }) => {
-    capturedSSEHandler = handler;
-    capturedOnReconnect = options?.onReconnect ?? null;
+  useEventStream: vi.fn(),
+}));
+
+// Contract stream — captured options + controllable fold state.
+let capturedContractOptions: {
+  onEvent: (event: Event, seq: bigint) => void;
+  onSnapshot: (state: { seq: bigint; sessions: ReadonlyMap<string, SessionSnapshot> }) => void;
+  onReconnect: () => void;
+} | null = null;
+let contractState: { seq: bigint; sessions: Map<string, SessionSnapshot> };
+vi.mock("../hooks/useContractStream", () => ({
+  useContractStream: vi.fn((_workspaceId: string | undefined, options: Record<string, unknown>) => {
+    capturedContractOptions = options as typeof capturedContractOptions;
+    return contractState;
   }),
 }));
 
@@ -143,6 +140,7 @@ vi.mock("../components/chat/ChatView", () => ({
   },
 }));
 
+import { workspacesApi } from "../api/workspaces";
 import { messagesApi } from "../api/messages";
 
 // --- Helpers ---
@@ -167,15 +165,21 @@ function renderChat(qc: QueryClient, path: string) {
   );
 }
 
-function sendSSEEvent(event: WorkspaceStreamEvent) {
-  if (event.type === "session.status") {
-    mockBusyState.set(event.status === "busy");
-  }
-  act(() => { capturedSSEHandler?.(event); });
+function sendContractEvent(evt: Event, seq: bigint = 1n) {
+  act(() => { capturedContractOptions?.onEvent(evt, seq); });
 }
 
-function triggerReconnect() {
-  act(() => { capturedOnReconnect?.(); });
+function triggerContractReconnect() {
+  act(() => { capturedContractOptions?.onReconnect(); });
+}
+
+/** Contract SESSION_STATUS event for the viewed session. */
+function sessionStatusEvent(sessionId: string, status: SessionStatus): Event {
+  return create(EventSchema, {
+    sessionId,
+    type: EventType.SESSION_STATUS,
+    status,
+  } as Parameters<typeof create>[1]);
 }
 
 function getRenderedMessages(): Array<{ id: string; role: string; parts: Array<{ type: string; text?: string }> }> {
@@ -183,169 +187,122 @@ function getRenderedMessages(): Array<{ id: string; role: string; parts: Array<{
   return JSON.parse(el.getAttribute("data-messages") || "[]");
 }
 
-function makeSessionStatusEvent(sessionId: string, status: "idle" | "busy"): SessionStatusEvent {
-  return { type: "session.status", session_id: sessionId, status };
+function userTexts(): string[] {
+  return getRenderedMessages()
+    .filter((m) => m.role === "user")
+    .flatMap((m) => m.parts.map((p) => p.text))
+    .filter((t): t is string => typeof t === "string");
+}
+
+const priorTurn = [
+  { id: "msg-prior-user", role: "user", parts: [{ type: "text", text: "prior" }] },
+  { id: "msg-prior-asst", role: "assistant", parts: [{ type: "text", text: "prior reply" }] },
+];
+
+async function sendText(text: string) {
+  // Wait for ChatView to be mounted (the initial history load flips the
+  // spinner → ChatView branch; a textarea grabbed before that is replaced
+  // by a fresh uncontrolled node with an empty value).
+  await screen.findByTestId("chat-view");
+  const textarea = screen.getByRole("textbox");
+  await waitFor(() => expect(textarea).not.toBeDisabled());
+  await userEvent.type(textarea, text);
+  // Re-query: async query resolution can re-render ChatView between the
+  // type and the keypress, detaching the earlier node.
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+  await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
 }
 
 // --- Tests ---
 
 describe("Optimistic user message survival across reconcile", () => {
   beforeEach(() => {
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
     vi.clearAllMocks();
-    mockBusyState.reset();
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
-  it("BUG REPRO — SSE reconnect mid-send wipes the just-sent user bubble before history catches up", async () => {
-    // Scenario: a prior turn exists in history (msg-prior-user/asst). The user
-    // sends a NEW message ("hello"). Network blips → handleSSEReconnect fires
-    // → reconcileOnIdle refetches. Opencode hasn't persisted the new user
-    // message yet, so history returns the prior turn only. reconcileOnIdle
-    // sees msgs.length > 0 and clears localMessages. The just-sent "hello"
-    // bubble vanishes from the rendered chat list — exactly the production
-    // symptom.
-    const user = userEvent.setup();
+  it("BUG REPRO — contract-stream reconnect mid-send must not wipe the just-sent user bubble before history catches up", async () => {
     const qc = makeQueryClient();
-    qc.setQueryData(
-      ["workspace-status", "ws-1"],
-      { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] },
-    );
 
-    // First call: initial load returns one prior turn (so msgs.length>0 will
-    // hold when reconcile re-fetches). Subsequent calls (the reconcile
-    // refetch) return the SAME prior turn (the new send hasn't been
-    // persisted by opencode yet).
-    const priorTurn = [
-      { id: "msg-prior-user", role: "user", parts: [{ type: "text", text: "prior" }] },
-      { id: "msg-prior-asst", role: "assistant", parts: [{ type: "text", text: "prior reply" }] },
-    ];
+    // Initial load and the reconcile refetch both return the prior turn
+    // only — opencode has not persisted the just-sent message yet.
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(priorTurn);
 
-    renderChat(qc, "/chat/ws-1/ses_1");
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    await waitFor(() => expect(capturedOnReconnect).not.toBeNull());
+    renderChat(qc, "/chat/ws-1/sess-1");
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      expect(msgs).toHaveLength(2);
+      expect(getRenderedMessages()).toHaveLength(2);
     });
 
-    // User sends a new message
-    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    await user.click(textarea);
-    await user.type(textarea, "hello");
-    await user.keyboard("{Enter}");
-
-    await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
-
-    // Sanity check: optimistic bubble was appended (prior turn + new user msg).
+    // User sends a new message; the optimistic bubble appends.
+    await sendText("hello");
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      const userMsgs = msgs.filter((m) => m.role === "user");
-      expect(userMsgs.some((m) => m.parts.some((p) => p.text === "hello"))).toBe(true);
+      expect(userTexts()).toContain("hello");
     });
 
-    // Now SSE reconnects (issue 440 path: in-place opencode restart, brief
-    // network drop, etc.). Server-side history hasn't been updated yet to
+    // The contract stream reconnects (issue 440 path: in-place opencode
+    // restart, brief network drop). Server-side history still does not
     // include the just-sent "hello".
-    triggerReconnect();
+    triggerContractReconnect();
 
-    // Wait for the reconcile refetch to land. After this the bug currently
-    // wipes localMessages.
+    // Wait for the reconcile refetch to land.
     await waitFor(() => {
-      // getHistoryPage is called by reconcileOnIdle's queryClient.refetchQueries
       expect((messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
-    // ASSERTION — the just-sent user bubble MUST still be visible in the
-    // chat list. Production bug: it vanishes here because reconcileOnIdle
-    // clears localMessages even though the new message isn't in history yet.
+    // ASSERTION — the just-sent user bubble MUST still be visible.
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      const userTexts = msgs
-        .filter((m) => m.role === "user")
-        .flatMap((m) => m.parts.map((p) => p.text));
-      expect(userTexts).toContain("hello");
+      expect(userTexts()).toContain("hello");
     });
   });
 
-  it("BUG REPRO — premature session.status=idle SSE wipes the just-sent user bubble before history catches up", async () => {
-    // Variant: instead of SSE reconnect, a stale or premature `session.status=idle`
-    // event arrives (e.g. opencode flushed a sub-task or interrupt). reconcileOnIdle
-    // still fires, with the same wipe effect.
-    const user = userEvent.setup();
+  it("BUG REPRO — a premature contract SESSION_STATUS IDLE event must not wipe the just-sent user bubble", async () => {
+    // Variant: instead of a reconnect, a stale/premature IDLE contract
+    // event arrives (e.g. opencode flushed a sub-task or interrupt).
+    // reconcileOnIdle still fires, with the same wipe risk.
     const qc = makeQueryClient();
-    qc.setQueryData(
-      ["workspace-status", "ws-1"],
-      { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] },
-    );
-
-    const priorTurn = [
-      { id: "msg-prior-user", role: "user", parts: [{ type: "text", text: "prior" }] },
-      { id: "msg-prior-asst", role: "assistant", parts: [{ type: "text", text: "prior reply" }] },
-    ];
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(priorTurn);
 
-    renderChat(qc, "/chat/ws-1/ses_1");
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+    renderChat(qc, "/chat/ws-1/sess-1");
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      expect(msgs).toHaveLength(2);
+      expect(getRenderedMessages()).toHaveLength(2);
     });
 
-    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    await user.click(textarea);
-    await user.type(textarea, "world");
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
-
+    await sendText("world");
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      const userMsgs = msgs.filter((m) => m.role === "user");
-      expect(userMsgs.some((m) => m.parts.some((p) => p.text === "world"))).toBe(true);
+      expect(userTexts()).toContain("world");
     });
 
-    // A spurious / premature idle fires. History still doesn't have "world".
-    sendSSEEvent(makeSessionStatusEvent("ses_1", "idle"));
+    // A spurious/premature idle fires. History still doesn't have "world".
+    sendContractEvent(sessionStatusEvent("sess-1", SessionStatus.IDLE));
 
-    // Reconcile refetches.
     await waitFor(() => {
       expect((messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
 
     // The bubble MUST still be visible.
     await waitFor(() => {
-      const msgs = getRenderedMessages();
-      const userTexts = msgs
-        .filter((m) => m.role === "user")
-        .flatMap((m) => m.parts.map((p) => p.text));
-      expect(userTexts).toContain("world");
+      expect(userTexts()).toContain("world");
     });
   });
 
-  it("CONTROL — when history refetch DOES contain the just-sent message, the optimistic bubble may be cleared (no duplicate)", async () => {
-    // This is the happy path: opencode has persisted the user message by
-    // the time reconcileOnIdle runs. The refetched history includes the
-    // message, so it's safe to clear localMessages. Rendered list still
-    // shows the user message — sourced from history rather than
-    // localMessages — and there is NO duplicate.
-    //
-    // This test guards against an over-aggressive fix that drops the
-    // existing "clear-when-history-is-authoritative" behavior (the fix
-    // documented in ChatPage.sse.test.tsx:226).
-    const user = userEvent.setup();
+  it("CONTROL — when the history refetch DOES contain the just-sent message, the optimistic bubble is dropped (no duplicate)", async () => {
+    // Happy path: opencode persisted the user message by the time
+    // reconcileOnIdle runs. The refetched history includes the message,
+    // so the identity-key filter drops the optimistic copy. The rendered
+    // list still shows the user message — sourced from history — and
+    // there is NO duplicate.
     const qc = makeQueryClient();
-    qc.setQueryData(
-      ["workspace-status", "ws-1"],
-      { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] },
-    );
 
     let historyCallCount = 0;
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(() => {
       historyCallCount++;
       if (historyCallCount === 1) return Promise.resolve([]);
-      // Subsequent fetches (reconcileOnIdle's refetch) DO include the
+      // Subsequent fetches (the reconcile refetch) DO include the
       // just-sent message.
       return Promise.resolve([
         { id: "msg-user-real", role: "user", parts: [{ type: "text", text: "ping" }] },
@@ -353,26 +310,19 @@ describe("Optimistic user message survival across reconcile", () => {
       ]);
     });
 
-    renderChat(qc, "/chat/ws-1/ses_1");
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+    renderChat(qc, "/chat/ws-1/sess-1");
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
 
-    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
-    await user.click(textarea);
-    await user.type(textarea, "ping");
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+    await sendText("ping");
 
-    sendSSEEvent(makeSessionStatusEvent("ses_1", "idle"));
+    sendContractEvent(sessionStatusEvent("sess-1", SessionStatus.IDLE));
 
     await waitFor(() => {
       const msgs = getRenderedMessages();
-      // EXACTLY 2 (no duplicate from localMessages + history) and the user
-      // bubble for "ping" is still present.
+      // EXACTLY 2 (no duplicate from localMessages + history) and the
+      // user bubble for "ping" is still present.
       expect(msgs).toHaveLength(2);
-      const userTexts = msgs
-        .filter((m) => m.role === "user")
-        .flatMap((m) => m.parts.map((p) => p.text));
-      expect(userTexts).toContain("ping");
+      expect(userTexts().filter((t) => t === "ping")).toHaveLength(1);
     });
   });
 });

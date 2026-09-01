@@ -1,18 +1,20 @@
 /**
- * E2E tests for the stuck-session auto-abort gating (PR #852).
+ * E2E tests for the stuck-session auto-abort gating (PR #852, fold-driven
+ * after the US-69.10 hard cutover).
  *
  * Uses Playwright route interception to mock the backend, including the
- * user-event stream (`/api/v1/events`) that carries the input-snapshot
- * markers. Two scenarios the unit tests cannot cover end-to-end:
+ * contract stream (`/api/v1/workspaces/:id/contract-events`) whose stamped
+ * snapshots are the projection-authoritative evidence. Two scenarios the
+ * unit tests cannot cover end-to-end:
  *
- *  1. Reconnect into a BUSY session with a LIVE pending question and a
- *     successful snapshot — the prompt must stay answerable and the
- *     "Session was interrupted" banner must NOT appear (the pre-fix D9 wipe
- *     + auto-abort killed exactly this).
- *  2. Reconnect into a genuinely stuck session (opencode restarted and lost
- *     the question): a successful snapshot reports an EMPTY pending set —
- *     the auto-abort must still fire under the new gating (retained
- *     recovery behavior).
+ *  1. Reconnect into a BUSY session with a LIVE pending question — the
+ *     fold's snapshot CARRIES the pendingInput → the prompt renders and
+ *     stays answerable, and the "Session was interrupted" banner must NOT
+ *     appear.
+ *  2. Reconnect into a genuinely stuck session (opencode restarted and
+ *     lost the question): the fold says BUSY with a running question tool
+ *     in history while snapshots NEVER carry pendingInputs → after the
+ *     1.5s dwell the auto-abort fires and the banner appears.
  */
 import { test, expect } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
@@ -39,6 +41,28 @@ const HISTORY_WITH_RUNNING_QUESTION = [
     ],
   },
 ];
+
+// --- contract-frame builders (mirrors contract-stream.spec.ts) ---------------
+
+function snapshotFrame(atSeq: number | bigint, sessions: Array<Record<string, unknown>>): string {
+  return `data: ${JSON.stringify({
+    snapshot: { atSeq: String(atSeq), snapshot: { sessions } },
+  })}\n\n`;
+}
+
+function busySession(pendingInputs: Array<Record<string, unknown>>): Record<string, unknown> {
+  return { sessionId: SESSION_ID, status: "SESSION_STATUS_BUSY", inFlightParts: [], queueDepth: 0, pendingInputs };
+}
+
+const LIVE_QUESTION_INPUT = {
+  id: "que_live_e2e",
+  sessionId: SESSION_ID,
+  rootSessionId: SESSION_ID,
+  kind: "INPUT_KIND_QUESTION",
+  question: "GitHub auth required — approve?",
+  header: "GitHub auth",
+  options: [{ label: "Yes", description: "" }, { label: "No", description: "" }],
+};
 
 async function setupAPIMocks(page: Page, opts?: { sessionEventsFirstBody?: string }) {
   let sessionStreamHits = 0;
@@ -156,33 +180,41 @@ function sseBody(events: object[]): string {
 }
 
 test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () => {
-  test("live pending question survives a successful snapshot — no interrupted banner, prompt answerable", async ({ page }) => {
-    // Production dual-publishes question events on the workspace stream
-    // (drives the prompt UI) and the user stream (drives the indicator).
-    const questionData = {
-      id: "que_live_e2e",
-      session_id: SESSION_ID,
-      root_session_id: SESSION_ID,
-      questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }],
-    };
-    // Workspace stream: the setup's parameterized first body delivers the
-    // question once, then holds — no re-delivery churn on reconnect cycles.
-    await setupAPIMocks(page, {
-      sessionEventsFirstBody: sseBody([{ type: "agent.question", data: questionData }]),
+  test("live pending question survives a fold snapshot carrying it — no interrupted banner, prompt answerable", async ({ page }) => {
+    await setupAPIMocks(page);
+    // The fold's snapshot is projection-authoritative: the LIVE question is
+    // carried as a pendingInput, so the prompt renders from the snapshot
+    // alone and the stuck-tool evidence never holds.
+    let resolveReply!: () => void;
+    const replyGate = new Promise<void>((resolve) => { resolveReply = resolve; });
+    let contractHits = 0;
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, async (route: Route) => {
+      contractHits++;
+      if (contractHits <= 2) {
+        // React StrictMode's dev double-mount destroys connection #1 before
+        // its body is processed — deliver on the first two hits.
+        const body = snapshotFrame(3, [busySession([LIVE_QUESTION_INPUT])]);
+        await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+        return;
+      }
+      // After the answer lands, the fold drops the input (production emits
+      // INPUT_RESOLVED / a fresh snapshot without it) — the prompt stays gone.
+      await replyGate;
+      const body = snapshotFrame(4, [{ sessionId: SESSION_ID, status: "SESSION_STATUS_IDLE", inFlightParts: [], queueDepth: 0, pendingInputs: [] }]);
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
     });
-    // First user-stream delivery: busy seed + a snapshot flight that
-    // re-emits the LIVE question (pod fetch succeeded and lists it).
-    const firstDelivery = [
+    // User stream: busy seed for the provider's busy map (unchanged path).
+    await mockUserStream(page, [
       { type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" },
-      { type: "agent.input.snapshot_begin", workspace_id: WORKSPACE_ID, snapshot_id: "flight-1" },
-      { type: "agent.question", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, request_id: "que_live_e2e", data: questionData },
-      { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
-    ];
-    await mockUserStream(page, firstDelivery);
+    ]);
 
     let abortCalled = false;
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/abort`, async (route: Route) => {
       abortCalled = true;
+      await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
+    });
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/question/que_live_e2e/reply`, async (route: Route) => {
+      resolveReply();
       await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
     });
 
@@ -199,24 +231,29 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
     // Answerable: clicking an option + submit hits the reply endpoint.
     await page.getByRole("button", { name: "Yes" }).click();
     await page.getByText("Submit answers").click();
-    await expect(page.getByText("GitHub auth required — approve?")).not.toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("GitHub auth required — approve?")).not.toBeVisible({ timeout: 10_000 });
   });
 
-  test("genuinely stuck session (empty ok-snapshot) is still auto-aborted with banner", async ({ page }) => {
+  test("genuinely stuck session (fold busy, snapshots never carry pendingInputs) is still auto-aborted with banner", async ({ page }) => {
     await setupAPIMocks(page);
-    // opencode restarted and lost the question: the pod's pending set is
-    // EMPTY and the session stays busy with a running question tool. The
-    // snapshot markers are gated on the on-demand /input-snapshot POST the
-    // page fires when reconnect mode arms — deterministic ordering (markers
-    // cannot precede arming), mirroring production.
-    await mockUserStream(
-      page,
-      [{ type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" }],
-      [
-        { type: "agent.input.snapshot_begin", workspace_id: WORKSPACE_ID, snapshot_id: "flight-1" },
-        { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
-      ],
-    );
+    // opencode restarted and lost the question: the fold stays BUSY with a
+    // running question tool in history while NO snapshot ever carries a
+    // pendingInput — the fold evidence holds through the 1.5s dwell and the
+    // auto-abort fires.
+    let contractHits = 0;
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, async (route: Route) => {
+      contractHits++;
+      if (contractHits <= 2) {
+        const body = snapshotFrame(2, [busySession([])]);
+        await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body });
+        return;
+      }
+      await new Promise<never>(() => {}); // hold — snapshots never carry inputs, no churn
+    });
+    // User stream: busy seed for the provider's busy map (unchanged path).
+    await mockUserStream(page, [
+      { type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" },
+    ]);
 
     let abortCalled = false;
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/abort`, async (route: Route) => {
@@ -226,8 +263,9 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
 
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    // Abort must fire after the dwell, and the banner must appear.
-    await expect(page.getByText(/Session was interrupted/i)).toBeVisible({ timeout: 15_000 });
+    // Abort must fire after the dwell (+ history load + polling margin),
+    // and the banner must appear.
+    await expect(page.getByText(/Session was interrupted/i)).toBeVisible({ timeout: 10_000 });
     expect(abortCalled).toBe(true);
   });
 });

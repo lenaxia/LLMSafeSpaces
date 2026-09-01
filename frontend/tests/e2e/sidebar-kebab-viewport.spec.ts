@@ -10,6 +10,7 @@
  */
 import { test, expect } from "@playwright/test";
 import type { Page, Route } from "@playwright/test";
+import { mockIdleContractStream } from "./helpers/contractStream";
 
 const WORKSPACE_ID = "ws-kebab-viewport-e2e";
 const API_PREFIX = "**/api/v1";
@@ -53,6 +54,9 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
     await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" });
   });
+  // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
+  // must open with a snapshot frame or the client reconnects.
+  await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, "ses_0");
 }
 
 test.describe("Sidebar kebab menu viewport awareness", () => {

@@ -1,78 +1,73 @@
 /**
- * Tests for Epic 15: Streaming State Resilience & Mid-Stream Reconnect.
- * Covers US-15.1 through US-15.5.
+ * Fold-driven stuck-session auto-abort tests (post US-69.10 hard cutover).
+ *
+ * The old D9/D10 evidence chain (the SSE busy/status dialect + the
+ * the dialect. The new semantics (I12): the fold published by
+ * useContractStream is projection-authoritative —
+ *
+ *   evidence = stuck question/permission tool as the last assistant part
+ *              in history (toolState "running")
+ *            + foldViewedSession.status === BUSY
+ *            + foldViewedSession.pendingInputs.length === 0
+ *            + no prompts in the provider store (pendingPromptCount 0)
+ *            + a contract snapshot stamped AFTER this page started
+ *              viewing the session (lastContractSnapshotAt >
+ *              sessionMountedAt)
+ *   dwell   = AUTO_ABORT_DWELL_MS (1500ms) → workspacesApi.abortSession
+ *             → "Session was interrupted" banner + reconcile.
+ *
+ * All session state is driven through the mocked useContractStream: the
+ * module-level `contractState` (the hook's return value) provides the
+ * viewed session's fold snapshot, and `applySnapshot(...)` invokes the
+ * captured onSnapshot callback to stamp lastContractSnapshotAt AFTER
+ * mount. The platform stream (useEventStream) is captured but idle — it
+ * carries no session state anymore.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, waitFor, act, screen, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
-import type { WorkspaceStreamEvent, SessionStatusEvent } from "../api/types";
+import { create } from "@bufbuild/protobuf";
+import {
+  EventSchema,
+  PartSchema,
+  EventType,
+  PartType,
+  SessionStatus,
+  InputKind,
+} from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { Event } from "../abi/llmsafespaces/abi/v1/contract_pb";
+import type { SessionSnapshot } from "../abi/llmsafespaces/abi/v1/abi_pb";
+import { SessionSnapshotSchema } from "../abi/llmsafespaces/abi/v1/abi_pb";
 
-// React-state-backed mock for useIsSessionBusy so busy state changes trigger re-renders.
-const mockBusyState = vi.hoisted(() => {
-  let val = false;
-  const listeners = new Set<(v: boolean) => void>();
-  return {
-    get: () => val,
-    set: (v: boolean) => { val = v; listeners.forEach((l) => l(v)); },
-    subscribe: (l: (v: boolean) => void) => { listeners.add(l); },
-    unsubscribe: (l: (v: boolean) => void) => { listeners.delete(l); },
-    reset: () => { val = false; listeners.clear(); },
-  };
-});
+// --- Mocks (mirroring ChatPage.sse.test.tsx, the reference pattern) ---
 
-// Stateful prompt store so the auto-abort guard (pendingPromptCount > 0)
-// reflects questions/permissions delivered via SSE. Mutated synchronously by
-// the add/remove/clear mocks; read at render time by the selector mocks.
-const promptStore = vi.hoisted(() => ({ questions: [] as Array<{ id: string }>, permissions: [] as Array<{ id: string }> }));
+// Provider prompt store so the pendingPromptCount guard reflects prompts
+// delivered outside the fold (set directly by tests; read at render time
+// by the usePendingQuestionsForSession mock).
+const promptStore = vi.hoisted(() => ({ questions: [] as Array<Record<string, unknown>> }));
 
-// D10: controllable input-snapshot store backing the mocked
-// useWorkspaceInputSnapshot — tests set `snapshotStore.value` to simulate
-// marker arrival (ok/failed/stale).
-const snapshotStore = vi.hoisted(() => ({ value: undefined as { ok: boolean; at: number } | undefined }));
-
-vi.mock("../providers/SessionActivityProvider", async () => {
-  const { useState, useEffect } = await vi.importActual<typeof import("react")>("react");
-  return {
-    useClearPendingUnread: () => () => {},
-    useIsSessionBusy: () => {
-      const [val, setVal] = useState(mockBusyState.get());
-      useEffect(() => {
-        mockBusyState.subscribe(setVal);
-        return () => { mockBusyState.unsubscribe(setVal); };
-      }, []);
-      return val;
-    },
-    useIsSessionUnread: () => false,
-    useWorkspaceBusyCount: () => 0,
-    useWorkspaceHung: () => false,
-    useIsSessionPendingAction: () => false,
-    useSessionPendingActions: () => new Set<string>(),
-    useAddPendingAction: () => () => {},
-    useRemovePendingAction: () => (id: string) => {
-      promptStore.questions = promptStore.questions.filter((q) => q.id !== id);
-      promptStore.permissions = promptStore.permissions.filter((p) => p.id !== id);
-    },
-    useAddPendingQuestion: () => (_ws: string, req: { id: string }) => {
-      if (!promptStore.questions.some((q) => q.id === req.id)) promptStore.questions = [...promptStore.questions, req];
-    },
-    useAddPendingPermission: () => (_ws: string, req: { id: string }) => {
-      if (!promptStore.permissions.some((p) => p.id === req.id)) promptStore.permissions = [...promptStore.permissions, req];
-    },
-    usePendingQuestionsForSession: () => promptStore.questions,
-    usePendingPermissionsForSession: () => promptStore.permissions,
-    useClearSessionPendingPrompts: () => () => {
-      promptStore.questions = [];
-      promptStore.permissions = [];
-    },
-    useWorkspaceInputSnapshot: () => snapshotStore.value,
-    useSessionStatus: () => "idle",
-    resolveSessionStatus: () => "idle",
-    SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  };
-});
+vi.mock("../providers/SessionActivityProvider", () => ({
+  useClearPendingUnread: () => () => {},
+  useIsSessionBusy: () => false,
+  useIsSessionUnread: () => false,
+  useWorkspaceBusyCount: () => 0,
+  useWorkspaceHung: () => false,
+  useIsSessionPendingAction: () => false,
+  useSessionPendingActions: () => new Set<string>(),
+  useAddPendingAction: () => () => {},
+  useRemovePendingAction: () => () => {},
+  useAddPendingQuestion: () => () => {},
+  useAddPendingPermission: () => () => {},
+  usePendingQuestionsForSession: () => promptStore.questions,
+  usePendingPermissionsForSession: () => [],
+  useClearSessionPendingPrompts: () => () => {},
+  useWorkspaceInputSnapshot: () => undefined,
+  SessionActivityProvider: ({ children }: { children: any }) => <>{children}</>,
+}));
 
 vi.mock("../api/workspaces", () => ({
   workspacesApi: {
@@ -83,9 +78,10 @@ vi.mock("../api/workspaces", () => ({
     renameSession: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
-    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
+    abortSession: vi.fn().mockResolvedValue(undefined),
   },
 }));
+
 vi.mock("../api/messages", () => {
   const gh = vi.fn().mockResolvedValue([]);
   return {
@@ -95,23 +91,36 @@ vi.mock("../api/messages", () => {
         const msgs = await gh();
         return { messages: msgs, nextCursor: undefined };
       }),
-      sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined),
+      sendAsync: vi.fn(),
+      queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }),
+      getQueue: vi.fn().mockResolvedValue({ messages: [] }),
+      deleteQueueMessage: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
+
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn() } }));
 
-// Capture the SSE handler and onReconnect callback
-let capturedSSEHandler: ((data: unknown) => void) | null = null;
-let capturedOnReconnect: (() => void) | null = null;
+// Platform stream — mocked inert; it carries platform events only (no
+// session state) after the cutover.
 vi.mock("../hooks/useEventStream", () => ({
-  useEventStream: vi.fn((_workspaceId: string | undefined, handler: (data: unknown) => void, options?: { onReconnect?: () => void }) => {
-    capturedSSEHandler = handler;
-    capturedOnReconnect = options?.onReconnect ?? null;
+  useEventStream: vi.fn(),
+}));
+
+// Contract stream — captured options + controllable fold state.
+let capturedContractOptions: {
+  onEvent: (event: Event, seq: bigint) => void;
+  onSnapshot: (state: { seq: bigint; sessions: ReadonlyMap<string, SessionSnapshot> }) => void;
+  onReconnect: () => void;
+} | null = null;
+let contractState: { seq: bigint; sessions: Map<string, SessionSnapshot> };
+vi.mock("../hooks/useContractStream", () => ({
+  useContractStream: vi.fn((_workspaceId: string | undefined, options: Record<string, unknown>) => {
+    capturedContractOptions = options as typeof capturedContractOptions;
+    return contractState;
   }),
 }));
 
-// Mock ChatView to expose streaming state and parts
 vi.mock("../components/chat/ChatView", () => ({
   ChatView: (props: Record<string, unknown>) => {
     return (
@@ -161,976 +170,238 @@ function renderChat(qc: QueryClient, path: string) {
   );
 }
 
-function sendSSEEvent(event: WorkspaceStreamEvent) {
-  if (event.type === "session.status") {
-    mockBusyState.set(event.status === "busy");
-  }
-  act(() => { capturedSSEHandler?.(event); });
+function sendContractEvent(evt: Event, seq: bigint = 1n) {
+  act(() => { capturedContractOptions?.onEvent(evt, seq); });
 }
 
-function triggerReconnect() {
-  act(() => { capturedOnReconnect?.(); });
+function applySnapshot(atSeq: bigint, sessions: SessionSnapshot[]) {
+  contractState = { seq: atSeq, sessions: new Map(sessions.map((s) => [s.sessionId, s])) };
+  act(() => { capturedContractOptions?.onSnapshot(contractState); });
 }
 
-function getStreamingState(): boolean {
-  const el = screen.getByTestId("chat-view");
-  return el.getAttribute("data-streaming") === "true";
+function textPartEnd(partId: string, text: string, sessionId: string): Event {
+  return create(EventSchema, {
+    sessionId,
+    type: EventType.PART_END,
+    partId,
+    part: create(PartSchema, { id: partId, type: PartType.TEXT, payload: { case: "text", value: text } }),
+  } as Parameters<typeof create>[1]);
 }
 
-function getStreamParts(): Array<{ type: string; text: string }> {
-  const el = screen.getByTestId("chat-view");
-  return JSON.parse(el.getAttribute("data-stream-parts") || "[]");
+function makeSessionSnapshot(sessionId: string, init: Record<string, unknown> = {}): SessionSnapshot {
+  return create(SessionSnapshotSchema, { sessionId, ...init } as Parameters<typeof create>[1]);
 }
 
-function getRenderedMessages(): Array<{ id: string; role: string; parts: Array<{ id?: string; type: string; text?: string }> }> {
+function busyFold(sessionId: string, pendingInputs: Array<Record<string, unknown>> = []): SessionSnapshot {
+  return makeSessionSnapshot(sessionId, { status: SessionStatus.BUSY, pendingInputs });
+}
+
+/** Stuck-tool history fixture (old-suite shape): the last assistant
+ * message ends with a question/permission tool_use part still "running". */
+function stuckHistory(toolText: string): Array<Record<string, unknown>> {
+  return [
+    { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
+    {
+      id: "msg-asst",
+      role: "assistant",
+      parts: [{ type: "tool_use", text: toolText, toolState: "running" }],
+    },
+  ];
+}
+
+const STUCK_QUESTION = "question: GitHub auth required";
+const STUCK_PERMISSION = "permission: shell";
+
+function getRenderedMessages(): Array<{ id: string; role: string; parts: Array<{ type: string; text?: string }> }> {
   const el = screen.getByTestId("chat-view");
   return JSON.parse(el.getAttribute("data-messages") || "[]");
 }
 
-function makeSessionStatusEvent(sessionId: string, status: "idle" | "busy"): SessionStatusEvent {
-  return { type: "session.status", session_id: sessionId, status };
+function abortMock() {
+  return workspacesApi.abortSession as ReturnType<typeof vi.fn>;
 }
 
-function makePartUpdatedWithId(sessionId: string, partId: string, text: string): WorkspaceStreamEvent {
-  return {
-    type: "session.event",
-    session_id: sessionId,
-    data: {
-      type: "part.end",
-      sessionId,
-      messageId: "msg-2",
-      partId,
-      part: { type: "text", text },
-    },
-  } as unknown as WorkspaceStreamEvent;
-}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function makePartDeltaWithId(sessionId: string, partId: string, delta: string): WorkspaceStreamEvent {
-  return {
-    type: "session.event",
-    session_id: sessionId,
-    data: {
-      type: "part.delta",
-      sessionId,
-      messageId: "msg-2",
-      partId,
-      delta,
-    },
-  } as unknown as WorkspaceStreamEvent;
-}
+// --- Tests ---
 
-// --- Test Groups ---
-
-// Reset the stateful prompt store between tests so a question delivered in one
-// test cannot leak into another's auto-abort guard check.
-beforeEach(() => {
-  promptStore.questions = [];
-  promptStore.permissions = [];
-  snapshotStore.value = undefined;
-});
-
-describe("US-15.1 + US-15.2: Status-Driven Streaming Indicator", () => {
-  let qc: QueryClient;
-
+describe("Fold-driven auto-abort of sessions stuck on an input tool", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    mockBusyState.reset();
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
-    qc = makeQueryClient();
-  });
-
-  it("shows streaming indicator when session is busy on mount", async () => {
-    mockBusyState.set(true);
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(true);
-    });
-  });
-
-  it("no streaming indicator when session is idle on mount", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "idle" }],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-    expect(getStreamingState()).toBe(false);
-  });
-
-  it("no streaming indicator when sessions array is empty", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-    expect(getStreamingState()).toBe(false);
-  });
-
-  it("SSE busy event shows streaming indicator", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "idle" }],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-    expect(getStreamingState()).toBe(false);
-
-    sendSSEEvent(makeSessionStatusEvent("sess-1", "busy"));
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(true);
-    });
-  });
-
-  it("SSE idle event hides streaming indicator", async () => {
-    mockBusyState.set(true);
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(true);
-    });
-
-    sendSSEEvent(makeSessionStatusEvent("sess-1", "idle"));
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(false);
-    });
-  });
-
-  it("SSE busy for different session is ignored", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "idle" }],
-    });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-
-    sendSSEEvent(makeSessionStatusEvent("sess-other", "busy"));
-
-    // Should still be false
-    expect(getStreamingState()).toBe(false);
-  });
-
-  it("SSE reconnect triggers status re-poll to catch missed transitions", async () => {
-    mockBusyState.set(true);
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({
-        phase: "Active",
-        sessions: [{ id: "sess-1", status: "busy" }],
-      })
-      .mockResolvedValueOnce({
-        phase: "Active",
-        sessions: [{ id: "sess-1", status: "idle" }],
-      });
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(true);
-    });
-
-    // Simulate SSE reconnect — workspace stream reconnect triggers status
-    // re-poll; the user stream (provider) also reconnects and re-seeds busy
-    // state. The mock simulates the provider clearing busy (status now idle).
-    triggerReconnect();
-    mockBusyState.set(false);
-
-    // After reconnect, status is re-polled and returns idle
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(false);
-    });
-  });
-});
-
-describe("US-15.3: History Fetch on Busy Reconnect", () => {
-  let qc: QueryClient;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockBusyState.reset();
-    mockBusyState.set(true);
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
-    qc = makeQueryClient();
-  });
-
-  it("fetches and renders history when mounting into busy session", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-2", role: "assistant", parts: [{ id: "p2", type: "text", text: "Hi there" }], createdAt: "2026-01-02T00:00:00.000Z" },
-      { id: "msg-1", role: "user", parts: [{ id: "p1", type: "text", text: "Hello" }], createdAt: "2026-01-01T00:00:00.000Z" },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      const msgs = getRenderedMessages();
-      expect(msgs).toHaveLength(2);
-      expect(msgs[0]!.parts[0]!.text).toBe("Hello");
-      expect(msgs[1]!.parts[0]!.text).toBe("Hi there");
-    });
-  });
-
-  it("computes historyPartIds from fetched history", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "existing" }] },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    // Send an SSE event for a part already in history — should be ignored
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "p1", "existing updated"));
-
-    // No new stream parts should appear
-    expect(getStreamParts()).toHaveLength(0);
-  });
-});
-
-describe("US-15.4: Boundary Detection", () => {
-  let qc: QueryClient;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockBusyState.reset();
-    mockBusyState.set(true);
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
-    qc = makeQueryClient();
-  });
-
-  it("ignores SSE event for part already in history", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "old text" }] },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "p1", "old text updated"));
-    expect(getStreamParts()).toHaveLength(0);
-  });
-
-  it("renders new part not in history", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "old" }] },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "p2", "new content"));
-
-    await waitFor(() => {
-      const parts = getStreamParts();
-      expect(parts).toHaveLength(1);
-      expect(parts[0]!.text).toBe("new content");
-    });
-  });
-
-  it("ignores delta for history part", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "old" }] },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    sendSSEEvent(makePartDeltaWithId("sess-1", "p1", " more text"));
-    expect(getStreamParts()).toHaveLength(0);
-  });
-
-  it("appends delta for live part", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "old" }] },
-    ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    // First: new part arrives
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "p2", "start"));
-
-    await waitFor(() => {
-      expect(getStreamParts()).toHaveLength(1);
-    });
-
-    // Then: delta for that new part
-    sendSSEEvent(makePartDeltaWithId("sess-1", "p2", " appended"));
-
-    await waitFor(() => {
-      const parts = getStreamParts();
-      expect(parts[0]!.text).toBe("start appended");
-    });
-  });
-
-  it("ignores orphan delta (unknown partID)", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-
-    // Delta with no prior updated event — should be ignored
-    sendSSEEvent(makePartDeltaWithId("sess-1", "unknown-part", "orphan"));
-    expect(getStreamParts()).toHaveLength(0);
-  });
-
-  it("boundary gate inactive during normal send flow", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "idle" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("chat-view")).toBeInTheDocument();
-    });
-
-    // In normal (non-reconnect) mode, events should process normally
-    // Send a text part event — should render (no gate active)
-    sendSSEEvent({
-      type: "session.event",
-      session_id: "sess-1",
-      data: {
-        type: "part.end",
-        sessionId: "sess-1",
-        part: { type: "text", text: "hello world" },
-      },
-    } as unknown as WorkspaceStreamEvent);
-
-    await waitFor(() => {
-      const parts = getStreamParts();
-      expect(parts.length).toBeGreaterThan(0);
-    });
-  });
-});
-
-describe("US-15.5: Idle Reconciliation", () => {
-  let qc: QueryClient;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockBusyState.reset();
-    mockBusyState.set(true);
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
-    qc = makeQueryClient();
-  });
-
-  it("idle event triggers history refetch and clears streaming parts", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce([
-        { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "partial" }] },
-      ])
-      .mockResolvedValueOnce([
-        { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "partial" }] },
-        { id: "msg-2", role: "assistant", parts: [{ id: "p2", type: "text", text: "complete response" }] },
-      ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(1);
-    });
-
-    // Simulate a new part streaming in
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "p2", "streaming..."));
-
-    await waitFor(() => {
-      expect(getStreamParts()).toHaveLength(1);
-    });
-
-    // Now idle arrives — should reconcile
-    sendSSEEvent(makeSessionStatusEvent("sess-1", "idle"));
-
-    await waitFor(() => {
-      // Stream parts should be cleared
-      expect(getStreamParts()).toHaveLength(0);
-      // History should now have 2 messages (refetched)
-      expect(getRenderedMessages()).toHaveLength(2);
-    });
-  });
-
-  it("reconciliation resets reconnect mode — subsequent events not gated", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({
-        phase: "Active",
-        sessions: [{ id: "sess-1", status: "busy" }],
-      })
-      .mockResolvedValue({
-        phase: "Active",
-        sessions: [{ id: "sess-1", status: "idle" }],
-      });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce([
-        { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "done" }] },
-      ])
-      .mockResolvedValue([
-        { id: "msg-1", role: "assistant", parts: [{ id: "p1", type: "text", text: "done" }] },
-      ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(true);
-    });
-
-    // Idle arrives — reconcile
-    sendSSEEvent(makeSessionStatusEvent("sess-1", "idle"));
-
-    await waitFor(() => {
-      expect(getStreamingState()).toBe(false);
-    });
-
-    // Now send a new event with part id "p1" (same as history) — after reconcile,
-    // reconnect mode is off, so events with no part.id should still process normally
-    sendSSEEvent({
-      type: "session.event",
-      session_id: "sess-1",
-      data: {
-        type: "part.end",
-        sessionId: "sess-1",
-        part: { type: "text", text: "new after reconcile" },
-      },
-    } as unknown as WorkspaceStreamEvent);
-
-    await waitFor(() => {
-      const parts = getStreamParts();
-      expect(parts.length).toBeGreaterThan(0);
-      expect(parts[0]!.text).toBe("new after reconcile");
-    });
-  });
-});
-
-describe("US-15.6: Full Flow Integration", () => {
-  let qc: QueryClient;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockBusyState.reset();
-    mockBusyState.set(true);
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
-    qc = makeQueryClient();
-  });
-
-  it("full reconnect flow: mount busy → history → new parts → idle → reconcile", async () => {
-    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
-      phase: "Active",
-      sessions: [{ id: "sess-1", status: "busy" }],
-    });
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce([
-        { id: "msg-1", role: "user", parts: [{ id: "up1", type: "text", text: "question" }] },
-        { id: "msg-2", role: "assistant", parts: [{ id: "ap1", type: "text", text: "partial answer" }] },
-      ])
-      .mockResolvedValueOnce([
-        { id: "msg-1", role: "user", parts: [{ id: "up1", type: "text", text: "question" }] },
-        { id: "msg-2", role: "assistant", parts: [{ id: "ap1", type: "text", text: "partial answer" }] },
-        { id: "msg-3", role: "assistant", parts: [{ id: "ap2", type: "text", text: "full new response" }] },
-      ]);
-
-    renderChat(qc, "/chat/ws-1/sess-1");
-
-    // 1. History renders
-    await waitFor(() => {
-      expect(getRenderedMessages()).toHaveLength(2);
-    });
-
-    // 2. Streaming indicator shows
-    expect(getStreamingState()).toBe(true);
-
-    // 3. New part arrives (not in history)
-    sendSSEEvent(makePartUpdatedWithId("sess-1", "ap2", "streaming new"));
-
-    await waitFor(() => {
-      expect(getStreamParts()).toHaveLength(1);
-      expect(getStreamParts()[0]!.text).toBe("streaming new");
-    });
-
-    // 4. Idle arrives — reconcile
-    sendSSEEvent(makeSessionStatusEvent("sess-1", "idle"));
-
-    await waitFor(() => {
-      // Stream parts cleared
-      expect(getStreamParts()).toHaveLength(0);
-      // History now has 3 messages
-      expect(getRenderedMessages()).toHaveLength(3);
-      // Streaming indicator gone
-      expect(getStreamingState()).toBe(false);
-    });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Auto-abort stuck question/permission sessions on reconnect
-// ---------------------------------------------------------------------------
-describe("ChatPage auto-abort stuck input sessions", () => {
-  beforeEach(() => {
-    mockBusyState.reset();
-    mockBusyState.set(true);
-    capturedSSEHandler = null;
-    capturedOnReconnect = null;
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
+    promptStore.questions = [];
     vi.clearAllMocks();
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
-    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({
-      items: [], pagination: { limit: 20, offset: 0, total: 0 },
-    });
+    abortMock().mockResolvedValue(undefined);
   });
 
-  it("auto-aborts and shows interrupted banner when reconnecting to session stuck on question tool", async () => {
-    // History has a question tool in "running" state — opencode restarted and
-    // lost the question from its queue. On reconnect we should auto-abort and
-    // show the interrupted banner without requiring user action.
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [
-          { type: "tool_use", text: "question: GitHub auth required", toolState: "running" },
-        ],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-        {
-          id: "msg-asst",
-          role: "assistant",
-          parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-        },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
-    const qc = makeQueryClient();
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/chat/ws-1/sess-stuck"]}>
-          <TooltipProvider delayDuration={0}>
-            <Routes>
-              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
-            </Routes>
-          </TooltipProvider>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-
-    // Drive serverBusy=true (session was busy when we loaded)
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-stuck", status: "busy" });
-    });
-
-    // Successful input snapshot received AFTER arming — opencode's queue was
-    // consulted and reports nothing pending.
-    act(() => {
-      snapshotStore.value = { ok: true, at: Date.now() };
-    });
-
-    // After history loads with the stuck question tool, abort should be called
+  async function renderStuck(qc: QueryClient, sessionId: string, history: Array<Record<string, unknown>>) {
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(history);
+    renderChat(qc, `/chat/ws-1/${sessionId}`);
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
+    // Deterministic: the stuck tool is rendered from history (history
+    // loaded → the abort effect has run once with an empty fold).
     await waitFor(
-      () => expect((workspacesApi as Record<string, unknown>).abortSession)
-        .toHaveBeenCalledWith("ws-1", "sess-stuck"),
+      () => expect(getRenderedMessages().some((m) => m.parts.some((p) => p.type === "tool_use"))).toBe(true),
       { timeout: 5000 },
     );
+  }
 
-    // Interrupted banner should be visible
-    await waitFor(() =>
-      expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
-    );
-  });
+  /** Completes the evidence: a fold snapshot (BUSY, no pendingInputs)
+   * stamped after mount, plus a live part event to force the re-render
+   * that re-reads the mutated contractState (the mocked hook is a plain
+   * vi.fn — only a ChatPage re-render picks up the new fold). */
+  function armEvidence(sessionId: string, fold?: SessionSnapshot) {
+    applySnapshot(1n, [fold ?? busyFold(sessionId)]);
+    sendContractEvent(textPartEnd("p-ev", "streaming", sessionId));
+  }
 
-  it("auto-aborts when last tool is permission (not just question)", async () => {
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "run deploy.sh" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "permission: shell", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "run deploy.sh" }] },
-        { id: "msg-asst", role: "assistant", parts: [{ type: "tool_use", text: "permission: shell", toolState: "running" }] },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
+  it("busy fold + stuck question tool + fresh snapshot without pendingInputs → abortSession after the dwell + interrupted banner", async () => {
     const qc = makeQueryClient();
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/chat/ws-1/sess-perm"]}>
-          <TooltipProvider delayDuration={0}>
-            <Routes>
-              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
-            </Routes>
-          </TooltipProvider>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    await renderStuck(qc, "sess-stuck", stuckHistory(STUCK_QUESTION));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-perm", status: "busy" });
-    });
-    act(() => {
-      snapshotStore.value = { ok: true, at: Date.now() };
-    });
+    armEvidence("sess-stuck");
 
     await waitFor(
-      () => expect((workspacesApi as Record<string, unknown>).abortSession)
-        .toHaveBeenCalledWith("ws-1", "sess-perm"),
+      () => expect(abortMock()).toHaveBeenCalledWith("ws-1", "sess-stuck"),
       { timeout: 5000 },
     );
     await waitFor(() =>
       expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
     );
-  });
+  }, 10000);
 
-  it("abort failure still shows interrupted banner and reconciles history", async () => {
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push code" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push code" }] },
-        { id: "msg-asst", role: "assistant", parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }] },
-      ],
-      nextCursor: undefined,
-    });
-    // Abort fails (e.g. network error)
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockRejectedValue(new Error("network error"));
-
+  it("auto-aborts when the stuck tool is a permission (not just a question)", async () => {
     const qc = makeQueryClient();
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/chat/ws-1/sess-abort-fail"]}>
-          <TooltipProvider delayDuration={0}>
-            <Routes>
-              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
-            </Routes>
-          </TooltipProvider>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
+    await renderStuck(qc, "sess-perm", stuckHistory(STUCK_PERMISSION));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-abort-fail", status: "busy" });
-    });
-    act(() => {
-      snapshotStore.value = { ok: true, at: Date.now() };
-    });
+    armEvidence("sess-perm");
 
-    // Even when abort fails, banner must still appear
-    await waitFor(() =>
-      expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
+    await waitFor(
+      () => expect(abortMock()).toHaveBeenCalledWith("ws-1", "sess-perm"),
       { timeout: 5000 },
     );
-  });
-
-  it("does NOT auto-abort when the question is still in the SSE queue (re-emitted on reconnect)", async () => {
-    // If the agent.question SSE event arrives (emitPendingInputRequests replayed it),
-    // the question is still live — don't abort, let the user answer.
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-        { id: "msg-asst", role: "assistant", parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }] },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
-    const qc = makeQueryClient();
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/chat/ws-1/sess-live-q"]}>
-          <TooltipProvider delayDuration={0}>
-            <Routes>
-              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
-            </Routes>
-          </TooltipProvider>
-        </MemoryRouter>
-      </QueryClientProvider>,
+    await waitFor(() =>
+      expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
     );
+  }, 10000);
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-
-    act(() => {
-      // Session is busy
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-live-q", status: "busy" });
-      // Agent question was replayed via emitPendingInputRequests
-      capturedSSEHandler!({
-        type: "agent.question",
-        data: {
-          id: "que_123",
-          session_id: "sess-live-q",
-          root_session_id: "sess-live-q",
-          questions: [{ question: "How to proceed?", header: "GitHub auth", options: [], multiple: false, custom: true }],
-        },
-      });
-    });
-
-    // Give time for any auto-abort to fire (it should not)
-    await new Promise((r) => setTimeout(r, 200));
-
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
-    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-  });
-
-  it("does NOT auto-abort before a successful input snapshot arrives (F2 race)", async () => {
-    // History with a stuck question tool + busy session, but NO ok snapshot:
-    // the SSE snapshot (emitPendingInputRequests) takes up to 5s — aborting
-    // before it lands kills live prompts.
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-        {
-          id: "msg-asst",
-          role: "assistant",
-          parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-        },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
+  it("abort failure still shows the interrupted banner and reconciles history", async () => {
+    abortMock().mockRejectedValue(new Error("network error"));
     const qc = makeQueryClient();
-    renderChat(qc, "/chat/ws-1/sess-no-snap");
+    await renderStuck(qc, "sess-abort-fail", stuckHistory(STUCK_QUESTION));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-no-snap", status: "busy" });
-    });
-    // snapshotStore.value stays undefined — no marker yet.
+    armEvidence("sess-abort-fail");
 
-    // Longer than the abort dwell — must not fire without snapshot proof.
-    await new Promise((r) => setTimeout(r, 2500));
+    await waitFor(
+      () => expect(abortMock()).toHaveBeenCalledWith("ws-1", "sess-abort-fail"),
+      { timeout: 5000 },
+    );
+    // Even when abort fails, the banner must still appear.
+    await waitFor(() =>
+      expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
+    );
+  }, 10000);
 
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
-    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-  });
-
-  it("does NOT auto-abort when the input snapshot failed (ok:false)", async () => {
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
-        {
-          id: "msg-asst",
-          role: "assistant",
-          parts: [{ type: "tool_use", text: "question: GitHub auth required", toolState: "running" }],
-        },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
+  it("does NOT abort when the fold carries the pending input (question is live in the projection)", async () => {
     const qc = makeQueryClient();
-    renderChat(qc, "/chat/ws-1/sess-bad-snap");
+    await renderStuck(qc, "sess-live-fold", stuckHistory(STUCK_QUESTION));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-bad-snap", status: "busy" });
-    });
-    // Snapshot attempted but the pod fetch FAILED (opencode restarting —
-    // exactly when reconnects happen). ok:false must not read as "empty".
-    act(() => {
-      snapshotStore.value = { ok: false, at: Date.now() };
-    });
+    // The fold is projection-authoritative: pendingInputs present means
+    // the question is still live — the tool is not stuck.
+    armEvidence("sess-live-fold", busyFold("sess-live-fold", [{
+      id: "q1",
+      sessionId: "sess-live-fold",
+      rootSessionId: "sess-live-fold",
+      kind: InputKind.QUESTION,
+      question: "Continue?",
+      header: "GitHub auth",
+      options: [{ label: "yes", description: "" }],
+      multiple: false,
+      custom: false,
+    }]));
 
-    await new Promise((r) => setTimeout(r, 2500));
-
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
+    // Longer than the 1500ms dwell — must not fire.
+    await sleep(2500);
+    expect(abortMock()).not.toHaveBeenCalled();
     expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-  });
+  }, 10000);
 
-  it("does NOT auto-abort on a stale snapshot (predates reconnect-mode arming)", async () => {
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "permission: bash", toolState: "running" }],
-      },
-    ]);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: [
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
-        {
-          id: "msg-asst",
-          role: "assistant",
-          parts: [{ type: "tool_use", text: "permission: bash", toolState: "running" }],
-        },
-      ],
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
-    // A snapshot from BEFORE this page load armed reconnect mode — e.g. an
-    // earlier ChatPage view already fetched it. The question could have been
-    // asked after it; only a post-arming snapshot is valid evidence.
-    snapshotStore.value = { ok: true, at: Date.now() - 60_000 };
-
+  it("does NOT abort when a provider prompt is present (pendingPromptCount guard)", async () => {
+    promptStore.questions = [{
+      id: "q-live",
+      session_id: "sess-live-q",
+      questions: [{ question: "How to proceed?", header: "GitHub auth", options: [] }],
+    }];
     const qc = makeQueryClient();
-    renderChat(qc, "/chat/ws-1/sess-stale-snap");
+    await renderStuck(qc, "sess-live-q", stuckHistory(STUCK_QUESTION));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-stale-snap", status: "busy" });
-    });
+    // Fold says BUSY with no pendingInputs, but the provider store has a
+    // live question (delivered outside this view's fold) — no abort.
+    armEvidence("sess-live-q");
 
-    await new Promise((r) => setTimeout(r, 2500));
-
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
+    await sleep(2500);
+    expect(abortMock()).not.toHaveBeenCalled();
     expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-  });
+  }, 10000);
 
-  it("R1: busy→busy same-workspace session switch re-arms reconnect mode and requests a snapshot", async () => {
-    // Review round 3 R1: navigating from busy session A to busy session B
-    // (isSessionBusy never transitions) must re-arm reconnect mode after the
-    // session-change reset cleared it — otherwise the stuck-session recovery
-    // never fires for B. Re-arming also requests a fresh input snapshot.
-    const stuckHistory = (sessionLabel: string) => [
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push " + sessionLabel }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
-      },
+  it("B — a user send during the dwell resets the anchor: the original deadline passes without an abort", async () => {
+    const qc = makeQueryClient();
+    await renderStuck(qc, "sess-send", stuckHistory(STUCK_QUESTION));
+
+    // Evidence holds; the dwell anchor is set at t0 with a 1500ms timer.
+    armEvidence("sess-send");
+
+    // Well inside the dwell, the user actively sends a message.
+    await sleep(1000);
+    const textarea = screen.getByRole("textbox");
+    await userEvent.type(textarea, "hello there");
+    // Re-query: async query resolution can re-render ChatView between the
+    // type and the keypress, detaching the earlier node.
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    // Past the ORIGINAL dwell deadline: doSendNow dropped the abort
+    // anchor, so the armed timer was discarded (a fresh dwell would only
+    // re-anchor while evidence still holds — active use resets it).
+    await sleep(800);
+    expect(abortMock()).not.toHaveBeenCalled();
+
+    // The fold then reports the session idle (the turn the user started
+    // completes) — evidence broken permanently, anchor never re-arms.
+    applySnapshot(2n, [makeSessionSnapshot("sess-send", { status: SessionStatus.IDLE })]);
+    sendContractEvent(textPartEnd("p-ev2", "done", "sess-send"));
+
+    await sleep(1700);
+    expect(abortMock()).not.toHaveBeenCalled();
+    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
+  }, 15000);
+
+  it("snapshot stamped BEFORE this page started viewing the session is not evidence (busy→busy session switch)", async () => {
+    // N4/e staleness: the snapshot was received while viewing session A
+    // (or by an earlier view) — session B's mount time postdates it, so
+    // it cannot prove anything about B's pending inputs. B must NOT be
+    // aborted even though B's history shows a stuck tool and the fold
+    // says BUSY.
+    const healthyA = [
+      { id: "a1", role: "user", parts: [{ type: "text", text: "hello a" }] },
     ];
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(async () => stuckHistory("a"));
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
-      messages: stuckHistory("a"),
-      nextCursor: undefined,
-    }));
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-    const requestSnapshot = vi.fn().mockResolvedValue(undefined);
-    (workspacesApi as Record<string, unknown>).requestInputSnapshot = requestSnapshot;
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, sid: string) => ({
+        messages: sid === "sess-b" ? stuckHistory(STUCK_QUESTION) : healthyA,
+        nextCursor: undefined,
+      }),
+    );
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, sid: string) => (sid === "sess-b" ? stuckHistory(STUCK_QUESTION) : healthyA),
+    );
 
-    mockBusyState.set(true); // busy at mount AND stays busy across the switch
-
-    const qc = makeQueryClient();
-    // navigate via react-router (rerendering with a new MemoryRouter does NOT
-    // navigate — initialEntries is only initial state).
     function SwitchButton() {
       const navigate = useNavigate();
       return <button data-testid="switch-btn" onClick={() => navigate("/chat/ws-1/sess-b")}>switch</button>;
     }
+
+    const qc = makeQueryClient();
     render(
       <QueryClientProvider client={qc}>
         <MemoryRouter initialEntries={["/chat/ws-1/sess-a"]}>
@@ -1143,181 +414,53 @@ describe("ChatPage auto-abort stuck input sessions", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
+    await waitFor(() => expect(getRenderedMessages()).toHaveLength(1));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    await waitFor(() => expect(requestSnapshot).toHaveBeenCalledWith("ws-1"));
+    // Snapshot (with B BUSY in the fold) stamped while still viewing A.
+    applySnapshot(1n, [busyFold("sess-b")]);
 
-    // Fresh history for sess-b arrives (stuck question tool)
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(async () => stuckHistory("b"));
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
-      messages: stuckHistory("b"),
-      nextCursor: undefined,
-    }));
+    // Navigate within the SPA to busy session B — its mount stamp now
+    // postdates the snapshot.
+    act(() => { screen.getByTestId("switch-btn").click(); });
 
-    // Navigate within the SPA to a DIFFERENT busy session of the same workspace
-    act(() => {
-      screen.getByTestId("switch-btn").click();
-    });
-
-    // The switch re-arms: a fresh ok snapshot after the switch satisfies the
-    // gate and the abort fires for sess-b.
-    act(() => {
-      snapshotStore.value = { ok: true, at: Date.now() };
-    });
-
-    await waitFor(
-      () => expect((workspacesApi as Record<string, unknown>).abortSession)
-        .toHaveBeenCalledWith("ws-1", "sess-b"),
-      { timeout: 5000 },
-    );
-    // And the snapshot was requested again for the newly-viewed session
-    expect(requestSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("does NOT arm reconnect mode when busy arrives after the activation window closed (F1)", async () => {
-    vi.useFakeTimers();
-    try {
-      (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-        { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
-        {
-          id: "msg-asst",
-          role: "assistant",
-          parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
-        },
-      ]);
-      (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-        messages: [
-          { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
-          {
-            id: "msg-asst",
-            role: "assistant",
-            parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
-          },
-        ],
-        nextCursor: undefined,
-      });
-      (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-
-      const qc = makeQueryClient();
-      renderChat(qc, "/chat/ws-1/sess-late-busy");
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-      // Busy arrives well after the mount activation window closed — this is
-      // the mid-session activation (send timeout / organic busy) that armed
-      // the false auto-abort.
-      act(() => {
-        capturedSSEHandler!({ type: "session.status", session_id: "sess-late-busy", status: "busy" });
-      });
-      act(() => {
-        snapshotStore.value = { ok: true, at: Date.now() };
-      });
-
-      // Far beyond the abort dwell.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
-      });
-
-      expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
-      expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("B: a direct send during the abort dwell disarms the auto-abort", async () => {
-    // Review round 4 B: evidence holds and the dwell is counting down; the
-    // session goes idle and the user sends directly (doSendNow disarms
-    // reconnect mode). The timer callback must re-check the disarm — the
-    // anchor intentionally survives churn, and a send changes no effect dep.
-    // (The sibling "auto-aborts ... stuck on question tool" test is the
-    // positive control proving the dwell DOES fire without the send.)
-    const stuckHistory = [
-      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
-      {
-        id: "msg-asst",
-        role: "assistant",
-        parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
-      },
-    ];
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(stuckHistory);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: stuckHistory,
-      nextCursor: undefined,
-    });
-    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
-    const abort = vi.fn().mockResolvedValue(undefined);
-    (workspacesApi as Record<string, unknown>).abortSession = abort;
-    (workspacesApi as Record<string, unknown>).requestInputSnapshot = vi.fn().mockResolvedValue(undefined);
-
-    mockBusyState.set(true); // armed at mount
-    const qc = makeQueryClient();
-    renderChat(qc, "/chat/ws-1/sess-send");
-
-    // Deterministic evidence-ready signal: the stuck tool is rendered from
-    // history (history loaded) — then arm the snapshot evidence.
+    // B's stuck history loads; everything holds EXCEPT snapshot freshness.
     await waitFor(
       () => expect(getRenderedMessages().some((m) => m.parts.some((p) => p.type === "tool_use"))).toBe(true),
       { timeout: 5000 },
     );
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-send", status: "busy" });
-      snapshotStore.value = { ok: true, at: Date.now() };
-    });
 
-    // Session goes idle and the user sends directly — immediately, well
-    // inside the 1.5s dwell. (fireEvent, not userEvent; the busy flip is
-    // flushed in its own act so the send sees the idle state.)
-    act(() => {
-      mockBusyState.set(false);
-    });
-    const textarea = screen.getByRole("textbox");
-    act(() => {
-      fireEvent.change(textarea, { target: { value: "hello there" } });
-      fireEvent.keyDown(textarea, { key: "Enter" });
-    });
-    expect(messagesApi.sendAsync).toHaveBeenCalled();
-
-    // Far past the dwell — the send disarmed the abort.
-    await new Promise((r) => setTimeout(r, 3500));
-    expect(abort).not.toHaveBeenCalled();
+    await sleep(2500);
+    expect(abortMock()).not.toHaveBeenCalled();
     expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-  });
+  }, 15000);
 
-  it("N4: stale history from session A does not abort healthy busy session B", async () => {
-    // Review round 5 N4: switching from busy stuck session A to busy healthy
-    // session B, with B's history delayed past marker+dwell — the last-known
-    // transcript (A's, with the stuck tool) must not satisfy the stuck-tool
-    // check for B. getHistoryPage is the mock target (the messages query is
-    // backed by it), per the reviewer's correction.
-    const stuckA = [
-      { id: "msg-u", role: "user", parts: [{ type: "text", text: "push a" }] },
-      { id: "msg-a", role: "assistant", parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }] },
+  it("R1 — busy→busy switch with a FRESH post-switch snapshot still aborts the newly-viewed stuck session", async () => {
+    // The staleness guard must not permanently disarm recovery: after
+    // switching to B, a snapshot stamped after the switch is valid
+    // evidence and the abort fires for B.
+    const healthyA = [
+      { id: "a1", role: "user", parts: [{ type: "text", text: "hello a" }] },
     ];
-    const healthyB = [
-      { id: "msg-u2", role: "user", parts: [{ type: "text", text: "hello b" }] },
-      { id: "msg-a2", role: "assistant", parts: [{ type: "text", text: "all good" }] },
-    ];
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(stuckA);
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
-      messages: stuckA,
-      nextCursor: undefined,
-    });
-    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
-    (workspacesApi as Record<string, unknown>).requestInputSnapshot = vi.fn().mockResolvedValue(undefined);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, sid: string) => ({
+        messages: sid === "sess-b2" ? stuckHistory(STUCK_PERMISSION) : healthyA,
+        nextCursor: undefined,
+      }),
+    );
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_ws: string, sid: string) => (sid === "sess-b2" ? stuckHistory(STUCK_PERMISSION) : healthyA),
+    );
 
     function SwitchButton() {
       const navigate = useNavigate();
-      return <button data-testid="switch-btn" onClick={() => navigate("/chat/ws-1/sess-healthy-b")}>switch</button>;
+      return <button data-testid="switch-btn" onClick={() => navigate("/chat/ws-1/sess-b2")}>switch</button>;
     }
 
-    mockBusyState.set(true); // busy at mount AND across the switch
     const qc = makeQueryClient();
     render(
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={["/chat/ws-1/sess-stuck-a"]}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-a"]}>
           <TooltipProvider delayDuration={0}>
             <SwitchButton />
             <Routes>
@@ -1327,83 +470,61 @@ describe("ChatPage auto-abort stuck input sessions", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
+    await waitFor(() => expect(getRenderedMessages()).toHaveLength(1));
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-    // Deterministic: A's stuck tool must be RENDERED from history before the
-    // mocks are swapped — otherwise A's query can still be in flight and the
-    // override would swallow it (lastHistoryRef never populated).
+    act(() => { screen.getByTestId("switch-btn").click(); });
+
+    // B's stuck history loads while the fold is still empty — no abort.
     await waitFor(
       () => expect(getRenderedMessages().some((m) => m.parts.some((p) => p.type === "tool_use"))).toBe(true),
       { timeout: 5000 },
     );
 
-    // B's history is DELAYED: the query hangs until released.
-    let releaseB!: (v: { messages: typeof healthyB; nextCursor: undefined }) => void;
-    const bHistory = new Promise<{ messages: typeof healthyB; nextCursor: undefined }>((resolve) => { releaseB = resolve; });
-    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(() => bHistory);
-    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(() => bHistory.then((r) => r.messages));
+    // A FRESH snapshot arrives after the switch — valid evidence for B.
+    applySnapshot(1n, [busyFold("sess-b2")]);
+    sendContractEvent(textPartEnd("p-ev", "streaming", "sess-b2"));
 
-    // Switch to B; arm + evidence complete while B's history is still pending.
-    act(() => {
-      screen.getByTestId("switch-btn").click();
-    });
-    act(() => {
-      capturedSSEHandler!({ type: "session.status", session_id: "sess-healthy-b", status: "busy" });
-      snapshotStore.value = { ok: true, at: Date.now() + 1 };
-    });
+    await waitFor(
+      () => expect(abortMock()).toHaveBeenCalledWith("ws-1", "sess-b2"),
+      { timeout: 5000 },
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/session was interrupted/i)).toBeInTheDocument(),
+    );
+  }, 15000);
+});
 
-    // Wait past marker+dwell — with the stale-ref bug, A's transcript
-    // satisfied the stuck-tool check and aborted healthy B.
-    await new Promise((r) => setTimeout(r, 3000));
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalledWith("ws-1", "sess-healthy-b");
-    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
-
-    // B's history finally loads — healthy content, no abort.
-    await act(async () => { releaseB({ messages: healthyB, nextCursor: undefined }); });
-    await new Promise((r) => setTimeout(r, 500));
-    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
-  });
-
-  it("refreshes message queue on SSE reconnect", async () => {
-    const qc = makeQueryClient();
-    qc.setQueryData(["workspace-status", "ws-1"], { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
-    qc.setQueryData(["messages", "ws-1", "ses_1"], { pages: [{ messages: [] }], pageParams: [undefined] });
-    renderChat(qc, "/chat/ws-1/ses_1");
-
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-
-    const callsBefore = (messagesApi.getQueue as ReturnType<typeof vi.fn>).mock.calls.length;
-
-    triggerReconnect();
-
-    await waitFor(() => {
-      const callsAfter = (messagesApi.getQueue as ReturnType<typeof vi.fn>).mock.calls.length;
-      expect(callsAfter).toBeGreaterThan(callsBefore);
+describe("Contract-stream reconnect reconciliation", () => {
+  beforeEach(() => {
+    capturedContractOptions = null;
+    contractState = { seq: 0n, sessions: new Map() };
+    promptStore.questions = [];
+    vi.clearAllMocks();
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      const msgs = await (messagesApi.getHistory as ReturnType<typeof vi.fn>)();
+      return { messages: msgs, nextCursor: undefined };
     });
   });
 
-  it("refetches message history on SSE reconnect (issue 440 — transcript resync)", async () => {
-    // Issue 440: an in-place opencode restart (credential reload / OOM / crash)
-    // cuts the SSE stream. On reconnect the transcript must be resynced from
-    // authoritative opencode history, otherwise the user sees a stale or
-    // partially-interrupted transcript with no recovery. handleSSEReconnect
-    // now calls reconcileOnIdle, which refetches the messages query (backed
-    // by getHistoryPage).
+  it("contract-stream reconnect refreshes the queue and refetches message history (issue 440 — transcript resync)", async () => {
     const qc = makeQueryClient();
-    qc.setQueryData(["workspace-status", "ws-1"], { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
-    qc.setQueryData(["messages", "ws-1", "ses_1"], { pages: [{ messages: [] }], pageParams: [undefined] });
-    renderChat(qc, "/chat/ws-1/ses_1");
+    renderChat(qc, "/chat/ws-1/sess-1");
+    await waitFor(() => expect(capturedContractOptions).not.toBeNull());
+    await waitFor(() => expect(screen.getByTestId("chat-view")).toBeInTheDocument());
 
-    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+    const historyBefore = (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length;
+    const queueBefore = (messagesApi.getQueue as ReturnType<typeof vi.fn>).mock.calls.length;
 
-    const callsBefore = (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length;
+    act(() => { capturedContractOptions?.onReconnect(); });
 
-    triggerReconnect();
-
-    // reconcileOnIdle refetches the messages query → getHistoryPage is called.
+    // A stream gap may have missed persisted messages — the reconnect
+    // path must resync the transcript and the queue.
     await waitFor(() => {
-      const callsAfter = (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length;
-      expect(callsAfter).toBeGreaterThan(callsBefore);
+      expect((messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(historyBefore);
+      expect((messagesApi.getQueue as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(queueBefore);
     });
   });
 });
