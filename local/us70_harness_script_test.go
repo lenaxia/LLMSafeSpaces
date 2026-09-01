@@ -1,6 +1,8 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+//go:build !race
+
 package local_test
 
 // us70_harness_script_test.go — pin tests for the US-70.0 delivery-harness
@@ -576,5 +578,41 @@ func TestUS70ReconcileInterval_WorkflowLockstep(t *testing.T) {
 		"lib RECONCILE_INTERVAL_S default")
 	if def != "5" {
 		t.Fatalf("lib RECONCILE_INTERVAL_S default must stay 5 (matching the workflows' 5s helm set), got %s", def)
+	}
+}
+
+// TestUS69EvidenceLegScript (#1218/#1219): the Epic 69 pool leg must be
+// syntactically valid, source the shared harness, and fail (not silently
+// pass) on probe errors — the matrix outcome is data, harness failure is
+// not.
+
+func TestUS69EvidenceLegScript(t *testing.T) {
+	if testing.Short() {
+		t.Skip("script lint only")
+	}
+	// The test binary's cwd is this package dir; the scripts sit in the
+	// same directory.
+	for _, script := range []string{"us-69-evidence-leg.sh", "authority-flip.sh"} {
+		t.Run(script, func(t *testing.T) {
+			out, err := exec.Command("bash", "-n", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("syntax: %v: %s", err, out)
+			}
+		})
+	}
+	src, err := os.ReadFile("us-69-evidence-leg.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"local/lib/us70-common.sh",
+		"local/spike-admission-id.sh",
+		"local/authority-flip.sh",
+		"set -euo pipefail",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("evidence leg missing %q", want)
+		}
 	}
 }
