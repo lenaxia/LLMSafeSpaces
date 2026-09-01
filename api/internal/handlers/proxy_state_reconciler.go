@@ -16,14 +16,15 @@ import (
 //
 //   - escalateHungs (D6/#998): the statusz-based unattended-escalation
 //     sweep (data source unchanged; only the scheduler moved);
-//   - usage-gate arming: every Active workspace gets one busy-gated ABI
-//     subscription attempt (the gate itself drops the connection after
-//     the idle settle window — arming is cheap and idempotent);
+//   - the stale-activeSess statusz self-heal;
 //   - gate teardown for workspaces that left Active.
 //
-// It deliberately does NOT re-derive session state: display state is the
-// pod's projection (contract streams), billing/state bridges hang off the
-// usage gates.
+// It deliberately does NOT arm gates and does NOT re-derive session
+// state: usage gates are ACTIVITY-gated (outbox delivery, adapter write
+// ops — the moments a turn may start), so an idle fleet holds ZERO pod
+// streams (D1-B's rolling_deploy_no_fanin_storm holds by construction —
+// an API deploy with idle pods establishes no upstream connections).
+// Display state is the pod's projection (contract streams).
 func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -46,7 +47,6 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 			watched := make([]string, 0, len(phases))
 			for id, phase := range phases {
 				if phase == string(phaseActive) {
-					h.UsageStream().Open(id)
 					watched = append(watched, id)
 				} else {
 					h.UsageStream().Close(id)

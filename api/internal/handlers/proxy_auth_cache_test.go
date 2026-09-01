@@ -283,14 +283,14 @@ func TestOnPhaseChange_ActiveUpdateRearmsUsageGate(t *testing.T) {
 	ws.Status.Phase = v1.WorkspacePhaseActive
 	env.handler.onPhaseChange(ws)
 
-	requireGateConnect(t, fc, "Active→Active update must arm the usage gate")
-	require.Contains(t, resolved(), "ws-902",
-		"#902: Redis-persisted prior-phase makes post-restart seeds look exactly like this — the gate must still arm")
+	requireGateSilence(t, fc, "an activity-driven status update must not open a pod stream")
+	require.Empty(t, resolved(), "no gate may arm without turn activity")
 }
 
-// A real transition (prior != Active) must still Close+Open — a fresh
-// gate, since the old one targets the previous pod.
-func TestOnPhaseChange_ActiveTransitionFreshGate(t *testing.T) {
+// A real transition into Active must not open a gate either (the
+// previous pod's gate is closed by the transition; a new one opens only
+// on activity).
+func TestOnPhaseChange_ActiveTransitionOpensNoGate(t *testing.T) {
 	env := newTestEnv(t)
 	consumer, fc, _ := newRecordingGateConsumer(nil)
 	t.Cleanup(injectUsageStream(consumer))
@@ -306,11 +306,11 @@ func TestOnPhaseChange_ActiveTransitionFreshGate(t *testing.T) {
 	ws.Status.Phase = v1.WorkspacePhaseActive
 	env.handler.onPhaseChange(ws)
 
-	// The transition tears the old gate down and arms a fresh one: a
-	// second connection must appear.
-	requireGateConnect(t, fc, "transition into Active must re-arm a fresh gate")
-	require.Equal(t, 1, env.handler.UsageStream().Gates(),
-		"transition must leave exactly one gate armed")
+	// The transition closes the stale gate and opens nothing: gates are
+	// activity-gated, and a phase is not activity.
+	assert.Equal(t, 0, env.handler.UsageStream().Gates(),
+		"a real transition into Active must not arm a gate — only turn activity does")
+	requireGateSilence(t, fc, "no fresh connection may open without activity")
 }
 
 func TestOnPhaseChange_SuspendedClosesGate(t *testing.T) {
@@ -331,12 +331,13 @@ func TestOnPhaseChange_SuspendedClosesGate(t *testing.T) {
 		"Suspended must close the usage gate (no pod stream to a deleted pod)")
 }
 
-// TestStateReconciler_HealsMissingGate (#902): the reconciler must arm
-// gates for Active workspaces the seed missed — converting permanent
-// event-blindness into at most one reconcile interval.
-func TestStateReconciler_HealsMissingGate(t *testing.T) {
+// TestStateReconciler_NoArmOnIdleFleet (D1-B / rolling_deploy_no_fanin_storm):
+// the reconciler must NOT arm gates for Active workspaces — usage gates
+// are activity-gated, so an idle fleet (or a freshly deployed API over
+// one) holds ZERO pod streams. Non-Active gates are torn down.
+func TestStateReconciler_NoArmOnIdleFleet(t *testing.T) {
 	env := newTestEnv(t)
-	consumer, _, resolved := newRecordingGateConsumer(nil)
+	consumer, fc, resolved := newRecordingGateConsumer(nil)
 	t.Cleanup(injectUsageStream(consumer))
 
 	orig := stateReconcileInterval
@@ -346,6 +347,7 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 	stopCh := make(chan struct{})
 	env.handler.stopCh = stopCh
 	reconDone := make(chan struct{})
+	_ = fc
 
 	// A phase source with an Active workspace no gate covers (the
 	// seed-skip shape), plus non-Active controls.
@@ -363,20 +365,10 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 		<-reconDone
 	})
 
-	require.Eventually(t, func() bool {
-		for _, id := range resolved() {
-			if id == "ws-missed" {
-				return true
-			}
-		}
-		return false
-	}, 2*time.Second, 10*time.Millisecond,
-		"reconciler must arm the missed Active gate")
-
-	for _, id := range resolved() {
-		assert.NotEqual(t, "ws-susp", id, "only Active phases are armed")
-		assert.NotEqual(t, "ws-created", id, "only Active phases are armed")
-	}
+	// Let at least two ticks fire: no gate may ever connect (the
+	// fan-in-storm guarantee — phase-Active is not activity).
+	requireGateSilence(t, fc, "the reconciler must not arm gates on an idle fleet")
+	assert.Empty(t, resolved(), "no gate may arm without turn activity")
 }
 
 type fakePhaseSource map[string]string

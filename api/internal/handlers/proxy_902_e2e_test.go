@@ -28,6 +28,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/usagestream"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -181,8 +182,18 @@ func requireGateConnect(t *testing.T, fc *gateTestClient, what string) {
 // while sends succeeded.
 func Test902_E2E_SeedWithPersistedPriorArmsGateAndBridgesEvents(t *testing.T) {
 	handler, fc := startFullWiring(t, "ws-902e2e", "10.0.0.1", "Active", time.Hour, nil)
+	handler.SetAgentdTerminus(true)
 
-	requireGateConnect(t, fc, "seed with Redis-persisted prior=Active must still arm and connect the gate (#902)")
+	// US-69.11: gates are ACTIVITY-gated — the outbox's confirmed
+	// delivery (a turn may start) is the arming trigger; a seed with
+	// Redis-persisted prior=Active opens nothing by itself.
+	handler.outboxOnDelivered("ws-902e2e", "ses-x", outbox.Entry{ID: "e1"})
+	requireGateConnect(t, fc, "confirmed delivery must arm and connect the gate")
+
+	// The bridge publishes to the workspace OWNER — the watcher's seed
+	// phase event records it, but it fires during Start() (before this
+	// test can subscribe); record it directly for determinism.
+	handler.userBroker.RecordWorkspaceOwner("ws-902e2e", "user-1")
 
 	// A pod-side session.status event bridges onto the user stream.
 	sub, err := handler.userBroker.SubscribeUser("user-1")
@@ -195,14 +206,20 @@ func Test902_E2E_SeedWithPersistedPriorArmsGateAndBridgesEvents(t *testing.T) {
 		Status:    abiv1.SessionStatus_SESSION_STATUS_IDLE,
 	})
 
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "session.status", evt.Type)
-		assert.Equal(t, "ws-902e2e", evt.WorkspaceID)
-		assert.Equal(t, "ses-x", evt.SessionID)
-		assert.Equal(t, "idle", evt.Status)
-	case <-time.After(5 * time.Second):
-		t.Fatal("derived session.status never reached the user subscriber — gate connected but the bridge is not relaying")
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case evt := <-sub.Ch:
+			if evt.Type != "session.status" {
+				continue // phase/lifecycle events share the user stream
+			}
+			assert.Equal(t, "ws-902e2e", evt.WorkspaceID)
+			assert.Equal(t, "ses-x", evt.SessionID)
+			assert.Equal(t, "idle", evt.Status)
+			return
+		case <-deadline:
+			t.Fatal("derived session.status never reached the user subscriber — gate connected but the bridge is not relaying")
+		}
 	}
 }
 
@@ -211,18 +228,22 @@ func Test902_E2E_SeedWithPersistedPriorArmsGateAndBridgesEvents(t *testing.T) {
 // gate with no phase transition), a NEW connection appears within one
 // reconcile interval. Deleting the phaseSource assignment or the
 // goroutine launch in Start() fails this test.
-func Test902_E2E_ReconcilerHealsDeletedGate(t *testing.T) {
+// US-69.11 (D1-B / rolling_deploy_no_fanin_storm): with the tracker
+// gone, NOTHING re-arms idle gates on a timer — a closed gate stays
+// closed until the next turn's delivery opens it. An idle fleet holds
+// zero pod streams across API deploys.
+func Test902_E2E_ReconcilerDoesNotReArmIdleGates(t *testing.T) {
 	handler, fc := startFullWiring(t, "ws-902heal", "10.0.0.1", "Active", 100*time.Millisecond, nil)
+	handler.SetAgentdTerminus(true)
 
-	requireGateConnect(t, fc, "initial gate")
+	handler.outboxOnDelivered("ws-902heal", "ses-x", outbox.Entry{ID: "e1"})
+	requireGateConnect(t, fc, "initial gate (activity-armed)")
 
-	// Kill the gate exactly as a connection death does: no transition,
-	// no user stream — nothing but the reconciler can bring it back.
 	handler.UsageStream().Close("ws-902heal")
 	require.Equal(t, 0, handler.UsageStream().Gates(), "sanity: gate torn down")
 
-	requireGateConnect(t, fc, "reconciler must re-arm the deleted gate within one interval")
-	require.Equal(t, 1, handler.UsageStream().Gates())
+	requireGateSilence(t, fc, "the reconciler must not re-arm an idle gate — only activity does")
+	require.Equal(t, 0, handler.UsageStream().Gates())
 }
 
 // Test902_E2E_ArmWhileUnresolvableThenRecovers: the unhappy path — the
@@ -232,6 +253,8 @@ func Test902_E2E_ReconcilerHealsDeletedGate(t *testing.T) {
 func Test902_E2E_ArmWhileUnresolvableThenRecovers(t *testing.T) {
 	ipReady := make(chan struct{})
 	handler, fc := startFullWiring(t, "ws-902ip", "", "Active", time.Hour, ipReady)
+	handler.SetAgentdTerminus(true)
+	handler.outboxOnDelivered("ws-902ip", "ses-x", outbox.Entry{ID: "e1"})
 
 	// Armed but cannot connect yet.
 	require.Eventually(t, func() bool { return handler.UsageStream().Gates() == 1 },
@@ -280,6 +303,18 @@ func Test902_TransitionCancelsExistingGate(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("transition into Active must cancel the previous gate's stream (fresh connection to the new pod)")
 	}
-	requireGateConnect(t, fc, "transition must leave a (new) gate armed")
-	require.Equal(t, 1, env.handler.UsageStream().Gates())
+	// US-69.11: the transition cancels the stale gate and opens nothing
+	// (gates are activity-gated); the next delivery arms the fresh one.
+	require.Equal(t, 0, env.handler.UsageStream().Gates())
+}
+
+// requireGateSilence asserts no further gate connection appears within
+// the window (the D1-B no-fan-in guarantee).
+func requireGateSilence(t *testing.T, fc *gateTestClient, what string) {
+	t.Helper()
+	select {
+	case <-fc.connected:
+		t.Fatalf("unexpected gate connection: %s", what)
+	case <-time.After(300 * time.Millisecond):
+	}
 }

@@ -87,6 +87,13 @@ Retire the API's SSE tracker (its per-workspace legacy-dialect pod streams and s
 ### Deletion inventory (tests)
 Files deleted: sse_billing_e2e_test, context_usage_adapter_e2e_test, context_observability_test, proxy_v2_shadow_test, proxy_v2_pending_redis_test, proxy_v2_ttl_busyguard_test. Rewritten/trimmed: adapter_crosscutting, proxy_d6, proxy_auth_cache, proxy_902_e2e, proxy_input (bridge-driven), proxy_test, agent_drain (poll-based), agent_reload_e2e, opencode_upgrade, stream_events, proxy_broker_agentdied, proxy_v2, proxy_v2_bridge, proxy_subtask_permission, context_usage_e2e, mock_adapter, proxy_session_status, mcp_router_integration, pkg/mcp tests.
 
+### AC dispositions (review round 2)
+
+- **statusz ↔ snapshot dedupe: DECLINED per US-69.6's recorded decision** (design 0055 §decisions): statusz and the ABI snapshot keep distinct charters — statusz is the controller's deep-introspection poll (sessions with tokens/context, no latency bound); the snapshot is the frozen I12 contract view. Merging would put an unbounded endpoint's semantics into the frozen surface. US-69.11 retires the API-side derivation (done); the controller's scrape may later source cheaper data from the snapshot — decided there, in the controller's own story.
+- **rolling_deploy_no_fanin_storm: holds BY CONSTRUCTION (review-round correction)** — the initial stateReconciler re-armed gates for every Active workspace each tick, which would have held a perpetual connect/idle-drop churn on idle pods. Corrected: usage gates open ONLY on turn activity (outbox confirmed delivery, adapter write ops); the reconciler tears down non-Active gates and never arms. An API deploy over an idle fleet establishes ZERO pod streams (pinned by Test902_E2E_ReconcilerDoesNotReArmIdleGates + TestStateReconciler_NoArmOnIdleFleet).
+- **streams_scale_to_zero**: manager last-detach + gauges (proxy_stream_gauges_test); usage gate idle-drop + CloseAll terminality (usagestream tests).
+- **two_replicas_single_owner**: delivery single-owner is the S2 outbox claim/ledger stress (outbox_stress_test); the deterministic billing keys make the dual-subscriber case exactly-once (proxy_usagestream_test).
+
 ### Known deltas (accepted)
 - Billing is per-step input+output (was: once-per-session input + cumulative output deltas) — more accurate; keys deterministic.
 - Cross-replica resolved-kind degradation: a resolution for a request first seen on another replica emits agent.question.resolved (the frontend removes by request id either way).

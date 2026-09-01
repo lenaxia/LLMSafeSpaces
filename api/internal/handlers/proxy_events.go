@@ -123,8 +123,6 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			// caches on activity-driven status updates).
 			h.state().InvalidateWorkspaceConfig(context.Background(), workspace.Name)
 		}
-		// #902 semantics: arm on EVERY Active event (idempotent gate).
-		h.UsageStream().Open(workspace.Name)
 	}
 }
 
