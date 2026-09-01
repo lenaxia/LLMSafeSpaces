@@ -91,6 +91,13 @@ func DefaultLoggingConfig() LoggingConfig {
 			// a session credential, not just a random value).
 			"/api/v1/auth",
 			"/api/v1/auth/",
+			// #1214: the pod-bootstrap internal endpoint (US-70.1
+			// spawn-env pull) returns the FULL materialized credential
+			// set in its response body — llm-provider keys, SSH private
+			// keys, env-secret tokens, MCP bearers — the same plaintext
+			// class as /api/v1/secrets/*. Skip it for the same reason;
+			// the array-masker fix is the second layer, this is the first.
+			"/internal/v1/pod-bootstrap",
 			// G25 defense-in-depth: admin and org credential endpoints
 			// accept provider API keys (OpenAI sk-..., Anthropic sk-ant-...,
 			// etc.) in the "apiKey" JSON field. "apiKey" is in
@@ -229,7 +236,16 @@ func logResponse(c *gin.Context, log interfaces.LoggerInterface, requestID strin
 			}
 			// Use the utilities.MaskSensitiveFieldsWithList function to mask sensitive fields
 			utilities.MaskSensitiveFieldsWithList(maskedBody, cfg.SensitiveFields)
-			fields = append(fields, "response_body", maskedBody)
+			// #1214: the size cap previously applied ONLY to the
+			// non-JSON branch — a JSON body was masked and logged with
+			// no bound (observed ~7KB credential-bearing lines). Marshal
+			// the masked copy and truncate the same way.
+			if maskedJSON, err := json.Marshal(maskedBody); err == nil && len(maskedJSON) > cfg.MaxBodyLogSize {
+				truncated := string(maskedJSON[:cfg.MaxBodyLogSize]) + "... (truncated)"
+				fields = append(fields, "response_body", truncated)
+			} else {
+				fields = append(fields, "response_body", maskedBody)
+			}
 		} else {
 			// If not JSON or too large, truncate it
 			if len(responseBody) > cfg.MaxBodyLogSize {
