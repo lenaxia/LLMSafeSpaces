@@ -44,6 +44,7 @@ usage() {
     cat <<'EOF'
 usage: local/authority-flip.sh <command> [args]
   preflight <workspaceId> [--park]   check in-flight ledger deliveries
+  inflight <workspaceId>            print the raw ledger_in_flight count
   park <workspaceId> <reason>        park in-flight outbox entries
   unpark <workspaceId>               re-arm parked entries (rollback)
   flip <on|off> [workspaceId]        toggle AGENTD_STATE_AUTHORITY
@@ -142,6 +143,10 @@ case "$cmd" in
 preflight)
     [ $# -ge 1 ] || { usage >&2; die "preflight needs <workspaceId>"; }
     do_preflight "$1" "$([ "${2:-}" = "--park" ] && echo 1 || echo 0)"
+    ;;
+inflight)
+    [ $# -ge 1 ] || { usage >&2; die "inflight needs <workspaceId>"; }
+    ok "inflight $1: ledger_in_flight=$(inflight_count "$1")"
     ;;
 park)
     [ $# -ge 2 ] || { usage >&2; die "park needs <workspaceId> <reason>"; }
