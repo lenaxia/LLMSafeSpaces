@@ -304,7 +304,10 @@ class WorkspacesAPI {
       "GET", `/workspaces/${id}/bindings`);
   }
   reloadSecrets(id: string) {
-    return this.client.request<{ reloaded: number; restarted: boolean }>("POST", `/workspaces/${id}/reload-secrets`);
+    // US-70.3: the pod's resync outcome (status/appliedRev/restarted) —
+    // no server-built reload count.
+    return this.client.request<{ status: 'applied' | 'not_modified'; appliedRev: string; restarted: boolean }>(
+      "POST", `/workspaces/${id}/reload-secrets`);
   }
   setModel(id: string, model: string) {
     return this.client.request<void>("PUT", `/workspaces/${id}/model`, { model });

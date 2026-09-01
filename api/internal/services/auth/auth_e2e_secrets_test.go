@@ -340,10 +340,16 @@ func (m *memDEKCache) GetDEK(_ context.Context, id string) ([]byte, error) { ret
 func (m *memDEKCache) EvictDEK(_ context.Context, id string) error         { delete(m.store, id); return nil }
 
 type memSecretStore struct {
-	secrets  map[string]*secrets.UserSecret
-	bindings map[string][]string
-	audit    []*secrets.AuditEntry
-	counter  int
+	secrets   map[string]*secrets.UserSecret
+	bindings  map[string][]string
+	audit     []*secrets.AuditEntry
+	counter   int
+	revisions map[string]memRevisionRow
+}
+
+type memRevisionRow struct {
+	seq          int64
+	manifestHash string
 }
 
 func (m *memSecretStore) CreateSecret(_ context.Context, s *secrets.UserSecret) error {
@@ -473,4 +479,24 @@ func (m *memSecretStore) LogAudit(_ context.Context, e *secrets.AuditEntry) erro
 }
 func (m *memSecretStore) QueryAudit(_ context.Context, uid string, _ secrets.AuditQuery) ([]*secrets.AuditEntry, error) {
 	return nil, nil
+}
+
+func (m *memSecretStore) CurrentRevision(_ context.Context, workspaceID string) (int64, string, bool, error) {
+	if m.revisions == nil {
+		m.revisions = make(map[string]memRevisionRow)
+	}
+	row, ok := m.revisions[workspaceID]
+	return row.seq, row.manifestHash, ok, nil
+}
+
+func (m *memSecretStore) EnsureRevision(_ context.Context, workspaceID, manifestHash string) (int64, error) {
+	if m.revisions == nil {
+		m.revisions = make(map[string]memRevisionRow)
+	}
+	row, exists := m.revisions[workspaceID]
+	if !exists || row.manifestHash != manifestHash {
+		row = memRevisionRow{seq: row.seq + 1, manifestHash: manifestHash}
+		m.revisions[workspaceID] = row
+	}
+	return row.seq, nil
 }

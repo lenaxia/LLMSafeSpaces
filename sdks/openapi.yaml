@@ -1677,12 +1677,20 @@ paths:
     post:
       tags: [secrets]
       summary: Reload secrets into the workspace pod
+      description: >-
+        US-70.3: the endpoint notifies the pod's resync endpoint and the pod
+        re-pulls through the conditional bootstrap path. The response reports
+        what the POD did — no server-built reload count.
       operationId: reloadWorkspaceSecrets
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
         "200":
-          description: Secrets reloaded
+          description: Secrets reload outcome reported by the pod
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadSecretsResult"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -8636,6 +8644,23 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/BoundSecret"
+    ReloadSecretsResult:
+      type: object
+      description: >-
+        US-70.3 reload outcome as reported by the workspace pod's resync
+        endpoint (notify → re-pull): no server-built reload count.
+      required: [status, restarted]
+      properties:
+        status:
+          type: string
+          enum: [applied, not_modified]
+          description: applied = the pod pulled and applied a new revision; not_modified = the conditional pull was a 304 no-op.
+        appliedRev:
+          type: string
+          description: The pod's applied revision anchor ("seq:manifestHash:contentHash"); empty when nothing has been applied yet.
+        restarted:
+          type: boolean
+          description: Whether the apply triggered a session-aware restart decision.
     BoundSecret:
       type: object
       properties:

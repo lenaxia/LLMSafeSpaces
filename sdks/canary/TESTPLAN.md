@@ -705,10 +705,10 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 | P1 | Create workspace, wait `Active` |
 | P2 | Create credential, bind → 204 |
 | P3 | `GET /bindings` → credential ID present |
-| P4 | `POST /reload-secrets` → 200 with `reloaded` integer ≥ 1 |
+| P4 | `POST /reload-secrets` → 200 with `status` ∈ {`applied`, `not_modified`} (US-70.3 pod-reported outcome) |
 | P5 | Status `credentialState.available` = `true` after reload |
 | P6 | Unbind (empty list) → 204; `GET /bindings` → empty |
-| P7 | `POST /reload-secrets` after unbind → 200 with `reloaded: 0` (not an error) |
+| P7 | `POST /reload-secrets` after unbind → 200 with `status` ∈ {`applied`, `not_modified`} (not an error) |
 | P8 | Status `credentialState.available` after clearing → false or not-set |
 | N1 | `POST /reload-secrets` on suspended workspace → 409 (`errNoRunningPod`) |
 

@@ -82,7 +82,7 @@ func (m *mockEnvService) UpdateSecret(_ context.Context, _, _ string, _ []byte, 
 	return m.updateErr
 }
 
-func (m *mockEnvService) DeleteSecret(_ context.Context, _, secretID string) error {
+func (m *mockEnvService) ForceRevokeSecret(_ context.Context, _, secretID string) ([]string, error) {
 	m.deleteCallCount++
 	m.lastDeleteID = secretID
 	for name, s := range m.secrets {
@@ -90,7 +90,10 @@ func (m *mockEnvService) DeleteSecret(_ context.Context, _, secretID string) err
 			delete(m.secrets, name)
 		}
 	}
-	return m.deleteErr
+	if m.deleteErr != nil {
+		return nil, m.deleteErr
+	}
+	return []string{m.lastBindWks}, nil
 }
 
 func (m *mockEnvService) AddBindings(_ context.Context, _, workspaceID string, secretIDs []string) (secrets.BindingsMutationResult, error) {

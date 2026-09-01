@@ -161,13 +161,26 @@ func TestSandboxPod_VolumeFootprint(t *testing.T) {
 	require.Equal(t, int64(600), *satProj.ExpirationSeconds,
 		"bootstrap-token TTL must be 600s (10 minutes, K8s minimum)")
 
-	// bootstrap-token must be mounted on the init container only, NOT on the main container.
+	// US-70.3: the projected token now ALSO mounts on the main container
+	// in single-container mode — agentd runs there (--supervise) and its
+	// resync endpoint must re-pull secrets for the pod's lifetime with a
+	// kubelet-rotated token. The mount stays READ-ONLY (agentd only ever
+	// reads it) and AutomountServiceAccountToken stays false (this is the
+	// explicit audience-scoped projected volume, never the default token).
 	require.NotEmpty(t, pod.Spec.Containers)
 	main := pod.Spec.Containers[0]
-	for _, m := range main.VolumeMounts {
-		require.NotEqual(t, "bootstrap-token", m.Name,
-			"bootstrap-token must NOT be mounted on the main container (G17)")
+	var mainTokenMount *corev1.VolumeMount
+	for i := range main.VolumeMounts {
+		if main.VolumeMounts[i].Name == "bootstrap-token" {
+			mainTokenMount = &main.VolumeMounts[i]
+			break
+		}
 	}
+	require.NotNil(t, mainTokenMount,
+		"single-container mode: bootstrap-token must mount on the main container (agentd --supervise re-pulls)")
+	require.Equal(t, "/var/run/bootstrap", mainTokenMount.MountPath)
+	require.True(t, mainTokenMount.ReadOnly,
+		"the projected SA token is read-only on the main container")
 
 	// US-35.7: sandbox-runtime must be tmpfs (Memory medium) and RW on main container.
 	var sandboxRuntimeVol *corev1.Volume

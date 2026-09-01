@@ -240,22 +240,56 @@ func (s *SecretService) UpdateSecret(ctx context.Context, userID, sessionID stri
 	return nil
 }
 
-// DeleteSecret removes a secret and its bindings.
-func (s *SecretService) DeleteSecret(ctx context.Context, userID, secretID string) error {
+// ForceRevokeSecret is the I12 revocation operation and the ONLY
+// delete path (validation m2 removed the plain DeleteSecret wrapper —
+// zero non-test callers; its "delete" audit wording with name+type is
+// preserved by the final audit below): deleting a secret revokes it
+// from EVERY workspace it is bound to. It removes the row (the
+// store's ON DELETE CASCADE drops every user_secret_bindings row),
+// then force-refreshes each affected workspace's stored revision by
+// recomputing the manifest tier (zero decrypts) and running
+// EnsureRevision — WITHOUT the refresh, the stored row would still
+// carry the pre-revoke hash and the reconcile loop would see the
+// workspace as converged while the pod keeps serving the revoked
+// plaintext. Returns the affected workspace IDs so the handler can
+// notify each live pod (notify failure costs latency, never correctness
+// — suspended pods converge on boot by construction).
+func (s *SecretService) ForceRevokeSecret(ctx context.Context, userID, secretID string) ([]string, error) {
 	secret, err := s.store.GetSecret(ctx, userID, secretID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if secret == nil {
-		return ErrSecretNotFound
+		return nil, ErrSecretNotFound
+	}
+
+	affected, err := s.store.GetBindingsForSecret(ctx, secretID)
+	if err != nil {
+		return nil, fmt.Errorf("list bindings for revoke: %w", err)
 	}
 
 	if err := s.store.DeleteSecret(ctx, userID, secretID); err != nil {
-		return fmt.Errorf("delete secret: %w", err)
+		return nil, fmt.Errorf("delete secret: %w", err)
+	}
+
+	revStore, err := s.requireRevisionStore()
+	if err != nil {
+		return nil, err
+	}
+	for _, ws := range affected {
+		hash, merr := s.ManifestFor(ctx, userID, ws)
+		if merr != nil {
+			return nil, fmt.Errorf("recompute manifest for revoke (workspace %s): %w", ws, merr)
+		}
+		if _, eerr := revStore.EnsureRevision(ctx, ws, hash); eerr != nil {
+			return nil, fmt.Errorf("refresh revision for revoke (workspace %s): %w", ws, eerr)
+		}
+		ws := ws
+		s.audit(ctx, userID, "revoke", &secretID, &ws, nil)
 	}
 
 	s.audit(ctx, userID, "delete", &secretID, nil, map[string]string{"name": secret.Name, "type": string(secret.Type)})
-	return nil
+	return affected, nil
 }
 
 // DecryptSecretValue decrypts a secret's value (used for pod injection).

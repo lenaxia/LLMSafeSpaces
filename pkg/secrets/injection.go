@@ -184,6 +184,20 @@ func (s *SecretService) CurrentRevision(ctx context.Context, workspaceID string)
 	return revStore.CurrentRevision(ctx, workspaceID)
 }
 
+// EnsureRevision converges the workspace's stored revision row to
+// manifestHash (see RevisionStore): same hash returns the stored seq
+// unchanged; a different hash conditionally mints the next seq with
+// the store's bounded CAS semantics. Exposed on the service so the
+// reconcile loop can mint observed drift as a new seq (US-70.3) with
+// the same single-writer guarantees the build path has.
+func (s *SecretService) EnsureRevision(ctx context.Context, workspaceID, manifestHash string) (int64, error) {
+	revStore, err := s.requireRevisionStore()
+	if err != nil {
+		return 0, err
+	}
+	return revStore.EnsureRevision(ctx, workspaceID, manifestHash)
+}
+
 // manifestFromRows builds the decrypt-free tier from ROWS: the intended
 // set as the store sees it, before any ciphertext is touched.
 func manifestFromRows(bindings []CredentialBinding, secrets []*UserSecret, servers []MCPServerBindingRow) []ManifestEntry {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Canary scenario: D-CRED-BIND
-// Tests credential bind + reload + unbind + reload-empty (reload with no bindings → {reloaded:0}).
+// Tests credential bind + reload + unbind + reload-empty (reload with no bindings → status not_modified/applied, never an error).
 package main
 
 import (
@@ -87,11 +87,12 @@ func runCredBind(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		run.Assert(found, "get-bindings: cred present", "")
 	}
 
-	// P4: Reload secrets → reloaded ≥ 1
+	// P4: Reload secrets → pod-reported outcome (US-70.3: status, not a count)
 	result, err := c.Workspaces.ReloadSecrets(ctx, wsID)
 	if run.AssertNoError(err, "reload-secrets: no error") {
-		run.Assert(result.Reloaded >= 1, "reload-secrets: reloaded ≥ 1",
-			fmt.Sprintf("got %d", result.Reloaded))
+		run.Assert(result.Status == "applied" || result.Status == "not_modified",
+			"reload-secrets: status ∈ {applied, not_modified}",
+			fmt.Sprintf("got %q", result.Status))
 	}
 
 	// P5: Status credentialState.available = true after reload
@@ -100,7 +101,7 @@ func runCredBind(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		run.Assert(status.CredentialState.Available, "status: credentialState.available=true", "")
 	}
 
-	// P6+P7: Unbind, then reload-empty → reloaded=0 (not an error)
+	// P6+P7: Unbind, then reload-empty → still a valid pod outcome (not an error)
 	err = c.Workspaces.SetBindings(ctx, wsID, []string{})
 	run.AssertNoError(err, "unbind: no error")
 
@@ -112,8 +113,9 @@ func runCredBind(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	emptyReload, err := c.Workspaces.ReloadSecrets(ctx, wsID)
 	if run.AssertNoError(err, "reload-after-unbind: no error (not an error)") {
-		run.Assert(emptyReload.Reloaded == 0, "reload-after-unbind: reloaded=0",
-			fmt.Sprintf("got %d", emptyReload.Reloaded))
+		run.Assert(emptyReload.Status == "applied" || emptyReload.Status == "not_modified",
+			"reload-after-unbind: status ∈ {applied, not_modified}",
+			fmt.Sprintf("got %q", emptyReload.Status))
 	}
 
 	// P8: credentialState.available after clearing

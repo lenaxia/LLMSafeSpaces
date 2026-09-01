@@ -821,7 +821,10 @@ func TestSecretService_UpdateSecret_NotFound(t *testing.T) {
 	}
 }
 
-func TestSecretService_DeleteSecret(t *testing.T) {
+// TestSecretService_DeleteIsForceRevoke pins m2: the plain DeleteSecret
+// wrapper is gone — the ONLY service-level delete is ForceRevokeSecret
+// (unbound secrets simply have an empty affected set).
+func TestSecretService_DeleteIsForceRevoke(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	ctx := context.Background()
 
@@ -829,9 +832,12 @@ func TestSecretService_DeleteSecret(t *testing.T) {
 		Name: "deletable", Type: SecretTypeAPIKey, Value: "val", Metadata: json.RawMessage(`{"kind":"x","slug":"x"}`),
 	})
 
-	err := svc.DeleteSecret(ctx, "user-1", created.ID)
+	affected, err := svc.ForceRevokeSecret(ctx, "user-1", created.ID)
 	if err != nil {
-		t.Fatalf("DeleteSecret failed: %v", err)
+		t.Fatalf("ForceRevokeSecret failed: %v", err)
+	}
+	if len(affected) != 0 {
+		t.Errorf("Unbound secret revoke should affect no workspaces, got %v", affected)
 	}
 
 	_, err = svc.GetSecret(ctx, "user-1", created.ID)
@@ -840,13 +846,13 @@ func TestSecretService_DeleteSecret(t *testing.T) {
 	}
 }
 
-func TestSecretService_DeleteSecret_NotFound(t *testing.T) {
+func TestSecretService_ForceRevokeSecret_NotFound(t *testing.T) {
 	svc, _, _ := setupSecretService(t)
 	ctx := context.Background()
 
-	err := svc.DeleteSecret(ctx, "user-1", "nonexistent")
+	_, err := svc.ForceRevokeSecret(ctx, "user-1", "nonexistent")
 	if err == nil {
-		t.Error("DeleteSecret for nonexistent ID should fail")
+		t.Error("ForceRevokeSecret for nonexistent ID should fail")
 	}
 }
 
@@ -915,8 +921,9 @@ func TestSecretService_AuditLogging(t *testing.T) {
 	// Update (generates audit entry)
 	svc.UpdateSecret(ctx, "user-1", sessionID, nil, created.ID, UpdateSecretRequest{Value: "v2"})
 
-	// Delete (generates audit entry)
-	svc.DeleteSecret(ctx, "user-1", created.ID)
+	// Delete (generates audit entry; unbound → revoke fan-out is empty
+	// and the m2-folded "delete" audit with name+type still lands)
+	_, _ = svc.ForceRevokeSecret(ctx, "user-1", created.ID)
 
 	// Check audit entries
 	entries, err := svc.QueryAudit(ctx, "user-1", AuditQuery{})
@@ -951,8 +958,8 @@ func TestSecretService_DeleteSecret_CascadesBindings(t *testing.T) {
 	// Bind to workspace
 	_, _ = svc.SetBindings(ctx, "user-1", "ws-1", []string{created.ID})
 
-	// Delete secret
-	svc.DeleteSecret(ctx, "user-1", created.ID)
+	// Delete secret (m2: the only delete path is the force-revoke)
+	_, _ = svc.ForceRevokeSecret(ctx, "user-1", created.ID)
 
 	// Bindings should be gone
 	bindings, _ := secretStore.GetBindings(ctx, "ws-1")

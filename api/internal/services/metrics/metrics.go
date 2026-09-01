@@ -636,31 +636,33 @@ func Upstream5xxCounter() *prometheus.CounterVec {
 // --- worklog 0589 / #493: Pod-recreation auto-push metrics ---
 
 var (
-	// secretAutoPushTotal counts fire-and-forget push attempts triggered
+	// secretAutoPushTotal counts fire-and-forget notify attempts triggered
 	// by the workspace-status pod-identity detector. Outcome label
-	// values are exhaustively enumerated: "success", "inject_failed",
-	// "reload_failed", "no_pod". Operators alert on non-zero
-	// {outcome!="success"} sustained rate.
+	// values are exhaustively enumerated: "success", "no_pod",
+	// "notify_failed" (US-70.3: the pod-recreation path notifies; the
+	// pod re-pulls). Operators alert on non-zero {outcome!="success"}
+	// sustained rate.
 	//
 	// This is distinct from llmsafespaces_agent_reload_total (which
-	// counts user-initiated dispose+restart via POST /agent/reload) —
-	// the two paths have different observability requirements and
-	// different SLOs. Combining them into one metric would prevent
+	// counts user-initiated dispose+restart via POST /agent/reload) and
+	// from llmsafespaces_secrets_notify_total (every notify dispatch,
+	// any caller) — the three paths have different observability
+	// requirements and different SLOs. Combining them would prevent
 	// operators from telling "user hit reload button 50x in an hour"
-	// (support signal) from "50 workspaces auto-recovered after a node
+	// (support signal) from "50 pods auto-recovered after a node
 	// failure" (infrastructure signal).
 	secretAutoPushTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "api_secret_auto_push_total",
-			Help: "Total auto-push attempts triggered by pod-identity transitions on workspace status polls.",
+			Help: "Total pod-recreation auto-notify attempts by outcome (success, no_pod, notify_failed).",
 		},
 		[]string{"outcome"},
 	)
 )
 
-// RecordSecretAutoPush increments the counter for a single auto-push
-// attempt outcome. outcome must be one of "success", "inject_failed",
-// "reload_failed", "no_pod". Called from app.recordAutoPushOutcome
+// RecordSecretAutoPush increments the counter for a single pod-recreation
+// auto-notify attempt outcome. outcome must be one of "success",
+// "no_pod", "notify_failed". Called from app.recordAutoPushOutcome
 // (the process-wide callback used by wsAgentPusherAdapter, the sole
 // emission point for this metric — see the adapter's doc for the
 // rationale).
@@ -741,4 +743,184 @@ func RecordUploadRequest(reason string) {
 // RecordUploadRequest.
 func UploadsCounter() *prometheus.CounterVec {
 	return uploadsTotal
+}
+
+// --- US-70.3: notify → re-pull delivery metrics ---
+
+var (
+	// secretsNotifyTotal counts every agentpush.Notify dispatch by
+	// outcome. Outcomes are exhaustively enumerated: "success" (pod
+	// applied or nothing to apply), "rate_limited" (429 — the pod will
+	// resync under its own budget; success-shaped), "retry_scheduled"
+	// (429 carrying retryAfterMs — one deferred retry was scheduled and
+	// will record its own outcome when it fires; M2), "no_pod"
+	// (workspace has no reachable pod), "failed" (transport error or
+	// agentd 502).
+	secretsNotifyTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_secrets_notify_total",
+			Help: "Total secret resync notify dispatches by outcome (success, rate_limited, retry_scheduled, no_pod, failed).",
+		},
+		[]string{"outcome"},
+	)
+
+	// secretsDeliveryConverged is 1 when the workspace's applied seq
+	// (CRD secretsDelivery.spawnedRev prefix) equals the stored revision
+	// row's seq, 0 otherwise. Written by the secretsreconcile loop each
+	// pass; the divergent>15m and SLO-burn alerts ride this gauge.
+	// legacy_format pods are deliberately NOT marked 0 (M1b): they can
+	// never converge by notify (the old mux 404s resync), so a 0 would
+	// page per pod during mixed-fleet rollouts — they surface via
+	// secrets_delivery_divergent_total{reason="legacy_format"} and
+	// converge with the fleet upgrade (US-70.5 re-points this gauge).
+	secretsDeliveryConverged = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llmsafespaces_secrets_delivery_converged",
+			Help: "1 when the workspace's secrets delivery is converged (applied seq == stored seq), 0 otherwise. legacy_format pods stay 1 by design (see divergent_total{reason=legacy_format}).",
+		},
+		[]string{"workspace_id"},
+	)
+
+	// secretsReconcilePassesTotal counts reconcile-loop passes.
+	// "success" means the pass COMPLETED the Active-workspace
+	// enumeration and per-workspace reconcile walk; a listing error is
+	// "error". Per-workspace skips (unreadable manifest/row, failed
+	// mint) do NOT fail the pass — they are counted separately in
+	// secrets_reconcile_skips_total.
+	secretsReconcilePassesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_secrets_reconcile_passes_total",
+			Help: "Total secrets reconcile loop passes by result (success, error). Success = the pass completed; per-workspace skips are counted by llmsafespaces_secrets_reconcile_skips_total.",
+		},
+		[]string{"result"},
+	)
+
+	// secretsReconcileSkipsTotal counts per-workspace skips inside an
+	// otherwise-successful pass by reason: "manifest_read" (live
+	// manifest derivation failed), "row_read" (stored revision row
+	// unreadable), "mint" (drift mint failed). A skip costs one period
+	// of latency for THAT workspace only — the next pass retries.
+	secretsReconcileSkipsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_secrets_reconcile_skips_total",
+			Help: "Total per-workspace secrets reconcile skips by reason (manifest_read, row_read, mint) — skipped inside an otherwise-successful pass.",
+		},
+		[]string{"reason"},
+	)
+
+	// secretsDeliveryDivergentTotal counts divergent observations by
+	// machine-readable reason: "missing_rev" (no stored revision row or
+	// no reported spawnedRev while content is expected), "stale_seq"
+	// (applied seq behind stored seq), "legacy_format" (spawnedRev in a
+	// pre-US-70.2 format OR unreported with an empty manifest — M1a:
+	// an unparseable rev can never certify convergence; counted here
+	// but does NOT mark the converged gauge divergent), "notify_failed"
+	// (a reconcile notify attempt errored).
+	secretsDeliveryDivergentTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_secrets_delivery_divergent_total",
+			Help: "Total secrets delivery divergence observations by reason (missing_rev, stale_seq, legacy_format, notify_failed). legacy_format does not mark the converged gauge divergent.",
+		},
+		[]string{"reason"},
+	)
+
+	// secretsReconcileLastPassSuccess is the unix timestamp of the last
+	// successful reconcile pass. The loop-health alert fires when
+	// time() - this gauge exceeds 3x the configured period.
+	secretsReconcileLastPassSuccess = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "llmsafespaces_secrets_reconcile_last_pass_success_timestamp",
+			Help: "Unix timestamp of the last successful secrets reconcile pass.",
+		},
+	)
+)
+
+// RecordSecretNotify increments the notify dispatch counter. outcome
+// must be one of "success", "rate_limited", "retry_scheduled",
+// "no_pod", "failed"; an empty outcome is counted as "unknown".
+func RecordSecretNotify(outcome string) {
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	secretsNotifyTotal.WithLabelValues(outcome).Inc()
+}
+
+// SecretNotifyCounter exposes the underlying CounterVec so tests can
+// reset it between cases.
+func SecretNotifyCounter() *prometheus.CounterVec {
+	return secretsNotifyTotal
+}
+
+// SetSecretsDeliveryConverged sets the per-workspace convergence gauge.
+func SetSecretsDeliveryConverged(workspaceID string, converged bool) {
+	v := 0.0
+	if converged {
+		v = 1
+	}
+	secretsDeliveryConverged.WithLabelValues(workspaceID).Set(v)
+}
+
+// SecretsDeliveryConvergedGauge exposes the underlying GaugeVec so
+// tests can reset it between cases.
+func SecretsDeliveryConvergedGauge() *prometheus.GaugeVec {
+	return secretsDeliveryConverged
+}
+
+// DeleteSecretsDeliveryConverged withdraws a workspace's gauge series
+// (used by the reconcile loop when a workspace leaves the Active set).
+func DeleteSecretsDeliveryConverged(workspaceID string) {
+	secretsDeliveryConverged.DeleteLabelValues(workspaceID)
+}
+
+// RecordSecretsReconcilePass increments the pass counter. result must
+// be "success" or "error".
+func RecordSecretsReconcilePass(result string) {
+	if result == "" {
+		result = "unknown"
+	}
+	secretsReconcilePassesTotal.WithLabelValues(result).Inc()
+}
+
+// SecretsReconcilePassesCounter exposes the underlying CounterVec so
+// tests can reset it between cases.
+func SecretsReconcilePassesCounter() *prometheus.CounterVec {
+	return secretsReconcilePassesTotal
+}
+
+// RecordSecretsReconcileSkip increments the per-workspace skip counter
+// (a workspace skipped inside an otherwise-successful pass). reason
+// must be one of "manifest_read", "row_read", "mint".
+func RecordSecretsReconcileSkip(reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	secretsReconcileSkipsTotal.WithLabelValues(reason).Inc()
+}
+
+// SecretsReconcileSkipsCounter exposes the underlying CounterVec so
+// tests can reset it between cases.
+func SecretsReconcileSkipsCounter() *prometheus.CounterVec {
+	return secretsReconcileSkipsTotal
+}
+
+// RecordSecretsDeliveryDivergent increments the divergence counter.
+// reason must be one of "missing_rev", "stale_seq", "legacy_format",
+// "notify_failed".
+func RecordSecretsDeliveryDivergent(reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	secretsDeliveryDivergentTotal.WithLabelValues(reason).Inc()
+}
+
+// SecretsDeliveryDivergentCounter exposes the underlying CounterVec so
+// tests can reset it between cases.
+func SecretsDeliveryDivergentCounter() *prometheus.CounterVec {
+	return secretsDeliveryDivergentTotal
+}
+
+// SetSecretsReconcilePassSuccess stamps the last-successful-pass gauge
+// with the current unix time.
+func SetSecretsReconcilePassSuccess() {
+	secretsReconcileLastPassSuccess.Set(float64(time.Now().Unix()))
 }

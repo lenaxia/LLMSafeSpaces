@@ -269,6 +269,18 @@ func TestUS70Harness_FailureDiagnostics(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_ScaleResourcesQuoted pins the pool-run-7 lesson:
+// SCALE_RES is a shell string interpolated into the CR heredoc — the
+// cpuLimit value MUST reach the API as a YAML string ("1"), not the
+// integer the double-quoted assignment produced (CRD validation rejected
+// spec.resources.cpuLimit integer at the first batch workspace).
+func TestUS70Harness_ScaleResourcesQuoted(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if !strings.Contains(src, "cpuLimit: 1000m") {
+		t.Fatal("cpuLimit must stay unit-suffixed — bare numerics coerce to JSON integers on the apply path (pool runs 7+9)")
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {
@@ -410,5 +422,159 @@ func TestUS70FaultsScript_401AndCorruptionRowsPresent(t *testing.T) {
 	}
 	if !strings.Contains(src, `decode('00','hex')`) {
 		t.Fatalf("faults script must corrupt wrapped_dek via decode('00','hex')")
+	}
+}
+
+// TestUS70NotifyRows_Pin pins the US-70.3 Part D rows' key asserts so they
+// cannot be silently dropped from the delivery suite (same philosophy as
+// the faults pins): the AC-3 30s budget literal, the revoke DELETE + audit
+// query, the resync-endpoint row (pod :4097, not_modified, 429, pull_failed),
+// the pod port-forward helper, and the api-scale-to-0 block.
+func TestUS70NotifyRows_Pin(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	for _, pin := range []string{
+		// AC-3: the 30s budget literal + the anchored-seq compare.
+		`AC3_BUDGET_MS="${AC3_BUDGET_MS:-30000}"`,
+		"spawned_seq",
+		// AC-5/AC-6: the ForceRevoke DELETE + the audit query + absence guard.
+		"-X DELETE",
+		"/api/v1/secrets/",
+		"secret_audit_log WHERE action='revoke'",
+		"env_absent_from_child",
+		// AC-11: the pod resync endpoint row.
+		"/v1/resync-secrets",
+		"not_modified",
+		"rate_limited",
+		"pull_failed",
+		// AC-4-lite: mid-apply pod delete + monotonic seq.
+		"kc delete pod",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("delivery script must keep %q — the US-70.3 notify/reconcile rows depend on it", pin)
+		}
+	}
+	lib := mustRead(t, us70CommonScript)
+	for _, pin := range []string{
+		// resync_pod: the pod port-forward + workspace-password channel.
+		"resync_pod()",
+		"kc port-forward \"pod/${pod}\"",
+		"4097",
+		"workspace-pw-",
+		"-u \"opencode:${RESC_PW}\"",
+		// api outage helpers for the AC-8 network-layer block.
+		"api_down()",
+		"api_up()",
+		"api_portforward_restart()",
+		"--replicas=0",
+	} {
+		if !strings.Contains(lib, pin) {
+			t.Fatalf("us70-common.sh must keep %q — the US-70.3 helpers depend on it", pin)
+		}
+	}
+}
+
+// TestUS70NotifyHelpers_SpawnedSeq executes spawned_seq with a fake kc
+// returning a per-workspace spawnedRev: "seq:hash:hash" parses to the seq,
+// a bare/legacy hash yields EMPTY (never a fabricated 0), and so does an
+// absent rev.
+func TestUS70NotifyHelpers_SpawnedSeq(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	fn := regexp.MustCompile(`(?s)(?m)^spawned_seq\(\) \{.*?^\}`).FindString(lib)
+	if fn == "" {
+		t.Fatal("us70-common.sh must define spawned_seq()")
+	}
+	script := `set -u
+rev_for() { case "$1" in
+  a) printf '12:man:con' ;;
+  b) printf 'deadbeeflegacy' ;;
+  c) printf '' ;;
+  *) printf '99:man:con' ;;
+esac }
+kc() { printf '%s' "$(rev_for "$3")"; }
+` + fn + `
+printf 'a=%s|b=%s|c=%s\n' "$(spawned_seq a)" "$(spawned_seq b)" "$(spawned_seq c)"`
+	out, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute spawned_seq: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "a=12|b=|c=" {
+		t.Fatalf("spawned_seq must parse the seq prefix and yield empty for legacy/absent revs, got %q", got)
+	}
+}
+
+// TestUS70NotifyHelpers_EnvAbsentGuard executes env_absent_from_child with
+// a fake agent_environ: present-var and empty-environ (mid-restart) must
+// both be NON-zero (absence is only assertible on a live, readable child),
+// a live environ without the var must be zero.
+func TestUS70NotifyHelpers_EnvAbsentGuard(t *testing.T) {
+	bash := requireBash(t)
+	lib := mustRead(t, us70CommonScript)
+	fn := regexp.MustCompile(`(?s)(?m)^env_absent_from_child\(\) \{.*?^\}`).FindString(lib)
+	if fn == "" {
+		t.Fatal("us70-common.sh must define env_absent_from_child()")
+	}
+	script := `set -u
+mode="$1"
+agent_environ() { case "$mode" in
+  live-with-var) printf 'PATH=/usr/bin\nSD_X=secret\n' ;;
+  live-clean)    printf 'PATH=/usr/bin\nOTHER=1\n' ;;
+  restarting)    printf '' ;;
+esac }
+` + fn + `
+if env_absent_from_child w "SD_X="; then echo absent; else echo not-absent; fi`
+	cases := map[string]string{
+		"live-with-var": "not-absent",
+		"live-clean":    "absent",
+		"restarting":    "not-absent",
+	}
+	for mode, want := range cases {
+		out, err := exec.Command(bash, "-c", script, "env-absent", mode).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute env_absent_from_child (%s): %v\n%s", mode, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Fatalf("env_absent_from_child(%s) = %q, want %q — an unreadable environ must never read as absent", mode, got, want)
+		}
+	}
+}
+
+// TestUS70ReconcileInterval_WorkflowLockstep pins the fast reconcile loop
+// wiring: BOTH the nightly and the pool helm install must set
+// LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL via api.extraEnv (single --set
+// string — helm's mergeMaps CLOBBERS list entries across separate --set
+// flags, so both key paths must ride one flag), the value must equal the
+// delivery script's RECONCILE_INTERVAL_S default the AC-8/AC-10 budgets
+// derive from, and the workflow step env must pass the same number.
+func TestUS70ReconcileInterval_WorkflowLockstep(t *testing.T) {
+	const helmSet = `--set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s"`
+	for _, wf := range []string{
+		filepath.Join("..", ".github", "workflows", "e2e-nightly.yml"),
+		us70PoolWorkflow,
+	} {
+		src := mustRead(t, wf)
+		if !strings.Contains(src, helmSet) {
+			t.Fatalf("%s must carry %s (single-flag form) — the reconcile loop period is the AC-8/AC-10 budget basis", wf, helmSet)
+		}
+		// A split form (name and value on separate --set flags) renders only
+		// the LAST list entry under helm's map-merge — refuse it explicitly.
+		if strings.Contains(src, "--set \"api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL\"") {
+			t.Fatalf("%s splits the extraEnv set across --set flags — helm clobbers list entries that way", wf)
+		}
+		if !strings.Contains(src, "RECONCILE_INTERVAL_S: 5") {
+			t.Fatalf("%s must pass RECONCILE_INTERVAL_S: 5 to the delivery suite (must match the helm set)", wf)
+		}
+	}
+	script := mustRead(t, us70DeliveryScript)
+	if !strings.Contains(script, "RECONCILE_INTERVAL_S") {
+		t.Fatal("delivery script must derive its AC-8/AC-10 budgets from RECONCILE_INTERVAL_S")
+	}
+	lib := mustRead(t, us70CommonScript)
+	def := extractSingle(t, lib,
+		regexp.MustCompile(`RECONCILE_INTERVAL_S="\$\{RECONCILE_INTERVAL_S:-(\d+)\}"`),
+		"lib RECONCILE_INTERVAL_S default")
+	if def != "5" {
+		t.Fatalf("lib RECONCILE_INTERVAL_S default must stay 5 (matching the workflows' 5s helm set), got %s", def)
 	}
 }

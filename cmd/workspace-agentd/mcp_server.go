@@ -8,9 +8,29 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
+
+// resyncBaseURLAtomic holds the base URL of THIS pod's resync endpoint
+// (the secrets_resync MCP tool's loopback target). Tests mutate it; the
+// default is the agentd user mux on localhost.
+var resyncBaseURLAtomic atomic.Value
+
+func init() {
+	resyncBaseURLAtomic.Store(fmt.Sprintf("http://127.0.0.1:%d", agentd.AgentdPort))
+}
+
+func resyncBaseURL() string {
+	return resyncBaseURLAtomic.Load().(string)
+}
+
+// mcpResyncHTTPTimeout bounds the tool's loopback wait: the notify
+// path's 5s client budget covers a healthy in-process pull, so double
+// that is the margin (a hung endpoint must not wedge the tool call).
+const mcpResyncHTTPTimeout = 10 * time.Second
 
 type mcpRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -107,6 +127,19 @@ func mcpHandler(password string) http.HandlerFunc {
 							"required": []string{},
 						},
 					},
+					{
+						// US-70.3 PR-4 (design 0052 §4.7): the agent's
+						// on-demand re-materialization escape hatch. No
+						// inputs — never accepts credential material
+						// (0050 finding-3); the applied state can only
+						// come from the platform's authenticated pull.
+						Name:        "secrets_resync",
+						Description: "Re-pull this workspace's secrets from the platform on demand (the same resync the platform triggers after credential changes). Use when credentials, API keys, or env vars seem missing or stale in this workspace — e.g. a key was just rotated, bound, or revoked, or an API call fails auth in a way the current config should fix. Takes NO inputs and never accepts credential material of any kind: the applied state can only come from the platform's authenticated pull. Returns the applied revision and whether delivery converged (applied/not_modified both mean converged). If the platform is unreachable it reports converged=false with expectedRev = the revision this pod still stands at (pending) — retry later, the platform's reconcile loop also converges this automatically. Rapid repeated calls are rate-limited and refused with retryAfterMs; resyncing may restart the agent session when env-class secrets change.",
+						InputSchema: map[string]any{
+							"type":       "object",
+							"properties": map[string]any{},
+						},
+					},
 				},
 			})
 
@@ -155,6 +188,13 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 			limit = int(l)
 		}
 		return mcpSessionRead(ctx, password, sessionID, limit)
+	case "secrets_resync":
+		// args are DELIBERATELY unread (0050 finding-3): the tool
+		// accepts no input — the applied state can only come from the
+		// platform's authenticated pull. The hand-rolled JSON-RPC
+		// layer has no schema validator, so undeclared arguments reach
+		// the dispatcher and are ignored here by construction.
+		return mcpSecretsResync(ctx, password)
 	case "dev_preview_url":
 		// Port is optional: default 5173 (the Vite default, the common
 		// case; the landing page's form defaults to the same).
@@ -333,5 +373,108 @@ func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
 		mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
 		merged, _ := json.Marshal(mcpMap)
 		cfg["mcp"] = merged
+	}
+}
+
+// mcpSecretsResync implements the secrets_resync MCP tool (US-70.3
+// PR-4, design 0052 §4.7): trigger THIS workspace's on-demand
+// re-materialization and report the outcome. The tool executes inside
+// the pod it serves (the platform MCP entry injectAgentdMCPServer
+// stamps points here), so the workspace is resolved by pod identity —
+// the loopback dispatch below carries no workspace argument anywhere.
+//
+// Mechanism: an empty, workspace-password-authenticated POST to this
+// pod's own /v1/resync-secrets — the SAME endpoint the platform's
+// notify targets (server.go mounts it as "the notify-pull target and
+// the secrets_resync MCP tool call[s] this"). That endpoint runs the
+// v2 conditional bootstrap pull in-process (fresh SA token; the API
+// recomputes the manifest and mints drift server-side) and applies with
+// the pod's I15 rate limit — which the tool therefore SHARES with the
+// notify path and the reconcile loop. No request body is ever sent
+// (0050 finding-3).
+//
+// Outcome shapes:
+//   - applied / not_modified → {"status", "appliedRev", "converged":true}
+//   - 429                    → {"error":"rate_limited","retryAfterMs":N}
+//   - failed / unreachable   → {"status":"failed","reason", converged:false,
+//     "expectedRev":<the pod's anchored rev>, "pending":true} — never a
+//     tool error: the reconcile loop converges the workspace (I3), and
+//     expectedRev reports the revision this pod still stands at.
+func mcpSecretsResync(ctx context.Context, password string) (string, error) {
+	pendingReport := func(reason string) (string, error) {
+		out, _ := json.Marshal(map[string]any{
+			"status":      "failed",
+			"reason":      reason,
+			"converged":   false,
+			"expectedRev": servedEnvRevAnchor(secretsEnvPathFromEnv()),
+			"pending":     true,
+		})
+		return string(out), nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		resyncBaseURL()+"/v1/resync-secrets", http.NoBody)
+	if err != nil {
+		return pendingReport("resync_request_unbuildable")
+	}
+	req.SetBasicAuth(agentd.AuthUsername, password)
+
+	// Bounded wait: the resync budget plus margin, so a hung endpoint
+	// cannot wedge the agent's tool call forever.
+	client := &http.Client{Timeout: mcpResyncHTTPTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return pendingReport("resync_unreachable")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var result struct {
+			Status     string `json:"status"`
+			AppliedRev string `json:"appliedRev"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return pendingReport("resync_response_unparseable")
+		}
+		converged := result.Status == "applied" || result.Status == "not_modified"
+		out, _ := json.Marshal(map[string]any{
+			"status":     result.Status,
+			"appliedRev": result.AppliedRev,
+			"converged":  converged,
+		})
+		return string(out), nil
+
+	case http.StatusTooManyRequests:
+		var result struct {
+			RetryAfterMs float64 `json:"retryAfterMs"`
+		}
+		_ = json.Unmarshal(body, &result)
+		if result.RetryAfterMs <= 0 {
+			// The endpoint did not say; the shared floor (same process,
+			// same env) is the honest upper bound.
+			result.RetryAfterMs = float64(resyncMinIntervalFromEnv().Milliseconds())
+		}
+		out, _ := json.Marshal(map[string]any{
+			"error":        "rate_limited",
+			"retryAfterMs": result.RetryAfterMs,
+		})
+		return string(out), nil
+
+	default:
+		var result struct {
+			Reason string `json:"reason"`
+			Error  string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &result)
+		reason := result.Reason
+		if reason == "" {
+			reason = result.Error
+		}
+		if reason == "" {
+			reason = fmt.Sprintf("http_%d", resp.StatusCode)
+		}
+		return pendingReport(reason)
 	}
 }

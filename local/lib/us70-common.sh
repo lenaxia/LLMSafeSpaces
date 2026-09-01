@@ -17,6 +17,13 @@
 #   RESUME_SCALE  - concurrent resume count for AC-13 (default 100)
 #   RESUME_SCALE_TIMEOUT_S - per-workspace resume wait (default 180)
 #   P95_BUDGET_MS - AC-13/AC-1 resume p95 budget (default 30000)
+#   RECONCILE_INTERVAL_S - API secrets-reconcile loop period in seconds;
+#                   MUST match the helm set
+#                   api.extraEnv[LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL]
+#                   in e2e-nightly.yml / us-70-delivery-pool.yml (5s) —
+#                   the AC-8/AC-10 convergence budgets are derived from it.
+#   RESYNC_PORT   - local port for the pod resync-endpoint port-forward
+#                   (default 18099)
 
 [[ -n ${__US70_COMMON:-} ]] && return 0
 __US70_COMMON=1
@@ -46,6 +53,8 @@ SUSPEND_SECONDS="${SUSPEND_SECONDS:-5}"
 RESUME_SCALE="${RESUME_SCALE:-100}"
 RESUME_SCALE_TIMEOUT_S="${RESUME_SCALE_TIMEOUT_S:-180}"
 P95_BUDGET_MS="${P95_BUDGET_MS:-30000}"
+RECONCILE_INTERVAL_S="${RECONCILE_INTERVAL_S:-5}"
+RESYNC_PORT="${RESYNC_PORT:-18099}"
 
 ws_id() { printf '%s%04d\n' "${WS_BASE:0:32}" "$1"; }
 
@@ -59,6 +68,10 @@ cleanup() {
     if [[ -n "${PF_PID:-}" ]]; then
         kill "${PF_PID}" 2>/dev/null || true
         wait "${PF_PID}" 2>/dev/null || true
+    fi
+    if [[ -n "${RESC_PF_PID:-}" ]]; then
+        kill "${RESC_PF_PID}" 2>/dev/null || true
+        wait "${RESC_PF_PID}" 2>/dev/null || true
     fi
 }
 trap cleanup EXIT
@@ -351,4 +364,165 @@ detect_runtime_class() {
         warn "no gVisor/runsc RuntimeClass advertised (kind can't run runsc) — AC-13 runsc leg SKIPPED"
         warn "gVisor (W7) coverage runs on the US-70.0 staged pool that provisions runsc"
     fi
+}
+
+# ---------------------------------------------------------------------------
+# US-70.3 (notify → re-pull + reconcile) helpers.
+
+# spawned_seq ws — the seq prefix of status.secretsDelivery.spawnedRev
+# ("seq:manifestHash:contentHash"; the reconcile loop's convergence key).
+# Empty when unset or legacy-format (pre-US-70.2 bare hash) — callers must
+# treat empty as "not comparable", never as 0.
+spawned_seq() {
+    local rev
+    rev=$(kc get workspace "$1" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || true)
+    if [[ "${rev}" == *:* ]]; then
+        printf '%s\n' "${rev%%:*}"
+    fi
+}
+
+# env_absent_from_child ws VAR= — 0 iff a LIVE child's environ is readable,
+# non-empty, and does not carry VAR. Distinct from ! env_in_child: while the
+# child is mid-restart /proc/<pid>/environ is unreadable and agent_environ
+# returns EMPTY, which must not read as "the var is gone" (the revocation
+# rows would pass on a crashed child). Pass the var WITH '=' so a prefix
+# collision (SD_X vs SD_X2) cannot blur the match.
+env_absent_from_child() {
+    local env
+    env=$(agent_environ "$1")
+    [[ -n "${env}" && "${env}" != *"$2"* ]]
+}
+
+# pg_scalar query — one scalar from the API's postgres via the pg pod.
+pg_scalar() {
+    kc exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
+        psql -U llmsafespaces -d llmsafespaces -tA -c "$1" 2>/dev/null || true
+}
+
+# secret_id_by_name ws name — resolve a bound secret's id via the API
+# (GET /workspaces/:id/bindings). bind_env names its secrets
+# "<workspaceID>-env-<lowercased var>", so callers can derive the name
+# without a separate create call.
+secret_id_by_name() {
+    local ws="$1" name="$2" body
+    body=$(curl -sfm 15 -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/bindings" 2>/dev/null) || body=""
+    printf '%s' "${body}" | jq -r --arg n "${name}" \
+        '.bindings[]? | select(.name == $n) | .secretId' | head -1
+}
+
+# resync_forward_start ws — port-forward the POD's agentd user mux
+# (4097 — POST /v1/resync-secrets, the notify target and the
+# secrets_resync MCP tool's backend) to ${RESYNC_PORT} on localhost, and
+# read the workspace password from the controller-owned Secret
+# workspace-pw-<ws> (same channel as local/test.sh's opencode health
+# probe). The forward rides the kube-apiserver, so it works even while
+# the llmsafespaces-api deployment itself is scaled to zero (AC-8).
+resync_forward_start() {
+    local ws="$1" pod logf _i
+    pod=$(pod_of "${ws}")
+    [[ -n "${pod}" ]] || die "resync: workspace ${ws} has no pod"
+    RESC_PW=$(kc get secret "workspace-pw-${ws}" -o jsonpath='{.data.password}' 2>/dev/null \
+        | base64 -d 2>/dev/null || true)
+    [[ -n "${RESC_PW}" ]] || die "resync: secret workspace-pw-${ws} missing or empty (controller did not mint the workspace password)"
+    if [[ -n "${RESC_PF_PID:-}" ]]; then
+        kill "${RESC_PF_PID}" 2>/dev/null || true
+        wait "${RESC_PF_PID}" 2>/dev/null || true
+    fi
+    logf=$(mktemp)
+    kc port-forward "pod/${pod}" "${RESYNC_PORT}:4097" >"${logf}" 2>&1 &
+    RESC_PF_PID=$!
+    for _i in $(seq 1 20); do
+        if grep -q "Forwarding from" "${logf}" 2>/dev/null; then
+            rm -f "${logf}"
+            return 0
+        fi
+        kill -0 "${RESC_PF_PID}" 2>/dev/null || break
+        sleep 0.5
+    done
+    cat "${logf}" >&2 || true
+    rm -f "${logf}"
+    die "resync: port-forward pod/${pod} ${RESYNC_PORT}:4097 failed to establish"
+}
+
+# resync_call — one authenticated POST /v1/resync-secrets against the
+# established forward; sets RESC_CODE (HTTP status) + RESC_BODY. The
+# endpoint NEVER reads a request body (0050 finding-3) — curl sends none.
+resync_call() {
+    local out
+    out=$(mktemp)
+    # -w '%{http_code}' emits 000 by itself on transport failure; the `||
+    # true` only keeps set -e from killing the caller (the substitution
+    # would otherwise carry curl's non-zero status).
+    RESC_CODE=$(curl -sm 20 -o "${out}" -w '%{http_code}' -X POST \
+        -u "opencode:${RESC_PW}" \
+        "http://127.0.0.1:${RESYNC_PORT}/v1/resync-secrets" 2>/dev/null || true)
+    RESC_BODY=$(cat "${out}" 2>/dev/null || true)
+    rm -f "${out}"
+}
+
+resync_forward_stop() {
+    if [[ -n "${RESC_PF_PID:-}" ]]; then
+        kill "${RESC_PF_PID}" 2>/dev/null || true
+        wait "${RESC_PF_PID}" 2>/dev/null || true
+        RESC_PF_PID=""
+    fi
+}
+
+# resync_pod ws — one-shot resync: forward, one POST, stop; leaves
+# RESC_CODE/RESC_BODY set for the caller's asserts. The port-forward
+# teardown between calls is fine for the pod-side rate limiter: the
+# min-interval (2s default) state lives on the POD, not the connection.
+resync_pod() {
+    resync_forward_start "$1"
+    resync_call
+    resync_forward_stop
+}
+
+# api_portforward_restart — re-establish the API port-forward after the
+# api deployment's pod set changed (scale-to-0 kills the svc-backed
+# forward: kubectl bound it to a pod that no longer exists).
+api_portforward_restart() {
+    if [[ -n "${PF_PID:-}" ]]; then
+        kill "${PF_PID}" 2>/dev/null || true
+        wait "${PF_PID}" 2>/dev/null || true
+    fi
+    kc port-forward svc/llmsafespaces-api "${PORTFWD_PORT}:8080" >/dev/null 2>&1 &
+    PF_PID=$!
+    local _i
+    for _i in $(seq 1 30); do
+        curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    die "API port-forward could not be re-established (livez unreachable on ${PORTFWD_PORT})"
+}
+
+# api_down — scale the api deployment to zero and wait until every api
+# pod is REALLY gone (SIGTERM drains in-flight work; the api exits
+# promptly when idle but the 660s grace means the wait must be bounded
+# and loud). No notify can leave the API and no pod pull can reach it
+# while down — the network-layer block the AC-8/AC-10 row uses instead
+# of the (pool-only) fault seam.
+api_down() {
+    kc scale deployment llmsafespaces-api --replicas=0 >/dev/null \
+        || die "api_down: scale --replicas=0 failed"
+    local _i names
+    for _i in $(seq 1 120); do
+        names=$(kc get pods -l app.kubernetes.io/component=api \
+            -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+        [[ -z "${names}" ]] && return 0
+        sleep 2
+    done
+    die "api_down: llmsafespaces-api pods still present after 240s (${names})"
+}
+
+# api_up — scale the api back to one replica, wait for readiness, and
+# re-establish the harness port-forward.
+api_up() {
+    kc scale deployment llmsafespaces-api --replicas=1 >/dev/null \
+        || die "api_up: scale --replicas=1 failed"
+    kc rollout status deployment llmsafespaces-api --timeout=240s >/dev/null 2>&1 \
+        || die "api_up: llmsafespaces-api never became ready"
+    api_portforward_restart
+    ok "api deployment recovered (replicas=1, port-forward re-established)"
 }

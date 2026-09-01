@@ -20,6 +20,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/secretsreconcile"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
@@ -96,10 +97,16 @@ func (a *dbKeyStoreAdapter) UpdateWrappedDEK(_ context.Context, userID string, w
 // t.Parallel() do not race. The audit slice is bounded so a long test
 // run does not grow without bound.
 type dbSecretStoreAdapter struct {
-	mu       sync.Mutex
-	secrets  map[string]*secrets.UserSecret
-	bindings map[string][]string
-	audit    []*secrets.AuditEntry
+	mu        sync.Mutex
+	secrets   map[string]*secrets.UserSecret
+	bindings  map[string][]string
+	revisions map[string]adapterRevisionRow
+	audit     []*secrets.AuditEntry
+}
+
+type adapterRevisionRow struct {
+	seq  int64
+	hash string
 }
 
 // maxAdapterAuditEntries caps the in-memory audit slice. Production
@@ -347,6 +354,58 @@ func (a *dbSecretStoreAdapter) QueryAudit(_ context.Context, userID string, _ se
 		}
 	}
 	return result, nil
+}
+
+// --- CredentialStore + RevisionStore surface (in-memory, for wiring
+// tests that exercise ForceRevokeSecret / manifest paths) ---
+
+func (a *dbSecretStoreAdapter) GetWorkspaceCredentials(context.Context, string) ([]secrets.CredentialBinding, error) {
+	return nil, nil
+}
+
+func (a *dbSecretStoreAdapter) UpsertFreeTierCredential(context.Context, []byte) error { return nil }
+
+func (a *dbSecretStoreAdapter) SeedWorkspaceCredentials(context.Context, string, string, *string) error {
+	return nil
+}
+
+func (a *dbSecretStoreAdapter) BindCredentialToAllUserWorkspaces(context.Context, string, string) error {
+	return nil
+}
+
+func (a *dbSecretStoreAdapter) HasUserProviderCredential(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (a *dbSecretStoreAdapter) GetWorkspaceMCPServers(context.Context, string) ([]secrets.MCPServerBindingRow, error) {
+	return nil, nil
+}
+
+func (a *dbSecretStoreAdapter) CurrentRevision(_ context.Context, workspaceID string) (int64, string, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.revisions == nil {
+		return 0, "", false, nil
+	}
+	row, ok := a.revisions[workspaceID]
+	if !ok {
+		return 0, "", false, nil
+	}
+	return row.seq, row.hash, true, nil
+}
+
+func (a *dbSecretStoreAdapter) EnsureRevision(_ context.Context, workspaceID, manifestHash string) (int64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.revisions == nil {
+		a.revisions = make(map[string]adapterRevisionRow)
+	}
+	if row, ok := a.revisions[workspaceID]; ok && row.hash == manifestHash {
+		return row.seq, nil
+	}
+	next := a.revisions[workspaceID].seq + 1
+	a.revisions[workspaceID] = adapterRevisionRow{seq: next, hash: manifestHash}
+	return next, nil
 }
 
 // workspaceOwnerVerifierAdapter and its local OrgMembershipChecker interface
@@ -748,6 +807,87 @@ func (a *k8sWorkspaceGetterAdapter) GetWorkspace(ctx context.Context, id string)
 	return v1Client.Workspaces(a.namespace).Get(ctx, id, metav1.GetOptions{})
 }
 
+// workspaceCRDListerClient is the list-capable seam the reconcile
+// loop's Active-workspace enumeration needs.
+type workspaceCRDListerClient interface {
+	List(ctx context.Context, opts metav1.ListOptions) (*v1.WorkspaceList, error)
+}
+
+// k8sWorkspaceListerAdapter satisfies workspaceCRDListerClient via the
+// shared Kubernetes client.
+type k8sWorkspaceListerAdapter struct {
+	client    *kubernetes.Client
+	namespace string
+}
+
+func (a *k8sWorkspaceListerAdapter) List(ctx context.Context, opts metav1.ListOptions) (*v1.WorkspaceList, error) {
+	v1Client, err := a.client.LlmsafespacesV1()
+	if err != nil {
+		return nil, fmt.Errorf("initialize LLMSafespacesV1 client: %w", err)
+	}
+	return v1Client.Workspaces(a.namespace).List(ctx, opts)
+}
+
+// activeWorkspaceListPageSize bounds each CRD list page (paginated so a
+// 1,000+ fleet never produces one giant apiserver response).
+const activeWorkspaceListPageSize = 500
+
+// k8sActiveWorkspaceLister enumerates Active workspaces for the
+// secretsreconcile loop. Phase is NOT field-selectable on status, so
+// pages are listed and filtered in memory; pagination follows
+// ListMeta.Continue so the full fleet is walked regardless of size.
+type k8sActiveWorkspaceLister struct {
+	client    workspaceCRDListerClient
+	namespace string
+	logger    pkginterfaces.LoggerInterface
+}
+
+func (l *k8sActiveWorkspaceLister) ListActiveWorkspaces(ctx context.Context) ([]secretsreconcile.ActiveWorkspace, error) {
+	var out []secretsreconcile.ActiveWorkspace
+	opts := metav1.ListOptions{Limit: activeWorkspaceListPageSize}
+	for {
+		list, err := l.client.List(ctx, opts)
+		if err != nil {
+			return nil, fmt.Errorf("list workspaces (namespace %s): %w", l.namespace, err)
+		}
+		for i := range list.Items {
+			ws := &list.Items[i]
+			if ws.Status.Phase != v1.WorkspacePhaseActive {
+				continue
+			}
+			out = append(out, secretsreconcile.ActiveWorkspace{
+				WorkspaceID: ws.Name,
+				OwnerUserID: ws.Spec.Owner.UserID,
+				SpawnedRev:  spawnedRevOf(ws),
+			})
+		}
+		if list.Continue == "" {
+			return out, nil
+		}
+		opts.Continue = list.Continue
+	}
+}
+
+func spawnedRevOf(ws *v1.Workspace) string {
+	if ws.Status.SecretsDelivery == nil {
+		return ""
+	}
+	return ws.Status.SecretsDelivery.SpawnedRev
+}
+
+// reconcileNotifyAdapter adapts *agentpush.Service to the
+// secretsreconcile.Notifier seam (same dependency-inversion shape as
+// wsAgentPusherAdapter): the reconcile package declares the interface
+// it needs and stays independent of agentpush.
+type reconcileNotifyAdapter struct {
+	pusher *agentpush.Service
+}
+
+func (a *reconcileNotifyAdapter) Notify(ctx context.Context, userID, workspaceID string) error {
+	_, err := a.pusher.Notify(ctx, userID, workspaceID)
+	return err
+}
+
 // workspaceCRDGetter is the minimal interface needed by secretsPodIPResolver.
 // Defined here (rather than reusing handlers.WorkspaceGetter) to keep the
 // dependency direction one-way: app depends on handlers, not the other way.
@@ -875,38 +1015,40 @@ func ensureFreeTierCredential(ctx context.Context, seeder credentialSeeder, prov
 // wsAgentPusherAdapter adapts *agentpush.Service to the narrow
 // secretautopush.SecretPusher interface (worklog 0591). This is the
 // dependency-inversion seam between the auto-push consumer (which
-// declares the interface it needs) and the concrete pusher (which
+// declares the interface it needs) and the concrete notifier (which
 // lives in the agentpush package, unaware of any consumer). Without
 // this adapter the secretautopush package would have to import
 // agentpush directly, creating a wider dependency than the SOLID DIP
 // allows.
 //
+// US-70.3: the adapter now dispatches a NOTIFY (empty resync request)
+// — after pod recreation the pod re-pulls its full batch through the
+// conditional bootstrap path; the notify only shrinks the window
+// between "pod up" and "user-DEK content present".
+//
 // The adapter is ALSO the metric-emission point for
 // api_secret_auto_push_total: the metric is specifically the
 // pod-recreation auto-push counter (per its Help text), NOT a general
-// "any push" counter. Wiring the hook onto the shared agentpush.Service
-// would conflate user-initiated SetBindings pushes with automatic
-// pod-recreation pushes — operators couldn't tell "50 users changed
-// bindings" from "50 pods were recreated." Emitting from here keeps
+// "any notify" counter (llmsafespaces_secrets_notify_total, emitted by
+// the shared pusher's own hook, covers that). Emitting from here keeps
 // the metric scoped to its documented meaning.
 type wsAgentPusherAdapter struct {
 	pusher *agentpush.Service
 }
 
 // Push satisfies secretautopush.SecretPusher by delegating to agentpush
-// and classifying the outcome for the pod-recreation-specific metric.
-// The Result value is dropped (the auto-push flow doesn't inspect it —
-// the reload count is recorded via structured logs from agentpush).
+// Notify and classifying the outcome for the pod-recreation-specific
+// metric.
 func (a *wsAgentPusherAdapter) Push(ctx context.Context, userID, workspaceID string) error {
-	_, err := a.pusher.Push(ctx, userID, workspaceID)
+	_, err := a.pusher.Notify(ctx, userID, workspaceID)
 	recordAutoPushOutcome(classifyPushOutcome(err))
 	return err
 }
 
-// classifyPushOutcome maps agentpush's returned error to one of the
-// four exhaustive metric labels: success, no_pod, inject_failed,
-// reload_failed. Kept in one place so the mapping stays consistent
-// between the metric and (future) log-level classification.
+// classifyPushOutcome maps agentpush.Notify's returned error to one of
+// the exhaustive metric labels: success, no_pod, notify_failed. Kept in
+// one place so the mapping stays consistent between the metric and
+// log-level classification.
 func classifyPushOutcome(err error) string {
 	if err == nil {
 		return "success"
@@ -914,20 +1056,13 @@ func classifyPushOutcome(err error) string {
 	if errors.Is(err, agentpush.ErrNoRunningPod) {
 		return "no_pod"
 	}
-	// The "build workspace batch" prefix is the sentinel documented on
-	// agentpush.Service.Push — every builder failure is wrapped with
-	// this prefix. Anything else is a reload-side failure (network,
-	// non-2xx from agentd, malformed response).
-	if strings.HasPrefix(err.Error(), "build workspace batch") {
-		return "inject_failed"
-	}
-	return "reload_failed"
+	return "notify_failed"
 }
 
 // recordAutoPushOutcome is the process-wide metrics-emitter used ONLY
 // by the secretautopush auto-push path (via wsAgentPusherAdapter).
 // See the adapter's doc for why the metric is scoped to that path and
-// not emitted from every agentpush.Service.Push caller.
+// not emitted from every agentpush.Service.Notify caller.
 //
 // If the metrics registration is disabled or misconfigured, the counter
 // is a no-op — recordAutoPushOutcome silently succeeds. Do not add

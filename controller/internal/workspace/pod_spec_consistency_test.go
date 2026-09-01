@@ -166,6 +166,24 @@ func TestE2E_Reconcile_PodSpec_InitContainerSelfConsistent(t *testing.T) {
 	require.NotNil(t, tokenMount)
 	assert.Equal(t, "/var/run/bootstrap", tokenMount.MountPath)
 	assert.True(t, tokenMount.ReadOnly)
+
+	// US-70.3: single-container agentd (the main container's --supervise
+	// process) serves /v1/resync-secrets and must be able to read a FRESH
+	// projected token for the pod's lifetime — the same volume mounts there,
+	// read-only.
+	require.NotEmpty(t, pod.Spec.Containers)
+	var mainTokenMount *corev1.VolumeMount
+	for i := range pod.Spec.Containers[0].VolumeMounts {
+		if pod.Spec.Containers[0].VolumeMounts[i].Name == "bootstrap-token" {
+			mainTokenMount = &pod.Spec.Containers[0].VolumeMounts[i]
+			break
+		}
+	}
+	require.NotNil(t, mainTokenMount,
+		"the main container must mount bootstrap-token (agentd resync re-pulls, US-70.3)")
+	assert.Equal(t, "/var/run/bootstrap", mainTokenMount.MountPath)
+	assert.True(t, mainTokenMount.ReadOnly,
+		"the token mount on the main container is read-only")
 }
 
 func indexOf(items []string, want string) int {
@@ -175,6 +193,82 @@ func indexOf(items []string, want string) int {
 		}
 	}
 	return -1
+}
+
+// TestE2E_Reconcile_PodSpec_SingleContainerResyncBatchPathRW pins the
+// US-70.3 validation B1 fix: in chart-DEFAULT single-container mode the
+// MAIN container's agentd serves /v1/resync-secrets, and its batch-file
+// default (/sandbox-cfg/secrets.json) lands on the ReadOnly sandbox-cfg
+// mount — every changed-manifest resync 500s at the batch write. The
+// controller must set LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT on the main
+// container to the pod-scoped RW tmpfs coordinate (the same one the
+// sidecar mode uses). Cross-validated on ONE reconcile-produced pod:
+// the env is present with the exact value, and the value's parent
+// directory is a declared RW VolumeMount on that same container.
+//
+// (The sandbox-runtime volume's tmpfs/RW properties are separately
+// pinned in security_test.go; the mount-level RW check here keeps this
+// pin self-contained.) A cluster-level resync e2e in single-container
+// mode is a known gap — the nightly e2e runs sidecar=true; the
+// attachments single-container workflow can carry it later.
+func TestE2E_Reconcile_PodSpec_SingleContainerResyncBatchPathRW(t *testing.T) {
+	ws := makeWorkspace("ws-resync-rw", "default", v1.WorkspacePhasePending)
+	_, pod := reconcileToCreatingPod(t, ws, "http://test-api:8080")
+
+	require.False(t, podHasAgentdSidecar(pod), "test premise: chart-default reconcile is single-container mode")
+
+	var mainContainer *corev1.Container
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == "workspace" {
+			mainContainer = &pod.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, mainContainer, "main 'workspace' container must exist")
+
+	const wantOut = "/sandbox-runtime/rt/secrets.json"
+	gotOut, ok := envMap(mainContainer.Env)["LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT"]
+	require.True(t, ok,
+		"single-container main container must carry LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT — without it the resync batch write targets the ReadOnly /sandbox-cfg mount and 500s")
+	assert.Equal(t, wantOut, gotOut, "the resync batch path must be the exact pod-scoped tmpfs coordinate")
+
+	// The batch path's parent must be a declared, RW mount on the SAME
+	// container: /sandbox-runtime (the rt/ subdir itself is created by
+	// the init-fs platform subcommand in both modes).
+	var runtimeMount *corev1.VolumeMount
+	for i := range mainContainer.VolumeMounts {
+		if mainContainer.VolumeMounts[i].MountPath == "/sandbox-runtime" {
+			runtimeMount = &mainContainer.VolumeMounts[i]
+			break
+		}
+	}
+	require.NotNil(t, runtimeMount, "/sandbox-runtime must be mounted on the main container")
+	assert.False(t, runtimeMount.ReadOnly,
+		"/sandbox-runtime must be RW on the main container — the resync batch write lands under it")
+
+	// And for contrast: the old default's parent is the RO mount the
+	// env var exists to escape.
+	var cfgMount *corev1.VolumeMount
+	for i := range mainContainer.VolumeMounts {
+		if mainContainer.VolumeMounts[i].MountPath == "/sandbox-cfg" {
+			cfgMount = &mainContainer.VolumeMounts[i]
+			break
+		}
+	}
+	require.NotNil(t, cfgMount, "/sandbox-cfg must be mounted on the main container")
+	assert.True(t, cfgMount.ReadOnly,
+		"/sandbox-cfg stays ReadOnly — which is exactly why the resync batch path must not default into it")
+}
+
+// podHasAgentdSidecar reports whether the built pod carries the agentd
+// native sidecar (design 0051 US-2 mode flag).
+func podHasAgentdSidecar(pod *corev1.Pod) bool {
+	for _, c := range pod.Spec.Containers {
+		if c.Name == "agentd" {
+			return true
+		}
+	}
+	return false
 }
 
 // TestE2E_Reconcile_PodSpec_ServiceAccountCreatedBeforePod verifies the

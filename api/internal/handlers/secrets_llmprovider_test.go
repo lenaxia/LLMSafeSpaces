@@ -41,7 +41,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 		t.Skip("port 4097 not available for test agentd mock")
 	}
 	agentd := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/reload-secrets" {
+		if r.URL.Path != "/v1/resync-secrets" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -52,7 +52,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"reloaded": 1, "restarted": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "applied", "appliedRev": "1:t", "restarted": false})
 	}))
 	agentd.Listener = agentdListener
 	agentd.Start()
@@ -136,27 +136,30 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 	body := reloadBody
 	mu.Unlock()
 
-	require.True(t, called, "SetBindings must trigger reload-secrets call to agentd")
+	require.True(t, called, "SetBindings must trigger the resync notify to agentd")
+	require.Empty(t, body, "US-70.3: the notify is bodyless — the pod pulls its batch")
 
-	// Parse the secrets.json payload that was pushed to the pod.
-	var injected []struct {
-		Type      string          `json:"type"`
-		Name      string          `json:"name"`
-		Metadata  json.RawMessage `json:"metadata"`
-		Plaintext string          `json:"plaintext"`
+	// The batch the pod will pull: build it through the one builder and pin
+	// the delivered provider shape (name from the decrypted slug, plaintext
+	// the original provider JSON).
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), userID, "ws-llm-test")
+	require.NoError(t, err)
+	require.Nil(t, degrade)
+	var found bool
+	for _, e := range batch.Entries {
+		if e.Type != secrets.SecretTypeLLMProvider {
+			continue
+		}
+		found = true
+		require.Equal(t, "anthropic", e.Name)
+		var decryptedProvider map[string]any
+		require.NoError(t, json.Unmarshal([]byte(e.Value), &decryptedProvider))
+		require.Equal(t, "anthropic", decryptedProvider["kind"])
+		require.Equal(t, "anthropic", decryptedProvider["slug"])
+		require.Equal(t, "sk-ant-api03-test-key", decryptedProvider["apiKey"])
+		require.Equal(t, "anthropic/claude-sonnet-4-5", decryptedProvider["default"])
 	}
-	require.NoError(t, json.Unmarshal(body, &injected))
-	require.Len(t, injected, 1)
-	require.Equal(t, "llm-provider", string(injected[0].Type))
-	require.Equal(t, "anthropic", injected[0].Name)
-
-	// Verify the plaintext is the original provider JSON (decrypted correctly).
-	var decryptedProvider map[string]any
-	require.NoError(t, json.Unmarshal([]byte(injected[0].Plaintext), &decryptedProvider))
-	require.Equal(t, "anthropic", decryptedProvider["kind"])
-	require.Equal(t, "anthropic", decryptedProvider["slug"])
-	require.Equal(t, "sk-ant-api03-test-key", decryptedProvider["apiKey"])
-	require.Equal(t, "anthropic/claude-sonnet-4-5", decryptedProvider["default"])
+	require.True(t, found, "the pullable batch must contain the llm-provider entry")
 }
 
 // TestHandler_E2E_LLMProvider_MultipleProviders_Bind verifies that binding
@@ -179,7 +182,7 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 		reloadBody = body
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"reloaded": 2, "restarted": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "applied", "appliedRev": "1:t", "restarted": false})
 	}))
 	agentd.Listener = agentdListener
 	agentd.Start()
@@ -253,22 +256,23 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 	router.ServeHTTP(bw, bReq)
 	require.Equal(t, http.StatusNoContent, bw.Code)
 
-	// Verify payload has both providers.
 	mu.Lock()
 	body := reloadBody
 	mu.Unlock()
+	require.Empty(t, body, "US-70.3: the notify is bodyless — the pod pulls its batch")
 
-	var injected []struct {
-		Type      string `json:"type"`
-		Plaintext string `json:"plaintext"`
-	}
-	require.NoError(t, json.Unmarshal(body, &injected))
-	require.Len(t, injected, 2, "Both llm-provider secrets should be in payload")
-
-	for _, s := range injected {
-		require.Equal(t, "llm-provider", s.Type)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), userID, "ws-multi")
+	require.NoError(t, err)
+	require.Nil(t, degrade)
+	var llmEntries int
+	for _, e := range batch.Entries {
+		if e.Type != secrets.SecretTypeLLMProvider {
+			continue
+		}
+		llmEntries++
 		var prov map[string]any
-		require.NoError(t, json.Unmarshal([]byte(s.Plaintext), &prov))
+		require.NoError(t, json.Unmarshal([]byte(e.Value), &prov))
 		require.Contains(t, []any{"anthropic", "openai"}, prov["slug"])
 	}
+	require.Equal(t, 2, llmEntries, "Both llm-provider secrets should be in the pullable batch")
 }

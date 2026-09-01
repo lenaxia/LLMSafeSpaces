@@ -301,6 +301,34 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		initContainers = append(initContainers,
 			r.buildPlatformBootstrap(workspace),
 			r.buildPlatformMaterialize(relayBaseURL))
+		// US-70.3 (design 0052 §4.7): single-container agentd runs in the
+		// main container (--supervise) and serves /v1/resync-secrets —
+		// it must read a FRESH projected token for the pod's lifetime to
+		// re-pull secrets. Read-only; AutomountServiceAccountToken stays
+		// false (the explicit audience-scoped volume, not the default
+		// automount). Sidecar mode does NOT mount it here — the sidecar
+		// holds the mux and its own mount (§D1: no SA token in uid-1000
+		// space).
+		mainContainer.VolumeMounts = append(mainContainer.VolumeMounts, corev1.VolumeMount{
+			Name:      "bootstrap-token",
+			MountPath: "/var/run/bootstrap",
+			ReadOnly:  true,
+		})
+		// US-70.3 validation B1: the single-container agentd serves
+		// /v1/resync-secrets from the MAIN container, whose
+		// bootstrapSecretsOut default is /sandbox-cfg/secrets.json — a
+		// ReadOnly mount — so every changed-manifest resync failed its
+		// batch write with 500. Relocate the resync batch file to the
+		// RW /sandbox-runtime tmpfs (the same pod-scoped coordinate the
+		// sidecar mode uses). Boot coherence is unchanged by design: the
+		// platform-bootstrap init still writes /sandbox-cfg/secrets.json,
+		// and a post-resync boot replays the reload cache (written by
+		// applySecretsBatch) merged over the base — converged by
+		// construction. Sidecar mode sets this env on the SIDECAR only.
+		mainContainer.Env = append(mainContainer.Env, corev1.EnvVar{
+			Name:  "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT",
+			Value: "/sandbox-runtime/rt/secrets.json",
+		})
 	}
 
 	// Free-models ConfigMap volume (2026-06-23 cold-start optimization,

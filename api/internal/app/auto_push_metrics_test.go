@@ -17,20 +17,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
-
-// stubInjector satisfies agentpush.BatchBuilder by returning a fixed
-// batch rendered as the legacy payload.
-type stubInjector struct{ payload []byte }
-
-func (s *stubInjector) BuildWorkspaceBatch(_ context.Context, _, _ string) (*secrets.Batch, *secrets.BuildDegrade, error) {
-	batch := &secrets.Batch{Entries: []secrets.BatchEntry{{
-		SecretID: "sec-stub", Version: 1, Type: secrets.SecretTypeEnvSecret,
-		Name: "STUB", Value: string(s.payload),
-	}}}
-	return batch, nil, nil
-}
 
 // stubResolverAdapter satisfies agentpush.PodIPResolver by returning a
 // fixed IP (or empty for the no_pod case).
@@ -41,7 +28,7 @@ func (s *stubResolverAdapter) GetWorkspacePodIP(_ context.Context, _, _ string) 
 }
 
 // stubPasswordProviderAdapter satisfies agentpush.PasswordProvider —
-// agentd enforces Basic auth on reload-secrets (#848), so Push needs one.
+// agentd enforces Basic auth on the user mux (#848), so Notify needs one.
 type stubPasswordProviderAdapter struct{}
 
 func (stubPasswordProviderAdapter) WorkspacePassword(_ context.Context, _ string) (string, error) {
@@ -50,7 +37,7 @@ func (stubPasswordProviderAdapter) WorkspacePassword(_ context.Context, _ string
 
 // newLoopbackClient returns an *http.Client whose transport short-
 // circuits every request with the given status + body. Lets us drive
-// agentpush.Service.Push without a real HTTP server.
+// agentpush.Service.Notify without a real HTTP server.
 func newLoopbackClient(status int, body string) *http.Client {
 	return &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -65,12 +52,11 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// TestClassifyPushOutcome maps agentpush errors to metric labels. This
-// mapping is the sole source of truth for api_secret_auto_push_total
-// outcomes — a bug here would silently misclassify production incidents
-// (e.g. every "inject failed" showing as "reload_failed" would send
-// operators looking at the wrong subsystem).
-func TestClassifyPushOutcome(t *testing.T) {
+// TestClassifyNotifyOutcome maps agentpush.Notify errors to metric
+// labels. This mapping is the sole source of truth for
+// api_secret_auto_push_total outcomes — a bug here would silently
+// misclassify production incidents.
+func TestClassifyNotifyOutcome(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -84,19 +70,14 @@ func TestClassifyPushOutcome(t *testing.T) {
 			"no_pod",
 		},
 		{
-			"builder failure",
-			errors.New("build workspace batch: revision store down"),
-			"inject_failed",
+			"notify failure (agentd 502)",
+			errors.New("agent resync failed: pull_failed"),
+			"notify_failed",
 		},
 		{
-			"reload failure (agentd 5xx)",
-			errors.New("agent reload failed"),
-			"reload_failed",
-		},
-		{
-			"reload failure (transport error)",
+			"notify failure (transport error)",
 			errors.New("failed to reach workspace agent: connection refused"),
-			"reload_failed",
+			"notify_failed",
 		},
 	}
 	for _, tc := range cases {
@@ -107,26 +88,27 @@ func TestClassifyPushOutcome(t *testing.T) {
 	}
 }
 
-// TestWsAgentPusherAdapter_EmitsMetricOnEveryPush proves that every call
-// to the adapter increments api_secret_auto_push_total exactly once with
-// the correct outcome label. The metric is process-global (Prometheus
-// counters can't be scoped to a test), so we reset it and read deltas.
+// TestWsAgentPusherAdapter_EmitsMetricOnEveryNotify proves that every
+// call to the adapter increments api_secret_auto_push_total exactly
+// once with the correct outcome label. The metric is process-global
+// (Prometheus counters can't be scoped to a test), so we reset it and
+// read deltas.
 //
 // This is the load-bearing regression test for the bot-caught bug: the
-// old wiring put WithMetricsHook on the shared pusher, causing
+// old wiring put the outcome hook on the shared pusher, causing
 // SetBindings pushes to also increment the counter. Now the metric is
 // emitted ONLY from this adapter (which is only invoked from the
 // pod-recreation auto-push path).
-func TestWsAgentPusherAdapter_EmitsMetricOnEveryPush(t *testing.T) {
+func TestWsAgentPusherAdapter_EmitsMetricOnEveryNotify(t *testing.T) {
 	counter := metrics.SecretAutoPushCounter()
 	counter.Reset()
 
 	// Success case: metric should increment {outcome="success"} by 1.
 	adapter := &wsAgentPusherAdapter{
-		pusher: agentpush.New(&stubInjector{payload: []byte("[]")},
+		pusher: agentpush.New(
 			agentpush.WithPodIPResolver(&stubResolverAdapter{ip: "10.0.0.5"}),
 			agentpush.WithPasswordProvider(stubPasswordProviderAdapter{}),
-			agentpush.WithHTTPClient(newLoopbackClient(200, `{"reloaded":0}`)),
+			agentpush.WithHTTPClient(newLoopbackClient(200, `{"status":"applied","appliedRev":"2:a:b"}`)),
 		),
 	}
 	err := adapter.Push(context.Background(), "user", "ws")
@@ -137,7 +119,7 @@ func TestWsAgentPusherAdapter_EmitsMetricOnEveryPush(t *testing.T) {
 	// no_pod case (empty pod IP).
 	counter.Reset()
 	adapter = &wsAgentPusherAdapter{
-		pusher: agentpush.New(&stubInjector{payload: []byte("[]")},
+		pusher: agentpush.New(
 			agentpush.WithPodIPResolver(&stubResolverAdapter{ip: ""}),
 		),
 	}
@@ -148,32 +130,27 @@ func TestWsAgentPusherAdapter_EmitsMetricOnEveryPush(t *testing.T) {
 		"no_pod outcome must NOT increment success")
 }
 
-// TestSharedPusher_DoesNotEmitAutoPushMetric proves that when the
-// shared *agentpush.Service is used directly (i.e. from
-// SecretsHandler's SetBindings/ReloadSecrets paths, NOT via the
+// TestSharedNotifier_DoesNotEmitAutoPushMetric proves that when the
+// shared *agentpush.Service is used directly (i.e. from SecretsHandler's
+// SetBindings/ReloadSecrets/revoke paths, NOT via the
 // wsAgentPusherAdapter), api_secret_auto_push_total is NOT incremented.
 // This locks in the metric's documented meaning ("pod-identity
 // transitions on workspace status polls") against future accidental
 // re-wiring.
-func TestSharedPusher_DoesNotEmitAutoPushMetric(t *testing.T) {
+func TestSharedNotifier_DoesNotEmitAutoPushMetric(t *testing.T) {
 	counter := metrics.SecretAutoPushCounter()
 	counter.Reset()
 
-	// Build the shared pusher the SAME way app.New does — without
-	// WithMetricsHook. Its Push must NOT touch the counter.
-	shared := agentpush.New(&stubInjector{payload: []byte("[]")},
+	shared := agentpush.New(
 		agentpush.WithPodIPResolver(&stubResolverAdapter{ip: "10.0.0.5"}),
 		agentpush.WithPasswordProvider(stubPasswordProviderAdapter{}),
-		agentpush.WithHTTPClient(newLoopbackClient(200, `{"reloaded":1}`)),
+		agentpush.WithHTTPClient(newLoopbackClient(200, `{"status":"applied","appliedRev":"2:a:b"}`)),
 	)
-	_, err := shared.Push(context.Background(), "user", "ws")
+	_, err := shared.Notify(context.Background(), "user", "ws")
 	assert.NoError(t, err)
 
-	// Every possible outcome label must remain at zero — the SetBindings
-	// path (which uses this same shared pusher directly) must not
-	// pollute the pod-recreation metric.
-	for _, outcome := range []string{"success", "no_pod", "inject_failed", "reload_failed"} {
+	for _, outcome := range []string{"success", "no_pod", "notify_failed"} {
 		assert.Equal(t, 0.0, testutil.ToFloat64(counter.WithLabelValues(outcome)),
-			"shared pusher must NOT increment %s outcome", outcome)
+			"shared notifier must NOT increment %s outcome", outcome)
 	}
 }

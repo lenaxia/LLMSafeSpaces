@@ -30,10 +30,11 @@ const testEnvelope = `{"entries":[{"secretId":"sec-1","version":3,"type":"env-se
 // conditionalServer records the last request body it served and replies
 // with the configured status/payload.
 type conditionalServer struct {
-	status  int
-	payload string
-	etag    string
-	lastReq atomic.Value // bootstrapRequest
+	status   int
+	payload  string
+	etag     string
+	lastReq  atomic.Value // bootstrapRequest
+	lastAuth atomic.Value // string
 }
 
 func (s *conditionalServer) handler(t *testing.T, hits *atomic.Int32) http.HandlerFunc {
@@ -41,6 +42,7 @@ func (s *conditionalServer) handler(t *testing.T, hits *atomic.Int32) http.Handl
 		if hits != nil {
 			hits.Add(1)
 		}
+		s.lastAuth.Store(r.Header.Get("Authorization"))
 		var req bootstrapRequest
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		s.lastReq.Store(req)

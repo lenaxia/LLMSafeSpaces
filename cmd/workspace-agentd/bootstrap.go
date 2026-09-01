@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -46,6 +47,12 @@ type bootstrapRequest struct {
 // bootstrapContractV2 is the delivery contract this client speaks.
 const bootstrapContractV2 = 2
 
+// errBootstrapUnauthorized marks a pull the API answered with 401 —
+// the projected SA token was rejected (expired beyond the kubelet's
+// rotation, or audience mismatch). Callers distinguish it to surface
+// pull_unauthorized instead of the generic pull_failed.
+var errBootstrapUnauthorized = errors.New("bootstrap: API returned 401")
+
 // runBootstrapCommand implements the `workspace-agentd bootstrap` subcommand.
 // It fetches decrypted secrets from the API using a projected ServiceAccount
 // token and writes them to /sandbox-cfg/secrets.json (+ workspace-config.json).
@@ -64,7 +71,7 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 
 	workspaceID := fs.String("workspace-id", "", "workspace ID to fetch secrets for (required)")
 	apiURL := fs.String("api-url", os.Getenv("LLMSAFESPACE_API_URL"), "API service base URL")
-	tokenFile := fs.String("token-file", "/var/run/bootstrap/token", "projected SA token file")
+	tokenFile := fs.String("token-file", bootstrapTokenPath, "projected SA token file")
 	out := fs.String("out", "/sandbox-cfg/secrets.json", "output secrets.json path")
 	// adminPromptOut is the file the bootstrap subcommand writes the merged
 	// platform→org→role→user system prompt to, if the API returns a non-empty
@@ -107,7 +114,7 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	secrets, notModified, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token), priorHash)
+	secrets, notModified, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(context.Background(), *apiURL, *workspaceID, string(token), priorHash)
 	if err != nil {
 		if hasPriorBatch {
 			// Resume-within-pod doctrine (US-70.2): a prior batch on disk is
@@ -170,7 +177,7 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 // returns notModified=true on 304 (caller keeps the prior file); the
 // secrets payload of a 200 is written verbatim by the caller — envelope
 // or legacy bare array, both are the exact bytes to persist.
-func fetchBootstrapSecrets(apiURL, workspaceID, token, clientManifestHash string) (json.RawMessage, bool, json.RawMessage, string, []string, error) {
+func fetchBootstrapSecrets(ctx context.Context, apiURL, workspaceID, token, clientManifestHash string) (json.RawMessage, bool, json.RawMessage, string, []string, error) {
 	body, err := json.Marshal(bootstrapRequest{
 		WorkspaceID:        workspaceID,
 		ContractVersion:    bootstrapContractV2,
@@ -180,7 +187,7 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token, clientManifestHash string
 		return nil, false, nil, "", nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	//nolint:gosec // G704: apiURL is controller-set via LLMSAFESPACE_API_URL env var, not user-controllable
@@ -203,6 +210,9 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token, clientManifestHash string
 		return nil, true, nil, "", nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return nil, false, nil, "", nil, errBootstrapUnauthorized
+		}
 		return nil, false, nil, "", nil, fmt.Errorf("API returned %d", resp.StatusCode)
 	}
 

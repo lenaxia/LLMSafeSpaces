@@ -158,10 +158,9 @@ func TestE2E_FullSecretLifecycle(t *testing.T) {
 		}
 	}
 
-	// === Phase 10: Delete a secret and verify cascade ===
-	err = svc.DeleteSecret(ctx, userID, sshSecret.ID)
-	if err != nil {
-		t.Fatalf("DeleteSecret: %v", err)
+	// === Phase 10: Delete a secret and verify cascade (m2: force-revoke is the only delete) ===
+	if _, err := svc.ForceRevokeSecret(ctx, userID, sshSecret.ID); err != nil {
+		t.Fatalf("ForceRevokeSecret: %v", err)
 	}
 
 	// Bindings should now have 4

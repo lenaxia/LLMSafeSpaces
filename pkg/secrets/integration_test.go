@@ -67,9 +67,8 @@ func TestIntegration_SecretCRUD_FullStack(t *testing.T) {
 		t.Errorf("Updated value wrong: %s", string(plaintext2))
 	}
 
-	// Delete
-	err = svc.DeleteSecret(ctx, "user-1", created.ID)
-	if err != nil {
+	// Delete (m2: force-revoke is the only delete path)
+	if _, err := svc.ForceRevokeSecret(ctx, "user-1", created.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -108,8 +107,8 @@ func TestIntegration_BindingLifecycle(t *testing.T) {
 		t.Fatalf("Expected 3 bindings, got %d", len(resp.Bindings))
 	}
 
-	// Remove one secret
-	svc.DeleteSecret(ctx, "user-1", ids[1])
+	// Remove one secret (m2: force-revoke is the only delete path)
+	_, _ = svc.ForceRevokeSecret(ctx, "user-1", ids[1])
 
 	// Bindings should auto-cascade
 	resp, _ = svc.GetBindings(ctx, "user-1", "ws-1")
@@ -221,8 +220,8 @@ func TestIntegration_AuditCompleteness(t *testing.T) {
 	// Inject
 	_, _ = injectJSONChecked(svc, ctx, "user-1", "ws-1")
 
-	// Delete
-	svc.DeleteSecret(ctx, "user-1", s.ID)
+	// Delete (m2: force-revoke is the only delete path)
+	_, _ = svc.ForceRevokeSecret(ctx, "user-1", s.ID)
 
 	// Verify audit
 	entries, _ := svc.QueryAudit(ctx, "user-1", AuditQuery{})
