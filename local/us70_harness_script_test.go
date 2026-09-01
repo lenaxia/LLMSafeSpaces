@@ -613,4 +613,16 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 			t.Errorf("evidence leg missing %q", want)
 		}
 	}
+	// Failure-path semantics: a probe ERROR fails the step (never a
+	// silent pass — the matrix outcome is data, harness failure is not),
+	// and a park/unpark round-trip mismatch is fatal.
+	for _, mustDie := range []string{
+		`die "admission-ID probe errored`,
+		`die "park/unpark round-trip mismatch`,
+		`die "no workspace password secret"`,
+	} {
+		if !strings.Contains(text, mustDie) {
+			t.Errorf("evidence leg lost its failure path: %q", mustDie)
+		}
+	}
 }
