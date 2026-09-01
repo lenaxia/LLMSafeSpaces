@@ -596,7 +596,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	var e Entry
 	for i, v := range vals {
 		var cand Entry
-		if json.Unmarshal([]byte(v), &cand) == nil && cand.Status != StatusError {
+		if json.Unmarshal([]byte(v), &cand) == nil && cand.Status != StatusError && cand.Status != StatusParked {
 			if cand.NextAttemptAt.IsZero() || !cand.NextAttemptAt.After(now) {
 				idx, e = i, cand
 				break

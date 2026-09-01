@@ -62,6 +62,16 @@ func f(t string) bool { return t == "session.status" }
 }
 
 func TestEventLiteralCheck_KnownLeakTolerated(t *testing.T) {
+	// The shipped map is empty since US-69.13 (the last leaks migrated
+	// behind the adapter seam); the tolerance MECHANISM stays — seed an
+	// entry the way a future known leak would, and verify it is reported
+	// as tolerated (leaked=true), not new.
+	restore := eventLiteralKnownLeaks
+	eventLiteralKnownLeaks = map[string]string{
+		"api/internal/handlers/proxy_events.go": "test-seeded leak (mechanism coverage)",
+	}
+	defer func() { eventLiteralKnownLeaks = restore }()
+
 	dir := t.TempDir()
 	writeGoFile(t, dir, "api/internal/handlers/proxy_events.go", `package handlers
 

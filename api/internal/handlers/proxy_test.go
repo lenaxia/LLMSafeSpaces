@@ -1051,7 +1051,7 @@ func TestProxy_StatuszPodIP_RunningReturnsIP(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP("ws-1")
+	ip := handler.statuszPodIP(context.Background(), "ws-1")
 	assert.Equal(t, "10.0.0.1", ip)
 }
 
@@ -1069,7 +1069,7 @@ func TestProxy_StatuszPodIP_SuspendedReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP("ws-1")
+	ip := handler.statuszPodIP(context.Background(), "ws-1")
 	assert.Equal(t, "", ip)
 }
 
@@ -1086,7 +1086,7 @@ func TestProxy_StatuszPodIP_NotFoundReturnsEmpty(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
 	require.NoError(t, err)
 
-	ip := handler.statuszPodIP("sb-missing")
+	ip := handler.statuszPodIP(context.Background(), "sb-missing")
 	assert.Equal(t, "", ip)
 }
 

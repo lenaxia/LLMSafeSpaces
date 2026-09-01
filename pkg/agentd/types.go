@@ -251,6 +251,10 @@ type StatuszResponse struct {
 	// exhausted — free-tier routing unavailable until the next agent
 	// restart; #901 G8).
 	RelayFreeModels int32 `json:"relay_free_models"`
+	// InFlightDeliveries: the ledger's unresolved delivery count pod-wide
+	// (ledgered + admitted + stalled — the flip gate's drain signal,
+	// design 0055 M4; 0 when the authority is not mounted).
+	InFlightDeliveries int64 `json:"ledger_in_flight"`
 	// OldestBusySeconds: age of the longest-busy session, 0 when idle
 	// (D6/#998: unattended-escalation detection input — a session busy
 	// this long with sustained watchdog flat-suppressions is likely

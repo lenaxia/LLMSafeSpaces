@@ -9,6 +9,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // stateReconciler is US-69.11's replacement for sseWatchReconciler: with
@@ -63,7 +65,7 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 					}
 				}()
 				for _, id := range watched {
-					podIP := h.statuszPodIP(id)
+					podIP := h.statuszPodIP(context.Background(), id)
 					if podIP == "" {
 						continue
 					}
@@ -92,12 +94,12 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 // statuszPodIP resolves the pod IP for statusz polls (phase-guarded —
 // the retired tracker's resolver, kept for the D6 sweep and the
 // reconcile pass).
-func (h *ProxyHandler) statuszPodIP(workspaceID string) string {
+func (h *ProxyHandler) statuszPodIP(ctx context.Context, workspaceID string) string {
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
 		return ""
 	}
-	workspace, err := v1Client.Workspaces(h.namespace).Get(context.Background(), workspaceID, metav1.GetOptions{})
+	workspace, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
 	if err != nil {
 		return ""
 	}
@@ -105,4 +107,15 @@ func (h *ProxyHandler) statuszPodIP(workspaceID string) string {
 		return ""
 	}
 	return workspace.Status.PodIP
+}
+
+// FetchStatuszPublic resolves the workspace pod and fetches statusz
+// (admin-facing; phase-guarded). The authority flip's drain signal reads
+// the ledger_in_flight field off it.
+func (h *ProxyHandler) FetchStatuszPublic(ctx context.Context, workspaceID string) (*agentd.StatuszResponse, error) {
+	podIP := h.statuszPodIP(ctx, workspaceID)
+	if podIP == "" {
+		return nil, fmt.Errorf("no pod IP for %s (not Active)", workspaceID)
+	}
+	return h.fetchStatusz(ctx, workspaceID, podIP)
 }

@@ -111,6 +111,8 @@ The API uses Viper with `AutomaticEnv` enabled. Every key in `config.yaml` can b
 | `LLMSAFESPACES_OIDC_FRONTENDREDIRECTURL` | `oidc.frontendRedirectUrl` | Browser landing URL after SSO. |
 | `LLMSAFESPACES_OIDC_STATECOOKIENAME` | `oidc.stateCookieName` | PKCE state cookie name. |
 | `LLMSAFESPACES_EMAIL_*` | `email.*` | Outbound email (SES region, from address, etc.). |
+| `OPENCODE_V2_DELIVERY` | — | Feature flag (`api.extraEnv`): V2 inboard delivery (design 0052); requires runtime opencode ≥ 1.18.15. |
+| `AGENTD_STATE_AUTHORITY` | — | Feature flag (`api.extraEnv`): agentd session-state authority (design 0055) — requires `OPENCODE_V2_DELIVERY=1` (illegal combo is a boot error); flip via the [authority-flip runbook](../runbooks/authority-flip.md). |
 
 ### When to use env vars
 

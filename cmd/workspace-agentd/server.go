@@ -65,6 +65,10 @@ type serverDeps struct {
 	// (single-container mode). Sidecar mode wires socket-backed reads —
 	// the sidecar's own cgroup is the wrong container (0050 finding).
 	sys sysMetricsSource
+	// ledgerInFlight reports the ledger's unresolved delivery count for
+	// statusz (the flip gate's drain signal). Nil when no authority —
+	// statusz then reports 0.
+	ledgerInFlight func() int64
 	// controlPlanePassword is the design-0051 §D1 agentdPassword (US-3):
 	// accepted on control-plane routes alongside the workspace password
 	// (D6.1 mixed-generation window). Empty in single-container mode.
@@ -123,6 +127,7 @@ func buildStatuszHandler(
 	modelWarnPath string,
 	sys sysMetricsSource,
 	spawnStatus func() (rev, degraded string),
+	inFlightFn func() int64,
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -182,8 +187,13 @@ func buildStatuszHandler(
 		}
 
 		sys := sys.orDefaults()
+		var inFlight int64
+		if inFlightFn != nil {
+			inFlight = inFlightFn()
+		}
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:             healthy,
+			InFlightDeliveries:  inFlight,
 			Ready:               ready,
 			Connected:           connected,
 			ProvidersConfigured: configured,
@@ -453,7 +463,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus)))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys, deps.spawnStatus, deps.ledgerInFlight)))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.

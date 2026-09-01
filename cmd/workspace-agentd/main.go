@@ -217,11 +217,16 @@ func main() {
 	}
 
 	startedAt := time.Now()
+	var ledgerInFlight func() int64
+	if stateAuthority != nil {
+		ledgerInFlight = stateAuthority.InFlightDeliveries
+	}
 	deps := serverDeps{
 		client:             client,
 		cache:              &providerCache{},
 		sseTracker:         sseTracker,
 		stateAuthority:     stateAuthority,
+		ledgerInFlight:     ledgerInFlight,
 		pressureMonitor:    newMemoryPressureMonitor(),
 		healthCache:        newHealthzCache(),
 		gr:                 newGateRecorder(startedAt, agentdGateDurationSeconds, log),

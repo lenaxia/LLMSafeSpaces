@@ -45,11 +45,10 @@ var eventLiteralAllowedPrefixes = []string{
 // eventLiteralKnownLeaks tolerates existing platform-code string matches
 // on agent event names until their seam migration lands. Each entry must
 // carry a reason and issue pointer; the rule fails on any NEW match.
-var eventLiteralKnownLeaks = map[string]string{
-	"api/internal/services/sse/tracker.go":  "busy/idle dispatch keyed on session.status; routes via Adapter.Stream when the Epic 65 SSE bridge migrates the tracker (see #938 worklog Next Steps)",
-	"api/internal/handlers/proxy_events.go": "title/parent persistence dispatch on session.updated; exact-match verified live-correct (wire unsuffixed), fold into the adapter when #940 touches session surfaces",
-	"api/internal/handlers/proxy_v2.go":     "V2 session-queue bridge constants (session.next.prompt.admitted/prompted); Epic 63 surface, migrates with the V2 bridge",
-}
+// Empty since US-69.13: the last tolerated leaks (the SSE tracker,
+// deleted with the Epic 69 tracker retirement, and the session.updated /
+// session.next.* matches in the proxy) migrated behind the adapter seam.
+var eventLiteralKnownLeaks = map[string]string{}
 
 // EventLiteralViolation is one instance of agent event-name string
 // matching found outside the seam.

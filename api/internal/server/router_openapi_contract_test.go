@@ -447,6 +447,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		RelayAdminHandler:               &handlers.RelayAdminHandler{},
 		PlatformInfoHandler:             &handlers.PlatformInfoHandler{},
 		AdminSessionHandler:             &handlers.AdminSessionHandler{},
+		AuthorityFlipHandler:            &handlers.AuthorityFlipHandler{},
 		PlatformAdminHandler:            &handlers.PlatformAdminHandler{},
 		InternalOrgStatusHandler:        &handlers.InternalOrgStatusHandler{},
 		PodBootstrapHandler:             &handlers.PodBootstrapHandler{},

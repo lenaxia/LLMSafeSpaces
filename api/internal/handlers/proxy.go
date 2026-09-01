@@ -248,7 +248,12 @@ func (h *ProxyHandler) SetOutbox(o *outbox.Service) {
 	h.outbox = o
 }
 
-// GetOutboxForTest exposes the outbox for assertions.
+// GetOutbox exposes the outbox service (admin authority-flip endpoints).
+func (h *ProxyHandler) GetOutbox() *outbox.Service {
+	return h.outbox
+}
+
+// GetOutboxForTest is the historical test alias.
 func (h *ProxyHandler) GetOutboxForTest() *outbox.Service {
 	return h.outbox
 }
