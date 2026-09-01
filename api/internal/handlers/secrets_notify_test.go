@@ -496,8 +496,9 @@ func TestHandler_WorkspaceEnvMutationsNotify(t *testing.T) {
 		agentpush.WithPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"}),
 		agentpush.WithPasswordProvider(staticPasswordProvider{}),
 	)
+	envLogger := &recordingLogger{}
 	envHandler := NewWorkspaceEnvHandler(mustEnvService(t, store))
-	envHandler.SetLogger(&recordingLogger{})
+	envHandler.SetLogger(envLogger)
 	envHandler.SetNotifier(func(ctx context.Context, userID, workspaceID string) error {
 		_, err := notifier.Notify(ctx, userID, workspaceID)
 		return err
@@ -517,6 +518,16 @@ func TestHandler_WorkspaceEnvMutationsNotify(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		envLogger.mu.Lock()
+		for _, e := range envLogger.warns {
+			t.Logf("handler warn: %s %v", e.Msg, e.Fields)
+		}
+		for _, e := range envLogger.errs {
+			t.Logf("handler error: %s", e.Msg)
+		}
+		envLogger.mu.Unlock()
+	}
 	require.Equal(t, http.StatusNoContent, w.Code)
 	require.Len(t, mock.dispatched(), 1, "PUT env must notify")
 
