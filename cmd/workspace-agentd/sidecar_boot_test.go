@@ -24,7 +24,7 @@ package main
 //     (reset() + reinstall).
 //   - Fresh boot: bootstrap fetches and materialize applies; exit 0.
 //   - API down on fresh boot: bootstrap degrades to an empty batch and
-//     the pod still boots (reload-secrets path recovers later) — the
+//     the pod still boots (resync path recovers later) — the
 //     never-block-boot contract is preserved.
 //   - Materialize structural failure: propagated non-zero — the sidecar
 //     exits, CrashLoopBackOff makes the failure VISIBLE (the 2026-08-25
@@ -56,7 +56,6 @@ func setSidecarMaterializeEnv(t *testing.T, dir string) {
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
 	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
-	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "reload-cache.json"))
 	t.Setenv(stagingDirEnvOverride, filepath.Join(dir, "staged"))
 	require.NoError(t, os.MkdirAll(os.Getenv("HOME"), 0o755))
 }
@@ -204,7 +203,7 @@ func TestSidecarBootSecrets_APIDown_PriorEnvelope_KeepsLastGood(t *testing.T) {
 
 // TestSidecarBootSecrets_APIDown_FreshBoot_StillBoots: the never-block-
 // boot contract survives the absorption — an unreachable API degrades
-// to an empty batch, exit 0 (the reload-secrets path recovers later).
+// to an empty batch, exit 0 (the resync path recovers later).
 func TestSidecarBootSecrets_APIDown_FreshBoot_StillBoots(t *testing.T) {
 	dir := t.TempDir()
 	setSidecarMaterializeEnv(t, dir)

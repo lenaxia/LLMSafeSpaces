@@ -12,11 +12,11 @@
 //
 //   - Row unwrap attempt with the CURRENT master provider. Success →
 //     healthy, skip.
-//   - Failure → recovery, in order: (a) the session-cache DEK walk
-//     (KeyService.GetDEKForUser — the K1 Redis / K2 jwt_sessions
-//     sources, while they exist; demolition is US-70.5); (b) nothing
-//     else. No source → outcome unwrappable_no_source, surfaced via
-//     metric + audit + alert (never silently labeled).
+//   - Failure → recovery, in order: (a) the warm-cache DEK walk
+//     (KeyService.GetCachedDEKForUser — the K1 Redis entries reachable
+//     through the jwt_sessions index, while pre-US-70.5 rows exist);
+//     (b) nothing else. No source → outcome unwrappable_no_source,
+//     surfaced via metric + audit + alert (never silently labeled).
 //   - Source agreement (W9): a recovered DEK must decrypt at least one
 //     existing secret for that user before any re-wrap — defense
 //     against a corrupt cache poisoning the durable row. A user with
@@ -138,10 +138,11 @@ var (
 )
 
 // DEKRecoverer is the recovery-source seam — satisfied by
-// *secrets.KeyService (GetDEKForUser: Redis session cache K1, then the
-// jwt_sessions walk K2 while that source exists).
+// *secrets.KeyService (GetCachedDEKForUser: the warm Redis session
+// cache reachable through the jwt_sessions index; it never re-derives
+// KEKs and never unwraps — US-70.5).
 type DEKRecoverer interface {
-	GetDEKForUser(ctx context.Context, userID string) (dek []byte, jti string, err error)
+	GetCachedDEKForUser(ctx context.Context, userID string) (dek []byte, jti string, err error)
 }
 
 // UserSecretLister is the cheapest existing per-user secret listing —
@@ -360,7 +361,7 @@ func (s *Service) processRow(ctx context.Context, row secrets.UserKeyReconcileRo
 		return outcomeHealthy
 	}
 
-	dek, _, err := s.recoverer.GetDEKForUser(ctx, row.UserID)
+	dek, _, err := s.recoverer.GetCachedDEKForUser(ctx, row.UserID)
 	if err != nil {
 		// ErrDEKUnavailable is the legitimate "no live source" case
 		// (owner offline, no session). Any other error is infrastructure

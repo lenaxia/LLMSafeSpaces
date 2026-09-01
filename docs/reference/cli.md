@@ -95,7 +95,7 @@ The sidecar binary that supervises `opencode` inside every workspace pod. Owns t
 
 | Subcommand | Purpose |
 |---|---|
-| `materialize` | Reads `/sandbox-cfg/secrets.json` (server-KEK creds) + replays `/sandbox-runtime/last-reload-secrets.json` (cached user-DEK creds), then applies via `pkg/agentd/secrets`. Runs before agentd in the init container. Replaces the legacy bash secret-loop (Epic 17 G2/G20). |
+| `materialize` | Applies `/sandbox-cfg/secrets.json` (the batch file — a v2 envelope or the legacy bare array; every resync-applied revision overwrites it) via `pkg/agentd/secrets`. Runs before agentd in the init container. A container restart re-materializes the same file. Replaces the legacy bash secret-loop (Epic 17 G2/G20). |
 | `bootstrap` | Epic 35 US-35.2: fetches decrypted secrets from the API using a projected SA token. Runs before `materialize` in the init container. Never blocks pod boot — degrades to empty on failure. |
 | `--supervise` | The default long-running mode: supervise `opencode`, serve HTTP, run the relay injector. |
 
@@ -104,7 +104,7 @@ The sidecar binary that supervises `opencode` inside every workspace pod. Owns t
 | Port | Purpose | Auth |
 |---|---|---|
 | `:4096` | opencode HTTP API (the main container, not agentd) | HTTP Basic Auth (workspace password) |
-| `:4097` | User port — `/v1/reload-secrets` (live credential reload) | **None (G40 accepted)** — NetworkPolicy is the trust boundary (only API server pods can reach port 4097) |
+| `:4097` | User port — `/v1/resync-secrets` (credential re-pull) | **None (G40 accepted)** — NetworkPolicy is the trust boundary (only API server pods can reach port 4097) |
 | `:4098` | Admin port — `/v1/healthz`, `/v1/statusz`, `/v1/readyz`, `/v1/metrics` | Token-gated |
 
 **Key endpoints:**
@@ -113,7 +113,7 @@ The sidecar binary that supervises `opencode` inside every workspace pod. Owns t
 - `/v1/readyz` — readiness including `RelayInjected` signal (used by the API to annotate the model catalog).
 - `/v1/statusz` — sessions, disk/memory/CPU/context metrics (scraped by the controller for CRD status enrichment).
 - `/v1/metrics` — Prometheus metrics (`workspace_restarts_total`, `workspace_memory_bytes`, `workspace_active_sessions`, `workspace_context_tokens`, `workspace_oom_kills_total`).
-- `/v1/reload-secrets` — live credential reload without pod restart (user port, G40).
+- `/v1/resync-secrets` — credential re-pull without pod restart (user port, G40).
 
 **When you'd run it manually:** never in production. For development debugging of the materialize/bootstrap subcommands against a test pod.
 

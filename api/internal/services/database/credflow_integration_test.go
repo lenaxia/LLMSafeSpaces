@@ -46,7 +46,7 @@ func TestCredflowIntegration_NoRowGetReturnsZeroTime(t *testing.T) {
 // staged during the dispose window (currentChangedAt == priorChangedAt).
 //
 // This test exists because Epic 30 rewrote the secret-injection path
-// (later renamed to InjectSecrets in PR #407) and the existing
+// (later renamed in PR #407) and the existing
 // agent_reload_e2e_test.go mocks the DB entirely; the SQL transitions
 // had no regression protection (per worklog 170 item US-27a.9).
 func TestCredflowIntegration_BindThenReloadClearsPendingRefresh(t *testing.T) {

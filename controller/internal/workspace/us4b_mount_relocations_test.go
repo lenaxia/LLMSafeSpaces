@@ -10,9 +10,8 @@ package workspace
 //
 //   - Two NEW Memory-medium emptyDirs: `agentd-config` (agent-config.json
 //     + allowed-dirs.json; RW sidecar, RO workspace container — integrity
-//     by mount, V3) and `agentd-secrets` (secrets-env, admin-prompt.md,
-//     last-reload-secrets.json; sidecar-ONLY — absent from uid-1000 space
-//     by mount topology, V2).
+//     by mount, V3) and `agentd-secrets` (secrets-env, admin-prompt.md;
+//     sidecar-ONLY — absent from uid-1000 space by mount topology, V2).
 //   - The sidecar carries the path env overrides so its writers/readers
 //     (ConfigWriter, reload handler, healthz) target the relocated
 //     stores; LLMSAFESPACES_CROSS_UID_FILES=1 arms the materializer's
@@ -143,7 +142,6 @@ func TestUS4B_Enabled_SidecarPathEnv(t *testing.T) {
 	expect := map[string]string{
 		"LLMSAFESPACES_AGENT_CONFIG_PATH": "/agentd-config/agent-config.json",
 		"LLMSAFESPACES_SECRETS_ENV_PATH":  "/agentd-secrets/secrets-env",
-		"LLMSAFESPACES_RELOAD_CACHE_PATH": "/agentd-secrets/last-reload-secrets.json",
 		"LLMSAFESPACES_ADMIN_PROMPT_PATH": "/agentd-secrets/admin-prompt.md",
 		"LLMSAFESPACES_ALLOWED_DIRS_PATH": "/agentd-config/allowed-dirs.json",
 		"LLMSAFESPACES_CROSS_UID_FILES":   "1",
@@ -178,7 +176,6 @@ func TestUS4B_Enabled_CredentialSetupInitSidecarEnv(t *testing.T) {
 	expect := map[string]string{
 		"LLMSAFESPACES_AGENT_CONFIG_PATH": "/agentd-config/agent-config.json",
 		"LLMSAFESPACES_SECRETS_ENV_PATH":  "/agentd-secrets/secrets-env",
-		"LLMSAFESPACES_RELOAD_CACHE_PATH": "/agentd-secrets/last-reload-secrets.json",
 		// The boot files the sidecar materializes are read across the
 		// uid split → 0640 at materialize.
 		"LLMSAFESPACES_CROSS_UID_FILES": "1",

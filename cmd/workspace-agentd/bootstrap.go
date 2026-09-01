@@ -59,7 +59,7 @@ var errBootstrapUnauthorized = errors.New("bootstrap: API returned 401")
 //
 // The subcommand NEVER blocks pod boot: on any failure (network error, API
 // down, malformed response, missing token) it writes an empty secrets array
-// and exits 0. The existing POST /v1/reload-secrets live-push path handles
+// and exits 0. The resync notify-pull path handles
 // credential delivery on the user's first activation — identical to the
 // behavior when a workspace has no credential bindings.
 //

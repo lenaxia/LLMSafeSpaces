@@ -25,7 +25,7 @@
 // shows that model is wrong: every existing caller updates ONE source
 // per Apply call:
 //
-//   - reloadSecretsHandler: providers + MCP servers (model and relay
+//   - the secrets apply pipeline: providers + MCP servers (model and relay
 //     must survive from boot and injection respectively)
 //   - relay_injector: relay only (providers came from init container's
 //     FlushProviders, model came from workspace-config.json)

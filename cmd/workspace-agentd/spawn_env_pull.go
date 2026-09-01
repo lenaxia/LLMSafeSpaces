@@ -6,7 +6,8 @@ package main
 // spawn_env_pull.go — US-70.1 (design 0057 R2): the spawn-time env pull,
 // both ends of the wire.
 //
-// The push design this replaces (US-4a pushInitialSpawnEnv) was
+// The push design this replaces (US-4a, deleted in the US-70.5
+// demolition) was
 // structurally broken under native-sidecar startup gating: the sidecar
 // pushed to the supervisor's control socket before its own startup probe
 // could pass — and the workspace container only starts after that probe
@@ -124,7 +125,7 @@ func supervisorSpawnCredential() string {
 
 // spawnEnvHandler serves GET /v1/spawn-env on the user mux (4097): the
 // current materialized secrets-env delta and its revision. Auth is the
-// §D1 Basic pair (either credential) — identical gate to reload-secrets.
+// §D1 Basic pair (either credential) — identical gate to the control-plane routes.
 //
 // The rev is revision-anchored ("<seq>:<manifestHash>:<contentHash>",
 // US-70.2) when the materialized batch carried a delivery revision

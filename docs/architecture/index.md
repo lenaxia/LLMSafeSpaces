@@ -142,7 +142,7 @@ flowchart LR
 
 This is why **suspend/resume is cheap**: the PVC is already bound, so resuming is just "create a new pod mounting the existing PVC" (~22s measured; the PVC reattach + opencode boot dominate). The PVC *is* the warm state — there are no warm pools.
 
-The credential story is the subtle part: credentials live in tmpfs (RAM-backed), so when a pod dies the PVC retains only **dangling symlinks** with no plaintext bytes. The next pod's init container re-materializes everything from the K8s Secret + the reload-replay cache. The [secrets](secrets.md) page covers this in depth.
+The credential story is the subtle part: credentials live in tmpfs (RAM-backed), so when a pod dies the PVC retains only **dangling symlinks** with no plaintext bytes. The next pod's init container re-pulls the batch file and re-materializes everything from it. The [secrets](secrets.md) page covers this in depth.
 
 ## What the platform is — and isn't
 

@@ -5,7 +5,7 @@ package main
 
 // Shared Basic-auth helpers for agentd HTTP handlers. Used by the gated
 // user-mux (port 4097) handlers — workflow execute/cancel/delete-session
-// and dev-preview (#762), the MCP proxy (#847), and reload-secrets +
+// and dev-preview (#762), the MCP proxy (#847), and resync-secrets +
 // agent/reload (#848). The mux is reachable from inside the workspace
 // pod and — when the chart's NetworkPolicy is misconfigured, the CNI is
 // buggy, or an operator opted out — from other pods. The auth check is
@@ -43,7 +43,7 @@ func checkBasicAuth(r *http.Request, password string) bool {
 // checked (no short-circuit), so timing does not reveal WHICH entry
 // matched.
 //
-// Callers: control-plane routes (reload-secrets, agent/reload,
+// Callers: control-plane routes (resync-secrets, agent/reload,
 // workflow/*) pass {agentdPassword, workspacePassword} — the D6.1
 // mixed-generation-window pair; single-container wiring passes the
 // workspace password alone.

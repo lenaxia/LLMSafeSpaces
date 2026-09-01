@@ -10,9 +10,9 @@ Pull-based, terminal-verified credential delivery. Normative source: **issue #11
 | US-70.1 | #1162 | spawn-time env pull (R2): bounded wait + last-good cache; `spawned_rev` (I4); degrade reason codes healthz → CRD; A2 validation; R3 cross-uid boot matrix | **landed 2026-08-30**; surface completion + cluster e2e (`local/us-70-secret-delivery-e2e.sh`, nightly-wired) via #1164 on 2026-08-31 |
 | R2b fix | #1165 | file-class ownership flip: sidecar stages manifest, uid-1000 supervisor writes; manifest-scoped reset; per-type mode contracts; `files_rev`; R3 schema growth (owner-uid + consumer-constraint) | **landed 2026-08-31** |
 | US-70.2 | #1183 | one builder + two-tier revisions (R1, covers the file manifest) + conditional pull endpoint | **landed 2026-08-31** (#1194); absorbs the #1165 manifest into the revision model |
-| US-70.3 | — | notify-pull + reconcile loop + revocation + `secrets_resync`; alerts + SLO; consumes `files_rev` as the file-class oracle | open |
-| US-70.4 | — | login-independent re-wrap reconciler (CAS, retained wrap re-wrapped) | open |
-| US-70.5 | — | demolition: `InjectSecrets*`, `rehydrateDEKFromJWTSession`, `secretautopush`+`UserCredsPresent`, `pushInitialSpawnEnv`, reload cache handoff | blocked by 70.3 + 70.4 **and #1165** |
+| US-70.3 | — | notify-pull + reconcile loop + revocation + `secrets_resync`; alerts + SLO; consumes `files_rev` as the file-class oracle | **landed 2026-08-31** (#1212) |
+| US-70.4 | — | login-independent re-wrap reconciler (CAS, retained wrap re-wrapped) | **landed 2026-08-31** (#1221) |
+| US-70.5 | #1209 | demolition: pod-side reload push path + reload cache handoff, `rehydrateDEKFromJWTSession` (K2) + `GetDEKForUser` walk (K3, replaced by the `GetCachedDEKForUser` warm-cache walk), K4 durable write half, `secretautopush`+`UserCredsPresent`; grep pin in repolint | **in review** |
 
 ## US-70.1 implementation notes (2026-08-30)
 

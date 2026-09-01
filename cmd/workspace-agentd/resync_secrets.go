@@ -4,16 +4,18 @@
 package main
 
 // resync_secrets.go — US-70.3 Part A: POST /v1/resync-secrets on the
-// user mux — the notify target and the secrets_resync backend.
+// user mux — the notify target and the secrets_resync backend, and
+// (since the US-70.5 demolition) the only live secrets updater.
 //
 // The handler runs the v2 conditional bootstrap pull IN-PROCESS: read
 // the projected SA token fresh from disk (AC-14 — the kubelet rotates
 // it in place for the pod's lifetime), present the on-disk batch
 // envelope's manifest hash, and either no-op (304) or apply the fresh
-// envelope through applySecretsBatch — the SAME pipeline the
-// reload-secrets push uses (materialize → delivery → cache → writer →
-// stage → session-aware restart), with the W2 apply-guard refusing any
-// seq ≤ the applied anchor.
+// envelope through applySecretsBatch (materialize → delivery → writer
+// → stage → session-aware restart), with the W2 apply-guard refusing
+// any seq ≤ the applied anchor. Every applied envelope is persisted
+// verbatim to the batch file — the container-restart replay surface
+// (the #443 scenario, now by pull).
 //
 // Integrity (0050 finding 3): a request body is never read, never
 // interpreted as a batch. The applied state can only come from the
@@ -81,12 +83,12 @@ func resyncMinIntervalFromEnv() time.Duration {
 	return resyncDefaultMinInterval
 }
 
-// resyncDeps bundles the handler's collaborators. reload mirrors the
-// reload-secrets deps (same §D1 gate, same restart machinery); now is
+// resyncDeps bundles the handler's collaborators. apply carries the
+// apply-pipeline deps (same §D1 gate, same restart machinery); now is
 // the rate-limiter clock seam (nil → time.Now).
 type resyncDeps struct {
 	cfg         materializeConfig
-	reload      reloadSecretsDeps
+	apply       applySecretsDeps
 	apiURL      string
 	workspaceID string
 	tokenPath   string
@@ -116,7 +118,7 @@ func resyncSecretsHandler(d resyncDeps) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuthAny(r, d.reload.ControlPlanePassword, d.reload.OpencodePassword) {
+		if !checkBasicAuthAny(r, d.apply.ControlPlanePassword, d.apply.OpencodePassword) {
 			rejectUnauthorized(w)
 			return
 		}
@@ -179,7 +181,7 @@ func resyncSecretsHandler(d resyncDeps) http.HandlerFunc {
 					return
 				}
 			}
-			outcome, aErr := applySecretsBatch(ctx, d.cfg, d.reload, bf.Secrets, bf.Revision)
+			outcome, aErr := applySecretsBatch(ctx, d.cfg, d.apply, bf.Secrets, bf.Revision)
 			if aErr != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"status": "failed", "reason": resyncReasonApplyFailed, "error": aErr.message})

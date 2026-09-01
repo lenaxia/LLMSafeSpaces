@@ -62,12 +62,11 @@ const (
 	sidecarAgentConfigPath = agentdConfigMountPath + "/agent-config.json"
 	sidecarAllowedDirsPath = agentdConfigMountPath + "/allowed-dirs.json"
 
-	// secrets-env, admin-prompt.md, last-reload-secrets.json: sidecar-ONLY
+	// secrets-env, admin-prompt.md: sidecar-ONLY
 	// volume, never mounted in the workspace container (V2: absent from
 	// uid-1000 space by mount topology; env crosses via spawn_env only).
 	sidecarSecretsEnvPath  = agentdSecretsMountPath + "/secrets-env"
 	sidecarAdminPromptPath = agentdSecretsMountPath + "/admin-prompt.md"
-	sidecarReloadCachePath = agentdSecretsMountPath + "/last-reload-secrets.json"
 )
 
 // ValidateAgentdSidecar is the exported startup guard used by controller
@@ -116,7 +115,7 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			},
 		}},
 		// US-3 (§D1 per-endpoint table): the control-plane Basic secret —
-		// reload-secrets, agent/reload, workflow/* accept this OR the
+		// resync-secrets, agent/reload, workflow/* accept this OR the
 		// workspace password (mixed-generation window). Delivered env-only
 		// to the SIDECAR (uid-2000 space, no child inherits it); the main
 		// container is deliberately NOT wired — this secret must never
@@ -141,7 +140,6 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		{Name: "LLMSAFESPACES_ALLOWED_DIRS_PATH", Value: sidecarAllowedDirsPath},
 		{Name: "LLMSAFESPACES_SECRETS_ENV_PATH", Value: sidecarSecretsEnvPath},
 		{Name: "LLMSAFESPACES_ADMIN_PROMPT_PATH", Value: sidecarAdminPromptPath},
-		{Name: "LLMSAFESPACES_RELOAD_CACHE_PATH", Value: sidecarReloadCachePath},
 		// rt/* is tool-consumed (class C) but re-materialized by THIS
 		// uid-2000 process on every reload: files land 0640 / dirs 0770
 		// so uid-1000 tools (shared gid 1000) keep reading them.
@@ -366,7 +364,6 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 			corev1.EnvVar{Name: "AGENTD_SIDECAR_MODE", Value: "1"},
 			corev1.EnvVar{Name: "LLMSAFESPACES_AGENT_CONFIG_PATH", Value: sidecarAgentConfigPath},
 			corev1.EnvVar{Name: "LLMSAFESPACES_SECRETS_ENV_PATH", Value: sidecarSecretsEnvPath},
-			corev1.EnvVar{Name: "LLMSAFESPACES_RELOAD_CACHE_PATH", Value: sidecarReloadCachePath},
 			// The boot files this init writes (secrets-env, reload cache)
 			// are READ by the uid-2000 sidecar across the split — they
 			// must materialize 0640 (rt/* files follow the reload state's

@@ -38,12 +38,17 @@ func newIntegrationService(t *testing.T) (*Service, *testharness.Harness) {
 	return svc, h
 }
 
-func seedLimit(t *testing.T, db *sql.DB, ownerID string, limit int64) {
+func seedLimit(t *testing.T, db *sql.DB, ownerID, eventType string, limit int64) {
 	t.Helper()
 	_, err := db.Exec(`INSERT INTO usage_limits (owner_id, owner_type, event_type, period_type, max_quantity)
-		VALUES ($1, 'user', 'llm_request', 'lifetime', $2)`,
-		ownerID, limit)
+		VALUES ($1, 'user', $2, 'lifetime', $3)
+		ON CONFLICT (owner_id, owner_type, event_type, period_type) DO UPDATE SET max_quantity = EXCLUDED.max_quantity`,
+		ownerID, eventType, limit)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM usage_limits WHERE owner_id = $1 AND owner_type = 'user' AND event_type = $2 AND period_type = 'lifetime'`,
+			ownerID, eventType)
+	})
 }
 
 func seedUsageEvent(t *testing.T, db *sql.DB, ownerID string, quantity int64) {
@@ -67,7 +72,7 @@ func TestReserveQuotaIntegration_AllowedAndDenied(t *testing.T) {
 	ctx := context.Background()
 	owner := ownerOf(h.ID())
 
-	seedLimit(t, h.SQLDB(), owner.ID, 3)
+	seedLimit(t, h.SQLDB(), owner.ID, "llm_request", 3)
 	seedUsageEvent(t, h.SQLDB(), owner.ID, 2)
 
 	allowed, remaining, err := svc.ReserveQuota(ctx, owner, "llm_request", 1)
@@ -95,7 +100,7 @@ func TestReserveQuotaIntegration_ConcurrentLastSlot(t *testing.T) {
 	svc, h := newIntegrationService(t)
 	owner := ownerOf(h.ID())
 
-	seedLimit(t, h.SQLDB(), owner.ID, 1)
+	seedLimit(t, h.SQLDB(), owner.ID, "llm_request", 1)
 
 	const n = 12
 	var wg sync.WaitGroup
@@ -130,7 +135,7 @@ func TestReserveQuotaIntegration_ExpiredReservationsDontCount(t *testing.T) {
 	ctx := context.Background()
 	owner := ownerOf(h.ID())
 
-	seedLimit(t, h.SQLDB(), owner.ID, 1)
+	seedLimit(t, h.SQLDB(), owner.ID, "llm_request", 1)
 	_, _, err := svc.ReserveQuota(ctx, owner, "llm_request", 1)
 	require.NoError(t, err)
 
@@ -171,7 +176,7 @@ func TestReapExpiredReservationsIntegration(t *testing.T) {
 func TestReserveQuotaIntegration_DBError_FailsClosed(t *testing.T) {
 	svc, h := newIntegrationService(t)
 	owner := ownerOf(h.ID())
-	seedLimit(t, h.SQLDB(), owner.ID, 3)
+	seedLimit(t, h.SQLDB(), owner.ID, "llm_request", 3)
 
 	// Swap the handle for one pointing at a dead DB: same service, no
 	// reachable store. Errors must surface.
@@ -198,9 +203,7 @@ func TestQuotaGateIntegration_RouterToDB(t *testing.T) {
 	owner := ownerOf(h.ID())
 
 	// Token limit of 10 with 10 used → token gate denies.
-	_, err := h.SQLDB().Exec(`INSERT INTO usage_limits (owner_id, owner_type, event_type, period_type, max_quantity)
-		VALUES ($1, 'user', 'llm_tokens', 'lifetime', 10)`, owner.ID)
-	require.NoError(t, err)
+	seedLimit(t, h.SQLDB(), owner.ID, "llm_tokens", 10)
 	seedUsageEventOfType(t, h.SQLDB(), owner.ID, "llm_tokens", 10)
 
 	allowed, _, err := svc.CheckQuota(ctx, owner, "llm_tokens")

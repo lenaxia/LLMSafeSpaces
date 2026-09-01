@@ -39,7 +39,6 @@ func TestPathResolution_AllResolversAgreeOnTmpfs(t *testing.T) {
 		"LLMSAFESPACES_AGENT_CONFIG_PATH",
 		"LLMSAFESPACES_SECRETS_ENV_PATH",
 		"LLMSAFESPACES_GIT_CREDS_PATH",
-		"LLMSAFESPACES_RELOAD_CACHE_PATH",
 	} {
 		t.Setenv(key, "")
 	}
@@ -81,16 +80,6 @@ func TestPathResolution_AllResolversAgreeOnTmpfs(t *testing.T) {
 	assert.True(t, strings.HasPrefix(prod.GitCredsPath, "/sandbox-runtime"),
 		"GitCredsPath must be tmpfs, got %s", prod.GitCredsPath)
 
-	// reloadCachePath is not a secrets.Paths field (only the boot path + reload
-	// handler use it), so it is checked against the agentd constant directly.
-	// It MUST resolve to /sandbox-runtime tmpfs (#443): otherwise the cache
-	// would land on the PVC (plaintext at rest, US-35.7 violation) or fail to
-	// survive a container restart (the whole point of the cache).
-	reloadCache := loadMaterializeConfig().reloadCachePath
-	assert.Equal(t, agentd.ReloadSecretsCachePath, reloadCache,
-		"loadMaterializeConfig.reloadCachePath must match agentd.ReloadSecretsCachePath")
-	assert.True(t, strings.HasPrefix(reloadCache, "/sandbox-runtime"),
-		"reloadCachePath must resolve to /sandbox-runtime tmpfs (survives container restart, wiped on pod death); got %s", reloadCache)
 }
 
 // TestPathResolution_ToPathsPreservesAllFields verifies the toPaths() bridge

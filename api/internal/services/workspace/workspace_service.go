@@ -1102,16 +1102,9 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 	return result, nil
 }
 
-// (worklog 0591: removed maybeAutoPushOnPodTransition + runAutoPush.
-// The pod-identity-transition detection approach from #494 was
-// replaced with a watcher-driven, agentd-signal-based auto-push in
-// api/internal/services/secretautopush. That detector runs from the
-// workspace watcher's per-CRD-event callback, uses agentd's own
-// userCredsPresent signal (surfaced via the CRD status field), and
-// retrieves the user's DEK via KeyService.GetDEKForUser instead of
-// piggybacking on a live request context. See worklog 0591 for the
-// full design rationale and the 9 pod-boot pathways it covers that
-// the request-context approach missed.)
+// (worklog 0591 introduced a watcher-driven auto-push here; US-70.5
+// removed it — the secretsreconcile loop is the level-triggered
+// correctness path, and notify-pull covers the latency path.)
 
 // ResolveWorkspace fetches workspace metadata by ID. It is the pure-fetch half
 // of verifyOwner and the entry point for WorkspaceAccessMiddleware. Returns a

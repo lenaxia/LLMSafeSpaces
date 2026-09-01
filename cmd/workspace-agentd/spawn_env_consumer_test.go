@@ -22,14 +22,12 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -73,31 +71,6 @@ func TestParseSecretsEnvDelta_AbsentFileIsEmpty(t *testing.T) {
 	delta, err := parseSecretsEnvDelta(filepath.Join(t.TempDir(), "nope"))
 	require.NoError(t, err)
 	require.Empty(t, delta)
-}
-
-// TestPushInitialSpawnEnv_BootHandoff: the sidecar's boot push lands the
-// file's delta in the supervisor's stored spawn env over the REAL socket.
-func TestPushInitialSpawnEnv_BootHandoff(t *testing.T) {
-	proc := &fakeRestartProc{}
-	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
-	go srv.serve()
-
-	p := writeSecretsEnv(t, t.TempDir(), "export BOOT_SECRET='boot-value'\n")
-	require.NoError(t, pushInitialSpawnEnv(newControlClient(srv.addr()), p))
-
-	env := *proc.lastEnv.Load()
-	require.Equal(t, "boot-value", env["BOOT_SECRET"])
-}
-
-// TestPushInitialSpawnEnv_EmptyFileNoPush: an empty/absent delta issues
-// NO SpawnEnv call (nothing to hand off; supervisor keeps defaults).
-func TestPushInitialSpawnEnv_EmptyFileNoPush(t *testing.T) {
-	proc := &fakeRestartProc{}
-	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
-	go srv.serve()
-
-	require.NoError(t, pushInitialSpawnEnv(newControlClient(srv.addr()), filepath.Join(t.TempDir(), "nope")))
-	require.Nil(t, proc.lastEnv.Load(), "no spawn_env call when the delta is empty")
 }
 
 // --- supervisor-side merge semantics -----------------------------------------
@@ -187,24 +160,23 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "rt", "ssh"))
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "rt", "git-credentials"))
-	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "last-reload.json"))
 
 	proc := &fakeRestartProc{}
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 	rp := newSocketReloadProc(newControlClient(srv.addr()))
 
-	deps := reloadSecretsDeps{
+	deps := applySecretsDeps{
 		OpencodePassword: "pw",
 		Proc:             rp,
 	}
-	h := reloadSecretsHandler(loadMaterializeConfig(), deps)
+	h := applyBatchHandler(loadMaterializeConfig(), deps)
 
 	// env-secret carries the variable name in metadata.var_name (the
 	// materializer's contract), not in the secret name.
 	body := bytes.NewBufferString(
 		`[{"type":"env-secret","name":"my-provider-key","metadata":{"var_name":"MY_PROVIDER_KEY"},"plaintext":"sk-live-123"}]`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", body)
 	req.SetBasicAuth("opencode", "pw")
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -247,7 +219,6 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "rt", "ssh"))
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "rt", "git-credentials"))
-	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "last-reload.json"))
 	t.Setenv("LLMSAFESPACES_CROSS_UID_FILES", "1")
 	t.Setenv(stagingDirEnvOverride, filepath.Join(dir, "staged"))
 
@@ -256,13 +227,13 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	go srv.serve()
 	rp := newSocketReloadProc(newControlClient(srv.addr()))
 
-	h := reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
+	h := applyBatchHandler(loadMaterializeConfig(), applySecretsDeps{
 		OpencodePassword: "pw",
 		Proc:             rp,
 	})
 	body := bytes.NewBufferString(
 		`[{"type":"secret-file","name":"app-cfg","metadata":{"mount_path":"app/config.env"},"plaintext":"tool-bytes"}]`)
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", body)
 	req.SetBasicAuth("opencode", "pw")
 	rec := httptest.NewRecorder()
 	h(rec, req)
@@ -282,36 +253,4 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "sidecar reload must not write consumed paths")
 	_, err = os.Stat(secretsDir)
 	require.True(t, os.IsNotExist(err), "not even the consumed dir is created by the sidecar")
-}
-
-// --- review round 1: boot ordering + degradation ------------------------------
-
-// TestPushInitialSpawnEnv_DeadSocketFailsFast: an unreachable supervisor
-// surfaces as an error WITHIN the 5s budget (never a hang), so the boot
-// sequence's log-and-continue branch is reachable and bounded.
-func TestPushInitialSpawnEnv_DeadSocketFailsFast(t *testing.T) {
-	deadPort := freeTCPPort(t)
-	cc := newControlClient(fmt.Sprintf("127.0.0.1:%d", deadPort))
-	cc.timeout = 5 * time.Second
-
-	p := writeSecretsEnv(t, t.TempDir(), "export BOOT_SECRET='x'\n")
-	begin := time.Now()
-	err := pushInitialSpawnEnv(cc, p)
-	require.Error(t, err, "dead socket must surface an error, not silence")
-	require.Less(t, time.Since(begin), 6*time.Second,
-		"the boot push must be bounded by its timeout — took %v", time.Since(begin))
-}
-
-// TestPushInitialSpawnEnv_EmptyDeltaSkipsDeadSocket: with no delta, no
-// socket call is made at all — a supervisor that is not yet up cannot
-// even delay the boot when there is nothing to hand off.
-func TestPushInitialSpawnEnv_EmptyDeltaSkipsDeadSocket(t *testing.T) {
-	deadPort := freeTCPPort(t)
-	cc := newControlClient(fmt.Sprintf("127.0.0.1:%d", deadPort))
-	cc.timeout = 100 * time.Millisecond // would fail fast IF dialed
-
-	begin := time.Now()
-	require.NoError(t, pushInitialSpawnEnv(cc, filepath.Join(t.TempDir(), "nope")))
-	require.Less(t, time.Since(begin), time.Second,
-		"empty delta must short-circuit before any dial")
 }

@@ -320,7 +320,7 @@ func TestSecretsResync_SharesPerWorkspaceResyncFloor(t *testing.T) {
 	env := newResyncTestEnv(t, &conditionalServer{status: http.StatusNotModified})
 	handler := resyncSecretsHandler(resyncDeps{
 		cfg:    env.cfg,
-		reload: reloadSecretsDeps{OpencodePassword: mcpTestPassword},
+		apply:  applySecretsDeps{OpencodePassword: mcpTestPassword},
 		apiURL: env.apiSrv.URL, workspaceID: "ws",
 		tokenPath: filepath.Join(env.dir, "token"), batchPath: filepath.Join(env.dir, "secrets.json"),
 		minInterval: time.Hour, // deterministic: anything within the hour is refused

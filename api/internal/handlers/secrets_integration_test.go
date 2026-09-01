@@ -282,7 +282,7 @@ func TestHandler_ConcurrentRequests(t *testing.T) {
 }
 
 // TestHandler_E2E_BindTriggersReloadSecrets verifies that SetBindings
-// auto-pushes secrets to the running pod's agentd via reload-secrets.
+// notifies the running pod's agentd to re-pull its secrets.
 func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

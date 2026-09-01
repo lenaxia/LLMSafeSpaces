@@ -157,26 +157,3 @@ func TestUS4B_ModelWarnPath_FollowsAgentConfigDir(t *testing.T) {
 	require.Equal(t, "/agentd-config/model-resolution-warning.json", modelWarnPathFromEnv(),
 		"relocated: colocated with the relocated config (the writer derives it from filepath.Dir)")
 }
-
-// TestUS4B_ReloadCacheMode_CrossUID: the boot cache is written by the
-// init (uid 1000) and read by the sidecar's healthz user_creds_present
-// (uid 2000) — 0640 under the sidecar's env, 0600 otherwise. The write
-// is rename-atomic, so the sidecar's own rewrites cross the uid split
-// via directory permissions, not file permissions.
-func TestUS4B_ReloadCacheMode_CrossUID(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "last-reload-secrets.json")
-
-	require.NoError(t, writeReloadSecretsCache(p, nil))
-	require.FileExists(t, p)
-	info, err := os.Stat(p)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "default: owner-only cache")
-
-	t.Setenv("LLMSAFESPACES_CROSS_UID_FILES", "1")
-	require.NoError(t, writeReloadSecretsCache(p, nil))
-	info, err = os.Stat(p)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o640), info.Mode().Perm(),
-		"cross-uid: the sidecar's healthz reads the init-written boot cache")
-}

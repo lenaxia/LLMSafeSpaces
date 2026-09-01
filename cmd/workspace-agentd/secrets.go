@@ -13,9 +13,9 @@ package main
 //     subcommand reads /sandbox-cfg/secrets.json (or --from), applies the
 //     batch via the secrets package, and exits non-zero ONLY on I/O or
 //     parse failures. Per-secret validation skips do not block boot.
-//   - reloadSecretsHandler: HTTP handler for /v1/reload-secrets. Same
-//     semantics as the subcommand but driven by an HTTP request body and
-//     with optional opencode restart on env/llm changes.
+//   - applySecretsBatch: the ONE post-parse secrets pipeline shared by
+//     every batch entry path (US-70.3 resync pull; the US-70.5 demolition
+//     removed the pod-side batch-body push handler that used to live here).
 //   - buildEnvFrom: replaces the legacy buildEnv() string-mangling with a
 //     proper FormatEnvLine/ParseEnvLine round-trip.
 //
@@ -47,15 +47,16 @@ import (
 	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// reloadMu serializes concurrent calls to reloadSecretsHandler. Two
-// simultaneous reloads (from two API replicas or from parallel credential
-// binds) race through Materializer.reset() which calls RemoveAll on
+// applyMu serializes concurrent calls to applySecretsBatch (resync
+// pulls racing a secrets_resync MCP call). Two simultaneous applies
+// race through Materializer.reset() which calls RemoveAll on
 // SecretsBaseDir and RemoveAll on SSHDir, and both then appendFile to
-// SecretsEnvPath — producing duplicate env var entries. Holding this mutex
-// for the materialize → enrich → flush → re-merge sequence ensures exactly
-// one reload runs at a time per pod. The restart at the end is excluded from
-// the lock to avoid holding it during the ~5s SIGTERM window.
-var reloadMu sync.Mutex
+// SecretsEnvPath — producing duplicate env var entries. Holding this
+// mutex for the materialize → enrich → flush → re-merge sequence
+// ensures exactly one apply runs at a time per pod. The restart at the
+// end is excluded from the lock to avoid holding it during the ~5s
+// SIGTERM window.
+var applyMu sync.Mutex
 
 // restartableProcess is the subset of *managedProcess needed by the
 // session-aware restart logic. Extracting it as an interface lets tests
@@ -307,11 +308,6 @@ type materializeConfig struct {
 	// Default: $HOME/.local/state/llmsafespaces (on the workspace PVC subPath:home,
 	// outside SecretsBaseDir and SSHDir, never cleaned by reset()).
 	enricherCacheDir string
-	// reloadCachePath is where reloadSecretsHandler persists the last reload
-	// batch for replay after a main-container restart (#443). It is on the
-	// /sandbox-runtime tmpfs (survives container restart, wiped on pod death).
-	// See agentd.ReloadSecretsCachePath.
-	reloadCachePath string
 	// crossUID arms the materializer's cross-uid modes (design 0051 US-4b):
 	// the SIDECAR's reload path re-materializes the tool-consumed rt/*
 	// stores as uid 2000 while uid-1000 tools stay their readers — files
@@ -374,7 +370,6 @@ func loadMaterializeConfig() materializeConfig {
 		secretsEnvPath:   envOrDefault("LLMSAFESPACES_SECRETS_ENV_PATH", agentd.SecretsEnvPath),
 		gitCredsPath:     envOrDefault("LLMSAFESPACES_GIT_CREDS_PATH", "/sandbox-runtime/rt/git-credentials"),
 		enricherCacheDir: envOrDefault("LLMSAFESPACES_ENRICHER_CACHE_DIR", home+"/.local/state/llmsafespaces"),
-		reloadCachePath:  envOrDefault("LLMSAFESPACES_RELOAD_CACHE_PATH", agentd.ReloadSecretsCachePath),
 		crossUID:         os.Getenv("LLMSAFESPACES_CROSS_UID_FILES") == "1",
 	}
 }
@@ -439,18 +434,11 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		baseFile = secrets.BatchFile{}
 	}
 
-	// Replay the last reload-secrets batch (survives container restart on the
-	// /sandbox-runtime tmpfs; wiped on pod death). This restores user-DEK
-	// credentials (env-secrets, SSH keys, user LLM providers) that were
-	// live-pushed after boot and would otherwise be lost when reset() runs
-	// again on this restart (#443). Absent on first boot / fresh pod.
-	cachedSecrets := loadReloadSecretsCache(cfg.reloadCachePath, stderr)
-
-	// Merge: base (server-KEK) + cache (last live state). The cache is the
-	// newer ground truth — it wins on any duplicate Type+Name. The pulled
-	// revision survives ONLY when the cache is empty (the effective set is
-	// then exactly the revisioned pull).
-	secretsList, effectiveRev := secrets.MergeBatchFile(baseFile, cachedSecrets)
+	// US-70.5: the reload-cache replay is gone — the batch file IS the
+	// durable state. The resync pull overwrites it atomically on every
+	// applied revision, so a container restart re-materializes by applying
+	// the same file (the #443 scenario, now by pull).
+	secretsList, effectiveRev := baseFile.Secrets, baseFile.Revision
 
 	// W2 apply-guard: a PULLED batch whose seq is ≤ the seq recorded as
 	// applied must not re-materialize (idempotent-equal is a no-op; a lower
@@ -549,37 +537,6 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		// runtime entrypoint can surface this to kubelet (CrashLoopBackOff
 		// rather than silent partial-credential boot).
 		return 3
-	}
-
-	// Design 0045 Change 3: persist the applied batch to the reload cache.
-	//
-	// Rationale (validated via stress-testing round 2): agentd's hasUserCreds
-	// (healthz.go) reports UserCredsPresent based on the *cache file's*
-	// existence, not on whether secrets.json contains user-DEK content. If
-	// the init container's materialize does NOT write the cache, the FIRST
-	// healthz-after-boot reports UserCredsPresent=false, which triggers a
-	// spurious auto-push from the API's watcher — even when pod-bootstrap
-	// already delivered user-DEK secrets via Change 1. The auto-push
-	// applies the same batch and triggers an opencode restart ~30s into
-	// pod life.
-	//
-	// Writing the cache here closes that loop: hasUserCreds returns true
-	// on the first healthz call, the watcher observes UserCredsPresent=true,
-	// and secretautopush emits "skipped_ucp_true" (no redundant push).
-	//
-	// Non-fatal on write failure: the cache only affects the auto-push
-	// filtering signal. On write failure, agentd degrades to the pre-
-	// Change-3 behavior (one spurious auto-push post-boot). No user-facing
-	// impact beyond a wasted opencode restart.
-	//
-	// Empty-batch guard: skip cache write when there's nothing to persist.
-	// Empty-path guard: production always resolves the path via
-	// loadMaterializeConfig → agentd.ReloadSecretsCachePath; tests may
-	// construct materializeConfig without reloadCachePath.
-	if cfg.reloadCachePath != "" && len(secretsList) > 0 {
-		if pErr := writeReloadSecretsCache(cfg.reloadCachePath, secretsList); pErr != nil {
-			_, _ = fmt.Fprintf(stderr, "materialize: failed to persist reload cache (auto-push will still fire post-boot as fallback): %v\n", pErr)
-		}
 	}
 
 	// Skips are intentional; do not fail the boot.
@@ -857,31 +814,29 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (s
 	return "", false
 }
 
-// reloadSecretsDeps bundles the runtime dependencies that
-// reloadSecretsHandler needs beyond the materialize config. Grouping them in
-// a struct keeps the handler signature stable as dependencies are added and
-// makes call sites self-documenting.
-type reloadSecretsDeps struct {
+// applySecretsDeps bundles the runtime dependencies that
+// applySecretsBatch needs beyond the materialize config. Grouping them
+// in a struct keeps the pipeline signature stable as dependencies are
+// added and makes call sites self-documenting.
+type applySecretsDeps struct {
 	// Proc is the supervised opencode process. May be nil in tests; in
-	// production it is a *managedProcess so the handler can restart
-	// opencode after env/llm secret changes.
+	// production it is a *managedProcess (or the sidecar restarter) so
+	// the pipeline can restart opencode after env/llm secret changes.
 	Proc restartableProcess
 
 	// OpencodePassword is the Basic-auth password every request to opencode
 	// (PUT /auth/:providerID, POST /instance/dispose) must carry. Production
 	// reads /sandbox-cfg/password at startup; tests pass "" since they
 	// either skip the credential push (no llm-provider in the batch) or
-	// stub the URL to a server that does not enforce auth. An empty
-	// password produces 401 against real opencode and was the proximate
-	// cause of Bug 1 (worklog 0125).
+	// stub the URL to a server that does not enforce auth.
 	OpencodePassword string
 	// ControlPlanePassword is the design-0051 §D1 agentdPassword: the
-	// Basic secret accepted (alongside the workspace password) on
-	// control-plane routes. Empty in single-container mode — the
-	// handler then reduces to workspace-password-only auth, unchanged.
+	// Basic secret accepted (alongside the workspace password) on the
+	// control-plane surface. Empty in single-container mode.
 	ControlPlanePassword string
 
 	// Tracker is the SSE session-status tracker. May be nil.
+
 	Tracker *sessionStatusTracker
 
 	// BgCtx is the agentd background-goroutine context. The deferred-restart
@@ -900,9 +855,6 @@ type reloadSecretsDeps struct {
 	// (C2a) — when opencode dies mid-busy and respawns, the tracker retains
 	// a stale busy entry for a session that no longer exists. May be nil
 	// (pruneFromLister is a no-op in that case).
-	//
-	// Design 0045 Change 4 removed the second (cold-start / C2b) use — the
-	// restart decision no longer probes /session when the tracker is empty.
 	Lister sessionLister
 
 	// AgentConfigWriter is the seam platform code holds after
@@ -917,65 +869,8 @@ type reloadSecretsDeps struct {
 	RestartReasonMarkerPath string
 }
 
-// reloadSecretsHandler returns the HTTP handler for /v1/reload-secrets.
-func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.HandlerFunc {
-	opencodePassword := deps.OpencodePassword
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		// #848: reload-secrets applies credential batches (provider
-		// config, env secrets) and can trigger an opencode restart —
-		// control-plane surface. Only the API server's agentpush calls
-		// this. Design 0051 US-3 (§D1): authenticates against the §D1
-		// credential set — agentdPassword (the control-plane secret) OR
-		// the workspace password (D6.1 mixed-generation window; the
-		// empty ControlPlanePassword of single-container mode reduces
-		// to today's behavior).
-		if !checkBasicAuthAny(r, deps.ControlPlanePassword, opencodePassword) {
-			rejectUnauthorized(w)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		var batch []secrets.Secret
-		if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid json: " + err.Error()})
-			return
-		}
-		// Capture the request context once and propagate it explicitly to the
-		// downstream calls that need it. Threading a local ctx (rather than
-		// repeated r.Context() calls) keeps the context lineage obvious to
-		// readers and to the contextcheck linter.
-		reqCtx := r.Context()
-
-		outcome, aErr := applySecretsBatch(reqCtx, cfg, deps, batch, nil)
-		if aErr != nil {
-			w.WriteHeader(aErr.status)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": aErr.message})
-			return
-		}
-
-		mat, skip, fail := outcome.result.Counts()
-		status := http.StatusOK
-		if outcome.result.HasFailures() {
-			status = http.StatusInternalServerError
-		}
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"reloaded":  mat,
-			"skipped":   skip,
-			"failed":    fail,
-			"results":   outcome.result.Results,
-			"restarted": outcome.restarted,
-		})
-	}
-}
-
 // applySecretsOutcome is the post-pipeline result shared by every
-// secrets-batch applier (reload-secrets push, resync pull).
+// secrets-batch applier (the resync pull).
 type applySecretsOutcome struct {
 	result    *secrets.MaterializeResult
 	restarted bool
@@ -991,13 +886,13 @@ type applyHTTPError struct {
 func (e *applyHTTPError) Error() string { return e.message }
 
 // applySecretsBatch is the ONE post-parse secrets pipeline: materialize
-// → staged file delivery → reload-cache write → provider enrichment →
-// AgentConfigWriter.Apply → StageCredentials → (anchor) → session-aware
-// restart decision. Both batch entry paths converge here — the
-// reload-secrets push (rev == nil: legacy batch, the anchor is removed)
-// and the resync pull (rev != nil: the anchor is written post-apply, so
-// reading it back yields the applied truth, I4).
-func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSecretsDeps, batch []secrets.Secret, rev *sec.BatchRevision) (applySecretsOutcome, *applyHTTPError) {
+// → staged file delivery → provider enrichment → AgentConfigWriter.Apply
+// → StageCredentials → (anchor) → session-aware restart decision. The
+// resync pull is the entry path (US-70.3): rev != nil anchors post-apply
+// so reading it back yields the applied truth (I4); a legacy bare-array
+// envelope (rev == nil, pre-US-70.2 file or mixed-fleet response)
+// bypasses the guard and removes the anchor.
+func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySecretsDeps, batch []secrets.Secret, rev *sec.BatchRevision) (applySecretsOutcome, *applyHTTPError) {
 	proc := deps.Proc
 	tracker := deps.Tracker
 	lister := deps.Lister
@@ -1013,17 +908,17 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSe
 	// entries and interleaved agent-config.json writes. The restart at the
 	// end is excluded from the lock to avoid holding it during the ~5s SIGTERM
 	// window.
-	reloadMu.Lock()
+	applyMu.Lock()
 
 	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID, Revision: rev}
 	result, mErr := m.Materialize(batch)
 
-	// A push is a legacy batch: whatever revisioned pull the live
-	// state came from, the pushed set supersedes it — invalidate the
-	// anchor (US-70.2 W2: legacy batches bypass the guard and reset
-	// the marker to unknown) so the served spawn revs and the next
-	// boot's guard describe the push, not a stale pull. A revisioned
-	// apply anchors at the END (post-apply truth).
+	// A legacy batch: whatever revisioned pull the live state came
+	// from, the legacy set supersedes it — invalidate the anchor
+	// (US-70.2 W2: legacy batches bypass the guard and reset the marker
+	// to unknown) so the served spawn revs and the next boot's guard
+	// describe the applied set, not a stale pull. A revisioned apply
+	// anchors at the END (post-apply truth).
 	if rev == nil && (mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure)) {
 		removeRevAnchor(revAnchorPath(cfg.toPaths().SecretsEnvPath))
 	}
@@ -1033,43 +928,19 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSe
 	// the uid-1000 supervisor pull delivers at the next spawn.
 	if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
 		if dErr := deliverStaged(cfg); dErr != nil {
-			reloadMu.Unlock()
+			applyMu.Unlock()
 			log.Error("secrets apply: file delivery failed", zap.Error(dErr))
 			return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, dErr.Error()}
 		}
 	}
 
 	if mErr != nil && !errors.Is(mErr, secrets.ErrPartialFailure) {
-		reloadMu.Unlock()
+		applyMu.Unlock()
 		log.Error("secrets apply: materialize failed", zap.Error(mErr))
 		return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, mErr.Error()}
 	}
 	if result == nil {
 		result = &secrets.MaterializeResult{}
-	}
-
-	// Persist the just-applied batch so a main-container restart (OOM,
-	// panic, kubelet restart) can replay it. reset() inside the next boot's
-	// Materialize would otherwise wipe these user-DEK credentials with no
-	// way to restore them (#443). The cache lives on the /sandbox-runtime
-	// tmpfs: survives container restart, wiped on pod death (US-35.7).
-	// Written here — after Materialize succeeded — so the cached state
-	// reflects what was materialized to the filesystem even if a later
-	// step (writer rebuild) fails. Non-fatal: a write failure warns but
-	// does not roll back the live materialization; the cost is only that
-	// the creds will not survive the *next* restart.
-	//
-	// The empty-path guard defends existing tests that construct
-	// materializeConfig without reloadCachePath: without it, an unset path
-	// would create temp files in the test CWD and log a WARN on every
-	// reload handler call. Production always resolves the path via
-	// loadMaterializeConfig → agentd.ReloadSecretsCachePath.
-	if cfg.reloadCachePath != "" {
-		if pErr := writeReloadSecretsCache(cfg.reloadCachePath, batch); pErr != nil {
-			log.Warn("secrets apply: failed to persist reload batch for restart replay; "+
-				"user-DEK credentials may be lost on the next container restart",
-				zap.Error(pErr))
-		}
 	}
 
 	// Enrich custom-endpoint providers with their live model list (same as
@@ -1085,7 +956,7 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSe
 	// that previously required a manual relay re-merge after FlushProviders.
 	formatted, fmtErr := m.FormatProviders(opencode.FormatOpenCodeConfig)
 	if fmtErr != nil {
-		reloadMu.Unlock()
+		applyMu.Unlock()
 		log.Error("secrets apply: format providers failed", zap.Error(fmtErr))
 		return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, "format providers: " + fmtErr.Error()}
 	}
@@ -1126,14 +997,14 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSe
 			// opencode now would boot with no provider config — silent credential
 			// loss. Abort with 500 (matching the old FlushProviders failure path)
 			// so the running opencode keeps its in-memory config.
-			reloadMu.Unlock()
+			applyMu.Unlock()
 			log.Error("secrets apply: agent-config writer Apply failed", zap.Error(err))
 			return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, "agent-config apply: " + err.Error()}
 		}
 	}
 
 	// Anchor a revisioned apply at the END of the locked pipeline —
-	// still UNDER reloadMu (validation m1): the anchor then describes
+	// still UNDER applyMu (validation m1): the anchor then describes
 	// state that is fully materialized, delivered and staged, and no
 	// concurrent apply can interleave between the pipeline and the
 	// anchor write (previously the post-Unlock window let a later
@@ -1148,7 +1019,7 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSe
 		setRevAnchorAfterApply(revAnchorPath(cfg.toPaths().SecretsEnvPath), rev, os.Stderr)
 	}
 
-	reloadMu.Unlock()
+	applyMu.Unlock()
 
 	mat, skip, fail := result.Counts()
 	log.Info("secrets reloaded",
@@ -1232,81 +1103,6 @@ func hasLLMProviders(batch []secrets.Secret) bool {
 		}
 	}
 	return false
-}
-
-// writeReloadSecretsCache atomically writes the batch as JSON to path with
-// mode 0600. Atomicity uses a temp file in the same directory + os.Rename so
-// a crash mid-write never leaves a truncated cache that would shadow the last
-// known good state on the next restart.
-//
-// The file holds plaintext credentials, so 0600 is mandatory. The parent
-// directory (/sandbox-runtime tmpfs) is created by the pod's init container
-// and is writable by the sandbox user.
-func writeReloadSecretsCache(path string, batch []secrets.Secret) error {
-	data, err := json.Marshal(batch)
-	if err != nil {
-		return fmt.Errorf("marshal reload batch: %w", err)
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".last-reload-secrets.*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp cache file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpName) }
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write cache: %w", err)
-	}
-	// US-4b: in sidecar mode the INIT container writes the boot cache
-	// (uid 1000) and the sidecar's healthz reads it (uid 2000) — 0640
-	// carries that read across the split via the shared gid; the
-	// uid-1000 exclusion is the mount topology (agentd-secrets volume),
-	// not the mode. Single-container keeps 0600.
-	cacheMode := os.FileMode(0o600)
-	if os.Getenv("LLMSAFESPACES_CROSS_UID_FILES") == "1" {
-		cacheMode = 0o640
-	}
-	if err := tmp.Chmod(cacheMode); err != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("chmod cache: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return fmt.Errorf("close cache: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		cleanup()
-		return fmt.Errorf("rename cache into place: %w", err)
-	}
-	return nil
-}
-
-// loadReloadSecretsCache reads and parses the persisted reload batch. It never
-// returns an error: an absent file is the normal first-boot / fresh-pod state
-// (returns nil), and a corrupt file degrades to base-only materialization with
-// a warning on stderr so an operator can diagnose missing creds after a
-// restart. A zero-length decode error is treated the same as absent.
-func loadReloadSecretsCache(path string, stderr io.Writer) []secrets.Secret {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			_, _ = fmt.Fprintf(stderr, "materialize: read last-reload-secrets cache %q: %v\n", path, err)
-		}
-		return nil
-	}
-	var batch []secrets.Secret
-	if err := json.Unmarshal(data, &batch); err != nil {
-		_, _ = fmt.Fprintf(stderr,
-			"materialize: ignoring corrupt last-reload-secrets cache %q (%v); "+
-				"falling back to base secrets only — user-DEK credentials pushed since the last boot will NOT be restored\n",
-			path, err)
-		return nil
-	}
-	return batch
 }
 
 // buildEnvFrom returns the process environment with secrets-env entries

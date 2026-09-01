@@ -11,7 +11,7 @@ import (
 )
 
 // InjectedSecret is a single secret entry in the legacy secrets.json /
-// reload-secrets wire shape that the mixed fleet of pods already
+// bare-array wire shape that the mixed fleet of pods already
 // consumes. New server-side code builds a Batch and renders it with
 // LegacyBatchJSON; this type is the W15 mixed-fleet pin.
 type InjectedSecret struct {

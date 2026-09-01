@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Review N1 on #871: the reload-secrets cache round-trip used to lose
+// Review N1 on #871: the persisted-batch replay round-trip used to lose
 // the metadata-invalid verdict (flag was json:"-"; nil metadata
 // marshaled as null), so a secret REJECTED at first parse materialized
 // with defaults after a container restart — a T5 violation on the
@@ -87,8 +87,8 @@ func TestSecret_ReplayFromCache_SkipsIdentically(t *testing.T) {
 	run1, err := LoadSecretsFile(path)
 	require.NoError(t, err)
 
-	// What the reload handler caches: the parsed batch.
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+	// A persisted batch file (the resync pull's restart surface): the parsed batch.
+	cachePath := filepath.Join(dir, "replayed-batch.json")
 	cacheData, err := json.Marshal(run1)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(cachePath, cacheData, 0o600))
@@ -136,7 +136,7 @@ func TestSecret_ReplayFromCache_MetadataIgnoringTypeStillSkips(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, run1[0].MetadataInvalid, "first parse records the verdict")
 
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+	cachePath := filepath.Join(dir, "replayed-batch.json")
 	cacheData, err := json.Marshal(run1)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(cachePath, cacheData, 0o600))

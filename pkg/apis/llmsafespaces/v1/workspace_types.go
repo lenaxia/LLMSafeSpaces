@@ -419,34 +419,13 @@ type WorkspaceStatus struct {
 	ContextUsed          int64 `json:"contextUsed"`
 	ContextTotal         int64 `json:"contextTotal"`
 
-	// UserCredsPresent (worklog 0591) reports whether agentd's
-	// last-reload-secrets.json cache indicates that user-DEK content
-	// has been materialized on the pod. Populated by the controller
-	// on every health scrape from agentd's /v1/healthz. A pointer for
-	// tri-state:
-	//
-	//   nil   : the controller has not scraped agentd yet, or the
-	//           pod isn't reachable. The API's watcher-driven auto-push
-	//           MUST treat nil as "unknown" and skip firing — a phase
-	//           transition alone is not enough signal.
-	//   true  : agentd reports at least one user-DEK entry materialized.
-	//           No push needed.
-	//   false : agentd reports no user-DEK content. The API's watcher
-	//           fires a background auto-push if the workspace has any
-	//           user_secret_bindings.
-	//
-	// Cleared to nil when the pod becomes unreachable so a stale "true"
-	// from a previous pod doesn't suppress the push after recreation.
-	UserCredsPresent *bool `json:"userCredsPresent,omitempty"`
-
 	// SecretsDelivery (US-70.1, design 0057) is the terminal-verified
 	// spawn-env delivery state scraped from agentd's /v1/healthz:
 	// spawned_rev (what the agent process actually spawned with) and the
 	// degrade reason when delivery is incomplete. Cleared to nil when
-	// the pod becomes unreachable (same doctrine as UserCredsPresent —
-	// a stale value from a previous pod must not survive); left as-is
-	// when a healthy scrape omits the field (mixed-fleet old runtimes
-	// never report it — W15).
+	// the pod becomes unreachable (a stale value from a previous pod
+	// must not survive); left as-is when a healthy scrape omits the
+	// field (mixed-fleet old runtimes never report it — W15).
 	SecretsDelivery *SecretsDeliveryStatus `json:"secretsDelivery,omitempty"`
 
 	// ---- Startup latency measurement anchors (S18.10) ----

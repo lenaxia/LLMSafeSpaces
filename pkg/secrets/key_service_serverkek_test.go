@@ -87,7 +87,7 @@ func TestInitializeUserKeysServerKEK_NoProvider_Fails(t *testing.T) {
 	}
 }
 
-func TestUnlockDEKWithSigningKey_ServerKEK_UsesRootKeyProvider(t *testing.T) {
+func TestUnlockDEK_ServerKEK_UsesRootKeyProvider(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
@@ -97,7 +97,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_UsesRootKeyProvider(t *testing.T) {
 	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
 
 	// Unlock with an arbitrary "password" — must be ignored for server_kek.
-	if err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", []byte("ignored-password"), "sess-1", time.Hour, nil); err != nil {
+	if err := svc.UnlockDEK(context.Background(), "u1", []byte("ignored-password"), "sess-1", time.Hour); err != nil {
 		t.Fatalf("unlock: %v", err)
 	}
 	if len(prov.decCalls) != 1 {
@@ -115,7 +115,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_UsesRootKeyProvider(t *testing.T) {
 	}
 }
 
-func TestUnlockDEKWithSigningKey_ServerKEK_NoProvider_FailsClosed(t *testing.T) {
+func TestUnlockDEK_ServerKEK_NoProvider_FailsClosed(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	// Seed a server_kek record directly.
@@ -127,7 +127,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_NoProvider_FailsClosed(t *testing.T) 
 	svc := NewKeyService(store, cache)
 	// rootKeyProvider NOT wired.
 
-	err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", nil, "sess", time.Hour, nil)
+	err := svc.UnlockDEK(context.Background(), "u1", nil, "sess", time.Hour)
 	if !errors.Is(err, ErrServerKEKUnavailable) {
 		t.Errorf("expected ErrServerKEKUnavailable, got %v", err)
 	}
@@ -137,7 +137,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_NoProvider_FailsClosed(t *testing.T) 
 	}
 }
 
-func TestUnlockDEKWithSigningKey_ServerKEK_DecryptFailure(t *testing.T) {
+func TestUnlockDEK_ServerKEK_DecryptFailure(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	store.records["u1"] = &UserKeyRecord{UserID: "u1", WrappedDEK: []byte("ct"), DEKSource: "server_kek"}
@@ -145,7 +145,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_DecryptFailure(t *testing.T) {
 	prov := &recordingProvider{failDecrypt: true}
 	svc.SetAPIKeyStore(nil, prov)
 
-	err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", nil, "sess", time.Hour, nil)
+	err := svc.UnlockDEK(context.Background(), "u1", nil, "sess", time.Hour)
 	if err == nil {
 		t.Fatal("decrypt failure must surface as an error")
 	}

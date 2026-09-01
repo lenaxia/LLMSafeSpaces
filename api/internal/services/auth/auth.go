@@ -42,17 +42,10 @@ type KeyServiceInterface interface {
 	// DEK tier has been removed).
 	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
-	// UnlockDEKWithSigningKey is UnlockDEK + durable jwt_sessions write
-	// (Epic 56). Login calls this with the active signing key (s.jwtSecret)
-	// so the unlocked DEK survives Valkey restart / LRU eviction for the
-	// JWT's remaining lifetime. Pass nil to fall back to Redis-only.
-	UnlockDEKWithSigningKey(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration, activeSigningKey []byte) error
 	HasKeys(ctx context.Context, userID string) (bool, error)
-	// GetDEK (Epic 56) takes the matched signing key so the rehydrate path
-	// can derive the per-session KEK from the same key the JWT validated
-	// under. Pass nil for API-key callers — rehydrate is skipped and
-	// ErrDEKUnavailable is returned (correct: API keys have their own
-	// durable DEK path via api_keys.WrappedDEK).
+	// GetDEK reads the Redis session cache only (US-70.5 removed the
+	// durable rehydrate). The matchedSigningKey parameter is retained
+	// for call-site stability and ignored.
 	GetDEK(ctx context.Context, sessionID string, matchedSigningKey []byte) ([]byte, error)
 	CacheDEK(ctx context.Context, sessionID string, dek []byte, ttl time.Duration) error
 	// DeleteDurableSessionsForUser (Epic 56) removes every jwt_sessions
@@ -467,7 +460,7 @@ func (s *Service) ProvisionServerKEKKeys(ctx context.Context, userID string) err
 // unlock (and, if necessary, first provision) the caller's server-KEK DEK so the
 // issued session is immediately usable for personal-secret operations. Used by
 // the SSO callback (Epic 58). The password argument is intentionally absent —
-// these users authenticate without one, and the keyService.UnlockDEKWithSigningKey
+// these users authenticate without one, and the keyService.UnlockDEK
 // path branches on users.dek_source to unwrap via the master-KEK provider.
 //
 // Provisioning is idempotent-guarded via HasKeys: an SSO user who already has a
@@ -514,7 +507,7 @@ func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl
 			return token, nil
 		}
 	}
-	if err := s.keyService.UnlockDEKWithSigningKey(ctx, userID, nil, jti, ttl, s.jwtSecret); err != nil {
+	if err := s.keyService.UnlockDEK(ctx, userID, nil, jti, ttl); err != nil {
 		if s.logger != nil {
 			s.logger.Warn("IssueTokenAndUnlockDEK: DEK unlock failed", "user_id", userID, "error", err.Error())
 		}
@@ -725,28 +718,6 @@ func (s *Service) signingKeyByIndex(idx int) []byte {
 	out := make([]byte, len(s.jwtPreviousSecrets[prev]))
 	copy(out, s.jwtPreviousSecrets[prev])
 	return out
-}
-
-// EachSigningKey satisfies secrets.SigningKeyEnumerator so KeyService's
-// GetDEKForUser (used by background/auto-push paths) can iterate the
-// same set of active + previous signing keys that parseTokenAcceptingRotatedKeys
-// uses at JWT validation time. Primary key first, then previous keys
-// in most-recent-rotation-first order.
-//
-// The callback receives a FRESH COPY of each key on every invocation;
-// implementations that store or retain the bytes past the callback
-// return must copy again. Zeroed slice is not returned — callers zero
-// their own copies.
-func (s *Service) EachSigningKey(fn func(key []byte) bool) {
-	for i := 0; ; i++ {
-		k := s.signingKeyByIndex(i)
-		if k == nil {
-			return
-		}
-		if !fn(k) {
-			return
-		}
-	}
 }
 
 // formatValidationCacheValue produces the cache value for a successful
@@ -988,14 +959,9 @@ func (s *Service) Register(ctx context.Context, req types.RegisterRequest) (*typ
 				fmt.Errorf("empty jti"), "user_id", userID)
 			return nil, errors.New("registration failed")
 		}
-		// Epic 56: register also gets durable jwt_sessions write, so a
-		// Valkey restart between registration and the user's first
-		// secret operation does not force a soft-unlock. The JWT was
-		// just generated above and is signed with s.jwtSecret, so that
-		// is by definition the matched key the rehydrate path will
-		// find. PR #421 review pass 2 flagged the previous nil-signing-
-		// key call as inconsistent with login.
-		if err := s.keyService.UnlockDEKWithSigningKey(ctx, userID, []byte(req.Password), jti, s.tokenDuration, s.jwtSecret); err != nil {
+		// Unlock (Redis cache write) so the user's first secret
+		// operation does not need a soft-unlock.
+		if err := s.keyService.UnlockDEK(ctx, userID, []byte(req.Password), jti, s.tokenDuration); err != nil {
 			s.logger.Error("Register: failed to unlock DEK", err, "user_id", userID)
 			return nil, errors.New("registration failed")
 		}
@@ -1172,7 +1138,7 @@ func (s *Service) Login(ctx context.Context, req types.LoginRequest) (*types.Aut
 					s.logger.Warn("Login: failed to auto-init keys", "user_id", user.ID, "error", err.Error())
 				}
 			}
-			if err := s.keyService.UnlockDEKWithSigningKey(ctx, user.ID, nil, jti, tokenDur, s.jwtSecret); err != nil {
+			if err := s.keyService.UnlockDEK(ctx, user.ID, nil, jti, tokenDur); err != nil {
 				s.logger.Warn("Login: failed to unlock DEK", "user_id", user.ID, "error", err.Error())
 			}
 		}

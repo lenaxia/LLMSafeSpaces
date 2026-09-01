@@ -130,7 +130,7 @@ The PVC is `ReadWriteOnce` by default — one pod at a time. `ReadWriteMany` is 
 
 ### What does NOT survive (tmpfs)
 
-`/sandbox-runtime` (the agent's live config: `agent-config.json`, `secrets-env`, `admin-prompt.md`, the `auth.json` symlink target, the reload-replay cache) is a `tmpfs` (RAM-backed emptyDir). On pod death it's wiped. The next pod's init containers re-materialize everything from the K8s Secret and, for user-DEK credentials, the reload-replay cache (`/sandbox-runtime/last-reload-secrets.json`) — which itself is tmpfs, so a *hard* pod death loses user-DEK credentials until the next `/v1/reload-secrets` push.
+`/sandbox-runtime` (the agent's live config: `agent-config.json`, `secrets-env`, `admin-prompt.md`, the `auth.json` symlink target) is a `tmpfs` (RAM-backed emptyDir). On pod death it's wiped. The next pod's init containers re-pull the batch file (`/sandbox-cfg/secrets.json`, an emptyDir that survives container restarts) and re-materialize from it; the reconcile loop re-notifies any pod that boots stale.
 
 This is deliberate: it keeps plaintext credentials off the PVC at rest. See [secrets](secrets.md).
 

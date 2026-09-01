@@ -248,7 +248,7 @@ func mkUserProvCredChecker(wsSvc *workspace.Service) func(ctx context.Context, u
 
 // TestSecretsHandler_PodIPResolverWired is the regression test for Bug 1
 // in worklog 0085: app.New must call SetPodIPResolver on the secrets
-// handler. Without this the reload-secrets endpoint and the SetBindings
+// handler. Without this the API-side reload-secrets endpoint and the SetBindings
 // auto-push both silently no-op (returning 503 / swallowing the error).
 //
 // We test the wiring helper directly rather than constructing the full

@@ -3,21 +3,21 @@
 
 package main
 
-// reload_credentials_e2e_test.go exercises the LIVE credential reload path:
+// reload_credentials_e2e_test.go exercises the LIVE credential apply path:
 //
 //	provider_credentials (DB row)
 //	  → SecretService.BuildWorkspaceBatch  (decrypt + dedupe by provider)
-//	  → reloadSecretsHandler                        (HTTP POST /v1/reload-secrets)
+//	  → applyBatchHandler                        (the apply-pipeline test seam)
 //	  → Materializer.Materialize → FlushProviders   (stages + writes agent-config.json)
 //	  → AgentConfigWriter.rebuild                   (atomic write)
 //	  → agent-config.json                           (the file opencode reads)
 //
-// This is the reload-path twin of pod_bootstrap_e2e_test.go. The API-side
-// tests (secrets_integration_test.go, secrets_llmprovider_test.go) wire a real
-// SecretService but mock agentd; the agentd-side reload tests hand-craft JSON
-// and bypass SecretService entirely. No test previously joined the two halves,
-// so an org-provider regression on the reload path (identical class to the
-// boot-path bug) would ship undetected.
+// This is the apply-path twin of pod_bootstrap_e2e_test.go. The API-side
+// tests (secrets_integration_test.go, secrets_llmprovider_test.go) wire a
+// real SecretService but mock agentd; the agentd-side pipeline tests
+// hand-craft JSON and bypass SecretService entirely. No test previously
+// joined the two halves, so an org-provider regression on the apply path
+// (identical class to the boot-path bug) would ship undetected.
 
 import (
 	"bytes"
@@ -231,7 +231,7 @@ func buildReloadSecretService(t *testing.T, bindings []reloadBinding, wireAdmin,
 
 // runReloadE2E is the shared harness: builds the real SecretService, calls
 // the one builder to produce the decrypted secrets JSON (legacy wire
-// shape), then POSTs it to the real reloadSecretsHandler and returns the
+// shape), then POSTs it to the real applyBatchHandler and returns the
 // materialized agent-config.json path + HTTP status + body.
 func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg bool) (agentCfgPath string, httpStatus int, httpBody string) {
 	t.Helper()
@@ -255,13 +255,13 @@ func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg boo
 	secretsJSON := secrets.LegacyBatchJSON(*batch)
 	require.NotEmpty(t, secretsJSON, "the builder must return non-empty JSON for non-empty bindings")
 
-	// Real reloadSecretsHandler: materialize → enrich → flush → writer rebuild.
+	// Real applyBatchHandler: materialize → enrich → flush → writer rebuild.
 	writer := opencode.NewConfigWriter(agentCfgPath)
-	deps := reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer}
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
+	deps := applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer}
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", bytes.NewReader(secretsJSON))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, deps)(rec, req)
+	applyBatchHandler(cfg, deps)(rec, req)
 	return agentCfgPath, rec.Code, rec.Body.String()
 }
 
@@ -283,7 +283,7 @@ func readReloadAgentConfig(t *testing.T, path string) struct {
 
 // TestE2E_ReloadSecrets_AllOwnerTypesMaterialized is the reload-path twin of
 // TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized. It seeds org + admin
-// + user credentials, runs BuildWorkspaceBatch → reloadSecretsHandler,
+// + user credentials, runs BuildWorkspaceBatch → applyBatchHandler,
 // and asserts all three providers appear in agent-config.json. A regression
 // where org credentials stop surviving the reload decrypt path fails here.
 func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
@@ -370,10 +370,10 @@ func TestE2E_ReloadSecrets_EmptyBindings_Returns200(t *testing.T) {
 		home:            dir,
 	}
 	writer := opencode.NewConfigWriter(agentCfgPath)
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", bytes.NewReader(secretsJSON))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code, "empty batch must return 200, not error; body=%s", rec.Body.String())
 }
 
@@ -383,9 +383,9 @@ func TestE2E_ReloadSecrets_EmptyBindings_Returns200(t *testing.T) {
 func TestE2E_ReloadSecrets_BadJSON_Returns400(t *testing.T) {
 	dir := t.TempDir()
 	cfg := materializeConfig{agentConfigPath: filepath.Join(dir, "agent-config.json")}
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("not json"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader("not json"))
 	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(cfg.agentConfigPath)})(rec, req)
+	applyBatchHandler(cfg, applySecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(cfg.agentConfigPath)})(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }

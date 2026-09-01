@@ -320,7 +320,7 @@ type combinedTestStore struct {
 }
 
 // buildInjectedJSON runs the one builder and renders the mixed-fleet
-// wire body — the successor of the deleted InjectSecrets call shape.
+// wire body.
 func buildInjectedJSON(t *testing.T, svc *SecretService, ctx context.Context, userID, workspaceID string) ([]byte, error) {
 	t.Helper()
 	batch, _, err := svc.BuildWorkspaceBatch(ctx, userID, workspaceID)

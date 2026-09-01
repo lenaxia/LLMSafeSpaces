@@ -1278,7 +1278,7 @@ func (s *Service) MarkAgentReloaded(ctx context.Context, tx *sql.Tx, workspaceID
 // MarkPodIdentityTransition, ClearPendingRefreshAfterAutoPush. The
 // pod-identity-transition detection approach from #494 was replaced with
 // a watcher-driven, agentd-signal-based auto-push in
-// api/internal/services/secretautopush — see worklog 0591. The
+// the watcher-driven push service (worklog 0591, removed by US-70.5). The
 // workspace_agent_state.last_seen_pod_name and last_seen_pod_start_time
 // columns are dropped via migration 000006.)
 

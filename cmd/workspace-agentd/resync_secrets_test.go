@@ -4,15 +4,16 @@
 package main
 
 // resync_secrets_test.go — US-70.3 Part A: the /v1/resync-secrets
-// handler contract. TDD-authored before the implementation:
+// handler contract (the only live secrets updater since the US-70.5
+// demolition). TDD-authored before the implementation:
 //
-//   - Auth: the §D1 Basic pair, identical gate to reload-secrets.
+//   - Auth: the §D1 Basic pair.
 //   - Method: POST only.
 //   - 304 → 200 not_modified with the ANCHOR's rev; no materialize
 //     (pinned by the secrets-env file staying byte-identical).
-//   - 200 → envelope written verbatim, applied through the same
-//     pipeline the reload handler uses, anchor written post-apply,
-//     appliedRev read back from the anchor (I4).
+//   - 200 → envelope written verbatim, applied through the shared
+//     apply pipeline, anchor written post-apply, appliedRev read back
+//     from the anchor (I4).
 //   - Pull failures: unreachable → 502 pull_failed; 401 → 502
 //     pull_unauthorized; missing token → pull_failed. Last batch kept.
 //   - The W2 apply-guard: a fetched seq ≤ the applied anchor seq is a
@@ -74,7 +75,6 @@ func newResyncTestEnv(t *testing.T, api *conditionalServer) *resyncTestEnv {
 		agentConfigPath:  filepath.Join(dir, "agent-config.json"),
 		secretsEnvPath:   filepath.Join(dir, "secrets-env"),
 		gitCredsPath:     filepath.Join(dir, "git-credentials"),
-		reloadCachePath:  filepath.Join(dir, "last-reload-secrets.json"),
 		enricherCacheDir: filepath.Join(dir, "enricher"),
 	}
 	apiSrv := httptest.NewServer(api.handler(t, nil))
@@ -88,7 +88,7 @@ func newResyncTestEnv(t *testing.T, api *conditionalServer) *resyncTestEnv {
 
 	handler := resyncSecretsHandler(resyncDeps{
 		cfg: cfg,
-		reload: reloadSecretsDeps{
+		apply: applySecretsDeps{
 			Proc:             proc,
 			OpencodePassword: resyncTestPassword,
 		},
@@ -143,7 +143,7 @@ func TestResyncSecrets_ControlPlanePasswordAccepted(t *testing.T) {
 	env := newResyncTestEnv(t, &conditionalServer{status: http.StatusInternalServerError})
 	handler := resyncSecretsHandler(resyncDeps{
 		cfg:    env.cfg,
-		reload: reloadSecretsDeps{ControlPlanePassword: "cp-pw"},
+		apply:  applySecretsDeps{ControlPlanePassword: "cp-pw"},
 		apiURL: env.apiSrv.URL, workspaceID: "ws", tokenPath: filepath.Join(env.dir, "token"),
 		batchPath: filepath.Join(env.dir, "secrets.json"), now: env.fakeClock.t,
 	})
@@ -244,10 +244,6 @@ func TestResyncSecrets_200_AppliesAndAnchors(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, envelope, string(batch), "the envelope is written verbatim")
 
-	cache, err := os.ReadFile(env.cfg.reloadCachePath)
-	require.NoError(t, err)
-	assert.Contains(t, string(cache), "RESYNC_DB",
-		"the applied batch is persisted to the reload cache (container-restart replay, #443)")
 }
 
 func TestResyncSecrets_200_LLMOnly_NoRestart(t *testing.T) {
@@ -265,7 +261,7 @@ func TestResyncSecrets_200_LLMOnly_NoRestart(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.Equal(t, "applied", resp.Status)
 	assert.Equal(t, "7:mh-7", resp.AppliedRev)
-	assert.False(t, resp.Restarted, "llm-provider-only changes do not force a restart (same semantics as reload-secrets)")
+	assert.False(t, resp.Restarted, "llm-provider-only changes do not force a restart (legacy push parity)")
 	assert.Equal(t, int32(0), env.proc.restarts.Load())
 }
 
@@ -283,7 +279,7 @@ func TestResyncSecrets_PullUnreachable_502_LastGoodKept(t *testing.T) {
 	require.NoError(t, os.WriteFile(batchPath, []byte(testEnvelope), 0o600))
 
 	handler := resyncSecretsHandler(resyncDeps{
-		cfg: cfg, reload: reloadSecretsDeps{OpencodePassword: resyncTestPassword},
+		cfg: cfg, apply: applySecretsDeps{OpencodePassword: resyncTestPassword},
 		apiURL: closed.URL, workspaceID: "ws", tokenPath: token, batchPath: batchPath,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/resync-secrets", nil)
@@ -396,13 +392,13 @@ func TestResyncSecrets_304_CrashWindow_HealsUnappliedEnvelope(t *testing.T) {
 }
 
 func TestResyncSecrets_304_NoAnchor_DoesNotRevertPushState(t *testing.T) {
-	// Mixed-fleet window: a legacy PUSH landed after the last revisioned
-	// pull (the anchor was invalidated). A 304 must NOT apply the stale
-	// on-disk envelope over the pushed live state.
+	// Pre-US-70.3 legacy state: the live materialization predates
+	// revision anchoring (no anchor on disk). A 304 must NOT apply the
+	// stale on-disk envelope over that live state — an absent anchor
+	// means the envelope does not describe what is materialized.
 	env := newResyncTestEnv(t, &conditionalServer{status: http.StatusNotModified})
 	require.NoError(t, os.WriteFile(filepath.Join(env.dir, "secrets.json"), []byte(testEnvelope), 0o600))
-	require.NoError(t, os.WriteFile(env.cfg.secretsEnvPath, []byte("export PUSHED='live-state'\n"), 0o600))
-	require.NoError(t, os.WriteFile(env.cfg.reloadCachePath, []byte(`[{"type":"env-secret","name":"p","metadata":{"var_name":"PUSHED"},"plaintext":"live-state"}]`), 0o600))
+	require.NoError(t, os.WriteFile(env.cfg.secretsEnvPath, []byte("export LEGACY='live-state'\n"), 0o600))
 
 	rec := env.post(t, "")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -416,8 +412,8 @@ func TestResyncSecrets_304_NoAnchor_DoesNotRevertPushState(t *testing.T) {
 
 	envOut, err := os.ReadFile(env.cfg.secretsEnvPath)
 	require.NoError(t, err)
-	assert.Equal(t, "export PUSHED='live-state'\n", string(envOut),
-		"the pushed live state must survive a 304 resync")
+	assert.Equal(t, "export LEGACY='live-state'\n", string(envOut),
+		"the pre-anchor live state must survive a 304 resync")
 }
 
 func TestResyncSecrets_ApplyGuard_StaleSeqIsNoOp(t *testing.T) {
@@ -453,7 +449,7 @@ func TestResyncSecrets_RateLimited(t *testing.T) {
 	env := newResyncTestEnv(t, &conditionalServer{status: http.StatusNotModified})
 	handler := resyncSecretsHandler(resyncDeps{
 		cfg:    env.cfg,
-		reload: reloadSecretsDeps{OpencodePassword: resyncTestPassword},
+		apply:  applySecretsDeps{OpencodePassword: resyncTestPassword},
 		apiURL: env.apiSrv.URL, workspaceID: "ws",
 		tokenPath: filepath.Join(env.dir, "token"), batchPath: filepath.Join(env.dir, "secrets.json"),
 		now: env.fakeClock.t,
@@ -544,7 +540,6 @@ func TestBuildUserMux_RegistersResyncEndpoint(t *testing.T) {
 	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "ssh"))
 	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", filepath.Join(dir, "secrets"))
 	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
-	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "last-reload-secrets.json"))
 	t.Setenv("LLMSAFESPACES_ENRICHER_CACHE_DIR", filepath.Join(dir, "enricher"))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "token"), []byte("mux-tok"), 0o600))
 

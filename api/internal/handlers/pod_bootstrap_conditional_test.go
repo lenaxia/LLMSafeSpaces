@@ -305,7 +305,6 @@ func TestE2E_ConditionalBootstrap_304ThenRotate_200(t *testing.T) {
 			"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, ".ssh"),
 			"LLMSAFESPACES_SECRETS_ENV_PATH":  envPath,
 			"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, ".git-credentials"),
-			"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, "last-reload-secrets.json"),
 			"HOME":                            dir,
 		})
 	require.Equal(t, 0, mCode, "materialize; stderr=%s", mStderr)

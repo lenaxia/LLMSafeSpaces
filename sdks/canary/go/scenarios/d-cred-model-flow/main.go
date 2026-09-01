@@ -115,7 +115,7 @@ func runCredModelFlow(ctx context.Context, run *canary.Runner, cfg canary.Config
 	// user-DEK encrypted and the DEK is only unlocked from a JWT
 	// session. With API key only, the user credential's plaintext
 	// can't be decrypted at bind time and the agent never sees it.
-	// (Admin/org credentials would still flow via InjectSessionlessSecrets,
+	// (Admin/org credentials would still flow via the sessionless tier,
 	// but this scenario binds a user credential — see Step 2.)
 	if !jwtAvailable {
 		run.OK("agent-tests: skipped (JWT required for DEK-based secret injection)")

@@ -128,7 +128,7 @@ flowchart TB
 
 - **`workspace-setup`** (only when `spec.packages` or `spec.initScript` are set) — installs declared packages to `/workspace/packages` and runs the user's init script. Idempotent, so it's safe to rerun on every pod start (including resume).
 - **`credential-setup`** — mounts the credentials Secret and password Secret via **projected volumes** (the kubelet mounts the data; the pod's SA has no Secret RBAC) and writes them to the shared `emptyDir` at `/sandbox-cfg`.
-- **`bootstrap`** (agentd subcommand, Epic 35) — presents a projected SA token to the API's `/internal/v1/pod-bootstrap` and fetches decrypted credentials. Never blocks pod boot; degrades to empty on failure and the live `/v1/reload-secrets` push handles delivery.
+- **`bootstrap`** (agentd subcommand, Epic 35) — presents a projected SA token to the API's `/internal/v1/pod-bootstrap` and fetches decrypted credentials. Never blocks pod boot; degrades to empty on failure and the notify-pull/reconcile path converges delivery.
 
 ### Main container
 
@@ -141,9 +141,8 @@ Hardened security context on **all** containers: `readOnlyRootFilesystem: true`,
 `workspace-agentd` (`cmd/workspace-agentd`) supervises `opencode`:
 
 - **Admin port `:4098`** — `/v1/healthz`, `/v1/statusz`, `/v1/readyz`, `/v1/metrics`. The controller polls these for health and metric enrichment; Prometheus scrapes `/metrics`. Token-gated.
-- **User port `:4097`** — `/v1/reload-secrets` (live credential reload without pod restart). *Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).*
+- **User port `:4097`** — `/v1/resync-secrets` (credential re-pull without pod restart). *Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).*
 - Owns the single `AgentConfigWriter` that builds `/sandbox-runtime/agent-config.json` atomically (temp-file + `os.Rename`), merging providers + model + relay sources. The one-shot relay injector runs ~T+7s after boot to discover free-tier models.
-- Owns the reload-replay cache (`/sandbox-runtime/last-reload-secrets.json`) so user-DEK credentials survive a main-container restart (OOM, panic, kubelet restart) — without it, the boot-time `reset()` would wipe them.
 
 ## PostgreSQL
 

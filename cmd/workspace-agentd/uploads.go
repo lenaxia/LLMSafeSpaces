@@ -8,9 +8,9 @@ package main
 // PUT /v1/files?filename=<name> — streamed request body lands on the
 // workspace PVC as /workspace/uploads/<uuid>-<sanitized-name> via the
 // atomic tmp+fsync+rename pattern (ConfigWriter precedent). Symmetric
-// with reload-secrets on the user mux: the API server is the only
+// with the other control-plane routes on the user mux: the API server is the only
 // caller, authenticating with the control-plane Basic credential set
-// (design 0051 §D1/D6.1 — checkBasicAuthAny, same as reload-secrets).
+// (design 0051 §D1/D6.1 — checkBasicAuthAny, same as the control-plane routes).
 //
 // Design epic-68 D14: the in-pod adversary is the agent itself (uid
 // 1000 owns /workspace), so the .tmp is created O_CREATE|O_EXCL (never
@@ -18,10 +18,10 @@ package main
 // uuid — the agent cannot race 128 bits of randomness.
 //
 // Port note: the design doc's architecture sketch says "(port 4098)"
-// but its own D1 anchors on symmetry with reload-secrets, which serves
+// but its own D1 anchors on symmetry with the other control-plane routes, which serve
 // on the USER mux (agentd.AgentdPort 4097; see server.go wireHTTPServers
-// and the API's agentpush dispatch at :4097/v1/reload-secrets). This
-// endpoint follows the validated reload-secrets pattern: user mux, 4097,
+// and the API's agentpush resync dispatch). This
+// endpoint follows the validated control-plane pattern: user mux, 4097,
 // Basic auth. Sidecar-mode caveat: the sidecar's /workspace mount is
 // read-only (controller agentd_sidecar.go), so uploads fail cleanly
 // with 5xx there until a control-socket write op exists — see worklog.
@@ -138,7 +138,7 @@ func writeUploadError(w http.ResponseWriter, status int, msg string) {
 
 // uploadFilesHandler returns the PUT /v1/files handler. Control-plane
 // route: workspacePassword plus extraAuth (the §D1 agentdPassword in
-// sidecar mode) — the same credential set reload-secrets accepts.
+// sidecar mode) — the same credential set the control-plane routes accept.
 func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	passwords := append([]string{workspacePassword}, extraAuth...)
 	return func(w http.ResponseWriter, r *http.Request) {

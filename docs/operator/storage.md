@@ -26,7 +26,7 @@ Every workspace pod has five volume mounts. Three are PVC-backed (persist across
 | `/home/sandbox` | PVC (`subPath: home`) | **Yes** | SSH keys (symlink target), secrets base dir, enricher cache, tool caches |
 | `/tmp` | PVC (`subPath: tmp`) | **Yes** | init scripts, package caches |
 | `/sandbox-cfg` | emptyDir (`Medium: Memory`, 32Mi) | No | `secrets.json`, `workspace-config.json`, bootstrap password |
-| `/sandbox-runtime` | emptyDir (`Medium: Memory`, 96Mi, RW) | No | `agent-config.json`, `secrets-env`, `admin-prompt.md`, reload-replay cache, symlink targets |
+| `/sandbox-runtime` | emptyDir (`Medium: Memory`, 96Mi, RW) | No | `agent-config.json`, `secrets-env`, `admin-prompt.md`, symlink targets |
 
 ```mermaid
 graph LR
@@ -88,13 +88,12 @@ The runtime working area. Contains:
 - `agent-config.json` — the file opencode reads for provider credentials. Written atomically by `AgentConfigWriter.Rebuild()` (temp-file + `os.Rename`).
 - `secrets-env` — environment variables for env-secret-type credentials.
 - `admin-prompt.md` — the merged platform→org→role→user system prompt.
-- `last-reload-secrets.json` — the reload-replay cache that restores user-DEK credentials after a container restart (OOM, panic, kubelet restart).
 - `rt/*` — symlink targets for `$HOME`-relative credential paths (`.ssh`, `.secrets`, `.git-credentials`, `auth.json`).
 
 The symlink architecture is key: `$HOME`-relative credential paths are symlinks created by the init container pointing into `/sandbox-runtime/rt/*`. On pod death, tmpfs is wiped and the PVC retains only dangling symlinks.
 
-??? info "The reload-replay cache"
-    `last-reload-secrets.json` is what lets user-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart. Without it, the next boot's `reset()` would wipe them and the base `secrets.json` (bootstrap, sessionless) never contained them. The cache is written after `Materialize` succeeds, is never written on a hard failure (500), and degrades to base-only on a corrupt read.
+??? info "Container-restart re-materialization (US-70.5)"
+    User-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart because every resync-applied revision is persisted verbatim to the batch file (`/sandbox-cfg/secrets.json`, an emptyDir that survives container restarts and is wiped on pod death); the next boot's materialize re-applies it. The old reload-replay cache (`last-reload-secrets.json`) was demolished.
 
 ---
 

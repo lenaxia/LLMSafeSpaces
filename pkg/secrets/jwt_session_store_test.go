@@ -17,13 +17,10 @@ import (
 // mockJWTSessionStore is the in-memory JWTSessionStore used by unit
 // tests in this package. Tracks call counts and supports an injected
 // error per-operation so tests can exercise failure paths without a
-// real Postgres. Concurrency-safe — KeyService callers may write to
-// the store from a goroutine fan-out test.
+// real Postgres. Concurrency-safe.
 type mockJWTSessionStore struct {
 	mu          sync.Mutex
 	rows        map[uuid.UUID]*JWTSession
-	writeErr    error
-	getErr      error
 	deleteErr   error
 	deleteForUE error
 	expireErr   error
@@ -34,8 +31,6 @@ type mockJWTSessionStore struct {
 	now time.Time
 
 	// Call counters
-	GetCount         int
-	WriteCount       int
 	DeleteCount      int
 	DeleteForUserCnt int
 	ExpireCount      int
@@ -46,34 +41,20 @@ func newMockJWTSessionStore() *mockJWTSessionStore {
 	return &mockJWTSessionStore{rows: make(map[uuid.UUID]*JWTSession)}
 }
 
-func (m *mockJWTSessionStore) GetJWTSession(_ context.Context, jti uuid.UUID) (*JWTSession, error) {
+// seed inserts a row directly — tests construct pre-existing
+// (pre-US-70.5) state; no production writer remains.
+func (m *mockJWTSessionStore) seed(s *JWTSession) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.GetCount++
-	if m.getErr != nil {
-		return nil, m.getErr
-	}
-	r, ok := m.rows[jti]
-	if !ok {
-		return nil, nil
-	}
-	cp := *r
-	return &cp, nil
-}
-
-func (m *mockJWTSessionStore) WriteJWTSession(_ context.Context, s *JWTSession) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.WriteCount++
-	if m.writeErr != nil {
-		return m.writeErr
-	}
-	if s == nil {
-		return errors.New("nil session")
-	}
 	cp := *s
 	m.rows[s.JTI] = &cp
-	return nil
+}
+
+func (m *mockJWTSessionStore) has(jti uuid.UUID) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.rows[jti]
+	return ok
 }
 
 func (m *mockJWTSessionStore) DeleteJWTSession(_ context.Context, jti uuid.UUID) error {
@@ -163,80 +144,15 @@ func (m *mockJWTSessionStore) ListActiveJWTSessionsForUser(_ context.Context, us
 
 // --- Tests ---
 
-func TestMockJWTSessionStore_WriteAndGet(t *testing.T) {
-	store := newMockJWTSessionStore()
-	jti := uuid.New()
-	row := &JWTSession{
-		JTI:        jti,
-		UserID:     "u-1",
-		WrappedDEK: []byte("wrapped"),
-		KEKSalt:    []byte("salt"),
-		CreatedAt:  time.Now(),
-		ExpiresAt:  time.Now().Add(time.Hour),
-	}
-	if err := store.WriteJWTSession(context.Background(), row); err != nil {
-		t.Fatalf("Write failed: %v", err)
-	}
-	got, err := store.GetJWTSession(context.Background(), jti)
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if got == nil {
-		t.Fatal("expected row, got nil")
-	}
-	if got.UserID != "u-1" {
-		t.Errorf("UserID = %q, want %q", got.UserID, "u-1")
-	}
-	if !bytes.Equal(got.WrappedDEK, []byte("wrapped")) {
-		t.Errorf("WrappedDEK mismatch")
-	}
-	if !bytes.Equal(got.KEKSalt, []byte("salt")) {
-		t.Errorf("KEKSalt mismatch")
-	}
-}
-
-func TestMockJWTSessionStore_GetMissing_ReturnsNilNil(t *testing.T) {
-	store := newMockJWTSessionStore()
-	got, err := store.GetJWTSession(context.Background(), uuid.New())
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil row for missing jti")
-	}
-}
-
-func TestMockJWTSessionStore_WriteUpsert_OverwritesWrappedDEK(t *testing.T) {
-	store := newMockJWTSessionStore()
-	jti := uuid.New()
-	first := &JWTSession{JTI: jti, UserID: "u-1", WrappedDEK: []byte("v1"), KEKSalt: []byte("s1"), ExpiresAt: time.Now().Add(time.Hour)}
-	if err := store.WriteJWTSession(context.Background(), first); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	// Soft-unlock backfill scenario: same jti, fresh kek_salt + wrapped_dek.
-	second := &JWTSession{JTI: jti, UserID: "u-1", WrappedDEK: []byte("v2"), KEKSalt: []byte("s2"), ExpiresAt: time.Now().Add(2 * time.Hour)}
-	if err := store.WriteJWTSession(context.Background(), second); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
-	got, _ := store.GetJWTSession(context.Background(), jti)
-	if !bytes.Equal(got.WrappedDEK, []byte("v2")) {
-		t.Errorf("WrappedDEK should overwrite on conflict, got %q", got.WrappedDEK)
-	}
-	if !bytes.Equal(got.KEKSalt, []byte("s2")) {
-		t.Errorf("KEKSalt should overwrite on conflict, got %q", got.KEKSalt)
-	}
-}
-
 func TestMockJWTSessionStore_DeleteJWTSession(t *testing.T) {
 	store := newMockJWTSessionStore()
 	jti := uuid.New()
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: jti, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: time.Now().Add(time.Hour)})
+	store.seed(&JWTSession{JTI: jti, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: time.Now().Add(time.Hour)})
 
 	if err := store.DeleteJWTSession(context.Background(), jti); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	got, _ := store.GetJWTSession(context.Background(), jti)
-	if got != nil {
+	if store.has(jti) {
 		t.Errorf("expected row deleted, still present")
 	}
 }
@@ -254,9 +170,9 @@ func TestMockJWTSessionStore_DeleteJWTSessionsForUser(t *testing.T) {
 	keep := uuid.New()
 	drop1 := uuid.New()
 	drop2 := uuid.New()
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: keep, UserID: "u-other", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: drop1, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: drop2, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
+	store.seed(&JWTSession{JTI: keep, UserID: "u-other", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
+	store.seed(&JWTSession{JTI: drop1, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
+	store.seed(&JWTSession{JTI: drop2, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
 
 	n, err := store.DeleteJWTSessionsForUser(context.Background(), "u-1")
 	if err != nil {
@@ -266,7 +182,7 @@ func TestMockJWTSessionStore_DeleteJWTSessionsForUser(t *testing.T) {
 		t.Errorf("rows affected = %d, want 2", n)
 	}
 	// Other user's row preserved
-	if got, _ := store.GetJWTSession(context.Background(), keep); got == nil {
+	if !store.has(keep) {
 		t.Errorf("expected other user's row preserved")
 	}
 }
@@ -276,8 +192,8 @@ func TestMockJWTSessionStore_DeleteExpiredJWTSessions(t *testing.T) {
 	now := time.Now()
 	expired := uuid.New()
 	active := uuid.New()
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: expired, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(-time.Hour)})
-	_ = store.WriteJWTSession(context.Background(), &JWTSession{JTI: active, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
+	store.seed(&JWTSession{JTI: expired, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(-time.Hour)})
+	store.seed(&JWTSession{JTI: active, UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: now.Add(time.Hour)})
 
 	n, err := store.DeleteExpiredJWTSessions(context.Background(), now)
 	if err != nil {
@@ -286,10 +202,10 @@ func TestMockJWTSessionStore_DeleteExpiredJWTSessions(t *testing.T) {
 	if n != 1 {
 		t.Errorf("rows affected = %d, want 1", n)
 	}
-	if got, _ := store.GetJWTSession(context.Background(), expired); got != nil {
+	if store.has(expired) {
 		t.Errorf("expected expired row removed")
 	}
-	if got, _ := store.GetJWTSession(context.Background(), active); got == nil {
+	if !store.has(active) {
 		t.Errorf("expected active row preserved")
 	}
 }
@@ -300,21 +216,6 @@ func TestMockJWTSessionStore_PropagatesInjectedErrors(t *testing.T) {
 		setup func(*mockJWTSessionStore)
 		run   func(context.Context, *mockJWTSessionStore) error
 	}{
-		{
-			name:  "Get error",
-			setup: func(m *mockJWTSessionStore) { m.getErr = errors.New("get fail") },
-			run: func(ctx context.Context, m *mockJWTSessionStore) error {
-				_, err := m.GetJWTSession(ctx, uuid.New())
-				return err
-			},
-		},
-		{
-			name:  "Write error",
-			setup: func(m *mockJWTSessionStore) { m.writeErr = errors.New("write fail") },
-			run: func(ctx context.Context, m *mockJWTSessionStore) error {
-				return m.WriteJWTSession(ctx, &JWTSession{JTI: uuid.New(), UserID: "u-1", WrappedDEK: []byte("w"), KEKSalt: []byte("s"), ExpiresAt: time.Now().Add(time.Hour)})
-			},
-		},
 		{
 			name:  "Delete error",
 			setup: func(m *mockJWTSessionStore) { m.deleteErr = errors.New("delete fail") },
@@ -363,8 +264,8 @@ func TestMockJWTSessionStore_PropagatesInjectedErrors(t *testing.T) {
 // exactly at expires_at MUST be treated as expired (SQL semantics use
 // expires_at > NOW(), strict inequality). Without this, a session
 // that expired at the exact microsecond we query would be returned,
-// and the caller would try to unwrap under a KEK that the janitor has
-// already flagged for pruning — pointless CPU work.
+// and the caller would consult a cache entry the janitor-bound expiry
+// has already invalidated.
 func TestListActive_ExcludesExpired(t *testing.T) {
 	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
@@ -395,9 +296,7 @@ func TestListActive_ExcludesExpired(t *testing.T) {
 		ExpiresAt:  base.Add(-1 * time.Minute),
 	}
 	for _, s := range []*JWTSession{active, expiredBoundary, expiredPast} {
-		if err := store.WriteJWTSession(context.Background(), s); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		store.seed(s)
 	}
 
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
@@ -413,10 +312,9 @@ func TestListActive_ExcludesExpired(t *testing.T) {
 }
 
 // TestListActive_OrdersMostRecentFirst locks in the ORDER BY created_at
-// DESC semantics. KeyService.GetDEKForUser picks the first row; if the
-// order changes silently, we'd start unwrapping under the OLDEST session
-// which is most likely to require a rotated (previous) signing key —
-// slower path, more iterations.
+// DESC semantics. GetCachedDEKForUser consults the first row's cache
+// entry first; the newest session is the most likely to hold a warm
+// cache entry.
 func TestListActive_OrdersMostRecentFirst(t *testing.T) {
 	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
@@ -438,9 +336,7 @@ func TestListActive_OrdersMostRecentFirst(t *testing.T) {
 		CreatedAt: base.Add(-1 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
 	}
 	for _, s := range []*JWTSession{middle, oldest, newest} { // insert out of order
-		if err := store.WriteJWTSession(context.Background(), s); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		store.seed(s)
 	}
 
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
@@ -471,9 +367,7 @@ func TestListActive_RespectsLimit(t *testing.T) {
 			CreatedAt: base.Add(-time.Duration(i+1) * time.Hour),
 			ExpiresAt: base.Add(1 * time.Hour),
 		}
-		if err := store.WriteJWTSession(context.Background(), all[i]); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		store.seed(all[i])
 	}
 
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 2)
@@ -491,7 +385,7 @@ func TestListActive_RespectsLimit(t *testing.T) {
 
 // TestListActive_UnknownUserReturnsEmpty ensures the "no rows" case is
 // nil-error, not an error. Callers use empty to signal "no live
-// session; use SessionlessInject."
+// session" (ErrDEKUnavailable).
 func TestListActive_UnknownUserReturnsEmpty(t *testing.T) {
 	store := newMockJWTSessionStore()
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "no-such-user", 0)
@@ -521,9 +415,7 @@ func TestListActive_ScopedToUser(t *testing.T) {
 		CreatedAt: base.Add(-1 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
 	}
 	for _, s := range []*JWTSession{mine, other} {
-		if err := store.WriteJWTSession(context.Background(), s); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+		store.seed(s)
 	}
 
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)

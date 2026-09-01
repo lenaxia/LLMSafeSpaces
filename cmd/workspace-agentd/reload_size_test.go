@@ -20,15 +20,13 @@ import (
 )
 
 // W8 materializer-bypass coverage: the API's 2MiB per-secret gate never
-// faces agentd directly — a crafted batch (or a future producer) can
-// present arbitrary bytes to /v1/reload-secrets. The materializer's own
-// ceilings must refuse loudly (500 + size_exceeded), keep the previously
-// published staging manifest intact, and never persist the bad batch to
-// the reload cache.
+// faces agentd directly — a crafted envelope (or a future producer) can
+// present arbitrary bytes to the apply pipeline. The materializer's own
+// ceilings must refuse loudly (500 + size_exceeded) and keep the
+// previously published staging manifest intact.
 
 type sizeTestEnv struct {
 	cfg      materializeConfig
-	cache    string
 	staging  string
 	manifest string
 }
@@ -41,7 +39,6 @@ func newSizeTestEnv(t *testing.T) *sizeTestEnv {
 	agentCfg := filepath.Join(dir, "agent-config.json")
 	envPath := filepath.Join(dir, "secrets-env")
 	gitCreds := filepath.Join(dir, ".git-credentials")
-	cachePath := filepath.Join(dir, "last-reload-secrets.json")
 	cfg := materializeConfig{
 		secretsBaseDir:  secretsBase,
 		sshDir:          sshDir,
@@ -49,12 +46,10 @@ func newSizeTestEnv(t *testing.T) *sizeTestEnv {
 		secretsEnvPath:  envPath,
 		gitCredsPath:    gitCreds,
 		home:            dir,
-		reloadCachePath: cachePath,
 	}
 	staging := stagingDirFor(envPath, false)
 	return &sizeTestEnv{
 		cfg:      cfg,
-		cache:    cachePath,
 		staging:  staging,
 		manifest: filepath.Join(staging, secrets.ManifestName),
 	}
@@ -62,10 +57,10 @@ func newSizeTestEnv(t *testing.T) *sizeTestEnv {
 
 func (e *sizeTestEnv) reload(t *testing.T, batch string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(batch))
+	req := httptest.NewRequest(http.MethodPost, "/v1/apply-batch", strings.NewReader(batch))
 	req.Header.Set("Authorization", "Basic "+basicAuth("size-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(e.cfg, reloadSecretsDeps{OpencodePassword: "size-pw"})(rec, req)
+	applyBatchHandler(e.cfg, applySecretsDeps{OpencodePassword: "size-pw"})(rec, req)
 	return rec
 }
 
@@ -175,8 +170,8 @@ func TestE2E_ReloadSecrets_WholeBatchOverBudget_LoudFailure(t *testing.T) {
 		"machine-readable reason (W8): %s", rec.Body.String())
 
 	requireStagedManifestLists(t, env, "good.bin")
-	cacheData, err := os.ReadFile(env.cache)
+	manifest, err := os.ReadFile(env.manifest)
 	require.NoError(t, err)
-	require.NotContains(t, string(cacheData), "part-0.bin",
-		"the over-budget batch must never reach the reload cache")
+	require.NotContains(t, string(manifest), "part-0.bin",
+		"the over-budget batch must never reach the staging manifest")
 }

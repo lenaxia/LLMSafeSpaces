@@ -35,7 +35,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 		reloadBody   []byte
 	)
 
-	// Mock agentd on port 4097 — receives the reload-secrets push.
+	// Mock agentd on port 4097 — receives the resync notify.
 	agentdListener, err := net.Listen("tcp", "127.0.0.1:4097")
 	if err != nil {
 		t.Skip("port 4097 not available for test agentd mock")

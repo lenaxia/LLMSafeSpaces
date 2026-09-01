@@ -6,7 +6,7 @@ package main
 // control_plane_auth_test.go — design 0051 US-3 / §D1 per-endpoint
 // credential table, pinned at the handler seam:
 //
-//	Control plane (reload-secrets, agent/reload, workflow/*):
+//	Control plane (resync-secrets, agent/reload, workflow/*):
 //	    agentdPassword OR workspace password (mixed-generation window, D6.1)
 //	/v1/mcp:      workspace password ONLY
 //	/v1/dev-preview/: workspace password ONLY
@@ -25,6 +25,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -50,22 +51,27 @@ func authedStatus(t *testing.T, h http.HandlerFunc, password string, body []byte
 	return rec.Code
 }
 
-// TestControlPlaneAuth_ReloadSecretsAcceptsBoth: reload-secrets accepts
-// agentdPassword (the new §D1 secret) AND the workspace password
-// (mixed-generation window), and rejects unknown credentials.
-func TestControlPlaneAuth_ReloadSecretsAcceptsBoth(t *testing.T) {
+// TestControlPlaneAuth_ResyncSecretsAcceptsBoth: resync-secrets (the
+// surviving secrets control-plane route, US-70.5) accepts
+// agentdPassword (the §D1 secret) AND the workspace password
+// (mixed-generation window), and rejects unknown credentials. The
+// handler runs against an unreachable API URL; any non-401 status
+// proves the auth gate passed.
+func TestControlPlaneAuth_ResyncSecretsAcceptsBoth(t *testing.T) {
 	withTestLogger(t)
-	deps := reloadSecretsDeps{
-		OpencodePassword:     testWorkspacePW,
-		ControlPlanePassword: testAgentdPW,
-	}
-	h := reloadSecretsHandler(materializeConfig{}, deps)
+	dir := t.TempDir()
+	h := resyncSecretsHandler(resyncDeps{
+		cfg:    materializeConfig{home: dir, secretsEnvPath: filepath.Join(dir, "secrets-env")},
+		apply:  applySecretsDeps{OpencodePassword: testWorkspacePW, ControlPlanePassword: testAgentdPW},
+		apiURL: "http://127.0.0.1:1", workspaceID: "ws-auth",
+		tokenPath: filepath.Join(dir, "token"), batchPath: filepath.Join(dir, "secrets.json"),
+	})
 
-	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testAgentdPW, []byte("[]")),
-		"agentdPassword must pass the reload-secrets auth gate")
-	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testWorkspacePW, []byte("[]")),
+	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testAgentdPW, nil),
+		"agentdPassword must pass the resync-secrets auth gate")
+	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testWorkspacePW, nil),
 		"workspace password stays valid on control-plane routes during the mixed-generation window (D6.1)")
-	require.Equal(t, http.StatusUnauthorized, authedStatus(t, h, "wrong-pw", []byte("[]")),
+	require.Equal(t, http.StatusUnauthorized, authedStatus(t, h, "wrong-pw", nil),
 		"unknown credentials rejected")
 }
 
@@ -74,10 +80,15 @@ func TestControlPlaneAuth_ReloadSecretsAcceptsBoth(t *testing.T) {
 // behavior — workspace password only.
 func TestControlPlaneAuth_SingleContainerModeUnchanged(t *testing.T) {
 	withTestLogger(t)
-	deps := reloadSecretsDeps{OpencodePassword: testWorkspacePW}
-	h := reloadSecretsHandler(materializeConfig{}, deps)
-	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testWorkspacePW, []byte("[]")))
-	require.Equal(t, http.StatusUnauthorized, authedStatus(t, h, testAgentdPW, []byte("[]")))
+	dir := t.TempDir()
+	h := resyncSecretsHandler(resyncDeps{
+		cfg:    materializeConfig{home: dir, secretsEnvPath: filepath.Join(dir, "secrets-env")},
+		apply:  applySecretsDeps{OpencodePassword: testWorkspacePW},
+		apiURL: "http://127.0.0.1:1", workspaceID: "ws-auth",
+		tokenPath: filepath.Join(dir, "token"), batchPath: filepath.Join(dir, "secrets.json"),
+	})
+	require.NotEqual(t, http.StatusUnauthorized, authedStatus(t, h, testWorkspacePW, nil))
+	require.Equal(t, http.StatusUnauthorized, authedStatus(t, h, testAgentdPW, nil))
 }
 
 // TestControlPlaneAuth_WorkflowAndAgentReloadAcceptBoth: agent/reload and
