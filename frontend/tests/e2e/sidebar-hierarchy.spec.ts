@@ -54,7 +54,8 @@ async function setupAPIMocks(page: Page) {
   });
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, ROOT_SESSION);}
+  await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, ROOT_SESSION);
+}
 
 test.describe("Sidebar hierarchy", () => {
   test.beforeEach(async ({ page }) => {

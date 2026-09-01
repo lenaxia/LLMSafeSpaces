@@ -156,6 +156,9 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     // double-mount aborts connection #1, and hit 2's registration replaces
     // the dead one).
     let sendContract: ((body: string) => void) | null = null;
+    // Read through an indirection: TS control-flow can't see the route
+    // callback's assignment from this scope.
+    const fireContract = (body: string) => sendContract?.(body);
     await page.route(`${API}/workspaces/${WORKSPACE_ID}/contract-events`, async (r: Route) => {
       await new Promise<void>((resolve) => {
         sendContract = (body: string) => {
@@ -171,7 +174,7 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     await expect(page.getByText(/100K/).first()).toBeVisible({ timeout: 10_000 });
 
     // Fire contract MESSAGE_END: 40K < 50% of 100K → compaction detected
-    sendContract?.(usageCostBody("40000", "0", "0"));
+    fireContract(usageCostBody("40000", "0", "0"));
 
     await expect(page.getByText(/context compacted/i)).toBeVisible({ timeout: 10_000 });
   });
@@ -185,6 +188,9 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     // (registration on every hit: StrictMode's double-mount aborts
     // connection #1, and hit 2's registration replaces the dead one).
     let sendContract: ((body: string) => void) | null = null;
+    // Read through an indirection: TS control-flow can't see the route
+    // callback's assignment from this scope.
+    const fireContract = (body: string) => sendContract?.(body);
     await page.route(`${API}/workspaces/${WORKSPACE_ID}/contract-events`, async (r: Route) => {
       await new Promise<void>((resolve) => {
         sendContract = (body: string) => {
@@ -200,7 +206,7 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     await expect(page.getByText(/100K/).first()).toBeVisible({ timeout: 10_000 });
 
     // Now fire the contract event that triggers compaction (40K < 50% of 100K)
-    sendContract?.(usageCostBody("40000", "0", "0"));
+    fireContract(usageCostBody("40000", "0", "0"));
 
     await expect(page.getByText(/context compacted/i)).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: /dismiss/i }).click();

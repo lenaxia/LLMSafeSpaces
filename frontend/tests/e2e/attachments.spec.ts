@@ -104,7 +104,8 @@ async function mockAuthAndWorkspace(page: Page, opts: { settings?: Record<string
   });
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await await mockIdleContractStream(page, `${API}/workspaces/${WS_ID}/contract-events`, SES_ID);  await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/queue`, async (route: Route) => {
+  await mockIdleContractStream(page, `${API}/workspaces/${WS_ID}/contract-events`, SES_ID);
+  await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/queue`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ messages: [] }) });
   });
   await page.route(`${API}/workspaces/${WS_ID}/sessions/${SES_ID}/seen`, async (route: Route) => {

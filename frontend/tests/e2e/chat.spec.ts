@@ -47,7 +47,8 @@ async function setupMockWorkspace(page: Page, workspaceId: string) {
   });
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await await mockIdleContractStream(page, `**/api/v1/workspaces/${workspaceId}/contract-events`, sess-auto-1);}
+  await mockIdleContractStream(page, `**/api/v1/workspaces/${workspaceId}/contract-events`, "sess-auto-1");
+}
 
 async function loginAs(page: import("@playwright/test").Page, username: string, password: string) {
   await page.goto("/login");

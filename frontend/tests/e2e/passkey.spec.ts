@@ -17,13 +17,6 @@ import type { Page, Route, CDPSession } from "@playwright/test";
 const API_PREFIX = "**/api/v1";
 const RP_ID = "localhost";
 
-interface VirtualAuthenticatorOptions {
-  protocol: string;
-  transport: string;
-  hasResidentKey: boolean;
-  isUserVerified: boolean;
-}
-
 async function setupVirtualAuthenticator(page: Page): Promise<{ cdp: CDPSession; authenticatorId: string }> {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("WebAuthn.enable", {});
@@ -34,7 +27,7 @@ async function setupVirtualAuthenticator(page: Page): Promise<{ cdp: CDPSession;
       hasResidentKey: true,
       isUserVerified: true,
       automaticPresenceSimulation: true,
-    } as VirtualAuthenticatorOptions,
+    },
   });
   return { cdp, authenticatorId: result.authenticatorId };
 }

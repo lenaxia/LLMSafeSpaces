@@ -56,7 +56,8 @@ async function setupAPIMocks(page: Page) {
   });
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, "ses_0");}
+  await mockIdleContractStream(page, `${API_PREFIX}/workspaces/${WORKSPACE_ID}/contract-events`, "ses_0");
+}
 
 test.describe("Sidebar kebab menu viewport awareness", () => {
   test.beforeEach(async ({ page }) => {

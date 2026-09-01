@@ -67,7 +67,8 @@ async function setupAPIMocks(page: Page, messages: unknown[]) {
 
   // Contract stream (US-69.10 cutover) — minimal idle snapshot; every body
   // must open with a snapshot frame or the client reconnects.
-  await await mockIdleContractStream(page, `${API}/workspaces/${WORKSPACE_ID}/contract-events`, SESSION_ID);}
+  await mockIdleContractStream(page, `${API}/workspaces/${WORKSPACE_ID}/contract-events`, SESSION_ID);
+}
 
 test.describe("History rendering with realistic wire data (#752 F1/F2)", () => {
   test("reasoning parts render in the transcript (#752 F1)", async ({ page }) => {

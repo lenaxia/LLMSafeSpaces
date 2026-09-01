@@ -8,14 +8,14 @@ import type { Page, Route } from "@playwright/test";
  * to the client, which reconnects forever (each reconnect fires the
  * reconcile path); holding after the first delivery keeps the page quiet.
  */
-export function mockIdleContractStream(
+export async function mockIdleContractStream(
   page: Page,
   pattern: string,
   sessionId: string,
   extraSessions: Array<Record<string, unknown>> = [],
 ): Promise<void> {
   let hits = 0;
-  return page.route(pattern, async (route: Route) => {
+  await page.route(pattern, async (route: Route) => {
     hits++;
     if (hits <= 2) {
       const body = `data: ${JSON.stringify({
