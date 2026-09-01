@@ -21,8 +21,15 @@
    - `BootReady=True` condition on the Workspace;
    - sidecar Ready, opencode session smoke (chat round-trip);
    - env-secrets/SSH key still land (cross-uid 0640 profile — K3's `secrets-env` mode).
-2. **Batch:** delete pods of Active workspaces in batches (≤25% per wave), same verification per wave. Watch `llmsafespaces_workspace_platform_boot_failures_total` — any non-zero value STOPS the rollout (page; it is a platform regression, not load).
-3. **Suspended workspaces:** do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window.
+2. **Batch:** delete pods of Active workspaces in batches (≤25% per wave), same verification per wave. Watch the stop-condition metrics — **any non-zero value STOPS the rollout** (page; it is a platform regression, not load):
+   - `llmsafespaces_workspace_platform_boot_failures_total`
+   - `llmsafespaces_workspace_agentd_verify_failures_total`
+   - `llmsafespaces_workspace_opencode_verify_failures_total`
+
+   **CounterVec semantics (verified live, #1211 F4): these metrics are ABSENT from `/metrics` while failures are zero** — a Prometheus CounterVec emits nothing until its first increment. Absence is the healthy state, not a missing/rename. The positive health signals are `llmsafespaces_agentd_gate_duration_seconds{gate=…}` (count ≥ 1 = every gate passed) and `llmsafespaces_stalled_entries 0`.
+
+   **Scrape method:** port-forward the controller's metrics port (`kubectl -n llmsafespaces port-forward deploy/llmsafespaces-controller 8080:8080`) — the controller image ships no wget/curl, so `kubectl exec … -- wget` is a false negative.
+3. **Suspended workspaces:** do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window. **Spot-resume caveat (#1211 F3):** a workspace idle longer than the auto-suspend timeout resumes, verifies, then re-suspends in ~a minute (Creating → OpencodeVerified → "idle timeout exceeded") — functionally correct, but refresh `status.lastActivityAt` first if you want a resumed workspace to stay up (the F2 drain used exactly this).
 4. **Accepting force-upgrade semantics:** an in-flight session on a deleted pod is interrupted (~22s resume cost); PVCs retain all state; opencode.db replays via WAL.
 
 **Rollback:** flip the value back off. Recreated pods converge to the single-container spec (`--supervise`); Secrets carry extra keys that legacy readers ignore; file relocations re-converge via reset()+re-materialize.
