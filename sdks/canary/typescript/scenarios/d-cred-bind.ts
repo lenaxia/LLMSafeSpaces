@@ -32,14 +32,16 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     if (ok3 && b) r.assert(b.bindings.some(x => x.id === credId), 'get-bindings: cred present');
 
     const [ok4, result] = await r.assertNoError(() => c.workspaces.reloadSecrets(wsId!), 'reload-secrets: no error');
-    if (ok4 && result) r.assert(result.reloaded >= 1, 'reload-secrets: reloaded ≥ 1', String(result.reloaded));
+    if (ok4 && result) r.assert(result.status === 'applied' || result.status === 'not_modified',
+      'reload-secrets: status ∈ {applied, not_modified}', String(result.status));
 
     const [ok5, st] = await r.assertNoError(() => c.workspaces.getStatus(wsId!), 'status-after-reload: no error');
     if (ok5 && st) r.assert((st as any).credentialState?.available === true, 'status: credentialState.available=true');
 
     await r.assertNoError(() => c.workspaces.setBindings(wsId!, []), 'unbind: no error');
     const [ok6, er] = await r.assertNoError(() => c.workspaces.reloadSecrets(wsId!), 'reload-after-unbind: no error');
-    if (ok6 && er) r.assert(er.reloaded === 0, 'reload-after-unbind: reloaded=0', String(er.reloaded));
+    if (ok6 && er) r.assert(er.status === 'applied' || er.status === 'not_modified',
+      'reload-after-unbind: status ∈ {applied, not_modified}', String(er.status));
 
     // Reload on suspended → error
     await r.assertNoError(() => c.workspaces.suspend(wsId!), 'suspend: no error');

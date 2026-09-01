@@ -43,6 +43,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/secretsreconcile"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
@@ -88,6 +89,8 @@ type App struct {
 	healthChecker      *health.Checker           // periodic dependency probe; nil only in degraded test setups
 	pendingOrgCleaner  *handlers.PendingOrgCleaner
 	jwtSessionJanitor  *secrets.JWTSessionJanitor // Epic 56: prunes expired jwt_sessions rows
+	secretsReconcile   *secretsreconcile.Service  // US-70.3: level-triggered secrets-delivery reconcile loop
+	agentPusher        *agentpush.Service         // US-70.3 M2: shared notifier; Stop() cancels pending deferred 429 retries on shutdown
 	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
 	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
 	invitationsHandler *handlers.InvitationsHandler
@@ -392,6 +395,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 	// Wire secret management (Epic 10).
 	var secretsHandler *handlers.SecretsHandler
+	var secretsReconcileSvc *secretsreconcile.Service
+	var agentPusherSvc *agentpush.Service
 	var modelsHandler *handlers.ModelsHandler
 	var workspaceEnvHandler *handlers.WorkspaceEnvHandler
 	var unlockDEKHandler *handlers.UnlockDEKHandler
@@ -650,9 +655,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			Logger:           engineLogger,
 			PasswordProvider: proxyHandler,
 		}
-		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
+		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
-		// request and the SetBindings auto-push silently no-ops; see
+		// request and the SetBindings auto-notify silently no-ops; see
 		// Bug 1 + Bug 2 in worklog 0085.
 		secretsPodResolver := newSecretsPodIPResolver(
 			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
@@ -663,32 +668,32 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		secretsHandler.SetLogger(log)
 		secretsHandler.SetCredentialStateWriter(dbSvc)
 
-		// Build the single agentpush.Service and share it between the
-		// SecretsHandler (bindings/reload endpoints) and the workspace
-		// service (pod-recreation auto-push). Sharing one instance means
-		// there's one place to change reload semantics — the SOLID payoff
-		// of extracting agentpush from SecretsHandler in worklog 0589.
+		// Build the single agentpush.Service (the US-70.3 notifier) and
+		// share it across every live-delivery consumer: the
+		// SecretsHandler (bindings/reload/revoke fan-out), the env
+		// handler, the MCP handlers, the pod-recreation auto-notify, and
+		// the secretsreconcile loop. Sharing one instance means one
+		// place to change delivery semantics.
 		//
-		// The metrics hook lives on the workspace-side adapter, NOT on
-		// the shared pusher: api_secret_auto_push_total is specifically
-		// the pod-recreation auto-push counter (per its Help text), and
-		// wiring it here would conflate user-initiated SetBindings
-		// pushes with automatic pod-recreation pushes — operators
-		// couldn't tell "50 users changed bindings" from "50 pods were
-		// recreated." See wsAgentPusherAdapter.Push in secrets_adapters.go.
+		// llmsafespaces_secrets_notify_total is emitted from the shared
+		// notifier itself (every dispatch, every caller);
+		// api_secret_auto_push_total stays scoped to the pod-recreation
+		// adapter (see wsAgentPusherAdapter).
 		agentPusher := agentpush.New(
-			secretService,
 			agentpush.WithPodIPResolver(secretsPodResolver),
 			agentpush.WithPasswordProvider(proxyHandler),
 			agentpush.WithModelCache(sharedModelCache),
 			agentpush.WithLogger(log),
+			agentpush.WithNotifyMetricsHook(metrics.RecordSecretNotify),
 		)
+		agentPusherSvc = agentPusher
 		secretsHandler.SetAgentPusher(agentPusher)
 
-		// Epic 53: wire the shared agent pusher into the MCP handlers so
-		// bound MCP servers reach running pods via live reload-secrets push.
+		// US-70.3 flip: live delivery is notify → re-pull. The closure
+		// shape (returning only error) matches the MCP and env handlers'
+		// pusher seams.
 		mcpPushAdapter = func(ctx context.Context, userID, workspaceID string) error {
-			_, err := agentPusher.Push(ctx, userID, workspaceID)
+			_, err := agentPusher.Notify(ctx, userID, workspaceID)
 			return err
 		}
 		if adminMcpHandler != nil {
@@ -697,11 +702,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if userMcpHandler != nil {
 			userMcpHandler.SetSecretPusher(mcpPushAdapter)
 		}
-		// worklog 0591: the workspace service is no longer a consumer
-		// of the auto-push (that role moved to secretautopush below).
-		// SecretsHandler still needs the shared agentPusher for
-		// SetBindings/ReloadSecrets user-driven paths, so we wire it
-		// above.
+		workspaceEnvHandler.SetNotifier(mcpPushAdapter)
 
 		// worklog 0591: watcher-driven auto-push. Uses the shared
 		// agentpush.Service + a KeyService.GetDEKForUser retrieval to
@@ -726,6 +727,29 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			secretautopush.WithLogger(log),
 		)
 		proxyHandler.SetWorkspaceUpdateCallback(autoPushSvc.OnWorkspaceUpdate)
+
+		// US-70.3: the level-triggered reconcile loop. Notify shrinks
+		// latency; this loop is the correctness path — every period it
+		// derives each Active workspace's LIVE manifest from rows
+		// (zero decrypts), mints any drift as a new stored-revision seq
+		// (so conditional pulls flip 304→200 exactly when the loop
+		// observes the change), and re-notifies workspaces whose pod
+		// applied seq lags, with backoff + jitter. Started in Run()
+		// after the K8s client is up; stopped on shutdown.
+		// Multi-replica safe: notifies are idempotent from the pod's
+		// perspective (conditional pull + rate limit), and the mint's
+		// CAS keeps concurrent seqs distinct and monotonic.
+		secretsReconcileSvc = secretsreconcile.New(
+			&k8sActiveWorkspaceLister{
+				client:    &k8sWorkspaceListerAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+				namespace: cfg.Kubernetes.Namespace,
+				logger:    log,
+			},
+			secretService,
+			&reconcileNotifyAdapter{pusher: agentPusher},
+			secretsreconcile.WithInterval(secretsreconcile.IntervalFromEnv(secretsreconcile.DefaultInterval)),
+			secretsreconcile.WithLogger(log),
+		)
 		// Wire password getter so ListModels/SetModel can authenticate
 		// to opencode. Uses the same K8s-secret-backed getter as ProxyHandler.
 		// Wired after proxyHandler construction (see below).
@@ -1459,6 +1483,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		secretsPool:        secretsPool,
 		pendingOrgCleaner:  pendingOrgCleaner,
 		jwtSessionJanitor:  jwtSessionJanitor,
+		secretsReconcile:   secretsReconcileSvc,
+		agentPusher:        agentPusherSvc,
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
 		invitationsHandler: invitationsHandler,
@@ -1551,6 +1577,19 @@ func (a *App) Run() error {
 		a.k8sClient.Stop()
 		_ = a.services.Stop()
 		return fmt.Errorf("failed to start proxy handler: %w", err)
+	}
+
+	// US-70.3: start the secrets-delivery reconcile loop after the K8s
+	// client and services are up. The immediate first pass heals
+	// divergence that accumulated overnight (pods unreachable at
+	// revoke, missed notifies).
+	if a.secretsReconcile != nil {
+		if err := a.secretsReconcile.Start(a.ctx); err != nil {
+			a.logger.Error("failed to start secrets reconcile loop", err)
+		} else {
+			a.logger.Info("secrets reconcile loop started",
+				"interval", secretsreconcile.IntervalFromEnv(secretsreconcile.DefaultInterval).String())
+		}
 	}
 
 	// Epic 27a/27b: wire the broker into the reload handlers (drain mode
@@ -1666,6 +1705,21 @@ func (a *App) Shutdown() error {
 
 	if err := a.sessionAlertsSvc.Stop(); err != nil {
 		a.logger.Error("Session alerts shutdown error", err)
+	}
+
+	// Stop the secrets reconcile loop before the K8s client and DB pool
+	// it reads from go away.
+	if a.secretsReconcile != nil {
+		if err := a.secretsReconcile.Stop(); err != nil {
+			a.logger.Error("Secrets reconcile shutdown error", err)
+		}
+	}
+
+	// M2: cancel any pending deferred notify retries (and wait for one
+	// already in flight) before the pod resolver / password provider
+	// they depend on tear down.
+	if a.agentPusher != nil {
+		a.agentPusher.Stop()
 	}
 
 	// Drain pending audit entries before tearing down the DB pool so

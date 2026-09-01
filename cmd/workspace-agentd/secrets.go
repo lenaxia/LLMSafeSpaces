@@ -44,6 +44,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
+	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 // reloadMu serializes concurrent calls to reloadSecretsHandler. Two
@@ -918,18 +919,7 @@ type reloadSecretsDeps struct {
 
 // reloadSecretsHandler returns the HTTP handler for /v1/reload-secrets.
 func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.HandlerFunc {
-	proc := deps.Proc
 	opencodePassword := deps.OpencodePassword
-	tracker := deps.Tracker
-	lister := deps.Lister
-	markerPath := deps.RestartReasonMarkerPath
-	if markerPath == "" {
-		// markerPathFromEnv: the controller points BOTH containers at the
-		// shared tmpfs marker in sidecar mode — the const default is the
-		// PVC path, which the sidecar sees READ-ONLY (its /workspace mount),
-		// so a socket-mode reload's marker write would silently fail.
-		markerPath = markerPathFromEnv()
-	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		// #848: reload-secrets applies credential batches (provider
@@ -961,189 +951,16 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 		// readers and to the contextcheck linter.
 		reqCtx := r.Context()
 
-		// Serialize the materialize → enrich → flush → re-merge sequence.
-		// Concurrent reloads (from two API replicas or parallel credential binds)
-		// race through Materializer.reset() which RemoveAlls SecretsBaseDir and
-		// SSHDir and appendFiles to SecretsEnvPath — producing duplicate env var
-		// entries and interleaved agent-config.json writes. The restart at the
-		// end is excluded from the lock to avoid holding it during the ~5s SIGTERM
-		// window.
-		reloadMu.Lock()
-
-		m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
-		result, mErr := m.Materialize(batch)
-
-		// A push is a legacy batch: whatever revisioned pull the live
-		// state came from, the pushed set supersedes it — invalidate the
-		// anchor (US-70.2 W2: legacy batches bypass the guard and reset
-		// the marker to unknown) so the served spawn revs and the next
-		// boot's guard describe the push, not a stale pull.
-		if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
-			removeRevAnchor(revAnchorPath(cfg.toPaths().SecretsEnvPath))
-		}
-
-		// R2b (#1165): single-container reload (crossUID false) runs as
-		// the consuming uid — deliver now. Sidecar reload only STAGES;
-		// the uid-1000 supervisor pull delivers at the next spawn.
-		if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
-			if dErr := deliverStaged(cfg); dErr != nil {
-				reloadMu.Unlock()
-				log.Error("reload-secrets: file delivery failed", zap.Error(dErr))
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": dErr.Error()})
-				return
-			}
-		}
-
-		if mErr != nil && !errors.Is(mErr, secrets.ErrPartialFailure) {
-			reloadMu.Unlock()
-			log.Error("reload-secrets: materialize failed", zap.Error(mErr))
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": mErr.Error()})
+		outcome, aErr := applySecretsBatch(reqCtx, cfg, deps, batch, nil)
+		if aErr != nil {
+			w.WriteHeader(aErr.status)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": aErr.message})
 			return
 		}
-		if result == nil {
-			result = &secrets.MaterializeResult{}
-		}
 
-		// Persist the just-applied batch so a main-container restart (OOM,
-		// panic, kubelet restart) can replay it. reset() inside the next boot's
-		// Materialize would otherwise wipe these user-DEK credentials with no
-		// way to restore them (#443). The cache lives on the /sandbox-runtime
-		// tmpfs: survives container restart, wiped on pod death (US-35.7).
-		// Written here — after Materialize succeeded — so the cached state
-		// reflects what was materialized to the filesystem even if a later
-		// step (writer rebuild) fails. Non-fatal: a write failure warns but
-		// does not roll back the live materialization; the cost is only that
-		// the creds will not survive the *next* restart.
-		//
-		// The empty-path guard defends existing tests that construct
-		// materializeConfig without reloadCachePath: without it, an unset path
-		// would create temp files in the test CWD and log a WARN on every
-		// reload handler call. Production always resolves the path via
-		// loadMaterializeConfig → agentd.ReloadSecretsCachePath.
-		if cfg.reloadCachePath != "" {
-			if pErr := writeReloadSecretsCache(cfg.reloadCachePath, batch); pErr != nil {
-				log.Warn("reload-secrets: failed to persist reload batch for restart replay; "+
-					"user-DEK credentials may be lost on the next container restart",
-					zap.Error(pErr))
-			}
-		}
-
-		// Enrich custom-endpoint providers with their live model list (same as
-		// the boot-time materialize path). On reload, any cached model list is
-		// reused so this is typically instant.
-		reloadHTTPClient := &http.Client{Timeout: 15 * time.Second}
-		m.EnrichProviders(enrichProviderModels(reqCtx, cfg.enricherCacheDir, reloadHTTPClient))
-
-		// Format staged llm-provider secrets and update the ConfigWriter.
-		// The writer is the sole writer of agent-config.json — it merges the
-		// new providers with any existing model and relay config, then writes
-		// atomically (temp + rename). This eliminates the four-writer race
-		// that previously required a manual relay re-merge after FlushProviders.
-		formatted, fmtErr := m.FormatProviders(opencode.FormatOpenCodeConfig)
-		if fmtErr != nil {
-			reloadMu.Unlock()
-			log.Error("reload-secrets: format providers failed", zap.Error(fmtErr))
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "format providers: " + fmtErr.Error()})
-			return
-		}
-		if formatted != nil && deps.AgentConfigWriter != nil {
-			// Build a single partial-update input carrying the
-			// sources this caller owns (providers + MCP servers).
-			// The AgentConfigWriter merges these onto the model and
-			// relay sources already on the writer (set at boot by
-			// applyWorkspaceConfig and by the relay injector
-			// respectively). Each non-nil field updates one source;
-			// the writer's state for the others is preserved.
-			input := agent.AgentConfigInput{
-				Providers: &agent.AgentProvidersChange{Formatted: formatted},
-			}
-
-			// Stage MCP servers (US-53.8): convert materializer's
-			// staged entries to the agent-layer type, then Apply
-			// merges them into the "mcp" section of
-			// agent-config.json via the opencode adapter.
-			stagedMCP := m.StagedMCPServers()
-			if len(stagedMCP) > 0 {
-				entries := make([]agent.MCPServerEntry, len(stagedMCP))
-				for i, s := range stagedMCP {
-					entries[i] = agent.MCPServerEntry{
-						Name: s.Name, Transport: s.Transport, URL: s.URL,
-						Command: s.Command, Args: s.Args, TimeoutMs: s.TimeoutMs,
-						Env: s.Env, Headers: s.Headers,
-					}
-				}
-				input.MCPServers = &agent.MCPServerChange{Servers: entries}
-			} else {
-				input.MCPServers = &agent.MCPServerChange{}
-			}
-
-			if _, err := deps.AgentConfigWriter.Apply(input); err != nil {
-				// C1 regression fix: reset() already deleted agent-config.json.
-				// If Apply fails (e.g. disk full), the file is ABSENT. Restarting
-				// opencode now would boot with no provider config — silent credential
-				// loss. Abort with 500 (matching the old FlushProviders failure path)
-				// so the running opencode keeps its in-memory config.
-				reloadMu.Unlock()
-				log.Error("reload-secrets: agent-config writer Apply failed", zap.Error(err))
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "agent-config apply: " + err.Error()})
-				return
-			}
-		}
-
-		reloadMu.Unlock()
-
-		mat, skip, fail := result.Counts()
-		log.Info("secrets reloaded",
-			zap.Int("materialized", mat),
-			zap.Int("skipped", skip),
-			zap.Int("failed", fail),
-		)
-
-		// Stage llm-provider credentials. StageCredentials writes to opencode's
-		// auth.json but does NOT dispose the instance. The user triggers reload
-		// explicitly via POST /api/v1/workspaces/:id/agent/reload (Epic 27a).
-		if hasLLMProviders(batch) {
-			staged := m.StagedProviders()
-			if len(staged) > 0 {
-				oc := opencode.NewClient(fmt.Sprintf("http://localhost:%d", agentd.AgentPort), opencodePassword, log)
-				if err := oc.StageCredentials(reqCtx, staged); err != nil {
-					log.Warn("reload-secrets: opencode stage failed; credentials remain in "+
-						"auth.json on disk but in-memory provider state will not pick them up "+
-						"until the next explicit reload or pod restart",
-						zap.Error(err))
-				}
-			}
-		}
-
-		restarted := false
-		if proc != nil && shouldRestart(batch) {
-			if reason, names := classifySecretRestartReason(batch); reason != "" {
-				if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
-					log.Error("failed to write restart-reason marker", zap.Error(err))
-					pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), reason)
-				} else {
-					logRestartReasonAtWrite(reason, names, log.Core())
-				}
-				// H2: record the restart in the Prometheus counter so ops
-				// dashboards surface credential-change restarts. Recorded
-				// UNCONDITIONALLY (after the marker/log block), not gated on
-				// marker-write success — a full/read-only PVC must not suppress
-				// the metric. This matches the crash path (main.go) and the OOM
-				// path (oom_detection.go), which also record the metric
-				// regardless of marker outcome. The reason label is the short
-				// metric form (env_secrets / api_key) matching the help text and
-				// the crash/oom reasons.
-				pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
-			}
-			restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, deps.BgWg) //nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
-		}
-
+		mat, skip, fail := outcome.result.Counts()
 		status := http.StatusOK
-		if result.HasFailures() {
+		if outcome.result.HasFailures() {
 			status = http.StatusInternalServerError
 		}
 		w.WriteHeader(status)
@@ -1151,10 +968,235 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			"reloaded":  mat,
 			"skipped":   skip,
 			"failed":    fail,
-			"results":   result.Results,
-			"restarted": restarted,
+			"results":   outcome.result.Results,
+			"restarted": outcome.restarted,
 		})
 	}
+}
+
+// applySecretsOutcome is the post-pipeline result shared by every
+// secrets-batch applier (reload-secrets push, resync pull).
+type applySecretsOutcome struct {
+	result    *secrets.MaterializeResult
+	restarted bool
+}
+
+// applyHTTPError is the pipeline's failure shape: an HTTP status plus
+// the message the caller's error body carries.
+type applyHTTPError struct {
+	status  int
+	message string
+}
+
+func (e *applyHTTPError) Error() string { return e.message }
+
+// applySecretsBatch is the ONE post-parse secrets pipeline: materialize
+// → staged file delivery → reload-cache write → provider enrichment →
+// AgentConfigWriter.Apply → StageCredentials → (anchor) → session-aware
+// restart decision. Both batch entry paths converge here — the
+// reload-secrets push (rev == nil: legacy batch, the anchor is removed)
+// and the resync pull (rev != nil: the anchor is written post-apply, so
+// reading it back yields the applied truth, I4).
+func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps reloadSecretsDeps, batch []secrets.Secret, rev *sec.BatchRevision) (applySecretsOutcome, *applyHTTPError) {
+	proc := deps.Proc
+	tracker := deps.Tracker
+	lister := deps.Lister
+	markerPath := deps.RestartReasonMarkerPath
+	if markerPath == "" {
+		markerPath = markerPathFromEnv()
+	}
+
+	// Serialize the materialize → enrich → flush → re-merge sequence.
+	// Concurrent reloads (from two API replicas or parallel credential binds)
+	// race through Materializer.reset() which RemoveAlls SecretsBaseDir and
+	// SSHDir and appendFiles to SecretsEnvPath — producing duplicate env var
+	// entries and interleaved agent-config.json writes. The restart at the
+	// end is excluded from the lock to avoid holding it during the ~5s SIGTERM
+	// window.
+	reloadMu.Lock()
+
+	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID, Revision: rev}
+	result, mErr := m.Materialize(batch)
+
+	// A push is a legacy batch: whatever revisioned pull the live
+	// state came from, the pushed set supersedes it — invalidate the
+	// anchor (US-70.2 W2: legacy batches bypass the guard and reset
+	// the marker to unknown) so the served spawn revs and the next
+	// boot's guard describe the push, not a stale pull. A revisioned
+	// apply anchors at the END (post-apply truth).
+	if rev == nil && (mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure)) {
+		removeRevAnchor(revAnchorPath(cfg.toPaths().SecretsEnvPath))
+	}
+
+	// R2b (#1165): single-container reload (crossUID false) runs as
+	// the consuming uid — deliver now. Sidecar reload only STAGES;
+	// the uid-1000 supervisor pull delivers at the next spawn.
+	if mErr == nil || errors.Is(mErr, secrets.ErrPartialFailure) {
+		if dErr := deliverStaged(cfg); dErr != nil {
+			reloadMu.Unlock()
+			log.Error("secrets apply: file delivery failed", zap.Error(dErr))
+			return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, dErr.Error()}
+		}
+	}
+
+	if mErr != nil && !errors.Is(mErr, secrets.ErrPartialFailure) {
+		reloadMu.Unlock()
+		log.Error("secrets apply: materialize failed", zap.Error(mErr))
+		return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, mErr.Error()}
+	}
+	if result == nil {
+		result = &secrets.MaterializeResult{}
+	}
+
+	// Persist the just-applied batch so a main-container restart (OOM,
+	// panic, kubelet restart) can replay it. reset() inside the next boot's
+	// Materialize would otherwise wipe these user-DEK credentials with no
+	// way to restore them (#443). The cache lives on the /sandbox-runtime
+	// tmpfs: survives container restart, wiped on pod death (US-35.7).
+	// Written here — after Materialize succeeded — so the cached state
+	// reflects what was materialized to the filesystem even if a later
+	// step (writer rebuild) fails. Non-fatal: a write failure warns but
+	// does not roll back the live materialization; the cost is only that
+	// the creds will not survive the *next* restart.
+	//
+	// The empty-path guard defends existing tests that construct
+	// materializeConfig without reloadCachePath: without it, an unset path
+	// would create temp files in the test CWD and log a WARN on every
+	// reload handler call. Production always resolves the path via
+	// loadMaterializeConfig → agentd.ReloadSecretsCachePath.
+	if cfg.reloadCachePath != "" {
+		if pErr := writeReloadSecretsCache(cfg.reloadCachePath, batch); pErr != nil {
+			log.Warn("secrets apply: failed to persist reload batch for restart replay; "+
+				"user-DEK credentials may be lost on the next container restart",
+				zap.Error(pErr))
+		}
+	}
+
+	// Enrich custom-endpoint providers with their live model list (same as
+	// the boot-time materialize path). On reload, any cached model list is
+	// reused so this is typically instant.
+	reloadHTTPClient := &http.Client{Timeout: 15 * time.Second}
+	m.EnrichProviders(enrichProviderModels(ctx, cfg.enricherCacheDir, reloadHTTPClient))
+
+	// Format staged llm-provider secrets and update the ConfigWriter.
+	// The writer is the sole writer of agent-config.json — it merges the
+	// new providers with any existing model and relay config, then writes
+	// atomically (temp + rename). This eliminates the four-writer race
+	// that previously required a manual relay re-merge after FlushProviders.
+	formatted, fmtErr := m.FormatProviders(opencode.FormatOpenCodeConfig)
+	if fmtErr != nil {
+		reloadMu.Unlock()
+		log.Error("secrets apply: format providers failed", zap.Error(fmtErr))
+		return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, "format providers: " + fmtErr.Error()}
+	}
+	if formatted != nil && deps.AgentConfigWriter != nil {
+		// Build a single partial-update input carrying the
+		// sources this caller owns (providers + MCP servers).
+		// The AgentConfigWriter merges these onto the model and
+		// relay sources already on the writer (set at boot by
+		// applyWorkspaceConfig and by the relay injector
+		// respectively). Each non-nil field updates one source;
+		// the writer's state for the others is preserved.
+		input := agent.AgentConfigInput{
+			Providers: &agent.AgentProvidersChange{Formatted: formatted},
+		}
+
+		// Stage MCP servers (US-53.8): convert materializer's
+		// staged entries to the agent-layer type, then Apply
+		// merges them into the "mcp" section of
+		// agent-config.json via the opencode adapter.
+		stagedMCP := m.StagedMCPServers()
+		if len(stagedMCP) > 0 {
+			entries := make([]agent.MCPServerEntry, len(stagedMCP))
+			for i, s := range stagedMCP {
+				entries[i] = agent.MCPServerEntry{
+					Name: s.Name, Transport: s.Transport, URL: s.URL,
+					Command: s.Command, Args: s.Args, TimeoutMs: s.TimeoutMs,
+					Env: s.Env, Headers: s.Headers,
+				}
+			}
+			input.MCPServers = &agent.MCPServerChange{Servers: entries}
+		} else {
+			input.MCPServers = &agent.MCPServerChange{}
+		}
+
+		if _, err := deps.AgentConfigWriter.Apply(input); err != nil {
+			// C1 regression fix: reset() already deleted agent-config.json.
+			// If Apply fails (e.g. disk full), the file is ABSENT. Restarting
+			// opencode now would boot with no provider config — silent credential
+			// loss. Abort with 500 (matching the old FlushProviders failure path)
+			// so the running opencode keeps its in-memory config.
+			reloadMu.Unlock()
+			log.Error("secrets apply: agent-config writer Apply failed", zap.Error(err))
+			return applySecretsOutcome{}, &applyHTTPError{http.StatusInternalServerError, "agent-config apply: " + err.Error()}
+		}
+	}
+
+	// Anchor a revisioned apply at the END of the locked pipeline —
+	// still UNDER reloadMu (validation m1): the anchor then describes
+	// state that is fully materialized, delivered and staged, and no
+	// concurrent apply can interleave between the pipeline and the
+	// anchor write (previously the post-Unlock window let a later
+	// legacy push invalidate or a parallel apply overwrite the anchor
+	// this apply was about to write). The restart below deliberately
+	// stays OUTSIDE the lock; it holds no window the anchor write can
+	// land in (lock-order: anchor write takes no locks beyond the
+	// filesystem). A partial materialize failure does not anchor
+	// (mirrors the subcommand: the guard must never vouch for a
+	// partially-applied batch).
+	if rev != nil && !result.HasFailures() {
+		setRevAnchorAfterApply(revAnchorPath(cfg.toPaths().SecretsEnvPath), rev, os.Stderr)
+	}
+
+	reloadMu.Unlock()
+
+	mat, skip, fail := result.Counts()
+	log.Info("secrets reloaded",
+		zap.Int("materialized", mat),
+		zap.Int("skipped", skip),
+		zap.Int("failed", fail),
+	)
+
+	// Stage llm-provider credentials. StageCredentials writes to opencode's
+	// auth.json but does NOT dispose the instance. The user triggers reload
+	// explicitly via POST /api/v1/workspaces/:id/agent/reload (Epic 27a).
+	if hasLLMProviders(batch) {
+		staged := m.StagedProviders()
+		if len(staged) > 0 {
+			oc := opencode.NewClient(fmt.Sprintf("http://localhost:%d", agentd.AgentPort), deps.OpencodePassword, log)
+			if err := oc.StageCredentials(ctx, staged); err != nil {
+				log.Warn("secrets apply: opencode stage failed; credentials remain in "+
+					"auth.json on disk but in-memory provider state will not pick them up "+
+					"until the next explicit reload or pod restart",
+					zap.Error(err))
+			}
+		}
+	}
+
+	restarted := false
+	if proc != nil && shouldRestart(batch) {
+		if reason, names := classifySecretRestartReason(batch); reason != "" {
+			if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
+				log.Error("failed to write restart-reason marker", zap.Error(err))
+				pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), reason)
+			} else {
+				logRestartReasonAtWrite(reason, names, log.Core())
+			}
+			// H2: record the restart in the Prometheus counter so ops
+			// dashboards surface credential-change restarts. Recorded
+			// UNCONDITIONALLY (after the marker/log block), not gated on
+			// marker-write success — a full/read-only PVC must not suppress
+			// the metric. This matches the crash path (main.go) and the OOM
+			// path (oom_detection.go), which also record the metric
+			// regardless of marker outcome. The reason label is the short
+			// metric form (env_secrets / api_key) matching the help text and
+			// the crash/oom reasons.
+			pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
+		}
+		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, deps.BgWg) //nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
+	}
+
+	return applySecretsOutcome{result: result, restarted: restarted}, nil
 }
 
 // metricRestartReason maps a marker reason (from classifySecretRestartReason,

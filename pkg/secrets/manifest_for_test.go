@@ -163,6 +163,29 @@ func TestManifestFor_DeterministicAcrossCalls(t *testing.T) {
 	assert.Equal(t, first, second)
 }
 
+// TestManifestFor_RebindSameSetIsNoOp pins the US-70.3 flip invariant:
+// a bind that replaces the binding set with the identical set changes
+// no binding refs, so the manifest hash is unchanged — the pod's
+// conditional pull 304s and nothing restarts. The notify the handler
+// sends is wasted latency, never a spurious mutation.
+func TestManifestFor_RebindSameSetIsNoOp(t *testing.T) {
+	svc, env, sessionID := setupBuilder(t)
+	env.creds = &mockCredentialStore{bindings: []CredentialBinding{env.adminCred}}
+	svc.store = env.store()
+	created := addUserSecret(t, svc, sessionID, "db_url")
+
+	before, err := svc.ManifestFor(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+
+	_, err = svc.SetBindings(context.Background(), "user-1", "ws-1", []string{created.ID})
+	require.NoError(t, err)
+
+	after, err := svc.ManifestFor(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, before, after,
+		"rebinding the same secret set must not change the manifest — the pod pulls 304 and no-ops")
+}
+
 // TestCurrentRevision_DelegatesToStore: the service-level reader returns
 // exactly what the revision row holds, including the no-row state.
 func TestCurrentRevision_DelegatesToStore(t *testing.T) {

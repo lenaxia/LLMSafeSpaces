@@ -168,6 +168,86 @@ spec:
               generation — free-tier model routing is unavailable until the next
               agent restart. Check opencode /provider health.
 
+        {{- /* US-70.3 (#1158 PR-5): a workspace whose secrets delivery is
+              divergent for >15m pages — the reconcile loop's backoff
+              (capped 10m) plus notify failures must not mask a pod that
+              never converges (stale plaintext still being served).
+              max by (workspace_id) dedupes the default 2-replica API
+              fleet, both of which run the loop.
+
+              Mixed-fleet note (US-70.3 validation M1b): legacy-format
+              pods (pre-US-70.2 spawnedRev) never mark this gauge
+              divergent — they cannot converge by notify (the old mux
+              404s resync) and would page per pod during rollouts. They
+              surface via
+              llmsafespaces_secrets_delivery_divergent_total{reason="legacy_format"}
+              and converge with the fleet upgrade (US-70.5 re-points the
+              gauge). */}}
+        - alert: LLMSafeSpacesSecretsDeliveryDivergent
+          expr: |
+            max by (workspace_id) (llmsafespaces_secrets_delivery_converged{job=~"{{ $apiJob }}"}) == 0
+          for: 15m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Secrets delivery divergent >15m for {{ `{{ $labels.workspace_id }}` }}"
+            description: >-
+              Workspace {{ `{{ $labels.workspace_id }}` }} has not converged to the stored
+              secret revision for over 15 minutes — the pod may be serving stale or
+              revoked plaintext. Check the reconcile loop logs (notify failures,
+              pull_failed/pull_unauthorized reasons) and the workspace's
+              secretsDelivery status. Legacy-format (pre-US-70.2) pods never trip
+              this alert: they surface via
+              llmsafespaces_secrets_delivery_divergent_total{reason="legacy_format"}
+              and converge with the fleet upgrade (US-70.5).
+
+        {{- /* US-70.3 SLO (#1158 PR-5): <99% of Active workspaces converged
+              over 5m windows. max by (workspace_id) dedupes replicas
+              before the ratio; the count guard keeps an empty/idle fleet
+              from firing on 0/0. */}}
+        - alert: LLMSafeSpacesSecretsConvergenceSLOBurn
+          expr: |
+            (
+              sum(max by (workspace_id) (llmsafespaces_secrets_delivery_converged{job=~"{{ $apiJob }}"}))
+              /
+              count(max by (workspace_id) (llmsafespaces_secrets_delivery_converged{job=~"{{ $apiJob }}"}))
+            ) < 0.99
+            and on() (count(max by (workspace_id) (llmsafespaces_secrets_delivery_converged{job=~"{{ $apiJob }}"})) > 0)
+          for: 5m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
+            description: >-
+              Only {{ `{{ $value | humanizePercentage }}` }} of Active workspaces are converged —
+              below the 99% SLO for 5m. Fleet-wide divergence usually means the API's
+              reconcile loop, the pods' resync endpoint, or the bootstrap pull path is
+              unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.
+
+        {{- /* US-70.3 loop health: no successful reconcile pass in 3x the
+              default 60s period (LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL
+              overrides the period — scale the threshold accordingly). The
+              reconcile loop is the correctness path; a dead loop means
+              divergence never heals silently. The absent() arm fires when
+              the gauge never existed at all (loop dead since boot). */}}
+        - alert: LLMSafeSpacesSecretsReconcileStalled
+          expr: |
+            (time() - max(llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job=~"{{ $apiJob }}"})) > 180
+            or absent(llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job=~"{{ $apiJob }}"})
+          for: 5m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Secrets reconcile loop stalled"
+            description: >-
+              The secrets-delivery reconcile loop has not completed a successful pass
+              in over 3 minutes (3x the default period) — or has never reported one.
+              Divergent workspaces will not converge until it recovers. Check the
+              API's K8s client and the loop's error logs.
+
     - name: llmsafespaces.controller
       rules:
         # #863: page-on-any. The counter increments once per failure

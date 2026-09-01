@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -91,7 +90,7 @@ func (h *SecretsHandler) SetPodIPResolver(r PodIPResolver) {
 
 // HasPodIPResolver reports whether a PodIPResolver has been configured.
 // Used by wiring tests to verify the handler is fully constructed; without
-// a resolver the reload-secrets endpoint and the SetBindings auto-push
+// a resolver the reload-secrets endpoint and the SetBindings auto-notify
 // silently no-op (Bug 1 + Bug 2 in worklog 0085).
 func (h *SecretsHandler) HasPodIPResolver() bool {
 	return h.podIPResolver != nil
@@ -112,8 +111,8 @@ func (h *SecretsHandler) SetModelCache(c ModelCache) {
 }
 
 // SetPasswordProvider installs the workspace-password lookup the lazy
-// fallback pusher needs — agentd enforces Basic auth on reload-secrets
-// (#848), so a fallback pusher without a provider can only ever fail
+// fallback notifier needs — agentd enforces Basic auth on its user mux
+// (#848), so a notifier without a provider can only ever fail
 // with ErrNoPasswordProvider. Production wiring uses SetAgentPusher with
 // a fully-constructed service; this setter keeps the setter-style
 // construction path (tests, non-app wiring) functional.
@@ -206,6 +205,13 @@ func (h *SecretsHandler) UpdateSecret(c *gin.Context) {
 }
 
 // DeleteSecret handles DELETE /api/v1/secrets/:id
+//
+// US-70.3 (I12: revocation is absence): a plain delete by the owner IS
+// a revoke-all-workspaces. ForceRevokeSecret removes every binding,
+// bumps each affected workspace's stored revision (so the reconcile
+// loop sees the divergence immediately), and the handler notifies every
+// affected live pod. Notify failures are logged, never fatal — the pod
+// converges on its next contact or on boot.
 func (h *SecretsHandler) DeleteSecret(c *gin.Context) {
 	userID, _ := extractAuth(c)
 	if userID == "" {
@@ -214,9 +220,17 @@ func (h *SecretsHandler) DeleteSecret(c *gin.Context) {
 	}
 
 	secretID := c.Param("id")
-	if err := h.svc.DeleteSecret(c.Request.Context(), userID, secretID); err != nil {
+	affected, err := h.svc.ForceRevokeSecret(c.Request.Context(), userID, secretID)
+	if err != nil {
 		handleSecretError(c, err)
 		return
+	}
+
+	for _, workspaceID := range affected {
+		if _, nerr := h.getPusher().Notify(c.Request.Context(), userID, workspaceID); nerr != nil {
+			h.warn("revoke fan-out notify failed; reconcile will converge the workspace",
+				"workspaceID", workspaceID, "secretID", secretID, "error", nerr.Error())
+		}
 	}
 
 	c.Status(http.StatusNoContent)
@@ -343,7 +357,7 @@ func (h *SecretsHandler) SetBindings(c *gin.Context) {
 		}
 	}
 
-	h.pushSecretsToAgent(c, userID, workspaceID)
+	h.notifyAgent(c, userID, workspaceID)
 
 	c.Status(http.StatusNoContent)
 }
@@ -367,21 +381,19 @@ func (h *SecretsHandler) GetBindings(c *gin.Context) {
 }
 
 // ReloadSecrets handles POST /api/v1/workspaces/:id/reload-secrets
-// Builds the workspace secret batch (session-independent — the one
-// builder decrypts user entries via the server-side DEK unwrap) and
-// pushes it to the running pod's agentd.
 //
-// Two failure classes get different HTTP status codes:
+// US-70.3 flip: the endpoint no longer builds and pushes a batch body —
+// it notifies the pod's resync endpoint and the pod re-pulls through
+// the conditional bootstrap path (fresh SA token, apply-guard,
+// terminal rev anchoring). The response reports what the POD did
+// (status, applied revision, restart decision), not a server-built
+// reload count.
 //
-//   - Build failures (bad workspaceID, store errors) are mapped by
-//     handleSecretError to 400/403/500.
-//   - Push transport / agentd failures map to 503/409/502.
+// Failure classes map exactly like before:
 //
-// Both flow through the same shared agentpush.Service (constructed once
-// by the wiring layer, reused across every request) so on-wire behavior
-// matches SetBindings and the auto-push exactly. agentpush wraps builder
-// errors with "build workspace batch: %w", so we can unwrap to recover
-// the typed error for handleSecretError.
+//   - ErrNoPodIPResolver → 503 (wiring bug).
+//   - ErrNoRunningPod → 409 (no reachable pod right now).
+//   - everything else (transport, agentd 502) → 502.
 func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	userID, _ := extractAuth(c)
 	if userID == "" {
@@ -390,16 +402,8 @@ func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	}
 
 	workspaceID := c.Param("id")
-	result, err := h.getPusher().Push(c.Request.Context(), userID, workspaceID)
+	result, err := h.getPusher().Notify(c.Request.Context(), userID, workspaceID)
 	if err != nil {
-		// Build-side failures need the typed-error mapping to 400/403/500.
-		// agentpush wraps them with "build workspace batch:" so we can
-		// unwrap the original SecretService error and route it through
-		// the shared handler.
-		if inner := errors.Unwrap(err); inner != nil && strings.HasPrefix(err.Error(), "build workspace batch") {
-			handleSecretError(c, inner)
-			return
-		}
 		switch {
 		case errors.Is(err, agentpush.ErrNoPodIPResolver):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "secret reload not configured"})
@@ -411,45 +415,29 @@ func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, reloadResult{Reloaded: result.Reloaded, Restarted: result.Restarted})
+	c.JSON(http.StatusOK, result)
 }
 
-type reloadResult struct {
-	Reloaded  int  `json:"reloaded"`
-	Restarted bool `json:"restarted"`
-}
-
-// pushSecretsToAgent runs the bind-time live delivery of the latest secret
-// snapshot for a workspace.
+// notifyAgent runs the bind-time live delivery for a workspace: an
+// empty notify so the pod re-pulls its batch through the conditional
+// bootstrap path (US-70.3). Credentials bound during suspend are picked
+// up at the next pod boot via the bootstrap endpoint; the notify only
+// shrinks latency for a running pod.
 //
-// Epic 35: the durable K8s Secret path (EnsureSecretsManifest) has been
-// removed — secretless injection means the init container fetches credentials
-// directly from the API at boot. This function now handles ONLY the live HTTP
-// push to running pods. Credentials bound during suspend are picked up at the
-// next pod boot via the bootstrap endpoint.
-//
-// The push path builds the workspace batch through the one builder —
-// session identity plays no role in what decrypts, so JWT and API-key
-// callers flow through the same code (US-70.2).
-//
-// The live push sends the payload even when it is the empty array '[]' — the
-// agent uses this to CLEAR its in-memory secret materialisations. Without
-// this an unbind leaves the live pod with stale plaintext until restart.
-//
-// Delegates to agentpush.Service (extracted for the pod-recreation auto-push
-// path in worklog 0589) so handler-driven pushes and the watcher-driven
-// auto-push share one code path.
-func (h *SecretsHandler) pushSecretsToAgent(c *gin.Context, userID, workspaceID string) {
-	_, err := h.getPusher().Push(c.Request.Context(), userID, workspaceID)
+// Errors never fail the bind request (I3): correctness is the reconcile
+// loop's job. ErrNoRunningPod is expected during suspend/boot races and
+// logged at info.
+func (h *SecretsHandler) notifyAgent(c *gin.Context, userID, workspaceID string) {
+	_, err := h.getPusher().Notify(c.Request.Context(), userID, workspaceID)
 	if err == nil {
 		return
 	}
 	if errors.Is(err, agentpush.ErrNoRunningPod) {
-		h.info("reload-secrets skipped: no running pod",
+		h.info("resync notify skipped: no running pod",
 			"workspaceID", workspaceID)
 		return
 	}
-	h.warn("reload-secrets push to agent failed",
+	h.warn("resync notify to agent failed",
 		"workspaceID", workspaceID, "error", err.Error())
 }
 
@@ -467,11 +455,11 @@ func (h *SecretsHandler) info(msg string, fields ...interface{}) {
 
 // getPusher returns the injected pusher, or lazily constructs one from
 // the handler's own deps if wiring only supplied the individual pieces
-// (podIPResolver, modelCache, logger, svc). This lets the handler work
-// with either the new "inject an agentpush.Service" wiring OR the
+// (podIPResolver, modelCache, logger, passwords). This lets the handler
+// work with either the "inject an agentpush.Service" wiring OR the
 // pre-existing "SetPodIPResolver + SetModelCache" wiring, so the
-// migration to the shared pusher can happen without breaking any of the
-// dozens of tests that use the older setter-style construction.
+// migration to the shared notifier can happen without breaking any of
+// the dozens of tests that use the older setter-style construction.
 func (h *SecretsHandler) getPusher() *agentpush.Service {
 	if h.pusher != nil {
 		return h.pusher
@@ -489,7 +477,7 @@ func (h *SecretsHandler) getPusher() *agentpush.Service {
 	if h.logger != nil {
 		opts = append(opts, agentpush.WithLogger(h.logger))
 	}
-	h.pusher = agentpush.New(h.svc, opts...)
+	h.pusher = agentpush.New(opts...)
 	return h.pusher
 }
 

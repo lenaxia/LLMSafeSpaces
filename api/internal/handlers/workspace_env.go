@@ -34,8 +34,13 @@ type WorkspaceEnvService interface {
 	CreateSecret(ctx context.Context, userID, sessionID string, matchedSigningKey []byte, req secrets.CreateSecretRequest) (*secrets.SecretResponse, error)
 	AddBindings(ctx context.Context, userID, workspaceID string, secretIDs []string) (secrets.BindingsMutationResult, error)
 	GetBindings(ctx context.Context, userID, workspaceID string) (*secrets.BindingsResponse, error)
-	DeleteSecret(ctx context.Context, userID, secretID string) error
+	ForceRevokeSecret(ctx context.Context, userID, secretID string) ([]string, error)
 }
+
+// envNotifier asks a running pod to re-pull its secret batch after an
+// env mutation (env vars are bound secrets). Satisfied by
+// agentpush.Service.Notify.
+type envNotifier func(ctx context.Context, userID, workspaceID string) error
 
 // WorkspaceEnvHandler handles PUT/GET/DELETE /api/v1/workspaces/:id/env.
 // Extracted from SecretsHandler (US-29.4) — env-var management is a
@@ -43,8 +48,9 @@ type WorkspaceEnvService interface {
 // selection. Each env var is stored as an env-secret-bound-to-workspace;
 // the handler orchestrates create-or-update-by-name + binding management.
 type WorkspaceEnvHandler struct {
-	svc    WorkspaceEnvService
-	logger pkginterfaces.LoggerInterface
+	svc      WorkspaceEnvService
+	notifier envNotifier
+	logger   pkginterfaces.LoggerInterface
 }
 
 // NewWorkspaceEnvHandler creates a WorkspaceEnvHandler backed by the given
@@ -52,6 +58,13 @@ type WorkspaceEnvHandler struct {
 // (US-29.8 principle: fail at construction, not at request time).
 func NewWorkspaceEnvHandler(svc WorkspaceEnvService) *WorkspaceEnvHandler {
 	return &WorkspaceEnvHandler{svc: svc}
+}
+
+// SetNotifier installs the live-delivery notify used after env vars are
+// created, updated, or deleted. Optional; if nil, mutations land on the
+// next pod boot or the next reconcile pass.
+func (h *WorkspaceEnvHandler) SetNotifier(n envNotifier) {
+	h.notifier = n
 }
 
 // SetLogger installs the logger used to surface non-fatal failures from
@@ -64,6 +77,18 @@ func (h *WorkspaceEnvHandler) SetLogger(l pkginterfaces.LoggerInterface) {
 func (h *WorkspaceEnvHandler) warn(msg string, fields ...interface{}) {
 	if h.logger != nil {
 		h.logger.Warn(msg, fields...)
+	}
+}
+
+// notify delivers the live-update notify. Failures never fail the env
+// request (I3: the reconcile loop converges the workspace).
+func (h *WorkspaceEnvHandler) notify(c *gin.Context, userID, workspaceID string) {
+	if h.notifier == nil {
+		return
+	}
+	if err := h.notifier(c.Request.Context(), userID, workspaceID); err != nil {
+		h.warn("env mutation resync notify failed",
+			"workspaceID", workspaceID, "error", err.Error())
 	}
 }
 
@@ -166,6 +191,8 @@ func (h *WorkspaceEnvHandler) SetWorkspaceEnv(c *gin.Context) {
 		return
 	}
 
+	h.notify(c, userID, workspaceID)
+
 	c.Status(http.StatusNoContent)
 }
 
@@ -218,10 +245,17 @@ func (h *WorkspaceEnvHandler) DeleteWorkspaceEnv(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.DeleteSecret(c.Request.Context(), userID, existing.ID); err != nil {
+	// An env-var delete is a revoke (I12): ForceRevokeSecret removes
+	// the binding and refreshes the stored revision so the reconcile
+	// loop sees the divergence even if the notify below fails. The
+	// secret name embeds this workspace's ID, so the affected set is
+	// this workspace — but the revoke path is uniform regardless.
+	if _, err := h.svc.ForceRevokeSecret(c.Request.Context(), userID, existing.ID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete env var"})
 		return
 	}
+
+	h.notify(c, userID, workspaceID)
 
 	c.Status(http.StatusNoContent)
 }

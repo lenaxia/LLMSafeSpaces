@@ -150,3 +150,151 @@ tests:
       - eval_time: 16m
         alertname: LLMSafeSpacesDeliveryLatencyBudget
         exp_alerts: []
+
+  # ── US-70.3 secrets delivery convergence (#1158 PR-5) ────────────────
+  # Divergent >15m: fires per workspace.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-stuck"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesSecretsDeliveryDivergent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              workspace_id: ws-stuck
+            exp_annotations:
+              summary: "Secrets delivery divergent >15m for ws-stuck"
+              description: 'Workspace ws-stuck has not converged to the stored secret revision for over 15 minutes — the pod may be serving stale or revoked plaintext. Check the reconcile loop logs (notify failures, pull_failed/pull_unauthorized reasons) and the workspace''s secretsDelivery status. Legacy-format (pre-US-70.2) pods never trip this alert: they surface via llmsafespaces_secrets_delivery_divergent_total{reason="legacy_format"} and converge with the fleet upgrade (US-70.5).'
+
+  # Two replicas agree on divergence: deduped to ONE alert (max by workspace_id).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="a"}'
+        values: '0+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="b"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesSecretsDeliveryDivergent
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              workspace_id: ws-split
+            exp_annotations:
+              summary: "Secrets delivery divergent >15m for ws-split"
+              description: 'Workspace ws-split has not converged to the stored secret revision for over 15 minutes — the pod may be serving stale or revoked plaintext. Check the reconcile loop logs (notify failures, pull_failed/pull_unauthorized reasons) and the workspace''s secretsDelivery status. Legacy-format (pre-US-70.2) pods never trip this alert: they surface via llmsafespaces_secrets_delivery_divergent_total{reason="legacy_format"} and converge with the fleet upgrade (US-70.5).'
+
+  # Converged workspace: must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-ok"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesSecretsDeliveryDivergent
+        exp_alerts: []
+
+  # Brief divergence (healed inside the 15m window): must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-blip"}'
+        values: '0x5 1+0x15'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: LLMSafeSpacesSecretsDeliveryDivergent
+        exp_alerts: []
+
+  # SLO burn: 9/10 converged (90% < 99%) for 5m → fires.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-1"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-2"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-3"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-4"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-5"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-6"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-7"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-8"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-9"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-slo-10"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesSecretsConvergenceSLOBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+            exp_annotations:
+              summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
+              description: 'Only 90% of Active workspaces are converged — below the 99% SLO for 5m. Fleet-wide divergence usually means the API''s reconcile loop, the pods'' resync endpoint, or the bootstrap pull path is unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.'
+
+  # Healthy fleet (10/10): must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-h-1"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-h-2"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesSecretsConvergenceSLOBurn
+        exp_alerts: []
+
+  # Empty fleet (no series at all): the count guard must keep it dark.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job="test-release-llmsafespaces-api"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesSecretsConvergenceSLOBurn
+        exp_alerts: []
+
+  # Reconcile stalled: last success far in the past → fires after the
+  # 5m for-window. (promtool's synthetic clock starts at epoch 0, so a
+  # constant 0 series is ~10 minutes stale by eval_time 10m.)
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job="test-release-llmsafespaces-api"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesSecretsReconcileStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+            exp_annotations:
+              summary: "Secrets reconcile loop stalled"
+              description: 'The secrets-delivery reconcile loop has not completed a successful pass in over 3 minutes (3x the default period) — or has never reported one. Divergent workspaces will not converge until it recovers. Check the API''s K8s client and the loop''s error logs.'
+
+  # Reconcile stalled (loop dead since boot — gauge never existed): the
+  # absent() arm fires.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_delivery_converged{job="test-release-llmsafespaces-api",workspace_id="ws-neverlooped"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesSecretsReconcileStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+            exp_annotations:
+              summary: "Secrets reconcile loop stalled"
+              description: 'The secrets-delivery reconcile loop has not completed a successful pass in over 3 minutes (3x the default period) — or has never reported one. Divergent workspaces will not converge until it recovers. Check the API''s K8s client and the loop''s error logs.'

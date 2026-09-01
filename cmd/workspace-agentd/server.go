@@ -398,7 +398,10 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	// them into the consumed paths itself (ownership by construction).
 	userMux.HandleFunc("/v1/spawn-files", spawnFilesHandler(deps.password, deps.controlPlanePassword, stagingDirPath()))
 
-	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
+	// US-70.3: the reload-secrets push path and the resync-secrets pull
+	// path share this deps bundle — same §D1 gate, same apply pipeline,
+	// same restart machinery.
+	reloadDeps := reloadSecretsDeps{
 		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,
 		ControlPlanePassword: deps.controlPlanePassword,
@@ -407,7 +410,23 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 		BgWg:                 bgWg,
 		Lister:               liveSessions,
 		AgentConfigWriter:    deps.agentConfigWriter,
+	}
+	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadDeps))
+
+	// US-70.3 (design 0057 law 1): the notify-pull target. Bind/rotate
+	// handlers and the secrets_resync MCP tool call this instead of
+	// receiving pushed batch bodies — the conditional re-pull runs
+	// in-process with a fresh projected SA token (304 = no-op). Same §D1
+	// gate and the same apply pipeline as reload-secrets.
+	userMux.HandleFunc("/v1/resync-secrets", resyncSecretsHandler(resyncDeps{
+		cfg:         loadMaterializeConfig(),
+		reload:      reloadDeps,
+		apiURL:      os.Getenv("LLMSAFESPACE_API_URL"),
+		workspaceID: os.Getenv("WORKSPACE_ID"),
+		tokenPath:   bootstrapTokenPathFromEnv(),
+		batchPath:   bootstrapSecretsOutFromEnv(),
 	}))
+
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the

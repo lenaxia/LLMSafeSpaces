@@ -58,15 +58,15 @@ def run(r: Runner, cfg: Config) -> None:
                 "get-bindings: cred present",
             )
 
-        # Reload → reloaded ≥ 1
+        # Reload → pod-reported outcome (US-70.3: status, not a count)
         ok4, result = r.assert_no_error(
             lambda: c.workspaces.reload_secrets(ws_id), "reload-secrets: no error"
         )
         if ok4 and result is not None:
             r.assert_(
-                result.get("reloaded", 0) >= 1,
-                "reload-secrets: reloaded ≥ 1",
-                str(result.get("reloaded")),
+                result.get("status") in ("applied", "not_modified"),
+                "reload-secrets: status ∈ {applied, not_modified}",
+                str(result.get("status")),
             )
 
         # Status credentialState.available = true
@@ -79,7 +79,7 @@ def run(r: Runner, cfg: Config) -> None:
                 "status: credentialState.available=true",
             )
 
-        # Unbind then reload-empty → reloaded=0
+        # Unbind then reload-empty → still a valid pod outcome (not an error)
         r.assert_no_error(
             lambda: c.workspaces.set_bindings(ws_id, []), "unbind: no error"
         )
@@ -88,9 +88,9 @@ def run(r: Runner, cfg: Config) -> None:
         )
         if ok6 and er is not None:
             r.assert_(
-                er.get("reloaded", -1) == 0,
-                "reload-after-unbind: reloaded=0",
-                str(er.get("reloaded")),
+                er.get("status") in ("applied", "not_modified"),
+                "reload-after-unbind: status ∈ {applied, not_modified}",
+                str(er.get("status")),
             )
 
         # Reload on suspended → error

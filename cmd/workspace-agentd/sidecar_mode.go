@@ -136,13 +136,16 @@ func runSidecarCommand(_ []string) int {
 	// zombie. Env: WORKSPACE_ID + LLMSAFESPACE_API_URL are already in
 	// the sidecar's container env (pod builder); the controller points
 	// the LLMSAFESPACES_* materialize paths at /sandbox-runtime.
+	// US-70.3: the batch file coordinate comes from the same
+	// LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT env the resync endpoint reads —
+	// boot pull and in-process re-pulls share one coordinate.
 	// Runs before any context allocation — it owns the whole process on
 	// failure.
 	if code := runSidecarBootSecrets(sidecarBootOpts{
 		WorkspaceID: os.Getenv("WORKSPACE_ID"),
 		APIURL:      os.Getenv("LLMSAFESPACE_API_URL"),
-		TokenFile:   "/var/run/bootstrap/token",
-		SecretsOut:  sidecarSecretsOutPath,
+		TokenFile:   bootstrapTokenPathFromEnv(),
+		SecretsOut:  bootstrapSecretsOutFromEnv(),
 		Stderr:      os.Stderr,
 	}); code != 0 {
 		log.Error("FATAL: sidecar credential boot phase failed — refusing to serve",

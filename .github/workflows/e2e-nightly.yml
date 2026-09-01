@@ -179,6 +179,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
+            --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \
             --wait --timeout 5m
 
       - name: Wait for rollout
@@ -321,6 +322,10 @@ jobs:
           SUSPEND_SECONDS: 5
           RESUME_SCALE: 100
           P95_BUDGET_MS: 30000
+          # Must match the helm api.extraEnv reconcile-interval set above —
+          # the AC-8/AC-10 convergence budgets derive from it (lockstep pin
+          # in local/us70_harness_script_test.go).
+          RECONCILE_INTERVAL_S: 5
         run: bash local/us-70-secret-delivery-e2e.sh
 
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)

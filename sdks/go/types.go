@@ -300,9 +300,12 @@ type BindingItem struct {
 }
 
 // ReloadResult is returned by POST /workspaces/:id/reload-secrets.
+// US-70.3: the notify → re-pull outcome as reported by the pod — no
+// server-built reload count.
 type ReloadResult struct {
-	Reloaded  int  `json:"reloaded"`
-	Restarted bool `json:"restarted"`
+	Status     string `json:"status"`     // applied | not_modified
+	AppliedRev string `json:"appliedRev"` // "seq:manifestHash:contentHash"; empty when nothing applied yet
+	Restarted  bool   `json:"restarted"`
 }
 
 // ModelListResponse is returned by GET /workspaces/:id/models.

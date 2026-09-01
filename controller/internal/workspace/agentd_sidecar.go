@@ -153,6 +153,11 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// /home/sandbox; /sandbox-runtime is its own RW tmpfs).
 		{Name: "LLMSAFESPACE_API_URL", Value: r.APIServiceURL},
 		{Name: "LLMSAFESPACES_ENRICHER_CACHE_DIR", Value: "/sandbox-runtime/enricher-cache"},
+		// US-70.3: the batch-file coordinate shared by the sidecar's boot
+		// pull and its resync endpoint — relocated off /sandbox-cfg (RO
+		// here) to the pod-scoped tmpfs, matching sidecarSecretsOutPath
+		// in cmd/workspace-agentd/sidecar_boot.go.
+		{Name: "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT", Value: "/sandbox-runtime/rt/secrets.json"},
 	}
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})

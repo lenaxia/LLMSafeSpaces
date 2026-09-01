@@ -47,14 +47,13 @@ type sidecarBootOpts struct {
 	APIURL      string
 	TokenFile   string
 	// SecretsOut is both bootstrap's --out and materialize's --from:
-	// the tmpfs batch path for this pod.
+	// the tmpfs batch path for this pod. Production resolves it via
+	// LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT (controller wires the pod-scoped
+	// /sandbox-runtime/rt/secrets.json — shared with the resync endpoint
+	// so boot pulls and in-process re-pulls read one coordinate).
 	SecretsOut string
 	Stderr     io.Writer
 }
-
-// sidecarSecretsOutPath is the production tmpfs batch path. The
-// controller's init-fs container created rt/ (0700) before this runs.
-const sidecarSecretsOutPath = "/sandbox-runtime/rt/secrets.json"
 
 // runSidecarBootSecrets performs the boot phase and returns the process
 // exit code the sidecar should propagate (0 to continue serving).

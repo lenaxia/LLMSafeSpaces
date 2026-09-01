@@ -26,30 +26,33 @@ import (
 
 // fakeRevisionStore is the in-memory RevisionStore for builder unit
 // tests (PG-backed semantics live in revision_integration_test.go).
+// Rows are per-workspace like the workspace_secret_revisions table.
 type fakeRevisionStore struct {
 	mu   sync.Mutex
-	seq  int64
-	hash string
+	rows map[string]mockRevisionRow
 }
 
-func (f *fakeRevisionStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+func (f *fakeRevisionStore) CurrentRevision(_ context.Context, workspaceID string) (int64, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.seq == 0 {
+	row, ok := f.rows[workspaceID]
+	if !ok {
 		return 0, "", false, nil
 	}
-	return f.seq, f.hash, true, nil
+	return row.seq, row.manifestHash, true, nil
 }
 
-func (f *fakeRevisionStore) EnsureRevision(_ context.Context, _, manifestHash string) (int64, error) {
+func (f *fakeRevisionStore) EnsureRevision(_ context.Context, workspaceID, manifestHash string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.hash == manifestHash {
-		return f.seq, nil
+	if f.rows == nil {
+		f.rows = make(map[string]mockRevisionRow)
 	}
-	f.seq++
-	f.hash = manifestHash
-	return f.seq, nil
+	if row, ok := f.rows[workspaceID]; ok && row.manifestHash == manifestHash {
+		return row.seq, nil
+	}
+	f.rows[workspaceID] = mockRevisionRow{seq: f.rows[workspaceID].seq + 1, manifestHash: manifestHash}
+	return f.rows[workspaceID].seq, nil
 }
 
 // builderTestStore satisfies SecretStore + CredentialStore + RevisionStore.

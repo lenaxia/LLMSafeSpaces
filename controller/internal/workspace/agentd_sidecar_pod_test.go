@@ -420,3 +420,48 @@ func TestAgentdSidecar_WorkspaceContainerSandboxRuntimeRW(t *testing.T) {
 		"R2b: the consuming uid WRITES the delivered credential files (ownership by construction)")
 	require.Equal(t, "/sandbox-runtime", mnt.MountPath)
 }
+
+// TestAgentdSidecar_BootstrapTokenMountTopology (US-70.3, design 0052
+// §4.7): the projected SA token follows the agentd process. Sidecar
+// mode: the SIDECAR (the mux host that re-pulls) keeps the mount and the
+// uid-1000 workspace container must NOT see it — design 0051 §D1 keeps
+// the audience-scoped credential out of the user-code container exactly
+// as it keeps agentdPassword out. Single-container mode's main-container
+// mount is pinned in security_test.go.
+func TestAgentdSidecar_BootstrapTokenMountTopology(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	tok := sidecarVolumeMount(sc, "bootstrap-token")
+	require.NotNil(t, tok, "the sidecar hosts the resync endpoint — it must keep the token mount")
+	require.Equal(t, "/var/run/bootstrap", tok.MountPath)
+	require.True(t, tok.ReadOnly)
+
+	main := &pod.Spec.Containers[0]
+	require.Nil(t, sidecarVolumeMount(main, "bootstrap-token"),
+		"sidecar mode: the uid-1000 workspace container must NOT mount the SA token (§D1: the supervisor never re-pulls)")
+}
+
+// TestAgentdSidecar_BootstrapSecretsOutEnv (US-70.3): the sidecar's boot
+// pull and its resync endpoint share ONE batch-file coordinate —
+// LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT at the pod-scoped tmpfs path (the
+// /sandbox-cfg mount is read-only in the sidecar, so the single-container
+// default would be unwritable).
+func TestAgentdSidecar_BootstrapSecretsOutEnv(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	env := sidecarEnvVar(sc, "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT")
+	require.NotNil(t, env, "the sidecar needs the relocated batch coordinate")
+	require.Equal(t, "/sandbox-runtime/rt/secrets.json", env.Value)
+}
