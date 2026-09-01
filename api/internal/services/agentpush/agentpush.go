@@ -1,26 +1,24 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// Package agentpush isolates the live-push flow that decrypts a user's
-// bound secret snapshot with their DEK and delivers it to the running
-// workspace pod's agentd via HTTP. It exists as a service (not a handler
-// method) because multiple call sites need it:
+// Package agentpush isolates the live-push flow that builds a
+// workspace's secret batch (session-independent, via the one builder)
+// and delivers it to the running workspace pod's agentd via HTTP. It
+// exists as a service (not a handler method) because multiple call
+// sites need it:
 //
 //   - SetBindings (handler) — user toggled a binding in the settings drawer.
 //   - ReloadSecrets (handler) — explicit POST /workspaces/:id/reload-secrets.
-//   - workspace.Service.GetWorkspaceStatus — auto-push on pod-identity
-//     transition (worklog 0589), the reason this package was extracted.
+//   - secretautopush — watcher-driven push after pod recreation
+//     (worklog 0591), the reason this package was extracted.
 //
-// The service takes sessionID and matchedSigningKey from context (via the
-// package-provided helpers) rather than as function args so callers that
-// only have a context.Context (i.e., non-handler callers like the workspace
-// status reader) can supply them the same way handlers do. Handlers that
-// hold a *gin.Context should first build ctx = agentpush.WithAuth(ctx,
-// sessionID, matchedSigningKey) before calling Push.
+// Batch construction carries no session identity (design 0052 §4.1,
+// US-70.2): the builder decrypts user entries via the server-side DEK
+// unwrap, so every pusher — request-bound or background — produces the
+// same batch for the same workspace state.
 //
 // See worklog 0589 for the design rationale — this package is the
-// concrete satisfier of the SecretPusher interface defined by consumers
-// (workspace.Service and the handlers).
+// concrete satisfier of the SecretPusher interface defined by consumers.
 package agentpush
 
 import (
@@ -35,14 +33,15 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// SecretInjector is the minimum surface Push needs to build the payload:
-// decrypt all bound secrets for the workspace with the user's DEK,
-// degrading to skip-with-audit for user-DEK entries when the DEK is
-// unavailable. Satisfied by *secrets.SecretService.InjectSecrets.
-type SecretInjector interface {
-	InjectSecrets(ctx context.Context, userID, sessionID string, matchedSigningKey []byte, workspaceID string) ([]byte, error)
+// BatchBuilder is the minimum surface Push needs to build the payload:
+// the one workspace batch builder, degrading loudly (machine-readable
+// reason) when the user's DEK cannot be unwrapped. Satisfied by
+// *secrets.SecretService.BuildWorkspaceBatch.
+type BatchBuilder interface {
+	BuildWorkspaceBatch(ctx context.Context, ownerUserID, workspaceID string) (*secrets.Batch, *secrets.BuildDegrade, error)
 }
 
 // PodIPResolver looks up the running pod IP for a workspace. Returns an
@@ -90,7 +89,7 @@ var (
 
 // Service is the concrete SecretPusher.
 type Service struct {
-	injector    SecretInjector
+	builder     BatchBuilder
 	podResolver PodIPResolver
 	passwords   PasswordProvider
 	modelCache  ModelCache
@@ -99,12 +98,12 @@ type Service struct {
 	metricsHook func(outcome string) // optional; nil = no metric
 }
 
-// New builds a Service. Only injector is required; podResolver may be
+// New builds a Service. Only builder is required; podResolver may be
 // nil during early wiring in which case Push returns ErrNoPodIPResolver.
 // modelCache and logger are optional.
-func New(injector SecretInjector, opts ...Option) *Service {
+func New(builder BatchBuilder, opts ...Option) *Service {
 	s := &Service{
-		injector:   injector,
+		builder:    builder,
 		httpClient: defaultHTTPClient(),
 	}
 	for _, opt := range opts {
@@ -156,25 +155,31 @@ func defaultHTTPClient() *http.Client {
 	return &http.Client{Timeout: 5 * time.Second}
 }
 
-// Push runs InjectSecrets to build the encrypted payload with the user's
-// DEK (from ctx auth) and posts it to the workspace pod's agentd. Callers
-// MUST set sessionID and matchedSigningKey on ctx via WithAuth before
-// calling; otherwise the injector degrades to skip-with-audit for
-// user-DEK entries (phase-1 outcome).
+// Push builds the workspace batch (the one builder — session identity
+// plays no role in what decrypts) and posts the mixed-fleet legacy body
+// to the workspace pod's agentd.
+//
+// A degraded build (user DEK unavailable) is still pushed — the
+// server-KEK subset keeps the pod's platform providers alive — but the
+// degrade is logged at Warn with its machine-readable reason (I10: no
+// silent partials).
 //
 // Empty payloads ('[]') are still sent — agentd uses them to CLEAR its
 // in-memory secret materialisations. Without this, an unbind would leave
 // the live pod with stale plaintext until restart.
 func (s *Service) Push(ctx context.Context, userID, workspaceID string) (Result, error) {
-	sessionID, matchedSigningKey := AuthFromContext(ctx)
-
-	secretsJSON, err := s.injector.InjectSecrets(ctx, userID, sessionID, matchedSigningKey, workspaceID)
+	batch, degrade, err := s.builder.BuildWorkspaceBatch(ctx, userID, workspaceID)
 	if err != nil {
 		s.emitMetric("inject_failed")
-		s.warn("agentpush: inject secrets failed",
+		s.warn("agentpush: build workspace batch failed",
 			"workspaceID", workspaceID, "error", err.Error())
-		return Result{}, fmt.Errorf("inject secrets: %w", err)
+		return Result{}, fmt.Errorf("build workspace batch: %w", err)
 	}
+	if degrade != nil {
+		s.warn("agentpush: workspace batch degraded; pushing server-KEK subset",
+			"workspaceID", workspaceID, "reason", degrade.Reason)
+	}
+	secretsJSON := secrets.LegacyBatchJSON(*batch)
 
 	if s.podResolver == nil {
 		return Result{}, ErrNoPodIPResolver
@@ -250,35 +255,4 @@ func (s *Service) warn(msg string, fields ...interface{}) {
 	if s.logger != nil {
 		s.logger.Warn(msg, fields...)
 	}
-}
-
-// --- context-carried auth ---
-
-type authCtxKey struct{}
-
-type authValues struct {
-	sessionID         string
-	matchedSigningKey []byte
-}
-
-// WithAuth returns ctx with sessionID and matchedSigningKey attached so
-// Push can decrypt the caller's DEK-bound secrets. Handlers that hold a
-// *gin.Context should extract these via extractAuth + extractMatchedSigningKey
-// and call WithAuth before invoking a service method that will Push.
-func WithAuth(ctx context.Context, sessionID string, matchedSigningKey []byte) context.Context {
-	return context.WithValue(ctx, authCtxKey{}, authValues{
-		sessionID:         sessionID,
-		matchedSigningKey: matchedSigningKey,
-	})
-}
-
-// AuthFromContext extracts the sessionID + matchedSigningKey previously
-// attached via WithAuth. Returns zero values when unset (Push then relies
-// on the injector's skip-with-audit degradation for user-DEK entries).
-func AuthFromContext(ctx context.Context) (string, []byte) {
-	v, ok := ctx.Value(authCtxKey{}).(authValues)
-	if !ok {
-		return "", nil
-	}
-	return v.sessionID, v.matchedSigningKey
 }

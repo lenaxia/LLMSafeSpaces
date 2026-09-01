@@ -1018,7 +1018,7 @@ func TestOrgCredentials_Delete_NotFound_Returns204(t *testing.T) {
 //  2. Handler updates row.Slug column but skips re-encrypt (the condition
 //     was `req.APIKey != nil || req.BaseURL != nil`).
 //  3. Ciphertext still decrypts to LLMProviderData{Slug:"old-slug",...}.
-//  4. InjectSecrets -> buildSecretsJSON sets Name: pd.Slug = "old-slug".
+//  4. BuildWorkspaceBatch sets Name: pd.Slug = "old-slug".
 //  5. agent-config.json provider map has the old key.
 //
 // The fix mirrors the admin handler: include Kind/Slug in the re-encrypt

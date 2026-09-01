@@ -19,6 +19,7 @@ import (
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -30,8 +31,15 @@ func (faultFixtureReviewer) Review(_ context.Context, _ string) (string, error) 
 
 type faultFixtureInjector struct{}
 
-func (faultFixtureInjector) InjectSecretsForPodBootstrap(_ context.Context, _, _ string) ([]byte, error) {
-	return []byte(`[{"type":"llm-provider","name":"model"}]`), nil
+func (faultFixtureInjector) BuildWorkspaceBatch(_ context.Context, _, _ string) (*secrets.Batch, *secrets.BuildDegrade, error) {
+	batch := &secrets.Batch{Entries: []secrets.BatchEntry{{
+		SecretID: "cred-1",
+		Version:  1,
+		Type:     secrets.SecretTypeLLMProvider,
+		Name:     "model",
+	}}}
+	batch.Revision = secrets.BatchRevision{Seq: 1, ManifestHash: "fixture", BatchHash: "fixture"}
+	return batch, nil, nil
 }
 
 type faultFixtureLookup struct{}

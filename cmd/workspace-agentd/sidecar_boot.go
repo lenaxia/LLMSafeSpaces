@@ -17,25 +17,26 @@ package main
 // Paths: bootstrap output relocates to the pod-scoped tmpfs
 // (/sandbox-runtime/rt/secrets.json) because the sidecar's /sandbox-cfg
 // mount is ReadOnly. Same lifetime semantics as the emptyDir it
-// replaces: wiped on pod death, survives CONTAINER restart — which the
-// idempotency guard relies on:
+// replaces: wiped on pod death, survives CONTAINER restart.
 //
-//   - secrets.json exists non-empty → bootstrap already ran for THIS
-//     pod (sidecar restart: liveness kill, OOM, node pressure). Skip
-//     the API fetch — it may be down and the 600s projected SA token is
-//     long expired. Materialize re-runs: it is idempotent by design
-//     (reset() wipes and reinstalls the tmpfs tree).
+// US-70.2 conditional semantics (superseding the old restart guard,
+// which skipped the API entirely once any batch existed): every boot
+// attempts the CONDITIONAL pull. Unchanged manifest → the API answers
+// 304 without decrypting and the prior batch stays byte-identical;
+// changed → a fresh envelope lands. A failed pull (API down, expired
+// projected SA token) keeps the prior batch as last-good — never-block-
+// boot holds either way, and a secrets change now reaches a restarted
+// sidecar within the same pod instead of waiting for the push path.
 //
 // Failure semantics (lens: a native sidecar RESTARTS, unlike an init
 // container): bootstrap never blocks boot on API failure (degrades to an
-// empty batch — the reload-secrets path recovers credentials on first
-// activation); materialize failures PROPAGATE non-zero so the sidecar
-// exits and kubelet surfaces CrashLoopBackOff with a restart reason —
-// never a never-Ready zombie (2026-08-25 incident class).
+// empty batch on first boot, keeps last-good afterwards); materialize
+// failures PROPAGATE non-zero so the sidecar exits and kubelet surfaces
+// CrashLoopBackOff with a restart reason — never a never-Ready zombie
+// (2026-08-25 incident class).
 
 import (
 	"io"
-	"os"
 )
 
 // sidecarBootOpts parameterizes the boot phase. Production values come
@@ -55,28 +56,20 @@ type sidecarBootOpts struct {
 // controller's init-fs container created rt/ (0700) before this runs.
 const sidecarSecretsOutPath = "/sandbox-runtime/rt/secrets.json"
 
-// sidecarBootSecretsAlreadyRan reports whether a non-empty batch
-// already exists for this pod (sidecar restart guard).
-func sidecarBootSecretsAlreadyRan(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Size() > 0
-}
-
 // runSidecarBootSecrets performs the boot phase and returns the process
 // exit code the sidecar should propagate (0 to continue serving).
 func runSidecarBootSecrets(opts sidecarBootOpts) int {
-	if !sidecarBootSecretsAlreadyRan(opts.SecretsOut) {
-		// Fresh pod (or first successful boot): fetch the batch.
-		// runBootstrapCommand never fails boot on API errors — it
-		// writes an empty batch and returns 0 (never-block-boot).
-		if code := runBootstrapCommand([]string{
-			"--workspace-id", opts.WorkspaceID,
-			"--api-url", opts.APIURL,
-			"--token-file", opts.TokenFile,
-			"--out", opts.SecretsOut,
-		}, io.Discard, opts.Stderr); code != 0 {
-			return code // flag-level failure only
-		}
+	// The conditional pull runs on every boot: runBootstrapCommand
+	// presents the prior envelope's manifest hash (304 = keep file) and
+	// keeps the last-good batch on failure. It never fails boot on API
+	// errors — flag-level failure is the only non-zero it can return.
+	if code := runBootstrapCommand([]string{
+		"--workspace-id", opts.WorkspaceID,
+		"--api-url", opts.APIURL,
+		"--token-file", opts.TokenFile,
+		"--out", opts.SecretsOut,
+	}, io.Discard, opts.Stderr); code != 0 {
+		return code
 	}
 
 	// Materialize is unconditional (idempotent replay on restart).

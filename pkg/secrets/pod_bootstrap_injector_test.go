@@ -3,25 +3,27 @@
 
 package secrets
 
-// pod_bootstrap_injector_test.go — unit tests for InjectSecretsForPodBootstrap.
+// pod_bootstrap_injector_test.go — unit tests for the bootstrap-shaped
+// contract of the one builder ("if the pod exists, it has its secrets").
 //
-// Contract under test ("if the pod exists, it has its secrets"): the
-// bootstrap payload includes user-DEK bindings whenever the master
-// RootKeyProvider can unwrap the owner's user_keys record — with NO
-// dependence on jwt_sessions state. The former GetDEKForUser session
-// walk is no longer consulted by this path at all.
+// Contract under test: the batch includes user-DEK bindings whenever the
+// master RootKeyProvider can unwrap the owner's user_keys record — with
+// NO dependence on jwt_sessions state. The former GetDEKForUser session
+// walk is not consulted at all.
 //
 // Test coverage:
 //
-//   - nil KeyService                        → degrades to sessionless
-//   - KeyService without RootKeyProvider    → degrades to sessionless
-//   - no user_keys record                   → degrades to sessionless
+//   - nil KeyService                        → loud degrade (dek_unwrap_failed)
+//   - KeyService without RootKeyProvider    → loud degrade (dek_unwrap_failed)
+//   - no user_keys record                   → owner_no_keys degrade
 //     (owner has no DEK-encrypted secrets; nothing is missing)
 //   - no jwt_sessions store wired           → DELIVERS user secrets
 //   - empty jwt_sessions table              → DELIVERS user secrets
 //   - only unwrappable jwt_sessions rows    → DELIVERS user secrets
 //     (rotated-out signing keys are irrelevant to the server unwrap)
 //   - happy path                            → DELIVERS user secrets
+//   - legacy row + live session             → heals + delivers
+//   - legacy row, no session                → loud degrade + audit
 //
 // The session-independence rows are the #1087 regression gates: a
 // suspend/resume that outlives every jwt_sessions row must not strip
@@ -52,114 +54,122 @@ func bindGHTokenEnvSecret(t *testing.T, svc *SecretService, sessionID string) {
 		Metadata: json.RawMessage(`{"var_name":"GH_TOKEN"}`),
 	})
 	require.NoError(t, err, "CreateSecret must succeed under the fixture session")
-	_, err = svc.SetBindings(ctx, "user-1", "ws-1", []string{s.ID})
-	require.NoError(t, err, "SetBindings must bind the env-secret to ws-1")
+	require.NoError(t, svc.store.SetBindings(ctx, "ws-1", []string{s.ID}),
+		"SetBindings must bind the env-secret to ws-1")
 }
 
-// assertGHTokenDelivered asserts the payload contains the env-secret
-// with its plaintext intact — the round-trip proof through the
-// server-side DEK unwrap.
-func assertGHTokenDelivered(t *testing.T, data []byte) {
+// assertGHTokenDelivered asserts the batch contains the env-secret with
+// its plaintext intact — the round-trip proof through the server-side
+// DEK unwrap.
+func assertGHTokenDelivered(t *testing.T, batch *Batch, degrade *BuildDegrade, err error) {
 	t.Helper()
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
+	require.NoError(t, err)
+	require.Nil(t, degrade, "a workspace whose owner has keys must not degrade")
 
 	var found bool
-	for _, item := range injected {
+	for _, item := range batch.Entries {
 		if item.Type == SecretTypeEnvSecret && item.Name == "gh-token" {
 			found = true
-			assert.Equal(t, "ghp_test_token_value", item.Plaintext,
-				"env-secret plaintext must survive round-trip through DEK unwrap")
+			assert.Equal(t, "ghp_test_token_value", item.Value,
+				"env-secret value must survive round-trip through DEK unwrap")
 		}
 	}
 	assert.True(t, found,
-		"user-DEK env-secret MUST appear in bootstrap payload — a pod that exists has its secrets")
+		"user-DEK env-secret MUST appear in the batch — a pod that exists has its secrets")
 }
 
-// assertSessionlessEmpty asserts the degrade shape: no error, empty
-// payload for an empty workspace.
-func assertSessionlessEmpty(t *testing.T, data []byte, err error) {
-	t.Helper()
-	require.NoError(t, err, "bootstrap degrade must never fail the call")
-	var injected []InjectedSecret
-	require.NoError(t, json.Unmarshal(data, &injected))
-	assert.Empty(t, injected)
-}
-
-// TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless
-// asserts that when the SecretService was constructed with keys=nil (a
-// legitimate test wiring), the pod-bootstrap path does not panic and
-// returns the same payload InjectSessionlessSecrets would.
-func TestInjectSecretsForPodBootstrap_NilKeyService_DegradesToSessionless(t *testing.T) {
+// TestBuildWorkspaceBatch_NilKeyService_LoudDegrade: when the
+// SecretService was constructed with keys=nil, the builder must not
+// panic — it returns an empty batch plus the machine-readable degrade
+// reason (previously a silent sessionless fallback; silent partials are
+// banned under I10).
+func TestBuildWorkspaceBatch_NilKeyService_LoudDegrade(t *testing.T) {
 	secretStore := newMockSecretStore()
-	svc := NewSecretService(nil, secretStore)
+	svc := NewSecretService(nil, &builderTestStore{
+		SecretStore:       secretStore,
+		CredentialStore:   &mockCredentialStore{},
+		fakeRevisionStore: &fakeRevisionStore{},
+	})
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	assertSessionlessEmpty(t, data, err)
+	seeded := &UserSecret{
+		ID: "sec-gh", UserID: "user-1", Name: "gh", Type: SecretTypeEnvSecret,
+		Ciphertext: []byte("wrapped"), KeyVersion: 1, Version: 1,
+		Metadata: json.RawMessage(`{"var_name":"GH_TOKEN"}`),
+	}
+	require.NoError(t, secretStore.CreateSecret(context.Background(), seeded))
+	require.NoError(t, secretStore.SetBindings(context.Background(), "ws-1", []string{seeded.ID}))
+
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, degrade)
+	assert.Equal(t, DegradeDEKUnwrapFailed, degrade.Reason)
+	assert.Empty(t, batch.Entries)
 }
 
-// TestInjectSecretsForPodBootstrap_NoRootProvider_DegradesToSessionless
-// asserts the wiring guard: a KeyService whose RootKeyProvider was never
-// set cannot unwrap server-side, so the call degrades cleanly instead of
+// TestBuildWorkspaceBatch_NoRootProvider_DegradesLoudly asserts the
+// wiring guard: a KeyService whose RootKeyProvider was never set cannot
+// unwrap server-side, so the build degrades with a reason instead of
 // panicking or failing the boot.
-func TestInjectSecretsForPodBootstrap_NoRootProvider_DegradesToSessionless(t *testing.T) {
+func TestBuildWorkspaceBatch_NoRootProvider_DegradesLoudly(t *testing.T) {
 	keySvc := NewKeyService(newMockKeyStore(), newMockDEKCache()) // no SetAPIKeyStore
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+	svc.keys = keySvc
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	assertSessionlessEmpty(t, data, err)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, degrade)
+	assert.Equal(t, DegradeDEKUnwrapFailed, degrade.Reason)
+	assert.Empty(t, batch.Entries)
 }
 
-// TestInjectSecretsForPodBootstrap_NoUserKeyRecord_DegradesToSessionless
-// asserts the "owner never created secrets" case: no user_keys row means
-// no DEK-encrypted bindings exist, so the sessionless payload is already
-// complete — the degrade is a no-op in content terms.
-func TestInjectSecretsForPodBootstrap_NoUserKeyRecord_DegradesToSessionless(t *testing.T) {
-	keySvc := NewKeyService(newMockKeyStore(), newMockDEKCache())
-	keySvc.SetAPIKeyStore(nil, &recordingProvider{}) // rootKeyProvider wired, but no InitializeUserKeysServerKEK
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
+// TestBuildWorkspaceBatch_NoUserKeyRecord_OwnerNoKeys asserts the
+// "owner never created secrets" case: no user_keys row means no
+// DEK-encrypted bindings exist, so the batch is complete in content
+// terms — the reason records why.
+func TestBuildWorkspaceBatch_NoUserKeyRecord_OwnerNoKeys(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	bindGHTokenEnvSecret(t, svc, sessionID)
+	require.NoError(t, svc.keys.store.(*mockKeyStore).DeleteUserKey(context.Background(), "user-1"))
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	assertSessionlessEmpty(t, data, err)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	require.NotNil(t, degrade)
+	assert.Equal(t, DegradeOwnerNoKeys, degrade.Reason)
+	assert.Empty(t, batch.Entries)
 }
 
-// TestInjectSecretsForPodBootstrap_NoJWTSessions_DeliversUserSecrets is
-// the core #1087 regression gate: no JWTSessionStore wired at all
-// (pre-Epic-56 shape, or a resume where every session row expired) —
-// the bound env-secret still delivers via the server-side unwrap.
-func TestInjectSecretsForPodBootstrap_NoJWTSessions_DeliversUserSecrets(t *testing.T) {
+// TestBuildWorkspaceBatch_NoJWTSessions_DeliversUserSecrets is the core
+// #1087 regression gate: no JWTSessionStore wired at all — the bound
+// env-secret still delivers via the server-side unwrap.
+func TestBuildWorkspaceBatch_NoJWTSessions_DeliversUserSecrets(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 	// Deliberately NO SetJWTSessionStore / SetSigningKeyEnumerator.
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	require.NoError(t, err)
-	assertGHTokenDelivered(t, data)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	assertGHTokenDelivered(t, batch, degrade, err)
 }
 
-// TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DeliversUserSecrets
-// asserts delivery when the jwt_sessions table is wired but has zero
+// TestBuildWorkspaceBatch_EmptyJWTSessionsTable_DeliversUserSecrets
+// asserts delivery when the jwt_sessions store is wired but has zero
 // rows for the user — the exact state a suspend/resume leaves when the
 // owner's sessions TTL'd out mid-suspend.
-func TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DeliversUserSecrets(t *testing.T) {
+func TestBuildWorkspaceBatch_EmptyJWTSessionsTable_DeliversUserSecrets(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 	svc.keys.SetJWTSessionStore(newMockJWTSessionStore()) // wired, empty
 	svc.keys.SetSigningKeyEnumerator(&staticSigningKeys{keys: [][]byte{[]byte("test-signing-key")}})
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	require.NoError(t, err)
-	assertGHTokenDelivered(t, data)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	assertGHTokenDelivered(t, batch, degrade, err)
 }
 
-// TestInjectSecretsForPodBootstrap_UnwrappableRows_DeliversUserSecrets
-// asserts delivery when the only jwt_sessions rows are wrapped under
-// signing keys outside the enumerator's retention window — under the old
-// GetDEKForUser path this degraded to sessionless; the server-side
+// TestBuildWorkspaceBatch_UnwrappableRows_DeliversUserSecrets asserts
+// delivery when the only jwt_sessions rows are wrapped under signing
+// keys outside the enumerator's retention window — the server-side
 // unwrap must not care.
-func TestInjectSecretsForPodBootstrap_UnwrappableRows_DeliversUserSecrets(t *testing.T) {
+func TestBuildWorkspaceBatch_UnwrappableRows_DeliversUserSecrets(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 
@@ -174,32 +184,30 @@ func TestInjectSecretsForPodBootstrap_UnwrappableRows_DeliversUserSecrets(t *tes
 	require.NoError(t, err, "seeding the hostile jwt_sessions row must succeed")
 	require.NotZero(t, jwtStore.WriteCount, "hostile jwt_sessions row must exist")
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	require.NoError(t, err)
-	assertGHTokenDelivered(t, data)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	assertGHTokenDelivered(t, batch, degrade, err)
 }
 
-// TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets
+// TestBuildWorkspaceBatch_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets
 // is the plain positive path: keys initialized, secret bound, no session
 // machinery involved whatsoever.
-func TestInjectSecretsForPodBootstrap_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets(t *testing.T) {
+func TestBuildWorkspaceBatch_HappyPath_UnwrapsUserDEKAndIncludesUserSecrets(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	require.NoError(t, err,
-		"InjectSecretsForPodBootstrap must succeed via the server-side unwrap")
-	assertGHTokenDelivered(t, data)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err, "the builder must succeed via the server-side unwrap")
+	assertGHTokenDelivered(t, batch, degrade, err)
 }
 
-// TestInjectSecretsForPodBootstrap_LegacyRowHeal_DeliversAndRewraps is the
+// TestBuildWorkspaceBatch_LegacyRowHeal_DeliversAndRewraps is the
 // 2026-08-28 incident as a unit test: the user_keys row is wrapped under a
 // key the current provider cannot unwrap (the June-era legacy blob), but a
 // live jwt_sessions row still carries the DEK. GetDEKServerSide must (a)
 // recover the DEK from the session source, (b) deliver the bound secrets,
 // and (c) re-wrap the row at the active version with verify-after-write —
-// so the NEXT bootstrap decrypts directly and the heal is one-shot.
-func TestInjectSecretsForPodBootstrap_LegacyRowHeal_DeliversAndRewraps(t *testing.T) {
+// so the NEXT build decrypts directly and the heal is one-shot.
+func TestBuildWorkspaceBatch_LegacyRowHeal_DeliversAndRewraps(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 
@@ -241,9 +249,17 @@ func TestInjectSecretsForPodBootstrap_LegacyRowHeal_DeliversAndRewraps(t *testin
 
 	// The call under test: degrade is NOT acceptable — the session source
 	// must heal it.
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
-	assertGHTokenDelivered(t, data)
+	require.Nil(t, degrade, "the heal path must recover the DEK, not degrade")
+	var found bool
+	for _, item := range batch.Entries {
+		if item.Type == SecretTypeEnvSecret && item.Name == "gh-token" {
+			found = true
+			assert.Equal(t, "ghp_test_token_value", item.Value)
+		}
+	}
+	require.True(t, found)
 
 	// The row must now be re-wrapped under the MASTER provider at its
 	// active version, and the re-wrap must round-trip (verify-after-write).
@@ -255,19 +271,27 @@ func TestInjectSecretsForPodBootstrap_LegacyRowHeal_DeliversAndRewraps(t *testin
 	require.Equal(t, ActiveVersionOf(svc.keys.rootKeyProvider), healed.KeyVersion,
 		"healed row must carry the provider's active key version")
 
-	// One-shot: a second bootstrap (cache cold for the session row) now
+	// One-shot: a second build (cache cold for the session row) now
 	// unwraps DIRECTLY — no session needed anymore.
 	require.NoError(t, svc.keys.cache.EvictDEK(context.Background(), legacyJTI))
-	data2, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
+	batch2, degrade2, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
-	assertGHTokenDelivered(t, data2)
+	require.Nil(t, degrade2)
+	found = false
+	for _, item := range batch2.Entries {
+		if item.Type == SecretTypeEnvSecret && item.Name == "gh-token" {
+			found = true
+		}
+	}
+	require.True(t, found)
 }
 
-// TestInjectSecretsForPodBootstrap_LegacyRowNoSession_DegradesAndAudits pins
-// the loud-degrade contract: unwrappable row AND no session source → the
-// sessionless batch returns, AND the failure is audited with the underlying
-// error (the 2026-08-28 lesson — silence was the diagnosis cost).
-func TestInjectSecretsForPodBootstrap_LegacyRowNoSession_DegradesAndAudits(t *testing.T) {
+// TestBuildWorkspaceBatch_LegacyRowNoSession_DegradesAndAudits pins the
+// loud-degrade contract: unwrappable row AND no session source → the
+// server-KEK batch returns with BuildDegrade{dek_unwrap_failed}, AND the
+// failure is audited with the underlying error (the 2026-08-28 lesson —
+// silence was the diagnosis cost).
+func TestBuildWorkspaceBatch_LegacyRowNoSession_DegradesAndAudits(t *testing.T) {
 	svc, store, sessionID := setupSecretService(t)
 	bindGHTokenEnvSecret(t, svc, sessionID)
 
@@ -290,8 +314,11 @@ func TestInjectSecretsForPodBootstrap_LegacyRowNoSession_DegradesAndAudits(t *te
 	store.audit = nil
 	store.mu.Unlock()
 
-	data, err := svc.InjectSecretsForPodBootstrap(context.Background(), "user-1", "ws-1")
-	assertSessionlessEmpty(t, data, err)
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err, "degrade is a result, not an error")
+	require.NotNil(t, degrade)
+	assert.Equal(t, DegradeDEKUnwrapFailed, degrade.Reason)
+	assert.Empty(t, batch.Entries)
 
 	store.mu.Lock()
 	entries := append([]*AuditEntry(nil), store.audit...)

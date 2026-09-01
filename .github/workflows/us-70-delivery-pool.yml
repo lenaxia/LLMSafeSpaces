@@ -223,6 +223,21 @@ jobs:
           P95_BUDGET_MS: 45000
         run: bash local/us-70-secret-delivery-e2e.sh
 
+      - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
+        # Two-tier-revision acceptance rows (see the nightly's copy):
+        # contract feature-detect + loud-skip, two-replica identical
+        # revisions, conditional pull 304/ETag, anchored spawned_rev,
+        # pull-vs-push identity. MUST run BEFORE the fault seam is armed
+        # below — its rows POST pod-bootstrap repeatedly and would both
+        # burn the 8-fault budget and fail against injected 500s. Scales
+        # the API deployment to 2 replicas mid-suite and restores it.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18087
+        run: bash local/us-70-revisions-e2e.sh
+
       - name: Arm fault seam (fresh API process, after the delivery suite)
         # B1/M10: arming at helm install would spend the fault budget on
         # the delivery suite's ~105 pod bootstraps (AC-1 would boot against

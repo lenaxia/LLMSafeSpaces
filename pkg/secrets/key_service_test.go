@@ -59,6 +59,13 @@ func (m *mockKeyStore) UpdateWrappedDEK(_ context.Context, userID string, wrappe
 	return nil
 }
 
+func (m *mockKeyStore) DeleteUserKey(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.records, userID)
+	return nil
+}
+
 type mockDEKCache struct {
 	mu    sync.Mutex
 	store map[string][]byte

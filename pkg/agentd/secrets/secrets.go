@@ -474,7 +474,12 @@ type Materializer struct {
 	// ~/.git-credentials via the pod's shared gid 1000 (US-35.7 class C
 	// ruling). Unset (single-container, init-container materialize): the
 	// pre-US-4b owner-only modes stand.
-	CrossUID         bool
+	CrossUID bool
+	// Revision (US-70.2): the delivery revision of the batch being
+	// materialized. When set, the published staging manifest carries the
+	// "<seq>:<manifestHash>" anchor; nil (push batches, legacy files)
+	// keeps the manifest legacy-shaped (byte-compat).
+	Revision         *sec.BatchRevision
 	stagedProviders  []sec.LLMProviderData
 	stagedMCPServers []StagedMCPServer
 	sshBlocks        []string
@@ -521,6 +526,9 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 	}
 
 	staging := newStageBuilder(m.FS, m.stagingPath())
+	if m.Revision != nil {
+		staging.rev = revisionAnchor(m.Revision)
+	}
 	m.sshBlocks = nil
 
 	result := &MaterializeResult{Results: make([]SecretResult, 0, len(secrets))}
@@ -1033,15 +1041,14 @@ func appendFile(fs Filesystem, path string, data []byte, perm os.FileMode) error
 
 // --- entrypoint helper ----------------------------------------------------
 
-// LoadSecretsFile reads and parses a secrets.json file.
+// LoadSecretsFile reads and parses a legacy secrets.json file (bare
+// array). The materialize path uses LoadBatchFile, which additionally
+// accepts the revisioned envelope; this accessor keeps the []Secret
+// surface the legacy readers (reload-cache replay fixtures) use.
 func LoadSecretsFile(path string) ([]Secret, error) {
-	data, err := os.ReadFile(path)
+	bf, err := LoadBatchFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, err
 	}
-	var secrets []Secret
-	if err := json.Unmarshal(data, &secrets); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	return secrets, nil
+	return bf.Secrets, nil
 }

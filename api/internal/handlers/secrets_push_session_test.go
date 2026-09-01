@@ -68,6 +68,13 @@ func (s *pushPathSessionStore) GetBindings(_ context.Context, ws string) ([]*sec
 }
 func (s *pushPathSessionStore) LogAudit(_ context.Context, _ *secrets.AuditEntry) error { return nil }
 
+func (s *pushPathSessionStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+func (s *pushPathSessionStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
+
 func (s *pushPathSessionStore) CreateSecret(_ context.Context, sec *secrets.UserSecret) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -148,25 +155,19 @@ func (s *pushPathSessionStore) QueryAudit(_ context.Context, _ string, _ secrets
 // (admin/org credentials).
 //
 // Production reality (uncovered in second-pass review): API-key auth
-// sets `sessionID = "apikey:" + hash(token)` (auth.go:1152), NOT empty
-// string. The first-pass fix branched on `sessionID != ""` and was
-// dead code as a result. The corrected fix degrades the GetDEK
-// failure inside loadNonLLMSecrets to skip-with-audit (matching the
-// LLM loop's existing behavior for user bindings), so any caller
-// without a real DEK — bootstrap, API-key, or expired-JWT — gracefully
-// drops user-DEK content instead of hard-erroring.
+// sets `sessionID = "apikey:" + hash(token)`, NOT empty string — the
+// original first-pass fix branched on `sessionID != ""` and was dead
+// code as a result. The durable shape (US-70.2): batch construction
+// carries no session identity at all — the builder decrypts user
+// entries via the server-side DEK unwrap, and DEK-tier failure
+// degrades to server-KEK entries with a machine-readable reason.
 //
-// Reproduction recipe:
+// Recipe:
 //
-//   - Workspace has a user-DEK env-secret bound (from a prior JWT
-//     session that successfully cached its DEK).
-//   - User binds via API-key auth: sessionID = "apikey:fake-hash",
-//     no DEK in cache for that pseudo-session.
-//   - pushSecretsToAgent calls InjectSecrets(ctx, userID, sessionID, ws)
-//   - loadNonLLMSecrets calls GetDEK("apikey:...") → "DEK not available"
-//   - With the fix: skip the user-DEK env-secret with audit, keep going,
-//     deliver the server-KEK org credential.
-//   - Without the fix: hard error, entire push silently dropped.
+//   - Workspace has a bound user-DEK env-secret plus a server-KEK
+//     org credential.
+//   - pushSecretsToAgent calls Push(ctx, userID, ws) → BuildWorkspaceBatch
+//   - The org credential (server-KEK) must always reach agentd.
 //
 // This test must FAIL today (agentd not called, or called without the
 // org credential) and PASS after the loadNonLLMSecrets degrade fix.

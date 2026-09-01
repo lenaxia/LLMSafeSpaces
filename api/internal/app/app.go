@@ -728,16 +728,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// watcher-driven push succeeded. The adapter's emission is
 		// authoritative.
 		//
-		// AuthContexter uses agentpush.WithAuth. After GetDEKForUser
-		// caches the DEK in Redis under the jti, agentpush.Push's
-		// downstream GetDEK(jti, nil) hits the cache and works without
-		// a signing key at hand.
+		// US-70.2: no DEK priming / auth ctx — the builder is
+		// session-independent and decrypts user entries server-side.
 		autoPushSvc := secretautopush.New(
-			keyService,
 			&bindingsCheckerAdapter{store: pgStore},
 			&wsAgentPusherAdapter{pusher: agentPusher},
 			secretautopush.WithLogger(log),
-			secretautopush.WithAuthContexter(agentpushAuthCtxBuilder{}),
 		)
 		proxyHandler.SetWorkspaceUpdateCallback(autoPushSvc.OnWorkspaceUpdate)
 		// Wire password getter so ListModels/SetModel can authenticate

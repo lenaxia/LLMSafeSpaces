@@ -27,6 +27,16 @@ import (
 // signal — it never reaches the HTTP layer.
 var ErrNotMyCiphertext = errors.New("ciphertext prefix does not match this provider")
 
+// ErrRevisionConvergeFailed is returned by RevisionStore.EnsureRevision
+// when the conditional seq mint did not converge within its bounded
+// retry budget — a concurrent writer kept winning the race. The caller
+// should treat the revision as unavailable (surface, retry later);
+// never fabricate a seq locally (the DB row is the single writer).
+//
+// Plain sentinel (not *StatusError) because this is an internal
+// consistency signal; it surfaces as a generic 500 at the HTTP boundary.
+var ErrRevisionConvergeFailed = errors.New("workspace secret revision failed to converge")
+
 // Sentinel errors returned by the secrets package. Each carries its HTTP
 // status code and user-facing message via StatusError, so the generic
 // error handler (respondWithError in router.go) maps them automatically

@@ -15,7 +15,6 @@ package main
 //
 // These tests are written TDD-style before the implementation:
 //
-//   - mergeSecretBatches: base + cache, cache wins on duplicate Type+Name.
 //   - writeReloadSecretsCache: atomic write, mode 0600, temp+rename.
 //   - loadReloadSecretsCache: absent → empty; corrupt → warn + empty; valid.
 //   - reloadSecretsHandler: persists after success; never on failure.
@@ -36,69 +35,9 @@ import (
 )
 
 // =============================================================================
-// mergeSecretBatches
-// =============================================================================
-
-func TestMergeSecretBatches_CacheWinsOnDuplicate(t *testing.T) {
-	base := []secrets.Secret{
-		{Type: "env-secret", Name: "gh", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "base-value"},
-		{Type: "ssh-key", Name: "k", Metadata: map[string]string{"key_type": "ed25519"}, Plaintext: "base-ssh"},
-	}
-	cache := []secrets.Secret{
-		{Type: "env-secret", Name: "gh", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "cache-value"},
-	}
-
-	merged := mergeSecretBatches(base, cache)
-
-	// Exactly one env-secret "gh" (cache wins), plus the base ssh-key.
-	require.Len(t, merged, 2)
-	gh := findSecret(t, merged, "env-secret", "gh")
-	assert.Equal(t, "cache-value", gh.Plaintext, "cache must win for duplicate Type+Name")
-	assert.Contains(t, merged, secrets.Secret{Type: "ssh-key", Name: "k", Metadata: map[string]string{"key_type": "ed25519"}, Plaintext: "base-ssh"})
-}
-
-func TestMergeSecretBatches_NoDuplicate_AllPresent(t *testing.T) {
-	base := []secrets.Secret{
-		{Type: "llm-provider", Name: "anthropic", Plaintext: `{"kind":"anthropic","slug":"anthropic"}`},
-	}
-	cache := []secrets.Secret{
-		{Type: "env-secret", Name: "gh", Metadata: map[string]string{"var_name": "GH_TOKEN"}, Plaintext: "tok"},
-		{Type: "git-credential", Name: "g", Metadata: map[string]string{"protocol": "https", "host": "github.com"}, Plaintext: "user:pass"},
-	}
-
-	merged := mergeSecretBatches(base, cache)
-
-	require.Len(t, merged, 3, "all distinct entries from both batches must be present")
-}
-
-func TestMergeSecretBatches_BothEmpty(t *testing.T) {
-	assert.Empty(t, mergeSecretBatches(nil, nil))
-	assert.Empty(t, mergeSecretBatches([]secrets.Secret{}, []secrets.Secret{}))
-}
-
-func TestMergeSecretBatches_BaseOnly(t *testing.T) {
-	base := []secrets.Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}}
-	assert.Equal(t, base, mergeSecretBatches(base, nil))
-}
-
-func TestMergeSecretBatches_CacheOnly(t *testing.T) {
-	cache := []secrets.Secret{{Type: "env-secret", Name: "x", Plaintext: "v"}}
-	assert.Equal(t, cache, mergeSecretBatches(nil, cache))
-}
-
-func TestMergeSecretBatches_SameTypeDifferentName_BothKept(t *testing.T) {
-	base := []secrets.Secret{
-		{Type: "env-secret", Name: "a", Metadata: map[string]string{"var_name": "A"}, Plaintext: "1"},
-	}
-	cache := []secrets.Secret{
-		{Type: "env-secret", Name: "b", Metadata: map[string]string{"var_name": "B"}, Plaintext: "2"},
-	}
-	merged := mergeSecretBatches(base, cache)
-	require.Len(t, merged, 2, "different Name under the same Type is NOT a duplicate")
-}
-
-// =============================================================================
-// writeReloadSecretsCache
+// (The Type+Name merge semantics moved to pkg/agentd/secrets as
+// MergeSecretBatches/MergeBatchFile — the cmd-local copy was deleted with
+// US-70.2; their tests live in pkg/agentd/secrets/batch_file_test.go.)
 // =============================================================================
 
 func TestWriteReloadSecretsCache_WritesValidJSON0600(t *testing.T) {
@@ -299,16 +238,4 @@ func TestReloadSecretsHandler_DoesNotPersistOnFailure(t *testing.T) {
 	_, err := os.Stat(filepath.Join(dir, "last-reload-secrets.json"))
 	assert.True(t, os.IsNotExist(err),
 		"cache must NOT be written on failure — last known good state must survive")
-}
-
-// findSecret locates an entry by Type+Name in a merged batch (test helper).
-func findSecret(t *testing.T, batch []secrets.Secret, typ, name string) secrets.Secret {
-	t.Helper()
-	for _, s := range batch {
-		if s.Type == typ && s.Name == name {
-			return s
-		}
-	}
-	t.Fatalf("secret %s/%s not found in batch", typ, name)
-	return secrets.Secret{}
 }

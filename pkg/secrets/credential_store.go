@@ -46,6 +46,7 @@ type CredentialBinding struct {
 	Slug               string // slug-safe per-owner identity; the agent-config.json provider-map key
 	Ciphertext         []byte
 	KeyVersion         int
+	Version            int64 // value-version counter (US-70.2): create = 1, every value-affecting mutation bumps
 	ModelAllowlist     []string
 	ModelContextLimits map[string]int // model_id → context window size in tokens
 	ModelOutputLimits  map[string]int // model_id → max output tokens

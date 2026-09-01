@@ -2,30 +2,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package secretautopush wires the workspace watcher's per-CRD-event
-// callback to a fire-and-forget push of user-DEK secrets to the
-// workspace pod's agentd. Runs when:
+// callback to a fire-and-forget push of the workspace's secret batch to
+// the workspace pod's agentd. Runs when:
 //
 //   - CRD phase == Active
 //   - CRD status.UserCredsPresent == false (controller has scraped
 //     agentd and confirmed no user-DEK content is materialized)
 //   - user has at least one binding in user_secret_bindings for this
 //     workspace
-//   - a DEK is retrievable for the workspace's owner (any active JWT
-//     session for the user works — see KeyService.GetDEKForUser)
 //
 // Any of those checks failing → skip. The next watch event or the
 // controller's next health scrape will retry naturally.
 //
-// Idempotency: an in-flight lock keyed on workspaceID prevents
-// concurrent pushes for the same workspace. Watcher may emit many
-// Modified events for a single CRD update; the lock ensures we push
-// exactly once and the subsequent events see "already in flight,
-// skip." Lock releases when the push goroutine (successful or not)
-// completes; a future recreation will re-acquire and re-push.
-//
-// This service is deliberately thin: composition of KeyService,
-// bindings storage, and agentpush.Service. See worklog 0591 for the
-// design rationale and the alternatives considered.
+// The batch builder is session-independent (US-70.2): no DEK priming,
+// no jti handoff — the pusher decrypts user entries via the
+// server-side DEK unwrap on its own. This service is deliberately
+// thin: composition of bindings storage and agentpush.Service. See
+// worklog 0591 for the design rationale and the alternatives
+// considered. US-70.5 demolishes this service in favor of reconcile.
 package secretautopush
 
 import (
@@ -37,15 +31,6 @@ import (
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
-// DEKRetriever exposes the KeyService.GetDEKForUser primitive. The
-// consumer needs both the DEK plaintext (unused directly — it's cached
-// in Redis as a side effect) and the jti (used as sessionID in the
-// auth ctx handed to the pusher, so pusher's downstream GetDEK call
-// hits the just-populated cache).
-type DEKRetriever interface {
-	GetDEKForUser(ctx context.Context, userID string) (dek []byte, jti string, err error)
-}
-
 // BindingsChecker reports whether a workspace has any bound user
 // secrets. If false, there's nothing user-DEK-encrypted to push — the
 // service skips.
@@ -54,39 +39,20 @@ type BindingsChecker interface {
 }
 
 // SecretPusher is the concrete push side (satisfied by
-// *agentpush.Service). The Push method is expected to read sessionID +
-// matchedSigningKey from ctx (via agentpush.WithAuth) and use them for
-// downstream GetDEK — so the caller must build the auth ctx before
-// calling.
+// *agentpush.Service): builds the workspace batch (session-free) and
+// delivers it.
 type SecretPusher interface {
 	Push(ctx context.Context, userID, workspaceID string) error
-}
-
-// AuthContexter builds an auth-carrying context.Context that
-// SecretPusher.Push can consume. Satisfied by a small wiring adapter
-// in app.New that calls agentpush.WithAuth internally so this package
-// doesn't import agentpush.
-//
-// The second parameter is an opaque auth blob (in production wiring:
-// nil, because the DEK is already cached in Redis under the jti by
-// DEKRetriever.GetDEKForUser — the pusher's downstream GetDEK(jti,
-// nil) hits the cache). Named `authBlob` intentionally: it is not
-// always a DEK, and the interface should not force implementations
-// to conflate the concept.
-type AuthContexter interface {
-	WithAuth(ctx context.Context, sessionID string, authBlob []byte) context.Context
 }
 
 // Service is the auto-push consumer. Construct with New; wire
 // OnWorkspaceUpdate into the workspace watcher's
 // SetWorkspaceUpdateCallback in app.New.
 type Service struct {
-	dek            DEKRetriever
-	bindings       BindingsChecker
-	pusher         SecretPusher
-	authCtxBuilder AuthContexter
-	logger         pkginterfaces.LoggerInterface
-	metrics        MetricsHook
+	bindings BindingsChecker
+	pusher   SecretPusher
+	logger   pkginterfaces.LoggerInterface
+	metrics  MetricsHook
 
 	// inFlightMu guards inFlight.
 	inFlightMu sync.Mutex
@@ -98,9 +64,8 @@ type Service struct {
 
 // MetricsHook is a callback for outcome recording. Optional — nil is
 // silently skipped. Outcomes: "success" | "no_bindings" |
-// "no_creds_yet" | "dek_unavailable" | "bindings_error" |
-// "push_error" | "skipped_in_flight" | "skipped_not_active" |
-// "skipped_ucp_true".
+// "no_creds_yet" | "bindings_error" | "push_error" |
+// "skipped_in_flight" | "skipped_not_active" | "skipped_ucp_true".
 type MetricsHook func(outcome string)
 
 // Option configures the Service.
@@ -116,25 +81,13 @@ func WithMetricsHook(fn MetricsHook) Option {
 	return func(s *Service) { s.metrics = fn }
 }
 
-// WithAuthContexter installs the auth-ctx builder. If unset, the
-// service uses a no-op that doesn't attach any auth to the ctx (the
-// pusher's downstream GetDEK will then rehydrate from Redis using the
-// jti sessionID — which works iff the DEK was just cached by
-// DEKRetriever.GetDEKForUser). Production wiring installs a real
-// agentpush.WithAuth-based contexter for future-proofing.
-func WithAuthContexter(a AuthContexter) Option {
-	return func(s *Service) { s.authCtxBuilder = a }
-}
-
-// New constructs a Service. dek + bindings + pusher are required;
-// logger and metrics are optional.
-func New(dek DEKRetriever, bindings BindingsChecker, pusher SecretPusher, opts ...Option) *Service {
+// New constructs a Service. bindings + pusher are required; logger and
+// metrics are optional.
+func New(bindings BindingsChecker, pusher SecretPusher, opts ...Option) *Service {
 	s := &Service{
-		dek:            dek,
-		bindings:       bindings,
-		pusher:         pusher,
-		authCtxBuilder: noopAuthCtxBuilder{},
-		inFlight:       make(map[string]struct{}),
+		bindings: bindings,
+		pusher:   pusher,
+		inFlight: make(map[string]struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -196,20 +149,26 @@ func (s *Service) OnWorkspaceUpdate(ws *v1.Workspace) {
 	}()
 }
 
-// autoPushTimeout bounds one auto-push attempt (bindings query + DEK
-// fetch + push HTTP call + optional cache writes). Set generously
-// relative to the underlying HTTP clients (agentpush uses 5s per
-// call; DEKRetriever's PG query is sub-100ms; bindings check is a
+// autoPushTimeout bounds one auto-push attempt (bindings query + batch
+// build + push HTTP call). Set generously relative to the underlying
+// HTTP clients (agentpush uses 5s per call; the builder's PG queries
+// are sub-100ms; bindings check is a
 // single indexed lookup): 30s covers the worst case plus retries
 // with margin. Not user-tunable — this is a defense-in-depth guard,
 // not a business-logic knob.
 const autoPushTimeout = 30 * time.Second
 
-// run performs the actual bindings-check + DEK-fetch + push. Runs on
-// a fresh context.Background() so the watch loop's ctx (which may
-// cancel on shutdown) doesn't abort in-flight pushes mid-send. The
-// per-workspace lock ensures at most one goroutine is here for a
-// given workspaceID.
+// run performs the actual bindings-check + push. Runs on a fresh
+// context.Background() so the watch loop's ctx (which may cancel on
+// shutdown) doesn't abort in-flight pushes mid-send. The per-workspace
+// lock ensures at most one goroutine is here for a given workspaceID.
+//
+// NOTE (epic #1158): the bindings check queries
+// user_secret_bindings.workspace_id, a uuid column, with the CR name —
+// for non-uuid CR names this errors with "invalid input syntax for
+// type uuid" (the error-loop noted in the epic). The check is retained
+// as-is: US-70.5 demolishes this service in favor of the reconcile
+// loop; fixing the query here would be throwaway.
 func (s *Service) run(ctx context.Context, workspaceID, userID string) {
 	defer func() {
 		s.inFlightMu.Lock()
@@ -232,28 +191,13 @@ func (s *Service) run(ctx context.Context, workspaceID, userID string) {
 		return
 	}
 
-	// DEK retrieval. GetDEKForUser writes back to Redis under the
-	// returned jti — a subsequent agentpush.Push whose ctx carries
-	// (jti as sessionID) hits the cache.
-	_, jti, err := s.dek.GetDEKForUser(ctx, userID)
-	if err != nil {
-		s.warn("secretautopush: DEK unavailable; skipping push",
-			"workspaceID", workspaceID, "userID", userID, "error", err.Error())
-		s.emit("dek_unavailable")
-		return
-	}
-
-	// Build the auth ctx so downstream InjectSecrets can locate the
-	// DEK via the standard GetDEK(sessionID, ...) path.
-	authCtx := s.authCtxBuilder.WithAuth(ctx, jti, nil)
-
-	if err := s.pusher.Push(authCtx, userID, workspaceID); err != nil {
+	if err := s.pusher.Push(ctx, userID, workspaceID); err != nil {
 		s.warn("secretautopush: push failed",
 			"workspaceID", workspaceID, "error", err.Error())
 		s.emit("push_error")
 		return
 	}
-	s.info("secretautopush: pushed user-DEK secrets after pod recreation",
+	s.info("secretautopush: pushed workspace secrets after pod recreation",
 		"workspaceID", workspaceID)
 	s.emit("success")
 }
@@ -274,13 +218,4 @@ func (s *Service) info(msg string, fields ...interface{}) {
 	if s.logger != nil {
 		s.logger.Info(msg, fields...)
 	}
-}
-
-// noopAuthCtxBuilder returns ctx unchanged. Used when no AuthContexter is
-// wired in; the pusher's downstream GetDEK still works because the
-// DEKRetriever call already populated the Redis cache under the jti.
-type noopAuthCtxBuilder struct{}
-
-func (noopAuthCtxBuilder) WithAuth(ctx context.Context, _ string, _ []byte) context.Context {
-	return ctx
 }

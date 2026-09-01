@@ -18,7 +18,11 @@ func TestE2E_FullSecretLifecycle(t *testing.T) {
 	keySvc := NewKeyService(keyStore, dekCache)
 	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
+	svc := NewSecretService(keySvc, &builderTestStore{
+		SecretStore:       secretStore,
+		CredentialStore:   &mockCredentialStore{},
+		fakeRevisionStore: &fakeRevisionStore{},
+	})
 	ctx := context.Background()
 
 	userID := "user-e2e"
@@ -115,9 +119,9 @@ func TestE2E_FullSecretLifecycle(t *testing.T) {
 	}
 
 	// === Phase 6: Prepare injection (simulates workspace activation) ===
-	injectionData, err := svc.InjectSecrets(ctx, userID, sessionID, nil, workspaceID)
+	injectionData, err := injectJSONChecked(svc, ctx, userID, workspaceID)
 	if err != nil {
-		t.Fatalf("InjectSecrets: %v", err)
+		t.Fatalf("BuildWorkspaceBatch: %v", err)
 	}
 
 	var injected []InjectedSecret

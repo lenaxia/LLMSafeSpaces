@@ -100,8 +100,16 @@ func (s *seamStore) ReEncryptUserSecrets(_ context.Context, _ string, _ int, _ f
 func (s *seamStore) SetBindings(_ context.Context, _ string, _ []string) error { panic("unused") }
 func (s *seamStore) AddBindings(_ context.Context, _ string, _ []string) error { panic("unused") }
 
+func (s *seamStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+func (s *seamStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
+
 var _ sec.SecretStore = (*seamStore)(nil)
 var _ sec.CredentialStore = (*seamStore)(nil)
+var _ sec.RevisionStore = (*seamStore)(nil)
 
 func TestMCPInjection_MaterializerSeam_ContractShape(t *testing.T) {
 	secretPayload := `{"env":{"GITHUB_TOKEN":"ghp_x"},"headers":{"X-A":"1"}}`
@@ -118,13 +126,17 @@ func TestMCPInjection_MaterializerSeam_ContractShape(t *testing.T) {
 		Args:       []string{"-y", "@modelcontextprotocol/server-github"},
 		TimeoutMs:  intPtr(5000),
 		Ciphertext: ciphertext,
+		Version:    1,
 		Enabled:    true,
 	}}}
 
 	svc := sec.NewSecretService(nil, store)
 	svc.SetAdminProvider(root)
 
-	out, err := svc.InjectSessionlessSecrets(context.Background(), "user-1", "ws-1")
+	batch, degrade, err := svc.BuildWorkspaceBatch(context.Background(), "user-1", "ws-1")
+	require.NoError(t, err)
+	require.Nil(t, degrade)
+	out := sec.LegacyBatchJSON(*batch)
 	require.NoError(t, err)
 	require.True(t, store.queried, "GetWorkspaceMCPServers must be reached sessionless")
 	require.NotEmpty(t, out, "one admin-scope MCP server must be delivered sessionless")

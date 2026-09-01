@@ -20,14 +20,21 @@ type mockSecretStore struct {
 	mu                   sync.Mutex
 	secrets              map[string]*UserSecret // keyed by ID
 	bindings             map[string][]string    // workspace_id -> []secret_id
+	revisions            map[string]mockRevisionRow
 	audit                []*AuditEntry
 	listGlobalDefaultErr error // optional: forces ListGlobalDefaultSecrets to fail
 }
 
+type mockRevisionRow struct {
+	seq          int64
+	manifestHash string
+}
+
 func newMockSecretStore() *mockSecretStore {
 	return &mockSecretStore{
-		secrets:  make(map[string]*UserSecret),
-		bindings: make(map[string][]string),
+		secrets:   make(map[string]*UserSecret),
+		bindings:  make(map[string][]string),
+		revisions: make(map[string]mockRevisionRow),
 	}
 }
 
@@ -42,6 +49,9 @@ func (m *mockSecretStore) CreateSecret(_ context.Context, secret *UserSecret) er
 	}
 	if secret.ID == "" {
 		secret.ID = "sec-" + secret.Name // deterministic for tests
+	}
+	if secret.Version == 0 {
+		secret.Version = 1 // mirrors the DB column default (US-70.2)
 	}
 	cp := *secret
 	m.secrets[secret.ID] = &cp
@@ -103,10 +113,12 @@ func (m *mockSecretStore) ListGlobalDefaultSecrets(_ context.Context, userID str
 func (m *mockSecretStore) UpdateSecret(_ context.Context, secret *UserSecret) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.secrets[secret.ID]; !ok {
+	existing, ok := m.secrets[secret.ID]
+	if !ok {
 		return &notFoundError{id: secret.ID}
 	}
 	cp := *secret
+	cp.Version = existing.Version + 1 // mirrors the DB's unconditional bump (US-70.2)
 	m.secrets[secret.ID] = &cp
 	return nil
 }
@@ -243,6 +255,24 @@ func (m *mockSecretStore) GetWorkspaceCredentials(_ context.Context, _ string) (
 	return nil, nil
 }
 
+func (m *mockSecretStore) CurrentRevision(_ context.Context, workspaceID string) (int64, string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.revisions[workspaceID]
+	return row.seq, row.manifestHash, ok, nil
+}
+
+func (m *mockSecretStore) EnsureRevision(_ context.Context, workspaceID, manifestHash string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, exists := m.revisions[workspaceID]
+	if !exists || row.manifestHash != manifestHash {
+		row = mockRevisionRow{seq: row.seq + 1, manifestHash: manifestHash}
+		m.revisions[workspaceID] = row
+	}
+	return row.seq, nil
+}
+
 func (m *mockSecretStore) UpsertFreeTierCredential(_ context.Context, _ []byte) error { return nil }
 
 func (m *mockSecretStore) SeedWorkspaceCredentials(_ context.Context, _, _ string, _ *string) error {
@@ -284,7 +314,11 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	keySvc := NewKeyService(keyStore, dekCache)
 	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
+	svc := NewSecretService(keySvc, &builderTestStore{
+		SecretStore:       secretStore,
+		CredentialStore:   &mockCredentialStore{},
+		fakeRevisionStore: &fakeRevisionStore{},
+	})
 
 	ctx := context.Background()
 	userID := "user-1"

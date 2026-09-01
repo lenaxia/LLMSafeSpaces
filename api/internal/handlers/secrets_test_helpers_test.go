@@ -307,6 +307,14 @@ func (m *testSecretStore) QueryAudit(_ context.Context, userID string, _ secrets
 	return result, nil
 }
 
+func (m *testSecretStore) CurrentRevision(context.Context, string) (int64, string, bool, error) {
+	return 0, "", false, nil
+}
+
+func (m *testSecretStore) EnsureRevision(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
+
 func (m *testSecretStore) GetWorkspaceCredentials(_ context.Context, workspaceID string) ([]secrets.CredentialBinding, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -323,6 +331,7 @@ func (m *testSecretStore) GetWorkspaceCredentials(_ context.Context, workspaceID
 			OwnerID:   s.UserID,
 			Kind:      s.Name, Slug: s.Name, // use name as provider key for dedup; decryptBinding resolves the real provider
 			Ciphertext: s.Ciphertext,
+			Version:    1,
 		})
 	}
 	return result, nil
