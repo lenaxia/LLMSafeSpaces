@@ -241,8 +241,8 @@ ON CONFLICT (id) DO UPDATE SET key=EXCLUDED.key, active=true;
 " >/dev/null
 }
 
-seed_workspace() { # ws [runtime_class] — owned by the harness session user
-    local ws="$1" user_id="${OWNER_ID:?harness_start must run first}" rc="${2:-}"
+seed_workspace() { # ws [runtime_class] [resources_yaml] — owned by the harness session user
+    local ws="$1" user_id="${OWNER_ID:?harness_start must run first}" rc="${2:-}" extra="${3:-}"
     kc delete workspace "${ws}" --ignore-not-found >/dev/null 2>&1 || true
     if [[ -n "${rc}" ]]; then
         # spec.runtimeClass is admin-gated: the Workspace validating
@@ -265,6 +265,8 @@ spec:
     userID: ${user_id}
   runtime: ${RUNTIME_REF}
   runtimeClass: ${rc}
+${extra:+  resources:
+${extra}}
   storage:
     size: 1Gi
     accessMode: ReadWriteOnce
@@ -281,6 +283,8 @@ spec:
   owner:
     userID: ${user_id}
   runtime: ${RUNTIME_REF}
+${extra:+  resources:
+${extra}}
   storage:
     size: 1Gi
     accessMode: ReadWriteOnce
