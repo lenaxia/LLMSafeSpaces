@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -883,9 +884,13 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 		writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
+	var replyMu sync.Mutex
 	mux.HandleFunc("/api/v1/workspaces/ws-1/permission/per_xyz/reply", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
 		permissionReplied.Store(true)
-		replyBody, _ = io.ReadAll(r.Body)
+		replyMu.Lock()
+		replyBody = body
+		replyMu.Unlock()
 		w.Write([]byte(`true`))
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
@@ -902,6 +907,8 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 	// Give the goroutine time to fire
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, permissionReplied.Load(), "permission should have been auto-approved")
+	replyMu.Lock()
+	defer replyMu.Unlock()
 	assert.JSONEq(t, `{"reply":"always"}`, string(replyBody), "auto-approve keeps the always-reply body")
 }
 
