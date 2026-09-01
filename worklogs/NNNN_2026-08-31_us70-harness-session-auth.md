@@ -77,3 +77,7 @@ None. Re-dispatch the pool after merge.
   refreshed token accepted, exactly one re-login).
 - Handler-level regression: `TestSetWorkspaceEnv_APIKeyAuth_NoDEKSession_500`
   pins the original bug as an executable contract.
+
+Closes #1196 (with #1197): the issue's resolution/root-cause layer landed in
+#1197; this PR is the second layer the re-dispatched pool exposed (secret
+authoring is DEK-session-gated). AC-1 is green only with both.
