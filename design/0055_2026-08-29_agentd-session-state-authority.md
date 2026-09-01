@@ -676,7 +676,9 @@ session-create routing).
 - [x] Dead paths deleted (API-side derive/verify unless fallback
       retained); flip-gate rewritten to the agentd in-flight-count
       procedure — verify retained behind the adapter seam as the
-      documented rollback fallback (spike pool runs open)
+      documented rollback fallback (spike pool runs open; the approved
+      exception is recorded on issue #1147 — deletion re-opens when the
+      admission-ID pool matrix lands)
 - [x] Metrics live: `seq_stall_seconds`, `ledger_depth`,
       `promotion_stall`, `snapshot_size_bytes`, `delivery_202_latency`;
       alerts wired (seq stall while pod running; stalled entries;
