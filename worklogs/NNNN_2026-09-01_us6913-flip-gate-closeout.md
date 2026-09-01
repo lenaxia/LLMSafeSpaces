@@ -39,9 +39,16 @@
 | I1–I12 | ✅ each pinned by its stage's tests | stamp atomicity/discard fuzz (0861/0864/0885), subscribe-before-snapshot (0861), rebuildability+reseed (0861/0864), store-is-truth, delivery idempotency (0871 stress), wake-only (0871), interrupt purity (0878), 4097 auth, ledger durability, completion mapping, containment, I12 snapshot-completeness (0885 standing-question e2e) |
 | Pool-bound exceptions | 🌊 | ≥7-day zero-divergence soak; admission-ID matrix; 20k-msg full-list cost; runsc resume p95; rollback drill; final resume p95 — all carried by the delivery pool workflow (harnesses + budgets committed) |
 
+## Recorded evidence (review round 2 — the reviewer's "recorded numbers" bar)
+
+- **rollback_drill (in-repo, `rollback_drill_test.go`)**: load = 4 concurrent acceptors against a 2ms deliverer; the deploy stops the worker; 19–41 queued entries park per run (the mode_transition hold); unpark + worker return drains; **verdict over 12 consecutive runs: unique clientMessageIDs delivered == accepted every time (zero loss); duplicates observed once = the outbox's documented at-least-once staging posture (stage-first/remove-second crash window; agent-side entryID dedupe — I5 — is the guard), not a flip artifact**. The file carries `//go:build !race`: the drill is a procedure proof, and -race scheduling noise at the deploy boundary swamps the drain window (the outbox's race semantics live in outbox_stress_test.go, which runs everywhere). Cluster-scale (two replicas, real agentd, rolling waves) still rides the delivery pool — the runbook encodes that procedure.
+- **resume_budget (in-repo share, `BenchmarkResumeBudget_LongSessions`)**: boot reseed + cursor replay with a 20k-event projection across 50 sessions = **0.33–0.51 ms/op** (benchtime 5x, count 3). The authority's share of the ~22s budget is ~0.002%; the budget's real terms (pod scheduling, PVC attach, opencode store full-list — the upstream cost) are e2e and ride the pool (`hack/benchmark-resume.sh --assert` carries the threshold; latest post-overlay measured 13–19s, worklog 0876).
+
 ## Tests Run
 
 - `go test ./api/internal/services/outbox/ ./api/internal/handlers/ -run "TestPark|TestUnpark|TestFlipGate" -count=1` — ok.
+- `go test ./api/internal/services/outbox/ -run TestRollbackDrill -count=12` — ok (evidence above).
+- `go test ./cmd/workspace-agentd/sessionstate/ -bench BenchmarkResumeBudget -benchtime 5x -count 3` — numbers above.
 - `go test ./api/internal/server/ -run TestOpenAPIRouterContract` — ok (3 new routes documented).
 - `go test ./cmd/workspace-agentd/ -run "TestStatusz"` — ok (ledger_in_flight pin).
 - Full suite at PR time (CI).

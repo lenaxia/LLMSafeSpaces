@@ -199,3 +199,41 @@ func TestSpikeNumbers(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkResumeBudget_LongSessions (US-69.13 resume_budget evidence):
+// the S4 AC's long-session shape — 20k store entries across 50 sessions,
+// reseed + cursor replay on boot. Recorded numbers live in the US-69.13
+// worklog; the p95 assertion is the pool's (the ~22s e2e budget includes
+// pod scheduling + PVC attach that only a cluster measures).
+func BenchmarkResumeBudget_LongSessions(b *testing.B) {
+	seeds := make(map[string]SessionSeed, 50)
+	for i := 0; i < 50; i++ {
+		seeds[fmt.Sprintf("s-%d", i)] = SessionSeed{Status: abiv1.SessionStatus_SESSION_STATUS_IDLE}
+	}
+	dir := b.TempDir()
+	warm, err := New(Config{PlatformDir: dir, Parser: nopParser{}, Store: seedStoreN{seeds: seeds}, Passwords: []string{"pw"}, FastCursor: true})
+	if err != nil {
+		b.Fatal(err)
+	}
+	// 20k events: the long-session projection cost (store full-list is
+	// the upstream pool item; this pins OUR side of the budget).
+	for i := 0; i < 20000; i++ {
+		warm.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+			SessionId: fmt.Sprintf("s-%d", i%50), Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	}
+	if err := warm.Close(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a, err := New(Config{PlatformDir: dir, Parser: nopParser{}, Store: seedStoreN{seeds: seeds}, Passwords: []string{"pw"}, FastCursor: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if err := a.Reseed(context.Background(), ReseedReasonBoot); err != nil {
+			b.Fatal(err)
+		}
+		_ = a.Close()
+	}
+}
