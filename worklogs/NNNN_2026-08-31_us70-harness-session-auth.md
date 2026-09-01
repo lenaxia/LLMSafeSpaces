@@ -66,3 +66,14 @@ None. Re-dispatch the pool after merge.
 - `local/us-70-secret-delivery-e2e.sh` (call sites, AC-F auth)
 - `local/us-70-faults-e2e.sh` (call sites, F3 ownership keys)
 - `local/us70_harness_script_test.go` (TestUS70Harness_SessionAuthPins)
+
+## Addendum (review rounds): unhappy-path pins + JWT-expiry robustness
+
+- Fake-API-driven die paths (Go test spins httptest; the extracted bash
+  helpers run against it): register-500 + login-401 → die naming the
+  failure; /auth/me 500 → die at id resolution.
+- `bind_env` now retries once through a re-login on 401 — pool dwells can
+  outlive a short JWT TTL; pinned end-to-end (rejected token → re-login →
+  refreshed token accepted, exactly one re-login).
+- Handler-level regression: `TestSetWorkspaceEnv_APIKeyAuth_NoDEKSession_500`
+  pins the original bug as an executable contract.
