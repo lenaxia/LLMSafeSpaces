@@ -28,11 +28,22 @@ api:
   # Extra environment variables for the API container. Standard
   # [{name, value}] passthrough (valueFrom is NOT supported — mount
   # secrets via the existing secret mechanisms instead).
-  # Notable flag: OPENCODE_V2_DELIVERY=1 enables V2 inboard delivery
-  # (design 0052) — requires runtime opencode ≥ 1.18.15; see the
-  # rollout runbook before enabling in production.
+  # Notable flags (both set via this block — never kubectl set env,
+  # which drifts from the release and reverts on the next upgrade):
+  #   OPENCODE_V2_DELIVERY=1  — V2 inboard delivery (design 0052);
+  #     requires runtime opencode >= 1.18.15; see the rollout runbook
+  #     before enabling in production.
+  #   AGENTD_STATE_AUTHORITY=1 — the agentd session-state authority
+  #     (design 0055, Epic 69): moves the outbox delivery terminus and
+  #     session-state truth into the pod's ledger. REQUIRES
+  #     OPENCODE_V2_DELIVERY=1 — ValidateDeliveryFlags rejects
+  #     authority-on/V2-off as an illegal combination at API boot (M4:
+  #     single delivery regime). Flip/rollback procedure:
+  #     docs/runbooks/authority-flip.md (drain-or-park first).
   # extraEnv:
   #   - name: OPENCODE_V2_DELIVERY
+  #     value: "1"
+  #   - name: AGENTD_STATE_AUTHORITY
   #     value: "1"
   extraEnv: []
   # US-70.0 (#1182): deterministic API fault injection for the e2e chaos

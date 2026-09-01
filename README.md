@@ -145,7 +145,7 @@ These endpoints are reverse-proxied to the workspace pod's `opencode serve` inst
 | `GET` | `/api/v1/workspaces/:id/sessions/:sessionId` | Get a single session |
 | `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/abort` | Abort a running session |
 | `DELETE` | `/api/v1/workspaces/:id/sessions/:sessionId` | Delete a session |
-| `GET` | `/api/v1/workspaces/:id/session-events` | SSE event stream (session-scoped) |
+| `GET` | `/api/v1/workspaces/:id/session-events` | SSE event stream (platform events; session state via `/contract-events`) |
 
 ### Questions & Permissions (proxied to opencode)
 

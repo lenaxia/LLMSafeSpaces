@@ -485,11 +485,12 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		if h.busyAlertCooling(wid) {
 			continue
 		}
-		podIP := h.statuszPodIP(wid)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		podIP := h.statuszPodIP(ctx, wid)
 		if podIP == "" {
+			cancel()
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		sz, err := h.fetchStatusz(ctx, wid, podIP)
 		cancel()
 		if err != nil {

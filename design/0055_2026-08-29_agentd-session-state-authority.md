@@ -1,6 +1,7 @@
 # 0055 — agentd session state authority: the pod-local headless TUI
 
-**Status:** Accepted (2026-08-29, owner) — Epic 69 filed: #1134 (US-69.1–.14 = #1135–#1148)
+**Status:** Implemented (Epic 69: US-69.1–.13 merged; US-69.14 history terminus deferred upstream)
+**Status (original):** Accepted (2026-08-29, owner) — Epic 69 filed: #1134 (US-69.1–.14 = #1135–#1148)
 **Date:** 2026-08-29
 **Depends on:** 0053 (overlay delivery — agentd+opencode version coupling), 0049/Epic 65 (session contract), Epic 22 (agentd health isolation), design 0051 (uid separation), 0052/0054 (V2 delivery)
 **Revives:** Epic 18 S18.3 (route proxy traffic through agentd) — designed 2026-06, shelved with its parent epic (`Status: Planning`), never decided on merits
@@ -606,82 +607,89 @@ delivery-status endpoints, reseed path incl. first-enable seeding,
 matrix (interrupt vs admission-in-flight vs admitted-queued vs turn;
 session-create routing).
 
-- [ ] I2 fault-injection test: events emitted mid-connect are never
+- [x] I2 fault-injection test: events emitted mid-connect are never
       lost (subscribe-before-snapshot ordering proven, not asserted)
-- [ ] I3 proven: after an agentd restart *with opencode alive* (sidecar
+- [x] I3 proven: after an agentd restart *with opencode alive* (sidecar
       rollout), projection converges to store truth; live clients
       re-snapshot on `projection.reseeded`
 - [ ] Zero-divergence: agentd projection vs the API's own tracker agree
       on busy/streaming/queue across the scenario suite — streaming
       turn, opencode `kill -9` mid-turn, agentd restart mid-turn,
-      suspend/resume, CPU-starvation soak under build load
-- [ ] Reseed-under-active-streaming scenario in the suite (M3's race)
+      suspend/resume, CPU-starvation soak under build load (pool — the
+      ≥7-day soak rides the staged pool; harness committed, worklog 0866)
+- [x] Reseed-under-active-streaming scenario in the suite (M3's race)
 - [ ] Admission-ID spike result documented against every pinned
-      version; fallback decision recorded per I5
-- [ ] IDL (D5): schema exists from S1 start with generated contract
+      version; fallback decision recorded per I5 (pool — the per-version
+      matrix rides the staged pool; harness committed, worklog 0867)
+- [x] IDL (D5): schema exists from S1 start with generated contract
       tests driving the comparator; transport choice (Connect vs gRPC)
       recorded; `pkg/session` source-of-truth plan agreed with Epic 65
-- [ ] Parts-capable deliveries schema (D3): file parts →
+- [x] Parts-capable deliveries schema (D3): file parts →
       `NotSupported` per capability report on the opencode adapter;
       multi-text-part join rule contract-tested
-- [ ] Typed action op: every union member exercised; `NotSupported`
+- [x] Typed action op: every union member exercised; `NotSupported`
       returned per capability report for undeclared actions; actions
       serialize against in-flight delivery (single-flight) with no
       lost interrupts
-- [ ] Concurrency matrix reviewed; no duplicate admissions, no phantom
+- [x] Concurrency matrix reviewed; no duplicate admissions, no phantom
       failures in golden tests
-- [ ] Snapshot latency p99 < 250ms on a 2-CPU pod under load (served
+- [x] Snapshot latency p99 < 250ms on a 2-CPU pod under load (served
       from projection, zero opencode calls — M3.1)
 
 ### S2 — delivery terminus (`AGENTD_STATE_AUTHORITY=on`, flagged, staged pool)
 
 **Gated on 0053-S3 (mandatory pins) — D4 decision; single-regime fleet.**
 
-- [ ] Flag matrix (M4) implemented; illegal `on/off` combination
+- [x] Flag matrix (M4) implemented; illegal `on/off` combination
       rejected at wiring; capability predicate gates the surface per pod
-- [ ] Crash-injection suite, each green with exactly-once admission per
+- [x] Crash-injection suite, each green with exactly-once admission per
       attempt and zero duplicate turns: kill agentd after ledger-ack
       before admission; kill opencode after admission before promotion;
       suspend pod in each window; API crash mid-forward
-- [ ] Stranded-admitted recovery fires wake only (I6) — verified by a
+- [x] Stranded-admitted recovery fires wake only (I6) — verified by a
       #1119 replay scenario (defect-class death consuming the row)
-- [ ] Interrupt suite (I7): entries survive interrupt unchanged; no
+- [x] Interrupt suite (I7): entries survive interrupt unchanged; no
       `superseded` states exist; queued rows drain after interrupt
-- [ ] I9 verified: 202-then-agentd-kill-then-resume loses no ledgered
+- [x] I9 verified: 202-then-agentd-kill-then-resume loses no ledgered
       entry; fsync path measured on target storage (Longhorn/EFS) and
       group-commit adopted if send-path p99 exceeds budget
-- [ ] State-mapping table (M2) enforced in code: outbox completion
+- [x] State-mapping table (M2) enforced in code: outbox completion
       wired to `admitted` only; `stalled` alerts fire and wake
-- [ ] US-63.9 `v2Pending` wake and US-63.10 `v2Shadow` retired from
+- [x] US-63.9 `v2Pending` wake and US-63.10 `v2Shadow` retired from
       the API (ledger-derived queue depth live)
-- [ ] Text-scan oracle demoted to agentd-internal fallback — deleted
+- [x] Text-scan oracle demoted to agentd-internal fallback — deleted
       outright if the S1 spike landed exact ID correlation
 
 ### S3 — API tracker retirement (cutover; sequenced behind Epic 65's frontend dialect work)
 
-- [ ] Frontend consumes the contract stream via the API; reconnect
+- [x] Frontend consumes the contract stream via the API; reconnect
       suite: mid-turn reconnect, standing question at reconnect
       (answerable from snapshot — I12), API rolling deploy mid-turn
       (snapshot fan-in bounded, measured)
-- [ ] API-side session-state derivation and the 0054 M3 bridge plan
+- [x] API-side session-state derivation and the 0054 M3 bridge plan
       deleted; unknown-taxonomy classifier and drift metric removed
-- [ ] Two API replicas concurrently consuming one pod: delivery stays
+- [x] Two API replicas concurrently consuming one pod: delivery stays
       single-owner (I5); no stream interference
 
 ### S4 — cleanup & operability
 
-- [ ] Dead paths deleted (API-side derive/verify unless fallback
+- [x] Dead paths deleted (API-side derive/verify unless fallback
       retained); flip-gate rewritten to the agentd in-flight-count
-      procedure
-- [ ] Metrics live: `seq_stall_seconds`, `ledger_depth`,
+      procedure — verify retained behind the adapter seam as the
+      documented rollback fallback (spike pool runs open)
+- [x] Metrics live: `seq_stall_seconds`, `ledger_depth`,
       `promotion_stall`, `snapshot_size_bytes`, `delivery_202_latency`;
       alerts wired (seq stall while pod running; stalled entries;
       wake failures)
 - [ ] Resume budget: reseed + ledger replay within the ~22s target at
       p95, including long sessions (V2 store full-list cost measured)
+      (pool — harness + runbook committed; evidence rides the delivery
+      pool workflow)
 - [ ] Rollback drill under load: authority flag off returns to 0052
       paths with no user-visible loss; ledger back-drains (R8)
-- [ ] Ledger outcome-retention and the seq-cursor meta row proven
+      (pool — harness + runbook committed; evidence rides the delivery
+      pool workflow)
+- [x] Ledger outcome-retention and the seq-cursor meta row proven
       uncompactable; compaction test included
 
 ---

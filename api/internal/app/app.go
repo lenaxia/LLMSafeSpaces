@@ -1408,6 +1408,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		RelayAdminHandler:               relayAdminHandler,
 		PlatformInfoHandler:             platformInfoHandler,
 		AdminSessionHandler:             adminSessionHandler,
+		AuthorityFlipHandler:            handlers.NewAuthorityFlipHandler(proxyHandler, log),
 		PlatformAdminHandler:            platformAdminHandler,
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
 		PodBootstrapHandler:             podBootstrapHandler,

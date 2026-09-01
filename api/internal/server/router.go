@@ -165,6 +165,10 @@ type RouterConfig struct {
 	// component versions read from deployed Deployment image tags. Optional.
 	PlatformInfoHandler *handlers.PlatformInfoHandler
 
+	// AuthorityFlipHandler serves the flip gate's operator endpoints
+	// (US-69.13): park/unpark with mode_transition + the ledger in-flight
+	// drain signal (optional).
+	AuthorityFlipHandler *handlers.AuthorityFlipHandler
 	// AdminSessionHandler handles admin-only session recovery endpoints (optional).
 	// US-44.11: force-abort a workspace session stuck in activeSess after the
 	// workspace pod was deleted/unreachable.
@@ -663,6 +667,16 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		adminSessions.Use(services.GetAuth().AuthMiddleware())
 		adminSessions.Use(middleware.AdminGuard())
 		adminSessions.POST("/:sessionId/force-abort", cfg.AdminSessionHandler.ForceAbortSession)
+	}
+
+	// US-69.13: the authority flip gate (park / unpark / in-flight).
+	if cfg.AuthorityFlipHandler != nil {
+		authority := router.Group("/api/v1/admin/authority")
+		authority.Use(services.GetAuth().AuthMiddleware())
+		authority.Use(middleware.AdminGuard())
+		authority.POST("/park", cfg.AuthorityFlipHandler.Park)
+		authority.POST("/unpark", cfg.AuthorityFlipHandler.Unpark)
+		authority.GET("/inflight/:workspaceId", cfg.AuthorityFlipHandler.InFlight)
 	}
 
 	// US-43.20: Cross-org audit view (platform admin only).

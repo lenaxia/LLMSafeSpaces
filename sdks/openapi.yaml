@@ -6906,6 +6906,116 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /admin/authority/park:
+    post:
+      tags: [admin]
+      summary: Park a workspace's in-flight outbox entries (authority flip gate)
+      description: |
+        US-69.13 (design 0055 M4): the drain-before-flip hold. Moves the
+        workspace's pending/delivering/verifying outbox entries to a parked
+        state carrying an explicit mode_transition reason — visible in the
+        queue, never auto-re-sent. Idempotent.
+      operationId: adminAuthorityPark
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId, reason]
+              properties:
+                workspaceId:
+                  type: string
+                reason:
+                  type: string
+                  maxLength: 200
+      responses:
+        "200":
+          description: Parked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaceId, parked]
+                properties:
+                  workspaceId:
+                    type: string
+                  parked:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /admin/authority/unpark:
+    post:
+      tags: [admin]
+      summary: Re-arm a workspace's mode_transition parks (authority rollback drain)
+      description: |
+        The rollback's ledger back-drain: re-arms exactly the entries parked
+        with the mode_transition reason back to pending. Genuine error
+        entries are never re-armed.
+      operationId: adminAuthorityUnpark
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId]
+              properties:
+                workspaceId:
+                  type: string
+                reason:
+                  type: string
+                  description: Accepted for symmetry with park; not matched.
+      responses:
+        "200":
+          description: Unparked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaceId, unparked]
+                properties:
+                  workspaceId:
+                    type: string
+                  unparked:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /admin/authority/inflight/{workspaceId}:
+    get:
+      tags: [admin]
+      summary: The pod's unresolved ledger delivery count (flip drain signal)
+      description: |
+        ledgered + admitted + stalled rows, read from the pod's statusz
+        (ledger_in_flight). The flip gate waits for zero or parks before
+        changing the authority flag.
+      operationId: adminAuthorityInFlight
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: In-flight count
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaceId, inFlight]
+                properties:
+                  workspaceId:
+                    type: string
+                  inFlight:
+                    type: integer
+                    format: int64
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Workspace unreachable
   /admin/workspaces/{workspaceId}/sessions/{sessionId}/force-abort:
     post:
       tags: [admin]

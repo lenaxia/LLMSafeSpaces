@@ -192,6 +192,7 @@ func runSidecarCommand(_ []string) int {
 	if sidecarAuthority != nil {
 		deps.stateAuthority = sidecarAuthority
 		deps.sseTracker.onRawEvent = sidecarAuthority.Ingest
+		deps.ledgerInFlight = sidecarAuthority.InFlightDeliveries
 	}
 
 	// Same loop set as single-container mode: SSE tracking, pressure

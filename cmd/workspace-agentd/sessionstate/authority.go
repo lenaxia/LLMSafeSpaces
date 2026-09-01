@@ -526,6 +526,19 @@ func (a *Authority) Metrics() Metrics {
 	return m
 }
 
+// InFlightDeliveries is the ledger's unresolved delivery count
+// (ledgered + admitted + stalled) — design 0055 M4's flip-gate drain
+// signal. Promoted/turn-ended/failed rows are resolved from the flip's
+// perspective (failed is terminal per attempt; the outbox owns retries).
+func (a *Authority) InFlightDeliveries() int64 {
+	m := a.Metrics()
+	var n int64
+	for _, state := range []string{"ledgered", "admitted", "stalled"} {
+		n += m.LedgerDepths[state]
+	}
+	return n
+}
+
 // StallStats is one stall-watchdog pass's outcome (US-69.12).
 type StallStats struct {
 	// Stalled is the number of rows moved admitted→stalled THIS pass.
