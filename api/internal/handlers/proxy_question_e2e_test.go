@@ -4,7 +4,6 @@
 package handlers
 
 import (
-	"bufio"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -21,44 +19,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// readNextSSEDataLineOfType reads SSE lines until it finds a data line whose
-// JSON "type" field matches want. Necessary because emitNormalizedInputEvent
-// publishes both an opencode.event (raw) and the typed normalized event.
-func readNextSSEDataLineOfType(t *testing.T, r *bufio.Reader, want string) map[string]interface{} {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		m := readNextSSEDataLine(t, r)
-		if m["type"] == want {
-			return m
-		}
-	}
-	t.Fatalf("timed out waiting for SSE event of type %q", want)
-	return nil
-}
-
-// TestE2E_QuestionFlow_FullRoundTrip closes the US-16.13 Definition-of-Done gap.
+// US-16.13's question round-trip, ported to the US-69.11 seams: the
+// pending-input lifecycle arrives through the usage bridge (the retired
+// tracker's dialect translation is gone), while the reply/reject POST
+// proxying is unchanged. The full request path stays wired together:
 //
-// It exercises the full question lifecycle through real handlers wired to a
-// real broker, against a fake workspace pod (httptest.Server):
-//
-//	pod emits "question.asked"
-//	  → tracker.onRawEvent → emitNormalizedInputEvent
-//	  → broker publishes "agent.question"
-//	  → SSE client (user browser) receives "agent.question"
+//	pod raises an ABI INPUT_REQUEST
+//	  → usageBridge.InputRequested → broker → user subscriber ("agent.question")
 //	POST /question/<id>/reply
 //	  → proxy forwards to pod with Basic Auth + correct path
-//	  → pod records the reply
-//	pod emits "question.replied"
-//	  → broker publishes "agent.question.resolved"
-//	  → SSE client receives "agent.question.resolved"
-//
-// Unit-test variants in proxy_input_test.go cover each piece in isolation;
-// this test wires the pieces together to prove the full request path.
+//	pod resolves the input
+//	  → usageBridge.InputResolved → user subscriber ("agent.question.resolved")
+
+func newQuestionFlowEnv(t *testing.T, podHandler http.HandlerFunc) *testEnv {
+	t.Helper()
+	env := newTestEnvWithBackend(t, podHandler)
+	env.handler.dialect = &agentoc.Dialect{}
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	t.Cleanup(stubUsageStream())
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+	env.setupPasswordWithT(t, "ws-1", "test-pw")
+	return env
+}
+
 func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -69,13 +59,13 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 		replyContentType string
 	)
 
-	podBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	podBackend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		require.True(t, ok, "Basic Auth must reach the pod")
 		assert.Equal(t, "opencode", user)
 		assert.Equal(t, "test-pw", pass)
 
-		if r.Method == http.MethodPost && len(r.URL.Path) >= 8 && r.URL.Path[len(r.URL.Path)-6:] == "/reply" {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reply") {
 			body, _ := io.ReadAll(r.Body)
 			mu.Lock()
 			replyPathHit = r.URL.Path
@@ -93,47 +83,30 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 			"method": r.Method,
 			"path":   r.URL.Path,
 		})
-	}))
-	defer podBackend.Close()
+	})
 
-	env := newTestEnvWithBackend(t, podBackend.Config.Handler.(http.HandlerFunc))
-	env.handler.dialect = &agentoc.Dialect{}
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
-	env.setupPasswordWithT(t, "ws-1", "test-pw")
+	env := newQuestionFlowEnv(t, podBackend)
 
 	// Question routes are not in the default proxy group; add them on the same router.
 	env.router.GET("/api/v1/workspaces/:id/question", env.handler.ListQuestions)
 	env.router.POST("/api/v1/workspaces/:id/question/:requestID/reply", env.handler.QuestionReply)
 	env.router.POST("/api/v1/workspaces/:id/question/:requestID/reject", env.handler.QuestionReject)
 
-	// Open the user-side SSE stream.
-	cancel, body, _, status := doStreamingRequest(env.router, "/api/v1/workspaces/ws-1/events")
-	defer cancel()
-	defer body.Close()
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
 
-	// Wait until the broker has an active subscriber (user SSE is wired).
-	require.Eventually(t, func() bool {
-		return env.handler.userBroker.WorkspaceSubscriberCount("ws-1") > 0
-	}, 2*time.Second, 5*time.Millisecond)
-	require.NotNil(t, status)
+	// 1. The pod raises a pending question (ABI INPUT_REQUEST).
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", &abiv1.InputRequest{
+		Id: "que_e2e", SessionId: "ses_e2e", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+		Question: "Pick?", Header: "H",
+		Options: []*abiv1.InputOption{{Label: "A", Description: "a"}},
+	})
 
-	// 1. Simulate the pod emitting a question.asked event via the tracker.
-	env.handler.onRawEvent("ws-1", "question.asked", makeEnvelope("question.asked", map[string]interface{}{
-		"id":        "que_e2e",
-		"sessionID": "ses_e2e",
-		"questions": []map[string]interface{}{
-			{"question": "Pick?", "header": "H", "options": []map[string]string{{"label": "A", "description": "a"}}},
-		},
-	}))
-
-	// 2. SSE client should receive the agent.question event.
-	reader := bufio.NewReader(body)
-	askEvt := readNextSSEDataLineOfType(t, reader, "agent.question")
-	dataBytes, _ := json.Marshal(askEvt["data"])
-	assert.Contains(t, string(dataBytes), `"id":"que_e2e"`)
-	assert.Contains(t, string(dataBytes), `"session_id":"ses_e2e"`)
+	// 2. The user stream receives agent.question.
+	askEvt := recvWithTimeout(t, userSub, "agent.question")
+	assert.Equal(t, "que_e2e", askEvt.RequestID)
+	assert.Equal(t, "ses_e2e", askEvt.SessionID)
+	assert.Equal(t, "ws-1", askEvt.WorkspaceID)
 
 	// 3. User POSTs /question/que_e2e/reply with their answer.
 	replyPayload := `{"answers":[["A"]]}`
@@ -157,24 +130,19 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 	assert.Equal(t, replyPayload, gotBody, "reply body must reach the pod verbatim")
 	assert.Equal(t, "application/json", gotCT)
 
-	// 5. Simulate the pod emitting question.replied after consuming the answer.
-	env.handler.onRawEvent("ws-1", "question.replied", makeEnvelope("question.replied", map[string]interface{}{
-		"id":        "que_e2e",
-		"sessionID": "ses_e2e",
-		"answers":   [][]string{{"A"}},
-	}))
+	// 5. The pod resolves the input; the user stream gets agent.question.resolved.
+	(&usageBridge{h: env.handler}).InputResolved("ws-1", "ses_e2e", "que_e2e")
 
-	// 6. SSE client receives agent.question.resolved.
-	resolvedEvt := readNextSSEDataLineOfType(t, reader, "agent.question.resolved")
-	resData, ok := resolvedEvt["data"].(map[string]interface{})
+	resolvedEvt := recvWithTimeout(t, userSub, "agent.question.resolved")
+	resData, ok := resolvedEvt.Data.(map[string]string)
 	require.True(t, ok, "resolved event data must be a map")
 	assert.Equal(t, "que_e2e", resData["request_id"])
 	assert.Equal(t, "ses_e2e", resData["session_id"])
 }
 
-// TestE2E_QuestionFlow_RejectClearsQuestion mirrors the round-trip for the
-// reject branch. Validates that POST /question/<id>/reject reaches the pod at
-// the dialect-specific reject endpoint and emits question.rejected.
+// TestE2E_QuestionFlow_RejectClearsQuestion mirrors the round-trip for
+// the reject branch: the reject POST reaches the pod at the
+// dialect-specific reject endpoint and the input resolves.
 func TestE2E_QuestionFlow_RejectClearsQuestion(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -183,11 +151,11 @@ func TestE2E_QuestionFlow_RejectClearsQuestion(t *testing.T) {
 		rejectPath   string
 		rejectMethod string
 	)
-	podBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	podBackend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, _, ok := r.BasicAuth(); !ok {
 			t.Errorf("pod backend requires Basic Auth")
 		}
-		if r.Method == http.MethodPost && len(r.URL.Path) >= 7 && r.URL.Path[len(r.URL.Path)-7:] == "/reject" {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reject") {
 			mu.Lock()
 			rejectPath = r.URL.Path
 			rejectMethod = r.Method
@@ -197,37 +165,21 @@ func TestE2E_QuestionFlow_RejectClearsQuestion(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"method": r.Method, "path": r.URL.Path})
-	}))
-	defer podBackend.Close()
+	})
 
-	env := newTestEnvWithBackend(t, podBackend.Config.Handler.(http.HandlerFunc))
-	env.handler.dialect = &agentoc.Dialect{}
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
-	env.setupPasswordWithT(t, "ws-1", "test-pw")
-
+	env := newQuestionFlowEnv(t, podBackend)
 	env.router.POST("/api/v1/workspaces/:id/question/:requestID/reject", env.handler.QuestionReject)
 
-	cancel, body, _, _ := doStreamingRequest(env.router, "/api/v1/workspaces/ws-1/events")
-	defer cancel()
-	defer body.Close()
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
 
-	require.Eventually(t, func() bool {
-		return env.handler.userBroker.WorkspaceSubscriberCount("ws-1") > 0
-	}, 2*time.Second, 5*time.Millisecond)
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", &abiv1.InputRequest{
+		Id: "que_rej", SessionId: "ses_rej", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+		Question: "Q?",
+	})
 
-	env.handler.onRawEvent("ws-1", "question.asked", makeEnvelope("question.asked", map[string]interface{}{
-		"id":        "que_rej",
-		"sessionID": "ses_rej",
-		"questions": []map[string]interface{}{
-			{"question": "Q?", "header": "H", "options": []map[string]string{{"label": "X", "description": "x"}}},
-		},
-	}))
-
-	reader := bufio.NewReader(body)
-	askEvt := readNextSSEDataLineOfType(t, reader, "agent.question")
-	assert.Equal(t, "agent.question", askEvt["type"])
+	askEvt := recvWithTimeout(t, userSub, "agent.question")
+	assert.Equal(t, "agent.question", askEvt.Type)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
@@ -244,13 +196,9 @@ func TestE2E_QuestionFlow_RejectClearsQuestion(t *testing.T) {
 	assert.Contains(t, gotPath, "/reject")
 	assert.Equal(t, http.MethodPost, gotMethod)
 
-	env.handler.onRawEvent("ws-1", "question.rejected", makeEnvelope("question.rejected", map[string]interface{}{
-		"id":        "que_rej",
-		"sessionID": "ses_rej",
-	}))
-
-	resolvedEvt := readNextSSEDataLineOfType(t, reader, "agent.question.resolved")
-	resData, ok := resolvedEvt["data"].(map[string]interface{})
+	(&usageBridge{h: env.handler}).InputResolved("ws-1", "ses_rej", "que_rej")
+	resolvedEvt := recvWithTimeout(t, userSub, "agent.question.resolved")
+	resData, ok := resolvedEvt.Data.(map[string]string)
 	require.True(t, ok)
 	assert.Equal(t, "que_rej", resData["request_id"])
 }

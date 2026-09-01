@@ -4,8 +4,11 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // stateReconciler is US-69.11's replacement for sseWatchReconciler: with
@@ -49,6 +52,28 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 					h.UsageStream().Close(id)
 				}
 			}
+			// Stale activeSess self-heal (the retired tracker's
+			// onReconnect duty, re-driven here): statusz reconcile clears
+			// sessions idle in the agent but busy in our map.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						h.logger.Error("statusz reconcile panicked (isolated; reconciler continues)",
+							fmt.Errorf("%v", r), "component", "reconcile")
+					}
+				}()
+				for _, id := range watched {
+					podIP := h.statuszPodIP(id)
+					if podIP == "" {
+						continue
+					}
+					pw, err := h.getPassword(context.Background(), id)
+					if err != nil {
+						continue
+					}
+					h.reconcileSessionState(id, podIP, pw)
+				}
+			}()
 			// D6 (#998): unattended-escalation sweep on the same tick —
 			// notify, never execute. Failure-isolated.
 			func() {
@@ -62,4 +87,22 @@ func (h *ProxyHandler) stateReconciler(interval time.Duration) {
 			}()
 		}
 	}
+}
+
+// statuszPodIP resolves the pod IP for statusz polls (phase-guarded —
+// the retired tracker's resolver, kept for the D6 sweep and the
+// reconcile pass).
+func (h *ProxyHandler) statuszPodIP(workspaceID string) string {
+	v1Client, err := h.k8sClient.LlmsafespacesV1()
+	if err != nil {
+		return ""
+	}
+	workspace, err := v1Client.Workspaces(h.namespace).Get(context.Background(), workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	if workspace.Status.Phase != phaseActive {
+		return ""
+	}
+	return workspace.Status.PodIP
 }

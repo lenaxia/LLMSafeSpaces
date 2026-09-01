@@ -16,21 +16,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	k8swatch "k8s.io/apimachinery/pkg/watch"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
+
 	"github.com/gin-gonic/gin"
-	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
-	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
@@ -145,63 +144,64 @@ func TestStreamEvents_SetsSSEHeaders(t *testing.T) {
 	assert.Equal(t, "keep-alive", header.Get("Connection"))
 }
 
-func TestStreamEvents_EnsuresWatchingOnOpen(t *testing.T) {
+// TestStreamEvents_ArmsUsageGateOnOpen (US-69.11 port of the old
+// EnsureWatching test): opening the workspace stream must arm the
+// busy-gated usage stream for that workspace, exactly as the tracker
+// watch armed on /events open.
+func TestStreamEvents_ArmsUsageGateOnOpen(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	trackerConnected := make(chan struct{}, 1)
-	sseBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/event" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			select {
-			case trackerConnected <- struct{}{}:
-			default:
-			}
-			<-r.Context().Done()
-		} else {
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer sseBackend.Close()
+	env := newTestEnv(t)
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
-	transport := &redirectTransport{server: sseBackend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	consumer, fc, _ := newRecordingGateConsumer(nil)
+	t.Cleanup(injectUsageStream(consumer))
+	// Gate arming on /events open rides the agentd-terminus path
+	// (US-69.8 flag; production app wiring enables it).
+	env.handler.agentdTerminus = true
 
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	secret := makePasswordSecret("ws-1", "test-pw")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil,
-	).Maybe()
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	handler.sseTracker = sse.NewTracker(httpClient, &testLogger{}, handler.onSessionIdle)
-	handler.sseTracker.SetPasswordGetter(handler)
-	handler.sseTracker.SetPodIPResolver(handler.getPodIPForSSE)
-	handler.sseTracker.SetOnSessionActive(handler.onSessionActive)
-	handler.userBroker = eventbroker.NewUserEventBroker()
-
-	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(handler), "/api/v1/workspaces/ws-1/events")
+	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()
 	defer body.Close()
 
 	select {
-	case <-trackerConnected:
+	case <-fc.connected:
 	case <-time.After(3 * time.Second):
-		t.Fatal("SSE tracker did not connect to pod after /events was opened; EnsureWatching not called from StreamEvents")
+		t.Fatal("usage gate did not connect after /events was opened; UsageStream().Open not called from StreamEvents")
 	}
+}
+
+// TestStreamEvents_BridgeSessionStatus_PublishesToUserStream: the
+// bridge's busy/idle transitions surface as session.status on the user
+// stream (the tracker's onSessionIdle/onSessionActive replacement).
+func TestStreamEvents_BridgeSessionStatus_PublishesToUserStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	t.Cleanup(stubUsageStream())
+
+	userSub, err := env.handler.userBroker.SubscribeUser("user-1")
+	require.NoError(t, err)
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	bridge := &usageBridge{h: env.handler}
+	bridge.SessionStatus("ws-1", "s2", true)
+	bridge.SessionStatus("ws-1", "s1", false)
+
+	evt := recvWithTimeout(t, userSub, "session.status busy")
+	assert.Equal(t, "session.status", evt.Type)
+	assert.Equal(t, "s2", evt.SessionID)
+	assert.Equal(t, "busy", evt.Status)
+	assert.Equal(t, "ws-1", evt.WorkspaceID)
+
+	evt = recvWithTimeout(t, userSub, "session.status idle")
+	assert.Equal(t, "session.status", evt.Type)
+	assert.Equal(t, "s1", evt.SessionID)
+	assert.Equal(t, "idle", evt.Status)
 }
 
 func TestStreamEvents_PhaseEventDeliveredToClient(t *testing.T) {
@@ -348,193 +348,13 @@ func TestStreamEvents_OnPhaseChange_PublishesToBroker(t *testing.T) {
 	}
 }
 
-func TestStreamEvents_OnSessionIdle_PublishesToBroker(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	handler.onSessionIdle("ws-1", "s1")
-
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "session.status", evt.Type)
-		assert.Equal(t, "s1", evt.SessionID)
-		assert.Equal(t, "idle", evt.Status)
-	case <-time.After(time.Second):
-		t.Fatal("expected session.status idle event from onSessionIdle")
-	}
-}
-
-// --- onRawEvent -> broker pipeline ---
-
-func TestStreamEvents_OnRawEvent_PublishesOpenCodeEvent(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	rawData := `{"directory":"ws-1","payload":{"type":"message.part.updated","properties":{"sessionID":"sess-1","part":{"type":"text","text":"hello"}}}}`
-	handler.onRawEvent("ws-1", "message.part.updated", rawData)
-
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-		assert.Equal(t, "message.part.updated", evt.EventType)
-		require.NotNil(t, evt.Data)
-		dataMap, ok := evt.Data.(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "ws-1", dataMap["directory"])
-	case <-time.After(time.Second):
-		t.Fatal("expected opencode.event from onRawEvent")
-	}
-}
-
-func TestStreamEvents_OnRawEvent_PublishesAllEventTypes(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	events := []struct {
-		eventType string
-		data      string
-	}{
-		{"message.part.updated", `{"directory":"ws-1","payload":{"type":"message.part.updated","properties":{"sessionID":"s1"}}}`},
-		{"message.updated", `{"directory":"ws-1","payload":{"type":"message.updated","properties":{"sessionID":"s1"}}}`},
-		{"session.diff", `{"directory":"ws-1","payload":{"type":"session.diff","properties":{"sessionID":"s1"}}}`},
-		{"session.error", `{"directory":"ws-1","payload":{"type":"session.error","properties":{"sessionID":"s1","error":"something went wrong"}}}`},
-	}
-
-	for _, e := range events {
-		handler.onRawEvent("ws-1", e.eventType, e.data)
-
-		select {
-		case evt := <-sub.Ch:
-			assert.Equal(t, "agent.event", evt.Type)
-			assert.Equal(t, e.eventType, evt.EventType)
-		case <-time.After(time.Second):
-			t.Fatalf("expected opencode.event for type %s", e.eventType)
-		}
-	}
-}
-
-func TestStreamEvents_OnRawEvent_NilBrokerDoesNotPanic(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	handler.onRawEvent("ws-1", "message.part.updated", `{"foo":"bar"}`)
-}
-
-func TestStreamEvents_OnRawEvent_UnparsableJSONData(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	handler.onRawEvent("ws-1", "session.status", "not-json-at-all")
-
-	// With the early-return fix (US-65.5), unparsable events are dropped
-	// entirely — no opencode.event with nil Data is forwarded. The channel
-	// should have no events.
-	select {
-	case evt := <-sub.Ch:
-		t.Fatalf("expected no event for unparsable data, got: %+v", evt)
-	case <-time.After(100 * time.Millisecond):
-		// Expected: no event forwarded.
-	}
-}
-
-func TestStreamEvents_OnRawEvent_PreservesNestedStructure(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	rawData := `{"directory":"ws-1","payload":{"type":"message.part.updated","properties":{"sessionID":"sess-1","part":{"type":"text","text":"hello world"}}}}`
-	handler.onRawEvent("ws-1", "message.part.updated", rawData)
-
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-		require.NotNil(t, evt.Data)
-
-		dataMap, ok := evt.Data.(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "ws-1", dataMap["directory"])
-
-		payload, ok := dataMap["payload"].(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "message.part.updated", payload["type"])
-
-		props, ok := payload["properties"].(map[string]interface{})
-		require.True(t, ok, "properties should be a map (JSON object)")
-		assert.Equal(t, "sess-1", props["sessionID"])
-
-		part, ok := props["part"].(map[string]interface{})
-		require.True(t, ok)
-		assert.Equal(t, "text", part["type"])
-		assert.Equal(t, "hello world", part["text"])
-	case <-time.After(time.Second):
-		t.Fatal("expected opencode.event with nested structure preserved")
-	}
-}
+// --- US-69.11: derived-state events via the usage bridge ---
+//
+// The onRawEvent → agent.event relay tests were deleted with the
+// tracker (the raw dialect relay is gone). The broker fan-out contract
+// for agent.event-shaped payloads is kept by
+// TestStreamEvents_OpenCodeEventDeliveredToSSEClient below; derived
+// session.status events now originate from usageBridge.SessionStatus.
 
 func TestStreamEvents_OpenCodeEventDeliveredToSSEClient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -569,72 +389,6 @@ func TestStreamEvents_OpenCodeEventDeliveredToSSEClient(t *testing.T) {
 	assert.Equal(t, "agent.event", evt["type"])
 	assert.Equal(t, "message.part.updated", evt["event_type"])
 	require.Contains(t, evt, "data")
-}
-
-func TestStreamEvents_OnRawEvent_DifferentWorkspaceIsolation(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	sub1, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub1)
-	sub2, _ := broker.SubscribeWorkspace("ws-2")
-	defer broker.UnsubscribeWorkspace("ws-2", sub2)
-
-	handler.onRawEvent("ws-1", "message.part.updated", `{"directory":"ws-1","payload":{"type":"message.part.updated","properties":{"sessionID":"s1"}}}`)
-
-	select {
-	case evt := <-sub1.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-	case <-time.After(time.Second):
-		t.Fatal("ws-1 subscriber should receive opencode.event")
-	}
-
-	select {
-	case <-sub2.Ch:
-		t.Fatal("ws-2 subscriber should NOT receive ws-1's event")
-	case <-time.After(200 * time.Millisecond):
-	}
-}
-
-// --- Existing onSessionActive test ---
-
-func TestStreamEvents_OnSessionActive_PublishesToBroker(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	broker := eventbroker.NewUserEventBroker()
-	handler.userBroker = broker
-
-	handler.SetWorkspaceConfigForTest("ws-1", wsstate.Config{MaxActiveSessions: 5})
-
-	sub, _ := broker.SubscribeWorkspace("ws-1")
-	defer broker.UnsubscribeWorkspace("ws-1", sub)
-
-	handler.onSessionActive("ws-1", "s2")
-
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "session.status", evt.Type)
-		assert.Equal(t, "s2", evt.SessionID)
-		assert.Equal(t, "busy", evt.Status)
-	case <-time.After(time.Second):
-		t.Fatal("expected session.status busy event from onSessionActive")
-	}
 }
 
 // --- #906 r5: stream-lifecycle logs (G7) on both SSE endpoints ---

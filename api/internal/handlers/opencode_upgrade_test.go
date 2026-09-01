@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -15,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -62,7 +60,16 @@ func TestStripVerboseQuery_OnlyStrippedParams(t *testing.T) {
 	assert.Equal(t, "", result)
 }
 
-// --- persistTitleFromEvent tests ---
+// --- session index mock ---
+//
+// US-69.11: the persistTitleFromEvent / persistContextFromEvent dialect
+// parsing tests (opencode session.updated JSON of several wire
+// generations) were deleted with the tracker — the ABI consumer now
+// delivers titles and context usage as structured fields, so there is
+// no dialect left to pin (the ABI decode is pinned in
+// api/internal/services/usagestream tests). What survives is the
+// HANDLER contract: bridge-provided titles/usage reach the session
+// index; deleted sessions are skipped (see also proxy_test.go).
 
 type mockSessionIndex struct {
 	mu          sync.Mutex
@@ -104,241 +111,84 @@ func (m *mockSessionIndex) Stop() error                                         
 
 var _ interfaces.SessionIndexService = (*mockSessionIndex)(nil)
 
-func TestPersistTitleFromEvent_V115FlatFormat(t *testing.T) {
-	// v1.15 format: {"id":"evt_...","type":"session.updated","properties":{"sessionID":"ses_123","info":{"id":"ses_123","title":"My Title",...}}}
-	event := `{"id":"evt_abc","type":"session.updated","properties":{"sessionID":"ses_123","info":{"id":"ses_123","title":"Hello World","slug":"hello-world"}}}`
+// --- usage bridge persistence tests (US-69.11) ---
 
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-1", event)
-
-	assert.Equal(t, "Hello World", mock.titles["ws-1/ses_123"])
-}
-
-func TestPersistTitleFromEvent_V127FlatFormat(t *testing.T) {
-	// v1.2.27 format: {"type":"session.updated","properties":{"info":{"id":"ses_456","title":"Old Format"}}}
-	event := `{"type":"session.updated","properties":{"info":{"id":"ses_456","title":"Old Format"}}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-2", event)
-
-	assert.Equal(t, "Old Format", mock.titles["ws-2/ses_456"])
-}
-
-func TestPersistTitleFromEvent_MissingTitle(t *testing.T) {
-	event := `{"id":"evt_abc","type":"session.updated","properties":{"sessionID":"ses_123","info":{"id":"ses_123"}}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-1", event)
-
-	assert.Empty(t, mock.titles)
-}
-
-func TestPersistTitleFromEvent_MissingInfoID(t *testing.T) {
-	event := `{"id":"evt_abc","type":"session.updated","properties":{"sessionID":"ses_123","info":{"title":"No ID"}}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-1", event)
-
-	assert.Empty(t, mock.titles)
-}
-
-func TestPersistTitleFromEvent_MalformedJSON(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-1", "not json at all")
-
-	assert.Empty(t, mock.titles)
-}
-
-func TestPersistTitleFromEvent_EmptyProperties(t *testing.T) {
-	event := `{"id":"evt_abc","type":"session.updated","properties":{}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
-	h.persistTitleFromEvent("ws-1", event)
-
-	assert.Empty(t, mock.titles)
-}
-
-type testSSEEvent struct {
-	ID         string          `json:"id"`
-	Type       string          `json:"type"`
-	Properties json.RawMessage `json:"properties"`
-}
-
-func newTestSSETracker(onIdle sse.SessionIdleCallback) *sse.Tracker {
-	return sse.NewTracker(&http.Client{Timeout: 2 * time.Second}, &testLogger{}, onIdle)
-}
-
-func TestSSETracker_ProcessEvent_V115Format_ParsesIDField(t *testing.T) {
-	var mu sync.Mutex
-	var capturedRawData string
-
-	tracker := newTestSSETracker(func(workspaceID, sessionID string) {})
-	tracker.SetOnRawEvent(func(workspaceID, eventType, rawData string) {
-		mu.Lock()
-		capturedRawData = rawData
-		mu.Unlock()
+func newBridgeIndexHandler(t *testing.T) (*ProxyHandler, *mockSessionIndex) {
+	t.Helper()
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 	})
-
-	// v1.15 format with id field
-	event := `{"id":"evt_01jw123","type":"session.status","properties":{"sessionID":"ses_abc","status":{"type":"idle"}}}`
-	tracker.ProcessEvent("ws-1", event)
-
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, event, capturedRawData)
-
-	// Verify the event was parsed correctly (id field didn't break parsing)
-	var parsed testSSEEvent
-	require.NoError(t, json.Unmarshal([]byte(event), &parsed))
-	assert.Equal(t, "evt_01jw123", parsed.ID)
-	assert.Equal(t, "session.status", parsed.Type)
+	env.handler.SetSessionIndex(newMockSessionIndex())
+	si := env.handler.sessionIndex.(*mockSessionIndex)
+	t.Cleanup(stubUsageStream())
+	return env.handler, si
 }
 
-func TestSSETracker_ProcessEvent_V115Format_SessionIdleStillWorks(t *testing.T) {
-	var mu sync.Mutex
-	var idleCalls []string
+func TestBridgeSessionTitle_Persists(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
 
-	tracker := newTestSSETracker(func(workspaceID, sessionID string) {
-		mu.Lock()
-		idleCalls = append(idleCalls, sessionID)
-		mu.Unlock()
-	})
+	(&usageBridge{h: h}).SessionTitle("ws-1", "ses_123", "Hello World")
 
-	// v1.15 format with id field — should still trigger idle callback
-	event := `{"id":"evt_01jw456","type":"session.status","properties":{"sessionID":"ses_xyz","status":{"type":"idle"}}}`
-	tracker.ProcessEvent("ws-1", event)
-
-	mu.Lock()
-	defer mu.Unlock()
-	require.Len(t, idleCalls, 1)
-	assert.Equal(t, "ses_xyz", idleCalls[0])
+	assert.Equal(t, "Hello World", si.titles["ws-1/ses_123"])
 }
 
-func TestSSETracker_ProcessEvent_V115Format_HeartbeatIgnored(t *testing.T) {
-	var mu sync.Mutex
-	var eventTypes []string
+func TestBridgeSessionTitle_EmptyTitleOrSession_Skipped(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
 
-	tracker := newTestSSETracker(func(workspaceID, sessionID string) {})
-	tracker.SetOnRawEvent(func(workspaceID, eventType, rawData string) {
-		mu.Lock()
-		eventTypes = append(eventTypes, eventType)
-		mu.Unlock()
-	})
+	(&usageBridge{h: h}).SessionTitle("ws-1", "ses_123", "")
+	(&usageBridge{h: h}).SessionTitle("ws-1", "", "Orphan")
 
-	// v1.15 heartbeat format
-	event := `{"id":"evt_hb001","type":"server.heartbeat","properties":{}}`
-	tracker.ProcessEvent("ws-1", event)
-
-	mu.Lock()
-	defer mu.Unlock()
-	require.Len(t, eventTypes, 1)
-	assert.Equal(t, "server.heartbeat", eventTypes[0])
+	assert.Empty(t, si.titles)
 }
 
-// --- persistContextFromEvent wiring tests ---
-//
-// Translation (wire shapes → ContextUsage math) is owned by the opencode
-// adapter and pinned in pkg/agent/opencode tests, including golden-fixture
-// coverage. These tests pin the HANDLER contract: adapter-provided usage
-// reaches the session index; everything else is skipped.
+func TestBridgeContextUsed_Persists(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
 
-func TestPersistContextFromEvent_AdapterUsage_Persisted(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_abc": 1050}))
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_abc", 1050)
 
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800,"output":400,"reasoning":100,"cache":{"read":200,"write":50}}}}`
-	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
-
-	v := mock.contextUsed["ws-1/ses_abc"]
-	require.NotNil(t, v, "adapter-provided usage must be stored")
+	v := si.contextUsed["ws-1/ses_abc"]
+	require.NotNil(t, v, "bridge-provided usage must be stored")
 	assert.Equal(t, int64(1050), *v)
 }
 
-func TestPersistContextFromEvent_NewShapeEvent_Persisted(t *testing.T) {
-	// The 1.18.x wire shape: usage inside step-finish parts of
-	// message.part.updated events (suffixed). The handler must not care —
-	// the adapter decides what carries usage.
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_new": 3590}))
+func TestBridgeContextUsed_NonPositiveSkipped(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
 
-	event := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_new","part":{"type":"step-finish","tokens":{"input":2310,"cache":{"read":1280,"write":0}}}}}`
-	h.persistContextFromEvent("ws-1", "message.part.updated.1", event)
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_abc", 0)
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_abc", -5)
 
-	v := mock.contextUsed["ws-1/ses_new"]
+	assert.Nil(t, si.contextUsed["ws-1/ses_abc"], "non-positive usage must not write")
+}
+
+func TestBridgeContextUsed_OverwritesPreviousValue(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
+
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_1", 5000)
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_1", 61500)
+
+	v := si.contextUsed["ws-1/ses_1"]
 	require.NotNil(t, v)
-	assert.Equal(t, int64(3590), *v)
+	assert.Equal(t, int64(61500), *v, "latest step overwrites previous contextUsed")
 }
 
-func TestPersistContextFromEvent_ZeroUsage_Persisted(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_xyz": 0}))
+func TestBridgeContextUsed_MultipleSessionsTrackedIndependently(t *testing.T) {
+	h, si := newBridgeIndexHandler(t)
 
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_xyz","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
-	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_1", 5000)
+	(&usageBridge{h: h}).ContextUsed("ws-1", "ses_2", 80000)
 
-	v := mock.contextUsed["ws-1/ses_xyz"]
-	require.NotNil(t, v, "zero usage is real usage — must be stored")
-	assert.Equal(t, int64(0), *v)
+	assert.Equal(t, int64(5000), *si.contextUsed["ws-1/ses_1"])
+	assert.Equal(t, int64(80000), *si.contextUsed["ws-1/ses_2"])
 }
 
-func TestPersistContextFromEvent_AdapterSaysNoUsage_NoWrite(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(nil))
+func TestBridge_NilSessionIndex_NoPanic(t *testing.T) {
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	t.Cleanup(stubUsageStream())
 
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc"}}`
-	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
-
-	assert.Nil(t, mock.contextUsed["ws-1/ses_abc"], "ok=false must not write")
-}
-
-func TestPersistContextFromEvent_MalformedJSON_NoWrite(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_abc": 1}))
-
-	h.persistContextFromEvent("ws-1", "session.next.step.ended", "not json at all")
-
-	assert.Empty(t, mock.contextUsed, "malformed JSON must not write")
-}
-
-func TestPersistContextFromEvent_NilAdapter_NoWriteNoPanic(t *testing.T) {
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800}}}`
-	assert.NotPanics(t, func() { h.persistContextFromEvent("ws-1", "session.next.step.ended", event) })
-	assert.Empty(t, mock.contextUsed)
-}
-
-func TestPersistContextFromEvent_NilSessionIndex_NoPanic(t *testing.T) {
-	h := &ProxyHandler{sessionIndex: nil}
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800}}}`
-	assert.NotPanics(t, func() { h.persistContextFromEvent("ws-1", "session.next.step.ended", event) })
-}
-
-func TestOnRawEvent_UsageEvent_PersistsThroughFullPath(t *testing.T) {
-	// Integration: onRawEvent → persistContextFromEvent → session index,
-	// for BOTH wire generations (legacy standalone event and part-update).
-	legacy := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_old","tokens":{"input":500,"cache":{"read":100,"write":25}}}}`
-	modern := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_new","part":{"type":"step-finish","tokens":{"input":900,"cache":{"read":100,"write":0}}}}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_old": 625, "ses_new": 1000}))
-
-	h.onRawEvent("ws-1", "session.next.step.ended", legacy)
-	h.onRawEvent("ws-1", "message.part.updated.1", modern)
-
-	assert.Equal(t, int64(625), *mock.contextUsed["ws-1/ses_old"])
-	assert.Equal(t, int64(1000), *mock.contextUsed["ws-1/ses_new"])
+	assert.NotPanics(t, func() {
+		(&usageBridge{h: env.handler}).SessionTitle("ws-1", "s", "t")
+		(&usageBridge{h: env.handler}).ContextUsed("ws-1", "s", 10)
+	})
 }

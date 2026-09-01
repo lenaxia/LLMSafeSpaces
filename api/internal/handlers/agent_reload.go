@@ -19,7 +19,6 @@ import (
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
@@ -69,7 +68,6 @@ type AgentReloadHandler struct {
 	podResolver          PodIPResolver
 	httpClient           *http.Client
 	logger               pkginterfaces.LoggerInterface
-	sseTracker           *sse.Tracker
 	getPassword          interfaces.WorkspacePasswordProvider
 	metricsService       MetricsRecorder
 	broker               BrokerPublisher
@@ -118,9 +116,6 @@ func NewAgentReloadHandler(
 func (h *AgentReloadHandler) SetStatusCheckerFactory(f func(podIP, password string) SessionStatusChecker) {
 	h.statusCheckerFactory = f
 }
-
-// SetSSETracker injects the tracker for drain mode support.
-func (h *AgentReloadHandler) SetSSETracker(t *sse.Tracker) { h.sseTracker = t }
 
 // SetPasswordGetter injects the password getter for drain mode (needs opencode client).
 func (h *AgentReloadHandler) SetPasswordGetter(provider interfaces.WorkspacePasswordProvider) {
@@ -186,7 +181,7 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 		}
 	}
 
-	if drain && h.sseTracker != nil && h.getPassword != nil {
+	if drain && h.getPassword != nil {
 		pw, err := h.getPassword.WorkspacePassword(c.Request.Context(), workspaceID)
 		if err != nil {
 			respondWithAPIError(c, apierrors.NewInternalError("get_opencode_password_failed", err))
@@ -200,7 +195,7 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 			fmt.Sprintf("%s:%d", podIP, agentd.AgentPort),
 			pw,
 		)
-		if err := WaitUntilIdle(c.Request.Context(), workspaceID, h.sseTracker, statusChecker, drainTimeout); err != nil {
+		if err := WaitUntilIdle(c.Request.Context(), workspaceID, statusChecker, drainTimeout); err != nil {
 			var drainErr *ErrDrainTimeout
 			if errors.As(err, &drainErr) {
 				if h.metricsService != nil {
@@ -345,7 +340,6 @@ type BulkReloadHandler struct {
 	podResolver          PodIPResolver
 	httpClient           *http.Client
 	logger               pkginterfaces.LoggerInterface
-	sseTracker           *sse.Tracker
 	getPassword          interfaces.WorkspacePasswordProvider
 	metricsService       MetricsRecorder
 	broker               BrokerPublisher
@@ -380,9 +374,6 @@ func NewBulkReloadHandler(
 		logger:        logger,
 	}
 }
-
-// SetSSETracker injects the SSE tracker for drain mode.
-func (h *BulkReloadHandler) SetSSETracker(t *sse.Tracker) { h.sseTracker = t }
 
 // SetMetrics injects the metrics recorder.
 func (h *BulkReloadHandler) SetMetrics(m MetricsRecorder) { h.metricsService = m }
@@ -502,7 +493,7 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "pod_not_reachable", "message": "workspace pod is not reachable"}}
 	}
 
-	if drain && h.sseTracker != nil && h.getPassword != nil {
+	if drain && h.getPassword != nil {
 		pw, err := h.getPassword.WorkspacePassword(ctx, workspaceID)
 		if err != nil {
 			return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
@@ -512,7 +503,7 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 			return map[string]any{"workspaceId": workspaceID, "skip_reason": "status_checker_factory_not_wired"}
 		}
 		statusChecker := h.statusCheckerFactory(fmt.Sprintf("%s:%d", podIP, agentd.AgentPort), pw)
-		if err := WaitUntilIdle(ctx, workspaceID, h.sseTracker, statusChecker, drainTimeout); err != nil {
+		if err := WaitUntilIdle(ctx, workspaceID, statusChecker, drainTimeout); err != nil {
 			var drainErr *ErrDrainTimeout
 			if errors.As(err, &drainErr) {
 				return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "drain_timeout", "busySessionIDs": drainErr.BusySessions}}

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/contractstream"
@@ -26,6 +28,29 @@ import (
 // re-snapshots the SAME subscribers. Behind AGENTD_STATE_AUTHORITY (D4).
 
 const contractStreamHeartbeat = 25 * time.Second
+
+// contractStreamUpstreams (US-69.11, the SSE-tracker retirement's
+// scale-to-zero observable): 1 per workspace holding an open pod
+// upstream, series deleted on last detach — so idle fleets scrape an
+// empty (not zero-labeled) series set, same discipline as the
+// request-buffer gauges (DeleteRequestBufferMetrics).
+var contractStreamUpstreams = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "llmsafespaces_contract_stream_upstreams",
+	Help: "Open contract-stream pod upstreams per workspace (1 while >=1 browser subscriber is attached; series deleted on last detach — D1-B scale-to-zero).",
+}, []string{"workspace_id"})
+
+// recordContractStreamUpstream is the Manager's metrics hook (the
+// package stays import-clean; the gauge lives here).
+func recordContractStreamUpstream(workspaceID string, open bool) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if open {
+		contractStreamUpstreams.WithLabelValues(workspaceID).Set(1)
+	} else {
+		contractStreamUpstreams.DeleteLabelValues(workspaceID)
+	}
+}
 
 // contractStreamManager lazily builds the process-wide manager (the
 // resolve seam re-resolves the pod per (re)connect — resume-safe, A7).
@@ -44,13 +69,15 @@ func (h *ProxyHandler) contractStreamManager() *contractstream.Manager {
 // buildContractStreamManager is the production wiring (split out for the
 // test seam: SetContractStreamManagerForTest injects a fake).
 func (h *ProxyHandler) buildContractStreamManager() *contractstream.Manager {
-	return contractstream.NewManager(
+	m := contractstream.NewManager(
 		func(ctx context.Context, workspaceID string) (string, string, error) {
 			return h.agentdEndpoint(ctx, workspaceID)
 		},
 		h.logger,
 		contractstream.ConnectStream,
 	)
+	m.SetOnUpstreamChange(recordContractStreamUpstream)
+	return m
 }
 
 // SetContractStreamManagerForTest swaps the process manager (handler

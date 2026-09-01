@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
@@ -265,19 +264,18 @@ func TestProxy_Upstream401_InvalidatesRedisPasswordCache(t *testing.T) {
 	assert.False(t, cached, "GetCachedPassword must return miss after Redis DEL")
 }
 
-// --- #902: SSE watch re-arm on Active events ---
+// --- #902: usage-gate re-arm on Active events (US-69.11 port) ---
+//
+// The tracker's EnsureWatching is retired; the equivalent surface is the
+// busy-gated usage stream (h.UsageStream().Open/Close). The same #902
+// regression shapes hold: arm on EVERY Active event (even prior==Active),
+// a fresh gate on real transitions, teardown on suspend, and reconciler
+// healing for gates the seed missed.
 
-// TestOnPhaseChange_ActiveUpdateRearmsSSEWatch is the #902 regression:
-// an Active→Active update (prior == Active, exactly what the
-// Redis-backed prior-phase store presents to a post-restart seed) must
-// still EnsureWatching. Pre-fix, this event took the else-branch and
-// never armed the tracker — the workspace went event-blind while sends
-// and turns kept working (2026-08-16 halting-sessions incident).
-func TestOnPhaseChange_ActiveUpdateRearmsSSEWatch(t *testing.T) {
+func TestOnPhaseChange_ActiveUpdateRearmsUsageGate(t *testing.T) {
 	env := newTestEnv(t)
-	// Wire a tracker exactly as Start() does (newTestEnv leaves it nil;
-	// production code nil-guards, but these tests assert on the tracker).
-	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
+	consumer, fc, resolved := newRecordingGateConsumer(nil)
+	t.Cleanup(injectUsageStream(consumer))
 	env.handler.SetPriorPhaseForTest("ws-902", "Active")
 
 	ws := &v1.Workspace{}
@@ -285,54 +283,61 @@ func TestOnPhaseChange_ActiveUpdateRearmsSSEWatch(t *testing.T) {
 	ws.Status.Phase = v1.WorkspacePhaseActive
 	env.handler.onPhaseChange(ws)
 
-	assert.True(t, env.handler.GetSSETracker().IsWatching("ws-902"),
-		"Active→Active update must arm the SSE watch (#902: Redis-persisted prior-phase makes post-restart seeds look exactly like this)")
+	requireGateConnect(t, fc, "Active→Active update must arm the usage gate")
+	require.Contains(t, *resolved, "ws-902",
+		"#902: Redis-persisted prior-phase makes post-restart seeds look exactly like this — the gate must still arm")
 }
 
-// TestOnPhaseChange_ActiveTransitionFreshConnection: a real transition
-// (prior != Active) must still Stop+Ensure — a fresh connection, since
-// the old one targets the previous pod.
-func TestOnPhaseChange_ActiveTransitionFreshConnection(t *testing.T) {
+// A real transition (prior != Active) must still Close+Open — a fresh
+// gate, since the old one targets the previous pod.
+func TestOnPhaseChange_ActiveTransitionFreshGate(t *testing.T) {
 	env := newTestEnv(t)
-	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
+	consumer, fc, _ := newRecordingGateConsumer(nil)
+	t.Cleanup(injectUsageStream(consumer))
 	env.handler.SetPriorPhaseForTest("ws-902b", "Resuming")
 
-	// Simulate an existing (stale) watch: the tracker considers it armed.
-	env.handler.GetSSETracker().ForceWatchingForTest("ws-902b")
+	// Simulate an existing (stale) gate from the previous pod: armed
+	// before the transition.
+	env.handler.UsageStream().Open("ws-902b")
+	requireGateConnect(t, fc, "pre-transition gate must arm")
 
 	ws := &v1.Workspace{}
 	ws.Name = "ws-902b"
 	ws.Status.Phase = v1.WorkspacePhaseActive
 	env.handler.onPhaseChange(ws)
 
-	assert.True(t, env.handler.GetSSETracker().IsWatching("ws-902b"),
-		"transition into Active must leave a watch armed")
+	// The transition tears the old gate down and arms a fresh one: a
+	// second connection must appear.
+	requireGateConnect(t, fc, "transition into Active must re-arm a fresh gate")
+	require.Equal(t, 1, env.handler.UsageStream().Gates(),
+		"transition must leave exactly one gate armed")
 }
 
-// TestOnPhaseChange_SuspendedStopsWatching: unchanged semantics —
-// suspending must still tear the watch down (no connection leak to a
-// deleted pod).
-func TestOnPhaseChange_SuspendedStopsWatching(t *testing.T) {
+func TestOnPhaseChange_SuspendedClosesGate(t *testing.T) {
 	env := newTestEnv(t)
-	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
+	consumer, _, _ := newRecordingGateConsumer(nil)
+	t.Cleanup(injectUsageStream(consumer))
 	env.handler.SetPriorPhaseForTest("ws-902c", "Active")
-	env.handler.GetSSETracker().ForceWatchingForTest("ws-902c")
+
+	env.handler.UsageStream().Open("ws-902c")
+	require.Equal(t, 1, env.handler.UsageStream().Gates())
 
 	ws := &v1.Workspace{}
 	ws.Name = "ws-902c"
 	ws.Status.Phase = v1.WorkspacePhaseSuspended
 	env.handler.onPhaseChange(ws)
 
-	assert.False(t, env.handler.GetSSETracker().IsWatching("ws-902c"),
-		"Suspended must stop watching")
+	assert.Equal(t, 0, env.handler.UsageStream().Gates(),
+		"Suspended must close the usage gate (no pod stream to a deleted pod)")
 }
 
-// TestSSEWatchReconciler_HealsMissingWatch (#902): the reconciler must
-// arm watches for Active workspaces the seed missed — converting
-// permanent event-blindness into at most one reconcile interval.
-func TestSSEWatchReconciler_HealsMissingWatch(t *testing.T) {
+// TestStateReconciler_HealsMissingGate (#902): the reconciler must arm
+// gates for Active workspaces the seed missed — converting permanent
+// event-blindness into at most one reconcile interval.
+func TestStateReconciler_HealsMissingGate(t *testing.T) {
 	env := newTestEnv(t)
-	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
+	consumer, _, resolved := newRecordingGateConsumer(nil)
+	t.Cleanup(injectUsageStream(consumer))
 
 	orig := sseWatchReconcileInterval
 	sseWatchReconcileInterval = 20 * time.Millisecond
@@ -342,22 +347,29 @@ func TestSSEWatchReconciler_HealsMissingWatch(t *testing.T) {
 	env.handler.stopCh = stopCh
 	t.Cleanup(func() { close(stopCh) })
 
-	// A phase source with an Active workspace the tracker does NOT
-	// watch (the seed-skip shape), plus non-Active controls.
+	// A phase source with an Active workspace no gate covers (the
+	// seed-skip shape), plus non-Active controls.
 	env.handler.phaseSource = fakePhaseSource{
 		"ws-missed":  "Active",
 		"ws-susp":    "Suspended",
 		"ws-created": "Creating",
 	}
-	go env.handler.sseWatchReconciler(sseWatchReconcileInterval)
+	go env.handler.stateReconciler(sseWatchReconcileInterval)
 
-	require.Eventually(t, func() bool { return env.handler.GetSSETracker().IsWatching("ws-missed") },
-		2*time.Second, 10*time.Millisecond,
-		"reconciler must arm the missed Active watch")
+	require.Eventually(t, func() bool {
+		for _, id := range *resolved {
+			if id == "ws-missed" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, 10*time.Millisecond,
+		"reconciler must arm the missed Active gate")
 
-	// Only Active phases are armed.
-	assert.False(t, env.handler.GetSSETracker().IsWatching("ws-susp"))
-	assert.False(t, env.handler.GetSSETracker().IsWatching("ws-created"))
+	for _, id := range *resolved {
+		assert.NotEqual(t, "ws-susp", id, "only Active phases are armed")
+		assert.NotEqual(t, "ws-created", id, "only Active phases are armed")
+	}
 }
 
 type fakePhaseSource map[string]string

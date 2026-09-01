@@ -22,7 +22,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -48,8 +47,6 @@ func (h *ProxyHandler) Start() error {
 			return
 		}
 
-		h.sseTracker = h.newSSETracker()
-
 		watcher, err := workspace.NewWatcher(h.k8sClient, h.logger, h.namespace, h.onPhaseChange)
 		if err != nil {
 			_ = h.activityTracker.Stop()
@@ -70,11 +67,8 @@ func (h *ProxyHandler) Start() error {
 		}
 		h.watcher = watcher
 		h.phaseSource = watcher
-		// #902: the seed path alone cannot keep watches alive — prior-phase
-		// is Redis-persisted, so post-restart seeds skip arming, and dead
-		// watches have no transition event to re-arm them. The reconciler
-		// heals missing watches; see its doc comment for scope limits.
-		go h.sseWatchReconciler(sseWatchReconcileInterval)
+		// #902 semantics live on in the state reconciler: gates that die
+		// (pod churn) heal on its tick; usage-gate Open is idempotent.
 		go h.stateReconciler(sseWatchReconcileInterval)
 
 		// D3 (#907): the outbox delivery worker — detached from any
@@ -93,10 +87,6 @@ func (h *ProxyHandler) Start() error {
 				<-h.stopCh
 				wcancel()
 			}()
-			// G2 (design 0054): decay bridge-derived busy states whose
-			// terminal event never arrived. Rides the outbox worker's
-			// lifecycle (same lifetime, same stop signal).
-			go h.v2BusyReap(wctx)
 			go h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
 		}
 	})
@@ -118,61 +108,10 @@ var sseWatchReconcileInterval = 60 * time.Second
 //     connectAndRead failing forever at Warn with backoff — e.g. a stale
 //     podIP). That class needs the tracker-state signal from #901
 //     (G1/G11), not this reconciler.
-func (h *ProxyHandler) sseWatchReconciler(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-h.stopCh:
-			return
-		case <-ticker.C:
-			// Shutdown race (#903 review): the select above may pick
-			// ticker.C even when stopCh is already closed; arming after
-			// Stop() would leak a retry goroutine nobody will cancel.
-			select {
-			case <-h.stopCh:
-				return
-			default:
-			}
-			if h.sseTracker == nil || h.phaseSource == nil {
-				continue
-			}
-			phases := h.phaseSource.GetAllKnownPhases()
-			watched := make([]string, 0, len(phases))
-			for id, phase := range phases {
-				if phase == string(phaseActive) {
-					h.sseTracker.EnsureWatching(id)
-					watched = append(watched, id)
-				}
-			}
-			// D6 (#998): unattended-escalation sweep on the same tick —
-			// notify, never execute. Failure-isolated: an escalation
-			// panic must never take down the reconciler (which also
-			// arms SSE watches — losing it re-creates the #902 incident
-			// class).
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						h.logger.Error("D6 escalation sweep panicked (isolated; reconciler continues)",
-							fmt.Errorf("%v", r), "component", "d6")
-					}
-				}()
-				h.escalateHungs(watched)
-			}()
-			// #901 G3: refresh upstream-liveness gauges while we're here
-			// (no second loop/ticker for the same data).
-			sse.RefreshLastEventGauges(watched)
-		}
-	}
-}
-
 func (h *ProxyHandler) Stop() error {
 	h.stopOnce.Do(func() {
 		if h.stopCh != nil {
 			close(h.stopCh)
-		}
-		if h.sseTracker != nil {
-			h.sseTracker.Stop()
 		}
 		if h.watcher != nil {
 			h.watcher.Stop()
@@ -182,10 +121,6 @@ func (h *ProxyHandler) Stop() error {
 		}
 	})
 	return nil
-}
-
-func (h *ProxyHandler) GetSSETracker() *sse.Tracker {
-	return h.sseTracker
 }
 
 func (h *ProxyHandler) GetPasswordGetter() interfaces.WorkspacePasswordProvider {
@@ -225,22 +160,6 @@ func (h *ProxyHandler) SetRequestBufferConfig(maxSize int, timeout time.Duration
 
 func (h *ProxyHandler) SetMeteringService(svc interfaces.MeteringService) {
 	h.meteringSvc = svc
-}
-
-// SetV2QueueShadow injects the Redis-backed shadow marker for V2 queue
-// visibility (US-63.10). Must be called before Start(). Pass nil to
-// disable the shadow (ListQueue returns empty under V2).
-func (h *ProxyHandler) SetV2QueueShadow(s *V2QueueShadow) {
-	h.v2Shadow = s
-}
-
-// SetV2PendingTracker overrides the V2 pending-session tracker. Used by
-// app.go to swap the in-memory tracker for a Redis-backed one when a Redis
-// client is available (multi-replica support). Must be called before Start().
-func (h *ProxyHandler) SetV2PendingTracker(t v2PendingTracker) {
-	if t != nil {
-		h.v2Pending = t
-	}
 }
 
 func (h *ProxyHandler) GetBroker() BrokerPublisher {
@@ -287,29 +206,6 @@ func (h *ProxyHandler) GetAllKnownPhases() map[string]string {
 		return nil
 	}
 	return h.watcher.GetAllKnownPhases()
-}
-
-// newSSETracker constructs the workspace SSE tracker with every callback
-// wired, including the metering decoder — which rides the Adapter seam
-// (design 0049 boundary: no agent wire knowledge in the tracker). The
-// decoder is wired HERE, at construction, so no call site can forget it:
-// a nil decoder silently zeroes all billing inference.
-func (h *ProxyHandler) newSSETracker() *sse.Tracker {
-	t := sse.NewTracker(h.httpClient, h.logger, h.onSessionIdle)
-	if h.adapter != nil {
-		t.SetMeteringDecoder(h.adapter.MeteringFromEvent)
-		t.SetEventClassifier(h.adapter.IsKnownEventType)
-	}
-	t.SetPasswordGetter(h)
-	t.SetPodIPResolver(h.getPodIPForSSE)
-	t.SetOnSessionActive(h.onSessionActive)
-	t.SetOnRawEvent(h.onRawEvent)
-	t.SetOnAgentDied(h.onAgentDied)
-	t.SetOnReconnect(h.reconcileSessionState)
-	if h.tokenSeenStore != nil {
-		t.SetTokenSeenStore(h.tokenSeenStore)
-	}
-	return t
 }
 
 // outboxTick is the outbox delivery scan interval. Var for tests.
@@ -600,7 +496,7 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 		if h.busyAlertCooling(wid) {
 			continue
 		}
-		podIP := h.getPodIPForSSE(wid)
+		podIP := h.statuszPodIP(wid)
 		if podIP == "" {
 			continue
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
 )
 
@@ -289,10 +290,11 @@ func TestIntegration_ExternalStdioClient_UploadAndMessageWithFiles(t *testing.T)
 			mu.Unlock()
 			w.WriteHeader(http.StatusAccepted)
 
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/session-events"):
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/contract-events"):
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = w.Write([]byte("data: {\"type\":\"session.event\",\"data\":{\"type\":\"message.part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"first line: quarterly numbers\"}}\n\n"))
-			_, _ = w.Write([]byte("data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n"))
+			writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+			writeContractFrame(t, w, eventFrame(2, deltaEvent("sess-1", "first line: quarterly numbers")))
+			writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 
 		default:
 			t.Errorf("unexpected API call: %s %s", r.Method, r.URL.Path)

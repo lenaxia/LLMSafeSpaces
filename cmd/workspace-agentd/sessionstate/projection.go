@@ -172,10 +172,16 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 // referenced by the fanout frame (serialized outside the lock by the
 // Events handler) — retaining the shared pointer would race later
 // mutations (PART_DELTA) against in-flight sends. Caught by the S1 shadow
-// harness under -race.
+// harness under -race. A CUSTOM part application also bumps the
+// custom-valve counter (the retired API-side unknown-taxonomy signal's
+// agentd successor: extension kinds flowing through the valve, counted at
+// the projection — the sole place parts are applied).
 func (a *Authority) upsertPartLocked(rec *sessionRecord, p *abiv1.Part) {
 	if p == nil || p.GetId() == "" {
 		return
+	}
+	if p.GetType() == abiv1.PartType_PART_TYPE_CUSTOM {
+		a.customValveEvents++
 	}
 	clone := proto.Clone(p).(*abiv1.Part)
 	if i := rec.partIndex(p.GetId()); i >= 0 {

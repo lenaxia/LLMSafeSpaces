@@ -14,9 +14,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/stretchr/testify/assert"
 )
 
 // stubMCPStore is a test double for mcpServerStore.

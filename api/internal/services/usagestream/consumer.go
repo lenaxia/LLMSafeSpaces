@@ -117,6 +117,13 @@ type Config struct {
 	IdleDrop time.Duration
 	// Retry is the reconnect backoff after a stream error (default 2s).
 	Retry time.Duration
+
+	// OnGateChange is the optional gate-lifecycle hook (the metrics
+	// seam — a prometheus gauge in the handler layer; the package
+	// stays import-clean). Fires open=true when a workspace's gate is
+	// armed and open=false when it drops (Close, idle-drop, or
+	// teardown). May be nil.
+	OnGateChange func(workspaceID string, open bool)
 }
 
 // Consumer owns one busy-gated pod subscription per workspace.
@@ -150,15 +157,20 @@ func New(cfg Config) *Consumer {
 // immediately; activity keeps it alive.
 func (c *Consumer) Open(workspaceID string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, ok := c.gates[workspaceID]; ok {
+		c.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &gate{cancel: cancel, done: make(chan struct{}), idleSince: time.Now()}
 	c.gates[workspaceID] = g
+	hook := c.cfg.OnGateChange
+	c.mu.Unlock()
 	//nolint:contextcheck // the gate's lifecycle is activity-driven
 	// (Open/Close + idle-drop), not request-scoped.
+	if hook != nil {
+		hook(workspaceID, true)
+	}
 	go c.run(ctx, workspaceID, g)
 }
 
@@ -169,8 +181,12 @@ func (c *Consumer) Close(workspaceID string) {
 	if ok {
 		delete(c.gates, workspaceID)
 	}
+	hook := c.cfg.OnGateChange
 	c.mu.Unlock()
 	if ok {
+		if hook != nil {
+			hook(workspaceID, false)
+		}
 		g.cancel()
 		<-g.done
 	}
@@ -185,11 +201,20 @@ func (c *Consumer) Gates() int {
 
 func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 	defer func() {
+		// Self-drop (idle window elapsed or ctx canceled with the gate
+		// still mapped): the map entry is ours to remove — fire the hook
+		// exactly once (Close's delete wins the race by making the
+		// identity check fail).
 		c.mu.Lock()
-		if c.gates[workspaceID] == g {
+		self := c.gates[workspaceID] == g
+		if self {
 			delete(c.gates, workspaceID)
 		}
+		hook := c.cfg.OnGateChange
 		c.mu.Unlock()
+		if self && hook != nil {
+			hook(workspaceID, false)
+		}
 		g.cancel()
 		close(g.done)
 	}()

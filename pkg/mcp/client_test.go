@@ -18,9 +18,47 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
+
+// --- ABI contract-stream fixtures (US-69.11: /contract-events carries
+// protojson StreamFrames — snapshot first, then sequenced events). ---
+
+// writeContractFrame marshals one StreamFrame exactly as the API's
+// ContractEvents handler does (protojson, camelCase) and writes it as
+// an SSE data line.
+func writeContractFrame(t *testing.T, w io.Writer, frame *abiv1.StreamFrame) {
+	t.Helper()
+	raw, err := protojson.Marshal(frame)
+	require.NoError(t, err)
+	_, err = fmt.Fprintf(w, "data: %s\n\n", raw)
+	require.NoError(t, err)
+}
+
+func sessionSnap(id string, status abiv1.SessionStatus) *abiv1.SessionSnapshot {
+	return &abiv1.SessionSnapshot{SessionId: id, Status: status}
+}
+
+func snapshotFrame(atSeq uint64, sessions ...*abiv1.SessionSnapshot) *abiv1.StreamFrame {
+	return &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Snapshot{Snapshot: &abiv1.SnapshotFrame{
+		AtSeq: atSeq, Snapshot: &abiv1.PodSnapshot{Sessions: sessions},
+	}}}
+}
+
+func eventFrame(seq uint64, evt *abiv1.Event) *abiv1.StreamFrame {
+	return &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: seq, Event: evt}}}
+}
+
+func statusEvent(sid string, status abiv1.SessionStatus) *abiv1.Event {
+	return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: sid, Status: status}
+}
+
+func deltaEvent(sid, delta string) *abiv1.Event {
+	return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_DELTA, SessionId: sid, Delta: delta}
+}
 
 func newTestHTTPClient(handler http.Handler) (*HTTPClient, *httptest.Server) {
 	ts := httptest.NewServer(handler)
@@ -274,23 +312,24 @@ func TestHTTPClient_GetHistory_HappyPath(t *testing.T) {
 
 // ===== SendMessage =====
 
-func TestHTTPClient_SendMessage_SSEResponse(t *testing.T) {
+func TestHTTPClient_SendMessage_ContractStreamResponse(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		// The real broker shape (#1053): contract events ride
-		// session.event envelopes, and streamed text arrives as
-		// part.delta payloads inside data.
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"Hello \"}}\n\n")
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"world!\"}}\n\n")
+		writeContractFrame(t, w, eventFrame(2, deltaEvent("sess-1", "Hello ")))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(3, deltaEvent("sess-1", "world!")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(4, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 
@@ -302,22 +341,57 @@ func TestHTTPClient_SendMessage_SSEResponse(t *testing.T) {
 	assert.Equal(t, "Hello world!", resp)
 }
 
-// TestHTTPClient_SendMessage_SSEOtherSessionDelta_Ignored: deltas from
-// another session on the same workspace stream must not bleed into this
-// call's response.
-func TestHTTPClient_SendMessage_SSEOtherSessionDelta_Ignored(t *testing.T) {
+// TestHTTPClient_SendMessage_SnapshotIdleCompletesImmediately pins the
+// snapshot-first rule: a snapshot whose target session is IDLE
+// completes the wait without any further event. The stream stays open
+// after the snapshot — only the snapshot itself terminates the wait.
+func TestHTTPClient_SendMessage_SnapshotIdleCompletesImmediately(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-2\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-2\",\"delta\":\"other session\"}}\n\n")
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"mine\"}}\n\n")
+		<-r.Context().Done() // no further event: idle must come from the snapshot
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "already done")})
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	start := time.Now()
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 3*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "already done", resp)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"IDLE snapshot must complete the wait immediately, not via the timeout")
+}
+
+// TestHTTPClient_SendMessage_OtherSessionDelta_Ignored: deltas from
+// another session on the pod-wide contract stream must not bleed into
+// this call's response.
+func TestHTTPClient_SendMessage_OtherSessionDeltaIgnored(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1,
+			sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY),
+			sessionSnap("sess-2", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(2, deltaEvent("sess-2", "other session")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(3, deltaEvent("sess-1", "mine")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(4, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 
@@ -334,8 +408,9 @@ func TestHTTPClient_SendMessage_FallbackToHistory(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
-		// SSE stream closes immediately without session.idle
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		// Stream closes immediately without ever delivering a snapshot
+		// frame — a broken endpoint; the history fallback answers.
 		w.Header().Set("Content-Type", "text/event-stream")
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
@@ -372,8 +447,9 @@ func TestHTTPClient_SendMessage_Timeout(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
-		// Block until context canceled (simulates timeout)
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		// Block until context canceled (simulates timeout): the stream
+		// never delivers its snapshot.
 		w.Header().Set("Content-Type", "text/event-stream")
 		<-r.Context().Done()
 	})
@@ -387,6 +463,137 @@ func TestHTTPClient_SendMessage_Timeout(t *testing.T) {
 	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 100*time.Millisecond)
 	require.NoError(t, err)
 	assert.Equal(t, "timeout fallback", resp)
+}
+
+// TestHTTPClient_SendMessage_StreamErrorFallsBackToHistory: a non-200
+// contract stream (e.g. 501 flag-off regime) answers via history.
+func TestHTTPClient_SendMessage_StreamErrorFallsBackToHistory(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+		w.Write([]byte(`{"error":{"code":"not_supported","capability":"abi.contract_stream"}}`))
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "history answer")})
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "history answer", resp)
+}
+
+// ===== SSE with keepalive comments and retry directives =====
+
+func TestHTTPClient_SendMessage_SSEWithKeepalives(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		// Real SSE streams have comments, retry directives, and
+		// undecodable data lines — all tolerated.
+		fmt.Fprintf(w, ":keepalive\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "retry: 3000\n\n")
+		flusher.Flush()
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
+		fmt.Fprintf(w, "data: not-json-at-all\n\n")
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(2, deltaEvent("sess-1", "answer")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
+		flusher.Flush()
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "answer", resp)
+}
+
+// ===== Resync + snapshot-first protocol rules =====
+
+// TestHTTPClient_SendMessage_ResyncReconnects: the named resync event
+// drops the connection; a fresh connection re-snapshots and the seq
+// discard rule keeps replayed deltas exactly-once.
+func TestHTTPClient_SendMessage_ResyncReconnects(t *testing.T) {
+	var conns atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		if conns.Add(1) == 1 {
+			writeContractFrame(t, w, snapshotFrame(5, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+			flusher.Flush()
+			writeContractFrame(t, w, eventFrame(6, deltaEvent("sess-1", "partial")))
+			flusher.Flush()
+			fmt.Fprintf(w, "event: resync\ndata: {}\n\n")
+			flusher.Flush()
+			return
+		}
+		// Fresh stamped snapshot: at_seq covers the delta already seen.
+		writeContractFrame(t, w, snapshotFrame(7, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(8, deltaEvent("sess-1", " full")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(9, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
+		flusher.Flush()
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "partial full", resp)
+}
+
+// TestHTTPClient_SendMessage_NonSnapshotFirstFrameReconnects: an event
+// frame before the snapshot violates the protocol — reconnect; the
+// unseeded event's payload must never fold in.
+func TestHTTPClient_SendMessage_NonSnapshotFirstFrameReconnects(t *testing.T) {
+	var conns atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		if conns.Add(1) == 1 {
+			// Protocol violation: an event frame with no snapshot first.
+			fmt.Fprintf(w, "data: {\"event\":{\"seq\":\"2\",\"event\":{\"type\":\"EVENT_TYPE_PART_DELTA\",\"sessionId\":\"sess-1\",\"delta\":\"BOGUS\"}}}\n\n")
+			flusher.Flush()
+			return
+		}
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(2, deltaEvent("sess-1", "clean")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
+		flusher.Flush()
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "clean", resp)
 }
 
 // ===== Context cancellation =====
@@ -416,37 +623,6 @@ func TestHTTPClient_MalformedJSONResponse(t *testing.T) {
 	_, err := client.CreateWorkspace(context.Background(), CreateWorkspaceReq{Runtime: "python:3.10"})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decode response")
-}
-
-// ===== SSE with keepalive comments and retry directives =====
-
-func TestHTTPClient_SendMessage_SSEWithKeepalives(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher := w.(http.Flusher)
-		// Real SSE streams have comments, retry directives, and event types
-		fmt.Fprintf(w, ":keepalive\n\n")
-		flusher.Flush()
-		fmt.Fprintf(w, "retry: 3000\n\n")
-		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"answer\"}}\n\n")
-		flusher.Flush()
-		fmt.Fprintf(w, "data: not-json-at-all\n\n")
-		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
-		flusher.Flush()
-	})
-
-	client, ts := newTestHTTPClient(mux)
-	defer ts.Close()
-
-	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
-	require.NoError(t, err)
-	assert.Equal(t, "answer", resp)
 }
 
 // ===== Input validation (path traversal) =====
@@ -515,17 +691,19 @@ func TestHTTPClient_SendMessage_IgnoresIdleForOtherSession(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
 		// Idle for a DIFFERENT session — should be ignored
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-OTHER\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(2, statusEvent("sess-OTHER", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 		// Content for our session
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"result\"}}\n\n")
+		writeContractFrame(t, w, eventFrame(3, deltaEvent("sess-1", "result")))
 		flusher.Flush()
-		// Idle for OUR session — should break
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		// Idle for OUR session — should complete the wait
+		writeContractFrame(t, w, eventFrame(4, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 
@@ -537,20 +715,22 @@ func TestHTTPClient_SendMessage_IgnoresIdleForOtherSession(t *testing.T) {
 	assert.Equal(t, "result", resp)
 }
 
-func TestHTTPClient_SendMessage_IgnoresBusyEvents(t *testing.T) {
+func TestHTTPClient_SendMessage_IgnoresBusyStatus(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		// Busy event — should be ignored
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"busy\"}\n\n")
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"done\"}}\n\n")
+		// BUSY status — should be ignored (only IDLE completes)
+		writeContractFrame(t, w, eventFrame(2, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(3, deltaEvent("sess-1", "done")))
+		flusher.Flush()
+		writeContractFrame(t, w, eventFrame(4, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 
@@ -605,19 +785,27 @@ func TestHTTPClient_GetHistory_AcceptsOpenCodeSessionID(t *testing.T) {
 	assert.Len(t, msgs, 1)
 }
 
-// ===== US-16.7: SendMessage Question Detection =====
+// ===== US-16.7: SendMessage input-request detection =====
 
 func TestHTTPClient_SendMessage_QuestionDetected(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		// Agent asks a question
-		questionData := `{"id":"que_abc","session_id":"sess-1","questions":[{"question":"What language?","header":"Choose","options":[{"label":"Go","description":"Fast"}]}]}`
-		fmt.Fprintf(w, "data: {\"type\":\"agent.question\",\"data\":%s}\n\n", questionData)
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
+		// Agent asks a question (ABI unified input request, kind QUESTION)
+		writeContractFrame(t, w, eventFrame(2, &abiv1.Event{
+			Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, SessionId: "sess-1",
+			Input: &abiv1.InputRequest{
+				Id: "que_abc", SessionId: "sess-1", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+				Question: "What language?", Header: "Choose",
+				Options: []*abiv1.InputOption{{Label: "Go", Description: "Fast"}},
+			},
+		}))
 		flusher.Flush()
 	})
 
@@ -631,7 +819,7 @@ func TestHTTPClient_SendMessage_QuestionDetected(t *testing.T) {
 	var result map[string]interface{}
 	require.NoError(t, json.Unmarshal([]byte(resp), &result))
 	assert.Equal(t, "question", result["type"])
-	// request should contain the question data
+	// request should carry the ABI InputRequest (id + question fields)
 	reqData, _ := json.Marshal(result["request"])
 	assert.Contains(t, string(reqData), "que_abc")
 	assert.Contains(t, string(reqData), "What language?")
@@ -642,14 +830,19 @@ func TestHTTPClient_SendMessage_QuestionForDifferentSession_Ignored(t *testing.T
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
 		// Question for a DIFFERENT session — should be ignored
-		fmt.Fprintf(w, "data: {\"type\":\"agent.question\",\"data\":{\"id\":\"que_abc\",\"session_id\":\"sess-OTHER\",\"questions\":[]}}\n\n")
+		writeContractFrame(t, w, eventFrame(2, &abiv1.Event{
+			Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, SessionId: "sess-OTHER",
+			Input: &abiv1.InputRequest{Id: "que_abc", SessionId: "sess-OTHER", Kind: abiv1.InputKind_INPUT_KIND_QUESTION},
+		}))
 		flusher.Flush()
 		// Then idle for our session
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
@@ -667,22 +860,32 @@ func TestHTTPClient_SendMessage_QuestionForDifferentSession_Ignored(t *testing.T
 
 func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 	var permissionReplied atomic.Bool
+	var replyBody []byte
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/contract-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		// Permission event
-		fmt.Fprintf(w, "data: {\"type\":\"agent.permission\",\"data\":{\"id\":\"per_xyz\",\"session_id\":\"sess-1\",\"permission\":\"shell\",\"patterns\":[\"ls\"]}}\n\n")
+		writeContractFrame(t, w, snapshotFrame(1, sessionSnap("sess-1", abiv1.SessionStatus_SESSION_STATUS_BUSY)))
+		flusher.Flush()
+		// Permission request (ABI unified input request, kind PERMISSION)
+		writeContractFrame(t, w, eventFrame(2, &abiv1.Event{
+			Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, SessionId: "sess-1",
+			Input: &abiv1.InputRequest{
+				Id: "per_xyz", SessionId: "sess-1", Kind: abiv1.InputKind_INPUT_KIND_PERMISSION,
+				Permission: "shell", Patterns: []string{"ls"},
+			},
+		}))
 		flusher.Flush()
 		// Then idle
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		writeContractFrame(t, w, eventFrame(3, statusEvent("sess-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)))
 		flusher.Flush()
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/permission/per_xyz/reply", func(w http.ResponseWriter, r *http.Request) {
 		permissionReplied.Store(true)
+		replyBody, _ = io.ReadAll(r.Body)
 		w.Write([]byte(`true`))
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
@@ -699,6 +902,7 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 	// Give the goroutine time to fire
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, permissionReplied.Load(), "permission should have been auto-approved")
+	assert.JSONEq(t, `{"reply":"always"}`, string(replyBody), "auto-approve keeps the always-reply body")
 }
 
 // #880/#905: the API wraps the secrets list ({"secrets": [...]}); the

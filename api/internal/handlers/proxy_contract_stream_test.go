@@ -13,10 +13,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/contractstream"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -131,7 +132,7 @@ func nextDataLine(t *testing.T, lines <-chan string) string {
 		select {
 		case l := <-lines:
 			if strings.HasPrefix(l, "data:") {
-				return strings.TrimPrefix(l, "data: ")
+				return l
 			}
 		case <-deadline:
 			t.Fatal("no data line within deadline")

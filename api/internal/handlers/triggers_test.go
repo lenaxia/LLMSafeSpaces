@@ -9,9 +9,10 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // mockTriggerStore implements triggerStore for testing.

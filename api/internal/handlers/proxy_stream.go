@@ -62,8 +62,8 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 	c.Writer.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	if h.sseTracker != nil {
-		h.sseTracker.EnsureWatching(workspaceID)
+	if h.agentdTerminus {
+		h.UsageStream().Open(workspaceID)
 	}
 
 	// #901 G7: stream lifecycle visibility. During the 2026-08-16

@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
 
@@ -18,20 +17,24 @@ func newHandlerWithMockK8s(t *testing.T) *ProxyHandler {
 	return handler
 }
 
-func TestOnSessionIdle_PublishesToUserBroker(t *testing.T) {
+// US-69.11: the tracker's onSessionIdle/onSessionActive callbacks are
+// retired; session.status on the user stream now originates from
+// usageBridge.SessionStatus (driven by the ABI consumer's SESSION_STATUS
+// events). Same wire shapes, same owner-unknown skip, same nil-safety.
+
+func TestBridgeSessionStatus_Idle_PublishesToUserBroker(t *testing.T) {
 	handler := newHandlerWithMockK8s(t)
+	t.Cleanup(stubUsageStream())
 
 	broker := eventbroker.NewUserEventBroker()
 	broker.RecordWorkspaceOwner("ws-1", "user-1")
 	handler.userBroker = broker
 
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
 	sub, err := broker.SubscribeUser("user-1")
 	require.NoError(t, err)
 	defer broker.UnsubscribeUser("user-1", sub)
 
-	handler.onSessionIdle("ws-1", "s1")
+	(&usageBridge{h: handler}).SessionStatus("ws-1", "s1", false)
 
 	select {
 	case evt := <-sub.Ch:
@@ -44,10 +47,9 @@ func TestOnSessionIdle_PublishesToUserBroker(t *testing.T) {
 	}
 }
 
-func TestOnSessionActive_PublishesToUserBroker(t *testing.T) {
+func TestBridgeSessionStatus_Busy_PublishesToUserBroker(t *testing.T) {
 	handler := newHandlerWithMockK8s(t)
-
-	handler.SetWorkspaceConfigForTest("ws-1", wsstate.Config{MaxActiveSessions: 5})
+	t.Cleanup(stubUsageStream())
 
 	broker := eventbroker.NewUserEventBroker()
 	broker.RecordWorkspaceOwner("ws-1", "user-1")
@@ -57,7 +59,7 @@ func TestOnSessionActive_PublishesToUserBroker(t *testing.T) {
 	require.NoError(t, err)
 	defer broker.UnsubscribeUser("user-1", sub)
 
-	handler.onSessionActive("ws-1", "s1")
+	(&usageBridge{h: handler}).SessionStatus("ws-1", "s1", true)
 
 	select {
 	case evt := <-sub.Ch:
@@ -70,19 +72,18 @@ func TestOnSessionActive_PublishesToUserBroker(t *testing.T) {
 	}
 }
 
-func TestOnSessionIdle_SkipsUserBrokerWhenOwnerUnknown(t *testing.T) {
+func TestBridgeSessionStatus_SkipsUserBrokerWhenOwnerUnknown(t *testing.T) {
 	handler := newHandlerWithMockK8s(t)
+	t.Cleanup(stubUsageStream())
 
 	broker := eventbroker.NewUserEventBroker()
 	handler.userBroker = broker
-
-	handler.SetActiveSessionsForTest("ws-unknown", []string{"s1"})
 
 	sub, err := broker.SubscribeUser("user-1")
 	require.NoError(t, err)
 	defer broker.UnsubscribeUser("user-1", sub)
 
-	handler.onSessionIdle("ws-unknown", "s1")
+	(&usageBridge{h: handler}).SessionStatus("ws-unknown", "s1", false)
 
 	select {
 	case <-sub.Ch:
@@ -91,22 +92,11 @@ func TestOnSessionIdle_SkipsUserBrokerWhenOwnerUnknown(t *testing.T) {
 	}
 }
 
-func TestOnSessionIdle_NoPanicWhenUserBrokerNil(t *testing.T) {
+func TestBridgeSessionStatus_NoPanicWhenUserBrokerNil(t *testing.T) {
 	handler := newHandlerWithMockK8s(t)
 
-	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
 	assert.NotPanics(t, func() {
-		handler.onSessionIdle("ws-1", "s1")
-	})
-}
-
-func TestOnSessionActive_NoPanicWhenUserBrokerNil(t *testing.T) {
-	handler := newHandlerWithMockK8s(t)
-
-	handler.SetWorkspaceConfigForTest("ws-1", wsstate.Config{MaxActiveSessions: 5})
-
-	assert.NotPanics(t, func() {
-		handler.onSessionActive("ws-1", "s1")
+		(&usageBridge{h: handler}).SessionStatus("ws-1", "s1", false)
+		(&usageBridge{h: handler}).SessionStatus("ws-1", "s1", true)
 	})
 }

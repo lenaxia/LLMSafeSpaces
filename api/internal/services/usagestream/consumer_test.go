@@ -281,3 +281,60 @@ func TestCloseCancelsGate(t *testing.T) {
 type nopLogger struct{}
 
 func (nopLogger) Warn(string, ...interface{}) {}
+
+// TestGateChangeHook (US-69.11): the optional metrics seam fires
+// open=true on arm and open=false exactly once per drop — whether the
+// drop is an explicit Close or the idle window (scale-to-zero). The
+// hook is the llmsafespaces_usage_stream_gates gauge's event source.
+func TestGateChangeHook(t *testing.T) {
+	c, fc, _, _ := newTestConsumer(t)
+	events := make(chan bool, 8)
+	c.cfg.OnGateChange = func(ws string, open bool) {
+		require.Equal(t, "ws1", ws)
+		events <- open
+	}
+
+	c.Open("ws1")
+	<-fc.connected
+	require.True(t, <-events, "arming the gate fires open")
+
+	// Idempotent re-arm inside the idle window: no duplicate event
+	// (newTestConsumer's IdleDrop is 50ms — stay well inside it).
+	c.Open("ws1")
+	select {
+	case v := <-events:
+		t.Fatalf("idempotent re-open must not re-fire, got %v", v)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	// Idle window elapses (nothing ever busy): the gate self-drops →
+	// close, exactly once.
+	select {
+	case open := <-events:
+		require.False(t, open, "idle-drop fires close")
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle-drop never fired the close hook")
+	}
+	require.Zero(t, c.Gates())
+
+	// Re-arm, hold busy (no idle-drop race), then explicit Close: close
+	// fires once (Close's delete wins; run's deferred identity check
+	// must not double-fire).
+	c.Open("ws1")
+	<-fc.connected
+	require.True(t, <-events, "re-arm fires open again")
+	fc.apply(1, &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1",
+		Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	c.Close("ws1")
+	select {
+	case open := <-events:
+		require.False(t, open, "explicit Close fires close")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close never fired the close hook")
+	}
+	select {
+	case v := <-events:
+		t.Fatalf("double close event, got %v", v)
+	case <-time.After(150 * time.Millisecond):
+	}
+}

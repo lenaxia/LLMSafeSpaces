@@ -4,8 +4,11 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
@@ -13,6 +16,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/usagestream"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	abiclient "github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -129,4 +133,117 @@ func newUsageBillingTestHandler(t *testing.T) *ProxyHandler {
 	h.userBroker = eventbroker.NewUserEventBroker()
 	h.userBroker.RecordWorkspaceOwner("ws1", "u1")
 	return h
+}
+
+// --- US-69.11 gate-test seams -------------------------------------------------
+//
+// The usagestream consumer is a process-wide singleton on the handler
+// (UsageStream). Handler-level tests that exercise the arming paths
+// (onPhaseChange, Start, stateReconciler, StreamEvents) inject a consumer
+// whose Client is a recording fake — connections, disconnects, and
+// event pushes are all observable without a pod.
+
+// gateTestClient fakes the abiclient stream one gate holds: it records
+// each connection, captures the fold/applied-events callbacks, and lets
+// the test push ABI events exactly as a pod stream would.
+type gateTestClient struct {
+	mu           sync.Mutex
+	connected    chan struct{}
+	disconnected chan struct{}
+	onUpdate     func(*abiclient.SessionState)
+	onEvent      func(evt *abiv1.Event, seq uint64)
+	// minimal fold: BUSY/COMPACTING status events mark the session busy
+	// (mirrors the reference client's folded-state publications).
+	busy map[string]bool
+}
+
+func (g *gateTestClient) Stream(ctx context.Context, onUpdate func(*abiclient.SessionState), opts ...abiclient.StreamOption) error {
+	g.mu.Lock()
+	g.onUpdate = onUpdate
+	g.onEvent = abiclient.AppliedEventsOf(opts)
+	g.mu.Unlock()
+	// Snapshot-first: the protocol's stamp.
+	onUpdate(&abiclient.SessionState{Seq: 0})
+	if g.connected != nil {
+		g.connected <- struct{}{}
+	}
+	<-ctx.Done()
+	if g.disconnected != nil {
+		g.disconnected <- struct{}{}
+	}
+	return context.Canceled
+}
+
+// apply pushes one ABI event through the captured callbacks (and the
+// minimal fold), as the pod stream would.
+func (g *gateTestClient) apply(seq uint64, evt *abiv1.Event) {
+	g.mu.Lock()
+	onUpdate, onEvent := g.onUpdate, g.onEvent
+	g.mu.Unlock()
+	if onEvent == nil || onUpdate == nil {
+		return
+	}
+	if evt.GetType() == abiv1.EventType_EVENT_TYPE_SESSION_STATUS {
+		if g.busy == nil {
+			g.busy = map[string]bool{}
+		}
+		switch evt.GetStatus() {
+		case abiv1.SessionStatus_SESSION_STATUS_BUSY, abiv1.SessionStatus_SESSION_STATUS_COMPACTING:
+			g.busy[evt.GetSessionId()] = true
+		default:
+			delete(g.busy, evt.GetSessionId())
+		}
+	}
+	onEvent(evt, seq)
+	sessions := map[string]*abiv1.SessionSnapshot{}
+	for sid := range g.busy {
+		sessions[sid] = &abiv1.SessionSnapshot{SessionId: sid, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY}
+	}
+	onUpdate(&abiclient.SessionState{Seq: seq, Sessions: sessions})
+}
+
+// newRecordingGateConsumer builds a consumer whose gates all share the
+// recording client. Resolve never fails and is recorded per workspace
+// (the observable for "which workspaces got armed"). IdleDrop is parked
+// at an hour: tests tear gates down explicitly via Close.
+func newRecordingGateConsumer(bridge usagestream.Bridge) (*usagestream.Consumer, *gateTestClient, *[]string) {
+	fc := &gateTestClient{connected: make(chan struct{}, 32)}
+	var mu sync.Mutex
+	var resolved []string
+	c := usagestream.New(usagestream.Config{
+		Resolve: func(_ context.Context, workspaceID string) (string, string, error) {
+			mu.Lock()
+			resolved = append(resolved, workspaceID)
+			mu.Unlock()
+			return "http://pod", "pw", nil
+		},
+		NewClient: func(baseURL, password string) usagestream.Client { return fc },
+		Bridge:    bridge,
+		Logger:    &testLogger{},
+		IdleDrop:  time.Hour,
+		Retry:     10 * time.Millisecond,
+	})
+	return c, fc, &resolved
+}
+
+// injectUsageStream swaps the handler's process-wide consumer singleton
+// for the test's and returns a restore func. Handler tests run
+// sequentially, so the package-level once/ptr swap is safe.
+func injectUsageStream(c *usagestream.Consumer) (restore func()) {
+	savedPtr := usageStreamPtr
+	usageStreamOnce = sync.Once{} //nolint:copylocks // test-only singleton swap; no gate goroutine touches the Once concurrently
+	usageStreamPtr = nil
+	usageStreamOnce.Do(func() { usageStreamPtr = c })
+	return func() {
+		usageStreamOnce = sync.Once{}
+		usageStreamPtr = savedPtr
+	}
+}
+
+// stubUsageStream injects a never-connecting consumer so handler paths
+// that arm gates on Active phases (onPhaseChange etc.) stay hermetic in
+// tests that don't care about the stream itself.
+func stubUsageStream() func() {
+	c, _, _ := newRecordingGateConsumer(nil)
+	return injectUsageStream(c)
 }

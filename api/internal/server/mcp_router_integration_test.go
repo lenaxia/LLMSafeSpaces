@@ -16,7 +16,8 @@ package server
 //
 // Scope: the surfaces pkg/mcp actually consumes — workspace lifecycle
 // (WorkspaceService), sessions/new + proxy (ProxyHandler + adapter),
-// question/permission replies, and the Epic 64 workflow/trigger CRUD.
+// question/permission replies, the Epic 64 workflow/trigger CRUD, and
+// (US-69.11) the ABI contract stream the session_message wait rides on.
 // Routes whose handlers need service fakes that do not exist yet
 // (secrets, models, credentials) are wired in the OpenAPI contract
 // fixture only and remain route-presence-checked there; full-handler
@@ -36,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -52,9 +54,10 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/contractstream"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	mcppkg "github.com/lenaxia/llmsafespaces/pkg/mcp"
@@ -440,6 +443,10 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 	proxy.SetAdapter(adapter)
 	broker := eventbroker.NewUserEventBroker()
 	proxy.SetUserBrokerForTest(broker)
+	// US-69.11: the MCP client consumes the ABI contract stream — arm
+	// the real /contract-events route behind its flag with the shared
+	// fake pod source below.
+	armMCPContractStream(proxy)
 
 	// Epic 64 handlers over in-memory stores.
 	wfStore := newFakeWorkflowStore()
@@ -527,37 +534,27 @@ func TestMCPClientSessionCreate_ResolvesProductionRoute(t *testing.T) {
 		"CreateSession must decode the sessionId field of EnsureSessionResponse")
 }
 
-// TestMCPClientSessionMessage_QuestionEventViaSSE pins #1034 (and the
-// prompt-body half of the same flow): session_message must deliver a
-// parts-based prompt body the /prompt handler accepts, subscribe to the
-// live /session-events route, and surface a structured question result
-// when the broker emits agent.question for the session. The pre-fix
-// client sent {"message": ...} (rejected: "text must not be empty")
-// and subscribed to the removed /events route.
-func TestMCPClientSessionMessage_QuestionEventViaSSE(t *testing.T) {
+// TestMCPClientSessionMessage_QuestionViaContractStream pins the
+// US-69.11 wire: session_message delivers a parts-based prompt body
+// the /prompt handler accepts, subscribes to the real
+// /contract-events route, and surfaces a structured question result
+// when the pod stream carries an INPUT_REQUEST (kind QUESTION) for the
+// session. The ABI frames flow through the production SSE handler —
+// protojson StreamFrames, snapshot first.
+func TestMCPClientSessionMessage_QuestionViaContractStream(t *testing.T) {
 	f := newMCPRouterFixture(t)
 
-	done := make(chan string, 1)
-	go func() {
-		out, err := f.client.SendMessage(context.Background(), mcpTestWSID, mcpTestSession, "please continue", 10*time.Second)
-		if err != nil {
-			done <- "ERROR: " + err.Error()
-			return
-		}
-		done <- out
-	}()
+	done, baseline := runMCPSessionMessage(f, "please continue", 10*time.Second)
+	frames := awaitMCPContractFrames(t, baseline)
 
-	// Wait for the SSE subscription to land on the broker, then emit an
-	// agent.question event for the session — the structured-result path.
-	require.Eventually(t, func() bool {
-		return f.broker.WorkspaceSubscriberCount(mcpTestWSID) > 0
-	}, 5*time.Second, 10*time.Millisecond, "client must subscribe to the workspace SSE stream")
-
-	f.broker.PublishToWorkspace(mcpTestWSID, mcpSSEEvent("agent.question", map[string]any{
-		"session_id": mcpTestSession,
-		"id":         "que_abc123",
-		"options":    []string{"yes", "no"},
-	}, mcpTestSession, ""))
+	frames <- mcpSnapshotFrame(1, mcpSessionSnap(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	frames <- mcpEventFrame(2, &abiv1.Event{
+		Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, SessionId: mcpTestSession,
+		Input: &abiv1.InputRequest{
+			Id: "que_abc123", SessionId: mcpTestSession, Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+			Question: "Continue?", Options: []*abiv1.InputOption{{Label: "yes"}, {Label: "no"}},
+		},
+	})
 
 	select {
 	case out := <-done:
@@ -567,10 +564,11 @@ func TestMCPClientSessionMessage_QuestionEventViaSSE(t *testing.T) {
 			Request json.RawMessage `json:"request"`
 		}
 		require.NoError(t, json.Unmarshal([]byte(out), &parsed), "question result must be the structured JSON: %q", out)
-		assert.Equal(t, "question", parsed.Type, "agent.question must produce a structured question result, got: %q", out)
+		assert.Equal(t, "question", parsed.Type, "INPUT_REQUEST must produce a structured question result, got: %q", out)
 		assert.Contains(t, string(parsed.Request), "que_abc123")
+		assert.Contains(t, string(parsed.Request), "Continue?")
 	case <-time.After(15 * time.Second):
-		t.Fatal("SendMessage did not return after question event")
+		t.Fatal("SendMessage did not return after input-request frame")
 	}
 
 	// The prompt leg must have delivered a parts-based text body the
@@ -589,82 +587,71 @@ func TestMCPClientSessionMessage_QuestionEventViaSSE(t *testing.T) {
 	}
 }
 
-// TestMCPClientSessionMessage_IdleTermination pins the SSE completion
-// contract of session_message: session.status=idle for the target
-// session terminates the wait and the final assistant text is returned
-// via the history fallback.
+// TestMCPClientSessionMessage_IdleTermination pins the completion
+// contract of session_message on the contract stream:
+// EVENT_TYPE_SESSION_STATUS with status IDLE for the target session
+// terminates the wait and the final assistant text is returned via the
+// history fallback.
 func TestMCPClientSessionMessage_IdleTermination(t *testing.T) {
 	f := newMCPRouterFixture(t)
 
-	done := make(chan string, 1)
-	go func() {
-		out, err := f.client.SendMessage(context.Background(), mcpTestWSID, mcpTestSession, "hi", 10*time.Second)
-		if err != nil {
-			done <- "ERROR: " + err.Error()
-			return
-		}
-		done <- out
-	}()
+	done, baseline := runMCPSessionMessage(f, "hi", 10*time.Second)
+	frames := awaitMCPContractFrames(t, baseline)
 
-	require.Eventually(t, func() bool {
-		return f.broker.WorkspaceSubscriberCount(mcpTestWSID) > 0
-	}, 5*time.Second, 10*time.Millisecond)
-
-	f.broker.PublishToWorkspace(mcpTestWSID, mcpSSEEvent("session.status", nil, mcpTestSession, "idle"))
+	frames <- mcpSnapshotFrame(1, mcpSessionSnap(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	frames <- mcpEventFrame(2, mcpStatusEvent(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_IDLE))
 
 	select {
 	case out := <-done:
 		require.NotContains(t, out, "ERROR")
 		assert.Equal(t, "ok", out, "idle-terminated send returns the final assistant text via history fallback")
 	case <-time.After(15 * time.Second):
-		t.Fatal("SendMessage did not return after idle event")
+		t.Fatal("SendMessage did not return after idle frame")
 	}
 }
 
-// TestMCPClientSessionMessage_LiveContentFromSessionEvents pins #1053:
-// streamed part.delta content arrives inside session.event envelopes and
-// must be captured live — the old read of a top-level "content" field
-// (which the broker envelope never carries) meant live accumulation was
-// dead code and every response fell through to the history round-trip.
-func TestMCPClientSessionMessage_LiveContentFromSessionEvents(t *testing.T) {
+// TestMCPClientSessionMessage_LiveContentFromContractStream pins the
+// live-text path: EVENT_TYPE_PART_DELTA frames for the target session
+// accumulate without a history round-trip.
+func TestMCPClientSessionMessage_LiveContentFromContractStream(t *testing.T) {
 	f := newMCPRouterFixture(t)
 
-	done := make(chan string, 1)
-	go func() {
-		out, err := f.client.SendMessage(context.Background(), mcpTestWSID, mcpTestSession, "hi", 10*time.Second)
-		if err != nil {
-			done <- "ERROR: " + err.Error()
-			return
-		}
-		done <- out
-	}()
+	done, baseline := runMCPSessionMessage(f, "hi", 10*time.Second)
+	frames := awaitMCPContractFrames(t, baseline)
 
-	require.Eventually(t, func() bool {
-		return f.broker.WorkspaceSubscriberCount(mcpTestWSID) > 0
-	}, 5*time.Second, 10*time.Millisecond)
-
-	// Stream two deltas as real contract events inside session.event
-	// envelopes — exactly what publishClientEvents puts on the wire.
-	for _, chunk := range []string{"Hello ", "live world!"} {
-		f.broker.PublishToWorkspace(mcpTestWSID, apitypes.WorkspaceSSEEvent{
-			Type:      "session.event",
-			SessionID: mcpTestSession,
-			Data: map[string]any{
-				"type":      "part.delta",
-				"sessionId": mcpTestSession,
-				"delta":     chunk,
-			},
-		})
+	frames <- mcpSnapshotFrame(1, mcpSessionSnap(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_BUSY))
+	for seq, chunk := range []string{"Hello ", "live world!"} {
+		frames <- mcpEventFrame(uint64(seq+2), mcpDeltaEvent(mcpTestSession, chunk))
 	}
-	f.broker.PublishToWorkspace(mcpTestWSID, mcpSSEEvent("session.status", nil, mcpTestSession, "idle"))
+	frames <- mcpEventFrame(4, mcpStatusEvent(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_IDLE))
 
 	select {
 	case out := <-done:
 		require.NotContains(t, out, "ERROR")
 		assert.Equal(t, "Hello live world!", out,
-			"streamed part.delta content must be captured live from session.event data (#1053)")
+			"PART_DELTA frames must be captured live from the contract stream")
 	case <-time.After(15 * time.Second):
-		t.Fatal("SendMessage did not return after idle event")
+		t.Fatal("SendMessage did not return after idle frame")
+	}
+}
+
+// TestMCPClientSessionMessage_SnapshotIdleCompletes pins the
+// snapshot-first rule end-to-end: a snapshot whose target session is
+// already IDLE completes the wait with no further frame.
+func TestMCPClientSessionMessage_SnapshotIdleCompletes(t *testing.T) {
+	f := newMCPRouterFixture(t)
+
+	done, baseline := runMCPSessionMessage(f, "hi", 10*time.Second)
+	frames := awaitMCPContractFrames(t, baseline)
+
+	frames <- mcpSnapshotFrame(1, mcpSessionSnap(mcpTestSession, abiv1.SessionStatus_SESSION_STATUS_IDLE))
+
+	select {
+	case out := <-done:
+		require.NotContains(t, out, "ERROR")
+		assert.Equal(t, "ok", out, "IDLE snapshot completes immediately; text arrives via history fallback")
+	case <-time.After(15 * time.Second):
+		t.Fatal("SendMessage did not return after IDLE snapshot")
 	}
 }
 
@@ -894,6 +881,110 @@ func TestMCPClientHistoryResolves(t *testing.T) {
 
 // --- helpers ---
 
+// --- US-69.11: the ABI contract stream through the real route ---
+
+// The contract-stream manager is process-wide (once-sealed in the
+// handler), so the fake pod source is shared for the whole test
+// binary: every upstream (re)connect registers a fresh frame channel
+// and bumps the connect counter; tests push ABI StreamFrames into the
+// live channel and the real ContractEvents handler marshals them onto
+// the SSE wire.
+var (
+	mcpContractOnce     sync.Once
+	mcpContractMgr      *contractstream.Manager
+	mcpContractMu       sync.Mutex
+	mcpContractLive     chan *abiv1.StreamFrame
+	mcpContractConnects atomic.Int64
+)
+
+// mcpFakeFrameSource is the injectable pod Events stream.
+type mcpFakeFrameSource struct{ frames chan *abiv1.StreamFrame }
+
+func (s *mcpFakeFrameSource) Frames() <-chan *abiv1.StreamFrame { return s.frames }
+func (s *mcpFakeFrameSource) Err() error                        { return nil }
+
+// armMCPContractStream wires one fixture proxy for the real
+// /contract-events route: the agentd-terminus flag plus the shared
+// fake-source manager (installed once per process).
+func armMCPContractStream(proxy *handlers.ProxyHandler) {
+	mcpContractOnce.Do(func() {
+		mcpContractMgr = contractstream.NewManager(
+			func(ctx context.Context, ws string) (string, string, error) {
+				return "http://agentd.test", "pw", nil
+			},
+			nil,
+			func(ctx context.Context, base, pw string) (contractstream.FrameSource, error) {
+				frames := make(chan *abiv1.StreamFrame, 64)
+				mcpContractMu.Lock()
+				mcpContractLive = frames
+				mcpContractMu.Unlock()
+				mcpContractConnects.Add(1)
+				return &mcpFakeFrameSource{frames: frames}, nil
+			},
+		)
+	})
+	proxy.SetAgentdTerminus(true)
+	proxy.SetContractStreamManagerForTest(mcpContractMgr)
+}
+
+// awaitMCPContractFrames waits until the client's contract-stream
+// subscription has opened the upstream (connect count past baseline —
+// capture the baseline BEFORE starting the client call) and returns
+// the live channel to push ABI frames into.
+func awaitMCPContractFrames(t *testing.T, baseline int64) chan *abiv1.StreamFrame {
+	t.Helper()
+	require.Eventually(t, func() bool { return mcpContractConnects.Load() > baseline },
+		5*time.Second, 10*time.Millisecond, "client must open the contract stream")
+	// Manager.Subscribe registers the subscriber right after starting
+	// the upstream goroutine — let that registration land before the
+	// first fanout so no frame is dropped.
+	time.Sleep(10 * time.Millisecond)
+	mcpContractMu.Lock()
+	defer mcpContractMu.Unlock()
+	return mcpContractLive
+}
+
+// ABI frame builders for the fixture (protojson wire is produced by
+// the real ContractEvents handler).
+func mcpSessionSnap(id string, status abiv1.SessionStatus) *abiv1.SessionSnapshot {
+	return &abiv1.SessionSnapshot{SessionId: id, Status: status}
+}
+
+func mcpSnapshotFrame(atSeq uint64, sessions ...*abiv1.SessionSnapshot) *abiv1.StreamFrame {
+	return &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Snapshot{Snapshot: &abiv1.SnapshotFrame{
+		AtSeq: atSeq, Snapshot: &abiv1.PodSnapshot{Sessions: sessions},
+	}}}
+}
+
+func mcpEventFrame(seq uint64, evt *abiv1.Event) *abiv1.StreamFrame {
+	return &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: seq, Event: evt}}}
+}
+
+func mcpStatusEvent(sid string, status abiv1.SessionStatus) *abiv1.Event {
+	return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: sid, Status: status}
+}
+
+func mcpDeltaEvent(sid, delta string) *abiv1.Event {
+	return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_PART_DELTA, SessionId: sid, Delta: delta}
+}
+
+// runMCPSessionMessage drives SendMessage on a goroutine and returns
+// the done channel plus the contract-stream baseline for awaiting the
+// subscription.
+func runMCPSessionMessage(f *mcpFixture, message string, timeout time.Duration) (<-chan string, int64) {
+	done := make(chan string, 1)
+	baseline := mcpContractConnects.Load()
+	go func() {
+		out, err := f.client.SendMessage(context.Background(), mcpTestWSID, mcpTestSession, message, timeout)
+		if err != nil {
+			done <- "ERROR: " + err.Error()
+			return
+		}
+		done <- out
+	}()
+	return done, baseline
+}
+
 func seedWorkflow(t *testing.T, f *mcpFixture, id string) {
 	t.Helper()
 	err := f.wfStore.CreateWorkflow(context.Background(), &wf.WorkflowRow{
@@ -912,16 +1003,9 @@ func seedTrigger(t *testing.T, f *mcpFixture, id string) {
 	require.NoError(t, err)
 }
 
-// mcpSSEEvent builds a broker WorkspaceSSEEvent with optional
-// session/status fields.
-func mcpSSEEvent(eventType string, data map[string]any, sessionID, status string) apitypes.WorkspaceSSEEvent {
-	return apitypes.WorkspaceSSEEvent{
-		Type:      eventType,
-		Data:      data,
-		SessionID: sessionID,
-		Status:    status,
-	}
-}
+// mcpSSEEvent and the retired workspace-stream dialect are gone
+// (US-69.11): the MCP client now consumes the ABI contract stream
+// (/contract-events) — see the contract-stream helpers below.
 
 func ginHandlerSettingUserID(userID string) gin.HandlerFunc {
 	return func(c *gin.Context) {

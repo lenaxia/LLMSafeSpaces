@@ -14,10 +14,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
-	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
 // --- US-69.8: the outbox terminus switch (design 0055 M2/M4 + D1-B) --------

@@ -5,93 +5,104 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newMockOpencode(t *testing.T, statuses map[string]string) (*opencode.Client, *httptest.Server) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pw, ok := r.BasicAuth()
-		if !ok || user != agentd.AuthUsername || pw != "test-pw" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if r.URL.Path == "/session/status" {
-			resp := make(map[string]map[string]string)
-			for id, typ := range statuses {
-				resp[id] = map[string]string{"type": typ}
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(resp)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	client := opencode.NewClient(srv.URL, "test-pw", nil)
-	return client, srv
+// checkerStep is one scripted GetSessionStatuses response for the
+// poll-based WaitUntilIdle (US-69.11).
+type checkerStep struct {
+	statuses map[string]string
+	err      error
+}
+
+func idleStep(ids ...string) checkerStep {
+	m := make(map[string]string, len(ids))
+	for _, id := range ids {
+		m[id] = "idle"
+	}
+	return checkerStep{statuses: m}
+}
+
+func busyStep(ids ...string) checkerStep {
+	m := make(map[string]string, len(ids))
+	for _, id := range ids {
+		m[id] = "busy"
+	}
+	return checkerStep{statuses: m}
+}
+
+// fakeStatusChecker scripts GetSessionStatuses responses: each call
+// consumes one scripted step; when the script is exhausted the last
+// step repeats.
+type fakeStatusChecker struct {
+	mu    sync.Mutex
+	steps []checkerStep
+	calls int
+}
+
+func (f *fakeStatusChecker) GetSessionStatuses(context.Context) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if len(f.steps) == 0 {
+		return map[string]string{}, nil
+	}
+	step := f.steps[len(f.steps)-1]
+	if f.calls <= len(f.steps) {
+		step = f.steps[f.calls-1]
+	}
+	if step.err != nil {
+		return nil, step.err
+	}
+	cp := make(map[string]string, len(step.statuses))
+	for k, v := range step.statuses {
+		cp[k] = v
+	}
+	return cp, nil
+}
+
+func (f *fakeStatusChecker) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 func TestWaitUntilIdle_AlreadyIdle_ReturnsImmediately(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "idle",
-		"sess-2": "idle",
-	})
-	defer srv.Close()
+	checker := &fakeStatusChecker{steps: []checkerStep{idleStep("sess-1", "sess-2")}}
 
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 5*time.Second)
 	assert.NoError(t, err)
+	assert.Equal(t, 1, checker.callCount(), "idle snapshot must return on the first poll")
 }
 
 func TestWaitUntilIdle_EmptySessions_ReturnsImmediately(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{})
-	defer srv.Close()
+	checker := &fakeStatusChecker{}
 
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 5*time.Second)
 	assert.NoError(t, err)
 }
 
-func TestWaitUntilIdle_BusyThenIdle_ReturnsAfterEvent(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "busy",
-	})
-	defer srv.Close()
+func TestWaitUntilIdle_BusyThenIdle_ReturnsAfterPoll(t *testing.T) {
+	checker := &fakeStatusChecker{steps: []checkerStep{
+		busyStep("sess-1"),
+		idleStep("sess-1"),
+	}}
 
-	// Fire idle event after a short delay
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		// Simulate SSE dispatch
-		tracker.DispatchProperties("ws-1", "session.status", json.RawMessage(
-			`{"sessionID":"sess-1","status":{"type":"idle"}}`,
-		))
-	}()
-
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 5*time.Second)
 	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, checker.callCount(), 2, "the busy first poll must not satisfy the drain")
 }
 
 func TestWaitUntilIdle_NeverIdle_TimeoutReturnsDrainError(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "busy",
-		"sess-2": "busy",
-	})
-	defer srv.Close()
+	checker := &fakeStatusChecker{steps: []checkerStep{busyStep("sess-1", "sess-2")}}
 
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 100*time.Millisecond)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 100*time.Millisecond)
 	require.Error(t, err)
 
 	var drainErr *ErrDrainTimeout
@@ -102,11 +113,7 @@ func TestWaitUntilIdle_NeverIdle_TimeoutReturnsDrainError(t *testing.T) {
 }
 
 func TestWaitUntilIdle_ContextCancelled_ReturnsErr(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "busy",
-	})
-	defer srv.Close()
+	checker := &fakeStatusChecker{steps: []checkerStep{busyStep("sess-1")}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -114,60 +121,29 @@ func TestWaitUntilIdle_ContextCancelled_ReturnsErr(t *testing.T) {
 		cancel()
 	}()
 
-	err := WaitUntilIdle(ctx, "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(ctx, "ws-1", checker, 5*time.Second)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
 func TestWaitUntilIdle_NewBusyDuringWait_HoldsTillIdle(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	// Start with one busy
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "busy",
-	})
-	defer srv.Close()
+	// sess-1 goes idle but sess-2 becomes busy, then everything drains.
+	checker := &fakeStatusChecker{steps: []checkerStep{
+		busyStep("sess-1"),
+		{statuses: map[string]string{"sess-1": "idle", "sess-2": "busy"}},
+		idleStep("sess-1", "sess-2"),
+	}}
 
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		// sess-1 goes idle but sess-2 becomes busy
-		tracker.DispatchProperties("ws-1", "session.status", json.RawMessage(
-			`{"sessionID":"sess-1","status":{"type":"idle"}}`,
-		))
-		tracker.DispatchProperties("ws-1", "session.status", json.RawMessage(
-			`{"sessionID":"sess-2","status":{"type":"busy"}}`,
-		))
-		time.Sleep(30 * time.Millisecond)
-		// Now sess-2 goes idle too
-		tracker.DispatchProperties("ws-1", "session.status", json.RawMessage(
-			`{"sessionID":"sess-2","status":{"type":"idle"}}`,
-		))
-	}()
-
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 5*time.Second)
 	assert.NoError(t, err)
 }
 
-func TestWaitUntilIdle_SnapshotFails_ReturnsErr(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	// Client pointing at closed server
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	srv.Close()
-	client := opencode.NewClient(srv.URL, "test-pw", nil)
-
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 5*time.Second)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "snapshot")
-}
-
 func TestWaitUntilIdle_RetryStatusTreatedAsBusy(t *testing.T) {
-	tracker := sse.NewTracker(nil, nil, nil)
-	client, srv := newMockOpencode(t, map[string]string{
-		"sess-1": "retry",
-	})
-	defer srv.Close()
+	checker := &fakeStatusChecker{steps: []checkerStep{
+		{statuses: map[string]string{"sess-1": "retry"}},
+	}}
 
-	// Will timeout because "retry" is treated as busy
-	err := WaitUntilIdle(context.Background(), "ws-1", tracker, client, 100*time.Millisecond)
+	err := WaitUntilIdle(context.Background(), "ws-1", checker, 100*time.Millisecond)
 	require.Error(t, err)
 
 	var drainErr *ErrDrainTimeout

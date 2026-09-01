@@ -14,10 +14,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
 
 // #887 D5.1: admin-mux (:4098) Bearer consumers must try the distinct

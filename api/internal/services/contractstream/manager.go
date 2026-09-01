@@ -36,9 +36,10 @@ type Manager struct {
 	mu      sync.Mutex
 	streams map[string]*workspaceStream
 
-	resolve Resolve
-	connect func(ctx context.Context, baseURL, password string) (FrameSource, error)
-	logger  Logger
+	resolve          Resolve
+	connect          func(ctx context.Context, baseURL, password string) (FrameSource, error)
+	logger           Logger
+	onUpstreamChange func(workspaceID string, open bool)
 }
 
 // Logger is the minimal seam (the API's LoggerInterface satisfies it).
@@ -64,6 +65,17 @@ func NewManager(resolve Resolve, logger Logger, connect func(ctx context.Context
 	}
 }
 
+// SetOnUpstreamChange wires the optional upstream-lifecycle hook (the
+// metrics seam — a prometheus gauge in the handler layer; the package
+// stays import-clean). Fires open=true when a workspace's upstream is
+// created (first attach) and open=false when it is torn down (last
+// detach). Must be set before serving; read under mu.
+func (m *Manager) SetOnUpstreamChange(fn func(workspaceID string, open bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onUpstreamChange = fn
+}
+
 // Subscribe attaches one browser connection to the workspace's stream,
 // creating the upstream on first attach. The returned channel carries
 // frames and possibly one Resync (channel-closed after). The unsubscribe
@@ -71,8 +83,8 @@ func NewManager(resolve Resolve, logger Logger, connect func(ctx context.Context
 // detach (D1-B scale-to-zero).
 func (m *Manager) Subscribe(ctx context.Context, workspaceID string) (<-chan any, func(), error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	ws, ok := m.streams[workspaceID]
+	created := false
 	if !ok {
 		ws = &workspaceStream{
 			workspaceID: workspaceID,
@@ -81,19 +93,37 @@ func (m *Manager) Subscribe(ctx context.Context, workspaceID string) (<-chan any
 			subs:        map[*subscriber]struct{}{},
 		}
 		m.streams[workspaceID] = ws
+		created = true
+	}
+	// Register the subscriber BEFORE starting the upstream: the first
+	// connect delivers the pod's snapshot immediately, and a subscriber
+	// added after `go run` could miss it (fan-out to zero subscribers —
+	// the client then wedges into violation-reconnect).
+	sub := ws.add()
+	hook := m.onUpstreamChange
+	if created {
 		//nolint:contextcheck // the upstream lifecycle is refcount-driven
 		// (the cancel channel is the context — D1-B attach/detach), not
 		// request-scoped; per-connection ctxs derive inside runOnce.
 		go m.run(ws)
 	}
-	sub := ws.add()
+	m.mu.Unlock()
+	if created && hook != nil {
+		hook(workspaceID, true)
+	}
 	unsub := func() {
 		m.mu.Lock()
-		defer m.mu.Unlock()
 		ws.remove(sub)
+		detached := false
 		if ws.refs == 0 && m.streams[workspaceID] == ws {
 			delete(m.streams, workspaceID)
 			close(ws.cancel) // last detach: scale to zero (one close — the map guard is the arbiter)
+			detached = true
+		}
+		hook := m.onUpstreamChange
+		m.mu.Unlock()
+		if detached && hook != nil {
+			hook(workspaceID, false)
 		}
 	}
 	return sub.ch, unsub, nil

@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )

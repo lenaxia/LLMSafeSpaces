@@ -4,22 +4,49 @@
 package handlers
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
+
+// Subtask root-session resolution (US-65.x), ported to the US-69.11
+// usage-bridge seam: the ABI InputRequest may carry root_session_id
+// directly; when it does not, the bridge resolves the parent chain via
+// the session-parent cache (unchanged). The user-visible event keeps
+// SessionID = the subtask and RootSessionID = the user-visible parent.
+
+func newSubtaskBridgeEnv(t *testing.T, backend http.HandlerFunc) (*testEnv, *eventbroker.Subscriber) {
+	t.Helper()
+	env := newTestEnvWithBackend(t, backend)
+	env.handler.dialect = &agentoc.Dialect{}
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	t.Cleanup(stubUsageStream())
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	sub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	t.Cleanup(func() { env.handler.userBroker.UnsubscribeUser("user-1", sub) })
+	return env, sub
+}
+
+func abiPermission(id, sessionID string) *abiv1.InputRequest {
+	return &abiv1.InputRequest{
+		Id: id, SessionId: sessionID, Kind: abiv1.InputKind_INPUT_KIND_PERMISSION,
+		Permission: "shell", Patterns: []string{"ls"},
+	}
+}
 
 func TestSubtaskPermission_BubblesToRootSession(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,56 +71,46 @@ func TestSubtaskPermission_BubblesToRootSession(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env, sub := newSubtaskBridgeEnv(t, backend.Config.Handler.(http.HandlerFunc))
 	env.handler.EnableSessionParentResolution()
 
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_subtask", "ses_child"))
 
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_subtask",
-		"sessionID":  "ses_child",
-		"permission": "shell",
-		"patterns":   []string{"ls"},
-	})
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
-
-	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
-
-	req, ok := evt.Data.(*agent.PermissionRequest)
+	req, ok := evt.Data.(agent.PermissionRequest)
 	require.True(t, ok, "event data should be *agent.PermissionRequest, got %T", evt.Data)
 	assert.Equal(t, "per_subtask", req.ID)
 	assert.Equal(t, "ses_child", req.SessionID, "SessionID stays the subtask")
 	assert.Equal(t, "ses_root", req.RootSessionID, "RootSessionID points to user-visible parent")
 }
 
+// The ABI request may carry root_session_id directly (the pod knows its
+// own session tree) — the bridge must use it without a parent walk.
+func TestSubtaskPermission_ABIProvidesRoot_NoWalk(t *testing.T) {
+	env, sub := newSubtaskBridgeEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("no pod fetch expected when the ABI carries root_session_id, got %s", r.URL.Path)
+	})
+	env.handler.EnableSessionParentResolution()
+
+	req := abiPermission("per_abiroot", "ses_child")
+	req.RootSessionId = "ses_root"
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", req)
+
+	evt := recvWithTimeout(t, sub, "agent.permission")
+	pr := evt.Data.(agent.PermissionRequest)
+	assert.Equal(t, "ses_child", pr.SessionID)
+	assert.Equal(t, "ses_root", pr.RootSessionID)
+}
+
 func TestSubtaskPermission_ResolutionDisabled_RootEqualsSelf(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
-
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_x",
-		"sessionID":  "ses_x",
-		"permission": "shell",
+	env, sub := newSubtaskBridgeEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
 	})
 
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_x", "ses_x"))
 
-	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(*agent.PermissionRequest)
+	req := evt.Data.(agent.PermissionRequest)
 	assert.Equal(t, "ses_x", req.SessionID)
 	assert.Equal(t, "ses_x", req.RootSessionID, "fallback to self when resolution is disabled")
 }
@@ -110,29 +127,13 @@ func TestSubtaskPermission_TopLevelSession_RootEqualsSelf(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env, sub := newSubtaskBridgeEnv(t, backend.Config.Handler.(http.HandlerFunc))
 	env.handler.EnableSessionParentResolution()
 
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_top", "ses_top"))
 
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_top",
-		"sessionID":  "ses_top",
-		"permission": "shell",
-	})
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
-
-	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(*agent.PermissionRequest)
+	req := evt.Data.(agent.PermissionRequest)
 	assert.Equal(t, "ses_top", req.SessionID)
 	assert.Equal(t, "ses_top", req.RootSessionID, "top-level session is its own root")
 }
@@ -150,35 +151,17 @@ func TestSubtaskQuestion_BubblesToRootSession(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env, sub := newSubtaskBridgeEnv(t, backend.Config.Handler.(http.HandlerFunc))
 	env.handler.EnableSessionParentResolution()
 
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
-
-	envelope := makeEnvelope("question.asked", map[string]interface{}{
-		"id":        "que_subtask",
-		"sessionID": "ses_child",
-		"questions": []map[string]interface{}{
-			{
-				"question": "Pick one",
-				"header":   "Choose",
-				"options":  []map[string]string{{"label": "A", "description": "x"}},
-			},
-		},
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", &abiv1.InputRequest{
+		Id: "que_subtask", SessionId: "ses_child", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+		Question: "Pick one", Header: "Choose",
+		Options: []*abiv1.InputOption{{Label: "A", Description: "x"}},
 	})
-	env.handler.onRawEvent("ws-1", "question.asked", envelope)
 
-	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.question")
-	req := evt.Data.(*agent.QuestionRequest)
+	req := evt.Data.(agent.QuestionRequest)
 	assert.Equal(t, "que_subtask", req.ID)
 	assert.Equal(t, "ses_child", req.SessionID)
 	assert.Equal(t, "ses_root", req.RootSessionID)
@@ -190,29 +173,13 @@ func TestSubtaskPermission_FetcherFails_FallsBackToSelf(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env, sub := newSubtaskBridgeEnv(t, backend.Config.Handler.(http.HandlerFunc))
 	env.handler.EnableSessionParentResolution()
 
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
-	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_x", "ses_unreachable"))
 
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_x",
-		"sessionID":  "ses_unreachable",
-		"permission": "shell",
-	})
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
-
-	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(*agent.PermissionRequest)
+	req := evt.Data.(agent.PermissionRequest)
 	assert.Equal(t, "ses_unreachable", req.SessionID)
 	assert.Equal(t, "ses_unreachable", req.RootSessionID, "fallback to self when fetch fails")
 }
@@ -234,176 +201,6 @@ func TestSessionParentCache_InvalidateOnWorkspaceCacheFlush(t *testing.T) {
 
 	_ = env.handler.sessionParents.resolveRoot(context.Background(), "ws-1", "ses_x")
 	require.Equal(t, 2, calls, "cache must be invalidated on workspace cache flush")
-}
-
-func TestE2E_SubtaskPermission_BubblesThroughSSE(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/ses_child":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":       "ses_child",
-				"parentID": "ses_root",
-			})
-		case "/session/ses_root":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id": "ses_root",
-			})
-		default:
-			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
-		}
-	}))
-	defer backend.Close()
-
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.handler.EnableSessionParentResolution()
-
-	router := newStreamEventsRouter(env.handler)
-
-	cancel, body, _, _ := doStreamingRequest(router, "/api/v1/workspaces/ws-1/events")
-	defer cancel()
-	defer body.Close()
-
-	require.Eventually(t, func() bool {
-		return env.handler.userBroker.WorkspaceSubscriberCount("ws-1") > 0
-	}, 2*time.Second, 5*time.Millisecond, "subscriber should register on /events open")
-
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_e2e",
-		"sessionID":  "ses_child",
-		"permission": "shell",
-		"patterns":   []string{"rm -rf /"},
-	})
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
-
-	reader := bufio.NewReader(body)
-
-	rawEvt := readNextSSEDataLine(t, reader)
-	assert.Equal(t, "agent.event", rawEvt["type"], "first SSE line should be the raw opencode passthrough")
-
-	normEvt := readNextSSEDataLine(t, reader)
-	assert.Equal(t, "agent.permission", normEvt["type"])
-
-	data, ok := normEvt["data"].(map[string]interface{})
-	require.True(t, ok, "agent.permission.data must be an object, got %T", normEvt["data"])
-	assert.Equal(t, "per_e2e", data["id"])
-	assert.Equal(t, "ses_child", data["session_id"], "session_id stays the subtask")
-	assert.Equal(t, "ses_root", data["root_session_id"], "root_session_id resolved to user-visible parent")
-	assert.Equal(t, "shell", data["permission"])
-}
-
-func TestE2E_SubtaskQuestion_BubblesThroughSSE(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/ses_child":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ses_child", "parentID": "ses_root"})
-		case "/session/ses_root":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ses_root"})
-		default:
-			http.Error(w, "unexpected: "+r.URL.Path, http.StatusNotFound)
-		}
-	}))
-	defer backend.Close()
-
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.handler.EnableSessionParentResolution()
-
-	router := newStreamEventsRouter(env.handler)
-	cancel, body, _, _ := doStreamingRequest(router, "/api/v1/workspaces/ws-1/events")
-	defer cancel()
-	defer body.Close()
-
-	require.Eventually(t, func() bool {
-		return env.handler.userBroker.WorkspaceSubscriberCount("ws-1") > 0
-	}, 2*time.Second, 5*time.Millisecond)
-
-	envelope := makeEnvelope("question.asked", map[string]interface{}{
-		"id":        "que_e2e",
-		"sessionID": "ses_child",
-		"questions": []map[string]interface{}{
-			{
-				"question": "Confirm?",
-				"header":   "Confirm action",
-				"options":  []map[string]string{{"label": "Yes", "description": "go"}},
-			},
-		},
-	})
-	env.handler.onRawEvent("ws-1", "question.asked", envelope)
-
-	reader := bufio.NewReader(body)
-	_ = readNextSSEDataLine(t, reader)
-
-	normEvt := readNextSSEDataLine(t, reader)
-	assert.Equal(t, "agent.question", normEvt["type"])
-	data := normEvt["data"].(map[string]interface{})
-	assert.Equal(t, "que_e2e", data["id"])
-	assert.Equal(t, "ses_child", data["session_id"])
-	assert.Equal(t, "ses_root", data["root_session_id"])
-}
-
-func TestE2E_NestedSubtask_TwoLevelsBubbleToRoot(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/ses_grandchild":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ses_grandchild", "parentID": "ses_child"})
-		case "/session/ses_child":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ses_child", "parentID": "ses_root"})
-		case "/session/ses_root":
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "ses_root"})
-		default:
-			http.Error(w, "unexpected: "+r.URL.Path, http.StatusNotFound)
-		}
-	}))
-	defer backend.Close()
-
-	env := newInputTestEnv(t)
-	env.handler.httpClient = &http.Client{
-		Transport: &redirectTransport{server: backend},
-		Timeout:   5 * time.Second,
-	}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.handler.EnableSessionParentResolution()
-
-	router := newStreamEventsRouter(env.handler)
-	cancel, body, _, _ := doStreamingRequest(router, "/api/v1/workspaces/ws-1/events")
-	defer cancel()
-	defer body.Close()
-
-	require.Eventually(t, func() bool {
-		return env.handler.userBroker.WorkspaceSubscriberCount("ws-1") > 0
-	}, 2*time.Second, 5*time.Millisecond)
-
-	envelope := makeEnvelope("permission.asked", map[string]interface{}{
-		"id":         "per_nested",
-		"sessionID":  "ses_grandchild",
-		"permission": "shell",
-		"patterns":   []string{"ls"},
-	})
-	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
-
-	reader := bufio.NewReader(body)
-	_ = readNextSSEDataLine(t, reader)
-
-	normEvt := readNextSSEDataLine(t, reader)
-	require.Equal(t, "agent.permission", normEvt["type"])
-	data := normEvt["data"].(map[string]interface{})
-	assert.Equal(t, "ses_grandchild", data["session_id"])
-	assert.Equal(t, "ses_root", data["root_session_id"], "two-level walk should reach the root")
 }
 
 var _ = metav1.GetOptions{}

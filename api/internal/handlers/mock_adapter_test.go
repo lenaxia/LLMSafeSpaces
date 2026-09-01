@@ -134,10 +134,10 @@ func (m *mockAdapter) ContextUsageFromEvent(eventType string, rawData string) (s
 	return "", nil, false
 }
 
-func (m *mockAdapter) MeteringFromEvent(_ string, _ []byte) (*agent.SessionUsage, bool, error) {
-	return nil, false, nil
-}
-func (m *mockAdapter) IsKnownEventType(string) bool                         { return false }
+// US-69.11: MeteringFromEvent and IsKnownEventType were removed from
+// the agent.Adapter seam (billing derives from ABI MESSAGE_END in the
+// usagestream consumer; event classification retired with the tracker).
+
 func (m *mockAdapter) ClientEventsFromEvent(string, string) []session.Event { return nil }
 func (m *mockAdapter) RetryFromEvent(string, string) (string, *agent.ClientRetryStatus, bool) {
 	return "", nil, false

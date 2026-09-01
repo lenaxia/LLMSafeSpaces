@@ -3,11 +3,13 @@
 
 package handlers
 
-// #902/#903 full-wiring tests: real ProxyHandler.Start() → real CRD
-// watcher seed → onPhaseChange → tracker connect → agent event relayed
-// to a workspace subscriber. These catch wiring deletions the direct
-// unit calls cannot (review round 1 on #903): removing the seed path,
-// the phaseSource assignment, or the reconciler launch breaks them.
+// #902/#903 full-wiring tests, ported to the US-69.11 usage-gate seam:
+// real ProxyHandler.Start() → real CRD watcher seed → onPhaseChange →
+// UsageStream().Open → the gate's (fake) ABI client connects → derived
+// state reaches the user stream through the PRODUCTION usageBridge.
+// These catch wiring deletions the direct unit calls cannot (review
+// round 1 on #903): removing the seed path, the phaseSource assignment,
+// or the reconciler launch breaks them.
 
 import (
 	"context"
@@ -15,7 +17,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,76 +28,16 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
-
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/usagestream"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
-// fakeSSEBackend serves opencode's /event stream: signals every
-// connection, and lets tests push events to all live listeners.
-type fakeSSEBackend struct {
-	*httptest.Server
-	mu        sync.Mutex
-	conns     int
-	listeners map[chan string]struct{}
-}
-
-func newFakeSSEBackend() *fakeSSEBackend {
-	b := &fakeSSEBackend{listeners: make(map[chan string]struct{})}
-	b.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/event" {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			ch := make(chan string, 8)
-			b.mu.Lock()
-			b.conns++
-			b.listeners[ch] = struct{}{}
-			b.mu.Unlock()
-			defer func() {
-				b.mu.Lock()
-				b.conns--
-				delete(b.listeners, ch)
-				b.mu.Unlock()
-			}()
-			flusher := w.(http.Flusher)
-			flusher.Flush()
-			for {
-				select {
-				case evt := <-ch:
-					fmt.Fprintf(w, "data: %s\n\n", evt)
-					flusher.Flush()
-				case <-r.Context().Done():
-					return
-				}
-			}
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	return b
-}
-
-func (b *fakeSSEBackend) connectionCount() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.conns
-}
-
-func (b *fakeSSEBackend) push(event string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ch := range b.listeners {
-		select {
-		case ch <- event:
-		default:
-		}
-	}
-}
-
 // e2eLogger captures log lines so e2e failures self-diagnose
-// (testLogger swallows everything; the tracker's Warn output is the
-// fastest route to why a connection did or didn't happen).
+// (testLogger swallows everything; the reconciler's Warn output is the
+// fastest route to why a gate did or didn't connect).
 type e2eLogger struct {
 	mu    sync.Mutex
 	lines []string
@@ -135,60 +76,34 @@ func (l *e2eLogger) dump(t *testing.T) {
 
 // startFullWiring builds a ProxyHandler wired exactly like production
 // (NewProxyHandler + Start: activity tracker, CRD watcher with seed,
-// tracker, reconciler) against mock k8s and the fake SSE backend.
-// priorPhaseActive simulates the Redis-persisted prior that made
-// post-restart seeds skip arming (#902).
-// flipGet wraps MockWorkspaceInterface so Get flips to an IP-carrying CR
-// once ready flips — race-free dynamic mock behavior (testify re-On
-// appends rather than replaces).
-type flipGet struct {
-	*k8smocks.MockWorkspaceInterface
-	ready  *atomic.Bool
-	withIP *v1.Workspace
-}
-
-func (f *flipGet) Get(ctx context.Context, name string, opts metav1.GetOptions) (*v1.Workspace, error) {
-	if f.ready != nil && f.ready.Load() {
-		return f.withIP, nil
-	}
-	return f.MockWorkspaceInterface.Get(ctx, name, opts)
-}
-
-func startFullWiring(t *testing.T, backend *fakeSSEBackend, wsName, podIP, priorPhase string, reconcileInterval time.Duration, ipReady *atomic.Bool) (*ProxyHandler, *k8smocks.MockWorkspaceInterface) {
+// state reconciler) against mock k8s, with the usage-stream singleton
+// swapped for a consumer whose client is the recording fake and whose
+// bridge is the PRODUCTION usageBridge. priorPhaseActive simulates the
+// Redis-persisted prior that made post-restart seeds skip arming (#902).
+// ipReady != nil models the resume race: resolve fails until the flag
+// flips (the pod-IP-empty unhappy path).
+func startFullWiring(t *testing.T, wsName, podIP, priorPhase string, reconcileInterval time.Duration, ipReady <-chan struct{}) (*ProxyHandler, *gateTestClient) {
 	t.Helper()
 	orig := sseWatchReconcileInterval
 	sseWatchReconcileInterval = reconcileInterval
 	t.Cleanup(func() { sseWatchReconcileInterval = orig })
 
-	// No client.Timeout — production wires the default client (transport
-	// timeouts only); a client.Timeout would kill the long-lived /event
-	// stream mid-test, mirroring nothing real.
-	transport := &redirectTransport{server: backend.Server}
-	httpClient := &http.Client{Transport: transport}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // statusz reconcile probe target (silent)
+	}))
+	t.Cleanup(backend.Close)
 
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
 	wsMock := k8smocks.NewMockWorkspaceInterface()
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	// The workspace interface the API talks to: the plain mock, or (for
-	// the pod-IP-empty unhappy path) a wrapper whose Get flips to an
-	// IP-carrying CR atomically.
-	var wsIface = interface{}(wsMock)
-	if ipReady != nil {
-		ipWS := &v1.Workspace{}
-		ipWS.Name = wsName
-		ipWS.Status.Phase = v1.WorkspacePhaseActive
-		ipWS.Status.PodIP = "10.0.0.1"
-		wsIface = &flipGet{MockWorkspaceInterface: wsMock, ready: ipReady, withIP: ipWS}
-	}
-	llmMock.On("Workspaces", "default").Return(wsIface)
+	llmMock.On("Workspaces", "default").Return(wsMock)
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	// One mutable CR shared by List/Get: the unhappy-path test flips
-	// PodIP on it after the seed (simulating the resume completing).
 	wsCR := &v1.Workspace{}
 	wsCR.Name = wsName
+	wsCR.Spec.Owner.UserID = "user-1"
 	wsCR.Status.Phase = v1.WorkspacePhaseActive
 	wsCR.Status.PodIP = podIP
 	list := &v1.WorkspaceList{}
@@ -205,7 +120,7 @@ func startFullWiring(t *testing.T, backend *fakeSSEBackend, wsName, podIP, prior
 	require.NoError(t, err)
 
 	logger := &e2eLogger{}
-	handler, err := NewProxyHandler(k8sMock, logger, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, logger, "default", backend.Client(), nil)
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	t.Cleanup(func() {
@@ -214,151 +129,157 @@ func startFullWiring(t *testing.T, backend *fakeSSEBackend, wsName, podIP, prior
 		}
 	})
 
+	// The usage-stream swap: recording client, production bridge. The
+	// resolve seam models agentdEndpoint — instant success, or (for the
+	// resume-race test) failure until the pod IP appears.
+	fc := &gateTestClient{connected: make(chan struct{}, 16)}
+	consumer := usagestream.New(usagestream.Config{
+		Resolve: func(ctx context.Context, workspaceID string) (string, string, error) {
+			if ipReady != nil {
+				select {
+				case <-ipReady:
+				case <-ctx.Done():
+					return "", "", ctx.Err()
+				default:
+					return "", "", fmt.Errorf("no pod IP yet (resume race) for %s", workspaceID)
+				}
+			}
+			return "http://pod", "test-pw", nil
+		},
+		NewClient: func(baseURL, password string) usagestream.Client { return fc },
+		Bridge:    &usageBridge{h: handler},
+		Logger:    logger,
+		IdleDrop:  time.Hour,
+		Retry:     50 * time.Millisecond,
+	})
+	t.Cleanup(injectUsageStream(consumer))
+
 	// The #902 precondition: Redis-persisted prior phase already says
 	// Active, so the seed's onPhaseChange sees a no-transition update.
 	handler.SetPriorPhaseForTest(wsName, priorPhase)
 
 	require.NoError(t, handler.Start())
 	t.Cleanup(func() { _ = handler.Stop() })
-	return handler, wsMock
+	return handler, fc
 }
 
-// Test902_E2E_SeedWithPersistedPriorArmsWatchAndRelaysEvents is the
+func requireGateConnect(t *testing.T, fc *gateTestClient, what string) {
+	t.Helper()
+	select {
+	case <-fc.connected:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s: usage gate never connected", what)
+	}
+}
+
+// Test902_E2E_SeedWithPersistedPriorArmsGateAndBridgesEvents is the
 // full-wiring reproduction of the incident: real Start(), prior phase
-// Active (Redis-persisted shape), seed fires onPhaseChange — the watch
-// must arm, CONNECT to the backend, and relay an agent event to a
-// workspace subscriber. Pre-fix, the seed took the else-branch and none
-// of this happened: users halted while sends succeeded.
-func Test902_E2E_SeedWithPersistedPriorArmsWatchAndRelaysEvents(t *testing.T) {
-	backend := newFakeSSEBackend()
-	t.Cleanup(backend.Close) // LIFO: runs after handler.Stop (registered below)
+// Active (Redis-persisted shape), seed fires onPhaseChange — the usage
+// gate must arm and CONNECT despite prior == Active, and a pod ABI event
+// must reach a user subscriber through the production bridge. Pre-fix,
+// the seed took the else-branch and none of this happened: users halted
+// while sends succeeded.
+func Test902_E2E_SeedWithPersistedPriorArmsGateAndBridgesEvents(t *testing.T) {
+	handler, fc := startFullWiring(t, "ws-902e2e", "10.0.0.1", "Active", time.Hour, nil)
 
-	handler, _ := startFullWiring(t, backend, "ws-902e2e", "10.0.0.1", "Active", time.Hour, nil)
+	requireGateConnect(t, fc, "seed with Redis-persisted prior=Active must still arm and connect the gate (#902)")
 
-	// The watch armed AND connected despite prior == Active.
-	require.Eventually(t, func() bool { return backend.connectionCount() >= 1 },
-		10*time.Second, 20*time.Millisecond,
-		"seed with Redis-persisted prior=Active must still arm and connect the tracker (#902)")
-	assert.True(t, handler.GetSSETracker().IsWatching("ws-902e2e"))
-
-	// A workspace subscriber receives a relayed agent event end-to-end.
-	sub, err := handler.userBroker.SubscribeWorkspace("ws-902e2e")
+	// A pod-side session.status event bridges onto the user stream.
+	sub, err := handler.userBroker.SubscribeUser("user-1")
 	require.NoError(t, err)
-	defer handler.userBroker.UnsubscribeWorkspace("ws-902e2e", sub)
-	backend.push(`{"type":"session.status","properties":{"sessionID":"ses-x","status":{"type":"idle"}}}`)
+	defer handler.userBroker.UnsubscribeUser("user-1", sub)
+
+	fc.apply(2, &abiv1.Event{
+		Type:      abiv1.EventType_EVENT_TYPE_SESSION_STATUS,
+		SessionId: "ses-x",
+		Status:    abiv1.SessionStatus_SESSION_STATUS_IDLE,
+	})
 
 	select {
 	case evt := <-sub.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-		assert.Equal(t, "session.status", evt.EventType)
+		assert.Equal(t, "session.status", evt.Type)
+		assert.Equal(t, "ws-902e2e", evt.WorkspaceID)
+		assert.Equal(t, "ses-x", evt.SessionID)
+		assert.Equal(t, "idle", evt.Status)
 	case <-time.After(5 * time.Second):
-		t.Fatal("agent event never reached the workspace subscriber — tracker connected but not relaying")
+		t.Fatal("derived session.status never reached the user subscriber — gate connected but the bridge is not relaying")
 	}
 }
 
-// Test902_E2E_ReconcilerHealsDeletedWatch proves the Start()-launched
-// reconciler wiring: after the watch is torn down (simulating connection
-// death with no phase transition), a NEW connection appears within one
-// reconcile interval and events flow again. Deleting the phaseSource
-// assignment or the goroutine launch in Start() fails this test.
-func Test902_E2E_ReconcilerHealsDeletedWatch(t *testing.T) {
-	backend := newFakeSSEBackend()
-	t.Cleanup(backend.Close) // LIFO: runs after handler.Stop (registered below)
+// Test902_E2E_ReconcilerHealsDeletedGate proves the Start()-launched
+// reconciler wiring: after a gate is torn down (simulating a dropped
+// gate with no phase transition), a NEW connection appears within one
+// reconcile interval. Deleting the phaseSource assignment or the
+// goroutine launch in Start() fails this test.
+func Test902_E2E_ReconcilerHealsDeletedGate(t *testing.T) {
+	handler, fc := startFullWiring(t, "ws-902heal", "10.0.0.1", "Active", 100*time.Millisecond, nil)
 
-	handler, _ := startFullWiring(t, backend, "ws-902heal", "10.0.0.1", "Active", 100*time.Millisecond, nil)
+	requireGateConnect(t, fc, "initial gate")
 
-	require.Eventually(t, func() bool { return backend.connectionCount() >= 1 },
-		10*time.Second, 20*time.Millisecond)
-
-	// Kill the watch exactly as a connection death does: no transition,
+	// Kill the gate exactly as a connection death does: no transition,
 	// no user stream — nothing but the reconciler can bring it back.
-	handler.GetSSETracker().StopWatching("ws-902heal")
-	require.Eventually(t, func() bool { return backend.connectionCount() == 0 },
-		5*time.Second, 20*time.Millisecond, "sanity: watch torn down, connection closed")
+	handler.UsageStream().Close("ws-902heal")
+	require.Equal(t, 0, handler.UsageStream().Gates(), "sanity: gate torn down")
 
-	require.Eventually(t, func() bool { return backend.connectionCount() >= 1 },
-		3*time.Second, 20*time.Millisecond,
-		"reconciler must re-arm the deleted watch within one interval")
-
-	sub, err := handler.userBroker.SubscribeWorkspace("ws-902heal")
-	require.NoError(t, err)
-	defer handler.userBroker.UnsubscribeWorkspace("ws-902heal", sub)
-	backend.push(`{"type":"session.status","properties":{"sessionID":"ses-y","status":{"type":"idle"}}}`)
-	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-	case <-time.After(5 * time.Second):
-		t.Fatal("healed watch must relay events")
-	}
+	requireGateConnect(t, fc, "reconciler must re-arm the deleted gate within one interval")
+	require.Equal(t, 1, handler.UsageStream().Gates())
 }
 
-// Test902_E2E_ArmWhilePodIPEmptyThenRecovers: the unhappy path — the
-// workspace is Active but podIP is not yet populated (resume race). The
-// watch arms, connectAndRead fails (Warn + backoff), and once the IP
-// appears the retry loop connects and events flow.
-func Test902_E2E_ArmWhilePodIPEmptyThenRecovers(t *testing.T) {
-	backend := newFakeSSEBackend()
-	t.Cleanup(backend.Close) // LIFO: runs after handler.Stop (registered below)
-
-	ipReady := &atomic.Bool{}
-	handler, _ := startFullWiring(t, backend, "ws-902ip", "", "Creating", time.Hour, ipReady)
+// Test902_E2E_ArmWhileUnresolvableThenRecovers: the unhappy path — the
+// workspace is Active but the pod is not reachable yet (resume race).
+// The gate arms (retrying resolve), and once the pod resolves the gate
+// connects and events flow.
+func Test902_E2E_ArmWhileUnresolvableThenRecovers(t *testing.T) {
+	ipReady := make(chan struct{})
+	handler, fc := startFullWiring(t, "ws-902ip", "", "Active", time.Hour, ipReady)
 
 	// Armed but cannot connect yet.
-	require.Eventually(t, func() bool { return handler.GetSSETracker().IsWatching("ws-902ip") },
-		5*time.Second, 20*time.Millisecond)
-	assert.Zero(t, backend.connectionCount(), "sanity: no pod IP yet, no connection possible")
-
-	// Pod IP appears (resume completes). The wrapper's Get flips
-	// atomically (re-On-ing the k8s mock APPENDS an expectation — the old
-	// IP-less one keeps winning; mutating the shared CR races the
-	// tracker's reads). The subscribe loop's retry (2s initial backoff,
-	// growing) connects once the IP is visible.
-	ipReady.Store(true)
-
-	require.Eventually(t, func() bool { return backend.connectionCount() >= 1 },
-		15*time.Second, 50*time.Millisecond,
-		"tracker retry loop must connect once the pod IP becomes available")
-
-	sub, err := handler.userBroker.SubscribeWorkspace("ws-902ip")
-	require.NoError(t, err)
-	defer handler.userBroker.UnsubscribeWorkspace("ws-902ip", sub)
-	backend.push(`{"type":"session.status","properties":{"sessionID":"ses-z","status":{"type":"idle"}}}`)
+	require.Eventually(t, func() bool { return handler.UsageStream().Gates() == 1 },
+		5*time.Second, 20*time.Millisecond, "gate must arm while the pod is unresolvable")
 	select {
-	case evt := <-sub.Ch:
-		assert.Equal(t, "agent.event", evt.Type)
-	case <-time.After(5 * time.Second):
-		t.Fatal("recovered watch must relay events")
+	case <-fc.connected:
+		t.Fatal("sanity: no pod yet, no connection possible")
+	default:
 	}
+
+	// Pod appears (resume completes); the retry loop connects.
+	close(ipReady)
+	requireGateConnect(t, fc, "gate retry loop must connect once the pod resolves")
 }
 
-// Test902_TransitionCancelsExistingWatch pins the fresh-connection
+// Test902_TransitionCancelsExistingGate pins the fresh-connection
 // semantics with a REAL cancel observation: a transition into Active
-// must StopWatching (cancel) the previous subscription before arming a
-// new one. Uses ForceWatchingWithCancelForTest so the cancel is
-// observable (review round 1 case 5).
-func Test902_TransitionCancelsExistingWatch(t *testing.T) {
+// must close the previous gate (cancel its stream) before arming a new
+// one — the old stream targets the previous pod.
+func Test902_TransitionCancelsExistingGate(t *testing.T) {
 	env := newTestEnv(t)
-	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
-
-	canceled := make(chan struct{}, 1)
-	env.handler.GetSSETracker().ForceWatchingWithCancelForTest("ws-902t", func() {
-		select {
-		case canceled <- struct{}{}:
-		default:
-		}
+	fc := &gateTestClient{
+		connected:    make(chan struct{}, 4),
+		disconnected: make(chan struct{}, 4),
+	}
+	consumer := usagestream.New(usagestream.Config{
+		Resolve:   func(context.Context, string) (string, string, error) { return "http://pod", "pw", nil },
+		NewClient: func(string, string) usagestream.Client { return fc },
+		Logger:    &testLogger{},
+		IdleDrop:  time.Hour,
+		Retry:     10 * time.Millisecond,
 	})
-	env.handler.SetPriorPhaseForTest("ws-902t", "Resuming")
+	t.Cleanup(injectUsageStream(consumer))
 
+	env.handler.UsageStream().Open("ws-902t")
+	requireGateConnect(t, fc, "pre-transition gate")
+
+	env.handler.SetPriorPhaseForTest("ws-902t", "Resuming")
 	ws := &v1.Workspace{}
 	ws.Name = "ws-902t"
 	ws.Status.Phase = v1.WorkspacePhaseActive
 	env.handler.onPhaseChange(ws)
 
 	select {
-	case <-canceled:
+	case <-fc.disconnected:
 	case <-time.After(2 * time.Second):
-		t.Fatal("transition into Active must cancel the previous watch (fresh connection to the new pod)")
+		t.Fatal("transition into Active must cancel the previous gate's stream (fresh connection to the new pod)")
 	}
-	assert.True(t, env.handler.GetSSETracker().IsWatching("ws-902t"),
-		"and leave a (new) watch armed")
+	requireGateConnect(t, fc, "transition must leave a (new) gate armed")
+	require.Equal(t, 1, env.handler.UsageStream().Gates())
 }

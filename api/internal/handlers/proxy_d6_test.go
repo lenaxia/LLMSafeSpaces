@@ -31,7 +31,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -304,17 +303,19 @@ func TestEscalateHungs_ReconcilerTickIntegration(t *testing.T) {
 	require.NoError(t, err)
 	defer broker.UnsubscribeWorkspace("ws-1", sub)
 
-	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
-	env.handler.sseTracker = tracker
+	// US-69.11: the reconciler arms usage gates for Active workspaces —
+	// inject the recording consumer so the tick stays hermetic.
+	consumer, _, _ := newRecordingGateConsumer(nil)
+	restore := injectUsageStream(consumer)
+	t.Cleanup(restore)
 
 	if env.handler.stopCh == nil {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
-		tracker.Stop()
 		<-done
 	})
 
@@ -406,16 +407,16 @@ func TestD6_E2E_DetectionToHistory(t *testing.T) {
 	require.NoError(t, err)
 	defer broker.UnsubscribeWorkspace("ws-1", sub)
 
-	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
-	env.handler.sseTracker = tracker
+	consumer, _, _ := newRecordingGateConsumer(nil)
+	restore := injectUsageStream(consumer)
+	t.Cleanup(restore)
 	if env.handler.stopCh == nil {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
-		tracker.Stop()
 		<-done
 	})
 
@@ -455,16 +456,16 @@ func TestD6_E2E_PanicIsolation_ReconcilerSurvives(t *testing.T) {
 	phases := fakePhaseSourceD6{"ws-1": "Active"}
 	env.handler.phaseSource = phaseCountingSource{inner: phases, ticks: &ticks}
 
-	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
-	env.handler.sseTracker = tracker
+	consumer, _, _ := newRecordingGateConsumer(nil)
+	restore := injectUsageStream(consumer)
+	t.Cleanup(restore)
 	if env.handler.stopCh == nil {
 		env.handler.stopCh = make(chan struct{})
 	}
 	done := make(chan struct{}, 1)
-	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	go func() { env.handler.stateReconciler(sseWatchReconcileInterval); close(done) }()
 	t.Cleanup(func() {
 		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
-		tracker.Stop()
 		<-done
 	})
 

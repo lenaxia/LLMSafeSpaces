@@ -156,9 +156,10 @@ type Authority struct {
 	sessionLocks   map[string]*sync.Mutex
 	sessionLocksMu sync.Mutex
 
-	droppedEvents   int64
-	parserFailures  int64
-	panicsContained int64
+	droppedEvents     int64
+	parserFailures    int64
+	panicsContained   int64
+	customValveEvents int64
 }
 
 // New constructs the authority and loads the durable seq cursor from
@@ -481,11 +482,12 @@ func (a *Authority) KillForTest() {}
 
 // Metrics exposes module counters for ops_metrics wiring (US-69.12).
 type Metrics struct {
-	DroppedEvents   int64
-	ParserFailures  int64
-	PanicsContained int64
-	Subscribers     int
-	BufferedPending int
+	DroppedEvents     int64
+	ParserFailures    int64
+	PanicsContained   int64
+	CustomValveEvents int64
+	Subscribers       int
+	BufferedPending   int
 	// SecondsSinceSeqAdvance is how long since the projection last moved
 	// (the R5 starvation signal: seq stalled N seconds while the pod
 	// runs). Initialized at construction; a reseed counts as advance.
@@ -508,6 +510,7 @@ func (a *Authority) Metrics() Metrics {
 		DroppedEvents:               a.droppedEvents,
 		ParserFailures:              a.parserFailures,
 		PanicsContained:             a.panicsContained,
+		CustomValveEvents:           a.customValveEvents,
 		Subscribers:                 len(a.subs),
 		BufferedPending:             len(a.pending),
 		SecondsSinceSeqAdvance:      time.Since(a.lastSeqAt).Seconds(),

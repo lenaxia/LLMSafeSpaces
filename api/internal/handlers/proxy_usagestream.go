@@ -10,6 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/usagestream"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	abiclient "github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
@@ -24,6 +27,28 @@ import (
 // constraint makes multi-replica billing exactly-once), the Epic 28
 // user-stream state bridge (source swapped from the retired tracker),
 // context/title persistence, and agent-death detection.
+
+// usageStreamGates (US-69.11, the scale-to-zero AC observable): 1 per
+// workspace with an armed busy-gated subscription, series deleted when
+// the gate drops (Close / idle window) — an idle fleet scrapes empty,
+// not a wall of zero series.
+var usageStreamGates = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "llmsafespaces_usage_stream_gates",
+	Help: "Open busy-gated usage-stream subscriptions per workspace (set on Open, series deleted on close or idle-drop — scale-to-zero).",
+}, []string{"workspace_id"})
+
+// recordUsageStreamGate is the Consumer's metrics hook (the package
+// stays import-clean; the gauge lives here).
+func recordUsageStreamGate(workspaceID string, open bool) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if open {
+		usageStreamGates.WithLabelValues(workspaceID).Set(1)
+	} else {
+		usageStreamGates.DeleteLabelValues(workspaceID)
+	}
+}
 
 var (
 	usageStreamOnce sync.Once
@@ -48,9 +73,10 @@ func (h *ProxyHandler) buildUsageStream() *usagestream.Consumer {
 		NewClient: func(baseURL, password string) usagestream.Client {
 			return newUsageStreamClient(baseURL, password)
 		},
-		Billing: usagestream.BillingFunc(h.recordStepUsage),
-		Bridge:  &usageBridge{h: h},
-		Logger:  h.logger,
+		Billing:      usagestream.BillingFunc(h.recordStepUsage),
+		Bridge:       &usageBridge{h: h},
+		Logger:       h.logger,
+		OnGateChange: recordUsageStreamGate,
 	})
 }
 
@@ -123,6 +149,29 @@ func (h *ProxyHandler) recordStepUsage(workspaceID string, u usagestream.Usage) 
 // these unchanged), session-index persistence, and agent death.
 type usageBridge struct {
 	h *ProxyHandler
+
+	// kindsMu remembers the kind of every input request seen on this
+	// replica so resolved events carry the right wire type
+	// (agent.question.resolved vs agent.permission.resolved). Requests
+	// first seen by another replica degrade to question.resolved — the
+	// frontend removes by request id either way.
+	kindsMu sync.Mutex
+	kinds   map[string]abiv1.InputKind
+}
+
+func (b *usageBridge) rememberKind(id string, kind abiv1.InputKind) {
+	b.kindsMu.Lock()
+	defer b.kindsMu.Unlock()
+	if b.kinds == nil {
+		b.kinds = map[string]abiv1.InputKind{}
+	}
+	b.kinds[id] = kind
+}
+
+func (b *usageBridge) kindOf(id string) abiv1.InputKind {
+	b.kindsMu.Lock()
+	defer b.kindsMu.Unlock()
+	return b.kinds[id]
 }
 
 func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
@@ -145,6 +194,14 @@ func (b *usageBridge) SessionStatus(workspaceID, sessionID string, busy bool) {
 
 func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest) {
 	if b.h.userBroker == nil || req == nil {
+		return
+	}
+	b.rememberKind(req.GetId(), req.GetKind())
+	// Headless mode: auto-approve answers permissions server-side — the
+	// user stream must not prompt a human for an input the platform is
+	// about to resolve (the retired dialect path suppressed these too).
+	if req.GetKind() == abiv1.InputKind_INPUT_KIND_PERMISSION && b.h.shouldAutoApprovePermissions(context.Background(), workspaceID) {
+		go b.h.autoApprovePermission(workspaceID, req.GetId())
 		return
 	}
 	root := req.GetRootSessionId()
@@ -172,10 +229,12 @@ func (b *usageBridge) InputResolved(workspaceID, sessionID, inputID string) {
 	if b.h.userBroker == nil {
 		return
 	}
-	// The resolved event is kind-agnostic on the user stream (both
-	// question and permission resolutions publish the same shape).
+	resolvedType := "agent.question.resolved"
+	if b.kindOf(inputID) == abiv1.InputKind_INPUT_KIND_PERMISSION {
+		resolvedType = "agent.permission.resolved"
+	}
 	evt := apitypes.WorkspaceSSEEvent{
-		Type:      "agent.question.resolved",
+		Type:      resolvedType,
 		SessionID: sessionID,
 		RequestID: inputID,
 		Data: map[string]string{

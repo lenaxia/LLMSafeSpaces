@@ -260,18 +260,6 @@ func (s *Service) RecordInference(modelID, providerID string, inputTokens, outpu
 	}
 }
 
-// RecordAgentEvent counts one agent SSE event for drift observability.
-// The caller classifies via Adapter.IsKnownEventType and passes the type
-// name only when known; unknown types must pass "" so the label set
-// stays bounded by the taxonomy (O(types), not O(upstream creativity)).
-func (s *Service) RecordAgentEvent(eventType string, known bool) {
-	if known {
-		agentEventsTotal.WithLabelValues(eventType).Inc()
-	} else {
-		agentEventsTotal.WithLabelValues("unknown").Inc()
-	}
-}
-
 // RecordModelSelection records a model selection event.
 func (s *Service) RecordModelSelection(modelID, providerID string) {
 	tier := "paid"

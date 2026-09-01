@@ -7,11 +7,12 @@ import (
 	"context"
 	"time"
 
+	stripe "github.com/stripe/stripe-go/v76"
+	"github.com/stripe/stripe-go/v76/checkout/session"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	stripe "github.com/stripe/stripe-go/v76"
-	"github.com/stripe/stripe-go/v76/checkout/session"
 )
 
 // pendingOrgStore is the data-access surface the cleanup cron needs.

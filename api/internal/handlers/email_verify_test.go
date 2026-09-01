@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // reuse memTokenStore, memUserStore fakes from password_reset_test.go
