@@ -151,14 +151,29 @@ if (( SCALE > 0 )); then
         WSBATCH+=("$(ws_id $((100 + n)))")
     done
 
-    ok "seeding + binding ${#WSBATCH[@]} workspaces (this is the slow part; parallelizable in pool)"
+    # Seed in waves, not one thundering herd: AC-13 measures concurrent
+    # RESUMES, and the resume burst below is still all-${SCALE}-at-once. A
+    # single 100-pod create burst on one kind node wedged workspace #4 past
+    # its whole wait budget in pool run 6 (reconcile conflict storm between
+    # status writers) — the create side needs no such burst to be honest.
+    SEED_WAVE="${SEED_WAVE:-20}"
+    ok "seeding + binding ${#WSBATCH[@]} workspaces in waves of ${SEED_WAVE} (resume burst stays ${SCALE}-wide)"
+    declare -a SEEDED=()
     for ws in "${WSBATCH[@]}"; do
         seed_workspace "${ws}" "${RUNTIME_CLASS}"
         bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
+        SEEDED+=("${ws}")
+        if (( ${#SEEDED[@]} % SEED_WAVE == 0 )); then
+            for seeded in "${SEEDED[@]}"; do
+                wait_phase "${seeded}" Active 600 || die "AC-13: ${seeded} never Active"
+                secrets_converged "${seeded}" 120 || die "AC-13: ${seeded} pre-suspend unhealthy"
+            done
+            SEEDED=()
+        fi
     done
-    for ws in "${WSBATCH[@]}"; do
-        wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
-        secrets_converged "${ws}" 120 || die "AC-13: ${ws} pre-suspend unhealthy"
+    for seeded in "${SEEDED[@]}"; do
+        wait_phase "${seeded}" Active 600 || die "AC-13: ${seeded} never Active"
+        secrets_converged "${seeded}" 120 || die "AC-13: ${seeded} pre-suspend unhealthy"
     done
 
     ok "suspending ${#WSBATCH[@]} workspaces"

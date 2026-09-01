@@ -246,6 +246,24 @@ func TestUS70Harness_BindEnv_ReloginsOn401(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_AC13SeedsInWaves pins the pool-run-6 lesson: the AC-13
+// create side seeds in bounded waves (the resume burst stays full-width —
+// that is what the AC measures); a single 100-pod create herd on one kind
+// node wedged workspace #4 past its entire wait budget in a reconcile
+// conflict storm between status writers.
+func TestUS70Harness_AC13SeedsInWaves(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	for _, pin := range []string{
+		`SEED_WAVE="${SEED_WAVE:-20}"`,
+		"seeding + binding ${#WSBATCH[@]} workspaces in waves",
+		`wait_phase "${seeded}" Active 600`,
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("AC-13 provisioning must keep %q", pin)
+		}
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {
