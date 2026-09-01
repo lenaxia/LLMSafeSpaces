@@ -496,9 +496,8 @@ func TestHandler_WorkspaceEnvMutationsNotify(t *testing.T) {
 		agentpush.WithPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"}),
 		agentpush.WithPasswordProvider(staticPasswordProvider{}),
 	)
-	envLogger := &recordingLogger{}
 	envHandler := NewWorkspaceEnvHandler(mustEnvService(t, store))
-	envHandler.SetLogger(envLogger)
+	envHandler.SetLogger(&recordingLogger{})
 	envHandler.SetNotifier(func(ctx context.Context, userID, workspaceID string) error {
 		_, err := notifier.Notify(ctx, userID, workspaceID)
 		return err
@@ -518,16 +517,6 @@ func TestHandler_WorkspaceEnvMutationsNotify(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
-	if w.Code != http.StatusNoContent {
-		envLogger.mu.Lock()
-		for _, e := range envLogger.warns {
-			t.Logf("handler warn: %s %v", e.Msg, e.Fields)
-		}
-		for _, e := range envLogger.errs {
-			t.Logf("handler error: %s", e.Msg)
-		}
-		envLogger.mu.Unlock()
-	}
 	require.Equal(t, http.StatusNoContent, w.Code)
 	require.Len(t, mock.dispatched(), 1, "PUT env must notify")
 
@@ -554,7 +543,12 @@ func mustEnvService(t *testing.T, store *notifyPathStore) *secrets.SecretService
 	t.Helper()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(newTestKeyStore(), dekCache)
+	prov, err := secrets.NewStaticKeyProvider(make([]byte, 32))
+	require.NoError(t, err)
+	keySvc.SetAPIKeyStore(nil, prov)
+	require.NoError(t, keySvc.InitializeUserKeysServerKEK(context.Background(), "user-1", "server_kek"),
+		"the env author path reads the user's key material (salt + DEK)")
 	require.NoError(t, dekCache.CacheDEK(context.Background(), "session-1", make([]byte, 32), time.Hour),
-		"the env path authors through the session DEK — pre-cache it like login would")
+		"pre-cache the session DEK like login would")
 	return secrets.NewSecretService(keySvc, store)
 }
