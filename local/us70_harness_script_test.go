@@ -1,8 +1,6 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//go:build !race
-
 package local_test
 
 // us70_harness_script_test.go — pin tests for the US-70.0 delivery-harness
