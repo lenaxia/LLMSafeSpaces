@@ -81,3 +81,31 @@ func TestUS70_SeedUserUsesHashHelper(t *testing.T) {
 		t.Fatalf("seed_user must seed via api_key_db_hash (hash pinned by test):\n%s", insn)
 	}
 }
+
+func TestUS70_APIKeyInsertIDFitsColumn(t *testing.T) {
+	// Pool run 4: 'value too long for type character varying(36)' — the
+	// seeded api_keys.id was <owner-uuid>+"-sd" (39 chars). Pin the
+	// literal ≤36 and that no ${OWNER_ID}-derived suffix sneaks back.
+	raw, err := exec.Command("cat", us70Lib).CombinedOutput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(raw)
+	i := strings.Index(src, "INSERT INTO api_keys")
+	insn := src[i : i+strings.Index(src[i:], ";")]
+	for _, line := range strings.Split(insn, "\n") {
+		if !strings.Contains(line, "VALUES") {
+			continue
+		}
+		for _, m := range strings.Split(line, ",") {
+			m = strings.TrimSpace(m)
+			if !strings.HasPrefix(m, "'") {
+				continue
+			}
+			id := strings.Trim(m, "'")
+			if len(id) > 36 {
+				t.Fatalf("api_keys INSERT value %q is %d chars; id column is varchar(36) — pool run 4's failure", id, len(id))
+			}
+		}
+	}
+}
