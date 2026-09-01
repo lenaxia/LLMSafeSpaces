@@ -269,6 +269,18 @@ func TestUS70Harness_FailureDiagnostics(t *testing.T) {
 	}
 }
 
+// TestUS70Harness_ScaleResourcesQuoted pins the pool-run-7 lesson:
+// SCALE_RES is a shell string interpolated into the CR heredoc — the
+// cpuLimit value MUST reach the API as a YAML string ("1"), not the
+// integer the double-quoted assignment produced (CRD validation rejected
+// spec.resources.cpuLimit integer at the first batch workspace).
+func TestUS70Harness_ScaleResourcesQuoted(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if !strings.Contains(src, "cpuLimit: 1000m") {
+		t.Fatal("cpuLimit must stay unit-suffixed — bare numerics coerce to JSON integers on the apply path (pool runs 7+9)")
+	}
+}
+
 func TestUS70Scripts_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	for _, script := range []string{us70CommonScript, us70GvisorScript, us70FaultsScript, us70DeliveryScript} {
