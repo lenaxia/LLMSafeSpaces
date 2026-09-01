@@ -389,13 +389,10 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 		t.Errorf("reload-secrets dispatch missing Basic credential (#848): got %q, want %q", authHeader, expectedAuth)
 	}
 
-	var secrets []struct {
-		Type string `json:"type"`
-		Name string `json:"name"`
-	}
-	json.Unmarshal(body, &secrets)
-	if len(secrets) != 1 || secrets[0].Type != "ssh-key" || secrets[0].Name != "ssh-e2e" {
-		t.Errorf("Unexpected secrets payload: %s", string(body))
+	// US-70.3: the notify carries NO batch body — the pod pulls. The empty
+	// body IS the contract; content correctness lives in the builder tests.
+	if len(body) != 0 {
+		t.Errorf("resync notify must be bodyless (the pod pulls its batch): got %d bytes", len(body))
 	}
 }
 
