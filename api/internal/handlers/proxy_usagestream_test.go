@@ -206,7 +206,10 @@ func (g *gateTestClient) apply(seq uint64, evt *abiv1.Event) {
 // recording client. Resolve never fails and is recorded per workspace
 // (the observable for "which workspaces got armed"). IdleDrop is parked
 // at an hour: tests tear gates down explicitly via Close.
-func newRecordingGateConsumer(bridge usagestream.Bridge) (*usagestream.Consumer, *gateTestClient, *[]string) {
+// resolvedSnapshot returns a copy of the resolve log, read under the
+// same mutex the consumer goroutine appends with (the raw pointer must
+// not escape the lock — the race detector is right about that).
+func newRecordingGateConsumer(bridge usagestream.Bridge) (*usagestream.Consumer, *gateTestClient, func() []string) {
 	fc := &gateTestClient{connected: make(chan struct{}, 32)}
 	var mu sync.Mutex
 	var resolved []string
@@ -223,20 +226,32 @@ func newRecordingGateConsumer(bridge usagestream.Bridge) (*usagestream.Consumer,
 		IdleDrop:  time.Hour,
 		Retry:     10 * time.Millisecond,
 	})
-	return c, fc, &resolved
+	return c, fc, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), resolved...)
+	}
 }
 
 // injectUsageStream swaps the handler's process-wide consumer singleton
 // for the test's and returns a restore func. Handler tests run
 // sequentially, so the package-level once/ptr swap is safe.
 func injectUsageStream(c *usagestream.Consumer) (restore func()) {
+	usageStreamMu.Lock()
 	savedPtr := usageStreamPtr
-	usageStreamOnce = sync.Once{} //nolint:copylocks // test-only singleton swap; no gate goroutine touches the Once concurrently
+	usageStreamOnce = sync.Once{} //nolint:copylocks // test-only swap under usageStreamMu
 	usageStreamPtr = nil
 	usageStreamOnce.Do(func() { usageStreamPtr = c })
+	usageStreamMu.Unlock()
 	return func() {
+		// Drop the gates FIRST (their goroutines hold the injected
+		// consumer; leaking them into later tests panics on that test's
+		// K8s mock), then restore the singleton.
+		c.CloseAll()
+		usageStreamMu.Lock()
 		usageStreamOnce = sync.Once{}
 		usageStreamPtr = savedPtr
+		usageStreamMu.Unlock()
 	}
 }
 

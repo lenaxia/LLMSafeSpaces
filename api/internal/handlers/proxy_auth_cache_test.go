@@ -284,7 +284,7 @@ func TestOnPhaseChange_ActiveUpdateRearmsUsageGate(t *testing.T) {
 	env.handler.onPhaseChange(ws)
 
 	requireGateConnect(t, fc, "Active→Active update must arm the usage gate")
-	require.Contains(t, *resolved, "ws-902",
+	require.Contains(t, resolved(), "ws-902",
 		"#902: Redis-persisted prior-phase makes post-restart seeds look exactly like this — the gate must still arm")
 }
 
@@ -345,7 +345,7 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 
 	stopCh := make(chan struct{})
 	env.handler.stopCh = stopCh
-	t.Cleanup(func() { close(stopCh) })
+	reconDone := make(chan struct{})
 
 	// A phase source with an Active workspace no gate covers (the
 	// seed-skip shape), plus non-Active controls.
@@ -354,10 +354,17 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 		"ws-susp":    "Suspended",
 		"ws-created": "Creating",
 	}
-	go env.handler.stateReconciler(stateReconcileInterval)
+	go func() { env.handler.stateReconciler(stateReconcileInterval); close(reconDone) }()
+	// Quiesce BEFORE the injected consumer's CloseAll cleanup runs
+	// (LIFO): a reconciler mid-tick could otherwise open a gate after
+	// CloseAll and leak it into later tests.
+	t.Cleanup(func() {
+		close(stopCh)
+		<-reconDone
+	})
 
 	require.Eventually(t, func() bool {
-		for _, id := range *resolved {
+		for _, id := range resolved() {
 			if id == "ws-missed" {
 				return true
 			}
@@ -366,7 +373,7 @@ func TestStateReconciler_HealsMissingGate(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond,
 		"reconciler must arm the missed Active gate")
 
-	for _, id := range *resolved {
+	for _, id := range resolved() {
 		assert.NotEqual(t, "ws-susp", id, "only Active phases are armed")
 		assert.NotEqual(t, "ws-created", id, "only Active phases are armed")
 	}

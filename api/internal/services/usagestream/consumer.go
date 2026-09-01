@@ -25,6 +25,7 @@ package usagestream
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -128,9 +129,10 @@ type Config struct {
 
 // Consumer owns one busy-gated pod subscription per workspace.
 type Consumer struct {
-	cfg   Config
-	mu    sync.Mutex
-	gates map[string]*gate
+	cfg    Config
+	mu     sync.Mutex
+	gates  map[string]*gate
+	closed bool
 }
 
 type gate struct {
@@ -199,6 +201,24 @@ func (c *Consumer) Gates() int {
 	return len(c.gates)
 }
 
+// CloseAll drops every gate (shutdown). Terminal: later Opens are
+// no-ops, and any gate goroutine that slips past the close (a caller
+// mid-Open) terminates on its next loop iteration.
+func (c *Consumer) CloseAll() {
+	c.mu.Lock()
+	c.closed = true
+	gates := make([]*gate, 0, len(c.gates))
+	for _, g := range c.gates {
+		gates = append(gates, g)
+	}
+	c.gates = map[string]*gate{}
+	c.mu.Unlock()
+	for _, g := range gates {
+		g.cancel()
+		<-g.done
+	}
+}
+
 func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 	defer func() {
 		// Self-drop (idle window elapsed or ctx canceled with the gate
@@ -244,7 +264,10 @@ func (c *Consumer) run(ctx context.Context, workspaceID string, g *gate) {
 		if ctx.Err() != nil {
 			return
 		}
-		baseURL, password, err := c.cfg.Resolve(ctx, workspaceID)
+		if c.isClosed() {
+			return
+		}
+		baseURL, password, err := c.resolve(ctx, workspaceID)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -376,6 +399,24 @@ func (c *Consumer) handleError(workspaceID string, hadFrames bool) {
 	if hadFrames && c.cfg.Bridge != nil {
 		c.cfg.Bridge.AgentDied(workspaceID)
 	}
+}
+
+// resolve wraps the resolve seam with panic containment: this goroutine
+// is a background consumer whose seams touch handler state — a panic
+// there must degrade to a retry, never kill the process.
+func (c *Consumer) resolve(ctx context.Context, workspaceID string) (baseURL, password string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("resolve panicked: %v", r)
+		}
+	}()
+	return c.cfg.Resolve(ctx, workspaceID)
+}
+
+func (c *Consumer) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (c *Consumer) sleep(ctx context.Context, d time.Duration) bool {

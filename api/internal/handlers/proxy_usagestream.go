@@ -51,13 +51,18 @@ func recordUsageStreamGate(workspaceID string, open bool) {
 }
 
 var (
+	usageStreamMu   sync.Mutex
 	usageStreamOnce sync.Once
 	usageStreamPtr  *usagestream.Consumer
 )
 
 // UsageStream lazily builds the process-wide consumer (the resolve seam
-// re-resolves the pod per (re)connect — resume-safe, A7).
+// re-resolves the pod per (re)connect — resume-safe, A7). The mutex
+// guards the singleton swap (tests inject fakes; the race detector
+// holds us to it).
 func (h *ProxyHandler) UsageStream() *usagestream.Consumer {
+	usageStreamMu.Lock()
+	defer usageStreamMu.Unlock()
 	usageStreamOnce.Do(func() {
 		usageStreamPtr = h.buildUsageStream()
 	})
