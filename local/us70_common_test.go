@@ -151,4 +151,13 @@ func TestUS70_ScaleBatchSetsMinimalResources(t *testing.T) {
 	if !strings.Contains(src, `seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"`) {
 		t.Fatal("AC-13 batch must pass SCALE_RES to seed_workspace")
 	}
+	// Pool run 9: cpuLimit "1" (quoted bare number) was re-marshaled to
+	// a JSON integer somewhere on the apply path — CRD rejected it.
+	// Limits must be unit-suffixed, which no codec coerces.
+	if strings.Contains(src, `cpuLimit: \"1\"`) || strings.Contains(src, `cpuLimit: "1"`) {
+		t.Fatal("cpuLimit must be unit-suffixed (1000m), not a bare quoted number — pool run 9's type-coercion bug")
+	}
+	if !strings.Contains(src, "cpuLimit: 1000m") {
+		t.Fatal("cpuLimit must be unit-suffixed")
+	}
 }
