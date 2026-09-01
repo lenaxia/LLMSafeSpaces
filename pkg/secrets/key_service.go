@@ -85,16 +85,6 @@ type KeyService struct {
 	now func() time.Time
 }
 
-// nowOr returns the configured clock or time.Now when unset. Callers
-// that need "current time" for TTL/expiry math should route through
-// this so the clock is uniformly injectable for tests.
-func (s *KeyService) nowOr() time.Time {
-	if s.now != nil {
-		return s.now()
-	}
-	return time.Now()
-}
-
 // setClock installs a deterministic clock. Test-only helper (all
 // pkg/secrets tests use `package secrets`, so the unexported name
 // is accessible from tests). Rename to SetClock + export ONLY if a
