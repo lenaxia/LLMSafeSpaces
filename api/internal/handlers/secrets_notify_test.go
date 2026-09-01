@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -540,6 +541,9 @@ func TestHandler_WorkspaceEnvMutationsNotify(t *testing.T) {
 
 func mustEnvService(t *testing.T, store *notifyPathStore) *secrets.SecretService {
 	t.Helper()
-	keySvc := secrets.NewKeyService(newTestKeyStore(), newTestDEKCache())
+	dekCache := newTestDEKCache()
+	keySvc := secrets.NewKeyService(newTestKeyStore(), dekCache)
+	require.NoError(t, dekCache.CacheDEK(context.Background(), "session-1", []byte("notify-test-dek"), time.Hour),
+		"the env path authors through the session DEK — pre-cache it like login would")
 	return secrets.NewSecretService(keySvc, store)
 }

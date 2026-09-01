@@ -41,7 +41,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 		t.Skip("port 4097 not available for test agentd mock")
 	}
 	agentd := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/reload-secrets" {
+		if r.URL.Path != "/v1/resync-secrets" {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
@@ -52,7 +52,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"reloaded": 1, "restarted": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "applied", "appliedRev": "1:t", "restarted": false})
 	}))
 	agentd.Listener = agentdListener
 	agentd.Start()
@@ -136,7 +136,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 	body := reloadBody
 	mu.Unlock()
 
-	require.True(t, called, "SetBindings must trigger reload-secrets call to agentd")
+	require.True(t, called, "SetBindings must trigger the resync notify to agentd")
 
 	// Parse the secrets.json payload that was pushed to the pod.
 	var injected []struct {
@@ -179,7 +179,7 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 		reloadBody = body
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"reloaded": 2, "restarted": false})
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "applied", "appliedRev": "1:t", "restarted": false})
 	}))
 	agentd.Listener = agentdListener
 	agentd.Start()

@@ -298,7 +298,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 		t.Skip("port 4097 not available for test agentd mock")
 	}
 	agentd := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/reload-secrets" {
+		if r.URL.Path != "/v1/resync-secrets" {
 			t.Errorf("agentd received unexpected request: %s", r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)
 			return
@@ -311,7 +311,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"reloaded": 1, "restarted": false})
+		json.NewEncoder(w).Encode(map[string]any{"status": "applied", "appliedRev": "1:t", "restarted": false})
 	}))
 	agentd.Listener = agentdListener
 	agentd.Start()
@@ -382,7 +382,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 	mu.Unlock()
 
 	if !called {
-		t.Fatal("SetBindings did not trigger reload-secrets call to agentd")
+		t.Fatal("SetBindings did not trigger the resync notify to agentd")
 	}
 	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw"))
 	if authHeader != expectedAuth {
