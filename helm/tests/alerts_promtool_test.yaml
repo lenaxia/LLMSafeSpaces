@@ -234,6 +234,14 @@ tests:
     alert_rule_test:
       - eval_time: 6m
         alertname: LLMSafeSpacesSecretsConvergenceSLOBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+            exp_annotations:
+              summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
+              description: 'Only 90% of Active workspaces are converged — below the 99% SLO for 5m. Fleet-wide divergence usually means the API''s reconcile loop, the pods'' resync endpoint, or the bootstrap pull path is unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.'
+
   # ── US-70.4 key re-wrap reconciler ────────────────────────────────────
 
   # Verify failures: 3 verify_failed increments inside 10m → fires
@@ -253,8 +261,8 @@ tests:
               severity: warning
               component: api
             exp_annotations:
-              summary: "Secrets delivery convergence SLO burn (<99% over 5m)"
-              description: 'Only 90% of Active workspaces are converged — below the 99% SLO for 5m. Fleet-wide divergence usually means the API''s reconcile loop, the pods'' resync endpoint, or the bootstrap pull path is unhealthy; correlate with llmsafespaces_secrets_notify_total outcomes.'
+              summary: "Key re-wrap reconciler refused to commit unverified wraps"
+              description: 'Re-wrap attempts failed verify-after-write or source agreement in the last 10m. Rows were left untouched by design — investigate the master KEK health and the session-cache DEK source before the halt threshold trips.'
 
   # Healthy fleet (10/10): must NOT fire.
   - interval: 1m
@@ -288,8 +296,13 @@ tests:
     alert_rule_test:
       - eval_time: 10m
         alertname: LLMSafeSpacesSecretsReconcileStalled
-              summary: "Key re-wrap reconciler refused to commit unverified wraps"
-              description: 'Re-wrap attempts failed verify-after-write or source agreement in the last 10m. Rows were left untouched by design — investigate the master KEK health and the session-cache DEK source before the halt threshold trips.'
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+            exp_annotations:
+              summary: "Secrets reconcile loop stalled"
+              description: 'The secrets-delivery reconcile loop has not completed a successful pass in over 3 minutes (3x the default period) — or has never reported one. Divergent workspaces will not converge until it recovers. Check the API''s K8s client and the loop''s error logs.'
 
   # Healthy + healed outcomes only: must NOT fire.
   - interval: 1m
@@ -318,8 +331,8 @@ tests:
               severity: critical
               component: api
             exp_annotations:
-              summary: "Secrets reconcile loop stalled"
-              description: 'The secrets-delivery reconcile loop has not completed a successful pass in over 3 minutes (3x the default period) — or has never reported one. Divergent workspaces will not converge until it recovers. Check the API''s K8s client and the loop''s error logs.'
+              summary: "Key re-wrap reconciler halted"
+              description: 'The user_keys re-wrap reconciler has been halted for 5m — verify-after-write failures reached the blast-radius threshold and further batches are being skipped. The KEK/provider that produced non-round-tripping wraps must be investigated; heals resume on the next pass once it recovers.'
 
   # Reconcile stalled (loop dead since boot — gauge never existed): the
   # absent() arm fires.
@@ -337,8 +350,6 @@ tests:
             exp_annotations:
               summary: "Secrets reconcile loop stalled"
               description: 'The secrets-delivery reconcile loop has not completed a successful pass in over 3 minutes (3x the default period) — or has never reported one. Divergent workspaces will not converge until it recovers. Check the API''s K8s client and the loop''s error logs.'
-              summary: "Key re-wrap reconciler halted"
-              description: 'The user_keys re-wrap reconciler has been halted for 5m — verify-after-write failures reached the blast-radius threshold and further batches are being skipped. The KEK/provider that produced non-round-tripping wraps must be investigated; heals resume on the next pass once it recovers.'
 
   # Halted gauge blip (one scrape) absorbed by for: 5m: must NOT fire.
   - interval: 1m
