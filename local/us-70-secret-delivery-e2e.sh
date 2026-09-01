@@ -158,9 +158,13 @@ if (( SCALE > 0 )); then
     # recovery path fired correctly. AC-13 measures resume latency and
     # rev convergence, not resource contention: minimal requests keep
     # the 100-concurrency semantics on the pool's hardware.
+    # cpuLimit MUST stay unit-suffixed (1000m): a bare numeric string
+    # ("1") survives YAML as a string but is re-marshalled to a JSON
+    # number somewhere on the apply path (pool run 9: CRD rejected
+    # cpuLimit "must be of type string: integer").
     SCALE_RES="    cpu: 50m
     memory: 128Mi
-    cpuLimit: "1"
+    cpuLimit: 1000m
     memoryLimit: 512Mi"
     for ws in "${WSBATCH[@]}"; do
         seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
