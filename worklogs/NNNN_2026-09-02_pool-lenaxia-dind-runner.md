@@ -1,14 +1,14 @@
 # Worklog: pool → lenaxia-dind at full scale; runner rollout root cause
 
 **Date:** 2026-09-02
-**Session:** Move the US-70 delivery pool to the org `lenaxia-dind` runner set at `RESUME_SCALE=100` (the Epic 70/69 evidence bottleneck), including the ops-prod GitHub-App wiring and the corrected registration root cause.
+**Session:** Move the US-70 delivery pool to the repo-scoped `lenaxia-dind` runner set at `RESUME_SCALE=100` (the Epic 70/69 evidence bottleneck), including the ops-prod GitHub-App wiring and the corrected registration root cause.
 **Status:** Complete
 
 ---
 
 ## Objective
 
-The 2-core GitHub-hosted runner could not absorb the AC-13 batch (pool runs 10–16: API crash-loops, provisioner starvation, scrape starvation — documented in the run-10..16 comments and the #1226 diagnose bundles). Restore the full-100 leg on capacity-appropriate hardware: the org `lenaxia-dind` privileged runner set (ops-prod #2385).
+The 2-core GitHub-hosted runner could not absorb the AC-13 batch (pool runs 10–16: API crash-loops, provisioner starvation, scrape starvation — documented in the run-10..16 comments and the #1226 diagnose bundles). Restore the full-100 leg on capacity-appropriate hardware: the repo-scoped `lenaxia-dind` privileged runner set (ops-prod #2385, repo-scoped to this repo by 2baafa74).
 
 ---
 

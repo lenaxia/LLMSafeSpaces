@@ -26,7 +26,8 @@ jobs:
     # 300m: the pool runs TWO ~1h dwells (the #1087 gate in the delivery
     # suite's AC-2 and the faults suite's F4b JWT-exp sleep) — hard dwells
     # alone are ~120m — plus the RESUME_SCALE=100 batch under gVisor (W7
-    # tax) and build/install headroom. GitHub-hosted limit is 6h.
+    # tax) and build/install headroom. The 6h ceiling was the GitHub-hosted
+    # limit; on the self-hosted dind set 300m remains a sane bound.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v6
