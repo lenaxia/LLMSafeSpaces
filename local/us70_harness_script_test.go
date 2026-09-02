@@ -388,6 +388,11 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		"timeout-minutes: 300",
 		"SUSPEND_SECONDS: 3600",
 		"local/lib/gvisor.sh",
+		// The capacity-appropriate runner + full-scale leg (pool runs
+		// 10-16 proved the 2-core GitHub-hosted ceiling; the dind set
+		// is repo-scoped to this repo — see ops-prod 2baafa74).
+		"runs-on: lenaxia-dind",
+		"RESUME_SCALE: 100",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Fatalf("pool workflow must contain %q (found missing)", pin)
