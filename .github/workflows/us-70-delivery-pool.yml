@@ -16,13 +16,13 @@ env:
 jobs:
   us70-delivery-pool:
     name: US-70 delivery pool (runsc + fault injection, SUSPEND_SECONDS=3600)
-    # lenaxia-dind (ops-prod #2385): repo-scoped (lenaxia/LLMSafeSpaces) PRIVILEGED runner set —
+    # lenaxia-dind-runner (ops-prod #2385): repo-scoped (lenaxia/LLMSafeSpaces) PRIVILEGED runner set —
     # runner pod + docker:dind sidecar; kind runs in the pod's docker.
     # DISPATCH/SCHEDULE ONLY (never fork PRs — privileged pods), which is
     # this workflow's only trigger set. The 2-core GitHub-hosted runner
     # could not absorb the RESUME_SCALE=100 batch (pool runs 10-16: API
     # crash-loops, provisioner starvation — see the run-10 comment below).
-    runs-on: lenaxia-dind
+    runs-on: lenaxia-dind-runner
     # 300m: the pool runs TWO ~1h dwells (the #1087 gate in the delivery
     # suite's AC-2 and the faults suite's F4b JWT-exp sleep) — hard dwells
     # alone are ~120m — plus the RESUME_SCALE=100 batch under gVisor (W7
@@ -231,7 +231,7 @@ jobs:
           # (curl 28) and workspace probes 503'd before any delivery
           # semantics ran. Runs 14-16 confirmed the ceiling (boot-storm
           # shaping — two-phase wait + wave-boot — landed anyway but the
-          # control plane still died). lenaxia-dind restores the AC's
+          # control plane still died). lenaxia-dind-runner restores the AC's
           # full-100 leg on capacity-appropriate hardware.
           RESUME_SCALE: 100
           RESUME_SCALE_TIMEOUT_S: 600

@@ -22,9 +22,9 @@ The 2-core GitHub-hosted runner could not absorb the AC-13 batch (pool runs 10�
 
 ### LLMSafeSpaces (PR #1238)
 
-- `us-70-delivery-pool.yml`: `runs-on: lenaxia-dind` (privileged set, dispatch/schedule-only per the US-70 posture), `RESUME_SCALE: 25 → 100` with the run-10..16 history documented in the comment. Boot-storm hardening (#1236 two-phase wait, wave-boot 3ffe5a9d, runsc pod-pin #1232) stays landed and finally exercises at 100.
+- `us-70-delivery-pool.yml`: `runs-on: lenaxia-dind-runner` (privileged set, dispatch/schedule-only per the US-70 posture), `RESUME_SCALE: 25 → 100` with the run-10..16 history documented in the comment. Boot-storm hardening (#1236 two-phase wait, wave-boot 3ffe5a9d, runsc pod-pin #1232) stays landed and finally exercises at 100.
 - New `lenaxia-dind-smoke.yml`: <1min dispatch-only smoke (dind reachable, capacity, passwordless sudo, pull+run with a registry-fetched digest — not hand-written).
-- Pin: `TestUS70PoolWorkflow_Pins` asserts `runs-on: lenaxia-dind` + `RESUME_SCALE: 100`.
+- Pin: `TestUS70PoolWorkflow_Pins` asserts `runs-on: lenaxia-dind-runner` + `RESUME_SCALE: 100`.
 - **Review correction adopted:** the PR's original pre-merge smoke gate was structurally unmeetable — `workflow_dispatch` requires the workflow on the default branch, so a branch-only smoke cannot be dispatched. Restructured: merge gate = registered listener (in-cluster evidence recorded above); smoke dispatches on main immediately post-merge as the pre-pool gate.
 
 ---
