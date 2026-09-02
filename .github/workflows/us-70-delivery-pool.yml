@@ -205,19 +205,6 @@ jobs:
           bash local/lib/gvisor.sh runtimeclass
           kubectl get runtimeclass gvisor
 
-      - name: Run Epic 69 evidence leg (admission-ID matrix + flip drill)
-        # #1218/#1219: the cluster-bound close-out rows. The admission-ID
-        # probe reports its matrix as DATA (the disposition rule is applied
-        # by the tracker, not this step); the flip drill FAILS on an
-        # operational error or a park/unpark round-trip mismatch. SEAM-INERT
-        # — must run before the fault seam arms.
-        env:
-          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
-          CTX: kind-${{ env.CLUSTER_NAME }}
-          NS: ${{ env.NS }}
-          PORTFWD_PORT: 18089
-        run: bash local/us-69-evidence-leg.sh
-
       - name: Run secret-delivery e2e rows (Epic 70 — pool legs)
         # The pool executes the gated legs of the nightly suite: the ≥1h
         # #1087 suspend gate (SUSPEND_SECONDS=3600 in AC-2) and the AC-13
@@ -261,6 +248,21 @@ jobs:
           NS: ${{ env.NS }}
           PORTFWD_PORT: 18087
         run: bash local/us-70-revisions-e2e.sh
+
+      - name: Run Epic 69 evidence leg (admission-ID matrix + flip drill)
+        # #1218/#1219: the cluster-bound close-out rows. The admission-ID
+        # probe reports its matrix as DATA (the disposition rule is applied
+        # by the tracker, not this step); the flip drill FAILS on an
+        # operational error or a park/unpark round-trip mismatch. SEAM-INERT
+        # — must run before the fault seam arms. Ordered AFTER the Epic 70
+        # rows: this leg has never been green in a recorded pool run, and an
+        # evidence leg for one epic must not gate every other epic's rows.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18089
+        run: bash local/us-69-evidence-leg.sh
 
       - name: Arm fault seam (fresh API process, after the delivery suite)
         # B1/M10: arming at helm install would spend the fault budget on
