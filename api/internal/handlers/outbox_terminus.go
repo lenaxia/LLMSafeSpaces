@@ -36,7 +36,8 @@ import (
 //     re-admitted (no second row, no duplicate turn); only a failed prior
 //     attempt creates the attempt+1 row.
 //
-// The text-scan oracle (verifydelivery.go) is bypassed entirely on this
+// The text-scan oracle (verifydelivery.go, deleted per the #1219
+// admission-ID matrix disposition) was bypassed entirely on this
 // terminus: the ledger IS the oracle (its disposition per the US-69.6
 // spike: deleted on this path).
 

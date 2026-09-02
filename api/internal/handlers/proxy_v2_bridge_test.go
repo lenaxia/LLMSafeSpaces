@@ -17,8 +17,7 @@ import (
 
 func TestOutboxDeliver_V2ModelAppliedToSessionBeforeAdmission(t *testing.T) {
 	shrinkOutboxTimers(t)
-	shrinkV2PromotionTimers(t)
-	backend := &fakeAgentBackend{persistFirst: true, promoteDelay: 0}
+	backend := &fakeAgentBackend{}
 	env := newVerifyEnv(t, backend)
 	env.handler.SetV2Delivery(true)
 
@@ -28,7 +27,7 @@ func TestOutboxDeliver_V2ModelAppliedToSessionBeforeAdmission(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, w.Code)
 
 	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
-	assert.Empty(t, listOutbox(t, env), "delivery completes at promotion")
+	assert.Empty(t, listOutbox(t, env), "delivery completes at admission")
 
 	backend.mu.Lock()
 	order := append([]string{}, backend.callOrder...)
@@ -43,7 +42,6 @@ func TestOutboxDeliver_V2ModelAppliedToSessionBeforeAdmission(t *testing.T) {
 func TestOutboxDeliver_V2ModelSetFailureClassifications(t *testing.T) {
 	t.Run("model-set 5xx is definitive — bounded retry, no admission", func(t *testing.T) {
 		shrinkOutboxTimers(t)
-		shrinkV2PromotionTimers(t)
 		backend := &fakeAgentBackend{modelSetStatus: http.StatusBadGateway}
 		env := newVerifyEnv(t, backend)
 		env.handler.SetV2Delivery(true)
@@ -63,8 +61,7 @@ func TestOutboxDeliver_V2ModelSetFailureClassifications(t *testing.T) {
 
 	t.Run("no model on entry — no model-set call", func(t *testing.T) {
 		shrinkOutboxTimers(t)
-		shrinkV2PromotionTimers(t)
-		backend := &fakeAgentBackend{persistFirst: true, promoteDelay: 0}
+		backend := &fakeAgentBackend{}
 		env := newVerifyEnv(t, backend)
 		env.handler.SetV2Delivery(true)
 

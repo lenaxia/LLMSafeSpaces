@@ -188,32 +188,22 @@ func listOutbox(t *testing.T, env *e2eEnv) []outbox.Entry {
 	return entries
 }
 
-// TestOutbox_RetrySkipsAlreadyDelivered pins the D3 r2 dedupe: when a
-// prior delivery attempt timed out but the turn COMPLETED and persisted
-// (the transcript now holds the user text newer than accept), the retry
-// must NOT redeliver — it treats the entry as delivered. This kills the
-// dominant duplicate-turn source (delivery timeout while opencode
-// finishes).
-func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
-	accepted := time.Now().Add(-time.Minute)
+// TestOutbox_RetryRedeliversAfterTimeout pins the post-oracle retry
+// contract: the D3 r2 transcript-dedupe pre-check (skip redelivery when
+// the prior attempt's text already persisted) was deleted with the
+// verify oracle (#1219 disposition). A retried entry re-POSTs and
+// completes through the normal path — the duplicate-turn risk on the
+// non-terminus regimes is the documented, accepted trade of the
+// deletion (the agentd terminus, the production regime, dedupes in the
+// ledger by entryID).
+func TestOutbox_RetryRedeliversAfterTimeout(t *testing.T) {
 	var mu sync.Mutex
 	sendCalls := 0
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message") {
 			mu.Lock()
 			sendCalls++
 			mu.Unlock()
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/message"):
-			// History in opencode's wire shape (info.role — see
-			// ocMessage): the user message WAS persisted (prior attempt
-			// completed server-side).
-			// created must be AFTER the entry's AcceptedAt (accept
-			// time ~= now): prior-attempt completion persisted later.
-			created := accepted.Add(90 * time.Second)
-			createdMS := created.UnixMilli()
-			fmt.Fprintf(w, `[{"info":{"id":"msg_u1","role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"already ran"}]}]`, createdMS)
-			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"msg_1"},"parts":[{"type":"text","text":"ok"}]}`))
@@ -230,29 +220,26 @@ func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
 	t.Cleanup(func() { outbox.RetryBackoff, outbox.MaxBackoff = origBackoff, origMax })
 
 	// Seed an entry, then mark one failed attempt through the service
-	// seam (attempts=1) whose text matches the persisted transcript.
+	// seam (attempts=1 — a prior attempt existed and timed out).
 	ob := env.handler.GetOutboxForTest()
 	_, err := ob.Accept(context.Background(), "ws-1", "ses_1", "u-1", "cm-r", "already ran", nil)
 	require.NoError(t, err)
 	_ = ob.DeliverOnce(context.Background(), "ws-1", "ses_1", func(ctx context.Context, _, _ string, _ outbox.Entry) error {
 		return errors.New("simulated timeout")
 	})
-	// Let the (shrunk) backoff gate elapse AFTER the failed attempt —
-	// before the fix this slept before the seeding, and the bridge pass
-	// raced the 1ms NextAttemptAt (passed standalone on wall-clock luck,
-	// failed under full-suite load).
+	// Let the (shrunk) backoff gate elapse AFTER the failed attempt.
 	time.Sleep(10 * time.Millisecond)
 
-	// Now the handler-bridge delivery: attempts=1 AND the transcript
-	// holds the text — must NOT hit /message again.
+	// The handler-bridge delivery re-POSTs (no transcript pre-check)
+	// and completes.
 	ok := env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1")
 	require.True(t, ok)
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Zero(t, sendCalls, "retry must skip redelivery when the transcript already holds the text")
+	assert.Equal(t, 1, sendCalls, "the retry re-delivers — the transcript dedupe pre-check is gone with the oracle")
 
 	after, _ := ob.List(context.Background(), "ws-1", "ses_1")
-	assert.Empty(t, after, "entry treated as delivered and removed")
+	assert.Empty(t, after, "entry delivered and removed")
 }
 
 // TestOutbox_RetryEndpoint_Integration exercises the retry flow at the

@@ -74,7 +74,6 @@ func (h *ProxyHandler) Start() error {
 		// re-checks quota per delivery.
 		if h.outbox != nil {
 			if h.adapter != nil {
-				h.outbox.SetVerifier(h.outboxVerify)
 				h.outbox.SetOnDelivered(h.outboxOnDelivered)
 				h.outbox.SetOnStaged(h.outboxOnStaged)
 			}
@@ -190,25 +189,6 @@ func (h *ProxyHandler) GetAllKnownPhases() map[string]string {
 // outboxTick is the outbox delivery scan interval. Var for tests.
 var outboxTick = 1 * time.Second
 
-// V2 promotion-await tunables (#1119). Production observations on
-// opencode 1.18.15: `session.next.prompted` (and the user-text persist)
-// land within ~1s of admission — including for defect-class deaths, which
-// ALSO promote-then-die; a promotion unobserved for V2PromotionWait is a
-// genuinely stranded row (park race), and the ambiguous→verifying→re-admit
-// path is the bounded nudge. Vars for tests.
-var (
-	// V2PromotionWait bounds the admission→promotion await (#1119).
-	// Exported read via V2PromotionAwaitBudget so app wiring can size
-	// outbox.DeliveryTimeout around it (the wait runs INSIDE the
-	// deliverer's detached context).
-	V2PromotionWait = 30 * time.Second
-	v2PromotionPoll = 2 * time.Second
-)
-
-// V2PromotionAwaitBudget reports the current promotion-await window
-// (app wiring sizes the V2 delivery budget = window + margin).
-func V2PromotionAwaitBudget() time.Duration { return V2PromotionWait }
-
 // SetAgentdTerminus switches the outbox deliverer to the agentd ledger
 // (US-69.8, design 0055 M2/M4). It must be called before Start().
 //
@@ -223,31 +203,21 @@ func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
 // the raw selector JSON). Confirmed delivery completes via the outbox's
 // OnDelivered hook (wired in Start) — the SINGLE seam for the
 // cross-cutting events (SSE queue.update/sent, activity, session-index,
-// llm_request usage) on the synchronous, verified, and re-send paths.
+// llm_request usage) on every delivery path.
 //
-// Two #987 rules:
-//
-//  1. Never re-send unverified: any re-send (Attempts > 0 — a prior
-//     attempt existed) verifies against the transcript first. opencode
-//     persists the user message BEFORE the turn runs, so presence of
-//     the exact text at/after the send window proves the prior attempt
-//     landed and a re-send would duplicate the whole turn (the
-//     sent-once/delivered-3x incident). Subsumes the D3 r2
-//     pre-redelivery tail-25 check with exact cursor-paged coverage.
-//
-//  2. Classify failures: an HTTP status response
-//     (agent.ErrHTTPStatus) means the agent PROCESSED and rejected
-//     the request — definitive, safe to retry. Anything else (timeout
-//     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
-//     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
+// Failure classification (#987 rule 2, the surviving half): an HTTP
+// status response (agent.ErrHTTPStatus) means the agent PROCESSED and
+// rejected the request — definitive, safe to retry. Anything else
+// (timeout mid-turn, connection cut mid-flight) is outcome-UNKNOWN and
+// wraps outbox.Ambiguous. The transcript-verify oracle that once
+// resolved ambiguous outcomes (and gated re-sends) was deleted per the
+// admission-ID matrix disposition (#1219): with no verifier wired the
+// outbox degrades ambiguous entries to its bounded retry ladder — the
+// documented trade of a bounded duplicate risk against the stranded-
+// in-verifying alternative (outbox.Service.verifyOne).
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	if h.agentdTerminus {
 		return h.agentdTerminusDeliver(ctx, workspaceID, sessionID, e)
-	}
-	if e.Attempts > 0 || e.VerifyAttempts > 0 {
-		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
-			return nil // prior attempt confirmed in the transcript — complete without re-sending
-		}
 	}
 	var model *session.ModelRef
 	if len(e.Model) > 0 {
@@ -259,17 +229,14 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	opts := session.SendOpts{Model: model}
 	if h.v2Delivery {
 		// V2 mode (design 0052, OPENCODE_V2_DELIVERY): admission
-		// returns in milliseconds. But admission ≠ delivery (#1119):
-		// the user text persists at PROMOTION, and a defect-class
-		// death (model-resolve failure, park race) consumes or strands
-		// the admitted row with no signal — completing at pickup was
-		// the silent-drop bug (production 10:24Z). The deliverer now
-		// waits for promotion, proven by the persisted text via the
-		// same oracle the #987 verifier uses, before completing. If
-		// the window expires unobserved, the outcome is unknown →
-		// ambiguous → the verifying machinery resolves it: text
-		// present (late promotion) completes; absent-after-window
-		// re-admits (the bounded nudge) — never a blind complete.
+		// returns in milliseconds. The admission→promotion await that
+		// once ran here (its only observer was the deleted text-scan
+		// oracle, #1119) is gone with the oracle; the stranded-admitted
+		// risk it covered is owned by the agentd ledger's state machine
+		// on the authority path (design 0055 M2/I6), which is the only
+		// regime where this branch's flag combination occurs in
+		// production. This legacy branch completes at admission.
+		//
 		// V2 has no per-prompt model: the endpoint strips the field
 		// (verified live, 2026-08-29). Apply the entry's model to the
 		// SESSION before admission — the same mechanism the SPA uses.
@@ -281,32 +248,14 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 				return outbox.Ambiguous(err)
 			}
 		}
-		admittedAt := time.Now().UTC()
-		msgID, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts)
+		_, err := h.adapter.SendAsync(ctx, "", workspaceID, sessionID, e.Text, opts)
 		if err != nil {
 			if errors.Is(err, agent.ErrHTTPStatus) {
 				return err
 			}
 			return outbox.Ambiguous(err)
 		}
-		_ = msgID // correlation key for the events-based fast path (follow-up)
-		verifier, hasVerifier := h.adapter.(deliveryVerifier)
-		deadline := time.Now().UTC().Add(V2PromotionWait)
-		for {
-			if hasVerifier {
-				if delivered, _, verr := verifier.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, admittedAt); verr == nil && delivered {
-					return nil // promotion observed — real delivery
-				}
-			}
-			if !time.Now().UTC().Before(deadline) {
-				return outbox.Ambiguous(fmt.Errorf("v2 promotion not observed within %s (admission msg %q)", V2PromotionWait, msgID))
-			}
-			select {
-			case <-ctx.Done():
-				return outbox.Ambiguous(ctx.Err())
-			case <-time.After(v2PromotionPoll):
-			}
-		}
+		return nil
 	}
 	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, opts)
 	if err != nil {
@@ -333,66 +282,9 @@ func (h *ProxyHandler) agentdTerminusDeliver(ctx context.Context, workspaceID, s
 // SetV2Delivery enables V2 admit-and-return outbox delivery (design
 // 0052, OPENCODE_V2_DELIVERY). Must be called before Start(), and the
 // adapter must be constructed with WithV2Store(true) in the same
-// wiring — delivery and verification must agree on the store, or the
-// verifier reports false absence and re-sends (the #987 duplicate
-// class).
+// wiring (delivery and history reads must agree on the store).
 func (h *ProxyHandler) SetV2Delivery(enabled bool) {
 	h.v2Delivery = enabled
-}
-
-// deliveryVerifier is the #987/#1119 ambiguity oracle. Now ALSO on
-// agent.Adapter (promoted 2026-08-29: production adapters are wrapped by
-// systemnotices.Wrap, and this local assertion silently failed against
-// the wrapper — every verification returned inconclusive without
-// touching the network, breaking all V2 delivery for hours). The local
-// interface stays as the compile-time shape contract at the call sites.
-type deliveryVerifier interface {
-	VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (delivered, definitive bool, err error)
-}
-
-// outboxVerify resolves delivery ambiguity against the agent
-// transcript: cursor-paged coverage of the send window (adapter.
-// VerifyDelivery), delivered-proof even while the turn still runs.
-// Inconclusive (agent unreachable, coverage incomplete, or a non-
-// opencode adapter without the verifier) never blocks a re-send
-// attempt by itself — the send's own failure classification re-enters
-// verification.
-func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) outbox.Verdict {
-	v, ok := h.adapter.(deliveryVerifier)
-	if !ok {
-		// Unreachable since VerifyDelivery moved onto agent.Adapter
-		// (wrappers inherit it via embedding) — but the 2026-08-29
-		// incident showed this branch failing SILENTLY for hours, so
-		// it screams if it ever happens again.
-		h.logger.Error("outbox verify: adapter does not implement deliveryVerifier — all verification is inconclusive",
-			fmt.Errorf("adapter %T lacks VerifyDelivery", h.adapter))
-		return outbox.VerdictInconclusive
-	}
-	since := e.LastAttemptAt
-	if since.IsZero() {
-		// Crash-recovered entry: the send started sometime after
-		// accept — AcceptedAt is the safe floor.
-		since = e.AcceptedAt
-	}
-	delivered, definitive, err := v.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, since)
-	switch {
-	case err != nil:
-		// #1119 follow-up 2: verify errors were silent in the first
-		// live-traffic incident — seven inconclusive passes against a
-		// healthy agent left no log line. Surface them: an unreachable
-		// or wedged verify path is ops signal, not noise (cadence is
-		// bounded by the verify backoff ladder).
-		h.logger.Warn("outbox verify inconclusive: transport error",
-			"workspaceID", workspaceID, "sessionID", sessionID,
-			"entryID", e.ID, "error", err)
-		return outbox.VerdictInconclusive
-	case delivered:
-		return outbox.VerdictDelivered
-	case definitive:
-		return outbox.VerdictAbsent
-	default:
-		return outbox.VerdictInconclusive
-	}
 }
 
 // outboxOnDelivered is the single confirmed-delivery seam: cross-cutting

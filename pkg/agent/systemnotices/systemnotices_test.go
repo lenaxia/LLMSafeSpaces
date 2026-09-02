@@ -8,7 +8,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -66,9 +65,6 @@ func (f *fakeAdapter) SendAsync(ctx context.Context, userID, workspaceID, sessio
 
 func (f *fakeAdapter) SetSessionModel(_ context.Context, _, _, _ string, _ *session.ModelRef) error {
 	return nil
-}
-func (f *fakeAdapter) VerifyDelivery(_ context.Context, _, _, _, _ string, _ time.Time) (bool, bool, error) {
-	return false, false, nil // inconclusive: test fake without transcript verification
 }
 
 func (f *fakeAdapter) Abort(ctx context.Context, userID, workspaceID, sessionID string) error {
