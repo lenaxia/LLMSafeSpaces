@@ -10,7 +10,7 @@ jobs:
     # sudo for the kind/helm install steps. Dispatch-only (privileged
     # pods must never run fork PRs). Fails fast — the whole job is <1min
     # of runner time.
-    runs-on: lenaxia-dind
+    runs-on: lenaxia-dind-runner
     timeout-minutes: 5
     steps:
       - name: Docker (dind sidecar) reachable

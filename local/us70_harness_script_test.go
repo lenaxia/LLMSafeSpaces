@@ -391,7 +391,7 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		// The capacity-appropriate runner + full-scale leg (pool runs
 		// 10-16 proved the 2-core GitHub-hosted ceiling; the dind set
 		// is repo-scoped to this repo — see ops-prod 2baafa74).
-		"runs-on: lenaxia-dind",
+		"runs-on: lenaxia-dind-runner",
 		"RESUME_SCALE: 100",
 	} {
 		if !strings.Contains(src, pin) {
