@@ -57,10 +57,25 @@ wait_phase "${WS_ADMIT}" Active 240 || die "admission workspace never went Activ
 PASSWORD=$(kc get secret "workspace-pw-${WS_ADMIT}" -o jsonpath='{.data.password}' | base64 -d)
 [[ -n "${PASSWORD}" ]] || die "no workspace password secret"
 
-SESSION=$(curl -sfm 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS_ADMIT}/sessions" \
-    -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
-    -d '{"title":"us69 admission matrix"}' | jq -r '.sessionId // .id // empty')
-[[ -n "${SESSION}" && "${SESSION}" != "null" ]] || die "session create failed"
+# curl -f under pipefail would kill the script with curl's exit code
+# before die can diagnose (pool run 33578936807: exit 22, no body).
+# Capture code+body, retry once (session create races the just-Active
+# pod's first readiness), and print the body on failure.
+SESSION=""
+for attempt in 1 2; do
+    SB=$(mktemp)
+    SC=$(curl -sm 15 -o "${SB}" -w '%{http_code}' -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS_ADMIT}/sessions" \
+        -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
+        -d '{"title":"us69 admission matrix"}' || echo 000)
+    SESSION=$(jq -r '.sessionId // .id // empty' "${SB}" 2>/dev/null || true)
+    if [[ "${SC}" == "200" || "${SC}" == "201" ]] && [[ -n "${SESSION}" && "${SESSION}" != "null" ]]; then
+        rm -f "${SB}"; break
+    fi
+    [[ "${attempt}" == "2" ]] && die "session create failed (HTTP ${SC}): $(cat "${SB}" 2>/dev/null | head -c 300)"
+    warn "session create HTTP ${SC}, retrying: $(head -c 200 "${SB}" 2>/dev/null)"
+    rm -f "${SB}"; sleep 5
+done
+[[ -n "${SESSION}" && "${SESSION}" != "null" ]] || die "session create returned no id"
 
 POD=$(kc get pod -l "llmsafespaces.dev/workspace=${WS_ADMIT}" -o jsonpath='{.items[0].metadata.name}')
 [[ -n "${POD}" ]] || die "no pod for ${WS_ADMIT}"
