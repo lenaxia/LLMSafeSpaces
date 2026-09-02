@@ -5,7 +5,7 @@ on:
 
 jobs:
   smoke:
-    # Verifies the org-scoped privileged runner set (ops-prod #2385) is
+    # Verifies the repo-scoped privileged runner set (lenaxia/LLMSafeSpaces; ops-prod #2385 + 2baafa74) is
     # usable by the pool: docker:dind reachable, core count, passwordless
     # sudo for the kind/helm install steps. Dispatch-only (privileged
     # pods must never run fork PRs). Fails fast — the whole job is <1min

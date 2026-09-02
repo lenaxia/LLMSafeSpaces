@@ -389,7 +389,7 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		"SUSPEND_SECONDS: 3600",
 		"local/lib/gvisor.sh",
 		// The capacity-appropriate runner + full-scale leg (pool runs
-		// 10-16 proved the 2-core GitHub-hosted ceiling; the org dind set
+		// 10-16 proved the 2-core GitHub-hosted ceiling; the repo-scoped dind set
 		// is repo-scoped to this repo — see ops-prod 2baafa74).
 		"runs-on: lenaxia-dind",
 		"RESUME_SCALE: 100",

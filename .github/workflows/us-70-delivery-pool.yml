@@ -16,7 +16,7 @@ env:
 jobs:
   us70-delivery-pool:
     name: US-70 delivery pool (runsc + fault injection, SUSPEND_SECONDS=3600)
-    # lenaxia-dind (ops-prod #2385): org-scoped PRIVILEGED runner set —
+    # lenaxia-dind (ops-prod #2385): repo-scoped (lenaxia/LLMSafeSpaces) PRIVILEGED runner set —
     # runner pod + docker:dind sidecar; kind runs in the pod's docker.
     # DISPATCH/SCHEDULE ONLY (never fork PRs — privileged pods), which is
     # this workflow's only trigger set. The 2-core GitHub-hosted runner
