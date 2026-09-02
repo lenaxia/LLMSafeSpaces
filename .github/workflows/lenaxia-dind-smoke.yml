@@ -1,0 +1,26 @@
+---
+name: lenaxia-dind smoke
+on:
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    # Verifies the org-scoped privileged runner set (ops-prod #2385) is
+    # usable by the pool: docker:dind reachable, core count, passwordless
+    # sudo for the kind/helm install steps. Dispatch-only (privileged
+    # pods must never run fork PRs). Fails fast — the whole job is <1min
+    # of runner time.
+    runs-on: lenaxia-dind
+    timeout-minutes: 5
+    steps:
+      - name: Docker (dind sidecar) reachable
+        run: docker info --format '{{.ServerVersion}} {{.NCPU}} CPUs {{.MemTotal}} bytes'
+
+      - name: Capacity
+        run: nproc && free -h | head -2
+
+      - name: Passwordless sudo (kind/helm install steps)
+        run: sudo -n true && echo sudo-ok
+
+      - name: Kind-compatible docker operations
+        run: docker run --rm alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b echo docker-pull-run-ok
