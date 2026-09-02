@@ -212,6 +212,17 @@ if (( SCALE > 0 )); then
     for ws in "${WSBATCH[@]}"; do
         wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
         secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
+        if [[ "${GVisorAvailable}" == "true" ]]; then
+            # Pin the runsc claim at the pod, not the CR: GVisorAvailable
+            # only proves the RuntimeClass exists and the spec asked for
+            # it — controller propagation is exactly the kind of silent
+            # drop this must catch (kubelet has no runc fallback for an
+            # explicit runtimeClassName: a missing handler fails the pod
+            # loudly, but a controller-dropped field would pass unnoticed).
+            pod_rc=$(kc get pod -l "llmsafespaces.dev/workspace=${ws}" -o jsonpath='{.items[0].spec.runtimeClassName}' 2>/dev/null || echo "")
+            [[ "${pod_rc}" == "${RUNTIME_CLASS}" ]] \
+                || die "AC-13: ${ws} pod runtimeClassName='${pod_rc:-<empty>}' != ${RUNTIME_CLASS} — the runsc leg is NOT actually running under gVisor"
+        fi
     done
 
     ok "suspending ${#WSBATCH[@]} workspaces"
