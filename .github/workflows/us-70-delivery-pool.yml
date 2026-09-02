@@ -43,6 +43,21 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin
 
+      - name: Install kubectl
+        # The self-hosted runner image (actions-runner:2.337.0) is minimal —
+        # kind and helm are installed above for the same reason; kubectl was
+        # an ubuntu-latest preinstall assumption that run 17 broke on
+        # (exit 127 at the cert-manager step). v1.35.x matches the kind
+        # node image (kindest/node:v1.35.5). jq is in the same class (the
+        # harness scripts use it throughout) — installed only if absent.
+        run: |
+          curl -fsSLo ./kubectl "https://dl.k8s.io/release/v1.35.5/bin/linux/amd64/kubectl"
+          curl -fsSLo ./kubectl.sha256 "https://dl.k8s.io/release/v1.35.5/bin/linux/amd64/kubectl.sha256"
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin
+          command -v jq >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; }
+
       - name: Install helm
         run: |
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
