@@ -613,7 +613,6 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 			t.Errorf("evidence leg missing %q", want)
 		}
 	}
-
 	// The workspace ID must be a VALID UUID literal (pool run
 	// 33574913376: a WS_BASE string-mangle produced a 12-char first
 	// group and Postgres' uuid column rejected the metadata seed). Pin
@@ -624,6 +623,20 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).MatchString(m[1]) {
 		t.Fatalf("WS_ADMIT default must be a valid UUID literal (uuid-typed workspaces.id), got %q", m[1])
+	}
+
+	// Session-create robustness (pool run 33578936807: bare curl exit 22
+	// killed the script before die could diagnose): the create must
+	// capture code+body, retry once, and print the body on failure —
+	// never a bare -f pipefail exit.
+	for _, pin := range []string{
+		`-w '%{http_code}' -X POST`,
+		`for attempt in 1 2`,
+		`session create failed (HTTP ${SC})`,
+	} {
+		if !strings.Contains(text, pin) {
+			t.Errorf("evidence leg session-create lost its capture/retry/diagnose path: %q", pin)
+		}
 	}
 
 	// Failure-path semantics: a probe ERROR fails the step (never a
