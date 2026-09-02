@@ -148,8 +148,8 @@ func TestUS70_ScaleBatchSetsMinimalResources(t *testing.T) {
 	if !strings.Contains(src, "SCALE_RES=") {
 		t.Fatal("AC-13 batch must define SCALE_RES (pool run 6: unschedulable at default requests)")
 	}
-	if !strings.Contains(src, `seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"`) {
-		t.Fatal("AC-13 batch must pass SCALE_RES to seed_workspace")
+	if !strings.Contains(src, `seed_workspace "${WSBATCH[n - 1]}" "${RUNTIME_CLASS}" "${SCALE_RES}"`) {
+		t.Fatal("AC-13 wave-boot must pass SCALE_RES to seed_workspace")
 	}
 	// Pool run 9: cpuLimit "1" (quoted bare number) was re-marshaled to
 	// a JSON integer somewhere on the apply path — CRD rejected it.

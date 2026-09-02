@@ -205,20 +205,30 @@ if (( SCALE > 0 )); then
     memory: 128Mi
     cpuLimit: 1000m
     memoryLimit: 512Mi"
-    for ws in "${WSBATCH[@]}"; do
-        seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
-        bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
+    # Wave-boot (pool run 15): 25 concurrent BOOTS saturate the 2-core
+    # runner's control plane outright — the API pod itself crash-looped
+    # (BackOff) and the local-path provisioner starved (PVCs stuck in
+    # ExternalProvisioning). AC-13 measures 25 concurrent RESUMES, a
+    # far lighter storm (images cached, PVCs bound); boot the batch in
+    # waves of BOOT_WAVE, each wave fully Active before the next, and
+    # keep the resume phase at full batch concurrency.
+    BOOT_WAVE="${BOOT_WAVE:-5}"
+    for ((w = 0; w < ${#WSBATCH[@]}; w += BOOT_WAVE)); do
+        for ((n = w + 1; n <= w + BOOT_WAVE && n <= ${#WSBATCH[@]}; n++)); do
+            seed_workspace "${WSBATCH[n - 1]}" "${RUNTIME_CLASS}" "${SCALE_RES}"
+            bind_env "${WSBATCH[n - 1]}" "SD_SCALE" "ac13-${WSBATCH[n - 1]}"
+        done
+        for ((n = w + 1; n <= w + BOOT_WAVE && n <= ${#WSBATCH[@]}; n++)); do
+            wait_phase "${WSBATCH[n - 1]}" Active 480 \
+                || { diagnose_workspace "${WSBATCH[n - 1]}"; die "AC-13: ${WSBATCH[n - 1]} never Active (wave $((w / BOOT_WAVE + 1)))"; }
+        done
     done
-    # Two-phase wait (pool run 14): checking convergence on the Nth
-    # workspace while the (N+1..25) pods are still booting starves the
-    # 2-core node — the controller's reconcile queue stalls (valkey
+    # Convergence check AFTER all waves are Active (pool run 14): the
+    # controller's reconcile queue stalls under the boot storm (valkey
     # probe timeouts in the same window), one healthz scrape times out,
     # SecretsDelivery is nil-cleared by design, and the mirror never
-    # refreshes until the storm passes. Wait for ALL phases first, then
-    # check convergence once the boot storm is over.
-    for ws in "${WSBATCH[@]}"; do
-        wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
-    done
+    # refreshes until the storm passes. All waves are Active now; check
+    # convergence once the boot storm is over.
     for ws in "${WSBATCH[@]}"; do
         secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
         if [[ "${GVisorAvailable}" == "true" ]]; then

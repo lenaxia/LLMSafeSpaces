@@ -653,29 +653,29 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 	}
 }
 
-// TestUS70AC13TwoPhaseWait pins the AC-13 batch wait structure (pool run
-// 14): the convergence checks must run only after EVERY scale-batch
-// workspace reached Active. The interleaved order sampled workspace N's
-// controller-mirored SecretsDelivery while pods N+1..25 were still
-// booting — node starvation stalled the reconcile loop, one scrape
-// timeout nil-cleared the mirror, and the harness died mid-storm.
-func TestUS70AC13TwoPhaseWait(t *testing.T) {
+// TestUS70AC13WaveBoot pins the AC-13 batch structure (pool runs 14-15):
+// workspaces boot in waves (BOOT_WAVE at a time, each wave fully Active
+// before the next — 25 concurrent boots crash-loop the API pod and starve
+// the local-path provisioner on the 2-core runner), and the convergence
+// checks run only after every wave is Active (sampling mid-storm nil-clears
+// the controller mirror via scrape timeout).
+func TestUS70AC13WaveBoot(t *testing.T) {
 	script := mustRead(t, us70DeliveryScript)
-	waitLoop := "wait_phase \"${ws}\" Active 240 || die \"AC-13: ${ws} never Active\""
-	convergedLoop := "secrets_converged \"${ws}\" 300 || die \"AC-13: ${ws} pre-suspend unhealthy\""
-	waitIdx := strings.Index(script, waitLoop)
+	waveSeed := strings.Index(script, `seed_workspace "${WSBATCH[n - 1]}"`)
+	convergedLoop := `secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"`
 	convergedIdx := strings.Index(script, convergedLoop)
-	if waitIdx == -1 || convergedIdx == -1 {
-		t.Fatal("AC-13 wait/converged loop bodies not found — harness structure drifted; update this pin")
+	if waveSeed == -1 || convergedIdx == -1 {
+		t.Fatal("AC-13 wave-boot/converged loop bodies not found — harness structure drifted; update this pin")
 	}
-	// The pin: between the Active-wait loop body and the converged-check
-	// loop body there must be a loop boundary (the Active wait completes
-	// for the whole batch first). In the interleaved order the two loop
-	// bodies appear inside ONE for-loop with no boundary between them.
-	between := script[waitIdx+len(waitLoop) : convergedIdx]
-	for _, boundary := range []string{"done", "for ws in"} {
-		if !strings.Contains(between, boundary) {
-			t.Fatalf("AC-13 must wait ALL workspaces Active before checking convergence (two-phase); found interleaved order between the loops: %q", between)
-		}
+	// The seed loop must be wave-scoped (indexed WSBATCH access, not the
+	// flat for-each that booted the whole batch at once).
+	flatSeed := strings.Index(script, "seed_workspace \"${ws}\"")
+	if flatSeed != -1 {
+		t.Fatalf("AC-13 must seed in waves (BOOT_WAVE), found a flat batch seed loop at byte %d — 25 concurrent boots saturate the 2-core runner's control plane (pool run 15)", flatSeed)
+	}
+	// Every wave's Active wait must complete before the convergence checks.
+	lastActiveWait := strings.LastIndex(script, "wait_phase \"${WSBATCH[n - 1]}\" Active")
+	if lastActiveWait == -1 || lastActiveWait > convergedIdx {
+		t.Fatal("AC-13 convergence checks must run after all boot waves reached Active — sampling mid-storm measures the runner, not the product")
 	}
 }
