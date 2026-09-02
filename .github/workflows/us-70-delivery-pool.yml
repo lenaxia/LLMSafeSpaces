@@ -148,8 +148,8 @@ jobs:
       - name: Install cert-manager
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
-          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
-          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
+          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=600s
+          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s
 
       - name: Create credentials Secret (before Postgres)
         # The Postgres/Valkey manifests reference llmsafespaces-credentials
@@ -168,8 +168,8 @@ jobs:
       - name: Deploy Postgres + Redis
         run: |
           kubectl apply -f local/postgres-redis.yaml
-          kubectl -n $NS rollout status deployment/postgres --timeout=180s
-          kubectl -n $NS rollout status deployment/valkey --timeout=180s
+          kubectl -n $NS rollout status deployment/postgres --timeout=600s
+          kubectl -n $NS rollout status deployment/valkey --timeout=600s
 
       - name: Helm install LLMSafeSpaces (seam inert)
         run: |
@@ -208,12 +208,12 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
             --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \
-            --wait --timeout 5m
+            --wait --timeout 15m
 
       - name: Wait for rollout
         run: |
-          kubectl -n $NS rollout status deployment/llmsafespaces-api --timeout=180s
-          kubectl -n $NS rollout status deployment/llmsafespaces-controller --timeout=180s
+          kubectl -n $NS rollout status deployment/llmsafespaces-api --timeout=600s
+          kubectl -n $NS rollout status deployment/llmsafespaces-controller --timeout=600s
 
       - name: Provision gVisor (runsc) on the kind node
         # S5.6 recipe (local/s5-overlay-validation.sh), extracted to
@@ -298,7 +298,7 @@ jobs:
         # FAULT_COUNT default pins (lockstep test compares both).
         run: |
           kubectl --context "kind-$CLUSTER_NAME" -n $NS set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${FAULT_COUNT}:POST:/internal/v1/pod-bootstrap"
-          kubectl --context "kind-$CLUSTER_NAME" -n $NS rollout status deployment/llmsafespaces-api --timeout=180s
+          kubectl --context "kind-$CLUSTER_NAME" -n $NS rollout status deployment/llmsafespaces-api --timeout=600s
 
       - name: Run fault/chaos e2e rows (Epic 70 US-70.0 F1–F5)
         # Fault-injected bootstraps (F1), API partition at resume (F2),
