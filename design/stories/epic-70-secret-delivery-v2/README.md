@@ -12,7 +12,7 @@ Pull-based, terminal-verified credential delivery. Normative source: **issue #11
 | US-70.2 | #1183 | one builder + two-tier revisions (R1, covers the file manifest) + conditional pull endpoint | **landed 2026-08-31** (#1194); absorbs the #1165 manifest into the revision model |
 | US-70.3 | — | notify-pull + reconcile loop + revocation + `secrets_resync`; alerts + SLO; consumes `files_rev` as the file-class oracle | **landed 2026-08-31** (#1212) |
 | US-70.4 | — | login-independent re-wrap reconciler (CAS, retained wrap re-wrapped) | **landed 2026-08-31** (#1221) |
-| US-70.5 | #1209 | demolition: pod-side reload push path + reload cache handoff, `rehydrateDEKFromJWTSession` (K2) + `GetDEKForUser` walk (K3, replaced by the `GetCachedDEKForUser` warm-cache walk), K4 durable write half, `secretautopush`+`UserCredsPresent`; grep pin in repolint | **in review** |
+| US-70.5 | #1209 | demolition: pod-side reload push path + reload cache handoff, `rehydrateDEKFromJWTSession` (K2) + `GetDEKForUser` walk (K3, replaced by the `GetCachedDEKForUser` warm-cache walk), K4 durable write half, `secretautopush`+`UserCredsPresent`; grep pin in repolint | **landed 2026-09-01** (#1224); operator runbook `docs/runbooks/secret-delivery.md` + threat-model note (0027 Appendix E) added at close-out |
 
 ## US-70.1 implementation notes (2026-08-30)
 

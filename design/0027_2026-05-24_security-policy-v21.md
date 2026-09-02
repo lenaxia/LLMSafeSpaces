@@ -1856,3 +1856,37 @@ iframe isolation, not inline evaluation.
 
 **When to remove**: if Turnstile is replaced with a self-hosted CAPTCHA
 (unlikely) or the feature is retired.
+
+## Appendix E: Secret delivery v2 threat-model deltas (design 0057, Epic 70)
+
+Epic 70 changed the credential-delivery trust surface; deltas against
+the model in §9 of evolution-v2 (design 0021) as amended here:
+
+- **Push-body elimination.** The API no longer POSTs credential bodies
+  to pods. Bind/unbind/rotate bumps the stored two-tier revision and
+  notifies the pod with a bodyless, authenticated request; the pod
+  re-pulls via the SA-token-authenticated bootstrap path (fresh token
+  read per pull). A compromised or replayed notify carries zero secret
+  material; the pull is single-purpose and rate-limited by design.
+- **Terminal verification.** Convergence is judged from what the
+  supervised process actually spawned with (`spawned_rev`) and what the
+  uid-1000 writer wrote (`files_rev`) — not from fetch or materialize
+  success — closing the served-stale-plaintext window the push model
+  could not observe.
+- **Durable unwrap surface shrunk (US-70.5).** `jwt_sessions` rows are
+  no longer unwrap-capable: the signing-key-derived KEK rehydrate (K2)
+  and the live-session walk (K3) are deleted; background recovery reads
+  the Redis session cache only. An attacker with DB read access gains
+  no DEK path through session rows they did not already control.
+- **At-rest replay artifact removed.** `last-reload-secrets.json`
+  (tmpfs reload-replay cache) is gone; container restart re-materializes
+  from the per-pod batch file on the pod-local emptyDir — same tmpfs
+  lifetime guarantees (US-35.7 unchanged: plaintext never touches the
+  PVC).
+- **Fleet-version marker is non-sensitive.** healthz `delivery: "v2"`
+  reports a capability string only — no revision or secret-derived
+  content — safe for the mixed-fleet gauge.
+
+**When to revisit**: when the W15 legacy bare-array response and the W1
+multi-version window retire (fleet-evidence gated), shrink this appendix
+accordingly.

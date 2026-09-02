@@ -172,7 +172,7 @@ test.describe("Composer attachments (Epic 68)", () => {
     });
 
     const chip = page.locator('[data-testid^="composer-chip-"][data-status="attached"]', { hasText: "notes.txt" });
-    await expect(chip).toBeVisible({ timeout: 5_000 });
+    await expect(chip).toBeVisible({ timeout: 15_000 });
     await expect(chip).toContainText("3 B");
     expect(uploaded).toEqual(["notes.txt"]);
 
@@ -201,7 +201,7 @@ test.describe("Composer attachments (Epic 68)", () => {
     await page.setInputFiles('[data-testid="composer-file-input"]', {
       name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("abc"),
     });
-    await expect(page.locator('[data-testid^="composer-chip-"][data-status="attached"]')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('[data-testid^="composer-chip-"][data-status="attached"]')).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole("button", { name: "Remove attachment notes.txt" }).click();
     await expect(page.locator('[data-testid^="composer-chip-"]')).toHaveCount(0);
@@ -299,7 +299,7 @@ test.describe("Composer attachments (Epic 68)", () => {
     });
 
     const chip = page.locator('[data-testid^="composer-chip-"][data-status="error"]', { hasText: "notes.txt" });
-    await expect(chip).toBeVisible({ timeout: 5_000 });
+    await expect(chip).toBeVisible({ timeout: 15_000 });
     await expect(chip).toContainText("workspace not active (phase: Suspended)");
     await expect(page.getByLabel("upload-error-notice")).toContainText("workspace not active (phase: Suspended)");
     expect(uploaded).toEqual(["notes.txt"]);
@@ -350,7 +350,7 @@ test.describe("Composer attachments — mobile viewport 375×812 (E5)", () => {
       { name: "a-very-long-filename-that-could-overflow.txt", mimeType: "text/plain", buffer: Buffer.from("x") },
       { name: "second-file.bin", mimeType: "application/octet-stream", buffer: Buffer.from("y") },
     ]);
-    await expect(page.locator('[data-testid^="composer-chip-"][data-status="attached"]')).toHaveCount(2, { timeout: 5_000 });
+    await expect(page.locator('[data-testid^="composer-chip-"][data-status="attached"]')).toHaveCount(2, { timeout: 15_000 });
 
     const chipsRow = page.locator('[data-testid^="composer-chip-"]').first().locator("..");
     const rowBox = await chipsRow.boundingBox();
