@@ -652,3 +652,30 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 		}
 	}
 }
+
+// TestUS70AC13TwoPhaseWait pins the AC-13 batch wait structure (pool run
+// 14): the convergence checks must run only after EVERY scale-batch
+// workspace reached Active. The interleaved order sampled workspace N's
+// controller-mirored SecretsDelivery while pods N+1..25 were still
+// booting — node starvation stalled the reconcile loop, one scrape
+// timeout nil-cleared the mirror, and the harness died mid-storm.
+func TestUS70AC13TwoPhaseWait(t *testing.T) {
+	script := mustRead(t, us70DeliveryScript)
+	waitLoop := "wait_phase \"${ws}\" Active 240 || die \"AC-13: ${ws} never Active\""
+	convergedLoop := "secrets_converged \"${ws}\" 300 || die \"AC-13: ${ws} pre-suspend unhealthy\""
+	waitIdx := strings.Index(script, waitLoop)
+	convergedIdx := strings.Index(script, convergedLoop)
+	if waitIdx == -1 || convergedIdx == -1 {
+		t.Fatal("AC-13 wait/converged loop bodies not found — harness structure drifted; update this pin")
+	}
+	// The pin: between the Active-wait loop body and the converged-check
+	// loop body there must be a loop boundary (the Active wait completes
+	// for the whole batch first). In the interleaved order the two loop
+	// bodies appear inside ONE for-loop with no boundary between them.
+	between := script[waitIdx+len(waitLoop) : convergedIdx]
+	for _, boundary := range []string{"done", "for ws in"} {
+		if !strings.Contains(between, boundary) {
+			t.Fatalf("AC-13 must wait ALL workspaces Active before checking convergence (two-phase); found interleaved order between the loops: %q", between)
+		}
+	}
+}

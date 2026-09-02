@@ -209,8 +209,17 @@ if (( SCALE > 0 )); then
         seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
         bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
     done
+    # Two-phase wait (pool run 14): checking convergence on the Nth
+    # workspace while the (N+1..25) pods are still booting starves the
+    # 2-core node — the controller's reconcile queue stalls (valkey
+    # probe timeouts in the same window), one healthz scrape times out,
+    # SecretsDelivery is nil-cleared by design, and the mirror never
+    # refreshes until the storm passes. Wait for ALL phases first, then
+    # check convergence once the boot storm is over.
     for ws in "${WSBATCH[@]}"; do
         wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
+    done
+    for ws in "${WSBATCH[@]}"; do
         secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
         if [[ "${GVisorAvailable}" == "true" ]]; then
             # Pin the runsc claim at the pod, not the CR: GVisorAvailable
