@@ -298,6 +298,7 @@ jobs:
           name: us70-pool-results-${{ github.run_id }}
           path: |
             /tmp/us70-resume-times.txt
+            /tmp/us69-evidence.txt
           retention-days: 90
           if-no-files-found: ignore
 
