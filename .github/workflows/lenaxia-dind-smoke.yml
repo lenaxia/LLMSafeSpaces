@@ -13,6 +13,14 @@ jobs:
     runs-on: lenaxia-dind-runner
     timeout-minutes: 5
     steps:
+      - name: Wait for the dind sidecar's dockerd (boot race: the job starts when the runner registers, not when dockerd is ready)
+        run: |
+          for i in $(seq 1 30); do
+            if docker info >/dev/null 2>&1; then echo "dockerd ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "dockerd not reachable at $DOCKER_HOST after 30s — dind sidecar failed to boot (check its container logs)"; exit 1
+
       - name: Docker (dind sidecar) reachable
         run: docker info --format '{{.ServerVersion}} {{.NCPU}} CPUs {{.MemTotal}} bytes'
 
