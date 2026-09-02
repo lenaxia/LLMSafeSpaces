@@ -205,32 +205,46 @@ if (( SCALE > 0 )); then
     memory: 128Mi
     cpuLimit: 1000m
     memoryLimit: 512Mi"
-    for ws in "${WSBATCH[@]}"; do
-        seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
-        bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
+    # Seed/converge/suspend in bounded batches, then resume ALL of them
+    # concurrently below. Pool run 12 (33589864400) died seeding all 25
+    # at once: 25 simultaneous runsc boots starved the runner's API and
+    # valkey (API 500s on the agentd pulls, valkey readiness probe
+    # timeouts) and ws …105 never converged pre-suspend. The AC measures
+    # concurrent RESUME latency, not concurrent BOOT throughput — the
+    # resume volley below still fires all ${#WSBATCH[@]} at once.
+    SEED_BATCH=5
+    for ((b = 0; b < SCALE; b += SEED_BATCH)); do
+        declare -a BBATCH=("${WSBATCH[@]:b:SEED_BATCH}")
+        for ws in "${BBATCH[@]}"; do
+            seed_workspace "${ws}" "${RUNTIME_CLASS}" "${SCALE_RES}"
+            bind_env "${ws}" "SD_SCALE" "ac13-${ws}"
+        done
+        for ws in "${BBATCH[@]}"; do
+            wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
+            secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
+            if [[ "${GVisorAvailable}" == "true" ]]; then
+                # Pin the runsc claim at the pod, not the CR: GVisorAvailable
+                # only proves the RuntimeClass exists and the spec asked for
+                # it — controller propagation is exactly the kind of silent
+                # drop this must catch (kubelet has no runc fallback for an
+                # explicit runtimeClassName: a missing handler fails the pod
+                # loudly, but a controller-dropped field would pass unnoticed).
+                pod_rc=$(kc get pod -l "llmsafespaces.dev/workspace=${ws}" -o jsonpath='{.items[0].spec.runtimeClassName}' 2>/dev/null || echo "")
+                [[ "${pod_rc}" == "${RUNTIME_CLASS}" ]] \
+                    || die "AC-13: ${ws} pod runtimeClassName='${pod_rc:-<empty>}' != ${RUNTIME_CLASS} — the runsc leg is NOT actually running under gVisor"
+            fi
+        done
+        for ws in "${BBATCH[@]}"; do
+            curl -sfm 10 -X POST -H "Authorization: Bearer ${API_KEY}" \
+                "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/suspend" >/dev/null 2>&1 \
+                || warn "AC-13: suspend ${ws} returned non-zero"
+        done
+        for ws in "${BBATCH[@]}"; do
+            wait_phase "${ws}" Suspended 120 \
+                || warn "AC-13: ${ws} still not Suspended after batch drain"
+        done
     done
-    for ws in "${WSBATCH[@]}"; do
-        wait_phase "${ws}" Active 240 || die "AC-13: ${ws} never Active"
-        secrets_converged "${ws}" 300 || die "AC-13: ${ws} pre-suspend unhealthy"
-        if [[ "${GVisorAvailable}" == "true" ]]; then
-            # Pin the runsc claim at the pod, not the CR: GVisorAvailable
-            # only proves the RuntimeClass exists and the spec asked for
-            # it — controller propagation is exactly the kind of silent
-            # drop this must catch (kubelet has no runc fallback for an
-            # explicit runtimeClassName: a missing handler fails the pod
-            # loudly, but a controller-dropped field would pass unnoticed).
-            pod_rc=$(kc get pod -l "llmsafespaces.dev/workspace=${ws}" -o jsonpath='{.items[0].spec.runtimeClassName}' 2>/dev/null || echo "")
-            [[ "${pod_rc}" == "${RUNTIME_CLASS}" ]] \
-                || die "AC-13: ${ws} pod runtimeClassName='${pod_rc:-<empty>}' != ${RUNTIME_CLASS} — the runsc leg is NOT actually running under gVisor"
-        fi
-    done
-
-    ok "suspending ${#WSBATCH[@]} workspaces"
-    for ws in "${WSBATCH[@]}"; do
-        curl -sfm 10 -X POST -H "Authorization: Bearer ${API_KEY}" \
-            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/suspend" >/dev/null 2>&1 \
-            || warn "AC-13: suspend ${ws} returned non-zero"
-    done
+    ok "seeded + suspended ${#WSBATCH[@]} workspaces in batches of ${SEED_BATCH}"
     done_wait=0
     while (( done_wait < 300 )); do
         still=0
@@ -240,6 +254,7 @@ if (( SCALE > 0 )); then
         (( still == 0 )) && break
         sleep 5; done_wait=$((done_wait+5))
     done
+    (( still == 0 )) || die "AC-13: ${still} workspaces never reached Suspended"
     ok "all ${#WSBATCH[@]} suspended"
 
     # Concurrent resume + per-workspace stopwatch. Each worker bounds its own
