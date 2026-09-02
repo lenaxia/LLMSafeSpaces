@@ -626,3 +626,26 @@ func TestUS69EvidenceLegScript(t *testing.T) {
 		}
 	}
 }
+
+// TestUS69EvidenceLegWorkspaceIDIsUUID executes the evidence leg's
+// WS_ADMIT construction against the default WS_BASE and pins the UUID
+// contract — pool run 12 shipped a 12-char first group
+// (e2e569ad0000-…), PG rejected the id, and every Epic 70 pool leg
+// downstream was skipped.
+func TestUS69EvidenceLegWorkspaceIDIsUUID(t *testing.T) {
+	bash := requireBash(t)
+	script := mustRead(t, "us-69-evidence-leg.sh")
+	wsAdmit := regexp.MustCompile(`(?m)^\t?WS_ADMIT="\$\{WS_BASE%\?+\}[^"]*"$`).FindString(script)
+	if wsAdmit == "" {
+		t.Fatal("us-69-evidence-leg.sh must define WS_ADMIT as a WS_BASE suffix trim on a single line")
+	}
+	out, err := exec.Command(bash, "-c",
+		`WS_BASE='e2e5d000-0000-4000-8000-000000000000'; `+wsAdmit+`; printf '%s' "${WS_ADMIT}"`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute WS_ADMIT construction: %v\n%s", err, out)
+	}
+	re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	if !re.MatchString(string(out)) {
+		t.Fatalf("WS_ADMIT %q is not a valid UUID — the evidence leg seeds workspaces.id (uuid) with it; PG rejects non-UUIDs and the pool step fails before any Epic 70 leg runs", string(out))
+	}
+}
