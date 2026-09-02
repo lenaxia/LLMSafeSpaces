@@ -22,7 +22,10 @@ cd "$(dirname "$0")/.."
 source local/lib/us70-common.sh
 
 EVIDENCE="${US69_EVIDENCE:-/tmp/us69-evidence.txt}"
-WS_ADMIT="${WS_BASE%????????????????????????????????}69ad0000-0000-4000-8000-000000000001"
+# A literal valid UUID (the workspaces.id column is uuid-typed): derived
+# from WS_BASE's shape but hardcoded — string-mangling WS_BASE produced an
+# invalid 12-char first group (pool run 33574913376).
+WS_ADMIT="${WS_ADMIT:-e2e569ad-0000-4000-8000-000000000069}"
 OC_PF_PORT="${OC_PF_PORT:-14096}"
 
 log_evidence() { printf '%s\n' "$*" | tee -a "${EVIDENCE}"; }
