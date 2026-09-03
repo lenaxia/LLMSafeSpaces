@@ -392,7 +392,7 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		// 10-16 proved the 2-core GitHub-hosted ceiling; the dind set
 		// is repo-scoped to this repo — see ops-prod 2baafa74).
 		"runs-on: lenaxia-dind-runner",
-		"RESUME_SCALE: 100",
+		"RESUME_SCALE: 60",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Fatalf("pool workflow must contain %q (found missing)", pin)
