@@ -711,9 +711,18 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 	}
 	// The re-wait: the retry is meaningless without a second rollout wait
 	// after the restart (deleting it leaves the restart fire-and-forget).
-	waitCount := strings.Count(src, "rollout status deployment/cert-manager-webhook --timeout=600s")
+	waitStr := "rollout status deployment/cert-manager-webhook --timeout=600s"
+	waitCount := strings.Count(src, waitStr)
 	if waitCount != 2 {
 		t.Fatalf("cert-manager-webhook needs exactly 2 rollout waits (initial + post-restart re-wait), found %d — the retry must be verified", waitCount)
+	}
+	// Ordering: dump → restart → re-wait. A swap (re-wait before the
+	// restart) silently disables the retry while every count stays green;
+	// indices must strictly increase.
+	firstWait := strings.Index(src, waitStr)
+	reWait := strings.Index(src[restartIdx:], waitStr) + restartIdx
+	if firstWait >= dumpIdx || dumpIdx >= restartIdx || restartIdx >= reWait {
+		t.Fatalf("cert-manager step ordering must be first-wait(%d) < dump(%d) < restart(%d) < re-wait(%d) — a swap disables the retry without failing any count pin", firstWait, dumpIdx, restartIdx, reWait)
 	}
 	// The generic dump must list pods cluster-wide: runs 19/20 failed in
 	// cert-manager while the dump covered only the app namespace. Anchored
