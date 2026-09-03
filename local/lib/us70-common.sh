@@ -530,3 +530,35 @@ api_up() {
     api_portforward_restart
     ok "api deployment recovered (replicas=1, port-forward re-established)"
 }
+
+# >>> resume-p95
+# us70_resume_p95 TDIR EXPECTED — p95 (ms) over EXPECTED per-workspace
+# latency files (TDIR/<ws>.ms, one integer ms per file). A missing or
+# empty file means that workspace's stopwatch never reported (the
+# 999999 sentinel) so an incomplete batch can never read as fast.
+# Prints "P95 MID MIN COUNT". Sourced-marker style matches
+# api-key-db-hash so us70_common_test.go can exercise the math.
+us70_resume_p95() {
+    local tdir="$1" expected="$2"
+    local -a sorted=()
+    local f v n idx p95 mid min count=0
+    for f in "${tdir}"/*.ms; do
+        [[ -e "$f" ]] || continue
+        v=$(cat "$f" 2>/dev/null || echo "")
+        [[ "$v" =~ ^[0-9]+$ ]] || v=999999
+        sorted+=("$v")
+    done
+    n=${#sorted[@]}
+    # Sentinel-fill up to EXPECTED: a worker that died before writing its
+    # file must count against the p95, not vanish from the sample set.
+    while (( n < expected )); do sorted+=("999999"); n=$((n+1)); done
+    mapfile -t sorted < <(printf '%s\n' "${sorted[@]}" | sort -n)
+    count=${#sorted[@]}
+    idx=$(( (count * 95 + 99) / 100 - 1 ))
+    (( idx < 0 )) && idx=0
+    p95=${sorted[$idx]}
+    mid=${sorted[$((count / 2))]}
+    min=${sorted[0]}
+    echo "${p95} ${mid} ${min} ${count}"
+}
+# <<< resume-p95

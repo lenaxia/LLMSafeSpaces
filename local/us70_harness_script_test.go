@@ -386,13 +386,20 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 	for _, pin := range []string{
 		"set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION",
 		"timeout-minutes: 300",
-		"SUSPEND_SECONDS: 3600",
+		// The #1087 ≥1h suspend gate: on schedule triggers inputs are
+		// empty so the || fallback pins AC-2 to 3600. The literal
+		// `SUSPEND_SECONDS: 3600` pin was retired when dispatch got the
+		// dwell_seconds knob (fast-iteration cycles default to 60).
+		"SUSPEND_SECONDS: ${{ inputs.dwell_seconds || '3600' }}",
 		"local/lib/gvisor.sh",
 		// The capacity-appropriate runner + full-scale leg (pool runs
 		// 10-16 proved the 2-core GitHub-hosted ceiling; the dind set
 		// is repo-scoped to this repo — see ops-prod 2baafa74).
 		"runs-on: lenaxia-dind-runner",
-		"RESUME_SCALE: 60",
+		// Calibrated 2026-09-03 (#1252): knee on the dind runner class
+		// measured ~55 concurrent gVisor workspaces across runs
+		// 33733697430/33773343318; 40 = 0.72x knee.
+		"RESUME_SCALE: 40",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Fatalf("pool workflow must contain %q (found missing)", pin)

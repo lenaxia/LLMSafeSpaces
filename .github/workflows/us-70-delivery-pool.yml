@@ -5,7 +5,33 @@ on:
     # Sundays 07:00 UTC — after the S5 overlay slot (Sun 06:00), before
     # the US-2 L3 slot (Mon 05:00).
     - cron: "0 7 * * 0"
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
+    # Allow manual trigger. Fast-iteration knobs (defaults preserve the
+    # scheduled #1087 gate semantics exactly):
+    #   dwell_seconds     — AC-2 suspend dwell. Scheduled runs always use
+    #                       3600 (the ≥1h #1087 stability gate: inputs are
+    #                       empty on schedule triggers, so the workflow
+    #                       expression falls back to 3600). Manual dispatch
+    #                       DEFAULTS TO 60 for iteration cycles — nightly
+    #                       already proves the 5s variant, so 60s exercises
+    #                       the same resume path at a fraction of the wall
+    #                       clock. Pass 3600 explicitly to run the full
+    #                       gate on demand.
+    #   use_prebuilt_images — skip the four heavy image builds by pulling
+    #                       ghcr.io/lenaxia/llmsafespaces/*:dev (built from
+    #                       HEAD by image-build.yml). runtime-base still
+    #                       builds locally (no :dev channel). NEVER use for
+    #                       the scheduled gate — the pool's contract is
+    #                       testing the commit's own artifacts.
+    inputs:
+      dwell_seconds:
+        description: "AC-2 suspend dwell in seconds (scheduled gate = 3600; dispatch default 60 = fast cycle)"
+        default: "60"
+        type: string
+      use_prebuilt_images:
+        description: "Pull ghcr :dev images instead of building (debug cycles only)"
+        default: false
+        type: boolean
 
 env:
   CLUSTER_NAME: llmsafespaces-ci
@@ -89,7 +115,47 @@ jobs:
             docker network connect kind lss-e2e-registry
           fi
 
+      - name: Prepare prebuilt images (fast mode)
+        # Debug-cycle shortcut: pull the HEAD-built ghcr :dev images instead
+        # of building api/controller/agentd/opencode (~7 min saved). Only
+        # runtime-base builds (no :dev channel). The scheduled run never
+        # takes this path (input defaults false there).
+        if: ${{ inputs.use_prebuilt_images == true }}
+        run: |
+          set -e
+          for img in api controller; do
+            docker pull "ghcr.io/lenaxia/llmsafespaces/${img}:dev"
+            docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "llmsafespaces/${img}:$IMAGE_TAG"
+          done
+          docker pull ghcr.io/lenaxia/llmsafespaces/agentd:dev
+          docker tag ghcr.io/lenaxia/llmsafespaces/agentd:dev "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
+          docker push "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" >/dev/null
+          AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG")
+          case "$AGENTD_REF" in *@sha256:*) AGENTD_REF="localhost:5001/llmsafespaces/agentd:$IMAGE_TAG@${AGENTD_REF##*@}" ;; *) echo "no agentd digest"; exit 1 ;; esac
+          CID=$(docker create "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" no-start)
+          docker cp "$CID:/usr/local/bin/workspace-agentd" /tmp/workspace-agentd >/dev/null 2>&1 || { docker rm -f "$CID"; echo "agentd extract failed"; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1
+          echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"
+          echo "AGENTD_BINARY_SHA=$(sha256sum /tmp/workspace-agentd | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          docker pull ghcr.io/lenaxia/llmsafespaces/opencode:dev
+          docker tag ghcr.io/lenaxia/llmsafespaces/opencode:dev "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG"
+          docker push "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG" >/dev/null
+          OPENCODE_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG")
+          case "$OPENCODE_REF" in *@sha256:*) OPENCODE_REF="localhost:5001/llmsafespaces/opencode:$IMAGE_TAG@${OPENCODE_REF##*@}" ;; *) echo "no opencode digest"; exit 1 ;; esac
+          OC_CID=$(docker create "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG" no-start)
+          docker cp "$OC_CID:/usr/local/bin/opencode" /tmp/opencode-bin >/dev/null 2>&1 || { docker rm -f "$OC_CID"; echo "opencode extract failed"; exit 1; }
+          docker rm -f "$OC_CID" >/dev/null 2>&1
+          echo "OPENCODE_REF=$OPENCODE_REF" >> "$GITHUB_ENV"
+          echo "OPENCODE_BINARY_SHA=$(sha256sum /tmp/opencode-bin | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          E2E_VERSION="${{ env.IMAGE_TAG }}"
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t "llmsafespaces/runtime-base:$IMAGE_TAG" .
+          docker tag "llmsafespaces/runtime-base:$IMAGE_TAG" "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG"
+          kind load docker-image "llmsafespaces/api:$IMAGE_TAG" --name $CLUSTER_NAME
+          kind load docker-image "llmsafespaces/controller:$IMAGE_TAG" --name $CLUSTER_NAME
+          kind load docker-image "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG" --name $CLUSTER_NAME
+
       - name: Build and load images
+        if: ${{ inputs.use_prebuilt_images != true }}
         run: |
           # Stamp build versions so the e2e cluster's healthz/platform-info
           # surfaces report the e2e build identity (semver-style tag name
@@ -271,7 +337,9 @@ jobs:
 
       - name: Run secret-delivery e2e rows (Epic 70 — pool legs)
         # The pool executes the gated legs of the nightly suite: the ≥1h
-        # #1087 suspend gate (SUSPEND_SECONDS=3600 in AC-2) and the AC-13
+          # #1087 suspend gate (SUSPEND_SECONDS=3600 in AC-2; dispatch may
+          # lower it for iteration cycles — the dwell is a plain sleep, the
+          # nightly already covers the 5s variant) and the AC-13
         # runsc batch (the RuntimeClass provisioned above makes the
         # feature-detect fire). W7 gVisor tax: resume budget loosened vs
         # nightly's 30s (P95_BUDGET_MS=45000) and per-workspace resume
@@ -282,7 +350,7 @@ jobs:
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
           PORTFWD_PORT: 18085
-          SUSPEND_SECONDS: 3600
+          SUSPEND_SECONDS: ${{ inputs.dwell_seconds || '3600' }}
           # Pool run 10: at 100 the scale batch starved the 2-core
           # GitHub-hosted runner — the API's own readyz timed out
           # (curl 28) and workspace probes 503'd before any delivery

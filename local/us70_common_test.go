@@ -17,7 +17,10 @@ package local_test
 //      re-introducing the plaintext is what run 2 did.
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -159,5 +162,80 @@ func TestUS70_ScaleBatchSetsMinimalResources(t *testing.T) {
 	}
 	if !strings.Contains(src, "cpuLimit: 1000m") {
 		t.Fatal("cpuLimit must be unit-suffixed")
+	}
+}
+
+// us70ResumeP95 invokes the shared stopwatch helper (the >>> resume-p95
+// marker block in lib/us70-common.sh) against a temp dir of per-workspace
+// .ms files. The helper exists because the original inline collection
+// captured `wait $pid` stdout — a builtin that relays nothing — so the
+// first-ever AC-13 resume execution (run 33795608257) reported
+// p95=999999ms with zero samples.
+func us70ResumeP95(t *testing.T, files map[string]string, expected int) (p95, mid, min string, count int) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	dir := t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(dir, name+".ms")
+		//nolint:gosec // test fixture content is controlled
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+	}
+	script := `source <(sed -n '/>>> resume-p95/,/<<< resume-p95/p' lib/us70-common.sh)` + "\n" +
+		`us70_resume_p95 "` + dir + `" ` + strconv.Itoa(expected)
+	out, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper exec failed: %s", out)
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) != 4 {
+		t.Fatalf("expected 4 fields (p95 mid min count), got %d: %q", len(fields), out)
+	}
+	n, _ := strconv.Atoi(fields[3])
+	return fields[0], fields[1], fields[2], n
+}
+
+func TestUS70_ResumeP95_MathAndCount(t *testing.T) {
+	files := map[string]string{}
+	for i, ms := range []string{"100", "200", "300", "400", "500", "600", "700", "800", "9000", "10000"} {
+		files["ws"+strconv.Itoa(i)] = ms
+	}
+	p95, mid, min, count := us70ResumeP95(t, files, 10)
+	// mid is the UPPER median (sorted[n/2]) — pinned to match the original
+	// inline collection's convention; it's informational, not a gate.
+	if p95 != "10000" || mid != "600" || min != "100" {
+		t.Fatalf("p95/mid/min = %s/%s/%s, want 10000/600/100", p95, mid, min)
+	}
+	if count != 10 {
+		t.Fatalf("count = %d, want 10", count)
+	}
+}
+
+func TestUS70_ResumeP95_MissingFileSentinelFills(t *testing.T) {
+	// 9 of 10 workers report fast; the 10th never writes its file. The
+	// sentinel fill must push the p95 to 999999 — an incomplete batch can
+	// never read as fast.
+	files := map[string]string{}
+	for i := 0; i < 9; i++ {
+		files["ws"+strconv.Itoa(i)] = "120"
+	}
+	p95, _, _, count := us70ResumeP95(t, files, 10)
+	if p95 != "999999" {
+		t.Fatalf("p95 = %s, want 999999 (missing sample must sentinel-fill)", p95)
+	}
+	if count != 10 {
+		t.Fatalf("count = %d, want 10 (sentinel counts as a sample)", count)
+	}
+}
+
+func TestUS70_ResumeP95_MalformedFileSentinel(t *testing.T) {
+	files := map[string]string{"a": "150", "b": "not-a-number"}
+	p95, _, min, count := us70ResumeP95(t, files, 2)
+	if p95 != "999999" || min != "150" || count != 2 {
+		t.Fatalf("p95/min/count = %s/%s/%d, want 999999/150/2", p95, min, count)
 	}
 }
