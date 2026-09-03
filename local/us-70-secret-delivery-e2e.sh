@@ -275,11 +275,19 @@ if (( SCALE > 0 )); then
     for ws in "${WSBATCH[@]}"; do
         (
             t0=$(date +%s%3N)
+            # || true: the phase poll below is the source of truth — a
+            # transient activate non-2xx must not kill the stopwatch
+            # worker (set -e is inherited by this subshell).
             curl -sfm 60 -X POST -H "Authorization: Bearer ${API_KEY}" \
-                "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/activate" >/dev/null 2>&1
+                "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/activate" >/dev/null 2>&1 || true
             for _i in $(seq 1 "$RESUME_SCALE_TIMEOUT_S"); do
                 p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-                [[ "$p" == "Active" ]] && break
+                # NOT the `[[ test ]] AND break` one-liner: a false test
+                # makes that statement exit 1 and set -e kills the worker
+                # on the first poll of a not-yet-Active workspace (found
+                # via a local repro after run 33809514014; pinned in
+                # us70_harness_script_test.go).
+                if [[ "$p" == "Active" ]]; then break; fi
                 sleep 1
             done
             echo "$(( $(date +%s%3N) - t0 ))" > "${TDIR}/${ws}.ms"
