@@ -130,8 +130,16 @@ jobs:
           docker pull ghcr.io/lenaxia/llmsafespaces/agentd:dev
           docker tag ghcr.io/lenaxia/llmsafespaces/agentd:dev "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
           docker push "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" >/dev/null
-          AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG")
-          case "$AGENTD_REF" in *@sha256:*) AGENTD_REF="localhost:5001/llmsafespaces/agentd:$IMAGE_TAG@${AGENTD_REF##*@}" ;; *) echo "no agentd digest"; exit 1 ;; esac
+          # Digest MUST come from the registry's tag resolution, NOT
+          # docker-inspect RepoDigests: ghcr :dev images are multi-arch
+          # manifest LISTS — RepoDigests[0] is the index digest, but the
+          # push above only contains the amd64 CHILD manifest, so an
+          # index-digest-pinned pull 404s (fast-mode run 33806590231).
+          AGENTD_DGST=$(curl -fsSI "http://127.0.0.1:5001/v2/llmsafespaces/agentd/manifests/$IMAGE_TAG" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
+          [[ "${AGENTD_DGST}" == sha256:* ]] || { echo "no agentd digest from registry"; exit 1; }
+          AGENTD_REF="localhost:5001/llmsafespaces/agentd:$IMAGE_TAG@$AGENTD_DGST"
           CID=$(docker create "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" no-start)
           docker cp "$CID:/usr/local/bin/workspace-agentd" /tmp/workspace-agentd >/dev/null 2>&1 || { docker rm -f "$CID"; echo "agentd extract failed"; exit 1; }
           docker rm -f "$CID" >/dev/null 2>&1
@@ -140,8 +148,13 @@ jobs:
           docker pull ghcr.io/lenaxia/llmsafespaces/opencode:dev
           docker tag ghcr.io/lenaxia/llmsafespaces/opencode:dev "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG"
           docker push "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG" >/dev/null
-          OPENCODE_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG")
-          case "$OPENCODE_REF" in *@sha256:*) OPENCODE_REF="localhost:5001/llmsafespaces/opencode:$IMAGE_TAG@${OPENCODE_REF##*@}" ;; *) echo "no opencode digest"; exit 1 ;; esac
+          # Same registry-resolved digest as agentd above (multi-arch
+          # index vs child-manifest trap).
+          OPENCODE_DGST=$(curl -fsSI "http://127.0.0.1:5001/v2/llmsafespaces/opencode/manifests/$IMAGE_TAG" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}')
+          [[ "${OPENCODE_DGST}" == sha256:* ]] || { echo "no opencode digest from registry"; exit 1; }
+          OPENCODE_REF="localhost:5001/llmsafespaces/opencode:$IMAGE_TAG@$OPENCODE_DGST"
           OC_CID=$(docker create "localhost:5001/llmsafespaces/opencode:$IMAGE_TAG" no-start)
           docker cp "$OC_CID:/usr/local/bin/opencode" /tmp/opencode-bin >/dev/null 2>&1 || { docker rm -f "$OC_CID"; echo "opencode extract failed"; exit 1; }
           docker rm -f "$OC_CID" >/dev/null 2>&1
