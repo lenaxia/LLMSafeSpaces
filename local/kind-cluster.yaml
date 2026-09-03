@@ -26,6 +26,26 @@ networking:
   # default networkPolicy.enabled=true policies are rendered but inert in
   # this dev cluster. No override is needed.
   apiServerAddress: "127.0.0.1"
+  # MUST NOT overlap the host cluster's ranges. The lenaxia-dind-runner
+  # runs kind INSIDE docker:dind inside a pod of the home cluster
+  # (service CIDR 10.96.0.0/12, pod CIDR 10.69.0.0/16). kind's default
+  # serviceSubnet 10.96.0.0/16 puts this cluster's apiserver on
+  # 10.96.0.1 — the SAME IP as the home cluster's `kubernetes` service.
+  # Any in-pod service-IP packet that escapes the kind node's DNAT
+  # (kube-proxy rules not yet programmed, or lost in dind nesting) is
+  # then routed by the runner pod's netns to the HOME apiserver, which
+  # answers with the home CA → "x509: certificate signed by unknown
+  # authority" for every in-cluster client (run 33721184488: cainjector
+  # CrashLoop, webhook never serving, coredns 0/1 for 26m,
+  # local-path-provisioner Error — while host-side kubectl via the
+  # forwarded port worked fine). See #1244 for the full post-mortem.
+  # 10.217.0.0/16 avoids both the home service (10.96/12) and pod
+  # (10.69/16) ranges; escapees now blackhole instead of reaching a
+  # foreign apiserver.
+  serviceSubnet: "10.217.0.0/16"
+  # kindnet default podSubnet is 10.244.0.0/16 — no overlap with the home
+  # ranges above; left explicit for the same reason.
+  podSubnet: "10.244.0.0/16"
 # Local-registry support (same wiring as scripts/us2-kind-integration.sh):
 # the agentd sidecar requires a digest-pinned delivery image, and digest
 # refs must resolve inside the nodes. Enabling the certs.d config path is
@@ -36,3 +56,14 @@ containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry]
     config_path = "/etc/containerd/certs.d"
+# Pin kube-proxy to iptables mode. With nftables mode, ClusterIP DNAT
+# inside a kind node nested in docker:dind (lenaxia-dind-runner) was not
+# applied to pod traffic — every in-cluster client fell through to the
+# default route and out of dind (see serviceSubnet note above). iptables
+# mode is the long-stable kind default; nftables is newer and fails this
+# nesting (run 33721184488 evidence in #1244).
+kubeadmConfigPatches:
+- |
+  kind: KubeProxyConfiguration
+  apiVersion: kubeproxy.config.k8s.io/v1alpha1
+  mode: iptables
