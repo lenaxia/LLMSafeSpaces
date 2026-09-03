@@ -735,7 +735,7 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 	// pipe appended (head, grep, tail) breaks the match; the cert-manager
 	// step's own head-30 copy is differently indented and does not
 	// satisfy this pin.
-	if !strings.Contains(src, "\n          kubectl get pods -A -o wide\n") {
+	if !strings.Contains(src, "\n          kubectl get pods -A -o wide || true\n") {
 		t.Fatal("the generic failure dump must list pods in ALL namespaces, untruncated — the app-namespace-only dump was the runs-19/20 blind spot, and a head-N pipe cuts exactly the scale-failure rows the dump exists to capture")
 	}
 }
