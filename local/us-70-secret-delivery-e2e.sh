@@ -329,6 +329,23 @@ if (( SCALE > 0 )); then
         die "AC-13 FAIL: ${SCALE} resumes incomplete — one or more workspaces never reached Active within ${RESUME_SCALE_TIMEOUT_S}s (p95=${P95}ms)"
     fi
 
+    # Settle window: stopwatch workers cap their poll at RESUME_SCALE_TIMEOUT_S,
+    # so stragglers can still be mid-resume (phase != Active, spawnedRev empty)
+    # the instant the stopwatch ends. Give the batch a bounded settle before
+    # comparing revs — comparing against a half-resumed batch reports phantom
+    # divergence (run 33815218119: verdict fired 100ms after the stopwatch).
+    settle=0
+    until [[ $settle -ge 120 ]]; do
+        stragglers=0
+        for ws in "${WSBATCH[@]}"; do
+            p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+            [[ "$p" == "Active" ]] || stragglers=$((stragglers+1))
+        done
+        [[ $stragglers -eq 0 ]] && break
+        sleep 5; settle=$((settle+5))
+    done
+    [[ $stragglers -gt 0 ]] && warn "AC-13: ${stragglers} workspaces still not Active after the settle window (rev comparison may flag them)"
+
     # Identical spawned_rev across the batch (single-writer, one truth).
     REF_REV=$(kc get workspace "${WSBATCH[0]}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
     REV_OK=true
@@ -339,6 +356,14 @@ if (( SCALE > 0 )); then
     if [[ -n "${REF_REV}" && "${REV_OK}" == "true" ]]; then
         ok "AC-13: all ${#WSBATCH[@]} workspaces report identical spawned_rev ${REF_REV:0:12}…"
     else
+        # Diagnose, don't just die: which workspaces hold which rev.
+        { echo "=== spawned_rev divergence detail (ref=${REF_REV:0:12}…) ==="
+          for ws in "${WSBATCH[@]}"; do
+              r=$(kc get workspace "${ws}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
+              p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+              [[ -z "$r" || "$r" != "$REF_REV" ]] && echo "  ${ws} phase=${p:-?} rev=${r:-<empty>}"
+          done
+        } >&2
         die "AC-13 FAIL: spawned_rev diverged across the batch (ref=${REF_REV:0:12}…)"
     fi
 
