@@ -158,6 +158,8 @@ jobs:
           if ! kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s; then
             echo "=== cert-manager-webhook rollout failed — dumping state before retry ==="
             kubectl -n cert-manager get pods -o wide || true
+            kubectl -n cert-manager describe pods -l app.kubernetes.io/name=webhook | tail -40 || true
+            kubectl -n cert-manager get events --sort-by=.lastTimestamp | tail -20 || true
             kubectl -n cert-manager describe deployment cert-manager-webhook | tail -30 || true
             kubectl -n cert-manager logs deployment/cert-manager-webhook --tail=30 --all-containers || true
             kubectl get pods -A -o wide | head -30 || true

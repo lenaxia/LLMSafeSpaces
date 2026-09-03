@@ -684,3 +684,29 @@ func TestUS70AC13WaveBoot(t *testing.T) {
 		t.Fatal("AC-13 convergence checks must run after all boot waves reached Active — sampling mid-storm measures the runner, not the product")
 	}
 }
+
+// TestUS70PoolCertManagerWebhookRetry pins the cert-manager step's
+// dump-then-retry structure (pool runs 19/20: the webhook deployment
+// exceeded its own 10m progress deadline on the dind-nested control
+// plane while cert-manager itself rolled out; the run died instantly
+// with zero pod-level evidence). The step must dump legible state
+// (pods, pod describe, events, logs) BEFORE the single restart+re-wait,
+// and only then fail.
+func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
+	src := mustRead(t, us70PoolWorkflow)
+	for _, pin := range []string{
+		"rollout status deployment/cert-manager-webhook --timeout=600s",
+		"describe pods -l app.kubernetes.io/name=webhook",
+		"get events --sort-by=.lastTimestamp",
+		"logs deployment/cert-manager-webhook",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("pool workflow cert-manager step must contain %q — the runs-19/20 failure path must stay legible (found missing)", pin)
+		}
+	}
+	dumpIdx := strings.Index(src, "dumping state before retry")
+	restartIdx := strings.Index(src, "rollout restart deployment/cert-manager-webhook")
+	if dumpIdx == -1 || restartIdx == -1 || dumpIdx > restartIdx {
+		t.Fatal("the dump must precede the webhook restart — evidence before recovery, or the retry destroys the failure state it exists to capture")
+	}
+}
