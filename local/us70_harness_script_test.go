@@ -734,3 +734,29 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 		t.Fatal("the generic failure dump must list pods in ALL namespaces, untruncated and abort-safe — the app-namespace-only dump was the runs-19/20 blind spot, and a head-N pipe or bare line cuts the scale-failure rows")
 	}
 }
+
+func TestUS70_StopwatchWorkersAreSetESafe(t *testing.T) {
+	// The resume stopwatch workers are ( ... ) & subshells that inherit
+	// set -Eeuo pipefail. Two patterns killed every worker instantly on
+	// the stopwatch's first executions (runs 33806590231-33809514014):
+	//   1. `curl -sf ...` unguarded — any non-2xx activate exits the worker
+	//      before a single phase poll
+	//   2. `[[ "$p" == "Active" ]] && break` — a false test makes the whole
+	//      statement exit 1, and set -e kills the worker on the FIRST poll
+	//      of a not-yet-Active workspace (i.e. every workspace, at t0)
+	// Both leave no .ms file, so the p95 sentinel-fills to 999999. Pin the
+	// safe forms structurally.
+	src := mustRead(t, us70DeliveryScript)
+	if strings.Contains(src, `]] && break`) {
+		t.Fatalf("delivery script must not use `[[ ... ]] && break` (set -e kills the statement on a false test); use if/then")
+	}
+	if !strings.Contains(src, `activate" >/dev/null 2>&1 || true`) {
+		t.Fatalf("stopwatch activate curl must be `|| true`-guarded — the phase poll is the source of truth, a non-2xx activate must not kill the worker")
+	}
+	if !strings.Contains(src, `if [[ "$p" == "Active" ]]; then break; fi`) {
+		t.Fatalf("stopwatch phase poll must use the if/then break form")
+	}
+	if !strings.Contains(src, `> "${TDIR}/${ws}.ms"`) {
+		t.Fatalf("stopwatch workers must write one integer to TDIR/<ws>.ms (never `wait $pid` stdout capture)")
+	}
+}
