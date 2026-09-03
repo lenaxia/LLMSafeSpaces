@@ -700,7 +700,8 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 	for _, pin := range []string{
 		"rollout status deployment/cert-manager-webhook --timeout=600s",
 		`describe pods -l 'app.kubernetes.io/name in (cainjector,webhook)'`,
-		"logs deployment/cert-manager-cainjector deployment/cert-manager-webhook",
+		"logs deployment/cert-manager-cainjector --tail=30",
+		"logs deployment/cert-manager-webhook --tail=30",
 		"get events --sort-by=.lastTimestamp",
 	} {
 		if !strings.Contains(src, pin) {

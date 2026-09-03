@@ -166,7 +166,8 @@ jobs:
             kubectl -n cert-manager describe pods -l 'app.kubernetes.io/name in (cainjector,webhook)' | tail -60 || true
             kubectl -n cert-manager get events --sort-by=.lastTimestamp | tail -20 || true
             kubectl -n cert-manager describe deployment cert-manager-webhook | tail -30 || true
-            kubectl -n cert-manager logs deployment/cert-manager-cainjector deployment/cert-manager-webhook --tail=30 --all-containers || true
+            kubectl -n cert-manager logs deployment/cert-manager-cainjector --tail=30 --all-containers || true
+            kubectl -n cert-manager logs deployment/cert-manager-webhook --tail=30 --all-containers || true
             kubectl get pods -A -o wide || true
             echo "=== bouncing cainjector + webhook pods (stale-CA / crash-loop recovery) ==="
             kubectl -n cert-manager delete pod -l 'app.kubernetes.io/name in (cainjector,webhook)' --wait=false
