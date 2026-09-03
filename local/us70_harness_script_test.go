@@ -709,4 +709,17 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 	if dumpIdx == -1 || restartIdx == -1 || dumpIdx > restartIdx {
 		t.Fatal("the dump must precede the webhook restart — evidence before recovery, or the retry destroys the failure state it exists to capture")
 	}
+	// The re-wait: the retry is meaningless without a second rollout wait
+	// after the restart (deleting it leaves the restart fire-and-forget).
+	waitCount := strings.Count(src, "rollout status deployment/cert-manager-webhook --timeout=600s")
+	if waitCount != 2 {
+		t.Fatalf("cert-manager-webhook needs exactly 2 rollout waits (initial + post-restart re-wait), found %d — the retry must be verified", waitCount)
+	}
+	// The generic dump must list pods cluster-wide: runs 19/20 failed in
+	// cert-manager while the dump covered only the app namespace. Anchored
+	// to the dump's head-40 form — the cert-manager step's own all-ns
+	// listing is head-30 and must not satisfy this pin.
+	if !strings.Contains(src, "kubectl get pods -A -o wide | head -40") {
+		t.Fatal("the generic failure dump must list pods in ALL namespaces (head-40 form) — the app-namespace-only dump was exactly the runs-19/20 blind spot, and the cert-manager step's copy does not cover post-install failures")
+	}
 }
