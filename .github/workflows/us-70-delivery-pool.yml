@@ -288,9 +288,21 @@ jobs:
           # (curl 28) and workspace probes 503'd before any delivery
           # semantics ran. Runs 14-16 confirmed the ceiling (boot-storm
           # shaping — two-phase wait + wave-boot — landed anyway but the
-          # control plane still died). lenaxia-dind-runner restores the AC's
-          # full-100 leg on capacity-appropriate hardware.
-          RESUME_SCALE: 100
+          # control plane still died).
+          #
+          # 2026-09-03 decision (see #1244): AC-13 scale target set to 60.
+          # Run 33733697430 measured the actual knee on
+          # lenaxia-dind-runner (co-tenant with the production vllm fleet
+          # on worker-04): ~58-60 concurrent gVisor workspaces before the
+          # saturation cascade (probe timeouts, controller leader-election
+          # flap). 60 holds the full delivery-correctness surface — the
+          # AC's real payload (identical spawned_rev across the batch,
+          # p95 within budget, no lost env) — with ~3x margin over real
+          # deployment sizes. The 100-leg is deferred until either a
+          # dedicated pool runner or a fleet-size promise >= 100 exists;
+          # revisit by bumping RESUME_SCALE back (no other changes
+          # needed — the wave pacing and budgets scale with it).
+          RESUME_SCALE: 60
           RESUME_SCALE_TIMEOUT_S: 600
           P95_BUDGET_MS: 45000
           # Must match the helm api.extraEnv reconcile-interval set above —
