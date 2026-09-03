@@ -341,7 +341,7 @@ if (( SCALE > 0 )); then
             p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
             [[ "$p" == "Active" ]] || stragglers=$((stragglers+1))
         done
-        [[ $stragglers -eq 0 ]] && break
+        if [[ $stragglers -eq 0 ]]; then break; fi
         sleep 5; settle=$((settle+5))
     done
     [[ $stragglers -gt 0 ]] && warn "AC-13: ${stragglers} workspaces still not Active after the settle window (rev comparison may flag them)"
