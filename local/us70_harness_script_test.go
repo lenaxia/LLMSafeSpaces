@@ -716,19 +716,26 @@ func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
 	if waitCount != 2 {
 		t.Fatalf("cert-manager-webhook needs exactly 2 rollout waits (initial + post-restart re-wait), found %d — the retry must be verified", waitCount)
 	}
-	// Ordering: dump → restart → re-wait. A swap (re-wait before the
+	// Ordering: evidence → restart → re-wait. A swap (re-wait before the
 	// restart) silently disables the retry while every count stays green;
-	// indices must strictly increase.
+	// the anchor is the EVIDENCE command itself, not the banner — moving
+	// the dump body while leaving the banner in place must still fail.
+	evidence := strings.Index(src, "describe pods -l app.kubernetes.io/name=webhook")
 	firstWait := strings.Index(src, waitStr)
 	reWait := strings.Index(src[restartIdx:], waitStr) + restartIdx
-	if firstWait >= dumpIdx || dumpIdx >= restartIdx || restartIdx >= reWait {
-		t.Fatalf("cert-manager step ordering must be first-wait(%d) < dump(%d) < restart(%d) < re-wait(%d) — a swap disables the retry without failing any count pin", firstWait, dumpIdx, restartIdx, reWait)
+	if evidence == -1 || firstWait >= evidence || evidence >= restartIdx || restartIdx >= reWait {
+		t.Fatalf("cert-manager step ordering must be first-wait(%d) < evidence(%d) < restart(%d) < re-wait(%d) — a swap disables the retry and evidence-after-restart destroys the failure state, both without failing any count pin", firstWait, evidence, restartIdx, reWait)
 	}
-	// The generic dump must list pods cluster-wide: runs 19/20 failed in
-	// cert-manager while the dump covered only the app namespace. Anchored
-	// to the dump's head-40 form — the cert-manager step's own all-ns
-	// listing is head-30 and must not satisfy this pin.
-	if !strings.Contains(src, "kubectl get pods -A -o wide | head -40") {
-		t.Fatal("the generic failure dump must list pods in ALL namespaces (head-40 form) — the app-namespace-only dump was exactly the runs-19/20 blind spot, and the cert-manager step's copy does not cover post-install failures")
+	// The generic dump must list pods cluster-wide AND untruncated: runs
+	// 19/20 failed in cert-manager while the dump covered only the app
+	// namespace, and the pool's own AC-13 creates 100+ pods — a head-N
+	// pipe cuts exactly the rows a scale failure needs. Anchored to the
+	// bare form; the cert-manager step's head-30 copy must not satisfy it.
+	// The exact standalone line (the generic dump's indentation) — any
+	// pipe appended (head, grep, tail) breaks the match; the cert-manager
+	// step's own head-30 copy is differently indented and does not
+	// satisfy this pin.
+	if !strings.Contains(src, "\n          kubectl get pods -A -o wide\n") {
+		t.Fatal("the generic failure dump must list pods in ALL namespaces, untruncated — the app-namespace-only dump was the runs-19/20 blind spot, and a head-N pipe cuts exactly the scale-failure rows the dump exists to capture")
 	}
 }

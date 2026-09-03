@@ -346,7 +346,7 @@ jobs:
         if: failure()
         run: |
           echo "=== Pod status ==="
-          kubectl get pods -A -o wide | head -40
+          kubectl get pods -A -o wide
           kubectl -n $NS get pods -o wide
           echo "=== API logs ==="
           kubectl -n $NS logs deployment/llmsafespaces-api --tail=50 || true
