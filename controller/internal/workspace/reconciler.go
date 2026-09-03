@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -109,6 +110,14 @@ type WorkspaceReconciler struct {
 	// the next reconcile will just call it immediately).
 	lastDeepStatus   map[string]time.Time
 	lastDeepStatusMu sync.Mutex
+
+	// MaxConcurrentReconciles: how many DIFFERENT workspaces reconcile in
+	// parallel (controller-runtime never runs the same object concurrently,
+	// so per-workspace state stays single-writer). 0/negative = framework
+	// default (1 = fully serial). The default serial behavior made fleet
+	// resume linear (~8s per workspace — 40 workspaces ≈ 5+ minutes, run
+	// 33811397260); main.go clamps this to 1..64 to bound apiserver load.
+	MaxConcurrentReconciles int
 }
 
 func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -166,7 +175,7 @@ func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	bld := ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Workspace{}).
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.Secret{}).
@@ -180,8 +189,11 @@ func (r *WorkspaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Workspace owns its PVC via SetControllerReference at PVC
 		// creation in handlePending, so the watch is exact (no
 		// cross-workspace fan-out).
-		Owns(&corev1.PersistentVolumeClaim{}).
-		Complete(r)
+		Owns(&corev1.PersistentVolumeClaim{})
+	if r.MaxConcurrentReconciles > 0 {
+		bld = bld.WithOptions(controller.Options{MaxConcurrentReconciles: r.MaxConcurrentReconciles})
+	}
+	return bld.Complete(r)
 }
 
 // sanitizeLabelValue maps a runtime image reference to a valid k8s

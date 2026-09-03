@@ -235,6 +235,12 @@ controller:
   # cache.DefaultNamespaces narrows what it actually reconciles.
   watchNamespaces: ""
 
+  # How many different workspaces reconcile in parallel (1..64, clamped
+  # by the controller). Default 4 is plenty for normal use; raise it if
+  # you suspend/resume big fleets — resume is otherwise serial at ~8s per
+  # workspace (40 workspaces ≈ 5+ minutes at 1).
+  maxConcurrentReconciles: 4
+
   leaderElection:
     enabled: true
 

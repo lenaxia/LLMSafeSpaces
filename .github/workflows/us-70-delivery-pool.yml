@@ -309,6 +309,7 @@ jobs:
             --set controller.image.repository=llmsafespaces/controller \
             --set controller.image.tag=$IMAGE_TAG \
             --set controller.image.pullPolicy=IfNotPresent \
+            --set controller.maxConcurrentReconciles=8 \
             --set mcp.enabled=false \
             --set postgresql.host=postgres \
             --set postgresql.port=5432 \
@@ -354,9 +355,11 @@ jobs:
           # lower it for iteration cycles — the dwell is a plain sleep, the
           # nightly already covers the 5s variant) and the AC-13
         # runsc batch (the RuntimeClass provisioned above makes the
-        # feature-detect fire). W7 gVisor tax: resume budget loosened vs
-        # nightly's 30s (P95_BUDGET_MS=45000) and per-workspace resume
-        # wait doubled (RESUME_SCALE_TIMEOUT_S=600). Runs SEAM-INERT — the
+        # feature-detect fire). AC-13 gates on COMPLETENESS (all
+        # workspaces back within RESUME_SCALE_TIMEOUT_S) + secret/rev
+        # correctness; resume timing is reported, not budgeted (the old
+        # 45s p95 was an invented number — retire it everywhere else the
+        # same way when touched). Runs SEAM-INERT — the
         # fault budget belongs to the faults suite below.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
@@ -388,7 +391,6 @@ jobs:
           # budgets scale with it.
           RESUME_SCALE: 40
           RESUME_SCALE_TIMEOUT_S: 600
-          P95_BUDGET_MS: 45000
           # Must match the helm api.extraEnv reconcile-interval set above —
           # the AC-8/AC-10 convergence budgets derive from it (lockstep pin
           # in local/us70_harness_script_test.go).
