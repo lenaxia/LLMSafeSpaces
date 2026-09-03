@@ -169,6 +169,22 @@ jobs:
             kubectl -n cert-manager logs deployment/cert-manager-cainjector --tail=30 --all-containers || true
             kubectl -n cert-manager logs deployment/cert-manager-webhook --tail=30 --all-containers || true
             kubectl get pods -A -o wide || true
+            echo "=== TLS trust triangle (run 22: x509 unknown-authority is CLUSTER-WIDE — coredns 0/1 too — and survives pod bounces) ==="
+            NODE="${CLUSTER_NAME}-control-plane"
+            echo "--- published root CA (kube-root-ca.crt configmap):"
+            kubectl -n kube-public get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | openssl x509 -noout -subject -fingerprint -sha256 2>&1 || true
+            echo "--- node PKI root CA (/etc/kubernetes/pki/ca.crt):"
+            docker exec "$NODE" openssl x509 -in /etc/kubernetes/pki/ca.crt -noout -subject -fingerprint -sha256 2>&1 || true
+            echo "--- node PKI apiserver serving cert (issuer + SANs):"
+            docker exec "$NODE" openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -issuer -subject -ext subjectAltName 2>&1 || true
+            echo "--- live apiserver serving chain as pods see it (via 10.96.0.1):"
+            docker exec "$NODE" sh -c 'openssl s_client -connect 10.96.0.1:443 -showcerts </dev/null 2>/dev/null | openssl x509 -noout -issuer -subject -fingerprint -sha256' 2>&1 || echo "(node cannot route the service CIDR — expected on some setups)" || true
+            echo "=== if published CA != node CA: refresh the configmap, then bounce ==="
+            if ! kubectl -n kube-public get configmap kube-root-ca.crt -o jsonpath='{.data.ca\.crt}' | docker exec -i "$NODE" sh -c 'openssl x509 -noout -fingerprint -sha256' | diff - <(docker exec "$NODE" openssl x509 -in /etc/kubernetes/pki/ca.crt -noout -fingerprint -sha256) >/dev/null 2>&1; then
+              echo "published CA DOES NOT MATCH the node PKI — deleting kube-root-ca.crt for republication"
+              kubectl -n kube-public delete configmap kube-root-ca.crt || true
+              sleep 20
+            fi
             echo "=== bouncing cainjector + webhook pods (stale-CA / crash-loop recovery) ==="
             kubectl -n cert-manager delete pod -l 'app.kubernetes.io/name in (cainjector,webhook)' --wait=false
             if ! kubectl -n cert-manager wait --for=condition=Available deployment/cert-manager-cainjector --timeout=600s; then
