@@ -146,26 +146,35 @@ jobs:
           kind load docker-image ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
 
       - name: Install cert-manager
-        # Runs 19/20: the WEBHOOK deployment missed even a 600s wait
-        # (exceeded its own 10m progress deadline) while cert-manager
-        # itself rolled out — the dind-nested control plane starves the
-        # probe during boot churn. Dump legible state on failure (the
-        # generic dump step only covers the app namespace), restart the
-        # webhook once, and only then fail.
+        # Runs 19-21 failure chain (run 21's dump finally pinned it): pods
+        # created inside kind's post-creation config window project a STALE
+        # kube-root CA — cainjector crash-loops on "x509: certificate
+        # signed by unknown authority" against 10.96.0.1, never creates the
+        # webhook's CA secret, webhook healthz 500s forever. Slow (dind)
+        # control planes widen the window; fast hardware never lands in it
+        # (bare-metal repro #1244: webhook Ready in 13s). Dump state, then
+        # bounce BOTH broken deployments' pods — deletion clears crash-loop
+        # backoff, re-projects the fresh CA, and condition-wait (not
+        # rollout status, which trips instantly on the stale
+        # ProgressDeadlineExceeded condition) verifies recovery.
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
           kubectl -n cert-manager rollout status deployment/cert-manager --timeout=600s
           if ! kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s; then
             echo "=== cert-manager-webhook rollout failed — dumping state before retry ==="
             kubectl -n cert-manager get pods -o wide || true
-            kubectl -n cert-manager describe pods -l app.kubernetes.io/name=webhook | tail -40 || true
+            kubectl -n cert-manager describe pods -l 'app.kubernetes.io/name in (cainjector,webhook)' | tail -60 || true
             kubectl -n cert-manager get events --sort-by=.lastTimestamp | tail -20 || true
             kubectl -n cert-manager describe deployment cert-manager-webhook | tail -30 || true
+            kubectl -n cert-manager logs deployment/cert-manager-cainjector --tail=30 --all-containers || true
             kubectl -n cert-manager logs deployment/cert-manager-webhook --tail=30 --all-containers || true
-            kubectl get pods -A -o wide | head -30 || true
-            echo "=== one restart + re-wait (boot-churn starvation usually clears) ==="
-            kubectl -n cert-manager rollout restart deployment/cert-manager-webhook
-            kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s
+            kubectl get pods -A -o wide || true
+            echo "=== bouncing cainjector + webhook pods (stale-CA / crash-loop recovery) ==="
+            kubectl -n cert-manager delete pod -l 'app.kubernetes.io/name in (cainjector,webhook)' --wait=false
+            if ! kubectl -n cert-manager wait --for=condition=Available deployment/cert-manager-cainjector --timeout=600s; then
+              echo "cainjector still unavailable after bounce"; exit 1
+            fi
+            kubectl -n cert-manager wait --for=condition=Available deployment/cert-manager-webhook --timeout=600s
           fi
 
       - name: Create credentials Secret (before Postgres)
