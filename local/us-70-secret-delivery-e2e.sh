@@ -270,7 +270,6 @@ if (( SCALE > 0 )); then
     # silently collects nothing and the p95 reads as all-sentinel (found on
     # the stopwatch's first-ever execution, run 33795608257; unit-tested in
     # us70_common_test.go TestUS70_ResumeP95_*).
-    local TDIR
     TDIR=$(mktemp -d /tmp/us70-resume-ms.XXXXXX)
     resume_pids=()
     for ws in "${WSBATCH[@]}"; do
