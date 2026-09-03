@@ -42,7 +42,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -74,6 +74,9 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 		OpencodeBinarySHA256ARM64: opencodeDelivery.BinarySHA256ARM64,
 		AgentdSidecarEnabled:      agentdSidecarEnabled,
 		Recorder:                  mgr.GetEventRecorderFor("workspace-controller"),
+		// Clamped upstream (main.go, 1..64); <=0 keeps controller-runtime's
+		// fully-serial default so unit tests that don't set it are unchanged.
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
 		return err

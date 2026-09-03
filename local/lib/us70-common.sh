@@ -16,7 +16,7 @@
 #   SUSPEND_SECONDS - suspend dwell before resume (default 5; pool: 3600)
 #   RESUME_SCALE  - concurrent resume count for AC-13 (default 100)
 #   RESUME_SCALE_TIMEOUT_S - per-workspace resume wait (default 180)
-#   P95_BUDGET_MS - AC-13/AC-1 resume p95 budget (default 30000)
+#   P95_BUDGET_MS - unused knob kept for nightly compat (AC-13 no longer gates on it)
 #   RECONCILE_INTERVAL_S - API secrets-reconcile loop period in seconds;
 #                   MUST match the helm set
 #                   api.extraEnv[LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL]
@@ -52,7 +52,7 @@ WS_BASE="${WS_BASE:-e2e5d000-0000-4000-8000-000000000000}"
 SUSPEND_SECONDS="${SUSPEND_SECONDS:-5}"
 RESUME_SCALE="${RESUME_SCALE:-100}"
 RESUME_SCALE_TIMEOUT_S="${RESUME_SCALE_TIMEOUT_S:-180}"
-P95_BUDGET_MS="${P95_BUDGET_MS:-30000}"
+P95_BUDGET_MS="${P95_BUDGET_MS:-30000}" # unused by the pool (see us-70-secret-delivery-e2e.sh AC-13)
 RECONCILE_INTERVAL_S="${RECONCILE_INTERVAL_S:-5}"
 RESYNC_PORT="${RESYNC_PORT:-18099}"
 

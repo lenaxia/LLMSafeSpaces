@@ -75,6 +75,12 @@ func main() {
 		"Maximum spec.resources.cpu in millicores (16000 = 16 cores). Set 0 to disable. (G4 / F1.2.3).")
 	flag.Int64Var(&maxMemoryMi, "max-workspace-memory-mi", 65536,
 		"Maximum spec.resources.memory in MiB (65536 = 64GiB). Set 0 to disable. (G4 / F1.2.3).")
+	var maxConcurrentReconciles int
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 4,
+		"Max workspaces reconciled in parallel. 1 = old fully-serial behavior "+
+			"(fleet resume is linear: ~8s per workspace). Clamped to 1..64 — "+
+			"each worker hits the API server, so the ceiling exists to keep a "+
+			"fat finger from DoS-ing the apiserver.")
 	var inferenceRelayURL string
 	flag.StringVar(&inferenceRelayURL, "inference-relay-url", "",
 		"Self-hosted relay URL (InferenceRelay fleet, Epic 42). "+
@@ -365,7 +371,7 @@ func main() {
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
 		BinarySHA256ARM64: opencodeBinarySHA256ARM64,
-	}, agentdSidecarEnabled); err != nil {
+	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles)); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}
@@ -474,4 +480,17 @@ func (s *workspaceGaugeSeeder) Start(ctx context.Context) error {
 		logger.Info("seeded recovery gauges", "in_recovery", inRecovery, "in_safe_mode", inSafeMode)
 	}
 	return nil
+}
+
+// clampConcurrenctReconciles bounds -max-concurrent-reconciles to 1..64:
+// each concurrent reconciler is apiserver load, and a mistyped flag
+// (0, negative, or 10000) must degrade to a safe value, not a DoS.
+func clampConcurrenctReconciles(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > 64 {
+		return 64
+	}
+	return n
 }

@@ -58,6 +58,7 @@ spec:
             {{- with .Values.controller.watchNamespaces }}
             - --watch-namespaces={{ . }}
             {{- end }}
+            - --max-concurrent-reconciles={{ .Values.controller.maxConcurrentReconciles | default 4 }}
             {{- /* G2 — workspace admission allow-lists. The controller's
                    ValidatingWebhook reads these to gate Spec.Runtime
                    image references and Spec.Storage parameters. Empty
