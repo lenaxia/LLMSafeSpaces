@@ -264,7 +264,14 @@ if (( SCALE > 0 )); then
     # Concurrent resume + per-workspace stopwatch. Each worker bounds its own
     # wait (RESUME_SCALE_TIMEOUT_S) so a stuck workspace reports a large
     # latency (and the outer p95 catches it) instead of hanging the batch.
-    declare -a TIMES_MS=()
+    # Each worker writes ONE integer (elapsed ms) to TDIR/<ws>.ms — the
+    # collection MUST NOT go through `wait "$pid"` stdout capture: `wait` is
+    # a builtin and does not relay the subshell's stdout, so that pattern
+    # silently collects nothing and the p95 reads as all-sentinel (found on
+    # the stopwatch's first-ever execution, run 33795608257; unit-tested in
+    # us70_common_test.go TestUS70_ResumeP95_*).
+    local TDIR
+    TDIR=$(mktemp -d /tmp/us70-resume-ms.XXXXXX)
     resume_pids=()
     for ws in "${WSBATCH[@]}"; do
         (
@@ -276,25 +283,36 @@ if (( SCALE > 0 )); then
                 [[ "$p" == "Active" ]] && break
                 sleep 1
             done
-            echo "$(( $(date +%s%3N) - t0 ))"
+            echo "$(( $(date +%s%3N) - t0 ))" > "${TDIR}/${ws}.ms"
         ) &
         resume_pids+=("$!")
     done
-    for pid in "${resume_pids[@]}"; do
-        TIMES_MS+=("$(wait "$pid" 2>/dev/null || echo 999999)")
-    done
+    for pid in "${resume_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
 
-    # sorted ascending for p95
-    mapfile -t SORTED < <(printf '%s\n' "${TIMES_MS[@]}" | sort -n)
-    N=${#SORTED[@]}
-    IDX=$(( (N * 95 + 99) / 100 - 1 ))
-    (( IDX < 0 )) && IDX=0
-    P95=${SORTED[$IDX]}
-    SPAN=$(printf '%s,%s' "${SORTED[$((N/2))]}" "${SORTED[0]}")
+    # p95 via the shared, unit-tested helper (missing files sentinel-fill)
+    read -r P95 RESUME_MID RESUME_MIN RESUME_COUNT < <(us70_resume_p95 "${TDIR}" "${#WSBATCH[@]}")
+    rm -rf "${TDIR}"
 
-    echo "resume_ms_sorted=${SORTED[*]}" > /tmp/us70-resume-times.txt
+    # Saturation telemetry — captured on EVERY AC-13 (pass or fail) so knee
+    # findings are explainable post-hoc without a dedicated instrumented run.
+    # PSI from the kind node explains WHAT saturated (cpu/memory/io pressure
+    # over the preceding window); lease ages expose leader-election churn
+    # (the run 33733697430/33773343318 failure mode: API lease updates
+    # timing out at 30s, controller leadership flap).
+    {
+        echo "=== AC-13 saturation telemetry ==="
+        echo "--- leases (age < renew period => churn):"
+        kc get lease -A 2>/dev/null || true
+        echo "--- control-plane static pods:"
+        kc -n kube-system get pods 2>/dev/null | grep -E 'NAME|controller-manager|scheduler|apiserver' || true
+        echo "--- kind node PSI (some avg10/avg60/avg300 over the resume window):"
+        docker exec "${CLUSTER_NAME}-control-plane" sh -c \
+            'for f in /proc/pressure/cpu /proc/pressure/memory /proc/pressure/io; do echo "[$f]"; cat "$f" 2>/dev/null; done' || true
+    } | tee -a /tmp/us70-resume-times.txt >&2 || true
+
+    echo "resume_p95=${P95}ms mid=${RESUME_MID}ms min=${RESUME_MIN}ms n=${RESUME_COUNT}/${#WSBATCH[@]}" > /tmp/us70-resume-times.txt
     if (( P95 <= P95_BUDGET_MS )); then
-        ok "AC-13: ${SCALE} resumes p95=${P95}ms ≤ ${P95_BUDGET_MS}ms budget (mid=${SPAN%%\,*}ms min=${SPAN##*\,}ms)"
+        ok "AC-13: ${SCALE} resumes p95=${P95}ms ≤ ${P95_BUDGET_MS}ms budget (mid=${RESUME_MID}ms min=${RESUME_MIN}ms n=${RESUME_COUNT}/${#WSBATCH[@]})"
     else
         die "AC-13 FAIL: ${SCALE} resumes p95=${P95}ms > ${P95_BUDGET_MS}ms budget"
     fi
