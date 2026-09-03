@@ -684,3 +684,58 @@ func TestUS70AC13WaveBoot(t *testing.T) {
 		t.Fatal("AC-13 convergence checks must run after all boot waves reached Active — sampling mid-storm measures the runner, not the product")
 	}
 }
+
+// TestUS70PoolCertManagerWebhookRetry pins the cert-manager step's
+// dump-then-retry structure (pool runs 19/20: the webhook deployment
+// exceeded its own 10m progress deadline on the dind-nested control
+// plane while cert-manager itself rolled out; the run died instantly
+// with zero pod-level evidence). The step must dump legible state
+// (pods, pod describe, events, logs) BEFORE the single restart+re-wait,
+// and only then fail.
+func TestUS70PoolCertManagerWebhookRetry(t *testing.T) {
+	src := mustRead(t, us70PoolWorkflow)
+	for _, pin := range []string{
+		"rollout status deployment/cert-manager-webhook --timeout=600s",
+		"describe pods -l app.kubernetes.io/name=webhook",
+		"get events --sort-by=.lastTimestamp",
+		"logs deployment/cert-manager-webhook",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("pool workflow cert-manager step must contain %q — the runs-19/20 failure path must stay legible (found missing)", pin)
+		}
+	}
+	dumpIdx := strings.Index(src, "dumping state before retry")
+	restartIdx := strings.Index(src, "rollout restart deployment/cert-manager-webhook")
+	if dumpIdx == -1 || restartIdx == -1 || dumpIdx > restartIdx {
+		t.Fatal("the dump must precede the webhook restart — evidence before recovery, or the retry destroys the failure state it exists to capture")
+	}
+	// The re-wait: the retry is meaningless without a second rollout wait
+	// after the restart (deleting it leaves the restart fire-and-forget).
+	waitStr := "rollout status deployment/cert-manager-webhook --timeout=600s"
+	waitCount := strings.Count(src, waitStr)
+	if waitCount != 2 {
+		t.Fatalf("cert-manager-webhook needs exactly 2 rollout waits (initial + post-restart re-wait), found %d — the retry must be verified", waitCount)
+	}
+	// Ordering: evidence → restart → re-wait. A swap (re-wait before the
+	// restart) silently disables the retry while every count stays green;
+	// the anchor is the EVIDENCE command itself, not the banner — moving
+	// the dump body while leaving the banner in place must still fail.
+	evidence := strings.Index(src, "describe pods -l app.kubernetes.io/name=webhook")
+	firstWait := strings.Index(src, waitStr)
+	reWait := strings.Index(src[restartIdx:], waitStr) + restartIdx
+	if evidence == -1 || firstWait >= evidence || evidence >= restartIdx || restartIdx >= reWait {
+		t.Fatalf("cert-manager step ordering must be first-wait(%d) < evidence(%d) < restart(%d) < re-wait(%d) — a swap disables the retry and evidence-after-restart destroys the failure state, both without failing any count pin", firstWait, evidence, restartIdx, reWait)
+	}
+	// The generic dump must list pods cluster-wide AND untruncated: runs
+	// 19/20 failed in cert-manager while the dump covered only the app
+	// namespace, and the pool's own AC-13 creates 100+ pods — a head-N
+	// pipe cuts exactly the rows a scale failure needs. Anchored to the
+	// bare form; the cert-manager step's head-30 copy must not satisfy it.
+	// The exact standalone line (the generic dump's indentation) — any
+	// pipe appended (head, grep, tail) breaks the match; the cert-manager
+	// step's own head-30 copy is differently indented and does not
+	// satisfy this pin.
+	if !strings.Contains(src, "\n          kubectl get pods -A -o wide || true\n") {
+		t.Fatal("the generic failure dump must list pods in ALL namespaces, untruncated — the app-namespace-only dump was the runs-19/20 blind spot, and a head-N pipe cuts exactly the scale-failure rows the dump exists to capture")
+	}
+}

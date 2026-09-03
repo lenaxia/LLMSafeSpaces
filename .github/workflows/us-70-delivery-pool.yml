@@ -146,10 +146,27 @@ jobs:
           kind load docker-image ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
 
       - name: Install cert-manager
+        # Runs 19/20: the WEBHOOK deployment missed even a 600s wait
+        # (exceeded its own 10m progress deadline) while cert-manager
+        # itself rolled out — the dind-nested control plane starves the
+        # probe during boot churn. Dump legible state on failure (the
+        # generic dump step only covers the app namespace), restart the
+        # webhook once, and only then fail.
         run: |
           kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
           kubectl -n cert-manager rollout status deployment/cert-manager --timeout=600s
-          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s
+          if ! kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s; then
+            echo "=== cert-manager-webhook rollout failed — dumping state before retry ==="
+            kubectl -n cert-manager get pods -o wide || true
+            kubectl -n cert-manager describe pods -l app.kubernetes.io/name=webhook | tail -40 || true
+            kubectl -n cert-manager get events --sort-by=.lastTimestamp | tail -20 || true
+            kubectl -n cert-manager describe deployment cert-manager-webhook | tail -30 || true
+            kubectl -n cert-manager logs deployment/cert-manager-webhook --tail=30 --all-containers || true
+            kubectl get pods -A -o wide | head -30 || true
+            echo "=== one restart + re-wait (boot-churn starvation usually clears) ==="
+            kubectl -n cert-manager rollout restart deployment/cert-manager-webhook
+            kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=600s
+          fi
 
       - name: Create credentials Secret (before Postgres)
         # The Postgres/Valkey manifests reference llmsafespaces-credentials
@@ -329,7 +346,8 @@ jobs:
         if: failure()
         run: |
           echo "=== Pod status ==="
-          kubectl -n $NS get pods -o wide
+          kubectl get pods -A -o wide || true
+          kubectl -n $NS get pods -o wide || true
           echo "=== API logs ==="
           kubectl -n $NS logs deployment/llmsafespaces-api --tail=50 || true
           echo "=== Controller logs ==="
