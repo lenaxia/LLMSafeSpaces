@@ -454,11 +454,11 @@ wait_phase "${WSF}" Active 240 || die "AC-F: workspace never Active"
 
 # Bind an ssh-key via the secrets API.
 SF_BODY=$(jq -nc --arg n "deploy" '{name:("e2e-sd-ssh-deploy"),type:"ssh-key",value:"ssh-ed25519 E2EKEYBYTES",metadata:{key_type:"ed25519",host:"github.com"}}')
-SF_STATUS=$(curl -sm 30 -o /tmp/opencode/sf.json -w "%{http_code}" -X POST \
+SF_STATUS=$(curl -sm 30 -o /tmp/ac-f-sf.json -w "%{http_code}" -X POST \
     -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
     -d "$SF_BODY" "http://127.0.0.1:${PORTFWD_PORT}/api/v1/secrets")
-[[ "${SF_STATUS}" == "201" || "${SF_STATUS}" == "200" ]] || die "AC-F: secret create returned ${SF_STATUS}: $(cat /tmp/opencode/sf.json)"
-SF_ID=$(jq -r .id /tmp/opencode/sf.json)
+[[ "${SF_STATUS}" == "201" || "${SF_STATUS}" == "200" ]] || die "AC-F: secret create returned ${SF_STATUS}: $(cat /tmp/ac-f-sf.json)"
+SF_ID=$(jq -r .id /tmp/ac-f-sf.json)
 curl -sfm 30 -X PUT -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
     -d "{\"secretIds\":[\"${SF_ID}\"]}" \
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WSF}/bindings" >/dev/null \
