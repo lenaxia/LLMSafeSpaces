@@ -348,7 +348,7 @@ fi
 # resume re-bootstraps with a then-current token).
 # -----------------------------------------------------------------------------
 WS4=$(ws_id 4)
-log "F4 — SA-token rows: minted token tampered → 401; expired (JWT-exp time-travel) → 401 + fresh mint works"
+log "F4 — SA-token rows: tampered mint → 401; expired mint (JWT-exp time-travel, handler-enforced) → 401 + fresh mint works"
 
 seed_workspace "${WS4}"
 bind_env "${WS4}" "SD_F4" "token-f4-value"
@@ -401,14 +401,17 @@ else
     die "F4a FAIL: untampered minted token → 401 — TokenReview path rejects a valid SA+audience mint"
 fi
 
-# --- F4b: expired mint (time-travel past the JWT's OWN exp) → exactly 401;
-# a fresh mint must then still work (rotation/fresh-read equivalence: a
-# fresh credential always works). Bounded: default mints live ~1h, so the
-# sleep is ≤~3700s regardless of SUSPEND_SECONDS.
+# --- F4b: expired mint (time-travel past the JWT's OWN exp) → exactly 401
+# (the API's own defense-in-depth exp check — the cluster's TokenReview
+# does NOT enforce TokenRequest exp, #1244); a fresh mint must then still
+# work (rotation/fresh-read equivalence). The 35m mint bounds the
+# leeway-aware sleep at ~3720s.
 # JWT payload decode: base64url segment + jq @base64d (accepts the URL-safe
 # alphabet and tolerates the "===" over-padding on any mod-4 remainder —
 # validated against synthetic JWTs). Guard: a mint without .exp skips.
-EXP=$(jq -R 'split(".")[1] + "===" | @base64d | fromjson | .exp' <<<"${TOKEN}")
+# || echo x: a payload jq cannot parse must skip the row, not abort the
+# suite (pipefail propagates jq's exit 5 otherwise).
+EXP=$(jq -R 'split(".")[1] + "===" | @base64d | fromjson | .exp' <<<"${TOKEN}" 2>/dev/null || echo x)
 if ! [[ "${EXP}" =~ ^[0-9]+$ ]]; then
     skip_row "F4b" "minted JWT carries no numeric .exp (got '${EXP}') — cannot time-travel past it"
 else
