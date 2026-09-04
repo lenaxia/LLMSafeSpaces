@@ -314,22 +314,27 @@ psql_q -c "UPDATE user_keys SET wrapped_dek=decode('${ORIG_HEX}','hex') WHERE us
 RESTORED_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${OWNER_ID}'")
 [[ "${RESTORED_HEX}" == "${ORIG_HEX}" ]] || die "F3: restore mismatch — user_keys left corrupted, aborting"
 
-# A DEK restore is INVISIBLE to the revision system: the key is not
-# manifest data, classify() sees applied==seq and never notifies — the
-# 300s wait below would wait on a signal that by design never comes (first
-# live run, 33885850468). Nudge one resync: even the 304 path re-runs
-# applySecretsBatch on the on-disk batch, re-materializing with the
-# restored key. This is the same heal the reconcile loop applies whenever
-# it CAN see a change.
-resync_forward_start "${WS3}"
-resync_call
-resync_forward_stop
+# A DEK restore is INVISIBLE to the revision system, and BY DESIGN no
+# in-place heal exists: the key is not manifest data (classify() sees
+# applied==seq, never notifies), the resync 304 path is blocked by the W2
+# apply-guard at the same seq, and runMaterializeCommand skips identically
+# (runs 33885850468/33891666924: forced resync = 200 not_modified, no
+# delivery). The anchor — and thus the ONLY state that pins the failed
+# materialization — is wiped with the pod: suspend→resume is the
+# deterministic recovery operation, exactly what an operator would run
+# after a key restore. It exercises the real recovery path end to end.
+curl -sfm 10 -X POST -H "Authorization: Bearer ${API_KEY}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS3}/suspend" >/dev/null
+wait_phase "${WS3}" Suspended 180 || die "F3: never Suspended after restore"
+curl -sfm 30 --retry 5 --retry-delay 2 --retry-all-errors -X POST -H "Authorization: Bearer ${API_KEY}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS3}/activate" >/dev/null
+wait_phase "${WS3}" Active 240 || die "F3: never Active after restore-resume"
 
 if secrets_converged "${WS3}" 300 && wait_env_present "${WS3}" "SD_F3=corrupt-f3-value" 300; then
-    ok "F3 PASS: exact-byte restore → resync heal → converged (SD_F3 delivered)"
+    ok "F3 PASS: exact-byte restore → resume re-materializes with the restored key → converged"
     PASS=$((PASS + 1))
 else
-    die "F3 FAIL: no convergence within 300s of restore + resync heal (last resync: ${RESC_CODE} ${RESC_BODY:0:120})"
+    die "F3 FAIL: no convergence after restore + resume (key still failing to decrypt?)"
 fi
 
 # -----------------------------------------------------------------------------
