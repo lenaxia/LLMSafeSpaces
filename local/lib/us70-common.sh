@@ -450,11 +450,15 @@ resync_forward_start() {
         wait "${RESC_PF_PID}" 2>/dev/null || true
     fi
     logf=$(mktemp)
-    # Two bounded retries: a stale local port (previous suite run's
-    # forward) or a just-recreated pod can fail the first establish —
-    # neither is a verdict (observed on hardware, suite5 run).
+    # Three bounded retries, each on a DIFFERENT local port: a killed
+    # forward's listener can sit in TIME_WAIT (kubectl binds without
+    # SO_REUSEADDR), so re-binding the same port fails until the kernel
+    # releases it (observed: AC-11's forward leaked into AC-8's establish,
+    # 'bind: address already in use' x3, run 33865691207). The local port
+    # is scratch — rotate it.
     local attempt
-    for attempt in 1 2 3; do
+    for attempt in 0 1 2; do
+        RESYNC_PORT=$(( RESYNC_PORT + attempt ))
         kc port-forward "pod/${pod}" "${RESYNC_PORT}:4097" >"${logf}" 2>&1 &
         RESC_PF_PID=$!
         for _i in $(seq 1 20); do
