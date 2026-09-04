@@ -166,7 +166,12 @@ harness_start
 # -----------------------------------------------------------------------------
 WS1=$(ws_id 1)
 log "REV-1 setup — create + bind workspace ${WS1}, wait Active + converged"
-seed_workspace "${WS1}" "${USER_ID}"
+# NB: seed_workspace's 2nd arg is the RUNTIME CLASS (admin-gated
+# override), NOT the owner — passing ${USER_ID} here requested a
+# RuntimeClass named "e2e-sd-user" and the pod was rejected forever
+# (first-ever execution, run 33869524681). Ownership comes from the
+# harness session internally.
+seed_workspace "${WS1}"
 bind_env "${WS1}" "SD_REV1" "rev1-first-value"
 wait_phase "${WS1}" Active 240 || die "REV-1: workspace never Active"
 secrets_converged "${WS1}" 120 || die "REV-1: secretsDelivery not healthy/converged"
