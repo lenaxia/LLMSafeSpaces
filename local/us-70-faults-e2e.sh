@@ -25,7 +25,7 @@
 #          restore → converge.
 #   F4   — SA-token rows (kubectl-minted tokens — the real TokenReview path
 #          server-side; audience llmsafespace-api + SA-name binding checks
-#          in api/internal/handlers/pod_bootstrap.go:204-230 apply to
+#          in api/internal/handlers/pod_bootstrap.go (audience, SA binding, exp) apply to
 #          minted tokens exactly as to projected ones):
 #          (a) tampered mint → exactly 401, untampered mint control → NOT
 #              401; (b) expired mint (sleep past the JWT's OWN .exp,
@@ -341,14 +341,14 @@ fi
 # F4 — SA-token rows: kubectl-minted tokens on the REAL TokenReview path.
 # Minting via `kubectl create token workspace-<ws> --audience=…` produces a
 # credential the API validates exactly like the projected one (audience +
-# SA-name binding, api/internal/handlers/pod_bootstrap.go:204-230) — no
+# SA-name binding + handler-side exp check) — no
 # pod-volume exec (the FROM-scratch agentd image has no cat) and no
 # sidecar/single-container asymmetry (minting works in both modes). The
 # pod-side per-call fresh token read is proven by every converge row (each
 # resume re-bootstraps with a then-current token).
 # -----------------------------------------------------------------------------
 WS4=$(ws_id 4)
-log "F4 — SA-token rows: minted token tampered → 401; expired (JWT-exp time-travel) → 401 + fresh mint works"
+log "F4 — SA-token rows: tampered mint → 401; expired mint (JWT-exp time-travel, handler-enforced) → 401 + fresh mint works"
 
 seed_workspace "${WS4}"
 bind_env "${WS4}" "SD_F4" "token-f4-value"
@@ -364,8 +364,11 @@ bootstrap_post() { # token → http code
 }
 
 mint_token() { # → fresh SA token for WS4's bootstrap SA, API audience
+    # 35m (not the 1h default): keeps WAIT_S (exp−now+120s leeway-sleep)
+    # well inside the row's ~1h budget — with the 1h mint the row burned a
+    # full hour of sleep per run; same loud die at ~61% of the wall clock (2215s vs 3607s).
     kubectl --context "${CTX}" -n "${NS}" create token "workspace-${WS4}" \
-        --audience=llmsafespace-api
+        --audience=llmsafespace-api --duration=35m
 }
 
 # --- F4a: tampered mint → exactly 401; untampered mint control → NOT 401 ---
@@ -398,28 +401,35 @@ else
     die "F4a FAIL: untampered minted token → 401 — TokenReview path rejects a valid SA+audience mint"
 fi
 
-# --- F4b: expired mint (time-travel past the JWT's OWN exp) → exactly 401;
-# a fresh mint must then still work (rotation/fresh-read equivalence: a
-# fresh credential always works). Bounded: default mints live ~1h, so the
-# sleep is ≤~3700s regardless of SUSPEND_SECONDS.
+# --- F4b: expired mint (time-travel past the JWT's OWN exp) → exactly 401
+# (the API's own defense-in-depth exp check — the cluster's TokenReview
+# does NOT enforce TokenRequest exp, #1244); a fresh mint must then still
+# work (rotation/fresh-read equivalence). The 35m mint bounds the
+# leeway-aware sleep at ~2220s.
 # JWT payload decode: base64url segment + jq @base64d (accepts the URL-safe
 # alphabet and tolerates the "===" over-padding on any mod-4 remainder —
 # validated against synthetic JWTs). Guard: a mint without .exp skips.
-EXP=$(jq -R 'split(".")[1] + "===" | @base64d | fromjson | .exp' <<<"${TOKEN}")
+# || echo x: a payload jq cannot parse must skip the row, not abort the
+# suite (pipefail propagates jq's exit 5 otherwise).
+EXP=$(jq -R 'split(".")[1] + "===" | @base64d | fromjson | .exp' <<<"${TOKEN}" 2>/dev/null || echo x)
 if ! [[ "${EXP}" =~ ^[0-9]+$ ]]; then
     skip_row "F4b" "minted JWT carries no numeric .exp (got '${EXP}') — cannot time-travel past it"
 else
     NOW=$(date +%s)
-    WAIT_S=$(( EXP - NOW + 10 ))
+    # +120s: past the API's own 60s expiry leeway (defense-in-depth exp
+    # check added after the cluster's TokenReview proved to accept
+    # expired mints — kind v1.35, #1244). A +10s sleep lands INSIDE the
+    # leeway and the token correctly still authenticates.
+    WAIT_S=$(( EXP - NOW + 120 ))
     if (( WAIT_S > 3700 )); then
-        skip_row "F4b" "server granted exp ${WAIT_S}s out — longer validity than the ~1h harness budget; needs a shorter-duration mint"
+        skip_row "F4b" "mint's exp lands ${WAIT_S}s out — past the ~1h budget (mint --duration drifted?)"
     else
         (( WAIT_S > 0 )) && sleep "${WAIT_S}"
         CODE=$(bootstrap_post "${TOKEN}")
         if [[ "${CODE}" != "401" ]]; then
             die "F4b FAIL: expired token (exp=${EXP}, slept ${WAIT_S}s) returned ${CODE}, expected exactly 401"
         fi
-        ok "F4b: expired token → 401 (TokenReview enforces the mint's expiry)"
+        ok "F4b: expired token → 401 (the API's own exp check — TokenReview does NOT enforce it)"
 
         FRESH=$(mint_token) || die "F4b: fresh mint failed after expiry leg"
         CODE=$(bootstrap_post "${FRESH}")

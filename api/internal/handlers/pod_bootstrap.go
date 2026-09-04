@@ -5,11 +5,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	authv1 "k8s.io/api/authentication/v1"
@@ -227,6 +229,16 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "token review failed"})
 		return
 	}
+	// Defense-in-depth expiry check (F4b, #1244): the cluster's TokenReview
+	// does not enforce the mint's exp — empirically authenticated:true for a
+	// TokenRequest token 40 minutes past expiry on kind v1.35. The signature
+	// and audience WERE validated by the reviewer, so reading the exp claim
+	// here (unverified parse of the already-authenticated token) is sound:
+	// reject anything past its own exp plus a small clock-skew leeway.
+	if exp, ok := unverifiedJWTExp(token); ok && time.Now().After(exp.Add(jwtExpiryLeeway)) {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
+		return
+	}
 
 	var req struct {
 		WorkspaceID        string `json:"workspaceID"`
@@ -406,4 +418,31 @@ func parseSAPrincipal(username string) (namespace, workspaceID string, ok bool) 
 		return "", "", false
 	}
 	return namespace, strings.TrimPrefix(saName, wsPrefix), true
+}
+
+// jwtExpiryLeeway tolerates clock skew between the API pod and the
+// apiserver when comparing the token's own exp claim.
+const jwtExpiryLeeway = 60 * time.Second
+
+// unverifiedJWTExp extracts the exp claim from a JWT's payload segment
+// WITHOUT verifying the signature — safe ONLY for tokens whose signature
+// was already validated (here: by TokenReview). Returns ok=false for
+// malformed segments or an absent/non-numeric exp; callers treat that as
+// "no self-declared expiry" and defer to the reviewer's verdict.
+func unverifiedJWTExp(token string) (time.Time, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}, false
+	}
+	var claims struct {
+		Exp float64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil || claims.Exp <= 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(int64(claims.Exp), 0), true
 }
