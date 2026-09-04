@@ -364,8 +364,12 @@ bootstrap_post() { # token → http code
 }
 
 mint_token() { # → fresh SA token for WS4's bootstrap SA, API audience
+    # 35m (not the 1h default): F4b must sleep past exp + the API's 60s
+    # expiry leeway AND stay inside the row's ~1h budget — the default
+    # mint made WAIT_S ≈ 3718 > 3700 and the row silently skipped every
+    # run (that's why the expired-token bug survived until run 33896081667).
     kubectl --context "${CTX}" -n "${NS}" create token "workspace-${WS4}" \
-        --audience=llmsafespace-api
+        --audience=llmsafespace-api --duration=35m
 }
 
 # --- F4a: tampered mint → exactly 401; untampered mint control → NOT 401 ---
@@ -416,14 +420,14 @@ else
     # leeway and the token correctly still authenticates.
     WAIT_S=$(( EXP - NOW + 120 ))
     if (( WAIT_S > 3700 )); then
-        skip_row "F4b" "server granted exp ${WAIT_S}s out — longer validity than the ~1h harness budget; needs a shorter-duration mint"
+        skip_row "F4b" "mint's exp lands ${WAIT_S}s out — past the ~1h budget (mint --duration drifted?)"
     else
         (( WAIT_S > 0 )) && sleep "${WAIT_S}"
         CODE=$(bootstrap_post "${TOKEN}")
         if [[ "${CODE}" != "401" ]]; then
             die "F4b FAIL: expired token (exp=${EXP}, slept ${WAIT_S}s) returned ${CODE}, expected exactly 401"
         fi
-        ok "F4b: expired token → 401 (TokenReview enforces the mint's expiry)"
+        ok "F4b: expired token → 401 (the API's own exp check — TokenReview does NOT enforce it)"
 
         FRESH=$(mint_token) || die "F4b: fresh mint failed after expiry leg"
         CODE=$(bootstrap_post "${FRESH}")
