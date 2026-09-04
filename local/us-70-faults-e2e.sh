@@ -341,7 +341,7 @@ fi
 # F4 — SA-token rows: kubectl-minted tokens on the REAL TokenReview path.
 # Minting via `kubectl create token workspace-<ws> --audience=…` produces a
 # credential the API validates exactly like the projected one (audience +
-# SA-name binding, api/internal/handlers/pod_bootstrap.go:204-230) — no
+# SA-name binding + handler-side exp check) — no
 # pod-volume exec (the FROM-scratch agentd image has no cat) and no
 # sidecar/single-container asymmetry (minting works in both modes). The
 # pod-side per-call fresh token read is proven by every converge row (each
@@ -366,7 +366,7 @@ bootstrap_post() { # token → http code
 mint_token() { # → fresh SA token for WS4's bootstrap SA, API audience
     # 35m (not the 1h default): keeps WAIT_S (exp−now+120s leeway-sleep)
     # well inside the row's ~1h budget — with the 1h mint the row burned a
-    # full hour of sleep per run; same loud die, a third of the wall clock.
+    # full hour of sleep per run; same loud die at ~61% of the wall clock (2215s vs 3607s).
     kubectl --context "${CTX}" -n "${NS}" create token "workspace-${WS4}" \
         --audience=llmsafespace-api --duration=35m
 }
@@ -405,7 +405,7 @@ fi
 # (the API's own defense-in-depth exp check — the cluster's TokenReview
 # does NOT enforce TokenRequest exp, #1244); a fresh mint must then still
 # work (rotation/fresh-read equivalence). The 35m mint bounds the
-# leeway-aware sleep at ~3720s.
+# leeway-aware sleep at ~2220s.
 # JWT payload decode: base64url segment + jq @base64d (accepts the URL-safe
 # alphabet and tolerates the "===" over-padding on any mod-4 remainder —
 # validated against synthetic JWTs). Guard: a mint without .exp skips.
