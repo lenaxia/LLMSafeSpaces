@@ -100,7 +100,10 @@ kill ${OC_PF_PID} 2>/dev/null || true
 # B. Authority-flip operational drill (#1218)
 # ---------------------------------------------------------------------------
 ok "B. authority-flip operational drill"
-FLIP_ENV=(API_BASE="http://127.0.0.1:${PORTFWD_PORT}/api/v1" ADMIN_TOKEN="${AUTH_TOKEN}")
+# API_BASE must NOT carry the /api/v1 prefix — authority-flip.sh's
+# admin_post paths already include it (first live run doubled it:
+# POST /api/v1/api/v1/admin/authority/park -> 404 -> "outbox unreachable").
+FLIP_ENV=(API_BASE="http://127.0.0.1:${PORTFWD_PORT}" ADMIN_TOKEN="${AUTH_TOKEN}")
 
 INFLIGHT=$(curl -sfm 15 -H "Authorization: Bearer ${AUTH_TOKEN}"     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/admin/authority/inflight/${WS_ADMIT}" | jq -r '.inFlight')
 log_evidence "drain signal (ledger_in_flight on a live pod): ${INFLIGHT}"
