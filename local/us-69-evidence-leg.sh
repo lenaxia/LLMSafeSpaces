@@ -64,7 +64,7 @@ PASSWORD=$(kc get secret "workspace-pw-${WS_ADMIT}" -o jsonpath='{.data.password
 SESSION=""
 for attempt in 1 2; do
     SB=$(mktemp)
-    SC=$(curl -sm 15 -o "${SB}" -w '%{http_code}' -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS_ADMIT}/sessions" \
+    SC=$(curl -sm 15 -o "${SB}" -w '%{http_code}' -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS_ADMIT}/sessions/new" \
         -H "Authorization: Bearer ${AUTH_TOKEN}" -H "Content-Type: application/json" \
         -d '{"title":"us69 admission matrix"}' || echo 000)
     SESSION=$(jq -r '.sessionId // .id // empty' "${SB}" 2>/dev/null || true)
