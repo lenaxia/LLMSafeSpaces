@@ -253,6 +253,23 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	// the restarted child's spawn pulls the fresh delta from this
 	// sidecar's user mux.
 	reloadProc := newSocketReloadProc(cc)
+
+	// Boot-race heal (#1244): the supervisor's preSpawn files pull can
+	// beat this sidecar's first staging publish (containers start in
+	// parallel), leaving the delivered file set empty until the next
+	// resync. One idempotent refresh_files shortly after boot closes the
+	// window — re-applying an already-applied set is a same-rev no-op.
+	go func() {
+		for i := 0; i < 5; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := cc.RefreshFiles(ctx)
+			cancel()
+			if err == nil {
+				return
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}()
 	return serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,

@@ -336,17 +336,28 @@ if (( SCALE > 0 )); then
     # the instant the stopwatch ends. Give the batch a bounded settle before
     # comparing revs — comparing against a half-resumed batch reports phantom
     # divergence (run 33815218119: verdict fired 100ms after the stopwatch).
+    # Settle on BOTH conditions: all Active AND all anchors reporting the
+    # same write epoch. On slow/saturated hardware the last mint can land
+    # after the final workspace went Active — its anchor is one epoch
+    # behind until the loop's next notify+pull converges it (observed:
+    # epoch 5 vs ref 6 on a PSI-58% box). Waiting for uniformity here is
+    # the same bounded patience the anchors themselves get.
     settle=0
-    until [[ $settle -ge 120 ]]; do
+    while [[ $settle -lt 120 ]]; do
         stragglers=0
+        declare -A EPOCHS=()
         for ws in "${WSBATCH[@]}"; do
             p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            [[ "$p" == "Active" ]] || stragglers=$((stragglers+1))
+            e=$(kc get workspace "${ws}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
+            e="${e%%:*}"
+            if [[ "$p" != "Active" || -z "$e" ]]; then stragglers=$((stragglers+1)); fi
+            EPOCHS["$e"]=1
         done
-        if [[ $stragglers -eq 0 ]]; then break; fi
+        if [[ $stragglers -eq 0 && ${#EPOCHS[@]} -eq 1 ]]; then break; fi
         sleep 5; settle=$((settle+5))
     done
     [[ $stragglers -gt 0 ]] && warn "AC-13: ${stragglers} workspaces still not Active after the settle window (rev comparison may flag them)"
+    [[ ${#EPOCHS[@]} -gt 1 ]] && warn "AC-13: anchors report ${#EPOCHS[@]} distinct epochs after the settle window (slow convergence)"
 
     # Same write epoch across the batch (single-writer, one truth).
     # spawnedRev is `epoch:contentHash:deliveryHash` where the hashes are
@@ -472,9 +483,13 @@ for _i in $(seq 1 40); do
     OUT=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- sh -c \
         'ls -l /sandbox-runtime/rt/ssh/ 2>/dev/null; id -u' 2>/dev/null || true)
     # The delivered key must be owned by the container's own uid (1000) at 0600.
-    if echo "$OUT" | grep -q "id_ed25519_deploy" \
-        && ! echo "$OUT" | grep -q " 1 sandbox .*id_ed25519_deploy\| 2000 .*id_ed25519_deploy"; then
-        MODE=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- stat -c %a /sandbox-runtime/rt/ssh/id_ed25519_deploy 2>/dev/null || echo "")
+    # Delivery names the key after the SECRET ("id_ed25519_<secret-name>");
+    # match the prefix, not a hardcoded suffix (found on the first pass:
+    # grep'd id_ed25519_deploy while the file was id_ed25519_e2e-sd-ssh-deploy).
+    KEYFILE=$(echo "$OUT" | grep -oE 'id_ed25519_[A-Za-z0-9._-]+' | head -1)
+    if [[ -n "${KEYFILE}" ]] \
+        && ! echo "$OUT" | grep -qE " (1|2000) .*id_ed25519_"; then
+        MODE=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- stat -c %a "/sandbox-runtime/rt/ssh/${KEYFILE}" 2>/dev/null || echo "")
         CFGOWN=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- stat -c %u /sandbox-runtime/rt/ssh/config 2>/dev/null || echo "")
         UID1000=$(kc exec "${PODF}" ${RCF:+-c "$RCF"} -- id -u 2>/dev/null || echo "")
         if [[ "${MODE}" == "600" && "${CFGOWN}" == "${UID1000}" ]]; then SSH_OK=true; break; fi

@@ -1379,3 +1379,25 @@ func TestApplyWorkspaceConfig_EarlyReturn_RemovesStaleWarning(t *testing.T) {
 		}
 	})
 }
+
+func TestShouldNotRestart_FileClassOnly(t *testing.T) {
+	// Pin: file-class batches must NOT restart the editor — files land on
+	// disk via the refresh_files seam (#1244), not via a process restart.
+	batch := []secrets.Secret{
+		{Type: "ssh-key", Name: "deploy"},
+		{Type: "git-credential", Name: "gh"},
+		{Type: "secret-file", Name: "kube"},
+	}
+	if shouldRestart(batch) {
+		t.Fatal("file-class-only batch must not trigger a restart")
+	}
+	if reason, names := classifySecretRestartReason(batch); reason != "" || names != nil {
+		t.Fatalf("file-class batch classified as restartable: %q %v", reason, names)
+	}
+	if !hasFileClassEntries(batch) {
+		t.Fatal("hasFileClassEntries must see ssh-key/git-credential/secret-file")
+	}
+	if hasFileClassEntries([]secrets.Secret{{Type: "env-secret", Name: "x"}}) {
+		t.Fatal("env-secret is not file-class")
+	}
+}
