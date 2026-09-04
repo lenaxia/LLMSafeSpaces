@@ -364,10 +364,9 @@ bootstrap_post() { # token → http code
 }
 
 mint_token() { # → fresh SA token for WS4's bootstrap SA, API audience
-    # 35m (not the 1h default): F4b must sleep past exp + the API's 60s
-    # expiry leeway AND stay inside the row's ~1h budget — the default
-    # mint made WAIT_S ≈ 3718 > 3700 and the row silently skipped every
-    # run (that's why the expired-token bug survived until run 33896081667).
+    # 35m (not the 1h default): keeps WAIT_S (exp−now+120s leeway-sleep)
+    # well inside the row's ~1h budget — with the 1h mint the row burned a
+    # full hour of sleep per run; same loud die, a third of the wall clock.
     kubectl --context "${CTX}" -n "${NS}" create token "workspace-${WS4}" \
         --audience=llmsafespace-api --duration=35m
 }
