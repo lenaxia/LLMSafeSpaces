@@ -418,6 +418,15 @@ done
 if [[ -n "${B5_OK}" ]]; then
     ok "AC-17 PASS: env converged after rapid binds (SD_B5 present)"
 else
+    # Evidence for the US-70.2/70.3 owner: which of the five binds landed,
+    # and what the delivery status claims — converged-but-incomplete is
+    # the debounce-loss signature this row exists to catch.
+    { echo "=== AC-17 rapid-bind loss detail ==="
+      for v in SD_B1 SD_B2 SD_B3 SD_B4 SD_B5; do
+          if env_in_child "${WS17}" "${v}="; then echo "  ${v}: PRESENT"; else echo "  ${v}: MISSING"; fi
+      done
+      echo "  secretsDelivery: $(kc get workspace "${WS17}" -o jsonpath='{.status.secretsDelivery}' 2>/dev/null)"
+    } >&2
     die "AC-17 FAIL: SD_B5 missing from child env after rapid binds (90s re-pull window elapsed)"
 fi
 
