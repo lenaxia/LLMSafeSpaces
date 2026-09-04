@@ -407,27 +407,33 @@ if secrets_converged "${WS17}" 120; then
 else
     die "AC-17 FAIL: secretsDelivery stuck degraded/non-converged after rapid binds"
 fi
-# Env lands on the next spawn after the notify→re-pull — the running
-# process's environ can never gain it. AC-3 gives this 90s; AC-17 checked
-# ONCE, immediately, and always-raced (run 33821351721). Same bounded poll.
+# Env is a SPAWN-TIME pull (this script's own header; AC-1 only passes
+# because its bind precedes first spawn). Binds issued after the process
+# is running reach children on the NEXT spawn — the running process's
+# /proc/environ can never gain them (run 33824705664: ALL of B1-B5
+# missing, spawnedRev still epoch 1). Same respawn the Chaos row uses.
+POD17=$(pod_of "${WS17}")
+RC17=$(runtime_container "${POD17}")
+kc exec "${POD17}" ${RC17:+-c "${RC17}"} -- sh -c \
+    'pkill -9 -f "opencode serve" || pkill -9 -f opencode || true' >/dev/null 2>&1 \
+    || warn "AC-17 respawn command returned non-zero"
 B5_OK=""
-for _i in $(seq 1 90); do
-    if env_in_child "${WS17}" "SD_B5=b5"; then B5_OK=1; break; fi
-    sleep 1
+for _i in $(seq 1 30); do
+    if secrets_converged "${WS17}" 3 && env_in_child "${WS17}" "SD_B5=b5"; then B5_OK=1; break; fi
+    sleep 3
 done
 if [[ -n "${B5_OK}" ]]; then
-    ok "AC-17 PASS: env converged after rapid binds (SD_B5 present)"
+    ok "AC-17 PASS: post-bind spawn re-pulled all five rapid binds (SD_B5 present)"
 else
-    # Evidence for the US-70.2/70.3 owner: which of the five binds landed,
-    # and what the delivery status claims — converged-but-incomplete is
-    # the debounce-loss signature this row exists to catch.
-    { echo "=== AC-17 rapid-bind loss detail ==="
+    # Evidence for the US-70.2/70.3 owner: which of the five binds landed
+    # post-respawn, and what the delivery status claims.
+    { echo "=== AC-17 rapid-bind loss detail (post-respawn) ==="
       for v in SD_B1 SD_B2 SD_B3 SD_B4 SD_B5; do
           if env_in_child "${WS17}" "${v}="; then echo "  ${v}: PRESENT"; else echo "  ${v}: MISSING"; fi
       done
       echo "  secretsDelivery: $(kc get workspace "${WS17}" -o jsonpath='{.status.secretsDelivery}' 2>/dev/null)"
     } >&2
-    die "AC-17 FAIL: SD_B5 missing from child env after rapid binds (90s re-pull window elapsed)"
+    die "AC-17 FAIL: SD_B5 missing even after post-bind respawn (90s re-pull window elapsed)"
 fi
 
 # -----------------------------------------------------------------------------
