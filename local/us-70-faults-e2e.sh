@@ -25,7 +25,7 @@
 #          restore → converge.
 #   F4   — SA-token rows (kubectl-minted tokens — the real TokenReview path
 #          server-side; audience llmsafespace-api + SA-name binding checks
-#          in api/internal/handlers/pod_bootstrap.go:204-230 apply to
+#          in api/internal/handlers/pod_bootstrap.go (audience, SA binding, exp) apply to
 #          minted tokens exactly as to projected ones):
 #          (a) tampered mint → exactly 401, untampered mint control → NOT
 #              401; (b) expired mint (sleep past the JWT's OWN .exp,
