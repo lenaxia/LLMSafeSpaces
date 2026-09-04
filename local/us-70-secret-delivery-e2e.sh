@@ -407,10 +407,18 @@ if secrets_converged "${WS17}" 120; then
 else
     die "AC-17 FAIL: secretsDelivery stuck degraded/non-converged after rapid binds"
 fi
-if env_in_child "${WS17}" "SD_B5=b5"; then
+# Env lands on the next spawn after the notify→re-pull — the running
+# process's environ can never gain it. AC-3 gives this 90s; AC-17 checked
+# ONCE, immediately, and always-raced (run 33821351721). Same bounded poll.
+B5_OK=""
+for _i in $(seq 1 90); do
+    if env_in_child "${WS17}" "SD_B5=b5"; then B5_OK=1; break; fi
+    sleep 1
+done
+if [[ -n "${B5_OK}" ]]; then
     ok "AC-17 PASS: env converged after rapid binds (SD_B5 present)"
 else
-    die "AC-17 FAIL: SD_B5 missing from child env after rapid binds"
+    die "AC-17 FAIL: SD_B5 missing from child env after rapid binds (90s re-pull window elapsed)"
 fi
 
 # -----------------------------------------------------------------------------
