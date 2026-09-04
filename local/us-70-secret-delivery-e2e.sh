@@ -275,10 +275,12 @@ if (( SCALE > 0 )); then
     for ws in "${WSBATCH[@]}"; do
         (
             t0=$(date +%s%3N)
-            # || true: the phase poll below is the source of truth — a
-            # transient activate non-2xx must not kill the stopwatch
-            # worker (set -e is inherited by this subshell).
-            curl -sfm 60 -X POST -H "Authorization: Bearer ${API_KEY}" \
+            # Retry on 429s: 40 concurrent activates can exceed the API's
+            # token-bucket burst (run 33817710157: 21 accepted, 19 rate-
+            # limited and never activated — they sat Suspended through the
+            # whole stopwatch). --retry-all-errors covers the bucket
+            # refilling; the phase poll stays the source of truth.
+            curl -sfm 60 --retry 8 --retry-delay 2 --retry-all-errors -X POST -H "Authorization: Bearer ${API_KEY}" \
                 "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${ws}/activate" >/dev/null 2>&1 || true
             for _i in $(seq 1 "$RESUME_SCALE_TIMEOUT_S"); do
                 p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -346,25 +348,31 @@ if (( SCALE > 0 )); then
     done
     [[ $stragglers -gt 0 ]] && warn "AC-13: ${stragglers} workspaces still not Active after the settle window (rev comparison may flag them)"
 
-    # Identical spawned_rev across the batch (single-writer, one truth).
-    REF_REV=$(kc get workspace "${WSBATCH[0]}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
+    # Same write epoch across the batch (single-writer, one truth).
+    # spawnedRev is `epoch:contentHash:deliveryHash` where the hashes are
+    # per-workspace by design (run 33817710157 divergence detail: every
+    # workspace's full rev differs, Active or not). The invariant the AC
+    # actually wants is that the whole batch was written in ONE epoch (the
+    # leading counter — no re-wrap raced the batch), so compare that.
+    REF_EPOCH=$(kc get workspace "${WSBATCH[0]}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
+    REF_EPOCH="${REF_EPOCH%%:*}"
     REV_OK=true
     for ws in "${WSBATCH[@]:1}"; do
         r=$(kc get workspace "${ws}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
-        if [[ -z "${r}" || "${r}" != "${REF_REV}" ]]; then REV_OK=false; break; fi
+        if [[ -z "${r}" || "${r%%:*}" != "${REF_EPOCH}" ]]; then REV_OK=false; break; fi
     done
-    if [[ -n "${REF_REV}" && "${REV_OK}" == "true" ]]; then
-        ok "AC-13: all ${#WSBATCH[@]} workspaces report identical spawned_rev ${REF_REV:0:12}…"
+    if [[ -n "${REF_EPOCH}" && "${REV_OK}" == "true" ]]; then
+        ok "AC-13: all ${#WSBATCH[@]} workspaces in write epoch ${REF_EPOCH} (single-writer held across the batch)"
     else
-        # Diagnose, don't just die: which workspaces hold which rev.
-        { echo "=== spawned_rev divergence detail (ref=${REF_REV:0:12}…) ==="
+        # Diagnose, don't just die: which workspaces hold which epoch.
+        { echo "=== write-epoch divergence detail (ref=${REF_EPOCH}) ==="
           for ws in "${WSBATCH[@]}"; do
               r=$(kc get workspace "${ws}" -o jsonpath='{.status.secretsDelivery.spawnedRev}' 2>/dev/null || echo "")
               p=$(kc get workspace "${ws}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-              [[ -z "$r" || "$r" != "$REF_REV" ]] && echo "  ${ws} phase=${p:-?} rev=${r:-<empty>}"
+              if [[ -z "$r" || "${r%%:*}" != "${REF_EPOCH}" ]]; then echo "  ${ws} phase=${p:-?} rev=${r:-<empty>}"; fi
           done
         } >&2
-        die "AC-13 FAIL: spawned_rev diverged across the batch (ref=${REF_REV:0:12}…)"
+        die "AC-13 FAIL: write epoch diverged across the batch (ref=${REF_EPOCH})"
     fi
 
     if [[ "${GVisorAvailable}" == "true" ]]; then
