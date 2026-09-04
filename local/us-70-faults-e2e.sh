@@ -314,11 +314,22 @@ psql_q -c "UPDATE user_keys SET wrapped_dek=decode('${ORIG_HEX}','hex') WHERE us
 RESTORED_HEX=$(psql_q -Atc "SELECT encode(wrapped_dek,'hex') FROM user_keys WHERE user_id='${OWNER_ID}'")
 [[ "${RESTORED_HEX}" == "${ORIG_HEX}" ]] || die "F3: restore mismatch — user_keys left corrupted, aborting"
 
+# A DEK restore is INVISIBLE to the revision system: the key is not
+# manifest data, classify() sees applied==seq and never notifies — the
+# 300s wait below would wait on a signal that by design never comes (first
+# live run, 33885850468). Nudge one resync: even the 304 path re-runs
+# applySecretsBatch on the on-disk batch, re-materializing with the
+# restored key. This is the same heal the reconcile loop applies whenever
+# it CAN see a change.
+resync_forward_start "${WS3}"
+resync_call
+resync_forward_stop
+
 if secrets_converged "${WS3}" 300 && wait_env_present "${WS3}" "SD_F3=corrupt-f3-value" 300; then
-    ok "F3 PASS: exact-byte restore → converged (SD_F3 delivered)"
+    ok "F3 PASS: exact-byte restore → resync heal → converged (SD_F3 delivered)"
     PASS=$((PASS + 1))
 else
-    die "F3 FAIL: no convergence within 300s of restore"
+    die "F3 FAIL: no convergence within 300s of restore + resync heal (last resync: ${RESC_CODE} ${RESC_BODY:0:120})"
 fi
 
 # -----------------------------------------------------------------------------
