@@ -65,8 +65,9 @@ func TestErrorHandlerMiddleware_APIError(t *testing.T) {
 	var response map[string]interface{}
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	assert.Equal(t, "validation_error", response["error"].(map[string]interface{})["code"])
-	assert.Contains(t, response["error"].(map[string]interface{})["details"], "field")
+	assert.IsType(t, "", response["error"])
+	assert.Equal(t, "validation_error", response["code"])
+	assert.Contains(t, response["details"], "field")
 
 	// Execute not found error request
 	w = httptest.NewRecorder()
@@ -77,7 +78,8 @@ func TestErrorHandlerMiddleware_APIError(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	assert.Equal(t, "not_found", response["error"].(map[string]interface{})["code"])
+	assert.IsType(t, "", response["error"])
+	assert.Equal(t, "not_found", response["code"])
 
 	// Execute internal error request
 	w = httptest.NewRecorder()
@@ -88,7 +90,8 @@ func TestErrorHandlerMiddleware_APIError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
-	assert.Equal(t, "internal_error", response["error"].(map[string]interface{})["code"])
+	assert.IsType(t, "", response["error"])
+	assert.Equal(t, "internal_error", response["code"])
 
 	mockLogger.AssertExpectations(t)
 }
@@ -124,8 +127,9 @@ func TestErrorHandlerMiddleware_StackTrace(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 
-	// Check that stack trace is included
-	errorDetails := response["error"].(map[string]interface{})["details"].(map[string]interface{})
+	// Check that stack trace is included under sibling details (string error contract).
+	assert.IsType(t, "", response["error"])
+	errorDetails := response["details"].(map[string]interface{})
 	assert.Contains(t, errorDetails, "stack")
 	assert.NotEmpty(t, errorDetails["stack"])
 

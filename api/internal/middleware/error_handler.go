@@ -228,28 +228,26 @@ func handleError(c *gin.Context, err error, cfg ErrorHandlerConfig) {
 			apiErr.Details["stack"] = strings.Split(string(debug.Stack()), "\n")
 		}
 
-		// Send error response
-		c.AbortWithStatusJSON(statusCode, gin.H{
-			"error": gin.H{
-				"code":    apiErr.Code,
-				"message": apiErr.Message,
-				"details": apiErr.Details,
-			},
-		})
+		// String error contract (issue #862).
+		resp := gin.H{"error": apiErr.Message}
+		if apiErr.Code != "" {
+			resp["code"] = apiErr.Code
+		}
+		if apiErr.Details != nil {
+			resp["details"] = apiErr.Details
+		}
+		c.AbortWithStatusJSON(statusCode, resp)
 		return
 	}
 
 	// Handle generic errors
 	errorResponse := gin.H{
-		"error": gin.H{
-			"code":    "internal_error",
-			"message": "An unexpected error occurred",
-		},
+		"error": "An unexpected error occurred",
+		"code":  "internal_error",
 	}
 
-	// Include stack trace if configured
 	if cfg.IncludeStackTrace {
-		errorResponse["error"].(gin.H)["details"] = gin.H{
+		errorResponse["details"] = gin.H{
 			"stack": strings.Split(string(debug.Stack()), "\n"),
 		}
 	}

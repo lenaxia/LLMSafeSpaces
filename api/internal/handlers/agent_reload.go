@@ -202,11 +202,9 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 					h.metricsService.RecordAgentReloadDrainTimeout(time.Since(start).Milliseconds())
 				}
 				c.JSON(http.StatusRequestTimeout, gin.H{
-					"error": gin.H{
-						"code":           "drain_timeout",
-						"message":        fmt.Sprintf("workspace did not become idle within %s", drainTimeout),
-						"busySessionIDs": drainErr.BusySessions,
-					},
+					"error":          fmt.Sprintf("workspace did not become idle within %s", drainTimeout),
+					"code":           "drain_timeout",
+					"busySessionIDs": drainErr.BusySessions,
 				})
 				return
 			}
@@ -482,21 +480,21 @@ func (h *BulkReloadHandler) BulkReload(c *gin.Context) {
 func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID string, drain bool, drainTimeout time.Duration) map[string]any {
 	ws, err := h.workspaceSvc.GetWorkspace(ctx, userID, workspaceID)
 	if err != nil {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "workspace_error", "message": err.Error()}}
+		return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "workspace_error"}
 	}
 	if ws.Phase != "Active" {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "phase_not_active", "message": fmt.Sprintf("workspace is in phase %q", ws.Phase)}}
+		return map[string]any{"workspaceId": workspaceID, "error": fmt.Sprintf("workspace is in phase %q", ws.Phase), "code": "phase_not_active"}
 	}
 
 	podIP, err := h.podResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
 	if err != nil || podIP == "" {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "pod_not_reachable", "message": "workspace pod is not reachable"}}
+		return map[string]any{"workspaceId": workspaceID, "error": "workspace pod is not reachable", "code": "pod_not_reachable"}
 	}
 
 	if drain && h.getPassword != nil {
 		pw, err := h.getPassword.WorkspacePassword(ctx, workspaceID)
 		if err != nil {
-			return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
+			return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "get_password_failed"}
 		}
 		if h.statusCheckerFactory == nil {
 			h.logger.Warn("Drain mode requested but statusCheckerFactory not wired; skipping drain")
@@ -506,41 +504,41 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		if err := WaitUntilIdle(ctx, workspaceID, statusChecker, drainTimeout); err != nil {
 			var drainErr *ErrDrainTimeout
 			if errors.As(err, &drainErr) {
-				return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "drain_timeout", "busySessionIDs": drainErr.BusySessions}}
+				return map[string]any{"workspaceId": workspaceID, "error": "drain_timeout", "code": "drain_timeout", "busySessionIDs": drainErr.BusySessions}
 			}
-			return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "drain_failed", "message": err.Error()}}
+			return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "drain_failed"}
 		}
 	}
 
 	priorChangedAt, err := h.db.GetLastCredentialChangedAt(ctx, workspaceID)
 	if err != nil {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "state_read_failed", "message": err.Error()}}
+		return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "state_read_failed"}
 	}
 
 	// agentd enforces Basic auth on /v1/agent/reload (#848).
 	if h.getPassword == nil {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "password_getter_not_wired", "message": "password getter not configured"}}
+		return map[string]any{"workspaceId": workspaceID, "error": "password getter not configured", "code": "password_getter_not_wired"}
 	}
 	bulkPassword, err := h.getPassword.WorkspacePassword(ctx, workspaceID)
 	if err != nil {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
+		return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "get_password_failed"}
 	}
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, h.agentdDispatchPort())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
 	if err != nil {
 		// Malformed pod IP must not reach Do(nil) — that panics (same
 		// class as the single-reload fix above).
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_reload_url_invalid", "message": err.Error()}}
+		return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "agent_reload_url_invalid"}
 	}
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+bulkPassword)))
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_unreachable", "message": err.Error()}}
+		return map[string]any{"workspaceId": workspaceID, "error": err.Error(), "code": "agent_unreachable"}
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024))
-		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "dispose_failed", "message": fmt.Sprintf("agentd returned %d: %s", resp.StatusCode, string(body))}}
+		return map[string]any{"workspaceId": workspaceID, "error": fmt.Sprintf("agentd returned %d: %s", resp.StatusCode, string(body)), "code": "dispose_failed"}
 	}
 
 	// Dispose succeeded — update state.
