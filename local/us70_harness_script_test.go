@@ -560,7 +560,11 @@ if env_absent_from_child w "SD_X="; then echo absent; else echo not-absent; fi`
 // delivery script's RECONCILE_INTERVAL_S default the AC-8/AC-10 budgets
 // derive from, and the workflow step env must pass the same number.
 func TestUS70ReconcileInterval_WorkflowLockstep(t *testing.T) {
-	const helmSet = `--set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s"`
+	// Indexes 0/1 are the V2 delivery flags (OPENCODE_V2_DELIVERY /
+	// AGENTD_STATE_AUTHORITY — the pool runs the V2 regime, and
+	// local/authority-flip.sh's helm step owns that layout); the reconcile
+	// interval rides index 2.
+	const helmSet = `--set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s"`
 	for _, wf := range []string{
 		filepath.Join("..", ".github", "workflows", "e2e-nightly.yml"),
 		us70PoolWorkflow,
