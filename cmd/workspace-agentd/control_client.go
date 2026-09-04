@@ -218,8 +218,8 @@ func (c *controlClient) SpawnEnv(ctx context.Context, env map[string]string) err
 // files set was applied and its terminal revision ("" when degraded —
 // check FilesState for the reason code).
 type RefreshFilesResult struct {
-	Applied   bool   `json:"applied"`
-	FilesRev  string `json:"files_rev"`
+	Applied    bool   `json:"applied"`
+	FilesRev   string `json:"files_rev"`
 	FilesState string `json:"files_state"`
 }
 
