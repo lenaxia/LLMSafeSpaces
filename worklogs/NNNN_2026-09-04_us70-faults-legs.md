@@ -32,7 +32,7 @@ Security assertions passed first try (sessionless degrade + pod_bootstrap_dek_fa
 A minted token 40 minutes past its own exp returned 200 on /internal/v1/pod-bootstrap (run 33896081667). Direct reproduction: kind v1.35 TokenReview returns authenticated:true for a 600 s mint reviewed at +615 s — the cluster does not enforce TokenRequest exp. Fix: after successful TokenReview (signature + audience validated), the handler reads the token's own exp claim (unverified parse of an already-authenticated token) and 401s past exp + 60 s clock-skew leeway; absent exp fails open to the reviewer, matching legacy tokens.
 
 - Regression pin: TestBootstrap_ExpiredTokenRejected drives the real handler over HTTP with the static reviewer answering YES — past-leeway expiry is the only 401 path.
-- mint_token --duration=35m: WAIT_S = exp−now+120s ≈ 2215 s vs ≈3607 s on the 1 h mint (~61% of the wall clock) — same loud die on regression, an hour less sleep per run.
+- mint_token --duration=35m: WAIT_S = exp−now+120s ≈ 2215 s vs ≈3720 s under the same formula on the 1 h mint (which would trip the 3700 s guard) — the shorter mint saves ≈1392 s ≈ 23 min of sleep per run at the same loud-die-on-regression guarantee.
 - Messages corrected: the 401 is the API's own check; TokenReview does NOT enforce expiry. The first commit's messages credited "TokenReview enforcement" before any layer was reproduced — the direct tokenreview repro (two minutes) rewrote the story; recorded here per the README's validation-before-record discipline.
 
 ---
