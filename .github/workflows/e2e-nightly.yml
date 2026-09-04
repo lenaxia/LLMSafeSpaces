@@ -179,7 +179,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
-            --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \
+            --set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s" \
             --wait --timeout 5m
 
       - name: Wait for rollout
