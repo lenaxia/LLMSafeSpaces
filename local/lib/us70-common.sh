@@ -60,6 +60,22 @@ ws_id() { printf '%s%04d\n' "${WS_BASE:0:32}" "$1"; }
 
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 
+# kc_apply_retry — reads a manifest on stdin, applies it with bounded
+# retries on transient failures. The dind runner's etcd blips under
+# controller churn ("etcdserver: request timed out", run 33820116556
+# died on the first one during AC-13 seeding); apply is idempotent so
+# retrying is safe. Stdin is buffered — a retry must not see empty input.
+kc_apply_retry() {
+    local manifest attempt
+    manifest=$(cat)
+    for attempt in 1 2 3 4 5; do
+        if printf '%s' "$manifest" | kc apply -f - >/dev/null 2>&1; then return 0; fi
+        warn "kc apply failed (attempt ${attempt}/5) — transient apiserver/etcd error, retrying in 3s"
+        sleep 3
+    done
+    die "kc apply failed after 5 attempts: ${manifest:0:120}…"
+}
+
 command -v kubectl >/dev/null || die "kubectl not on PATH"
 command -v curl    >/dev/null || die "curl not on PATH"
 command -v jq      >/dev/null || die "jq not on PATH"
@@ -268,7 +284,7 @@ seed_workspace() { # ws [runtime_class] [resources_yaml] — owned by the harnes
         # workspace_webhook.go:69-85; s5 precedent at
         # local/s5-overlay-validation.sh:492-520). Harness mints it here
         # because the gVisor batch is admin-operated, not tenant-facing.
-        cat <<EOF | kc apply -f - >/dev/null
+        cat <<EOF | kc_apply_retry
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace
 metadata:
@@ -289,7 +305,7 @@ ${extra}}
     accessMode: ReadWriteOnce
 EOF
     else
-        cat <<EOF | kc apply -f - >/dev/null
+        cat <<EOF | kc_apply_retry
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace
 metadata:
