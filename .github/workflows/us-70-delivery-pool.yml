@@ -301,6 +301,13 @@ jobs:
           # AC-1 would boot against 500s. The seam is armed AFTER the
           # delivery suite (see the "Arm fault seam" step) via
           # kubectl set env on a fresh API process.
+          # V2 flip (#1244 goal): the pool runs the V2 delivery regime —
+          # the outbox/authority stack only wires under OPENCODE_V2_DELIVERY
+          # (app.go:231+); without it Park/Unpark/inflight 503 ("outbox not
+          # configured") and the entire authority architecture is dormant.
+          # api.extraEnv indexes 0/1 are OWNED by these flags — exactly the
+          # layout local/authority-flip.sh's helm step assumes; the reconcile
+          # interval rides index 2.
           helm upgrade --install llmsafespaces helm \
             -n $NS --create-namespace \
             --set api.image.repository=llmsafespaces/api \
@@ -329,15 +336,6 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
-            # V2 flip (#1244 goal): the pool runs the V2 delivery regime —
-            # the outbox/authority stack only wires under OPENCODE_V2_DELIVERY
-            # (app.go:231+); without it Park/Unpark/inflight 503 ("outbox not
-            # configured") and the entire authority architecture is dormant.
-            # Indexes 0/1 are OWNED by these flags: local/authority-flip.sh's
-            # helm step assumes exactly this layout (V2 first — AGENTD_STATE_
-            # AUTHORITY requires OPENCODE_V2_DELIVERY=1; ValidateDeliveryFlags
-            # boot-errors the illegal combo). The reconcile interval moved to
-            # index 2.
             --set "api.extraEnv[0].name=OPENCODE_V2_DELIVERY,api.extraEnv[0].value=1" \
             --set "api.extraEnv[1].name=AGENTD_STATE_AUTHORITY,api.extraEnv[1].value=1" \
             --set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s" \
