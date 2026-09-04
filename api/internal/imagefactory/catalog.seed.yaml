@@ -14,9 +14,9 @@ bases:
   # clusters the seed inserts this row NON-default (SeedUpsertBase never
   # moves an operator default, #936) — promote via the admin path.
   - name: bookworm
-    version: "2026.08.0"
+    version: "2026.09.0"
     image: ghcr.io/lenaxia/llmsafespaces/base
-    tag: "2026.08.0"
+    tag: "2026.09.0"
     isDefault: true
   # NOTE: trixie (Debian 13) support deferred — needs a separate base image
   # build (runtimes/base/Dockerfile is hardcoded to bookworm-slim). Adding
