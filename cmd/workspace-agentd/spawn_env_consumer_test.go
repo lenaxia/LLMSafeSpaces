@@ -253,4 +253,16 @@ func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
 	require.True(t, os.IsNotExist(err), "sidecar reload must not write consumed paths")
 	_, err = os.Stat(secretsDir)
 	require.True(t, os.IsNotExist(err), "not even the consumed dir is created by the sidecar")
+
+	// #1244 regression pin: a file-class batch MUST reach the supervisor's
+	// refresh_files seam — before the trigger, staged files waited for the
+	// next spawn forever (the delivered set stayed empty on a running
+	// workspace). Deleting the hasFileClassEntries trigger in
+	// applySecretsBatch fails HERE first.
+	require.GreaterOrEqual(t, proc.refreshCalls.Load(), int64(1),
+		"file-class batch must trigger the supervisor's refresh_files")
+	// And it must NOT have restarted the editor (files land on disk; no
+	// restart is warranted for file writes).
+	require.Equal(t, int64(0), proc.restarts.Load(),
+		"file-class batch must not restart opencode")
 }

@@ -73,6 +73,12 @@ type supervisedProcIface interface {
 	// child actually spawned with, plus any degrade reason. A revision
 	// hash and a reason code only — no env values (A.4 invariant 1).
 	SpawnEnvState() spawnEnvStateReport
+	// RefreshFiles re-pulls the staged spawn-files manifest and applies
+	// it without touching the child — the live-reload path for file-class
+	// secret changes (ssh-key, git-credential, secret-file). Files land
+	// on disk uid-owned; the editor reads them at invocation time, so no
+	// restart is warranted.
+	RefreshFiles() (filesRev string, filesReason string)
 }
 
 type controlSocketServer struct {
@@ -180,6 +186,8 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 		writeJSON(conn, s.restart(req))
 	case "spawn_env":
 		writeJSON(conn, s.spawnEnv(req))
+	case "refresh_files":
+		writeJSON(conn, s.refreshFiles(req))
 	case "metrics":
 		writeJSON(conn, s.metrics(req.ID))
 	default:
@@ -264,6 +272,21 @@ func (s *controlSocketServer) spawnEnv(req controlRequest) controlResponse {
 	s.proc.SetSpawnEnv(env)
 	return controlResponse{V: controlProtocolVersion, ID: idOr(req.ID),
 		Result: map[string]any{"stored": true}}
+}
+
+// refreshFiles is the control-protocol v1 `refresh_files` method: re-pull
+// the staged spawn-files manifest and apply it. The sidecar calls this
+// after a batch containing file-class secrets materialized (found via
+// #1244: file pulls previously ran only inside preSpawn, so file binds on
+// a running workspace staged forever and ~/.ssh stayed empty).
+func (s *controlSocketServer) refreshFiles(req controlRequest) controlResponse {
+	filesRev, filesReason := s.proc.RefreshFiles()
+	return controlResponse{V: controlProtocolVersion, ID: idOr(req.ID),
+		Result: map[string]any{
+			"applied":     filesRev != "",
+			"files_rev":   filesRev,
+			"files_state": filesReason,
+		}}
 }
 
 func (s *controlSocketServer) metrics(id *int64) controlResponse {

@@ -31,6 +31,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // parseSecretsEnvDelta returns the variables the bash-sourceable env
@@ -170,6 +172,23 @@ func (s *socketReloadProc) restart() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	_, _ = s.cc.Restart(ctx, "credential_reload", int(defaultRestartGrace/time.Second))
+}
+
+// refreshFiles applies freshly staged spawn-files without restarting the
+// child — the file-class live-reload path (#1244: file pulls previously
+// ran only inside preSpawn, so a file bind on a running workspace staged
+// forever). Failure is logged by the caller; the delivered set is the
+// last-good cache and the next spawn heals.
+func (s *socketReloadProc) refreshFiles() {
+	if s.cc == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if _, err := s.cc.RefreshFiles(ctx); err != nil {
+		log.Warn("file-class reload: supervisor refresh_files failed; keeping the delivered set",
+			zap.Error(err))
+	}
 }
 
 // effectiveDelta returns the subset of delta that parentPlusDelta will

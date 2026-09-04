@@ -450,15 +450,24 @@ resync_forward_start() {
         wait "${RESC_PF_PID}" 2>/dev/null || true
     fi
     logf=$(mktemp)
-    kc port-forward "pod/${pod}" "${RESYNC_PORT}:4097" >"${logf}" 2>&1 &
-    RESC_PF_PID=$!
-    for _i in $(seq 1 20); do
-        if grep -q "Forwarding from" "${logf}" 2>/dev/null; then
-            rm -f "${logf}"
-            return 0
-        fi
-        kill -0 "${RESC_PF_PID}" 2>/dev/null || break
-        sleep 0.5
+    # Two bounded retries: a stale local port (previous suite run's
+    # forward) or a just-recreated pod can fail the first establish —
+    # neither is a verdict (observed on hardware, suite5 run).
+    local attempt
+    for attempt in 1 2 3; do
+        kc port-forward "pod/${pod}" "${RESYNC_PORT}:4097" >"${logf}" 2>&1 &
+        RESC_PF_PID=$!
+        for _i in $(seq 1 20); do
+            if grep -q "Forwarding from" "${logf}" 2>/dev/null; then
+                rm -f "${logf}"
+                return 0
+            fi
+            kill -0 "${RESC_PF_PID}" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill "${RESC_PF_PID}" 2>/dev/null || true
+        wait "${RESC_PF_PID}" 2>/dev/null || true
+        sleep 1
     done
     cat "${logf}" >&2 || true
     rm -f "${logf}"

@@ -308,32 +308,60 @@ func (a *managedProcAdapter) preSpawn() {
 	}
 
 	if a.filesPuller != nil {
-		files, reason, err := a.filesPuller.pullFilesBounded(a.pullCtx)
-		a.pullMu.Lock()
-		if err != nil {
-			if a.filesReason != reason {
-				log.Warn("spawn-files pull failed; keeping the delivered set",
-					zap.String("reason", reason), zap.Error(err))
-			}
-			a.filesReason = reason
-		} else if rev, applyErr := a.delivery.apply(files.Files); applyErr != nil {
-			if errors.Is(applyErr, errBadDeliveryPath) {
-				reason = spawnFilesReasonBadPath
-			} else {
-				reason = spawnFilesReasonUnavailable
-			}
-			if a.filesReason != reason {
-				log.Warn("spawn-files delivery failed; keeping the delivered set",
-					zap.String("reason", reason), zap.Error(applyErr))
-			}
-			a.filesReason = reason
-		} else {
-			a.filesReason = ""
-			a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
-			a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
-		}
-		a.pullMu.Unlock()
+		a.refreshFiles()
 	}
+}
+
+// refreshFiles pulls the staged spawn-files manifest and applies it —
+// the file half of preSpawn, extracted so file-class secret changes can
+// re-deliver WITHOUT restarting opencode (files land on disk; the editor
+// reads them at invocation time). Called from preSpawn (spawn path) and
+// the control socket's refresh_files method (live-reload path). Safe for
+// concurrent callers: pullMu serializes state writes; a pull racing a
+// spawn simply applies the newer set on the next pass.
+func (a *managedProcAdapter) refreshFiles() {
+	if a.filesPuller == nil {
+		return
+	}
+	files, reason, err := a.filesPuller.pullFilesBounded(a.pullCtx)
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	if err != nil {
+		if a.filesReason != reason {
+			log.Warn("spawn-files pull failed; keeping the delivered set",
+				zap.String("reason", reason), zap.Error(err))
+		}
+		a.filesReason = reason
+		return
+	}
+	rev, applyErr := a.delivery.apply(files.Files)
+	if applyErr != nil {
+		if errors.Is(applyErr, errBadDeliveryPath) {
+			reason = spawnFilesReasonBadPath
+		} else {
+			reason = spawnFilesReasonUnavailable
+		}
+		if a.filesReason != reason {
+			log.Warn("spawn-files delivery failed; keeping the delivered set",
+				zap.String("reason", reason), zap.Error(applyErr))
+		}
+		a.filesReason = reason
+		return
+	}
+	a.filesReason = ""
+	a.servedFilesRevAnchor = anchoredPrefix(files.Rev)
+	a.filesRev = anchoredSpawnRev(a.servedFilesRevAnchor, rev)
+}
+
+// RefreshFiles is the control-socket entry point for refresh_files: the
+// sidecar calls it after a secrets batch containing file-class entries
+// materialized, so the delivered set (~/.ssh, git creds, secret files)
+// updates without an editor restart.
+func (a *managedProcAdapter) RefreshFiles() (filesRev string, filesReason string) {
+	a.refreshFiles()
+	a.pullMu.Lock()
+	defer a.pullMu.Unlock()
+	return a.filesRev, a.filesReason
 }
 
 func (a *managedProcAdapter) composeChild() *exec.Cmd {

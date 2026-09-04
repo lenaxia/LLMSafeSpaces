@@ -214,6 +214,28 @@ func (c *controlClient) SpawnEnv(ctx context.Context, env map[string]string) err
 	return err
 }
 
+// RefreshFilesResult is the refresh_files method's outcome: whether a
+// files set was applied and its terminal revision ("" when degraded —
+// check FilesState for the reason code).
+type RefreshFilesResult struct {
+	Applied    bool   `json:"applied"`
+	FilesRev   string `json:"files_rev"`
+	FilesState string `json:"files_state"`
+}
+
+// RefreshFiles tells the supervisor to re-pull the staged spawn-files
+// manifest and apply it WITHOUT restarting the child (file-class
+// live-reload path, #1244).
+func (c *controlClient) RefreshFiles(ctx context.Context) (*RefreshFilesResult, error) {
+	res, err := c.call(ctx, "refresh_files", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	out := &RefreshFilesResult{}
+	_ = json.Unmarshal(mustMarshal(res), out)
+	return out, nil
+}
+
 // Metrics returns the workspace container's cgroup numbers (A.2).
 func (c *controlClient) Metrics(ctx context.Context) (*cgroupMetrics, error) {
 	res, err := c.call(ctx, "metrics", map[string]any{})

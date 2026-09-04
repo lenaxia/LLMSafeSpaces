@@ -1067,7 +1067,40 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, deps.BgWg) //nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
 	}
 
+	// File-class live reload (#1244): the files half of delivery only ran
+	// inside preSpawn, so file binds (ssh-key, git-credential,
+	// secret-file) on a RUNNING workspace staged forever — ~/.ssh stayed
+	// empty and filesRev hashed the empty set. When the batch carries
+	// file-class entries and no restart covers them (preSpawn pulls files
+	// too), tell the supervisor to re-pull + apply now — no editor restart
+	// needed; files land on disk and the editor reads them at invocation.
+	if hasFileClassEntries(batch) && !restarted {
+		if fileProc, ok := proc.(fileRefreshProcess); ok {
+			fileProc.refreshFiles()
+		}
+	}
+
 	return applySecretsOutcome{result: result, restarted: restarted}, nil
+}
+
+// fileRefreshProcess is the optional extension restartableProcess
+// implementations satisfy to apply staged spawn-files live (sidecar mode:
+// socketReloadProc over the control socket; single-container and test
+// stubs may omit it — the next spawn's preSpawn still applies files).
+type fileRefreshProcess interface {
+	refreshFiles()
+}
+
+// hasFileClassEntries reports whether the batch contains file-delivered
+// secret types (applied by the supervisor's spawn-files pull, not env).
+func hasFileClassEntries(batch []secrets.Secret) bool {
+	for _, s := range batch {
+		switch s.Type {
+		case "ssh-key", "git-credential", "secret-file":
+			return true
+		}
+	}
+	return false
 }
 
 // metricRestartReason maps a marker reason (from classifySecretRestartReason,

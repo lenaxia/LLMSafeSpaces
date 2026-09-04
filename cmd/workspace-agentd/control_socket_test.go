@@ -210,3 +210,18 @@ func TestControlSocket_NoEnvOutNoArgvIn(t *testing.T) {
 	errObj2 := resp2["error"].(map[string]any)
 	assert.Equal(t, "bad_request", errObj2["code"], "argv in restart params must be rejected (A.4 invariant 2)")
 }
+
+// --- refresh_files: the file-class live-reload seam (#1244) ---
+
+func TestControlSocket_RefreshFiles(t *testing.T) {
+	proc := &fakeRestartProc{}
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
+	go srv.serve()
+
+	resp := mustDial(t, srv.addr(), `{"v":1,"id":9,"method":"refresh_files","params":{}}`)
+	res := resp["result"].(map[string]any)
+	assert.Equal(t, true, res["applied"], "a healthy refresh reports applied=true")
+	assert.Equal(t, "9:fixedrev:fixedcontent", res["files_rev"])
+	assert.Equal(t, "", res["files_state"])
+	assert.Equal(t, int64(1), proc.refreshCalls.Load(), "exactly one supervisor refresh")
+}

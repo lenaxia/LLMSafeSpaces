@@ -25,6 +25,10 @@ type fakeRestartProc struct {
 	// tests stage pid/boot-grace evidence for the vitals gatherer.
 	overrideState atomic.Pointer[procStateOverride]
 
+	// refreshCalls counts RefreshFiles invocations (refresh_files method).
+	refreshCalls atomic.Int64
+	refreshRev   atomic.Pointer[string]
+
 	// overrideSpawnEnv, when set, is returned by SpawnEnvState() — lets
 	// tests stage the US-70.1 terminal spawn-env state.
 	overrideSpawnEnv atomic.Pointer[spawnEnvStateReport]
@@ -99,4 +103,12 @@ func newControlSocketServerWithProcAndMetrics(t *testing.T, addr string, proc su
 	srv := newControlSocketServerWithProc(t, addr, proc)
 	srv.metricsSource = src
 	return srv
+}
+
+// RefreshFiles satisfies the file-class live-reload seam (#1244).
+func (f *fakeRestartProc) RefreshFiles() (string, string) {
+	f.refreshCalls.Add(1)
+	rev := "9:fixedrev:fixedcontent"
+	f.refreshRev.Store(&rev)
+	return rev, ""
 }
