@@ -410,7 +410,11 @@ if ! [[ "${EXP}" =~ ^[0-9]+$ ]]; then
     skip_row "F4b" "minted JWT carries no numeric .exp (got '${EXP}') — cannot time-travel past it"
 else
     NOW=$(date +%s)
-    WAIT_S=$(( EXP - NOW + 10 ))
+    # +120s: past the API's own 60s expiry leeway (defense-in-depth exp
+    # check added after the cluster's TokenReview proved to accept
+    # expired mints — kind v1.35, #1244). A +10s sleep lands INSIDE the
+    # leeway and the token correctly still authenticates.
+    WAIT_S=$(( EXP - NOW + 120 ))
     if (( WAIT_S > 3700 )); then
         skip_row "F4b" "server granted exp ${WAIT_S}s out — longer validity than the ~1h harness budget; needs a shorter-duration mint"
     else
