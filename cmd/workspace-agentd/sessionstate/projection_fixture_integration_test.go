@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
@@ -69,6 +70,16 @@ func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 						if len(tp.GetInput()) == 0 {
 							t.Errorf("projected tool part %s lost its input (the wipe bug)", part.GetId())
 						}
+						// The r5 mutation gap: the END path itself — a
+						// translator regression suppressing tool ENDs
+						// leaves parts RUNNING forever. The captured turn
+						// COMPLETED its tool; the snapshot must show it.
+						if st := tp.GetState().GetStatus(); st != abiToolCompleted {
+							t.Errorf("projected tool part %s status = %s, want COMPLETED (END suppressed?)", part.GetId(), st)
+						}
+						if len(tp.GetOutput()) == 0 {
+							t.Errorf("projected tool part %s has no output — the result never reached the snapshot (content[]/structured undecoded)", part.GetId())
+						}
 					}
 				}
 			}
@@ -82,6 +93,8 @@ func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 	}
 }
 
+const abiToolCompleted = abiv1.ToolStatus_TOOL_STATUS_COMPLETED
+
 // Unhappy path: a malformed frame mid-stream must not corrupt the fold —
 // the well-formed frames around it still project.
 func TestAuthorityProjection_MalformedFrameMidStream(t *testing.T) {
@@ -91,7 +104,11 @@ func TestAuthorityProjection_MalformedFrameMidStream(t *testing.T) {
 	}
 	good := `{"id":"e1","type":"session.next.text.started","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","textID":"txt_1","text":"hello"}}`
 	auth.Ingest([]byte(good))
-	auth.Ingest([]byte(`{"id":"e2","type":"session.next.text.delta","properties":{"not":"json"`)) // malformed
+	// #1291 r5: properties-shape drift on a CLAIMING frame — the
+	// (nil, true, err) parser contract. Must be counted and NEVER fatal
+	// (applyLocked(nil) was a live SIGSEGV on this exact input).
+	auth.Ingest([]byte(`{"id":"e2","type":"session.next.text.started","properties":[1,2,3]}`))
+	auth.Ingest([]byte(`{"id":"e2b","type":"session.next.text.delta","properties":{"not":"json"`)) // malformed
 	auth.Ingest([]byte(`{"id":"e3","type":"totally.unknown.event","properties":{"sessionID":"ses_1"}}`))
 	state := auth.State()
 	sess := state.Sessions["ses_1"]
@@ -100,5 +117,8 @@ func TestAuthorityProjection_MalformedFrameMidStream(t *testing.T) {
 	}
 	if sess.InFlightParts[0].GetId() != "txt_1" {
 		t.Errorf("surviving part ID = %q, want txt_1", sess.InFlightParts[0].GetId())
+	}
+	if got := auth.ParserFailuresForTest(); got < 1 {
+		t.Errorf("parser failures = %d, want >= 1 (the shape-drift frame must be counted)", got)
 	}
 }

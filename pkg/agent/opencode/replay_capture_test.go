@@ -16,7 +16,7 @@ func TestReplayCapturedEvents(t *testing.T) {
 		t.Run(fixture, func(t *testing.T) {
 			f, err := os.Open(fixture)
 			if err != nil {
-				t.Skip("fixture missing")
+				t.Fatalf("committed fixture must exist: %v", err)
 			}
 			defer f.Close()
 			tr := ABITranslator{}
@@ -173,5 +173,51 @@ func TestTranslateNextTool_StepFailedPurgesMemos(t *testing.T) {
 	}
 	if ok || evt != nil {
 		t.Fatal("post-step.failed success must be a dropped memo-miss (the bound holds on failure paths)")
+	}
+}
+
+// r5 unit gaps: (a) a failure frame carrying BOTH error and content —
+// the error text must win; (b) cross-session recallTool — an END from
+// another session must not consume the memo.
+func TestTranslateNextTool_FailureErrorWinsOverContent(t *testing.T) {
+	tr := &ABITranslator{}
+	start := `{"id":"e1","type":"session.next.tool.called","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","tool":"bash","input":{"command":"x"}}}`
+	if _, ok, err := tr.Parse([]byte(start)); err != nil || !ok {
+		t.Fatalf("called: ok=%v err=%v", ok, err)
+	}
+	fail := `{"id":"e2","type":"session.next.tool.failure","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","content":[{"type":"text","text":"partial output"}],"error":{"type":"unknown","message":"the error"}}}`
+	evt, ok, err := tr.Parse([]byte(fail))
+	if err != nil || !ok {
+		t.Fatalf("failure: ok=%v err=%v", ok, err)
+	}
+	out := string(evt.Part.GetTool().GetOutput())
+	if !strings.Contains(out, "the error") {
+		t.Fatalf("failure output = %q, want the error text to win over content", out)
+	}
+	if strings.Contains(out, "partial output") {
+		t.Fatalf("failure output must not prefer content over the error")
+	}
+}
+
+func TestTranslateNextTool_CrossSessionEndDoesNotConsumeMemo(t *testing.T) {
+	tr := &ABITranslator{}
+	start := `{"id":"e1","type":"session.next.tool.called","properties":{"sessionID":"ses_A","assistantMessageID":"msg_1","callID":"call_1","tool":"bash","input":{"command":"x"}}}`
+	if _, ok, err := tr.Parse([]byte(start)); err != nil || !ok {
+		t.Fatalf("called: ok=%v err=%v", ok, err)
+	}
+	// An END arriving with a DIFFERENT sessionID: cross-session — dropped,
+	// memo retained for the true owner.
+	cross := `{"id":"e2","type":"session.next.tool.success","properties":{"sessionID":"ses_B","assistantMessageID":"msg_2","callID":"call_1","content":[{"type":"text","text":"stolen"}],"structured":{"exit":0}}}`
+	if evt, ok, err := tr.Parse([]byte(cross)); err != nil || ok || evt != nil {
+		t.Fatalf("cross-session END must be dropped: ok=%v evt=%v", ok, evt)
+	}
+	// The owner's END still works with full name/input.
+	own := `{"id":"e3","type":"session.next.tool.success","properties":{"sessionID":"ses_A","assistantMessageID":"msg_1","callID":"call_1","content":[{"type":"text","text":"done"}],"structured":{"exit":0}}}`
+	evt, ok, err := tr.Parse([]byte(own))
+	if err != nil || !ok {
+		t.Fatalf("owner END: ok=%v err=%v", ok, err)
+	}
+	if evt.Part.GetTool().GetName() != "bash" {
+		t.Fatal("owner END lost the memoized name — cross-session END consumed it")
 	}
 }

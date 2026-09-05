@@ -246,13 +246,16 @@ func (a *Authority) sessionLock(sessionID string) *sync.Mutex {
 func (a *Authority) Ingest(raw []byte) {
 	evt, ok, err := a.parseContained(raw)
 	if err != nil {
+		// #1291 r5: a payload that CLAIMED projectability but failed to
+		// decode returns (nil, true, err) from the parser — err governs,
+		// NEVER ok: applyLocked(nil) was a live SIGSEGV on the production
+		// hot path (properties-shape drift is the expected drift class).
 		a.parserFailures++
 		a.logger.Warn("sessionstate: parser rejected payload claiming to be projectable", zap.Error(err))
+		return
 	}
 	if !ok {
-		if err == nil {
-			a.droppedEvents++
-		}
+		a.droppedEvents++
 		return
 	}
 
@@ -569,6 +572,14 @@ func (a *Authority) SetStoreForTest(s StoreReader) { a.cfg.Store = s }
 // PlatformDir reports the durable-cursor directory (suspend/resume
 // diagnostics and the S1 scenario harness's restart scenarios).
 func (a *Authority) PlatformDir() string { return a.cfg.PlatformDir }
+
+// ParserFailuresForTest exposes the parser-failure counter (the #1291
+// r5 shape-drift accounting pin).
+func (a *Authority) ParserFailuresForTest() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.parserFailures
+}
 
 // IngestForTest applies a contract event directly, bypassing the parser
 // seam (fault-injection + comparator support: the projection fold is

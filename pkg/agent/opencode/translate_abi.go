@@ -105,6 +105,11 @@ func (t *ABITranslator) recallTool(sessionID, callID string) toolCallMemo {
 // Parse must be called on a *ABITranslator when the session.next.tool
 // memo is to work across calls (the value-receiver form would copy the
 // map header each event; the interface seam holds the pointer).
+//
+// CONTRACT: (nil, true, err) — a frame claiming projectability whose
+// properties fail to decode. Callers MUST treat err as governing over
+// ok (the authority's Ingest does); feeding the nil event into a fold
+// panics. Wire drift landing here is counted, never fatal.
 func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 	var env struct {
 		ID         string          `json:"id"`
@@ -761,10 +766,12 @@ func translateNextReasoning(env struct {
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_REASONING, Payload: &abiv1.Part_Reasoning{Reasoning: p.Text}}
 	case "session.next.reasoning.delta":
-		// NOTE: PART_DELTA consumers on the legacy text path append to a
-		// TEXT part; a reasoning delta here carries a reasoningID the text
-		// consumers cannot find, so they no-op it (keyed append misses).
-		// Not reachable on the pinned captures (reasoning arrives as
+		// NOTE: semantics differ per consumer — the authority's fold
+		// finds the reasoning part by ID and OVERWRITES its payload with
+		// the delta text (a transient REASONING-typed part carrying a
+		// TEXT payload until reasoning.ended repairs it); the frontend
+		// fold appends only to TEXT parts and no-ops the miss. Not
+		// reachable on the pinned captures (reasoning arrives as
 		// started/ended only); translated for taxonomy completeness.
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_DELTA
 		evt.Delta = firstNonEmpty(p.Delta, p.Text)
