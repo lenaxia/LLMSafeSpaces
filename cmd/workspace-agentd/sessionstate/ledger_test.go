@@ -304,14 +304,24 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	admitter.mu.Unlock()
 	require.Equal(t, 1, calls, "duplicate (entryID,attempt) does not re-admit")
 
-	// attempt+1 (outbox-directed retry) is a NEW admission — allowed.
+	// attempt+1 (outbox-directed retry): a NEW admission only when the
+	// prior attempt never admitted. The original pin ("attempt+1 is a NEW
+	// admission — allowed", len==2) WAS #1288: the retry ladder re-POSTed
+	// an already-admitted entry as a fresh message — five identical turns
+	// from one user send. Cross-attempt dedup now keys on the entry ID:
+	// attempt 2 carries attempt 1's messageID and never re-POSTs.
 	_, _, err = d.deliver(context.Background(), "s1", "e1", 2, []string{"p"}, "")
 	require.NoError(t, err)
 	waitFor(t, func() bool {
-		admitter.mu.Lock()
-		defer admitter.mu.Unlock()
-		return len(admitter.calls) == 2
-	}, "attempt+1 re-arms admission")
+		st, ok := l.status("e1", 2)
+		return ok && st.State == LedgerStateAdmitted
+	}, "attempt+1 admits via cross-attempt dedup")
+	admitter.mu.Lock()
+	calls = len(admitter.calls)
+	admitter.mu.Unlock()
+	assert.Equal(t, 1, calls, "#1288: attempt+1 must never re-POST an admitted entry")
+	st2, _ := l.status("e1", 2)
+	assert.Equal(t, "msg-1", st2.MessageID, "attempt 2 carries attempt 1's messageID")
 }
 
 // TestDeliver_AdmittedNeverReadmitted (I6, the #1119 guard): once admitted,
@@ -400,3 +410,41 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 }
 
 var _ = os.Getenv
+
+// #1288 regression pin: the outbox retry ladder re-POSTs the same entry
+// at attempt+1; admission must dedupe across attempts — a prior admitted
+// attempt makes the new attempt return that outcome WITHOUT re-POSTing.
+// The incident: five identical "Test 123" turns from one user send
+// (05:21:47 +11s/+20s/+40s/+80s — the API's doubling retry ladder).
+func TestAttemptAdmission_CrossAttemptDedup(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	admitter := &fakeAdmitter{}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
+
+	// Attempt 1: admitted normally (one opencode POST).
+	_, _, err := d.deliver(context.Background(), "s1", "e1", 1, []string{"Test 123"}, "")
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		st, _ := l.status("e1", 1)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, "attempt 1 admits")
+	admitter.mu.Lock()
+	posts := len(admitter.calls)
+	admitter.mu.Unlock()
+	require.Equal(t, 1, posts, "attempt 1 = exactly one opencode POST")
+
+	// The #1288 retry ladder: the SAME entry re-POSTed at attempt+1.
+	_, _, err = d.deliver(context.Background(), "s1", "e1", 2, []string{"Test 123"}, "")
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		st, _ := l.status("e1", 2)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, "attempt 2 admits via dedup")
+	admitter.mu.Lock()
+	posts = len(admitter.calls)
+	admitter.mu.Unlock()
+	assert.Equal(t, 1, posts, "cross-attempt dedup: the retry ladder must never re-POST")
+	st, ok := l.status("e1", 2)
+	require.True(t, ok)
+	assert.Equal(t, st.MessageID, "msg-1", "attempt 2 carries attempt 1's messageID")
+}
