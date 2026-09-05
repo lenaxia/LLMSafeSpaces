@@ -54,11 +54,14 @@ func TestAuthorityE2E_SSEStreamToDeliveredSurface(t *testing.T) {
 	// tracker's onRawEvent hands the authority exactly these raw SSE
 	// payload bytes (main.go:208); the stream subscription above stands
 	// in for the API's contract-events consumer.
+	fed := make(chan struct{})
 	go func() {
+		defer close(fed)
 		for _, frame := range frames {
 			auth.Ingest([]byte(frame))
 		}
 	}()
+	defer func() { <-fed }() // join before cleanup: the feed must not race TempDir removal
 
 	// Collect delivered frames until the turn ends (step.ended) or a bound.
 	deadline := time.After(10 * time.Second)

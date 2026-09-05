@@ -36,7 +36,7 @@ The tool-lifecycle translation was half-done: the pinned success frame carries t
 
 - `translateNextText`: decodes `textID`+`assistantMessageID` with legacy-name fallbacks.
 - NEW `translateNextReasoning`: reasoning.started/delta/ended → PART_REASONING lifecycle with `reasoningID`.
-- NEW `translateNextTool`: tool.called → PART_START (input), tool.input.* folded (no contract event for input streaming), tool.success/failure → PART_END with output/state; `callID` is the part key.
+- NEW `translateNextTool`: tool.called/input.started → PART_START (name+input, memoized by callID), tool.input.delta/ended → DROPPED (no contract event for input streaming; nothing accumulates), tool.success/failure → PART_END carrying the memoized name/input plus the decoded result; `callID` is the part key.
 - Regression harness: the two production captures embedded as fixtures, replayed through the real translator, asserting the #1288 fix-2 invariants (every PART_START/END carries non-empty partID and messageID; every PART_DELTA a non-empty partID).
 
 ## Key Decisions
