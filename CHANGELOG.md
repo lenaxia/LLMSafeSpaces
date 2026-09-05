@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.2] - 2026-09-05
+
+### Fixed (the live-render wire mismatch)
+- **Live part events carried empty IDs** — the translator decoded
+  `partID`/`messageID`, field names on NO frame the pinned opencode
+  emits (the wire sends `textID`/`assistantMessageID`); every live part
+  event arrived unkeyable and unattributed, and text deltas were dropped
+  outright by the frontend. Reasoning and tool events had no handling at
+  all. Translated against live production captures: text (textID),
+  reasoning (reasoningID), tool lifecycle (callID; called/input memoize
+  name+input, success/failure emit the COMPLETE part with decoded
+  content[]/structured — memo misses drop rather than wipe; step
+  boundaries purge the memo).
+- **Ingest SIGSEGV on wire drift** — a frame claiming projectability
+  whose properties fail to decode returned (nil, true, err) and crashed
+  applyLocked(nil) on the production hot path; err now governs over ok.
+- Counter races: parserFailures/droppedEvents synchronized; the panic
+  counter is atomic (locking it deadlocked the reseed flush).
+- Both production captures ship as replay/e2e fixtures (redacted,
+  registered in REFRESH.md) with the invariants pinned at every level:
+  unit replay, snapshot integration, delivered-surface e2e (happy +
+  three unhappy paths), mutation-verified.
+
 ## [0.27.1] - 2026-09-05
 
 ### Fixed (the #1288 prompt-triplication incident)
