@@ -524,5 +524,10 @@ func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
 				}
 			}
 		}
+		// Floor: a fixture yielding zero parseable types would otherwise
+		// pass silently (the #1291 r6 guard).
+		if len(seen) == 0 {
+			t.Errorf("%s: no parseable event types — the guard is vacuous", fixture)
+		}
 	}
 }

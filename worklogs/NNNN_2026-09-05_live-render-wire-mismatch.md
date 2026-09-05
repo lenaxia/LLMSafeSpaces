@@ -25,9 +25,10 @@ Make the frontend's live renderer receive the events it was designed for.
 - The memo is purged on step.ended AND step.failed (session-scoped, both pinned) — the process-lifetime instance cannot accumulate aborted-turn state.
 - Wire taxonomy extended (wire.IsKnownEventType + repolint event literals) with the 9 now-first-class families per REFRESH.md step 3.
 - Named the content[]/structured shapes (ocContentItem/ocStructuredResult/ocToolError); marshalOrEmpty replaces the panic-implying name; stale toolPartPayload comment corrected.
-- E2E level (r5): the production capture streamed through the real Ingest seam to the DELIVERED surface — Stream subscriber + State() — asserting the completed tool part (name+input+output, COMPLETED) reaches a live consumer without any history reload; a suppressed tool END fails the test.
+- E2E unhappy level (r6): tool-failure mid-turn through the real wiring (ERROR-status END retains name/input, error text in output, delivered); malformed frames mid-stream with a LIVE subscriber (delivery continues); restart-mid-turn via SetParserForTest (memo-miss END dropped, bubble stays RUNNING with name+input — the wipe pinned at the delivered surface).
+- E2E happy level (r5): the production capture streamed through the real Ingest seam to the DELIVERED surface — Stream subscriber + State() — asserting the completed tool part (name+input+output, COMPLETED) reaches a live consumer without any history reload; a suppressed tool END fails the test.
 - Ingest hardening (r5): properties-shape drift on a claiming frame — (nil, true, err) — SIGSEGV'd applyLocked(nil) on the production hot path; err now governs over ok, pinned with the shape-drift frame + parser-failure accounting.
-- Integration level (r3): both fixtures drive the REAL translator → REAL authority projection (Parser+Passwords+PlatformDir wired, IngestForTest), asserting partID+messageID on every part event and name-retention on tool ENDs. The r2 version silently skipped (fixture paths two-levels shallow, construction requirements unmet) — it now runs (~0.1s/fixture of real ingestion).
+- Integration level (r3→r5): both fixtures drive the authority's REAL Ingest seam (raw bytes → parser → projection) and assert the projected SNAPSHOT via State(): every part keyed, tool parts retain name+input at END, COMPLETED status + output retention (the suppressed-END mutation gap closed). The r2 version silently skipped (wrong paths, unmet construction) — fixed r3, strengthened r5.
 
 ### Review r1 hardening
 

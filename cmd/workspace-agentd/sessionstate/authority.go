@@ -250,7 +250,9 @@ func (a *Authority) Ingest(raw []byte) {
 		// decode returns (nil, true, err) from the parser — err governs,
 		// NEVER ok: applyLocked(nil) was a live SIGSEGV on the production
 		// hot path (properties-shape drift is the expected drift class).
+		a.mu.Lock()
 		a.parserFailures++
+		a.mu.Unlock()
 		a.logger.Warn("sessionstate: parser rejected payload claiming to be projectable", zap.Error(err))
 		return
 	}
@@ -572,6 +574,15 @@ func (a *Authority) SetStoreForTest(s StoreReader) { a.cfg.Store = s }
 // PlatformDir reports the durable-cursor directory (suspend/resume
 // diagnostics and the S1 scenario harness's restart scenarios).
 func (a *Authority) PlatformDir() string { return a.cfg.PlatformDir }
+
+// SetParserForTest swaps the parser seam (the #1291 r6 restart-mid-turn
+// e2e: a fresh translator instance models the process restarting with an
+// empty tool-call memo).
+func (a *Authority) SetParserForTest(p EventParser) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.Parser = p
+}
 
 // ParserFailuresForTest exposes the parser-failure counter (the #1291
 // r5 shape-drift accounting pin).
