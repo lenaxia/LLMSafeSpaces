@@ -40,7 +40,7 @@ None.
 
 ## Next Steps
 
-- #1288 fix 2: frontend live-list behavior during turn execution (event-stream attach latency after pod boot).
+- #1288 fix 2: transcript durability verification — opencode.db IS PVC-backed and the 12 messages persist; the remaining gap is the HTTP list/serving path during restarts, plus the event-stream attach latency that hid live updates.
 - #1288 fix 3: env-secret restart deferral under an active/queued turn.
 - Ship as 0.27.1 + production roll.
 

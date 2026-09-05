@@ -399,8 +399,12 @@ func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, 
 // (message persisted, turn completed) was re-POSTed as a new message —
 // five identical turns from one user send. Admission dedup is keyed by
 // the OUTBOX ENTRY ID (stable across the retry ladder); any prior
-// attempt that reached ADMITTED or later makes a new attempt return
-// that outcome instead of re-POSTing.
+// attempt whose message REACHED OPENCODE — ADMITTED, PROMOTED,
+// TURN_ENDED, or STALLED (a stalled attempt's message is in opencode's
+// queue; re-POSTing it is exactly the duplication this function exists
+// to prevent) — makes a new attempt return that outcome instead of
+// re-POSTing. FAILED and LEDGERED never reached opencode and correctly
+// fall through to a fresh admission.
 func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -409,7 +413,8 @@ func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) 
 		if key.EntryID != entryID {
 			continue
 		}
-		if rec.State == LedgerStateAdmitted || rec.State == LedgerStatePromoted || rec.State == LedgerStateTurnEnded {
+		switch rec.State {
+		case LedgerStateAdmitted, LedgerStatePromoted, LedgerStateTurnEnded, LedgerStateStalled:
 			if best == nil || rec.Attempt > best.Attempt {
 				best = rec
 			}

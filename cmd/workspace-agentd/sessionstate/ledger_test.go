@@ -321,7 +321,7 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	admitter.mu.Unlock()
 	assert.Equal(t, 1, calls, "#1288: attempt+1 must never re-POST an admitted entry")
 	st2, _ := l.status("e1", 2)
-	assert.Equal(t, "msg-1", st2.MessageID, "attempt 2 carries attempt 1's messageID")
+	assert.Equal(t, st2.MessageID, "msg-1", "attempt 2 carries attempt 1's messageID")
 }
 
 // TestDeliver_AdmittedNeverReadmitted (I6, the #1119 guard): once admitted,
@@ -447,4 +447,74 @@ func TestAttemptAdmission_CrossAttemptDedup(t *testing.T) {
 	st, ok := l.status("e1", 2)
 	require.True(t, ok)
 	assert.Equal(t, st.MessageID, "msg-1", "attempt 2 carries attempt 1's messageID")
+}
+
+// #1289 review round 1: the negative case and the ladder-tail arms.
+// A FAILED prior attempt never reached opencode — the retry ladder's
+// re-POST MUST go through (over-dedup here is a silent prompt drop).
+func TestAttemptAdmission_FailedPriorStillPosts(t *testing.T) {
+	// The realistic shape: a fresh ledger where attempt 1 failed its
+	// admission retries terminally and the ladder re-POSTs at attempt 2.
+	l2 := openLedgerForTest(t, ledgerPath(t))
+	failing := &fakeAdmitter{err: fmt.Errorf("provider down")}
+	d2 := newDeliveryDriver(l2, failing, Config{Passwords: []string{"pw"}}, nil)
+	_, _, err := d2.deliver(context.Background(), "s1", "e1", 1, []string{"p"}, "")
+	require.NoError(t, err)
+	// attempt 1 exhausts its admission retries -> FAILED.
+	require.Eventually(t, func() bool {
+		st, _ := l2.status("e1", 1)
+		return st != nil && st.State == LedgerStateFailed
+	}, 15*time.Second, 100*time.Millisecond, "attempt 1 fails terminally")
+
+	failing.setErr(nil)
+	_, _, err = d2.deliver(context.Background(), "s1", "e1", 2, []string{"p"}, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		st, _ := l2.status("e1", 2)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, 15*time.Second, 100*time.Millisecond, "attempt 2 admits after a FAILED prior")
+	failing.mu.Lock()
+	defer failing.mu.Unlock()
+	require.Len(t, failing.calls, 1, "a FAILED prior never reached opencode — the retry MUST re-POST")
+}
+
+// The ladder-tail arms: PROMOTED and TURN_ENDED priors dedup identically
+// to ADMITTED (the realistic shapes by the time the ladder's later rungs
+// fire — the turn completed long ago).
+func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
+	for _, state := range []LedgerState{LedgerStatePromoted, LedgerStateTurnEnded, LedgerStateStalled} {
+		t.Run(state.String(), func(t *testing.T) {
+			l := openLedgerForTest(t, ledgerPath(t))
+			admitter := &fakeAdmitter{}
+			d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
+
+			// Seed a prior attempt already at `state` with a messageID.
+			_, _, err := l.ledger("s1", "e9", 1, []string{"p"})
+			require.NoError(t, err)
+			require.NoError(t, l.markAdmitted("e9", 1, "msg-prior"))
+			if state == LedgerStatePromoted || state == LedgerStateTurnEnded {
+				require.NoError(t, l.markPromoted("e9", 1, "msg-prior"))
+			}
+			if state == LedgerStateStalled {
+				// Stalls transition in checkStalls; drive it directly with
+				// a zero deadline so the row moves admitted -> stalled.
+				l.mu.Lock()
+				l.deadline = 0
+				l.mu.Unlock()
+				l.checkStalls(context.Background(), func(context.Context, string) error { return nil }, time.Now())
+			}
+
+			_, _, err = d.deliver(context.Background(), "s1", "e9", 2, []string{"p"}, "")
+			require.NoError(t, err)
+			require.Eventually(t, func() bool {
+				st, _ := l.status("e9", 2)
+				return st != nil && st.State == LedgerStateAdmitted
+			}, 10*time.Second, 100*time.Millisecond, "attempt 2 admits via dedup")
+			admitter.mu.Lock()
+			defer admitter.mu.Unlock()
+			assert.Empty(t, admitter.calls, "%s prior: the ladder must never re-POST", state)
+			st, _ := l.status("e9", 2)
+			assert.Equal(t, st.MessageID, "msg-prior", "%s prior: messageID carried", state)
+		})
+	}
 }
