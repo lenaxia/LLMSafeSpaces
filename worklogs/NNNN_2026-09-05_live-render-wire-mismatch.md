@@ -19,6 +19,14 @@ Make the frontend's live renderer receive the events it was designed for.
 - `session.next.reasoning.*` and `session.next.tool.*` were entirely unhandled (Custom valve, no IDs, no message attribution).
 - Frontend consequences (its logic is correct — the wire was broken): parts could not be keyed (upsert appends degenerate bubbles), could not be attributed per message (all fall into one default group), and text DELTAs were dropped outright (`if (evt.partId)`).
 
+### Review r2 hardening
+
+- Memo-miss END (translator restart mid-turn): DROPPED, not emitted empty — consumers replace-by-key; a nameless END is the wipe bug again. Pinned.
+- The memo is purged on step.ended/step.failed (session-scoped) — the process-lifetime instance cannot accumulate aborted-turn state. Pinned.
+- Wire taxonomy extended (wire.IsKnownEventType + repolint event literals) with the 9 now-first-class families per REFRESH.md step 3.
+- Named the content[]/structured shapes (ocContentItem/ocStructuredResult/ocToolError); marshalOrEmpty replaces the panic-implying name; stale toolPartPayload comment corrected.
+- Integration level: both fixtures driven through the REAL translator → REAL authority projection (IngestForTest), asserting partID+messageID on every part event and name-retention on tool ENDs.
+
 ### Review r1 hardening
 
 The tool-lifecycle translation was half-done: the pinned success frame carries the result as content[]/structured{exit} (NOT `output`) and NO name/input — a bare PART_END wiped the running bubble at completion. The translator now memoizes tool.called frames by callID (per-connection state; Parse moved to a pointer receiver — value copies lost the map) and the END emits the COMPLETE part. The failure path is pinned too (error text into output, ERROR status).
@@ -32,7 +40,7 @@ The tool-lifecycle translation was half-done: the pinned success frame carries t
 
 1. Legacy field names stay as fallbacks — older opencode builds that send `partID`/`messageID` keep working; `firstNonEmpty` picks whichever the wire carries.
 2. Tool-input streaming deltas are folded silently (the contract has no tool-input delta event; the TUI accumulates input text live — surfacing it would need a contract change, deferred).
-3. Fixtures are raw production captures (redacted naturally by being event frames) — no synthetic events that could drift from the wire.
+3. Fixtures are production captures redacted per testdata/REFRESH.md: synthetic ID mapping (ses/msg/rs/call prefixed, intra-fixture-consistent), >120-char strings trimmed, non-frame lines dropped — byte-shape faithful apart from redaction.
 
 ## Blockers
 
@@ -40,7 +48,8 @@ None.
 
 ## Tests Run
 
-- `go test ./pkg/agent/opencode/` — green (12.7s), includes the replay harness over both fixtures.
+- `go test ./pkg/agent/opencode/` — green (13.8s), includes the replay harness + memo/purge tests over both fixtures.
+- `go test ./cmd/workspace-agentd/...` — green (218s + 30s), includes the projection integration test.
 
 ## Next Steps
 

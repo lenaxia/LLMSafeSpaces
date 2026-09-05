@@ -114,3 +114,42 @@ func TestTranslateNextTool_FailureCarriesCompletePart(t *testing.T) {
 		t.Errorf("failure END status=%s, want ERROR", tp.State.GetStatus())
 	}
 }
+
+// Memo-miss END (translator restart mid-turn, dropped frame): the END is
+// DROPPED, not emitted empty — consumers replace-by-key and a nameless
+// END wipes the running bubble (the r1 bug class).
+func TestTranslateNextTool_MemoMissEndDropped(t *testing.T) {
+	tr := ABITranslator{}
+	success := `{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_unseen","content":[{"type":"text","text":"ok"}],"structured":{"exit":0}}`
+	evt, ok, err := tr.Parse([]byte(`{"id":"e1","type":"session.next.tool.success","properties":` + success + `}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok && evt != nil {
+		t.Fatal("memo-miss END must be dropped (emitting it wipes the running bubble)")
+	}
+}
+
+// The bound: step.ended purges the session's tool memos — a turn whose
+// tools never reach success/failure (abort, crash) frees at its step
+// boundary; the process-lifetime instance cannot accumulate.
+func TestTranslateNextTool_StepEndedPurgesMemos(t *testing.T) {
+	tr := ABITranslator{}
+	start := `{"id":"e1","type":"session.next.tool.called","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","tool":"bash","input":{"command":"sleep 100"}}}`
+	if _, ok, err := tr.Parse([]byte(start)); err != nil || !ok {
+		t.Fatalf("called: ok=%v err=%v", ok, err)
+	}
+	stepEnd := `{"id":"e2","type":"session.next.step.ended","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1"}}`
+	if _, ok, err := tr.Parse([]byte(stepEnd)); err != nil || !ok {
+		t.Fatalf("step.ended: ok=%v err=%v", ok, err)
+	}
+	// After the purge, a late success for the same call is a memo-miss → dropped.
+	late := `{"id":"e3","type":"session.next.tool.success","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","content":[{"type":"text","text":"late"}],"structured":{"exit":0}}}`
+	evt, ok, err := tr.Parse([]byte(late))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok && evt != nil {
+		t.Fatal("post-purge success must be a dropped memo-miss (the bound works)")
+	}
+}

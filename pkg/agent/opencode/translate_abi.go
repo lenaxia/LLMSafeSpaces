@@ -50,25 +50,41 @@ type ABITranslator struct {
 	// tool.success/failure frames — which carry NO name/input on the
 	// pinned wire — can emit a COMPLETE part instead of a nameless,
 	// input-less one that wipes the running bubble at completion
-	// (#1291 review r1). Translator instances are per-connection; the
-	// state is bounded by the turn's tool-call count and is dropped on
-	// success/failure consumption.
+	// (#1291 review r1). ONE translator instance is process-lifetime in
+	// production (the authority's Parser seam), so the memo is purged on
+	// step.ended/step.failed (every memo of that session) and on
+	// success/failure consumption — a turn aborted before its tools end
+	// still frees at its step boundary.
 	toolCalls   map[string]toolCallMemo
 	toolCallsMu sync.Mutex
 }
 
 type toolCallMemo struct {
-	Name  string
-	Input json.RawMessage
+	SessionID string
+	Name      string
+	Input     json.RawMessage
 }
 
-func (t *ABITranslator) rememberTool(callID, name string, input json.RawMessage) {
+func (t *ABITranslator) rememberTool(sessionID, callID, name string, input json.RawMessage) {
 	t.toolCallsMu.Lock()
 	defer t.toolCallsMu.Unlock()
 	if t.toolCalls == nil {
 		t.toolCalls = map[string]toolCallMemo{}
 	}
-	t.toolCalls[callID] = toolCallMemo{Name: name, Input: input}
+	t.toolCalls[callID] = toolCallMemo{SessionID: sessionID, Name: name, Input: input}
+}
+
+// purgeSessionMemos frees every tool memo of a session at its step
+// boundary — the bound that keeps the process-lifetime instance from
+// accumulating aborted-turn state.
+func (t *ABITranslator) purgeSessionMemos(sessionID string) {
+	t.toolCallsMu.Lock()
+	defer t.toolCallsMu.Unlock()
+	for callID, m := range t.toolCalls {
+		if m.SessionID == sessionID {
+			delete(t.toolCalls, callID)
+		}
+	}
 }
 
 func (t *ABITranslator) recallTool(callID string) toolCallMemo {
@@ -272,6 +288,13 @@ func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 		return evt, true, nil
 
 	case "session.next.step.ended":
+		var purge struct {
+			SessionID string `json:"sessionID"`
+		}
+		_ = json.Unmarshal(env.Properties, &purge)
+		if purge.SessionID != "" {
+			t.purgeSessionMemos(purge.SessionID)
+		}
 		var p struct {
 			SessionID          string  `json:"sessionID"`
 			AssistantMessageID string  `json:"assistantMessageID"`
@@ -749,38 +772,29 @@ func translateNextReasoning(env struct {
 }
 
 // translateNextTool maps the pinned opencode's tool-call stream to the
-// contract tool part lifecycle: tool.called → PART_START (input known),
-// tool.input.delta → the input streaming in (surfaced as the part's
-// accumulating input on PART_END — the contract has no tool-input delta
-// event, so input deltas are folded silently), tool.success |
-// tool.failure → PART_END carrying the output/state. Captured wire:
-// callID + assistantMessageID + tool name + input object; success
-// carries content[] + structured{exit} (#1288 fix 2 capture).
+// contract tool part lifecycle: tool.called/input.started → PART_START
+// (name+input, memoized by callID); tool.input.delta/ended → DROPPED
+// (the contract has no tool-input delta event; nothing accumulates);
+// tool.success | tool.failure → PART_END carrying the memoized name +
+// input plus the decoded result (content[]/structured on success, the
+// error text on failure). Captured wire: callID + assistantMessageID +
+// tool name + input object (#1288 fix 2 capture).
 func (t *ABITranslator) translateNextTool(env struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
 	Properties json.RawMessage `json:"properties"`
 }, evt *abiv1.Event) (*abiv1.Event, bool, error) {
+	// #1291 r1: the pinned success frame carries the result as content[]
+	// (text items) + structured{exit,...} — NOT `output`.
 	var p struct {
 		nextStreamIDs
-		Tool   string          `json:"tool"`
-		Name   string          `json:"name"`
-		Input  json.RawMessage `json:"input"`
-		Output json.RawMessage `json:"output"`
-		// #1291 r1: the pinned success frame carries the result as
-		// content[] (text items) + structured{exit,...} — NOT `output`.
-		Content *[]struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		Structured *struct {
-			Exit      int  `json:"exit"`
-			Truncated bool `json:"truncated"`
-		} `json:"structured"`
-		Error *struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Tool       string              `json:"tool"`
+		Name       string              `json:"name"`
+		Input      json.RawMessage     `json:"input"`
+		Output     json.RawMessage     `json:"output"`
+		Content    *[]ocContentItem    `json:"content"`
+		Structured *ocStructuredResult `json:"structured"`
+		Error      *ocToolError        `json:"error"`
 	}
 	if err := json.Unmarshal(env.Properties, &p); err != nil {
 		return nil, true, fmt.Errorf("%s: %w", env.Type, err)
@@ -790,7 +804,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 	switch env.Type {
 	case "session.next.tool.called", "session.next.tool.input.started":
 		if partID != "" {
-			t.rememberTool(partID, name, p.Input)
+			t.rememberTool(p.SessionID, partID, name, p.Input)
 		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, nil, "running")}
@@ -802,20 +816,29 @@ func (t *ABITranslator) translateNextTool(env struct {
 	case "session.next.tool.success":
 		// The success frame carries NO name/input (pinned wire) — recall
 		// the START's memo so the END emits the COMPLETE part; consumers
-		// upsert by callID and would otherwise wipe the bubble.
+		// upsert by callID and would otherwise wipe the bubble. MEMO MISS
+		// (translator restart mid-turn, dropped frame): DROP the END — the
+		// running bubble survives until the next history reconcile; a
+		// nameless END would wipe it (the r1 bug class).
 		memo := t.recallTool(partID)
+		if memo.Name == "" && name == "" {
+			return nil, false, nil
+		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
-			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), toolResultOutput(p.Content, p.Structured, nil), "completed")}
+			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), toolResultOutput(p.Content, p.Structured), "completed")}
 	case "session.next.tool.failure":
 		memo := t.recallTool(partID)
+		if memo.Name == "" && name == "" {
+			return nil, false, nil // memo miss: drop rather than wipe
+		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
 		var errOut json.RawMessage
 		if p.Error != nil {
-			errOut = mustMarshalRaw(map[string]any{"error": p.Error.Message})
+			errOut = marshalOrEmpty(map[string]any{"error": p.Error.Message})
 		}
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
-			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), rawOr(toolResultOutput(p.Content, p.Structured, nil), errOut), "failed")}
+			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), rawOr(toolResultOutput(p.Content, p.Structured), errOut), "failed")}
 	default:
 		return nil, false, nil
 	}
@@ -825,17 +848,29 @@ func (t *ABITranslator) translateNextTool(env struct {
 	return evt, evt.SessionId != "" || evt.MessageId != "", nil
 }
 
+// ocContentItem and ocStructuredResult are the pinned success frame's
+// result fields (named once — the wire shapes recur on both the tool
+// success and failure paths).
+type ocContentItem struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type ocStructuredResult struct {
+	Exit      int  `json:"exit"`
+	Truncated bool `json:"truncated"`
+}
+
+type ocToolError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
 // toolResultOutput flattens the pinned success frame's content[] +
 // structured{exit} into the contract ToolPart output JSON — the shape
 // the persisted-part path (translateTool) produces for flat-state tool
 // parts: {"output":"joined text","exit":0}.
-func toolResultOutput(content *[]struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}, structured *struct {
-	Exit      int  `json:"exit"`
-	Truncated bool `json:"truncated"`
-}, _ []byte) json.RawMessage {
+func toolResultOutput(content *[]ocContentItem, structured *ocStructuredResult) json.RawMessage {
 	if content == nil && structured == nil {
 		return nil
 	}
@@ -852,13 +887,12 @@ func toolResultOutput(content *[]struct {
 	if structured != nil {
 		out["exit"] = structured.Exit
 	}
-	return mustMarshalRaw(out)
+	return marshalOrEmpty(out)
 }
 
 // toolPartPayload builds the contract ToolPart payload shared by the
-// tool lifecycle translations. Status strings reuse the persisted-part
-// vocabulary (translateToolStatus maps unknowns to pending — the UI's
-// "working" state).
+// tool lifecycle translations. Status mapping is abiToolStatus (unknown
+// → RUNNING, the UI's working state).
 func toolPartPayload(name, callID string, input, output json.RawMessage, status string) *abiv1.Part_Tool {
 	tp := &abiv1.ToolPart{CallId: callID, Name: name}
 	if len(input) > 0 {
@@ -883,7 +917,7 @@ func abiToolStatus(status string) abiv1.ToolStatus {
 	}
 }
 
-func mustMarshalRaw(v any) json.RawMessage {
+func marshalOrEmpty(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
