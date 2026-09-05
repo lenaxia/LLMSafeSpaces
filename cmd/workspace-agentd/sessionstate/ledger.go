@@ -400,9 +400,10 @@ func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, 
 // five identical turns from one user send. Admission dedup is keyed by
 // the OUTBOX ENTRY ID (stable across the retry ladder); any prior
 // attempt whose message REACHED OPENCODE — ADMITTED, PROMOTED,
-// TURN_ENDED, or STALLED (a stalled attempt's message is in opencode's
-// queue; re-POSTing it is exactly the duplication this function exists
-// to prevent) — makes a new attempt return that outcome instead of
+// TURN_ENDED, or STALLED (under steer admission a stalled row is a
+// posted-but-never-completed message — the restart-destroyed window;
+// re-POSTing it is exactly the duplication this function exists to
+// prevent) — makes a new attempt return that outcome instead of
 // re-POSTing. FAILED and LEDGERED never reached opencode and correctly
 // fall through to a fresh admission.
 func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) {
