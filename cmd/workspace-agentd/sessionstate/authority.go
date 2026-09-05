@@ -257,7 +257,9 @@ func (a *Authority) Ingest(raw []byte) {
 		return
 	}
 	if !ok {
+		a.mu.Lock()
 		a.droppedEvents++
+		a.mu.Unlock()
 		return
 	}
 
@@ -275,7 +277,9 @@ func (a *Authority) Ingest(raw []byte) {
 func (a *Authority) parseContained(raw []byte) (evt *abiv1.Event, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			a.mu.Lock()
 			a.panicsContained++
+			a.mu.Unlock()
 			a.logger.Error("sessionstate: parser panic contained by recover wall", zap.Any("panic", r))
 			evt, ok, err = nil, false, nil
 		}

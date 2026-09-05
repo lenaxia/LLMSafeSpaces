@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Session:** The frontend showed only the newest agent message during a turn (full list only after turn-end history load). Root-caused by capturing the pinned opencode's raw event stream live on production and replaying the captures through the real translator.
-**Status:** In Progress
+**Status:** In Progress (r7: REFRESH.md fixture table registered; all three Ingest counters synchronized)
 
 ---
 
