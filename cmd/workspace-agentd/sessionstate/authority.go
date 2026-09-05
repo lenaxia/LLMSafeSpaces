@@ -159,7 +159,7 @@ type Authority struct {
 
 	droppedEvents     int64
 	parserFailures    int64
-	panicsContained   int64 // atomic — parseContained runs under a.mu on the reseed flush path; a lock here deadlocks
+	panicsContained   atomic.Int64 // no lock: the reseed flush parses UNDER a.mu; reads go through .Load()
 	customValveEvents int64
 }
 
@@ -275,16 +275,14 @@ func (a *Authority) Ingest(raw []byte) {
 }
 
 // parseContained runs the injected parser behind a recover wall.
-// panicsContained increments WITHOUT a.mu: the reseed flush path calls
-// parseContained while HOLDING a.mu (authority.go:352+), so taking the
-// lock here deadlocks the flush. The counter stays atomic instead —
-// read-side synchronization (Metrics) may read a torn instant on 32-bit
-// builds; acceptable for a best-effort ops counter, and the deadlock is
-// not.
+// panicsContained is an atomic.Int64: the reseed flush path calls
+// parseContained while HOLDING a.mu, so a lock here deadlocks the flush;
+// and atomics synchronize only with atomics — every read goes through
+// .Load() (Metrics, accessors), never a plain read.
 func (a *Authority) parseContained(raw []byte) (evt *abiv1.Event, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			atomic.AddInt64(&a.panicsContained, 1)
+			a.panicsContained.Add(1)
 			a.logger.Error("sessionstate: parser panic contained by recover wall", zap.Any("panic", r))
 			evt, ok, err = nil, false, nil
 		}
@@ -523,7 +521,7 @@ func (a *Authority) Metrics() Metrics {
 	m := Metrics{
 		DroppedEvents:               a.droppedEvents,
 		ParserFailures:              a.parserFailures,
-		PanicsContained:             a.panicsContained,
+		PanicsContained:             a.panicsContained.Load(),
 		CustomValveEvents:           a.customValveEvents,
 		Subscribers:                 len(a.subs),
 		BufferedPending:             len(a.pending),

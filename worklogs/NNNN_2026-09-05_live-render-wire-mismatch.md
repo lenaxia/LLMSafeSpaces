@@ -1,8 +1,8 @@
-# Worklog: live render wire mismatch — session.next.* streaming translated against the real format (#1288 fix 2)
+# Worklog: live render wire mismatch — session.next.* streaming translated against the real format
 
 **Date:** 2026-09-05
 **Session:** The frontend showed only the newest agent message during a turn (full list only after turn-end history load). Root-caused by capturing the pinned opencode's raw event stream live on production and replaying the captures through the real translator.
-**Status:** In Progress (r7: REFRESH.md fixture table registered; all three Ingest counters synchronized)
+**Status:** In Progress (r9: panicsContained atomic after the r8 flush deadlock; both r9 pins committed)
 
 ---
 
@@ -19,7 +19,7 @@ Make the frontend's live renderer receive the events it was designed for.
 - `session.next.reasoning.*` and `session.next.tool.*` were entirely unhandled (Custom valve, no IDs, no message attribution).
 - Frontend consequences (its logic is correct — the wire was broken): parts could not be keyed (upsert appends degenerate bubbles), could not be attributed per message (all fall into one default group), and text DELTAs were dropped outright (`if (evt.partId)`).
 
-### Review r2 hardening
+### Review hardening (r2–r9)
 
 - Memo-miss END (translator restart mid-turn): DROPPED, not emitted empty — consumers replace-by-key; a nameless END is the wipe bug again. Pinned.
 - The memo is purged on step.ended AND step.failed (session-scoped, both pinned) — the process-lifetime instance cannot accumulate aborted-turn state.
@@ -42,8 +42,8 @@ The tool-lifecycle translation was half-done: the pinned success frame carries t
 ## Key Decisions
 
 1. Legacy field names stay as fallbacks — older opencode builds that send `partID`/`messageID` keep working; `firstNonEmpty` picks whichever the wire carries.
-2. Tool-input streaming deltas are folded silently (the contract has no tool-input delta event; the TUI accumulates input text live — surfacing it would need a contract change, deferred).
-3. Fixtures are production captures redacted per testdata/REFRESH.md: synthetic ID mapping (ses/msg/rs/call prefixed, intra-fixture-consistent), >120-char strings trimmed, non-frame lines dropped — byte-shape faithful apart from redaction.
+2. Tool-input streaming deltas are DROPPED at the translation (the contract has no tool-input delta event and nothing accumulates — the START carries the input, the END carries the result; surfacing input streaming would need a contract change, deferred).
+3. Fixtures are production captures redacted per testdata/REFRESH.md (and registered in its fixture table, r7): synthetic consistent IDs, >120-char trims, non-frame lines dropped.
 
 ## Blockers
 
