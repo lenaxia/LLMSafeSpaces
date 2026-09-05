@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -158,7 +159,7 @@ type Authority struct {
 
 	droppedEvents     int64
 	parserFailures    int64
-	panicsContained   int64
+	panicsContained   int64 // atomic — parseContained runs under a.mu on the reseed flush path; a lock here deadlocks
 	customValveEvents int64
 }
 
@@ -274,12 +275,16 @@ func (a *Authority) Ingest(raw []byte) {
 }
 
 // parseContained runs the injected parser behind a recover wall.
+// panicsContained increments WITHOUT a.mu: the reseed flush path calls
+// parseContained while HOLDING a.mu (authority.go:352+), so taking the
+// lock here deadlocks the flush. The counter stays atomic instead —
+// read-side synchronization (Metrics) may read a torn instant on 32-bit
+// builds; acceptable for a best-effort ops counter, and the deadlock is
+// not.
 func (a *Authority) parseContained(raw []byte) (evt *abiv1.Event, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.mu.Lock()
-			a.panicsContained++
-			a.mu.Unlock()
+			atomic.AddInt64(&a.panicsContained, 1)
 			a.logger.Error("sessionstate: parser panic contained by recover wall", zap.Any("panic", r))
 			evt, ok, err = nil, false, nil
 		}
