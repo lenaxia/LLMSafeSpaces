@@ -322,6 +322,7 @@ func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 		if err := json.Unmarshal(env.Properties, &p); err != nil || p.SessionID == "" {
 			return nil, true, fmt.Errorf("session.next.step.failed: %v", err)
 		}
+		t.purgeSessionMemos(p.SessionID)
 		evt.Type = abiv1.EventType_EVENT_TYPE_ERROR
 		evt.SessionId = p.SessionID
 		evt.MessageId = p.AssistantMessageID

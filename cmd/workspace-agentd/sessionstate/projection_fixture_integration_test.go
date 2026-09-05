@@ -18,8 +18,8 @@ import (
 // completion with their name intact.
 func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 	for _, fixture := range []string{
-		"../../pkg/agent/opencode/testdata/events-text-turn.txt",
-		"../../pkg/agent/opencode/testdata/events-tool-turn.txt",
+		"../../../pkg/agent/opencode/testdata/events-text-turn.txt",
+		"../../../pkg/agent/opencode/testdata/events-tool-turn.txt",
 	} {
 		t.Run(fixture, func(t *testing.T) {
 			f, err := os.Open(fixture)
@@ -28,7 +28,7 @@ func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 			}
 			defer f.Close()
 			tr := &opencode.ABITranslator{}
-			auth, err := New(Config{})
+			auth, err := New(Config{Parser: &opencode.ABITranslator{}, Passwords: []string{"pw"}, PlatformDir: t.TempDir()})
 			if err != nil {
 				t.Fatalf("authority construction: %v", err)
 			}

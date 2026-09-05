@@ -153,3 +153,25 @@ func TestTranslateNextTool_StepEndedPurgesMemos(t *testing.T) {
 		t.Fatal("post-purge success must be a dropped memo-miss (the bound works)")
 	}
 }
+
+// step.failed also purges the session's tool memos (the bound holds on
+// the failure path too — the struct comment claims both boundaries).
+func TestTranslateNextTool_StepFailedPurgesMemos(t *testing.T) {
+	tr := ABITranslator{}
+	start := `{"id":"e1","type":"session.next.tool.called","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","tool":"bash","input":{"command":"x"}}}`
+	if _, ok, err := tr.Parse([]byte(start)); err != nil || !ok {
+		t.Fatalf("called: ok=%v err=%v", ok, err)
+	}
+	fail := `{"id":"e2","type":"session.next.step.failed","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","error":{"type":"unknown","message":"boom"}}}`
+	if _, _, err := tr.Parse([]byte(fail)); err != nil {
+		t.Fatal(err)
+	}
+	late := `{"id":"e3","type":"session.next.tool.success","properties":{"sessionID":"ses_1","assistantMessageID":"msg_1","callID":"call_1","content":[{"type":"text","text":"late"}],"structured":{"exit":0}}}`
+	evt, ok, err := tr.Parse([]byte(late))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok && evt != nil {
+		t.Fatal("post-step.failed success must be a dropped memo-miss (the bound holds on failure paths)")
+	}
+}

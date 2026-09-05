@@ -22,10 +22,10 @@ Make the frontend's live renderer receive the events it was designed for.
 ### Review r2 hardening
 
 - Memo-miss END (translator restart mid-turn): DROPPED, not emitted empty — consumers replace-by-key; a nameless END is the wipe bug again. Pinned.
-- The memo is purged on step.ended/step.failed (session-scoped) — the process-lifetime instance cannot accumulate aborted-turn state. Pinned.
+- The memo is purged on step.ended AND step.failed (session-scoped, both pinned) — the process-lifetime instance cannot accumulate aborted-turn state.
 - Wire taxonomy extended (wire.IsKnownEventType + repolint event literals) with the 9 now-first-class families per REFRESH.md step 3.
 - Named the content[]/structured shapes (ocContentItem/ocStructuredResult/ocToolError); marshalOrEmpty replaces the panic-implying name; stale toolPartPayload comment corrected.
-- Integration level: both fixtures driven through the REAL translator → REAL authority projection (IngestForTest), asserting partID+messageID on every part event and name-retention on tool ENDs.
+- Integration level (r3): both fixtures drive the REAL translator → REAL authority projection (Parser+Passwords+PlatformDir wired, IngestForTest), asserting partID+messageID on every part event and name-retention on tool ENDs. The r2 version silently skipped (fixture paths two-levels shallow, construction requirements unmet) — it now runs (~0.1s/fixture of real ingestion).
 
 ### Review r1 hardening
 
