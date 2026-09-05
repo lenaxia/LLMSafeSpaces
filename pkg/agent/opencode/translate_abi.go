@@ -305,9 +305,28 @@ func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 			SessionID          string  `json:"sessionID"`
 			AssistantMessageID string  `json:"assistantMessageID"`
 			Tokens             *tokens `json:"tokens"`
+			Finish             string  `json:"finish"`
 		}
 		if err := json.Unmarshal(env.Properties, &p); err != nil || p.SessionID == "" {
 			return nil, true, fmt.Errorf("session.next.step.ended: %v", err)
+		}
+		// The live wire never emits session.idle/session.status on this
+		// build (#1292a: 240s post-turn capture, zero idle events) — the
+		// ONLY terminal marker is finish:"stop" on the last step.ended
+		// (finish:"tool-calls" = mid-turn). Map the terminal step to
+		// SESSION_STATUS_IDLE so the fold clears busy; the final step's
+		// cost rides on evt.Message for consumers that read it.
+		if p.Finish == "stop" {
+			evt.Type = abiv1.EventType_EVENT_TYPE_SESSION_STATUS
+			evt.SessionId = p.SessionID
+			evt.MessageId = p.AssistantMessageID
+			evt.Status = abiv1.SessionStatus_SESSION_STATUS_IDLE
+			msg := &abiv1.Message{Id: p.AssistantMessageID, SessionId: p.SessionID, Type: abiv1.MessageType_MESSAGE_TYPE_ASSISTANT}
+			if p.Tokens != nil {
+				msg.Cost = p.Tokens.cost()
+			}
+			evt.Message = msg
+			return evt, true, nil
 		}
 		evt.Type = abiv1.EventType_EVENT_TYPE_MESSAGE_END
 		evt.SessionId = p.SessionID

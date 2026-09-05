@@ -125,7 +125,16 @@ func (a *Authority) Deliver(ctx context.Context, req *connect.Request[abiv1.Deli
 	if len(texts) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errText("at least one non-empty text part is required"))
 	}
-	rec, _, err := a.deliver.deliver(ctx, m.GetSessionId(), m.GetEntryId(), m.GetAttempt(), texts, m.GetModel().GetId())
+	// #1292b: the model ref crosses the ledger as "provider/id" (empty
+	// provider → bare id) — the admitter re-splits before the
+	// session-model POST. The provider is load-bearing: 1.18.15's model
+	// endpoint wants the object form, and id-only refs resolve against
+	// whatever provider happens to own the id.
+	modelRef := m.GetModel().GetId()
+	if prov := m.GetModel().GetProvider(); prov != "" {
+		modelRef = prov + "/" + modelRef
+	}
+	rec, _, err := a.deliver.deliver(ctx, m.GetSessionId(), m.GetEntryId(), m.GetAttempt(), texts, modelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
