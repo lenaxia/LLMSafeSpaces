@@ -458,8 +458,15 @@ fi
 ok "F5a: pre-kill env present"
 
 POD5=$(pod_of "${WS5}")
-RS_BEFORE=$(kc get pod "${POD5}" -o jsonpath='{.status.containerStatuses[?(@.name=="agentd")].restartCount}' 2>/dev/null || echo 0)
-RS_BEFORE="${RS_BEFORE:-0}"
+# agentd is a NATIVE sidecar (initContainer, restartPolicy Always —
+# agentd_sidecar.go:271+): its status lives in initContainerStatuses,
+# not containerStatuses. Query both and concatenate — exactly one is
+# non-empty (first-execution finding, run 33927738086: the container
+# restart happened but the wrong field was read as a perpetual 0).
+agentd_restarts() {
+    kc get pod "${POD5}" -o jsonpath='{.status.containerStatuses[?(@.name=="agentd")].restartCount}{.status.initContainerStatuses[?(@.name=="agentd")].restartCount}' 2>/dev/null || echo 0
+}
+RS_BEFORE=$(agentd_restarts); RS_BEFORE="${RS_BEFORE:-0}"
 
 # B3: kill the agentd container from the NODE via crictl. agentd is a
 # FROM-scratch image (no kill binary) and a PID-1 SIGKILL raised from
@@ -481,7 +488,7 @@ else
 
     RS_AFTER="-1"
     for _i in $(seq 1 40); do
-        RS_AFTER=$(kc get pod "${POD5}" -o jsonpath='{.status.containerStatuses[?(@.name=="agentd")].restartCount}' 2>/dev/null || echo 0)
+        RS_AFTER=$(agentd_restarts)
         RS_AFTER="${RS_AFTER:-0}"
         (( RS_AFTER > RS_BEFORE )) && break
         sleep 3
