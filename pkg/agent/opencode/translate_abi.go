@@ -271,6 +271,10 @@ func (t ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 
 	case "session.next.text.started", "session.next.text.delta", "session.next.text.ended":
 		return translateNextText(env, evt)
+	case "session.next.reasoning.started", "session.next.reasoning.delta", "session.next.reasoning.ended":
+		return translateNextReasoning(env, evt)
+	case "session.next.tool.called", "session.next.tool.input.started", "session.next.tool.input.delta", "session.next.tool.input.ended", "session.next.tool.success", "session.next.tool.failure":
+		return translateNextTool(env, evt)
 
 	default:
 		if d.IsQuestionAsked(env.Type) {
@@ -621,36 +625,177 @@ func mapChangeStatus(s string) abiv1.ChangeStatus {
 	}
 }
 
+// nextStreamIDs decodes the id fields of the session.next.* streaming
+// families. The pinned opencode's wire format (#1288 fix 2, captured live
+// on production): text events carry textID + assistantMessageID; reasoning
+// carries reasoningID + assistantMessageID; tool carries callID +
+// assistantMessageID. The original decoder read partID/messageID — names
+// that appear on NO pinned-version frame — so every live part event
+// arrived with empty IDs: the frontend could not key, attribute, or delta
+// a single part (its live renderer needs partID to upsert and messageID
+// to partition per message). Legacy names stay as fallbacks for older
+// builds; firstNonEmpty picks whichever the wire carries.
+type nextStreamIDs struct {
+	SessionID          string `json:"sessionID"`
+	AssistantMessageID string `json:"assistantMessageID"`
+	MessageID          string `json:"messageID"`
+	PartID             string `json:"partID"`
+	TextID             string `json:"textID"`
+	ReasoningID        string `json:"reasoningID"`
+	CallID             string `json:"callID"`
+	Text               string `json:"text"`
+	Delta              string `json:"delta"`
+}
+
+func (p *nextStreamIDs) messageID() string { return firstNonEmpty(p.AssistantMessageID, p.MessageID) }
+
 func translateNextText(env struct {
 	ID         string          `json:"id"`
 	Type       string          `json:"type"`
 	Properties json.RawMessage `json:"properties"`
 }, evt *abiv1.Event) (*abiv1.Event, bool, error) {
-	var p struct {
-		SessionID string `json:"sessionID"`
-		MessageID string `json:"messageID"`
-		PartID    string `json:"partID"`
-		Text      string `json:"text"`
-		Delta     string `json:"delta"`
-	}
+	var p nextStreamIDs
 	if err := json.Unmarshal(env.Properties, &p); err != nil {
 		return nil, true, fmt.Errorf("%s: %w", env.Type, err)
 	}
+	partID := firstNonEmpty(p.TextID, p.PartID)
 	switch env.Type {
 	case "session.next.text.started":
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
-		evt.Part = &abiv1.Part{Id: p.PartID, Type: abiv1.PartType_PART_TYPE_TEXT, Payload: &abiv1.Part_Text{Text: p.Text}}
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TEXT, Payload: &abiv1.Part_Text{Text: p.Text}}
 	case "session.next.text.delta":
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_DELTA
 		evt.Delta = firstNonEmpty(p.Delta, p.Text)
 	case "session.next.text.ended":
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
-		evt.Part = &abiv1.Part{Id: p.PartID, Type: abiv1.PartType_PART_TYPE_TEXT, Payload: &abiv1.Part_Text{Text: p.Text}}
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TEXT, Payload: &abiv1.Part_Text{Text: p.Text}}
 	}
 	evt.SessionId = p.SessionID
-	evt.MessageId = p.MessageID
-	evt.PartId = p.PartID
+	evt.MessageId = p.messageID()
+	evt.PartId = partID
 	return evt, evt.SessionId != "" || evt.MessageId != "", nil
+}
+
+// translateNextReasoning maps the pinned opencode's reasoning stream
+// (session.next.reasoning.started/ended; a delta family may exist on
+// other providers and is translated defensively). Captured wire: rs_…
+// reasoningID + assistantMessageID (#1288 fix 2 capture). Previously
+// these fell through the Custom valve with no IDs and no message
+// attribution — reasoning never rendered live.
+func translateNextReasoning(env struct {
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Properties json.RawMessage `json:"properties"`
+}, evt *abiv1.Event) (*abiv1.Event, bool, error) {
+	var p nextStreamIDs
+	if err := json.Unmarshal(env.Properties, &p); err != nil {
+		return nil, true, fmt.Errorf("%s: %w", env.Type, err)
+	}
+	partID := firstNonEmpty(p.ReasoningID, p.PartID)
+	switch env.Type {
+	case "session.next.reasoning.started":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_REASONING, Payload: &abiv1.Part_Reasoning{Reasoning: p.Text}}
+	case "session.next.reasoning.delta":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_DELTA
+		evt.Delta = firstNonEmpty(p.Delta, p.Text)
+	case "session.next.reasoning.ended":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_REASONING, Payload: &abiv1.Part_Reasoning{Reasoning: p.Text}}
+	}
+	evt.SessionId = p.SessionID
+	evt.MessageId = p.messageID()
+	evt.PartId = partID
+	return evt, evt.SessionId != "" || evt.MessageId != "", nil
+}
+
+// translateNextTool maps the pinned opencode's tool-call stream to the
+// contract tool part lifecycle: tool.called → PART_START (input known),
+// tool.input.delta → the input streaming in (surfaced as the part's
+// accumulating input on PART_END — the contract has no tool-input delta
+// event, so input deltas are folded silently), tool.success |
+// tool.failure → PART_END carrying the output/state. Captured wire:
+// callID + assistantMessageID + tool name + input object; success
+// carries content[] + structured{exit} (#1288 fix 2 capture).
+func translateNextTool(env struct {
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Properties json.RawMessage `json:"properties"`
+}, evt *abiv1.Event) (*abiv1.Event, bool, error) {
+	var p struct {
+		nextStreamIDs
+		Tool   string          `json:"tool"`
+		Name   string          `json:"name"`
+		Input  json.RawMessage `json:"input"`
+		Output json.RawMessage `json:"output"`
+		Error  *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(env.Properties, &p); err != nil {
+		return nil, true, fmt.Errorf("%s: %w", env.Type, err)
+	}
+	partID := firstNonEmpty(p.CallID, p.PartID)
+	name := firstNonEmpty(p.Tool, p.Name)
+	switch env.Type {
+	case "session.next.tool.called", "session.next.tool.input.started":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, nil, "running")}
+	case "session.next.tool.input.delta", "session.next.tool.input.ended":
+		// Input streaming folds into the part's input; the contract has no
+		// tool-input delta event — a PART_END with the final state follows.
+		return nil, false, nil
+	case "session.next.tool.success":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, p.Output, "completed")}
+	case "session.next.tool.failure":
+		evt.Type = abiv1.EventType_EVENT_TYPE_PART_END
+		status := "failed"
+		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL, Payload: toolPartPayload(name, partID, p.Input, p.Output, status)}
+		if p.Error != nil {
+			evt.Part.Payload = toolPartPayload(name, partID, p.Input, mustMarshalRaw(map[string]any{"error": p.Error.Message}), status)
+		}
+	default:
+		return nil, false, nil
+	}
+	evt.SessionId = p.SessionID
+	evt.MessageId = p.messageID()
+	evt.PartId = partID
+	return evt, evt.SessionId != "" || evt.MessageId != "", nil
+}
+
+// toolPartPayload builds the contract ToolPart payload shared by the
+// tool lifecycle translations. Status strings reuse the persisted-part
+// vocabulary (translateToolStatus maps unknowns to pending — the UI's
+// "working" state).
+func toolPartPayload(name, callID string, input, output json.RawMessage, status string) *abiv1.Part_Tool {
+	tp := &abiv1.ToolPart{CallId: callID, Name: name}
+	if len(input) > 0 {
+		tp.Input = input
+	}
+	if len(output) > 0 {
+		tp.Output = output
+	}
+	tp.State = &abiv1.ToolState{Status: abiToolStatus(status)}
+	return &abiv1.Part_Tool{Tool: tp}
+}
+
+// abiToolStatus maps the lifecycle status onto the ABI enum.
+func abiToolStatus(status string) abiv1.ToolStatus {
+	switch status {
+	case "completed":
+		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
+	case "failed":
+		return abiv1.ToolStatus_TOOL_STATUS_ERROR
+	default:
+		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
+	}
+}
+
+func mustMarshalRaw(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func translateQuestionAsked(d *Dialect, env struct {
