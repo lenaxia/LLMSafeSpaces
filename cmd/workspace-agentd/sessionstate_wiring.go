@@ -258,9 +258,17 @@ func bootCapabilityReport(client *OpenCodeClient, supportedActions []abiv1.Actio
 
 // opencodeAdmitter is the US-69.7 admission seam implementation: POST the
 // V2 prompt endpoint on the pod's opencode (localhost :4096, §D1 Basic
-// credential). Delivery mode "queue" (0052 semantics: durable admission,
-// drains on idle/wake). The returned message ID is the promotion
-// correlation input (M2).
+// credential). Delivery mode "steer" — the TUI's send semantics (#1288):
+// admit-and-run-now, synchronous messageID, turn events flow on the
+// session stream for promotion correlation (M2).
+//
+// History: this seam shipped with delivery:"queue" (0052 semantics:
+// durable admission, drains on idle/wake) — but the pinned opencode
+// 1.18.10 never drains that queue (#755, "messages vanished"; the API's
+// adapter path abandoned queue for the same reason). The #1288 incident
+// ran on queue-mode admission racing opencode restarts. Steer is what
+// the TUI uses; the contract goldens (client_v2_contract_test) pin its
+// prompt.admitted/prompted events.
 type opencodeAdmitter struct {
 	password string
 }
@@ -271,7 +279,7 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model stri
 	}
 	body := map[string]any{
 		"prompt":   map[string]any{"text": text},
-		"delivery": "queue",
+		"delivery": "steer",
 	}
 	if model != "" {
 		body["model"] = map[string]any{"id": model}
