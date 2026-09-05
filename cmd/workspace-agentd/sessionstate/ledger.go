@@ -391,6 +391,42 @@ func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, 
 	return snapshotRecord(rec), true
 }
 
+// admittedAnywhere reports the best live outcome across ALL attempts of
+// an entry. The #1288 incident: the API-side outbox retries an entry on
+// a doubling ladder (10s/20s/40s/80s) and each re-POST carried
+// attempt+1; attempt-scoped status lookups treated every new attempt as
+// fresh, so an entry whose attempt-1 admission HAD reached opencode
+// (message persisted, turn completed) was re-POSTed as a new message —
+// five identical turns from one user send. Admission dedup is keyed by
+// the OUTBOX ENTRY ID (stable across the retry ladder); any prior
+// attempt whose message REACHED OPENCODE — ADMITTED, PROMOTED,
+// TURN_ENDED, or STALLED (under steer admission a stalled row is a
+// posted-but-never-completed message — the restart-destroyed window;
+// re-POSTing it is exactly the duplication this function exists to
+// prevent) — makes a new attempt return that outcome instead of
+// re-POSTing. FAILED and LEDGERED never reached opencode and correctly
+// fall through to a fresh admission.
+func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var best *ledgerRecord
+	for key, rec := range l.rows {
+		if key.EntryID != entryID {
+			continue
+		}
+		switch rec.State {
+		case LedgerStateAdmitted, LedgerStatePromoted, LedgerStateTurnEnded, LedgerStateStalled:
+			if best == nil || rec.Attempt > best.Attempt {
+				best = rec
+			}
+		}
+	}
+	if best == nil {
+		return nil, false
+	}
+	return snapshotRecord(best), true
+}
+
 // queueDepth is ledger-derived (M2): ledgered ∪ admitted-unpromoted.
 func (l *deliveryLedger) queueDepth(sessionID string) int {
 	l.mu.Lock()
@@ -593,6 +629,16 @@ func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uin
 	// admitted this row (crash-window resolution), and a prior attempt's
 	// failure may have re-armed at attempt+1.
 	if rec, ok := d.ledger.status(entryID, attempt); ok && rec.State != LedgerStateLedgered {
+		return true
+	}
+	// #1288 cross-attempt dedup: the retry ladder re-POSTs with attempt+1
+	// under the SAME entry ID — if ANY prior attempt of this entry already
+	// reached opencode (admitted or later), admit idempotently with that
+	// outcome instead of manufacturing a second message.
+	if rec, ok := d.ledger.admittedAnywhere(entryID); ok {
+		if err := d.ledger.markAdmitted(entryID, attempt, rec.MessageID); err != nil && logger() != nil {
+			logger().Warn("sessionstate: cross-attempt dedup append failed", zap.Error(err))
+		}
 		return true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:contextcheck // queue-scoped by design
