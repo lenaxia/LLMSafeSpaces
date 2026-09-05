@@ -161,7 +161,11 @@ func TestMiddlewareErrorPropagation(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 	assert.Contains(t, response, "error")
-	assert.Equal(t, "unauthorized", response["error"].(map[string]interface{})["code"])
+	// #1281: error values are string-shaped; the code rides a sibling key.
+	assert.Equal(t, "unauthorized", response["code"])
+	errVal, ok := response["error"].(string)
+	assert.True(t, ok, "error must be string-shaped (#1281), got %T", response["error"])
+	assert.NotEmpty(t, errVal)
 
 	// Check execution order - validation, handler, and anything after auth should not be called
 	expectedOrder := []string{
