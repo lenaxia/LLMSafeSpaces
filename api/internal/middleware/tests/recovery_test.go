@@ -44,7 +44,8 @@ func TestRecoveryMiddleware_PanicRecovery(t *testing.T) {
 
 	// Assert
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "internal_error")
+	// String error contract (#862/#1281): {"error":"<string>"} — no code
+	// field on this path.
 	assert.Contains(t, w.Body.String(), "Internal server error")
 
 	mockLogger.AssertExpectations(t)
@@ -123,8 +124,10 @@ func TestRecoveryMiddleware_StackTraceInResponse(t *testing.T) {
 	err := json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 
-	errorDetails := response["error"].(map[string]interface{})["details"].(map[string]interface{})
-	stackTrace := errorDetails["stack"].([]interface{})
+	// #862/#1281: error is a string; details rides a top-level sibling.
+	details, ok := response["details"].(map[string]interface{})
+	assert.True(t, ok, "details must be a top-level object, got %T", response["details"])
+	stackTrace, _ := details["stack"].([]interface{})
 	assert.NotEmpty(t, stackTrace)
 
 	// Check if any line in the stack trace contains the test function name
