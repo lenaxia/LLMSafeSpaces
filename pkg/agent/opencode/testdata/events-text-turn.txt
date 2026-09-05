@@ -1,0 +1,21 @@
+data: {"id":"evt_07243554f001QGJgwhPKLerKvz","type":"server.connected","properties":{}}
+data: {"id":"evt_0724368bf001htPUtCV64zcUH5","type":"session.next.prompt.admitted","properties":{"messageID":"msg_synthetic_0000","sessionID":"ses_synthetic_0001","timestamp":"2026-09-05T15:50:15.486Z","prompt":{"text":"In three separate steps: say ALPHA, then run the bash command echo BETA, then say GAMMA. Take the steps one at a time."},"delivery":"steer"}}
+data: {"id":"evt_0724368e3001mVMmrupr0gYYde","type":"session.next.prompted","properties":{"sessionID":"ses_synthetic_0001","timestamp":"2026-09-05T15:50:15.486Z","messageID":"msg_synthetic_0000","prompt":{"text":"In three separate steps: say ALPHA, then run the bash command echo BETA, then say GAMMA. Take the steps one at a time."},"delivery":"steer"}}
+data: {"id":"evt_0724370e3002GgEjKzwiHj41Fj","type":"session.next.step.started","properties":{"sessionID":"ses_synthetic_0001","agent":"build","model":{"id":"muse-spark-1.3-contributor-free","providerID":"opencode"},"assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:17.571Z"}}
+data: {"id":"evt_0724370f0001QwO4lXwlRJ1JAO","type":"session.next.reasoning.started","properties":{"sessionID":"ses_synthetic_0001","assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:17.584Z","reasoningID":"rs_synthetic_0003:rs_synthetic_0004:0","providerMetadata":{"openai":{"itemId":"rs_6a9c3a39400d66013b3e432a:rs_01a07243700d7952bb9302bddaaeacec","reasoningEncryptedContent":null}}}}
+data: {"id":"evt_072437c61001Og6J7ePRT2XCfs","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_072438f3f001UtHpBIJBPsNEZb","type":"session.next.reasoning.ended","properties":{"sessionID":"ses_synthetic_0001","assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:25.343Z","reasoningID":"rs_synthetic_0003:rs_synthetic_0004:0","text":"","providerMetadata":{"openai":{"itemId":"rs_6a9c3a39400d66013b3e432a:rs_01a07243700d7952bb9302bddaaeacec","reasoningEncryptedContent":"Q-PaDgH_XQ0GWOFKQMZ9RvfRXFS5bBKRg4TUoeHg4xibnUpCoO62x2lFiRxk\u2026[trimmed]"}}}}
+data: {"id":"evt_072438f5c001M7dxdZHIODasK6","type":"session.next.text.started","properties":{"sessionID":"ses_synthetic_0001","assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:25.372Z","textID":"rs_synthetic_0005"}}
+data: {"id":"evt_072438f6e001CI9kQiSld5GAoM","type":"session.next.text.delta","properties":{"sessionID":"ses_synthetic_0001","assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:25.390Z","textID":"rs_synthetic_0005","delta":"ALPHA"}}
+data: {"id":"evt_072438f70001EhA7UcsB1GgR8t","type":"session.next.text.ended","properties":{"sessionID":"ses_synthetic_0001","assistantMessageID":"msg_synthetic_0002","timestamp":"2026-09-05T15:50:25.392Z","textID":"rs_synthetic_0005","text":"ALPHA"}}
+data: {"id":"evt_072438f840013CxCSrPf7ZvvD5","type":"session.next.step.ended","properties":{"sessionID":"ses_synthetic_0001","timestamp":"2026-09-05T15:50:25.412Z","assistantMessageID":"msg_synthetic_0002","finish":"stop","cost":0,"tokens":{"input":9071,"output":14,"reasoning":906,"cache":{"read":0,"write":0}}}}
+data: {"id":"evt_07243a3710011HOWmChvQi5B6z","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_07243ca830010H5X5Lz5kQay6Q","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_07243f193001Chm5j6q9KV4ue5","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_0724418a4001I43cKS97iOZ8u7","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_072443fb8001m6aoOnJalTPP1l","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_0724466d1001YqTHbNofBc9olt","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_072448de2001O6LHWZ3Uu1DWwM","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_07244b4f2001Sjwi7XpeyGB1Ur","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_07244dc0300127wSFomvDE9BkT","type":"server.heartbeat","properties":{}}
+data: {"id":"evt_0724503130016VKkWc4m9KAAd6","type":"server.heartbeat","properties":{}}

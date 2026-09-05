@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
@@ -158,7 +159,7 @@ type Authority struct {
 
 	droppedEvents     int64
 	parserFailures    int64
-	panicsContained   int64
+	panicsContained   atomic.Int64 // no lock: the reseed flush parses UNDER a.mu; reads go through .Load()
 	customValveEvents int64
 }
 
@@ -246,13 +247,20 @@ func (a *Authority) sessionLock(sessionID string) *sync.Mutex {
 func (a *Authority) Ingest(raw []byte) {
 	evt, ok, err := a.parseContained(raw)
 	if err != nil {
+		// #1291 r5: a payload that CLAIMED projectability but failed to
+		// decode returns (nil, true, err) from the parser — err governs,
+		// NEVER ok: applyLocked(nil) was a live SIGSEGV on the production
+		// hot path (properties-shape drift is the expected drift class).
+		a.mu.Lock()
 		a.parserFailures++
+		a.mu.Unlock()
 		a.logger.Warn("sessionstate: parser rejected payload claiming to be projectable", zap.Error(err))
+		return
 	}
 	if !ok {
-		if err == nil {
-			a.droppedEvents++
-		}
+		a.mu.Lock()
+		a.droppedEvents++
+		a.mu.Unlock()
 		return
 	}
 
@@ -267,10 +275,14 @@ func (a *Authority) Ingest(raw []byte) {
 }
 
 // parseContained runs the injected parser behind a recover wall.
+// panicsContained is an atomic.Int64: the reseed flush path calls
+// parseContained while HOLDING a.mu, so a lock here deadlocks the flush;
+// and atomics synchronize only with atomics — every read goes through
+// .Load() (Metrics, accessors), never a plain read.
 func (a *Authority) parseContained(raw []byte) (evt *abiv1.Event, ok bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			a.panicsContained++
+			a.panicsContained.Add(1)
 			a.logger.Error("sessionstate: parser panic contained by recover wall", zap.Any("panic", r))
 			evt, ok, err = nil, false, nil
 		}
@@ -509,7 +521,7 @@ func (a *Authority) Metrics() Metrics {
 	m := Metrics{
 		DroppedEvents:               a.droppedEvents,
 		ParserFailures:              a.parserFailures,
-		PanicsContained:             a.panicsContained,
+		PanicsContained:             a.panicsContained.Load(),
 		CustomValveEvents:           a.customValveEvents,
 		Subscribers:                 len(a.subs),
 		BufferedPending:             len(a.pending),
@@ -569,6 +581,23 @@ func (a *Authority) SetStoreForTest(s StoreReader) { a.cfg.Store = s }
 // PlatformDir reports the durable-cursor directory (suspend/resume
 // diagnostics and the S1 scenario harness's restart scenarios).
 func (a *Authority) PlatformDir() string { return a.cfg.PlatformDir }
+
+// SetParserForTest swaps the parser seam (the #1291 r6 restart-mid-turn
+// e2e: a fresh translator instance models the process restarting with an
+// empty tool-call memo).
+func (a *Authority) SetParserForTest(p EventParser) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.Parser = p
+}
+
+// ParserFailuresForTest exposes the parser-failure counter (the #1291
+// r5 shape-drift accounting pin).
+func (a *Authority) ParserFailuresForTest() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.parserFailures
+}
 
 // IngestForTest applies a contract event directly, bypassing the parser
 // seam (fault-injection + comparator support: the projection fold is

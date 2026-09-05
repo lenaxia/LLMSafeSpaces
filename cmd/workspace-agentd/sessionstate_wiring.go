@@ -149,7 +149,7 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 	actor, supportedActions := opencodeActionSurface(client, password)
 	cfg := sessionstate.Config{
 		PlatformDir:  platformDirFromEnv(),
-		Parser:       opencode.ABITranslator{},
+		Parser:       &opencode.ABITranslator{},
 		Store:        opencodeStoreReader{client: client},
 		Admitter:     opencodeAdmitter{password: password},
 		Actor:        actor,

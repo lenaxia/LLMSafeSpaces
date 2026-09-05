@@ -30,6 +30,9 @@ var agentEventLiterals = []string{
 	"session.next.step.ended", "session.next.step.started", "session.next.step.failed",
 	"session.next.prompt.admitted", "session.next.prompted",
 	"session.next.text.started", "session.next.text.delta", "session.next.text.ended",
+	"session.next.reasoning.started", "session.next.reasoning.delta", "session.next.reasoning.ended",
+	"session.next.tool.called", "session.next.tool.input.started", "session.next.tool.input.delta",
+	"session.next.tool.input.ended", "session.next.tool.success", "session.next.tool.failure",
 	"step-start", "step-finish",
 }
 
