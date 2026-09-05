@@ -124,14 +124,12 @@ func RecoveryMiddleware(log interfaces.LoggerInterface, config ...RecoveryConfig
 					}
 				}
 
-				// Send error response
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"error": gin.H{
-						"code":    apiErr.Code,
-						"message": apiErr.Message,
-						"details": apiErr.Details,
-					},
-				})
+				// String error contract (issue #862): {"error":"<string>"}.
+				resp := gin.H{"error": apiErr.Message}
+				if cfg.IncludeStackTrace && apiErr.Details != nil {
+					resp["details"] = apiErr.Details
+				}
+				c.JSON(http.StatusInternalServerError, resp)
 				c.Abort()
 			}
 		}()
