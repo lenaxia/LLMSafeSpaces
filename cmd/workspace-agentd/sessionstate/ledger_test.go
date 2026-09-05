@@ -321,7 +321,7 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 	admitter.mu.Unlock()
 	assert.Equal(t, 1, calls, "#1288: attempt+1 must never re-POST an admitted entry")
 	st2, _ := l.status("e1", 2)
-	assert.Equal(t, st2.MessageID, "msg-1", "attempt 2 carries attempt 1's messageID")
+	assert.Equal(t, "msg-1", st2.MessageID, "attempt 2 carries attempt 1's messageID")
 }
 
 // TestDeliver_AdmittedNeverReadmitted (I6, the #1119 guard): once admitted,
@@ -512,6 +512,13 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 				l.mu.Unlock()
 				l.checkStalls(context.Background(), func(context.Context, string) error { return nil }, time.Now())
 			}
+			// Seeded-state assertion (after ALL seeding branches): the arm
+			// is only pinned if the prior row REALLY reached `state` — a
+			// seeding-chain regression otherwise silently unpins all three
+			// arms (review r3).
+			seeded, _ := l.status("e9", 1)
+			require.NotNil(t, seeded, "prior row must exist")
+			require.Equal(t, state, seeded.State, "prior row must be seeded at %s, got %s", state, seeded.State)
 
 			_, _, err = d.deliver(context.Background(), "s1", "e9", 2, []string{"p"}, "")
 			require.NoError(t, err)
@@ -523,7 +530,7 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 			defer admitter.mu.Unlock()
 			assert.Empty(t, admitter.calls, "%s prior: the ladder must never re-POST", state)
 			st, _ := l.status("e9", 2)
-			assert.Equal(t, st.MessageID, "msg-prior", "%s prior: messageID carried", state)
+			assert.Equal(t, "msg-prior", st.MessageID, "%s prior: messageID carried", state)
 		})
 	}
 }
