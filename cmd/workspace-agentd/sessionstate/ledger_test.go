@@ -495,6 +495,15 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 			if state == LedgerStatePromoted || state == LedgerStateTurnEnded {
 				require.NoError(t, l.markPromoted("e9", 1, "msg-prior"))
 			}
+			if state == LedgerStateTurnEnded {
+				// The only production path to TURN_ENDED is
+				// observeTurnEnded (turn-end event) — drive it so the
+				// seeded row is actually TURN_ENDED, not a byte-identical
+				// rerun of the promoted case (review r2: the arm was
+				// unpinned — deleting TURN_ENDED from the match set
+				// shipped green).
+				d.observeTurnEnded("s1")
+			}
 			if state == LedgerStateStalled {
 				// Stalls transition in checkStalls; drive it directly with
 				// a zero deadline so the row moves admitted -> stalled.
