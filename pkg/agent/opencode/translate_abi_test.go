@@ -15,7 +15,7 @@ import (
 
 func fixedClock() time.Time { return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC) }
 
-func tx() ABITranslator { return ABITranslator{Now: fixedClock} }
+func tx() *ABITranslator { tr := &ABITranslator{}; tr.Now = fixedClock; return tr }
 
 func parse(t *testing.T, raw string) (*abiv1.Event, bool) {
 	t.Helper()

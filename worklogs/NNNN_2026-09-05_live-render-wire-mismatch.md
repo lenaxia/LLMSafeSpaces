@@ -19,7 +19,9 @@ Make the frontend's live renderer receive the events it was designed for.
 - `session.next.reasoning.*` and `session.next.tool.*` were entirely unhandled (Custom valve, no IDs, no message attribution).
 - Frontend consequences (its logic is correct — the wire was broken): parts could not be keyed (upsert appends degenerate bubbles), could not be attributed per message (all fall into one default group), and text DELTAs were dropped outright (`if (evt.partId)`).
 
-### Fix
+### Review r1 hardening
+
+The tool-lifecycle translation was half-done: the pinned success frame carries the result as content[]/structured{exit} (NOT `output`) and NO name/input — a bare PART_END wiped the running bubble at completion. The translator now memoizes tool.called frames by callID (per-connection state; Parse moved to a pointer receiver — value copies lost the map) and the END emits the COMPLETE part. The failure path is pinned too (error text into output, ERROR status).
 
 - `translateNextText`: decodes `textID`+`assistantMessageID` with legacy-name fallbacks.
 - NEW `translateNextReasoning`: reasoning.started/delta/ended → PART_REASONING lifecycle with `reasoningID`.
