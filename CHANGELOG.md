@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.1] - 2026-09-05
+
+### Fixed (the #1288 prompt-triplication incident)
+- **Cross-attempt admission dedup** — the outbox retry ladder (10s
+  doubling) re-POSTed an entry at attempt+1 and the ledger's dedup was
+  attempt-scoped, so every rung manufactured a fresh opencode message
+  (live incident: five identical turns from one user send). Dedup now
+  keys on the outbox entry ID: a prior ADMITTED/PROMOTED/TURN_ENDED/
+  STALLED attempt makes the retry carry that messageID without
+  re-POSTing. A FAILED prior still re-POSTs (pinned).
+- **Admission uses the TUI's delivery semantics** — `delivery:"steer"`
+  (admit-and-run-now, synchronous messageID, events on the session
+  stream) instead of `delivery:"queue"`, which the pinned opencode
+  1.18.10 never drains (#755; the API's adapter path abandoned queue
+  long ago). The restart-destroyed-message window is recovered via
+  stall escalation (pinned: fsync'd STALLED state, wake-once,
+  stalled-entries gauge).
+
 ## [0.27.0] - 2026-09-05
 
 The V2-delivery validation release: the US-70 delivery pool ran fully green
