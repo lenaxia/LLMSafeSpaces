@@ -189,7 +189,9 @@ func TestBulkReloadOne_MalformedPodIP_NDJSONErrorRow(t *testing.T) {
 		row = handler.reloadOne(context.Background(), "user-1", "ws-bad2", false, 0)
 	})
 	require.NotNil(t, row["error"], "bulk reload must return an error row, not panic")
-	errObj, ok := row["error"].(map[string]any)
-	require.True(t, ok, "error row must be an object, got %T", row["error"])
-	assert.Equal(t, "agent_reload_url_invalid", errObj["code"])
+	// #1281: error values are string-shaped; the code rides a sibling key.
+	errStr, ok := row["error"].(string)
+	require.True(t, ok, "error row must be string-shaped (#1281), got %T", row["error"])
+	assert.NotEmpty(t, errStr)
+	assert.Equal(t, "agent_reload_url_invalid", row["code"])
 }
