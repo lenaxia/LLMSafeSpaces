@@ -87,14 +87,15 @@ func (t *ABITranslator) purgeSessionMemos(sessionID string) {
 	}
 }
 
-func (t *ABITranslator) recallTool(callID string) toolCallMemo {
+func (t *ABITranslator) recallTool(sessionID, callID string) toolCallMemo {
 	t.toolCallsMu.Lock()
 	defer t.toolCallsMu.Unlock()
 	m, ok := t.toolCalls[callID]
-	if ok {
+	if ok && (m.SessionID == sessionID || sessionID == "") {
 		delete(t.toolCalls, callID)
+		return m
 	}
-	return m
+	return toolCallMemo{} // cross-session or unknown: treat as a miss
 }
 
 // Parse implements the EventParser seam: ok=false means "nothing
@@ -291,10 +292,10 @@ func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 		var purge struct {
 			SessionID string `json:"sessionID"`
 		}
-		_ = json.Unmarshal(env.Properties, &purge)
-		if purge.SessionID != "" {
+		if json.Unmarshal(env.Properties, &purge) == nil && purge.SessionID != "" {
 			t.purgeSessionMemos(purge.SessionID)
-		}
+		} // garbage properties skip the purge — the next step boundary or
+		//   consumption still frees the memo (the bound approximately holds)
 		var p struct {
 			SessionID          string  `json:"sessionID"`
 			AssistantMessageID string  `json:"assistantMessageID"`
@@ -760,6 +761,11 @@ func translateNextReasoning(env struct {
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_START
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_REASONING, Payload: &abiv1.Part_Reasoning{Reasoning: p.Text}}
 	case "session.next.reasoning.delta":
+		// NOTE: PART_DELTA consumers on the legacy text path append to a
+		// TEXT part; a reasoning delta here carries a reasoningID the text
+		// consumers cannot find, so they no-op it (keyed append misses).
+		// Not reachable on the pinned captures (reasoning arrives as
+		// started/ended only); translated for taxonomy completeness.
 		evt.Type = abiv1.EventType_EVENT_TYPE_PART_DELTA
 		evt.Delta = firstNonEmpty(p.Delta, p.Text)
 	case "session.next.reasoning.ended":
@@ -821,7 +827,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 		// (translator restart mid-turn, dropped frame): DROP the END — the
 		// running bubble survives until the next history reconcile; a
 		// nameless END would wipe it (the r1 bug class).
-		memo := t.recallTool(partID)
+		memo := t.recallTool(p.SessionID, partID)
 		if memo.Name == "" && name == "" {
 			return nil, false, nil
 		}
@@ -829,7 +835,7 @@ func (t *ABITranslator) translateNextTool(env struct {
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
 			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), toolResultOutput(p.Content, p.Structured), "completed")}
 	case "session.next.tool.failure":
-		memo := t.recallTool(partID)
+		memo := t.recallTool(p.SessionID, partID)
 		if memo.Name == "" && name == "" {
 			return nil, false, nil // memo miss: drop rather than wipe
 		}
@@ -838,8 +844,14 @@ func (t *ABITranslator) translateNextTool(env struct {
 		if p.Error != nil {
 			errOut = marshalOrEmpty(map[string]any{"error": p.Error.Message})
 		}
+		// Failure output: the ERROR TEXT wins — a failure frame
+		// carrying content[] must not silently drop the error.
+		failureOut := errOut
+		if failureOut == nil {
+			failureOut = toolResultOutput(p.Content, p.Structured)
+		}
 		evt.Part = &abiv1.Part{Id: partID, Type: abiv1.PartType_PART_TYPE_TOOL,
-			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), rawOr(toolResultOutput(p.Content, p.Structured), errOut), "failed")}
+			Payload: toolPartPayload(firstNonEmpty(name, memo.Name), partID, rawOr(p.Input, memo.Input), failureOut, "failed")}
 	default:
 		return nil, false, nil
 	}

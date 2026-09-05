@@ -125,7 +125,7 @@ func TestTranslateNextTool_MemoMissEndDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok && evt != nil {
+	if ok || evt != nil {
 		t.Fatal("memo-miss END must be dropped (emitting it wipes the running bubble)")
 	}
 }
@@ -149,7 +149,7 @@ func TestTranslateNextTool_StepEndedPurgesMemos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok && evt != nil {
+	if ok || evt != nil {
 		t.Fatal("post-purge success must be a dropped memo-miss (the bound works)")
 	}
 }
@@ -171,7 +171,7 @@ func TestTranslateNextTool_StepFailedPurgesMemos(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok && evt != nil {
+	if ok || evt != nil {
 		t.Fatal("post-step.failed success must be a dropped memo-miss (the bound holds on failure paths)")
 	}
 }

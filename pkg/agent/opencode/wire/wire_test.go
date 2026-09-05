@@ -501,6 +501,10 @@ func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
 		"../testdata/event_store_1_18_10.jsonl",
 		"../testdata/sse_events_1_18_15_live.jsonl",
 		"../testdata/event_store_1_18_15.jsonl",
+		// The #1291 captures: the now-first-class session.next.reasoning.*
+		// and session.next.tool.* families (fixtures are SSE `data: ` lines).
+		"../testdata/events-text-turn.txt",
+		"../testdata/events-tool-turn.txt",
 	} {
 		data, err := os.ReadFile(fixture)
 		if err != nil {
@@ -508,6 +512,7 @@ func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
 		}
 		seen := map[string]bool{}
 		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			line = strings.TrimPrefix(line, "data: ")
 			var env Envelope
 			if json.Unmarshal([]byte(line), &env) != nil || env.Type == "" {
 				continue
