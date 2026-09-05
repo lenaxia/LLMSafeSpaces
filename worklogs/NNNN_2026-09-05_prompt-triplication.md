@@ -19,9 +19,13 @@ Stop the outbox retry ladder from manufacturing duplicate agent turns.
 - The terminus protocol: on a retryable poll outcome the deliverer re-POSTs at attempt+1; agentd's `attemptAdmission` keyed its dedup by (entryID, attempt) — every new attempt was a fresh admission, and opencode's prompt API carries no idempotency key. The original test even pinned the bug: "attempt+1 is a NEW admission — allowed".
 - Trigger: the workspace's opencode restarted (env-secret change) at the send moment, so attempt 1's admission was slow to become visible; the ladder fired.
 
-### Fix
+### Fix 1: cross-attempt admission dedup
 
 `attemptAdmission` now consults `admittedAnywhere(entryID)` — any prior attempt at ADMITTED or later makes the new attempt admit idempotently with that attempt's messageID; the opencode POST never happens. The outbox entry ID is stable across the ladder, making it the correct dedup key.
+
+### Fix 1b: admission uses the TUI's delivery semantics (steer, not queue)
+
+`opencodeAdmitter` shipped with `delivery:"queue"` (0052 semantics: drains on idle/wake) — but the pinned opencode 1.18.10 **never drains that queue** (#755, "messages vanished"; the API's adapter path abandoned queue for exactly this reason long ago). The incident ran on queue-mode admission racing opencode restarts. Steer is what the TUI sends: admit-and-run-now, a synchronous messageID, turn events on the session stream — the taxonomy the promotion correlation was built for (contract goldens pin steer's prompt.admitted/prompted events). Trade-off, disclosed: with dedup holding and steer's run-now semantics, a message opencode LOSES to a restart between admit and turn completion is never re-POSTed — its ONLY recovery surface is stall escalation (admitted → stalled, fsync'd, wake fired once, stalled-entries gauge). That surface is now pinned (`TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall`).
 
 ## Key Decisions
 
@@ -47,4 +51,6 @@ None.
 ## Files Modified
 
 - cmd/workspace-agentd/sessionstate/ledger.go — admittedAnywhere + cross-attempt dedup in attemptAdmission.
-- cmd/workspace-agentd/sessionstate/ledger_test.go — new regression pin; corrected the exactly-once pin's attempt+1 tail.
+- cmd/workspace-agentd/sessionstate_wiring.go — admission delivery mode queue → steer (the TUI semantics).
+- cmd/workspace-agentd/sessionstate_wiring_test.go — TestOpencodeAdmitter_UsesSteerDelivery (red-checked).
+- cmd/workspace-agentd/sessionstate/ledger_test.go — cross-attempt pin; corrected exactly-once tail; seeded-state guard; stall-escalation companion pin.

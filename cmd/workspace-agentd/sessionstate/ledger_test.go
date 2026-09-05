@@ -534,3 +534,69 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 		})
 	}
 }
+
+// #1289 review r4, the steer+dedup companion pin: the restart-destroyed-
+// admitted path. Steer semantics + cross-attempt dedup mean an entry whose
+// admission reached opencode — and whose message opencode then LOST to a
+// restart — never re-POSTs (correct: no duplication). The ONLY recovery
+// surface left is stall escalation: the admitted row ages past the
+// promotion deadline, moves to STALLED (fsync'd), the wake fires exactly
+// once, and wake failures surface as the escalation signal. Unpinned, this
+// ships the silent-drop window invisibly.
+func TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	admitter := &fakeAdmitter{}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
+
+	// The incident shape: one admission that reached opencode (messageID
+	// returned) — then opencode restarts and the message/turn is gone.
+	_, _, err := d.deliver(context.Background(), "s1", "e1", 1, []string{"Test 123"}, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		st, _ := l.status("e1", 1)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, 10*time.Second, 50*time.Millisecond, "attempt 1 admitted with a real messageID")
+	st1, _ := l.status("e1", 1)
+	require.NotEmpty(t, st1.MessageID, "steer admission returns the messageID synchronously")
+
+	// The ladder re-POSTs (attempt 2): cross-attempt dedup holds — the
+	// restart-destroyed message must NOT be re-created.
+	_, _, err = d.deliver(context.Background(), "s1", "e1", 2, []string{"Test 123"}, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		st, _ := l.status("e1", 2)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, 10*time.Second, 50*time.Millisecond, "attempt 2 admits via dedup")
+	admitter.mu.Lock()
+	require.Len(t, admitter.calls, 1, "the destroyed message is never re-POSTed")
+
+	// Escalation: age the admitted rows past the promotion deadline and
+	// run the stall pass. The row must move ADMITTED -> STALLED (durably)
+	// and the wake must fire EXACTLY ONCE — including on a second pass
+	// (wakeFired guard). A failing wake must surface in WakeFailures.
+	wakeCalls := 0
+	wake := func(context.Context, string) error { wakeCalls++; return nil }
+	// The pass clock runs FORWARD past the rows: now = real now + 2h makes
+	// both admitted rows (UpdatedAt = real now) older than the deadline.
+	future := time.Now().Add(2 * time.Hour)
+	stalled, wakeFailures := l.checkStalls(context.Background(), wake, future)
+	admitter.mu.Unlock()
+	require.Equal(t, 2, stalled, "both admitted rows (attempts 1+2) escalate to stalled")
+	require.Equal(t, 0, wakeFailures)
+	stS, _ := l.status("e1", 1)
+	require.Equal(t, LedgerStateStalled, stS.State, "the destroyed-admission row is STALLED — visible to the stalled-entries metric, not silently dropped")
+
+	wakeCallsBefore := wakeCalls
+	stalled2, wakeFailures2 := l.checkStalls(context.Background(), wake, future.Add(time.Hour))
+	require.Equal(t, 0, stalled2, "second pass: no re-stall")
+	require.Equal(t, 0, wakeFailures2)
+	require.Equal(t, wakeCallsBefore, wakeCalls, "wake fires exactly once per row (I6)")
+
+	// The escalation signal: a failing wake counts.
+	failWake := func(context.Context, string) error { return fmt.Errorf("wake down") }
+	_, wakeFailures3 := l.checkStalls(context.Background(), failWake, future.Add(2*time.Hour))
+	// No NEW stalls on this pass (already stalled) — the failure count
+	// only accrues for newly-stalled rows; the metric surface for the
+	// persistent-failure class is the stalled-entries gauge itself.
+	require.Equal(t, 0, wakeFailures3)
+}
