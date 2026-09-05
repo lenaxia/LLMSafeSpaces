@@ -446,7 +446,7 @@ func TestAttemptAdmission_CrossAttemptDedup(t *testing.T) {
 	assert.Equal(t, 1, posts, "cross-attempt dedup: the retry ladder must never re-POST")
 	st, ok := l.status("e1", 2)
 	require.True(t, ok)
-	assert.Equal(t, st.MessageID, "msg-1", "attempt 2 carries attempt 1's messageID")
+	assert.Equal(t, "msg-1", st.MessageID, "attempt 2 carries attempt 1's messageID")
 }
 
 // #1289 review round 1: the negative case and the ladder-tail arms.
@@ -540,9 +540,14 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 // admission reached opencode — and whose message opencode then LOST to a
 // restart — never re-POSTs (correct: no duplication). The ONLY recovery
 // surface left is stall escalation: the admitted row ages past the
-// promotion deadline, moves to STALLED (fsync'd), the wake fires exactly
-// once, and wake failures surface as the escalation signal. Unpinned, this
-// ships the silent-drop window invisibly.
+// promotion deadline, moves to STALLED (fsync'd — visible to the
+// stalled-entries gauge), and the wake fires exactly once (exactly-once
+// comes from ADMITTED-only row selection; no transition returns to
+// ADMITTED). Wake-FAILURE counting itself is pinned by
+// TestCheckStalls_StatsAndWakeFailures (metrics_test.go) — this test
+// pins the silent-drop triad: never re-POSTed, escalates to stalled,
+// wake-once across passes. Unpinned, this ships the silent-drop window
+// invisibly.
 func TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
 	admitter := &fakeAdmitter{}
@@ -572,8 +577,9 @@ func TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall(t *testing.T) {
 
 	// Escalation: age the admitted rows past the promotion deadline and
 	// run the stall pass. The row must move ADMITTED -> STALLED (durably)
-	// and the wake must fire EXACTLY ONCE — including on a second pass
-	// (wakeFired guard). A failing wake must surface in WakeFailures.
+	// and the wake must fire EXACTLY ONCE — a property of ADMITTED-only
+	// selection (no transition returns to ADMITTED), not the wakeFired
+	// guard (unreachable: only freshly-stalled rows enter the loop).
 	wakeCalls := 0
 	wake := func(context.Context, string) error { wakeCalls++; return nil }
 	// The pass clock runs FORWARD past the rows: now = real now + 2h makes
@@ -592,11 +598,12 @@ func TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall(t *testing.T) {
 	require.Equal(t, 0, wakeFailures2)
 	require.Equal(t, wakeCallsBefore, wakeCalls, "wake fires exactly once per row (I6)")
 
-	// The escalation signal: a failing wake counts.
+	// A failing wake on a no-new-stalls pass accrues nothing (failures
+	// count only for newly-stalled rows); the wake-FAILURE counting
+	// surface itself lives in TestCheckStalls_StatsAndWakeFailures
+	// (metrics_test.go), the persistent-failure gauge is the
+	// stalled-entries metric.
 	failWake := func(context.Context, string) error { return fmt.Errorf("wake down") }
 	_, wakeFailures3 := l.checkStalls(context.Background(), failWake, future.Add(2*time.Hour))
-	// No NEW stalls on this pass (already stalled) — the failure count
-	// only accrues for newly-stalled rows; the metric surface for the
-	// persistent-failure class is the stalled-entries gauge itself.
 	require.Equal(t, 0, wakeFailures3)
 }
