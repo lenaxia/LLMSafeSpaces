@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-09-05
+
+The V2-delivery validation release: the US-70 delivery pool ran fully green
+for the first time (delivery suite + revisions + Epic 69 evidence + faults
+F1–F5, under `OPENCODE_V2_DELIVERY=1` + `AGENTD_STATE_AUTHORITY=1`, gVisor,
+40-workspace scale). Production flip follows this release.
+
+### Fixed (security)
+- **Bootstrap-token expiry enforced in the handler** — the cluster's
+  TokenReview does NOT enforce TokenRequest `exp` (kind v1.35: a mint 40
+  minutes past expiry authenticated). After successful TokenReview the
+  handler reads the token's own `exp` claim and 401s past `exp` + 60 s
+  clock-skew leeway; absent `exp` fails open (legacy tokens). (#1282)
+
+### Fixed (secret delivery)
+- **File-class live delivery** — file-class secrets (ssh-key,
+  git-credential, secret-file) applied only at spawn; a bind on a RUNNING
+  workspace staged forever (~/.ssh empty, filesRev hashed the empty set).
+  New control-protocol `refresh_files` seam: the supervisor re-pulls and
+  applies WITHOUT restarting the editor; the reload pipeline triggers it
+  on file-class batches; a boot-race heal covers the supervisor's spawn
+  pull beating the sidecar's first staging publish. Permissions contract
+  verified: uid-1000-owned, 0600, config owner = consuming uid. (#1271)
+- **Concurrent workspace reconciles** — the workspace controller ran at
+  controller-runtime's default of 1: fleet resume was linear (~8 s per
+  workspace; 40 workspaces ≈ 5+ minutes on an idle node). New
+  `-max-concurrent-reconciles` flag (default 4, clamped 1..64), chart
+  value `controller.maxConcurrentReconciles`. (#1257)
+
+### Fixed (harness/CI — the pool's first green run)
+- The delivery pool's real runner blocker: kind's default serviceSubnet
+  collided with the host cluster's `kubernetes` service IP (10.96.0.1) —
+  in-cluster clients got the HOME apiserver's CA ("x509: certificate
+  signed by unknown authority") and kube-proxy nftables mode does not
+  DNAT under dind nesting. Non-colliding subnet + iptables pin. (#1247)
+- gVisor could never run on Talos workers (`user.max_user_namespaces=0`
+  — every runsc sandbox needs a userns; clone past the cap is ENOSPC).
+  Worker-scoped sysctl 63154. (talos-ops-prod#2389)
+- AC-13 resume stopwatch: three separate set-e/pipefail bugs made the
+  first-ever execution report zero samples; write-epoch comparison
+  replaces full-rev comparison (revs are per-workspace-unique by
+  design); activate bursts retry past the API's token-bucket 429s. (#1253–#1261)
+- F3 semantics: a DEK restore is invisible to the revision system by
+  design (not manifest data; W2 apply-guard blocks in-place re-materialize
+  at the same seq) — suspend/resume is the deterministic recovery. (#1280)
+- Fast-iteration cycle: dispatch `dwell_seconds=60` + `use_prebuilt_images`
+  takes a debug loop from ~5 h to ~17 min. (#1253)
+
+### Changed
+- **The pool runs the V2 regime** — `OPENCODE_V2_DELIVERY=1` +
+  `AGENTD_STATE_AUTHORITY=1` at install; the outbox/authority stack now
+  wires in the pool (Park/Unpark/inflight live). (#1275)
+- AC-13 scale target calibrated to the dind runner class: knee measured
+  ~55 concurrent gVisor workspaces across two runs; `RESUME_SCALE=40`.
+  The pass criterion is completeness + write-epoch identity, not the
+  invented 45 s p95. (#1250–#1257)
+
+### Known issues
+- AC-4-lite (a bind racing a pod-delete mid-apply does not survive the
+  recreate) — documented known-fail, US-70.3 durability question.
+
 ## [0.26.0] - 2026-08-31
 
 ### Changed (breaking — read before upgrading)
