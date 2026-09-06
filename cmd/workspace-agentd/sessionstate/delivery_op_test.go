@@ -146,3 +146,47 @@ func newAuthedServer(t *testing.T, h http.Handler) abiclientIface {
 	t.Cleanup(ts.Close)
 	return authedClient(ts.URL, "pw")
 }
+
+// #1293 r3: the provider crosses the DELIVER-entry boundary (the exact
+// site the bug lived) — a wire DeliveryRequest carrying
+// {id,provider} must reach the admitter as "provider/id". Empirically
+// revertible leg before this pin (GetId() dropped the provider).
+type modelRecordingAdmitter struct {
+	model atomic.Value // string; every access synchronized (r4: the Eventually read raced the guarded write under -race)
+}
+
+func (m *modelRecordingAdmitter) Admit(_ context.Context, _, _, model string) (string, error) {
+	m.model.Store(model)
+	return "wire-msg", nil
+}
+
+func (m *modelRecordingAdmitter) current() string {
+	v, _ := m.model.Load().(string)
+	return v
+}
+
+func TestDeliverOp_ModelProviderCrossesWire(t *testing.T) {
+	admitter := &modelRecordingAdmitter{}
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      &fixtureParser{},
+		Store:       &mapStore{},
+		Passwords:   []string{"pw"},
+		Admitter:    admitter,
+		FastCursor:  true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.Close() })
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+
+	body := &abiv1.DeliveryRequest{
+		SessionId: "s1", EntryId: "e-model", Attempt: 1,
+		Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "hello"}}},
+		Model: &abiv1.ModelRef{Id: "glm-5.3", Provider: "thekaocloud"},
+	}
+	_, err = c.Deliver(context.Background(), connect.NewRequest(body))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return admitter.current() != "" }, 10*time.Second, 50*time.Millisecond)
+	assert.Equal(t, "thekaocloud/glm-5.3", admitter.current(), "the provider must cross the Deliver boundary as provider/id — id-only re-runs the wrong model")
+}

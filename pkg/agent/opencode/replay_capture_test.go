@@ -2,7 +2,9 @@ package opencode
 
 import (
 	"bufio"
+
 	"encoding/json"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"os"
 	"strings"
 	"testing"
@@ -219,5 +221,45 @@ func TestTranslateNextTool_CrossSessionEndDoesNotConsumeMemo(t *testing.T) {
 	}
 	if evt.Part.GetTool().GetName() != "bash" {
 		t.Fatal("owner END lost the memoized name — cross-session END consumed it")
+	}
+}
+
+// #1292a: the terminal step.ended (finish:"stop") maps to
+// SESSION_STATUS_IDLE — the wire never emits session.idle on this build
+// (240s post-turn capture: zero idle events), so this is the ONLY busy
+// clear. Mid-turn steps (finish:"tool-calls") stay MESSAGE_END.
+func TestStepEnded_FinishStopMapsToIdle(t *testing.T) {
+	tr := ABITranslator{}
+	terminal := `{"sessionID":"ses_1","assistantMessageID":"msg_1","finish":"stop","tokens":{"input":10,"output":5}}`
+	evt, ok, err := tr.Parse([]byte(`{"id":"e1","type":"session.next.step.ended","properties":` + terminal + `}`))
+	if err != nil || !ok {
+		t.Fatalf("terminal step: ok=%v err=%v", ok, err)
+	}
+	if evt.Type.String() != "EVENT_TYPE_SESSION_STATUS" || evt.Status != abiv1.SessionStatus_SESSION_STATUS_IDLE {
+		t.Fatalf("finish=stop -> %s/%s, want SESSION_STATUS/IDLE", evt.Type, evt.Status)
+	}
+	if evt.Message.GetCost() == nil || evt.Message.GetCost().GetInputTokens() != 10 {
+		t.Fatalf("terminal step cost not carried: %+v", evt.Message.GetCost())
+	}
+	mid := `{"sessionID":"ses_1","assistantMessageID":"msg_2","finish":"tool-calls"}`
+	evt2, ok2, err2 := tr.Parse([]byte(`{"id":"e2","type":"session.next.step.ended","properties":` + mid + `}`))
+	if err2 != nil || !ok2 {
+		t.Fatalf("mid step: ok=%v err=%v", ok2, err2)
+	}
+	if evt2.Type.String() != "EVENT_TYPE_MESSAGE_END" {
+		t.Fatalf("finish=tool-calls -> %s, want MESSAGE_END (mid-turn)", evt2.Type)
+	}
+	// #1293 r1: the whitelist is inverted — ANY non-tool-calls finish is
+	// terminal ("stop", "unknown" per the live context-overflow evidence,
+	// and finish-absent abort shapes).
+	for _, finish := range []string{`"finish":"unknown"`, `"finish":"length-limit"`, ``} {
+		term := `{"sessionID":"ses_1","assistantMessageID":"msg_3"` + (map[bool]string{true: ",", false: ""}[finish != ""]) + finish + `}`
+		evt3, ok3, err3 := tr.Parse([]byte(`{"id":"e3","type":"session.next.step.ended","properties":` + term + `}`))
+		if err3 != nil || !ok3 {
+			t.Fatalf("terminal %q: ok=%v err=%v", finish, ok3, err3)
+		}
+		if evt3.Type.String() != "EVENT_TYPE_SESSION_STATUS" || evt3.Status != abiv1.SessionStatus_SESSION_STATUS_IDLE {
+			t.Fatalf("finish=%q -> %s/%s, want SESSION_STATUS/IDLE (inverted whitelist)", finish, evt3.Type, evt3.Status)
+		}
 	}
 }

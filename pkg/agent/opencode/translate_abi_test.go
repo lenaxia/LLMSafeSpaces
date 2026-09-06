@@ -95,7 +95,10 @@ func TestTranslateABI_BusyStepBoundaries(t *testing.T) {
 // TestTranslateABI_BillingFieldsCarried: step.ended tokens and
 // message-level cost map to contract Cost (Epic 33 shape).
 func TestTranslateABI_BillingFieldsCarried(t *testing.T) {
-	evt, ok := parse(t, `{"id":"e1","type":"session.next.step.ended","properties":{"sessionID":"s1","assistantMessageID":"m2","tokens":{"input":100,"output":50,"reasoning":10,"cache":{"read":5,"write":0}}}}`)
+	// finish:"tool-calls" keeps the mid-turn MESSAGE_END shape; the
+	// terminal (non-tool-calls) step maps to IDLE carrying the cost
+	// (#1293 r1 inversion — both shapes still carry the cost).
+	evt, ok := parse(t, `{"id":"e1","type":"session.next.step.ended","properties":{"sessionID":"s1","assistantMessageID":"m2","finish":"tool-calls","tokens":{"input":100,"output":50,"reasoning":10,"cache":{"read":5,"write":0}}}}`)
 	require.True(t, ok)
 	assert.Equal(t, abiv1.EventType_EVENT_TYPE_MESSAGE_END, evt.Type)
 	require.NotNil(t, evt.Message)

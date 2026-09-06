@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -273,16 +274,71 @@ type opencodeAdmitter struct {
 	password string
 }
 
+// post issues one Basic-auth JSON POST against the pod's opencode
+// (:4096, §D1 credential) — the admitter's transport discipline, shared
+// shape with the actor's post.
+func (o opencodeAdmitter) post(ctx context.Context, path string, payload any, out any) error {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, getAgentAddr()+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth("opencode", o.password)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(errBody))
+	}
+	if out != nil {
+		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+	}
+	return nil
+}
+
 func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
 	if text == "" {
 		return "", fmt.Errorf("admit: empty text")
+	}
+	// #1292b: the V2 prompt endpoint STRIPS per-prompt model overrides
+	// (verified live: a steer body carrying glm-5.3 ran the session
+	// default muse-spark). The model must be applied to the SESSION
+	// before admission — the same contract as the adapter path's
+	// SetSessionModel and the SwitchModel action ("pick a model →
+	// session default changes"). Fail closed: a model the endpoint
+	// rejects must fail the admission loudly, not silently run the
+	// default.
+	if model != "" {
+		// Wire key is providerID on the pinned >= 1.18.15 (the repo's own
+		// captured golden: {"id":"glm-5.3","providerID":"thekaocloud"},
+		// #1119 stress finding 5) — "provider" is the <= 1.18.14 shape.
+		wire := map[string]any{"id": model}
+		if prov, id, ok := strings.Cut(model, "/"); ok && id != "" {
+			wire = map[string]any{"id": id, "providerID": prov}
+		}
+		if err := o.post(ctx, "/api/session/"+sessionID+"/model", map[string]any{"model": wire}, nil); err != nil {
+			return "", fmt.Errorf("admit: set session model: %w", err)
+		}
 	}
 	body := map[string]any{
 		"prompt":   map[string]any{"text": text},
 		"delivery": "steer",
 	}
 	if model != "" {
-		body["model"] = map[string]any{"id": model}
+		// Kept for forward-compat with builds that honor it; stripped by
+		// the pinned endpoint (see above). providerID key — same golden.
+		if prov, id, ok := strings.Cut(model, "/"); ok && id != "" {
+			body["model"] = map[string]any{"id": id, "providerID": prov}
+		} else {
+			body["model"] = map[string]any{"id": model}
+		}
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
@@ -414,9 +470,11 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 
 	case *abiv1.ActionRequest_SwitchModel:
 		m := a.SwitchModel.GetModel()
+		// providerID key — the captured >= 1.18.15 golden (#1293 r1: the
+		// pre-existing "provider" key contradicts it, same wire-drift class).
 		wire := map[string]any{"id": m.GetId()}
 		if m.GetProvider() != "" {
-			wire["provider"] = m.GetProvider()
+			wire["providerID"] = m.GetProvider()
 		}
 		if _, err := o.post(ctx, "/api/session/"+sessionID+"/model", map[string]any{"model": wire}, nil); err != nil {
 			return nil, err

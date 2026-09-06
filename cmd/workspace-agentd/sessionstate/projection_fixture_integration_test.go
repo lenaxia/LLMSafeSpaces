@@ -32,6 +32,9 @@ func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 			}
 			sc := bufio.NewScanner(f)
 			sc.Buffer(make([]byte, 1024*1024), 1024*1024)
+			var maxParts int
+			var toolCompleteSeen bool
+			var busySeen bool
 			for sc.Scan() {
 				line := sc.Text()
 				if !strings.HasPrefix(line, "data: ") {
@@ -49,45 +52,64 @@ func TestAuthorityProjection_FixtureReplayIntegration(t *testing.T) {
 				}
 				raw, _ := json.Marshal(map[string]any{"id": envelope.ID, "type": envelope.Type, "properties": envelope.Properties})
 				auth.Ingest(raw)
-			}
-			// SNAPSHOT-level assertions: what the frontend's fold renders.
-			state := auth.State()
-			totalParts := 0
-			toolParts := 0
-			for _, sess := range state.Sessions {
-				for _, part := range sess.InFlightParts {
-					totalParts++
-					if part.GetId() == "" {
-						t.Error("snapshot part with empty ID — the fold cannot key it")
+				// Sample DURING the turn: the fold's in-flight parts exist
+				// only until the terminal step (finish:"stop" → IDLE clears
+				// them by design — idle means reconcile-from-history).
+				state := auth.State()
+				n := 0
+				for _, sess := range state.Sessions {
+					n += len(sess.InFlightParts)
+					if sess.Busy {
+						busySeen = true
 					}
-					if tp := part.GetTool(); tp != nil {
-						toolParts++
-						// The r1 wipe class: a completed tool part must
-						// retain name AND input in the projected snapshot.
-						if tp.GetName() == "" {
-							t.Errorf("projected tool part %s lost its name (the wipe bug)", part.GetId())
+					for _, part := range sess.InFlightParts {
+						if part.GetId() == "" {
+							t.Error("snapshot part with empty ID — the fold cannot key it")
 						}
-						if len(tp.GetInput()) == 0 {
-							t.Errorf("projected tool part %s lost its input (the wipe bug)", part.GetId())
-						}
-						// The r5 mutation gap: the END path itself — a
-						// translator regression suppressing tool ENDs
-						// leaves parts RUNNING forever. The captured turn
-						// COMPLETED its tool; the snapshot must show it.
-						if st := tp.GetState().GetStatus(); st != abiToolCompleted {
-							t.Errorf("projected tool part %s status = %s, want COMPLETED (END suppressed?)", part.GetId(), st)
-						}
-						if len(tp.GetOutput()) == 0 {
-							t.Errorf("projected tool part %s has no output — the result never reached the snapshot (content[]/structured undecoded)", part.GetId())
+						if tp := part.GetTool(); tp != nil {
+							// The r1 wipe class: name is known from the first
+							// frame (input.started precedes called); INPUT is
+							// only guaranteed once the call is complete
+							// (input.started carries no input on the wire).
+							if tp.GetName() == "" {
+								t.Errorf("projected tool part %s lost its name (the wipe bug)", part.GetId())
+							}
+							if st := tp.GetState().GetStatus(); st == abiToolCompleted {
+								if len(tp.GetInput()) == 0 {
+									t.Errorf("projected tool part %s completed without input (the wipe bug)", part.GetId())
+								}
+								toolCompleteSeen = true
+								if len(tp.GetOutput()) == 0 {
+									t.Errorf("projected tool part %s completed with no output (content[]/structured undecoded)", part.GetId())
+								}
+							}
 						}
 					}
 				}
+				if n > maxParts {
+					maxParts = n
+				}
 			}
-			if totalParts == 0 {
-				t.Fatal("no parts reached the projected snapshot")
+			if maxParts == 0 {
+				t.Fatal("no parts reached the projected snapshot during the turn")
 			}
-			if strings.Contains(fixture, "tool") && toolParts == 0 {
-				t.Fatal("tool fixture produced no projected tool parts")
+			if strings.Contains(fixture, "tool") && !toolCompleteSeen {
+				t.Fatal("tool fixture: the completed tool part was never observed in the fold")
+			}
+			// #1292a: the terminal shape — the fixture's turn ENDED, so the
+			// session must be IDLE with an empty fold (busy-stuck is the
+			// user-facing bug this pins).
+			final := auth.State()
+			for sid, sess := range final.Sessions {
+				if sess.Busy {
+					t.Errorf("session %s stuck BUSY after the captured turn ended — the #1292a bug", sid)
+				}
+				if len(sess.InFlightParts) != 0 {
+					t.Errorf("session %s: idle fold still carries %d in-flight parts", sid, len(sess.InFlightParts))
+				}
+			}
+			if !busySeen {
+				t.Fatal("the captured turn never showed BUSY — the fixture is not exercising the busy→idle cycle")
 			}
 		})
 	}
