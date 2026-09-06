@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Session:** Two user reports on the live system: (a) sessions stay BUSY after the turn ends; (b) agents run muse-spark despite the session being configured for glm-5.3. Both root-caused from live captures on the production pod.
-**Status:** In Progress (r3: all legs pinned — WAL replay model crossing, Deliver-entry provider crossing, terminal-finish inversion)
+**Status:** Complete (r5: all legs pinned and green; production roll pending)
 
 ---
 
@@ -40,7 +40,7 @@ None.
 - `-race` green.
 - New: TestStepEnded_FinishStopMapsToIdle (terminal incl. unknown/absent finishes vs mid-turn tool-calls — the inverted whitelist), TestOpencodeAdmitter_SetsSessionModelBeforeSteer (ordering + providerID wire form), TestOpencodeAdmitter_ModelSetFailureFailsClosed, TestModelPersistsAcrossWALReplay (the crash/suspend window re-admits with the WAL row's model), TestDeliverOp_ModelProviderCrossesWire (the provider crosses the Deliver boundary as provider/id — through the generated wire handler).
 - Integration reworked to sample DURING the turn (idle clears the fold by design) and pins the terminal shape: IDLE + empty fold + busy-was-seen — the #1292a pin.
-- TestDeliver_ExactlyOncePerAttempt's tail updated: attempt+1 after an ADMITTED prior dedups (the #1288 pin; the old assertion pinned the bug).
+- TestTranslateABI_BillingFieldsCarried's fixture now carries finish:tool-calls explicitly (the inversion kept both shapes carrying cost; the old fixture relied on finish-absent mapping to MESSAGE_END).
 
 ## Next Steps
 
@@ -48,7 +48,8 @@ None.
 
 ## Files Modified
 
-- pkg/agent/opencode/translate_abi.go — terminal step.ended → IDLE.
-- cmd/workspace-agentd/sessionstate_wiring.go — admitter sets the session model first (post helper + provider/id split).
+- pkg/agent/opencode/translate_abi.go — terminal step.ended (finish != tool-calls) → IDLE.
+- cmd/workspace-agentd/sessionstate_wiring.go — admitter sets the session model first (post helper + providerID/provider-id split); SwitchModel's wire key corrected to providerID.
 - cmd/workspace-agentd/sessionstate/service.go — provider crosses the Deliver boundary.
-- Tests + integration rework as above.
+- cmd/workspace-agentd/sessionstate/ledger.go — the model persists in the WAL row.
+- Tests: translate_abi_test, wiring_test, actor_test, ledger_test, delivery_op_test, projection integration rework, replay/e2e adjustments as listed.
