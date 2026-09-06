@@ -149,7 +149,7 @@ the platform artifact.**
   | `/sandbox-cfg/admin-token` | init-fs (1000) | legacy main agentd (1000); sidecar uses env | 0400 |
   | `/sandbox-cfg/free-models.json` | init-fs (1000) | materialize (2000/1000) | 0644 |
   | `rt/secrets.json` (bootstrap out) | bootstrap (2000 sidecar / 1000 legacy) | materialize | 0600 |
-  | `rt/*` credential outputs, `agent-config.json` | materialize (2000/1000) | opencode (1000) | 0600 / 0640 (T2 exception) |
+  | `rt/*` credential outputs, `agent-config.json` | materialize (2000/1000) | opencode (1000) | 0600 / 0640 (T2 exception) — `rt/auth.json` is **0660** (#1296): opencode WRITES the store (its auth subsystem persists at boot and on `PUT /auth`); 0640 left it uid-1000-unwritable and every provider failed init fleet-wide |
 
 - Legacy-no-overlay pods (no `agentdDelivery.image`) keep the bash init containers unchanged; that
   path is deleted in migration step 5 together with the baked binary. Helm rollback (D6.1) that

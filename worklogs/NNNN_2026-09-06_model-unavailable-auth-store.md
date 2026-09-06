@@ -19,8 +19,8 @@ Make a fresh workspace's provider credentials actually work.
 
 ## The fix
 
-1. auth.json lands **0660** (shared-gid read+write) — injector writes and the legacy-mode repair both.
-2. The bootstrap materialize **merges staged providers into auth.json** (same {key,type} shape as opencode's own PUT /auth; preserves existing entries; 0660; MkdirAll the store dir).
+1. auth.json lands **0660** (shared-gid read+write) — the injector's writes AND the bootstrap merge; the mode is umask-immune (chmod on a unique CreateTemp temp BEFORE the plaintext write; the fixed-name-temp variant inherited crashed runs' modes) and the rename resolves the symlink (resolvable OR dangling-first-boot — renaming onto a dangling link puts plaintext on the PVC, the r5 regression the fixture caught).
+2. The bootstrap materialize **merges staged providers into auth.json** — payload parity with the live PUT /auth ({key, type, metadata.baseURL?}); preserves existing entries; the reserved `opencode` slug is skipped with an observable stderr line; failure is NON-FATAL (log + continue, the pre-boot relay doctrine — a CrashLoop wedges harder).
 
 ## Why no test caught it (the user's question)
 
