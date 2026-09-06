@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-05
 **Session:** Two user reports on the live system: (a) sessions stay BUSY after the turn ends; (b) agents run muse-spark despite the session being configured for glm-5.3. Both root-caused from live captures on the production pod.
-**Status:** In Progress
+**Status:** In Progress (r3: all legs pinned — WAL replay model crossing, Deliver-entry provider crossing, terminal-finish inversion)
 
 ---
 
@@ -38,8 +38,9 @@ None.
 
 - `go test ./pkg/agent/opencode/ ./cmd/workspace-agentd/...` — green.
 - `-race` green.
-- New: TestStepEnded_FinishStopMapsToIdle (terminal vs mid-turn), TestOpencodeAdmitter_SetsSessionModelBeforeSteer (ordering + wire form), TestOpencodeAdmitter_ModelSetFailureFailsClosed.
+- New: TestStepEnded_FinishStopMapsToIdle (terminal incl. unknown/absent finishes vs mid-turn tool-calls — the inverted whitelist), TestOpencodeAdmitter_SetsSessionModelBeforeSteer (ordering + providerID wire form), TestOpencodeAdmitter_ModelSetFailureFailsClosed, TestModelPersistsAcrossWALReplay (the crash/suspend window re-admits with the WAL row's model), TestDeliverOp_ModelProviderCrossesWire (the provider crosses the Deliver boundary as provider/id — through the generated wire handler).
 - Integration reworked to sample DURING the turn (idle clears the fold by design) and pins the terminal shape: IDLE + empty fold + busy-was-seen — the #1292a pin.
+- TestDeliver_ExactlyOncePerAttempt's tail updated: attempt+1 after an ADMITTED prior dedups (the #1288 pin; the old assertion pinned the bug).
 
 ## Next Steps
 
