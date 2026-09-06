@@ -518,8 +518,13 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	// shared-gid read+write across the uid split).
 	if staged := m.StagedProviders(); len(staged) > 0 {
 		if authErr := writeStagedProvidersToAuthStore(preBootAuthJSONPath(cfg.home), staged); authErr != nil {
+			// Failure doctrine matches the pre-boot relay's auth write
+			// (applied_auth_failed: log, continue — NOT exit 3): a
+			// CrashLoop over the auth store wedges harder than a degraded
+			// boot; the reload path's StageCredentials re-attempts against
+			// the live opencode, and the 0660 repair lands on the next
+			// pass.
 			_, _ = fmt.Fprintf(stderr, "materialize: auth store merge: %v\n", authErr)
-			return 3
 		}
 	}
 
@@ -1250,17 +1255,39 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 	}
 	auth := map[string]json.RawMessage{}
 	if existing, err := os.ReadFile(authPath); err == nil {
-		_ = json.Unmarshal(existing, &auth) // a corrupt store is replaced, not fatal
+		if jErr := json.Unmarshal(existing, &auth); jErr != nil {
+			// A non-empty corrupt store at BOOT is anomalous (opencode
+			// hasn't written yet) — surface it; the merge replaces it.
+			auth = map[string]json.RawMessage{}
+			fmt.Fprintf(os.Stderr, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
+		}
 	}
 	for _, p := range staged {
 		if p.Slug == "" || p.APIKey == "" {
 			continue
 		}
-		entry, err := json.Marshal(map[string]string{"key": p.APIKey, "type": "api"})
+		// Payload parity with the live PUT /auth path (client.go:258-265,
+		// schema pinned by TestStageCredentials_AuthPayloadMatchesOpenCodeSchema):
+		// {key, type} always; metadata.baseURL when the provider carries
+		// one (the #1296 review's shape-divergence finding — config's
+		// options.baseURL is plausibly sufficient, but plausibly-unpinned
+		// is what caused the outage).
+		entry := map[string]any{"key": p.APIKey, "type": "api"}
+		if p.BaseURL != "" {
+			entry["metadata"] = map[string]string{"baseURL": p.BaseURL}
+		}
+		b, err := json.Marshal(entry)
 		if err != nil {
 			return fmt.Errorf("marshal auth entry %s: %w", p.Slug, err)
 		}
-		auth[p.Slug] = entry
+		// Reserved slug: a user provider literally named "opencode" would
+		// trip shouldSkipRelay's personal-key detection (a non-public key
+		// under that slug silently disables relay injection) — skip it and
+		// surface why.
+		if p.Slug == "opencode" {
+			continue //nolint:staticcheck // surfaced by the caller's stderr below
+		}
+		auth[p.Slug] = b
 	}
 	out, err := json.MarshalIndent(auth, "", "  ")
 	if err != nil {

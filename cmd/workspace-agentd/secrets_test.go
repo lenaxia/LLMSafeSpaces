@@ -1420,20 +1420,31 @@ func TestWriteStagedProvidersToAuthStore(t *testing.T) {
 		[]byte(`{"opencode-relay":{"key":"public","type":"api"},"anthropic":{"key":"sk-live","type":"api"}}`), 0o640))
 
 	staged := []sec.LLMProviderData{
-		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-kao-123"},
-		{Kind: "openai_compatible", Slug: "empty"}, // no key — skipped
+		// BaseURL carried — payload parity with the live PUT /auth path
+		// (client.go:258-265: metadata.baseURL when present).
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-kao-123", BaseURL: "https://ai.thekao.cloud/v1"},
+		// The reserved slug: a user provider literally named "opencode"
+		// would trip shouldSkipRelay's personal-key detection — skipped.
+		{Kind: "openai_compatible", Slug: "opencode", APIKey: "sk-personal"},
 	}
 	require.NoError(t, writeStagedProvidersToAuthStore(authPath, staged))
 
 	var auth map[string]struct {
-		Key  string `json:"key"`
-		Type string `json:"type"`
+		Key      string `json:"key"`
+		Type     string `json:"type"`
+		Metadata *struct {
+			BaseURL string `json:"baseURL"`
+		} `json:"metadata"`
 	}
 	require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
 	require.Len(t, auth, 3)
 	require.Equal(t, "sk-kao-123", auth["thekaocloud"].Key)
+	require.Equal(t, "https://ai.thekao.cloud/v1", auth["thekaocloud"].Metadata.BaseURL,
+		"payload parity with the live PUT /auth path — metadata.baseURL when the provider carries one")
 	require.Equal(t, "public", auth["opencode-relay"].Key, "the relay entry must survive the merge")
 	require.Equal(t, "sk-live", auth["anthropic"].Key, "opencode's own entries must survive the merge")
+	_, hasReserved := auth["opencode"]
+	require.False(t, hasReserved, "the reserved 'opencode' slug must not enter the store (shouldSkipRelay collision)")
 
 	info, err := os.Stat(authPath)
 	require.NoError(t, err)
@@ -1446,4 +1457,40 @@ func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	require.NoError(t, err)
 	return b
+}
+
+// #1296 wiring pin: runMaterializeCommand must deliver llm-provider
+// entries to the AUTH STORE (not just agent-config). Deleting the
+// writeStagedProvidersToAuthStore call ships green without this — the
+// exact review finding (the behavioral fix unpinned).
+func TestRunMaterialize_WritesProvidersToAuthStore(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(from, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\",\"baseURL\":\"https://kao/v1\"}"}
+	]}`), 0o600))
+
+	// Isolate the materialize paths (env file, staging tree) into the
+	// temp dir — the defaults point at /sandbox-runtime (prod-only).
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
+	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", filepath.Join(dir, "secrets-base"))
+	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "ssh"))
+	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	var stderrBuf bytes.Buffer
+	code := runMaterializeCommand([]string{"--from", from}, nil, &stderrBuf)
+	require.Equal(t, 0, code, "materialize must succeed; code=%d stderr=%s", code, stderrBuf.String())
+	t.Logf("full stderr: %s", stderrBuf.String())
+
+	authPath := filepath.Join(dir, ".local", "opencode", "auth.json")
+	var auth map[string]struct {
+		Key string `json:"key"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key,
+		"the bootstrap materialize MUST write provider credentials to the auth store (#1296)")
 }

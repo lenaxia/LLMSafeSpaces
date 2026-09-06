@@ -32,10 +32,19 @@ The pool verifies env/file secrets (SD_FIRST, ~/.ssh) — never a provider-crede
 2. Merge not replace at bootstrap: opencode's own live writes and the relay entry must survive.
 3. Fail materialize (exit 3) on store-write failure: a partial-credential boot silent-wedges worse than a CrashLoop.
 
+### Review r1 hardening
+
+- Payload parity with the live PUT /auth path: metadata.baseURL when the provider carries one (the divergence was unpinned).
+- The reserved "opencode" slug is skipped (a user provider under that literal would trip shouldSkipRelay's personal-key detection) — pinned.
+- Failure doctrine reconciled: the merge fails NON-fatal (matches pre-boot relay's applied_auth_failed; a CrashLoop wedges harder than a degraded boot).
+- A corrupt store at boot is surfaced on stderr, not silently replaced.
+- The unreachable no-key skip case removed from tests (applyLLMProvider + Validate guarantee both non-empty).
+- WIRING PIN: TestRunMaterialize_WritesProvidersToAuthStore drives the real runMaterializeCommand end-to-end — deleting the merge call fails it (the r1 finding: the behavioral fix shipped unpinned).
+
 ## Tests Run
 
 - Full cmd/workspace-agentd + sessionstate suites green.
-- New: TestUpdateAuthJSONForRelay_CrossUIDMode (0660 create + legacy repair), TestWriteStagedProvidersToAuthStore (merge preserves, mode 0660, no-key skip).
+- New: TestUpdateAuthJSONForRelay_CrossUIDMode (0660 create + legacy repair), TestWriteStagedProvidersToAuthStore (merge preserves, baseURL parity, reserved slug, mode 0660), TestRunMaterialize_WritesProvidersToAuthStore (the wiring pin).
 
 ## Files Modified
 
