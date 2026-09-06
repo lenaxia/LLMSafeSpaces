@@ -121,6 +121,82 @@ fi
 ok "AC-1 PASS"
 
 # -----------------------------------------------------------------------------
+# AC-1b — llm-provider credential bound before first Active → the model
+#         REGISTRY admits the provider's model (the #1300 contract)
+#
+# #1300 regression row: /config/providers (the config-service view)
+# showed credential-backed providers as healthy while
+# model.available() — the registry SessionRunnerModel.resolve searches —
+# admitted NOTHING, because the OPENCODE_CONFIG file never feeds the V2
+# catalog. This row pins the real contract end-to-end:
+#   1. create a user provider credential (openai_compatible stub),
+#   2. bind it BEFORE the pod exists (same cold-create shape as AC-1),
+#   3. assert the XDG registry-layer symlink the supervisor installs,
+#   4. assert the provider's allowlisted model appears in GET /api/model
+#      (the registry), NOT merely in /config/providers (the lying view).
+# The stub baseURL is unreachable on purpose — the enricher's /models
+# fetch fails and the allowlist render is the model source, which is
+# exactly the production shape for allowlisted credentials.
+# -----------------------------------------------------------------------------
+WS1B=$(ws_id 90)
+log "AC-1b — llm-provider credential bound before Active → registry admits the model (#1300)"
+
+CRED_BODY=$(mktemp)
+CRED_CODE=$(curl -sm 30 -o "${CRED_BODY}" -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"ac1b-stub","kind":"openai_compatible","slug":"ac1b-stub","apiKey":"sk-ac1b-stub","baseURL":"http://127.0.0.1:9/v1","modelAllowlist":["stub-model-1"]}' \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials")
+[[ "${CRED_CODE}" == 2* ]] || die "AC-1b: credential create failed: HTTP ${CRED_CODE}: $(head -c 300 "${CRED_BODY}")"
+CRED_ID=$(jq -r '.id // .credential.id // empty' "${CRED_BODY}")
+[[ -n "${CRED_ID}" ]] || die "AC-1b: credential create returned no id: $(head -c 300 "${CRED_BODY}")"
+rm -f "${CRED_BODY}"
+ok "provider credential created (${CRED_ID})"
+
+seed_workspace "${WS1B}"
+BIND_CODE=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED_ID}/bind/${WS1B}")
+[[ "${BIND_CODE}" == 2* ]] || die "AC-1b: credential bind failed: HTTP ${BIND_CODE}"
+ok "credential bound before pod creation"
+
+wait_phase "${WS1B}" Active 240 || die "AC-1b: workspace never Active"
+secrets_converged "${WS1B}" 120 || die "AC-1b: secretsDelivery not converged"
+
+POD1B=$(pod_of "${WS1B}")
+[[ -n "${POD1B}" ]] || die "AC-1b: no pod name on CR"
+
+# (3) The XDG registry-layer contract (#1300 fix): the supervisor
+# installs ~/.config/opencode/opencode.json → /agentd-config/agent-config.json.
+XDG_LINK=$(kc exec "${POD1B}" -c workspace -- readlink -f /home/sandbox/.config/opencode/opencode.json 2>/dev/null || true)
+[[ "${XDG_LINK}" == "/agentd-config/agent-config.json" ]] \
+    || die "AC-1b: XDG registry layer missing or wrong (readlink: '${XDG_LINK}')"
+ok "XDG registry-layer symlink present (→ ${XDG_LINK})"
+
+# The rendered config must contain the credential's provider block.
+kc exec "${POD1B}" -c workspace -- grep -q '"ac1b-stub"' /agentd-config/agent-config.json \
+    || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
+
+# (4) THE REGISTRY: opencode's model.available() via GET /api/model with
+# the workspace password (basic auth). This is the endpoint that lied
+# by omission in #1300 — /config/providers stayed green throughout.
+WS_PW=$(kc get secret "workspace-pw-${WS1B}" -o jsonpath='{.data.password}' | base64 -d)
+REG_OK=""
+for _i in $(seq 1 30); do
+    REG=$(kc exec "${POD1B}" -c workspace -- curl -sfm 5 -u "opencode:${WS_PW}" \
+        http://127.0.0.1:4096/api/model 2>/dev/null || true)
+    if printf '%s' "${REG}" | jq -e --arg p "ac1b-stub" --arg m "stub-model-1" \
+        '[.data[] | select(.providerID == $p and .id == $m)] | length == 1' >/dev/null 2>&1; then
+        REG_OK=true
+        break
+    fi
+    sleep 4
+done
+[[ "${REG_OK}" == "true" ]] \
+    || die "AC-1b FAIL: ac1b-stub/stub-model-1 NOT in the model registry (model.available()) after 120s — the #1300 failure mode"
+ok "AC-1b PASS: registry admits ac1b-stub/stub-model-1 (model.available(), not just /config/providers)"
+
+# -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
 # -----------------------------------------------------------------------------
 WS2=$(ws_id 2)

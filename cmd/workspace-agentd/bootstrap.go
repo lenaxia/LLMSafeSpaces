@@ -47,6 +47,17 @@ type bootstrapRequest struct {
 // bootstrapContractV2 is the delivery contract this client speaks.
 const bootstrapContractV2 = 2
 
+// First-boot fetch retry bounds (#1300): transient CNI/service warming
+// ("no route to host" to the API ClusterIP) outlives a single attempt
+// but is measured in seconds — 3 attempts with linear backoff (2s, 4s)
+// adds ≤6s of boot latency in the worst case while absorbing the
+// transient. A 401 is never retried (token rejection does not heal in
+// seconds) and a last-good batch skips the retry entirely.
+const (
+	bootstrapFetchAttempts     = 3
+	bootstrapFetchRetryBackoff = 2 * time.Second
+)
+
 // errBootstrapUnauthorized marks a pull the API answered with 401 —
 // the projected SA token was rejected (expired beyond the kubelet's
 // rotation, or audience mismatch). Callers distinguish it to surface
@@ -114,16 +125,37 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	secrets, notModified, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(context.Background(), *apiURL, *workspaceID, string(token), priorHash)
-	if err != nil {
+	// #1300: a first-boot fetch failure degrades to an EMPTY batch —
+	// which boots opencode with no providers and (with the registry
+	// frozen at boot state) can wedge the workspace's models until a
+	// restart. The observed first-boot failure mode ("no route to
+	// host" to the API ClusterIP) is transient CNI/service warming
+	// measured in seconds, so a short bounded retry absorbs it without
+	// meaningfully delaying boot. Last-good batches are NOT retried
+	// (the resync path heals those; instant boot preferred).
+	var secrets json.RawMessage
+	var notModified bool
+	var wsCfg json.RawMessage
+	var adminPrompt string
+	var allowedDirs []string
+	var fetchErr error
+	for attempt := 1; ; attempt++ {
+		secrets, notModified, wsCfg, adminPrompt, allowedDirs, fetchErr = fetchBootstrapSecrets(context.Background(), *apiURL, *workspaceID, string(token), priorHash)
+		if fetchErr == nil || hasPriorBatch || attempt >= bootstrapFetchAttempts || errors.Is(fetchErr, errBootstrapUnauthorized) {
+			break
+		}
+		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch attempt %d/%d failed: %v\n", attempt, bootstrapFetchAttempts, fetchErr)
+		time.Sleep(bootstrapFetchRetryBackoff * time.Duration(attempt))
+	}
+	if err := fetchErr; err != nil {
 		if hasPriorBatch {
 			// Resume-within-pod doctrine (US-70.2): a prior batch on disk is
 			// the last-good state — a failed pull keeps it; only the absence
 			// of any prior batch degrades to an empty one.
-			_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v; keeping last-good batch at %s\n", err, *out)
+			_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed after %d attempts: %v; keeping last-good batch at %s\n", bootstrapFetchAttempts, err, *out)
 			return 0
 		}
-		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed after %d attempts: %v\n", bootstrapFetchAttempts, err)
 		writeEmptySecrets(*out, stderr)
 		return 0
 	}

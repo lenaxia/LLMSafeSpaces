@@ -75,11 +75,35 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// fallback and never blocks boot.
 	ensureRedactWrapper(log)
 
+	// #1300 root-cause fix: opencode's V2 model registry only ingests
+	// provider blocks from the XDG config layer; our OPENCODE_CONFIG
+	// file (/agentd-config/agent-config.json) feeds the config service
+	// but never the catalog, so every platform-delivered provider was
+	// "Model unavailable". Install the XDG symlink (PVC holds only the
+	// link — US-35.7 intact) and quarantine malformed user configs
+	// that would crashloop opencode at boot. Both best-effort, both
+	// before the first spawn.
+	quarantineMalformedUserConfigs(log)
+	ensureOpencodeRegistryConfig(log)
+
+	// opencode chmods the auth store on its own live writes; a
+	// cross-uid (sidecar) writer leaves it foreign-owned, which EPERMs
+	// every PUT /auth. Normalize to the consuming uid before spawn.
+	normalizeAuthStoreOwnership(log)
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	proc, adapter := newSupervisorProcess(rootCtx)
 	proc.start()
+
+	// #1300 heal path: if the agent-config changes AFTER spawn (sidecar
+	// resync delivering a late batch), the running opencode may never
+	// re-ingest it into its registry (catalog re-transform is
+	// unreliable for late config under the sandbox runtime). Watch the
+	// file and restart opencode once per change with the existing
+	// credential_reload attribution.
+	go watchAgentConfigForChanges(rootCtx, proc, agentConfigPathFromEnv(), log)
 
 	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
 	// (Appendix A.0) and production never sets the override — it exists
