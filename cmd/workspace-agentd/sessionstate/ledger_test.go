@@ -607,3 +607,44 @@ func TestSteerDedup_RestartDestroyedAdmitted_EscalatesViaStall(t *testing.T) {
 	_, wakeFailures3 := l.checkStalls(context.Background(), failWake, future.Add(2*time.Hour))
 	require.Equal(t, 0, wakeFailures3)
 }
+
+// #1293 r2: the model persists in the WAL and crosses the replay path —
+// replayUnresolved re-drives admission with rec.Model intact (the crash/
+// suspend window previously re-ran the session default: #1292b).
+func TestModelPersistsAcrossWALReplay(t *testing.T) {
+	path := ledgerPath(t)
+	l1 := openLedgerForTest(t, path)
+	// A LEDGERED row with a model — the exact crash/suspend window (the
+	// 202 ack survived, admission never ran).
+	_, _, err := l1.ledger("s1", "e1", 1, []string{"hello"}, "thekaocloud/glm-5.3")
+	require.NoError(t, err)
+
+	// Simulate agentd death/restart: reopen the ledger from disk and
+	// replay unresolved rows with a WORKING admitter.
+	l2, err := openDeliveryLedger(path)
+	require.NoError(t, err)
+	captured := &modelCapturingAdmitter{}
+	d2 := newDeliveryDriver(l2, captured, Config{Passwords: []string{"pw"}}, nil)
+	d2.replayUnresolved(context.Background())
+	require.Eventually(t, func() bool {
+		st, _ := l2.status("e1", 1)
+		return st != nil && st.State == LedgerStateAdmitted
+	}, 15*time.Second, 100*time.Millisecond, "replay admits the row")
+	captured.mu.Lock()
+	defer captured.mu.Unlock()
+	require.NotEmpty(t, captured.calls, "replay re-drove admission")
+	assert.Equal(t, "thekaocloud/glm-5.3", captured.calls[0].model, "the WAL row's model crosses the replay — the #1293 r1 window")
+}
+
+// modelCapturingAdmitter records the model each admission carried.
+type modelCapturingAdmitter struct {
+	mu    sync.Mutex
+	calls []struct{ sessionID, text, model string }
+}
+
+func (m *modelCapturingAdmitter) Admit(_ context.Context, sessionID, text, model string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, struct{ sessionID, text, model string }{sessionID, text, model})
+	return "msg-r", nil
+}
