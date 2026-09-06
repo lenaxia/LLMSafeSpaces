@@ -1696,3 +1696,28 @@ func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
 		require.NotContains(t, e.Name(), ".auth-merge-", "the unique temp is consumed by the rename")
 	}
 }
+
+// r8: the unique-temp pin — the r7 fixed-name variant is the red case.
+// Runs the merge twice with a crashed first attempt (stale 0600 fixed-name
+// temp present), under umask 022; the fixed-name writer published 0600
+// (inheriting the stale temp's mode through WriteFile-on-existing), the
+// unique-temp writer cannot.
+func TestWriteStagedProvidersToAuthStore_UniqueTempIsTheSecurityProperty(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// The crashed prior run: the FIXED-NAME temp the r7 writer would reuse.
+	require.NoError(t, os.WriteFile(authPath+".merge-tmp", []byte(`{"crashed":true}`), 0o600))
+	oldMask := syscall.Umask(0o022)
+	defer syscall.Umask(oldMask)
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+	}))
+	st, err := os.Stat(authPath)
+	require.NoError(t, err)
+	perm := st.Mode().Perm()
+	require.NotEqual(t, fs.FileMode(0o600), perm,
+		"the r7 fixed-name writer inherits the crashed temp's 0600 here (verified red against 97ef2b21's shape); the unique-temp writer must not")
+	require.Equal(t, fs.FileMode(0o660), perm, "the published mode")
+	// The crashed run's fixed-name temp is untouched litter — NOT reused.
+	require.FileExists(t, authPath+".merge-tmp", "the unique-temp writer leaves the stale fixed-name file alone (it is not its temp)")
+}

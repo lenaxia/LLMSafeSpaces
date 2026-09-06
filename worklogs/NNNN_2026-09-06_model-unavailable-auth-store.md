@@ -26,11 +26,11 @@ Make a fresh workspace's provider credentials actually work.
 
 The pool verifies env/file secrets (SD_FIRST, ~/.ssh) — never a provider-credential turn through a real opencode boot. The #1119 pin asserted READ readability (0640) — the exact assertion that made the WRITE gap invisible. The new pins assert 0660 (both halves) and the bootstrap merge.
 
-## Key Decisions
+## Key Decisions (r1–r3 refinements superseded the original r0 text below where they differ; the shipped implementation is as described in The fix above)
 
 1. 0660 not 0600+chown: the uid split (2000 writes, 1000 reads+writes) is bridged by the shared gid — the existing T2 exception, plus w.
 2. Merge not replace at bootstrap: opencode's own live writes and the relay entry must survive.
-3. Fail materialize (exit 3) on store-write failure: a partial-credential boot silent-wedges worse than a CrashLoop.
+3. Fail NON-FATAL on store-write failure (log + continue, the pre-boot relay doctrine): a CrashLoop over the auth store wedges harder than a degraded boot; the repair lands on pod recreation or a batch-seq bump (the W2 apply-guard early-returns on sidecar restart).
 
 ### Review r1 hardening
 
