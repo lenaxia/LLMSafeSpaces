@@ -244,23 +244,26 @@ func updateAuthJSONForRelay(authJSONPath string) error {
 		return fmt.Errorf("marshal auth.json: %w", err)
 	}
 	// auth.json is written across the uid split (uid-2000 sidecar boot
-	// here, uid-1000 opencode the reader via the ~/.local/opencode
-	// symlink) — the same T2 exception as AgentConfigWriteMode (design
-	// 0051 §D1): 0640 via the pod's shared gid 1000. The 2026-08-29
-	// fleet-wide ModelUnavailableError was this file landing 0600:
-	// opencode could never read its auth store, so every custom
-	// provider failed init (#1119). WriteFile's perm applies only on
-	// CREATE, so an existing 0600 file keeps its mode through rewrites —
-	// the explicit Chmod repairs legacy files on the next pass.
-	// #nosec G306 -- 0640 is deliberate: cross-uid read via the pod's
-	// shared gid 1000 (design 0051 §D1/T2, the AgentConfigWriteMode
-	// exception); the plaintext exposure set is exactly gid 1000.
-	if err := os.WriteFile(authJSONPath, updated, 0o640); err != nil {
+	// here, uid-1000 opencode the reader AND WRITER via the
+	// ~/.local/opencode symlink) — the same T2 exception as
+	// AgentConfigWriteMode (design 0051 §D1) PLUS the write bit: opencode
+	// must WRITE this file (its auth subsystem persists credential
+	// updates via PUT /auth at boot and on reload). 0640 (the #1119 fix)
+	// made it readable — enough for the READ failure of 2026-08-29 — but
+	// left it unwritable by uid 1000: every PUT /auth died with
+	// PermissionDenied (500), provider registration failed at boot, and
+	// the model registry came up empty — fleet-wide "Model unavailable"
+	// for EVERY provider on pods whose auth.json the sidecar created
+	// (#1296: live-proven on a fresh 0.27.3 workspace; the same class
+	// wedged the 2026-08-29 pod permanently). 0660 via the pod's shared
+	// gid 1000: both uids read AND write; the plaintext exposure set is
+	// unchanged (exactly gid 1000).
+	if err := os.WriteFile(authJSONPath, updated, 0o660); err != nil {
 		return fmt.Errorf("write auth.json: %w", err)
 	}
-	// #nosec G302 -- same ruling as above; repairs legacy 0600-created
-	// files whose mode WriteFile cannot change on rewrite.
-	if err := os.Chmod(authJSONPath, 0o640); err != nil {
+	// #nosec G302 -- repairs legacy 0640/0600-created files whose mode
+	// WriteFile cannot change on rewrite (the #1119 and #1296 classes).
+	if err := os.Chmod(authJSONPath, 0o660); err != nil {
 		return fmt.Errorf("chmod auth.json: %w", err)
 	}
 	return nil

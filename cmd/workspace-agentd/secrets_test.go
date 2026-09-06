@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,7 @@ import (
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
+	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1400,4 +1402,48 @@ func TestShouldNotRestart_FileClassOnly(t *testing.T) {
 	if hasFileClassEntries([]secrets.Secret{{Type: "env-secret", Name: "x"}}) {
 		t.Fatal("env-secret is not file-class")
 	}
+}
+
+// #1296: the bootstrap materialize must MERGE staged provider credentials
+// into opencode's auth store — the config file alone does not register
+// providers with the session runner, and nothing else writes non-relay
+// credentials at boot (StageCredentials PUTs to a live opencode; the
+// relay injector writes only the relay entry). The file must land 0660
+// (opencode WRITES it through the uid-split symlink) and the merge must
+// preserve existing entries.
+func TestWriteStagedProvidersToAuthStore(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// Pre-existing: the relay entry (written by the injector) + an
+	// opencode-written entry — both must survive the merge.
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode-relay":{"key":"public","type":"api"},"anthropic":{"key":"sk-live","type":"api"}}`), 0o640))
+
+	staged := []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-kao-123"},
+		{Kind: "openai_compatible", Slug: "empty"}, // no key — skipped
+	}
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, staged))
+
+	var auth map[string]struct {
+		Key  string `json:"key"`
+		Type string `json:"type"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+	require.Len(t, auth, 3)
+	require.Equal(t, "sk-kao-123", auth["thekaocloud"].Key)
+	require.Equal(t, "public", auth["opencode-relay"].Key, "the relay entry must survive the merge")
+	require.Equal(t, "sk-live", auth["anthropic"].Key, "opencode's own entries must survive the merge")
+
+	info, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), info.Mode().Perm(),
+		"#1296: opencode (uid 1000) must be able to WRITE the store the sidecar (uid 2000) owns")
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	return b
 }

@@ -506,6 +506,23 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		return 3
 	}
 
+	// #1296: ALSO write the staged providers into opencode's auth store
+	// (auth.json). The config file alone does not register providers with
+	// opencode's session runner — availability comes from the auth store,
+	// and nothing else writes non-relay credentials there at boot: the
+	// reload path's StageCredentials PUTs to a LIVE opencode (never up at
+	// bootstrap), and the relay injector writes only the relay entry. On
+	// fresh pods every non-relay provider was "Model unavailable" forever.
+	// The write is a MERGE (preserves existing entries — e.g. the relay
+	// entry and opencode's own live writes) at the #1296 mode (0660,
+	// shared-gid read+write across the uid split).
+	if staged := m.StagedProviders(); len(staged) > 0 {
+		if authErr := writeStagedProvidersToAuthStore(preBootAuthJSONPath(cfg.home), staged); authErr != nil {
+			_, _ = fmt.Fprintf(stderr, "materialize: auth store merge: %v\n", authErr)
+			return 3
+		}
+	}
+
 	// Write the MCP servers section into agent-config.json (US-53.8). The
 	// servers were staged by applyMCPServer during Materialize above.
 	applyMCPServersToConfig(cfg.toPaths().AgentConfigPath, m.StagedMCPServers())
@@ -1213,4 +1230,52 @@ func buildEnvFrom(path string) []string {
 	// Applied after the merge so a user-staged env-secret with a banned
 	// name cannot smuggle one back in.
 	return scrubAdminEnv(append(parent, added...))
+}
+
+// writeStagedProvidersToAuthStore merges the staged provider credentials
+// into opencode's auth.json ({providerID: {key, type:"api"}} shape — the
+// same shape the relay injector and opencode's own PUT /auth use). The
+// merge preserves unknown entries; the file is created/repaired at 0660
+// (#1296: uid-1000 opencode must be able to WRITE its auth store through
+// the uid-split symlink).
+func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderData) error {
+	if len(staged) == 0 {
+		return nil
+	}
+	// The store's directory (or its symlink target) may not exist on a
+	// first boot — create it before the merge (MkdirAll through a symlinked
+	// dir is a no-op when it already exists).
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir auth store dir: %w", err)
+	}
+	auth := map[string]json.RawMessage{}
+	if existing, err := os.ReadFile(authPath); err == nil {
+		_ = json.Unmarshal(existing, &auth) // a corrupt store is replaced, not fatal
+	}
+	for _, p := range staged {
+		if p.Slug == "" || p.APIKey == "" {
+			continue
+		}
+		entry, err := json.Marshal(map[string]string{"key": p.APIKey, "type": "api"})
+		if err != nil {
+			return fmt.Errorf("marshal auth entry %s: %w", p.Slug, err)
+		}
+		auth[p.Slug] = entry
+	}
+	out, err := json.MarshalIndent(auth, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal auth store: %w", err)
+	}
+	// #nosec G306 -- 0660 is the #1296 mode: cross-uid read+write via the
+	// pod's shared gid 1000 (opencode PUTs /auth through this file at boot
+	// and on reload; 0640 wedged every provider fleet-wide).
+	if err := os.WriteFile(authPath, append(out, '\n'), 0o660); err != nil {
+		return fmt.Errorf("write auth store: %w", err)
+	}
+	// Repairs legacy 0640/0600 modes (WriteFile's perm applies only on
+	// CREATE) — the #1119 and #1296 classes.
+	if err := os.Chmod(authPath, 0o660); err != nil {
+		return fmt.Errorf("chmod auth store: %w", err)
+	}
+	return nil
 }
