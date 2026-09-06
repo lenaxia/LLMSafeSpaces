@@ -1667,3 +1667,32 @@ func TestWriteStagedProvidersToAuthStore_UmaskImmune(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "0660 under umask 022 — the create-mode-only variant lands 0640 (the outage mode)")
 }
+
+// r7: a crashed prior merge leaves a stale 0600 temp — the unique-temp
+// create must not inherit it (the fixed-name variant published 0600).
+func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// Simulate a crashed prior run: a stale temp at 0600 (any name — the
+	// assertion is that the PUBLISHED store does not inherit its mode).
+	stale := filepath.Join(dir, ".auth-merge-stale")
+	require.NoError(t, os.WriteFile(stale, []byte(`{"stale":"x"}`), 0o600))
+	oldMask := syscall.Umask(0o022)
+	defer syscall.Umask(oldMask)
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+	}))
+	st, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "a stale temp's mode must not leak into the published store")
+	// The unique temp is consumed by the rename (none of ITS pattern
+	// remains); the crashed run's file is unrelated litter, not reused.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if e.Name() == filepath.Base(stale) {
+			continue
+		}
+		require.NotContains(t, e.Name(), ".auth-merge-", "the unique temp is consumed by the rename")
+	}
+}

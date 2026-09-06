@@ -1333,22 +1333,33 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 			}
 		}
 	}
-	tmp := storePath + ".merge-tmp"
-	// #nosec G306 -- 0660 is the #1296 mode: cross-uid read+write via the
-	// pod's shared gid 1000 (opencode PUTs /auth through this file at
-	// boot and on reload; 0640 wedged every provider fleet-wide).
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o660); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("write auth store (tmp): %w", err)
+	// Unique temp in the TARGET's directory (r7: a fixed-name temp
+	// persists a crashed run's mode through later WriteFile reuses and,
+	// in the dangling case, sits PVC-side in a user-writable dir).
+	tmpF, err := os.CreateTemp(filepath.Dir(storePath), ".auth-merge-*")
+	if err != nil {
+		return fmt.Errorf("create auth store temp: %w", err)
 	}
-	// Umask-immune mode pin (the mkdirExact doctrine): WriteFile's perm
-	// is umask-masked — under the sidecar's production umask 022 the
-	// create lands 0640, the exact fleet-wedging mode. The explicit
-	// chmod on the TEMP (pre-rename) is race-free.
-	// #nosec G302 -- the #1296 mode; see the WriteFile note above.
-	if err := os.Chmod(tmp, 0o660); err != nil {
+	tmp := tmpF.Name()
+	// Umask-immune mode (the mkdirExact doctrine): the umask masks
+	// CreateTemp's 0600 anyway — chmod to the #1296 mode BEFORE writing
+	// the plaintext so no window exists at another mode.
+	// #nosec G302 -- 0660 is the #1296 mode: cross-uid read+write via
+	// the pod's shared gid 1000 (opencode PUTs /auth through this file
+	// at boot and on reload; 0640 wedged every provider fleet-wide).
+	if err := tmpF.Chmod(0o660); err != nil {
+		_ = tmpF.Close()
 		_ = os.Remove(tmp)
-		return fmt.Errorf("chmod auth store (tmp): %w", err)
+		return fmt.Errorf("chmod auth store temp: %w", err)
+	}
+	if _, err := tmpF.Write(append(out, '\n')); err != nil {
+		_ = tmpF.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write auth store temp: %w", err)
+	}
+	if err := tmpF.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close auth store temp: %w", err)
 	}
 	if err := os.Rename(tmp, storePath); err != nil {
 		_ = os.Remove(tmp)
