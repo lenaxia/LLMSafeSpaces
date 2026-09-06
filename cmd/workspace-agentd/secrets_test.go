@@ -1697,27 +1697,38 @@ func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
 	}
 }
 
-// r8: the unique-temp pin — the r7 fixed-name variant is the red case.
-// Runs the merge twice with a crashed first attempt (stale 0600 fixed-name
-// temp present), under umask 022; the fixed-name writer published 0600
-// (inheriting the stale temp's mode through WriteFile-on-existing), the
-// unique-temp writer cannot.
-func TestWriteStagedProvidersToAuthStore_UniqueTempIsTheSecurityProperty(t *testing.T) {
+// r9: the unique-temp SECURITY PROPERTY pin — not a filename pin. The
+// property: the temp is created with O_EXCL on an unpredictable name
+// (os.CreateTemp), so it cannot be pre-planted (a fixed, predictable
+// temp path is a symlink-clobber primitive — os.WriteFile follows
+// symlinks) and never reuses unknown-provenance files. Discriminator: a
+// symlink PLANTED at the only predictable temp path. A fixed-name writer
+// (any name it predicts) follows the symlink and writes the plaintext
+// THROUGH it — the plant's target captures the credentials; CreateTemp
+// cannot hit a predicted name.
+func TestWriteStagedProvidersToAuthStore_UniqueTempResistsSymlinkPlanting(t *testing.T) {
 	dir := t.TempDir()
 	authPath := filepath.Join(dir, "auth.json")
-	// The crashed prior run: the FIXED-NAME temp the r7 writer would reuse.
-	require.NoError(t, os.WriteFile(authPath+".merge-tmp", []byte(`{"crashed":true}`), 0o600))
-	oldMask := syscall.Umask(0o022)
-	defer syscall.Umask(oldMask)
+	// The attacker's plant: a symlink at the one path a fixed-name writer
+	// would touch, pointing at their capture file.
+	capture := filepath.Join(dir, "captured")
+	plant := authPath + ".merge-tmp"
+	require.NoError(t, os.Symlink(capture, plant))
+
 	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
-		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-secret"},
 	}))
-	st, err := os.Stat(authPath)
+
+	// The security property: no plaintext credential outside the store.
+	if _, err := os.Stat(capture); err == nil {
+		captured, _ := os.ReadFile(capture)
+		require.NotContains(t, string(captured), "sk-secret",
+			"a planted symlink captured the credential — the writer followed a predictable temp path (fixed-name shape)")
+	}
+	// And the plant itself was not followed into the store's slot.
+	st, err := os.Lstat(plant)
 	require.NoError(t, err)
-	perm := st.Mode().Perm()
-	require.NotEqual(t, fs.FileMode(0o600), perm,
-		"the r7 fixed-name writer inherits the crashed temp's 0600 here (verified red against 97ef2b21's shape); the unique-temp writer must not")
-	require.Equal(t, fs.FileMode(0o660), perm, "the published mode")
-	// The crashed run's fixed-name temp is untouched litter — NOT reused.
-	require.FileExists(t, authPath+".merge-tmp", "the unique-temp writer leaves the stale fixed-name file alone (it is not its temp)")
+	require.NotZero(t, st.Mode()&os.ModeSymlink, "the plant survives untouched (CreateTemp never wrote through it)")
+	// The store published correctly.
+	require.Contains(t, string(mustRead(t, authPath)), "sk-secret")
 }
