@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.4] - 2026-09-06
+
+### Fixed (the fleet-wide "Model unavailable" — provider credentials never usable on fresh pods)
+- **The auth store was unwritable by opencode** — the boot-time relay
+  writer created auth.json 0640 uid-2000 (the #1119 read fix); opencode
+  (uid 1000) must WRITE it (its auth subsystem persists at boot and on
+  PUT /auth) → PermissionDenied → provider registry empty → every model
+  unavailable on every pod whose store the sidecar created. The store
+  lands 0660 umask-immune now.
+- **Provider credentials never reached the store at boot** — the config
+  file alone does not register providers with the session runner; the
+  bootstrap materialize now merges staged providers into auth.json
+  (payload parity with the live PUT /auth path incl. metadata.baseURL;
+  symlink-aware atomic write; reserved-slug skip; non-fatal doctrine).
+- Pinned at every level: mode (umask-immune), merge + preservation +
+  parity, the wiring (real runMaterializeCommand), the first-boot
+  dangling symlink (no plaintext on the PVC), stale-temp non-reuse,
+  symlink-plant resistance, and the subprocess e2e (content + mode +
+  the production symlink shape).
+
 ## [0.27.3] - 2026-09-06
 
 ### Fixed
