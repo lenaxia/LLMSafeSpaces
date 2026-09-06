@@ -2,12 +2,12 @@ package opencode
 
 import (
 	"bufio"
-
 	"encoding/json"
-	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"os"
 	"strings"
 	"testing"
+
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
 // Replays a live-captured opencode event stream (production, pinned
