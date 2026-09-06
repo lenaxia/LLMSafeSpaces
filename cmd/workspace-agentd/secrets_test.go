@@ -1494,3 +1494,71 @@ func TestRunMaterialize_WritesProvidersToAuthStore(t *testing.T) {
 	require.Equal(t, "sk-k", auth["thekaocloud"].Key,
 		"the bootstrap materialize MUST write provider credentials to the auth store (#1296)")
 }
+
+// r2: the two new failure branches, pinned.
+func TestWriteStagedProvidersToAuthStore_FailureBranches(t *testing.T) {
+	t.Run("corrupt store is replaced with an alarm", func(t *testing.T) {
+		dir := t.TempDir()
+		authPath := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.WriteFile(authPath, []byte(`{not json`), 0o640))
+		require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		}))
+		var auth map[string]struct {
+			Key string `json:"key"`
+		}
+		require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+		require.Equal(t, "k1", auth["p1"].Key, "the merge replaces the corrupt store")
+	})
+	t.Run("zero-byte store is not an alarm and merges", func(t *testing.T) {
+		dir := t.TempDir()
+		authPath := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.WriteFile(authPath, nil, 0o640)) // fresh-create sentinel
+		require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		}))
+		var auth map[string]struct {
+			Key string `json:"key"`
+		}
+		require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+		require.Equal(t, "k1", auth["p1"].Key)
+	})
+	t.Run("non-fatal continue on write failure", func(t *testing.T) {
+		// A directory at the auth path makes WriteFile fail — the CALLER's
+		// doctrine (log + continue, no exit 3) is pinned by the wiring test
+		// below; here we pin the helper returns the error (the caller
+		// branch is exercised through runMaterializeCommand).
+		dir := t.TempDir()
+		blocked := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.Mkdir(blocked, 0o755))
+		err := writeStagedProvidersToAuthStore(blocked, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		})
+		require.Error(t, err, "the helper surfaces the write failure; the caller logs and continues")
+	})
+}
+
+// r2: the merge failure is NON-FATAL at the wiring level — materialize
+// exits 0 (the pre-boot relay doctrine), with the failure on stderr.
+func TestRunMaterialize_AuthStoreWriteFailureNonFatal(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(from, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\"}"}
+	]}`), 0o600))
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
+	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", filepath.Join(dir, "secrets-base"))
+	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "ssh"))
+	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_DATA_HOME", "")
+	// Block the auth path with a directory → WriteFile fails.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".local", "opencode", "auth.json"), 0o755))
+
+	var stderrBuf bytes.Buffer
+	code := runMaterializeCommand([]string{"--from", from}, nil, &stderrBuf)
+	require.Equal(t, 0, code, "auth-store failure is NON-fatal (log + continue; the pre-boot relay doctrine)")
+	require.Contains(t, stderrBuf.String(), "auth store merge", "the failure is surfaced on stderr")
+}

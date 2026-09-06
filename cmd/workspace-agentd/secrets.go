@@ -1254,10 +1254,12 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 		return fmt.Errorf("mkdir auth store dir: %w", err)
 	}
 	auth := map[string]json.RawMessage{}
-	if existing, err := os.ReadFile(authPath); err == nil {
+	if existing, err := os.ReadFile(authPath); err == nil && len(existing) > 0 {
 		if jErr := json.Unmarshal(existing, &auth); jErr != nil {
 			// A non-empty corrupt store at BOOT is anomalous (opencode
-			// hasn't written yet) — surface it; the merge replaces it.
+			// hasn't written yet) — surface it; the merge replaces it. A
+			// 0-byte file is the injector's fresh-create sentinel, not a
+			// corruption (the sibling writer guards the same).
 			auth = map[string]json.RawMessage{}
 			fmt.Fprintf(os.Stderr, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
 		}
@@ -1283,9 +1285,11 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 		// Reserved slug: a user provider literally named "opencode" would
 		// trip shouldSkipRelay's personal-key detection (a non-public key
 		// under that slug silently disables relay injection) — skip it and
-		// surface why.
+		// SAY SO (the skipped convention: silent divergence between config
+		// and store is how this bug class hides).
 		if p.Slug == "opencode" {
-			continue //nolint:staticcheck // surfaced by the caller's stderr below
+			fmt.Fprintf(os.Stderr, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
+			continue
 		}
 		auth[p.Slug] = b
 	}
