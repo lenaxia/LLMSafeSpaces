@@ -1566,3 +1566,55 @@ func TestRunMaterialize_AuthStoreWriteFailureNonFatal(t *testing.T) {
 	require.Equal(t, 0, code, "auth-store failure is NON-fatal (log + continue; the pre-boot relay doctrine)")
 	require.Contains(t, stderrBuf.String(), "auth store merge", "the failure is surfaced on stderr")
 }
+
+// r4 e2e-happy: subprocess-level assert of the auth store — CONTENT and
+// MODE — through the existing binary harness, plus the symlink invariant
+// (the store is reached through the ~/.local/opencode/auth.json symlink
+// in production; the writer must follow it, not replace it).
+func TestMaterializeSubcommand_AuthStoreContentModeAndSymlink(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	secretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(secretsPath, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\",\"baseURL\":\"https://kao/v1\"}"}
+	]}`), 0o600))
+
+	home := filepath.Join(dir, "home")
+	targetDir := filepath.Join(dir, "runtime", "rt")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".local", "opencode"), 0o755))
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	target := filepath.Join(targetDir, "auth.json")
+	// Pre-existing entries the merge must PRESERVE (the relay entry shape).
+	require.NoError(t, os.WriteFile(target, []byte(`{"opencode-relay":{"key":"public","type":"api"}}`), 0o640))
+	// The production symlink: ~/.local/opencode/auth.json -> rt/auth.json.
+	link := filepath.Join(home, ".local", "opencode", "auth.json")
+	require.NoError(t, os.Symlink(target, link))
+
+	exit, _, stderr := runMaterializeSubcommand(t, bin, secretsPath,
+		filepath.Join(dir, "secrets-base"), filepath.Join(home, ".ssh"),
+		filepath.Join(dir, "agent-config.json"), filepath.Join(dir, "env"),
+		filepath.Join(dir, "git-credentials"), "XDG_DATA_HOME=")
+	require.Equal(t, 0, exit, "stderr=%q", stderr)
+
+	// Read THROUGH the symlink (the invariant: the link survives).
+	fi, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, fi.Mode()&os.ModeSymlink, "the symlink must survive the merge (production shape)")
+
+	var auth map[string]struct {
+		Key  string `json:"key"`
+		Meta *struct {
+			BaseURL string `json:"baseURL"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, link), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key, "subprocess e2e: the provider credential reached the store")
+	require.Equal(t, "https://kao/v1", auth["thekaocloud"].Meta.BaseURL, "payload parity end-to-end")
+	require.Equal(t, "public", auth["opencode-relay"].Key, "the pre-existing entry survived the subprocess merge")
+
+	st, err := os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "subprocess e2e: the store lands 0660 (#1296)")
+}

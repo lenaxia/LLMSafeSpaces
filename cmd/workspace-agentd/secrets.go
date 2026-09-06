@@ -1305,16 +1305,31 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 	if err != nil {
 		return fmt.Errorf("marshal auth store: %w", err)
 	}
-	// #nosec G306 -- 0660 is the #1296 mode: cross-uid read+write via the
-	// pod's shared gid 1000 (opencode PUTs /auth through this file at boot
-	// and on reload; 0640 wedged every provider fleet-wide).
-	if err := os.WriteFile(authPath, append(out, '\n'), 0o660); err != nil {
-		return fmt.Errorf("write auth store: %w", err)
+	// Atomic replace (r4: the plain read-modify-write raced opencode's own
+	// auth writes): write a sibling temp at the #1296 mode, then rename
+	// over the target. CRITICAL: resolve the symlink FIRST — a rename
+	// onto the LINK path replaces the link with a regular file, breaking
+	// the production shape (~/.local/opencode/auth.json ->
+	// /sandbox-runtime/rt/auth.json); the rename must land on the TARGET
+	// (the e2e symlink fixture pins this). The rename replaces a
+	// legacy-mode file outright — the #1119/#1296 mode repair falls out
+	// of the create, no chmod chase needed. The temp is removed on every
+	// failure path.
+	storePath := authPath
+	if resolved, rErr := filepath.EvalSymlinks(authPath); rErr == nil {
+		storePath = resolved
 	}
-	// Repairs legacy 0640/0600 modes (WriteFile's perm applies only on
-	// CREATE) — the #1119 and #1296 classes.
-	if err := os.Chmod(authPath, 0o660); err != nil {
-		return fmt.Errorf("chmod auth store: %w", err)
+	tmp := storePath + ".merge-tmp"
+	// #nosec G306 -- 0660 is the #1296 mode: cross-uid read+write via the
+	// pod's shared gid 1000 (opencode PUTs /auth through this file at
+	// boot and on reload; 0640 wedged every provider fleet-wide).
+	if err := os.WriteFile(tmp, append(out, '\n'), 0o660); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write auth store (tmp): %w", err)
+	}
+	if err := os.Rename(tmp, storePath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename auth store: %w", err)
 	}
 	return nil
 }
