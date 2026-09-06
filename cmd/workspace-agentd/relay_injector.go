@@ -258,6 +258,9 @@ func updateAuthJSONForRelay(authJSONPath string) error {
 	// wedged the 2026-08-29 pod permanently). 0660 via the pod's shared
 	// gid 1000: both uids read AND write; the plaintext exposure set is
 	// unchanged (exactly gid 1000).
+	// #nosec G306 -- 0660 is the #1296 mode: opencode (uid 1000) must
+	// WRITE the store through the uid-split symlink; 0640 left it
+	// unwritable and every provider failed init fleet-wide.
 	if err := os.WriteFile(authJSONPath, updated, 0o660); err != nil {
 		return fmt.Errorf("write auth.json: %w", err)
 	}

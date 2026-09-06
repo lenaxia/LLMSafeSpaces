@@ -1258,6 +1258,8 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 	// The store's directory (or its symlink target) may not exist on a
 	// first boot — create it before the merge (MkdirAll through a symlinked
 	// dir is a no-op when it already exists).
+	// #nosec G301 -- 0755 matches the injector's rt/ and init-fs's
+	// managed-dir modes; the dir holds only the 0660 store.
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir auth store dir: %w", err)
 	}
