@@ -81,6 +81,9 @@ func ensureOpencodeRegistryConfig(logger *zap.Logger) string {
 	dir := opencodeXDGConfigDir()
 	link := filepath.Join(dir, "opencode.json")
 
+	// #nosec G301 -- 0755 matches opencode's own XDG dir scaffolding and
+	// the init-fs managed-dir modes; the dir holds only the symlink (no
+	// credential bytes — US-35.7 keeps those on /agentd-config).
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logger.Warn("registry config layer: cannot create XDG dir (model registry may not admit providers)",
 			zap.String("dir", dir), zap.Error(err))
@@ -263,6 +266,8 @@ func normalizeAuthStoreOwnership(logger *zap.Logger) {
 		return
 	}
 	// Match the #1296 mode: group read+write across the uid split.
+	// #nosec G302 -- 0660 is the #1296 cross-uid contract (sidecar 2000
+	// reads/writes, opencode 1000 chmods); 0600 would sever the split.
 	if err := os.Chmod(name, 0o660); err != nil {
 		_ = os.Remove(name)
 		logger.Warn("auth store ownership: chmod failed", zap.Error(err))
