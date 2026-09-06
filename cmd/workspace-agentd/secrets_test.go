@@ -1668,8 +1668,10 @@ func TestWriteStagedProvidersToAuthStore_UmaskImmune(t *testing.T) {
 	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "0660 under umask 022 — the create-mode-only variant lands 0640 (the outage mode)")
 }
 
-// r7: a crashed prior merge leaves a stale 0600 temp — the unique-temp
-// create must not inherit it (the fixed-name variant published 0600).
+// r7: a crashed prior merge leaves a stale temp — the unique-temp create
+// never touches files it did not create (the r5 no-chmod fixed-name
+// shape published the stale temp's 0600 through WriteFile-on-existing;
+// the chmod'd r6 shape did not — the property here is non-reuse).
 func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
 	dir := t.TempDir()
 	authPath := filepath.Join(dir, "auth.json")
@@ -1697,15 +1699,16 @@ func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
 	}
 }
 
-// r9: the unique-temp SECURITY PROPERTY pin — not a filename pin. The
-// property: the temp is created with O_EXCL on an unpredictable name
-// (os.CreateTemp), so it cannot be pre-planted (a fixed, predictable
-// temp path is a symlink-clobber primitive — os.WriteFile follows
-// symlinks) and never reuses unknown-provenance files. Discriminator: a
-// symlink PLANTED at the only predictable temp path. A fixed-name writer
-// (any name it predicts) follows the symlink and writes the plaintext
-// THROUGH it — the plant's target captures the credentials; CreateTemp
-// cannot hit a predicted name.
+// r9: pins the symlink-plant resistance of THIS writer's temp strategy
+// (os.CreateTemp's unpredictable O_EXCL name). Discriminator: a symlink
+// planted at the fixed ".merge-tmp" path the r5/r6 shapes used — both
+// historical writers follow the plant and the credential is captured
+// (verified red against 97ef2b21 and 1240cf3c). SCOPE: this pins the
+// specific historical regression, not the general property — a fixed-
+// name writer under a DIFFERENT suffix evades this fixture (verified:
+// a .tmp fixed-name writer passes). The general property (unpredictable
+// names resist pre-planting) is the reason CreateTemp is used; the
+// mechanism comment below documents it.
 func TestWriteStagedProvidersToAuthStore_UniqueTempResistsSymlinkPlanting(t *testing.T) {
 	dir := t.TempDir()
 	authPath := filepath.Join(dir, "auth.json")

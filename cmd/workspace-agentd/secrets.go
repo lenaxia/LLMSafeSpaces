@@ -1333,9 +1333,11 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 			}
 		}
 	}
-	// Unique temp in the TARGET's directory (r7: a fixed-name temp
-	// persists a crashed run's mode through later WriteFile reuses and,
-	// in the dangling case, sits PVC-side in a user-writable dir).
+	// Unique temp in the TARGET's directory: CreateTemp's unpredictable
+	// O_EXCL name resists pre-planting (a predictable temp path is a
+	// symlink-clobber primitive — WriteFile follows symlinks) and never
+	// reuses unknown-provenance files (the r5 no-chmod shape published
+	// a crashed run's 0600 through WriteFile-on-existing).
 	tmpF, err := os.CreateTemp(filepath.Dir(storePath), ".auth-merge-*")
 	if err != nil {
 		return fmt.Errorf("create auth store temp: %w", err)

@@ -19,7 +19,7 @@ Make a fresh workspace's provider credentials actually work.
 
 ## The fix
 
-1. auth.json lands **0660** (shared-gid read+write) — the injector's writes AND the bootstrap merge; the mode is umask-immune (chmod on a unique CreateTemp temp BEFORE the plaintext write; the fixed-name-temp variant inherited crashed runs' modes) and the rename resolves the symlink (resolvable OR dangling-first-boot — renaming onto a dangling link puts plaintext on the PVC, the r5 regression the fixture caught).
+1. auth.json lands **0660** (shared-gid read+write) — the injector's writes AND the bootstrap merge; the mode is umask-immune (chmod on a unique CreateTemp temp BEFORE the plaintext write; CreateTemp's unpredictable O_EXCL name also resists symlink pre-planting and never reuses unknown-provenance files) and the rename resolves the symlink (resolvable OR dangling-first-boot — renaming onto a dangling link puts plaintext on the PVC, the r5 regression the fixture caught).
 2. The bootstrap materialize **merges staged providers into auth.json** — payload parity with the live PUT /auth ({key, type, metadata.baseURL?}); preserves existing entries; the reserved `opencode` slug is skipped with an observable stderr line; failure is NON-FATAL (log + continue, the pre-boot relay doctrine — a CrashLoop wedges harder).
 
 ## Why no test caught it (the user's question)
@@ -44,7 +44,7 @@ The pool verifies env/file secrets (SD_FIRST, ~/.ssh) — never a provider-crede
 ## Tests Run
 
 - Full cmd/workspace-agentd + sessionstate suites green.
-- New: TestUpdateAuthJSONForRelay_CrossUIDMode (0660 create + legacy repair), TestWriteStagedProvidersToAuthStore (merge preserves, baseURL parity, reserved slug, mode 0660), TestRunMaterialize_WritesProvidersToAuthStore (the wiring pin).
+- New: TestUpdateAuthJSONForRelay_CrossUIDMode (0660 create + legacy repair), TestWriteStagedProvidersToAuthStore (merge preserves, baseURL parity, reserved slug, mode 0660), TestRunMaterialize_WritesProvidersToAuthStore (the wiring pin), the failure branches + non-fatal wiring, the dangling-symlink first boot, umask immunity, stale-temp non-reuse, the subprocess e2e (content + mode + the symlink invariant), and the symlink-plant resistance pin (red against both historical fixed-name shapes; scope = the .merge-tmp regression, documented).
 
 ## Files Modified
 
