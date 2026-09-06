@@ -517,13 +517,14 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	// entry and opencode's own live writes) at the #1296 mode (0660,
 	// shared-gid read+write across the uid split).
 	if staged := m.StagedProviders(); len(staged) > 0 {
-		if authErr := writeStagedProvidersToAuthStore(preBootAuthJSONPath(cfg.home), staged); authErr != nil {
+		if authErr := writeStagedProvidersToAuthStoreW(stderr, preBootAuthJSONPath(cfg.home), staged); authErr != nil {
 			// Failure doctrine matches the pre-boot relay's auth write
 			// (applied_auth_failed: log, continue — NOT exit 3): a
 			// CrashLoop over the auth store wedges harder than a degraded
-			// boot; the reload path's StageCredentials re-attempts against
-			// the live opencode, and the 0660 repair lands on the next
-			// pass.
+			// boot. NOTE: on a sidecar container restart of a
+			// revision-tracked batch the W2 apply-guard early-returns
+			// BEFORE this call — the repair lands only on pod recreation
+			// or a batch-seq bump, not "the next pass".
 			_, _ = fmt.Fprintf(stderr, "materialize: auth store merge: %v\n", authErr)
 		}
 	}
@@ -1244,6 +1245,13 @@ func buildEnvFrom(path string) []string {
 // (#1296: uid-1000 opencode must be able to WRITE its auth store through
 // the uid-split symlink).
 func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderData) error {
+	return writeStagedProvidersToAuthStoreW(io.Discard, authPath, staged)
+}
+
+// writeStagedProvidersToAuthStoreW is writeStagedProvidersToAuthStore with
+// an injectable observability writer (the reserved-slug skip and the
+// corrupt-store alarm assert through it — os.Stderr in production).
+func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec.LLMProviderData) error {
 	if len(staged) == 0 {
 		return nil
 	}
@@ -1261,7 +1269,7 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 			// 0-byte file is the injector's fresh-create sentinel, not a
 			// corruption (the sibling writer guards the same).
 			auth = map[string]json.RawMessage{}
-			fmt.Fprintf(os.Stderr, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
+			fmt.Fprintf(w, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
 		}
 	}
 	for _, p := range staged {
@@ -1288,7 +1296,7 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 		// SAY SO (the skipped convention: silent divergence between config
 		// and store is how this bug class hides).
 		if p.Slug == "opencode" {
-			fmt.Fprintf(os.Stderr, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
+			fmt.Fprintf(w, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
 			continue
 		}
 		auth[p.Slug] = b

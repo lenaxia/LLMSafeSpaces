@@ -1427,7 +1427,9 @@ func TestWriteStagedProvidersToAuthStore(t *testing.T) {
 		// would trip shouldSkipRelay's personal-key detection — skipped.
 		{Kind: "openai_compatible", Slug: "opencode", APIKey: "sk-personal"},
 	}
-	require.NoError(t, writeStagedProvidersToAuthStore(authPath, staged))
+	var obs bytes.Buffer
+	require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, authPath, staged))
+	require.Contains(t, obs.String(), "reserved", "the reserved-slug skip is OBSERVABLE (r3: deletable-with-green-suite)")
 
 	var auth map[string]struct {
 		Key      string `json:"key"`
@@ -1501,9 +1503,11 @@ func TestWriteStagedProvidersToAuthStore_FailureBranches(t *testing.T) {
 		dir := t.TempDir()
 		authPath := filepath.Join(dir, "auth.json")
 		require.NoError(t, os.WriteFile(authPath, []byte(`{not json`), 0o640))
-		require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		var obs bytes.Buffer
+		require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, authPath, []sec.LLMProviderData{
 			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
 		}))
+		require.Contains(t, obs.String(), "unparseable", "the corrupt-store alarm is OBSERVABLE (r3: deletable-with-green-suite)")
 		var auth map[string]struct {
 			Key string `json:"key"`
 		}
