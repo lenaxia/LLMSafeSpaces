@@ -312,11 +312,15 @@ func (t *ABITranslator) Parse(raw []byte) (*abiv1.Event, bool, error) {
 		}
 		// The live wire never emits session.idle/session.status on this
 		// build (#1292a: 240s post-turn capture, zero idle events) — the
-		// ONLY terminal marker is finish:"stop" on the last step.ended
-		// (finish:"tool-calls" = mid-turn). Map the terminal step to
-		// SESSION_STATUS_IDLE so the fold clears busy; the final step's
-		// cost rides on evt.Message for consumers that read it.
-		if p.Finish == "stop" {
+		// ONLY mid-turn marker is finish:"tool-calls" (more steps follow).
+		// Everything else is TERMINAL: "stop" (happy), "unknown" (live
+		// evidence: 741 context-overflow rows, worklog 0218), length-limit
+		// and abort shapes that carry no finish key at all. Inverted
+		// deliberately (#1293 r1): a whitelist of terminal finishes would
+		// re-ship busy-stuck on the next unseen finish value. Map terminal
+		// steps to SESSION_STATUS_IDLE so the fold clears busy; the final
+		// step's cost rides on evt.Message for consumers that read it.
+		if p.Finish != "tool-calls" {
 			evt.Type = abiv1.EventType_EVENT_TYPE_SESSION_STATUS
 			evt.SessionId = p.SessionID
 			evt.MessageId = p.AssistantMessageID

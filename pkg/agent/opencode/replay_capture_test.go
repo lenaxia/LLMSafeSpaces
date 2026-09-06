@@ -249,4 +249,17 @@ func TestStepEnded_FinishStopMapsToIdle(t *testing.T) {
 	if evt2.Type.String() != "EVENT_TYPE_MESSAGE_END" {
 		t.Fatalf("finish=tool-calls -> %s, want MESSAGE_END (mid-turn)", evt2.Type)
 	}
+	// #1293 r1: the whitelist is inverted — ANY non-tool-calls finish is
+	// terminal ("stop", "unknown" per the live context-overflow evidence,
+	// and finish-absent abort shapes).
+	for _, finish := range []string{`"finish":"unknown"`, `"finish":"length-limit"`, ``} {
+		term := `{"sessionID":"ses_1","assistantMessageID":"msg_3"` + (map[bool]string{true: ",", false: ""}[finish != ""]) + finish + `}`
+		evt3, ok3, err3 := tr.Parse([]byte(`{"id":"e3","type":"session.next.step.ended","properties":` + term + `}`))
+		if err3 != nil || !ok3 {
+			t.Fatalf("terminal %q: ok=%v err=%v", finish, ok3, err3)
+		}
+		if evt3.Type.String() != "EVENT_TYPE_SESSION_STATUS" || evt3.Status != abiv1.SessionStatus_SESSION_STATUS_IDLE {
+			t.Fatalf("finish=%q -> %s/%s, want SESSION_STATUS/IDLE (inverted whitelist)", finish, evt3.Type, evt3.Status)
+		}
+	}
 }

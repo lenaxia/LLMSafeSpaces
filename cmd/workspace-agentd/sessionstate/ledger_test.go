@@ -45,19 +45,19 @@ func openLedgerForTest(t *testing.T, path string) *deliveryLedger {
 func TestLedger_DedupeEntryIDAttempt(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
 
-	e1, created, err := l.ledger("s1", "entry-1", 1, []string{"hello"})
+	e1, created, err := l.ledger("s1", "entry-1", 1, []string{"hello"}, "")
 	require.NoError(t, err)
 	require.True(t, created)
 	require.Equal(t, LedgerStateLedgered, e1.State)
 
-	e2, created2, err := l.ledger("s1", "entry-1", 1, []string{"hello"})
+	e2, created2, err := l.ledger("s1", "entry-1", 1, []string{"hello"}, "")
 	require.NoError(t, err)
 	require.False(t, created2, "duplicate (entryID, attempt) must not create a row")
 	require.Equal(t, e1.Seq, e2.Seq, "same WAL record")
 
 	require.NoError(t, l.markFailed("entry-1", 1, "provider 500"))
 
-	_, created3, err := l.ledger("s1", "entry-1", 2, []string{"hello"})
+	_, created3, err := l.ledger("s1", "entry-1", 2, []string{"hello"}, "")
 	require.NoError(t, err)
 	require.True(t, created3, "attempt+1 re-arms (new row)")
 }
@@ -68,7 +68,7 @@ func TestLedger_DedupeEntryIDAttempt(t *testing.T) {
 func TestLedger_Durability202SurvivesKill(t *testing.T) {
 	path := ledgerPath(t)
 	l1 := openLedgerForTest(t, path)
-	e, created, err := l1.ledger("s1", "entry-9", 1, []string{"prompt"})
+	e, created, err := l1.ledger("s1", "entry-9", 1, []string{"prompt"}, "")
 	require.NoError(t, err)
 	require.True(t, created)
 
@@ -88,9 +88,9 @@ func TestLedger_CrashMatrixStateTransitions(t *testing.T) {
 	l := openLedgerForTest(t, path)
 
 	// Three windows: acked-not-admitted; admitted-not-promoted; promoted.
-	_, _, _ = l.ledger("s1", "e-a", 1, []string{"A"})
-	_, _, _ = l.ledger("s1", "e-b", 1, []string{"B"})
-	_, _, _ = l.ledger("s1", "e-c", 1, []string{"C"})
+	_, _, _ = l.ledger("s1", "e-a", 1, []string{"A"}, "")
+	_, _, _ = l.ledger("s1", "e-b", 1, []string{"B"}, "")
+	_, _, _ = l.ledger("s1", "e-c", 1, []string{"C"}, "")
 
 	require.NoError(t, l.markAdmitted("e-b", 1, "msg-b"))
 	require.NoError(t, l.markAdmitted("e-c", 1, "msg-c"))
@@ -122,7 +122,7 @@ func TestLedger_CrashMatrixStateTransitions(t *testing.T) {
 // driver only admits entries in ledgered state).
 func TestLedger_StalledDetectionAndWakeOnly(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
-	_, _, _ = l.ledger("s1", "e-1119", 1, []string{"stranded"})
+	_, _, _ = l.ledger("s1", "e-1119", 1, []string{"stranded"}, "")
 	require.NoError(t, l.markAdmitted("e-1119", 1, "msg-x"))
 
 	wakes := 0
@@ -146,10 +146,10 @@ func TestLedger_StalledDetectionAndWakeOnly(t *testing.T) {
 // terminal states do not.
 func TestLedger_QueueDepthLedgerDerived(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
-	_, _, _ = l.ledger("s1", "q1", 1, []string{"a"})
-	_, _, _ = l.ledger("s1", "q2", 1, []string{"b"})
-	_, _, _ = l.ledger("s1", "q3", 1, []string{"c"})
-	_, _, _ = l.ledger("s2", "q4", 1, []string{"d"})
+	_, _, _ = l.ledger("s1", "q1", 1, []string{"a"}, "")
+	_, _, _ = l.ledger("s1", "q2", 1, []string{"b"}, "")
+	_, _, _ = l.ledger("s1", "q3", 1, []string{"c"}, "")
+	_, _, _ = l.ledger("s2", "q4", 1, []string{"d"}, "")
 	require.NoError(t, l.markAdmitted("q3", 1, "m3")) // admitted-unpromoted: counts
 	require.NoError(t, l.markFailed("q4", 1, "err"))  // terminal: does not
 
@@ -163,12 +163,12 @@ func TestLedger_QueueDepthLedgerDerived(t *testing.T) {
 func TestLedger_CompactionPreservesTerminalOutcomesAndSeqMeta(t *testing.T) {
 	path := ledgerPath(t)
 	l := openLedgerForTest(t, path)
-	_, _, _ = l.ledger("s1", "old", 1, []string{"x"})
+	_, _, _ = l.ledger("s1", "old", 1, []string{"x"}, "")
 	require.NoError(t, l.markAdmitted("old", 1, "m"))
 	require.NoError(t, l.markPromoted("old", 1, "m"))
 	require.NoError(t, l.markTurnEnded("s1"))
 
-	_, _, _ = l.ledger("s1", "new", 1, []string{"y"})
+	_, _, _ = l.ledger("s1", "new", 1, []string{"y"}, "")
 
 	now := time.Now()
 	require.NoError(t, l.compact(now.Add(time.Hour), now))
@@ -186,7 +186,7 @@ func TestLedger_CompactionPreservesTerminalOutcomesAndSeqMeta(t *testing.T) {
 // nothing here by construction — this test pins the API surface).
 func TestLedger_InterruptPurity(t *testing.T) {
 	l := openLedgerForTest(t, ledgerPath(t))
-	_, _, _ = l.ledger("s1", "i1", 1, []string{"q"})
+	_, _, _ = l.ledger("s1", "i1", 1, []string{"q"}, "")
 	require.NoError(t, l.markAdmitted("i1", 1, "m"))
 	before, ok := l.status("i1", 1)
 	require.True(t, ok)
@@ -330,7 +330,7 @@ func TestDeliver_ExactlyOncePerAttempt(t *testing.T) {
 func TestDeliver_AdmittedNeverReadmitted(t *testing.T) {
 	path := ledgerPath(t)
 	l := openLedgerForTest(t, path)
-	_, _, _ = l.ledger("s1", "e1", 1, []string{"p"})
+	_, _, _ = l.ledger("s1", "e1", 1, []string{"p"}, "")
 	require.NoError(t, l.markAdmitted("e1", 1, "msg-1"))
 
 	admitter := &fakeAdmitter{}
@@ -489,7 +489,7 @@ func TestAttemptAdmission_PromotedAndTurnEndedPriorsDedup(t *testing.T) {
 			d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
 
 			// Seed a prior attempt already at `state` with a messageID.
-			_, _, err := l.ledger("s1", "e9", 1, []string{"p"})
+			_, _, err := l.ledger("s1", "e9", 1, []string{"p"}, "")
 			require.NoError(t, err)
 			require.NoError(t, l.markAdmitted("e9", 1, "msg-prior"))
 			if state == LedgerStatePromoted || state == LedgerStateTurnEnded {

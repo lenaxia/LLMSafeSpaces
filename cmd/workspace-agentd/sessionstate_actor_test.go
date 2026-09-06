@@ -107,7 +107,7 @@ func TestOpencodeActor_WireShapes(t *testing.T) {
 	_, err := actor.Act(ctx, "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_Interrupt{}})
 	require.NoError(t, err)
 
-	// switch_model → V2 model {"model":{"id","provider"}}
+	// switch_model → V2 model {"model":{"id","providerID"}} (the >=1.18.15 golden, #1293 r1)
 	_, err = actor.Act(ctx, "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_SwitchModel{
 		SwitchModel: &abiv1.SwitchModelAction{Model: &abiv1.ModelRef{Id: "m1", Provider: "p1"}},
 	}})
@@ -133,7 +133,7 @@ func TestOpencodeActor_WireShapes(t *testing.T) {
 	require.Len(t, reqs, 5)
 	assert.Equal(t, "/session/s1/abort", reqs[0].Path)
 	assert.Equal(t, "/api/session/s1/model", reqs[1].Path)
-	assert.JSONEq(t, `{"model":{"id":"m1","provider":"p1"}}`, reqs[1].Body)
+	assert.JSONEq(t, `{"model":{"id":"m1","providerID":"p1"}}`, reqs[1].Body) // providerID: the >=1.18.15 golden (#1293 r1)
 	assert.Equal(t, "/api/session/s1/switchAgent", reqs[2].Path)
 	assert.JSONEq(t, `{"agentID":"plan"}`, reqs[2].Body)
 	assert.Equal(t, "/question/q1/reply", reqs[3].Path)

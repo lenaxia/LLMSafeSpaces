@@ -219,7 +219,7 @@ func (l *deliveryLedger) writeLocked(rec *ledgerRecord) error {
 // returns the existing row WITHOUT a new WAL record (I5 dedupe). The
 // returned bool reports whether this call created the row. The ack implies
 // fsync-persistence (I9) — a 202 from Deliver is exactly this return.
-func (l *deliveryLedger) ledger(sessionID, entryID string, attempt uint32, parts []string) (*ledgerRecord, bool, error) {
+func (l *deliveryLedger) ledger(sessionID, entryID string, attempt uint32, parts []string, model string) (*ledgerRecord, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	key := ledgerKey{EntryID: entryID, Attempt: attempt}
@@ -232,6 +232,11 @@ func (l *deliveryLedger) ledger(sessionID, entryID string, attempt uint32, parts
 		Attempt:   attempt,
 		State:     LedgerStateLedgered,
 		Text:      strings.Join(parts, "\n"), // D3 multi-text join rule
+		// #1293 r1: the model MUST persist in the WAL — replayUnresolved
+		// re-drives admission from the row alone, and a row without the
+		// model re-runs the session default (the #1292b crash/suspend
+		// replay window).
+		Model: model,
 	}
 	if err := l.writeLocked(rec); err != nil {
 		return nil, false, err
@@ -579,7 +584,7 @@ func (d *deliveryDriver) privateSessionLock(sessionID string) *sync.Mutex {
 // (terminal per attempt) — never an error to the caller: the accept seam
 // accepts.
 func (d *deliveryDriver) deliver(ctx context.Context, sessionID, entryID string, attempt uint32, parts []string, model string) (*ledgerRecord, bool, error) {
-	rec, created, err := d.ledger.ledger(sessionID, entryID, attempt, parts)
+	rec, created, err := d.ledger.ledger(sessionID, entryID, attempt, parts, model)
 	if err != nil {
 		return nil, false, err
 	}

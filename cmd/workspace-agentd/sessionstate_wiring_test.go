@@ -75,7 +75,7 @@ func TestOpencodeAdmitter_SetsSessionModelBeforeSteer(t *testing.T) {
 	if len(order) != 2 || order[0] == "prompt" {
 		t.Fatalf("model must be set BEFORE the prompt: %v", order)
 	}
-	if !strings.Contains(order[0], `"provider":"thekaocloud"`) || !strings.Contains(order[0], `"id":"glm-5.3"`) {
+	if !strings.Contains(order[0], `"providerID":"thekaocloud"`) || !strings.Contains(order[0], `"id":"glm-5.3"`) {
 		t.Fatalf("model wire form wrong: %s", order[0])
 	}
 }
