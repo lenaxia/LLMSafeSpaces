@@ -1318,6 +1318,20 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 	storePath := authPath
 	if resolved, rErr := filepath.EvalSymlinks(authPath); rErr == nil {
 		storePath = resolved
+	} else {
+		// FIRST BOOT: the PVC-side link dangles (init plants the link;
+		// rt/auth.json does not exist yet — the merge is the store's
+		// first writer). Resolving the LINK ITSELF and creating the
+		// target keeps the rename on the tmpfs side; renaming onto the
+		// dangling link would replace the link with a plaintext file ON
+		// THE PVC (US-35.7: no plaintext at rest) — the r5 regression.
+		if li, lErr := os.Lstat(authPath); lErr == nil && li.Mode()&os.ModeSymlink != 0 {
+			if dest, dErr := os.Readlink(authPath); dErr == nil {
+				if abs, aErr := filepath.Abs(dest); aErr == nil {
+					storePath = abs
+				}
+			}
+		}
 	}
 	tmp := storePath + ".merge-tmp"
 	// #nosec G306 -- 0660 is the #1296 mode: cross-uid read+write via the
@@ -1326,6 +1340,15 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 	if err := os.WriteFile(tmp, append(out, '\n'), 0o660); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("write auth store (tmp): %w", err)
+	}
+	// Umask-immune mode pin (the mkdirExact doctrine): WriteFile's perm
+	// is umask-masked — under the sidecar's production umask 022 the
+	// create lands 0640, the exact fleet-wedging mode. The explicit
+	// chmod on the TEMP (pre-rename) is race-free.
+	// #nosec G302 -- the #1296 mode; see the WriteFile note above.
+	if err := os.Chmod(tmp, 0o660); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod auth store (tmp): %w", err)
 	}
 	if err := os.Rename(tmp, storePath); err != nil {
 		_ = os.Remove(tmp)

@@ -31,6 +31,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
@@ -1617,4 +1618,52 @@ func TestMaterializeSubcommand_AuthStoreContentModeAndSymlink(t *testing.T) {
 	st, err := os.Stat(target)
 	require.NoError(t, err)
 	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "subprocess e2e: the store lands 0660 (#1296)")
+}
+
+// r6: the first-boot dangling-symlink case — init plants the link,
+// rt/auth.json does not exist. The merge must create the TARGET on the
+// tmpfs side and leave the PVC-side link intact (renaming onto the
+// dangling link = plaintext credentials on the PVC, US-35.7).
+func TestWriteStagedProvidersToAuthStore_DanglingSymlinkFirstBoot(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "runtime", "rt")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "home", ".local", "opencode"), 0o755))
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	link := filepath.Join(dir, "home", ".local", "opencode", "auth.json")
+	target := filepath.Join(targetDir, "auth.json")
+	require.NoError(t, os.Symlink(target, link)) // dangles: target absent
+
+	var obs bytes.Buffer
+	require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, link, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-k"},
+	}))
+
+	fi, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, fi.Mode()&os.ModeSymlink, "the PVC-side link must survive first boot")
+
+	var auth map[string]struct {
+		Key string `json:"key"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, target), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key, "the credential landed on the TARGET (tmpfs side)")
+
+	st, err := os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "umask-immune 0660 (the r6 umask regression)")
+}
+
+// r6: the umask regression — the explicit chmod makes the mode
+// umask-independent (the sidecar's production umask is 022).
+func TestWriteStagedProvidersToAuthStore_UmaskImmune(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	oldMask := syscall.Umask(0o022)
+	defer syscall.Umask(oldMask)
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+	}))
+	st, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "0660 under umask 022 — the create-mode-only variant lands 0640 (the outage mode)")
 }
