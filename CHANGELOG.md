@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.3] - 2026-09-06
+
+### Fixed
+- **Sessions stuck BUSY after the turn** — a 240s post-turn capture
+  proves the pinned opencode NEVER emits session.idle on the live wire;
+  the only terminal marker is a non-`tool-calls` finish on the last
+  `step.ended` (live evidence includes `finish:"unknown"` from 741
+  context-overflow rows, and abort shapes carrying no finish key).
+  Terminal steps now map to SESSION_STATUS_IDLE (final cost preserved);
+  the whitelist is inverted — only `tool-calls` is mid-turn.
+- **Wrong model on admission** — the V2 prompt endpoint strips
+  per-prompt model overrides (live proof: a steer body carrying
+  glm-5.3 ran muse-spark). The admitter now sets the SESSION model
+  first (providerID wire key per the ≥1.18.15 golden), fail-closed; the
+  provider crosses the ledger as provider/id and PERSISTS in the WAL —
+  crash/suspend replay re-runs the right model, not the default.
+  SwitchModel's pre-existing wrong wire key fixed in passing.
+
 ## [0.27.2] - 2026-09-05
 
 ### Fixed (the live-render wire mismatch)
