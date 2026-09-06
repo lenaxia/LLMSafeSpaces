@@ -506,6 +506,29 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		return 3
 	}
 
+	// #1296: ALSO write the staged providers into opencode's auth store
+	// (auth.json). The config file alone does not register providers with
+	// opencode's session runner — availability comes from the auth store,
+	// and nothing else writes non-relay credentials there at boot: the
+	// reload path's StageCredentials PUTs to a LIVE opencode (never up at
+	// bootstrap), and the relay injector writes only the relay entry. On
+	// fresh pods every non-relay provider was "Model unavailable" forever.
+	// The write is a MERGE (preserves existing entries — e.g. the relay
+	// entry and opencode's own live writes) at the #1296 mode (0660,
+	// shared-gid read+write across the uid split).
+	if staged := m.StagedProviders(); len(staged) > 0 {
+		if authErr := writeStagedProvidersToAuthStoreW(stderr, preBootAuthJSONPath(cfg.home), staged); authErr != nil {
+			// Failure doctrine matches the pre-boot relay's auth write
+			// (applied_auth_failed: log, continue — NOT exit 3): a
+			// CrashLoop over the auth store wedges harder than a degraded
+			// boot. NOTE: on a sidecar container restart of a
+			// revision-tracked batch the W2 apply-guard early-returns
+			// BEFORE this call — the repair lands only on pod recreation
+			// or a batch-seq bump, not "the next pass".
+			_, _ = fmt.Fprintf(stderr, "materialize: auth store merge: %v\n", authErr)
+		}
+	}
+
 	// Write the MCP servers section into agent-config.json (US-53.8). The
 	// servers were staged by applyMCPServer during Materialize above.
 	applyMCPServersToConfig(cfg.toPaths().AgentConfigPath, m.StagedMCPServers())
@@ -1213,4 +1236,136 @@ func buildEnvFrom(path string) []string {
 	// Applied after the merge so a user-staged env-secret with a banned
 	// name cannot smuggle one back in.
 	return scrubAdminEnv(append(parent, added...))
+}
+
+// writeStagedProvidersToAuthStore merges the staged provider credentials
+// into opencode's auth.json ({providerID: {key, type:"api"}} shape — the
+// same shape the relay injector and opencode's own PUT /auth use). The
+// merge preserves unknown entries; the file is created/repaired at 0660
+// (#1296: uid-1000 opencode must be able to WRITE its auth store through
+// the uid-split symlink).
+func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderData) error {
+	return writeStagedProvidersToAuthStoreW(io.Discard, authPath, staged)
+}
+
+// writeStagedProvidersToAuthStoreW is writeStagedProvidersToAuthStore with
+// an injectable observability writer (the reserved-slug skip and the
+// corrupt-store alarm assert through it — os.Stderr in production).
+func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec.LLMProviderData) error {
+	if len(staged) == 0 {
+		return nil
+	}
+	// The store's directory (or its symlink target) may not exist on a
+	// first boot — create it before the merge (MkdirAll through a symlinked
+	// dir is a no-op when it already exists).
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir auth store dir: %w", err)
+	}
+	auth := map[string]json.RawMessage{}
+	if existing, err := os.ReadFile(authPath); err == nil && len(existing) > 0 {
+		if jErr := json.Unmarshal(existing, &auth); jErr != nil {
+			// A non-empty corrupt store at BOOT is anomalous (opencode
+			// hasn't written yet) — surface it; the merge replaces it. A
+			// 0-byte file is the injector's fresh-create sentinel, not a
+			// corruption (the sibling writer guards the same).
+			auth = map[string]json.RawMessage{}
+			fmt.Fprintf(w, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
+		}
+	}
+	for _, p := range staged {
+		if p.Slug == "" || p.APIKey == "" {
+			continue
+		}
+		// Payload parity with the live PUT /auth path (client.go:258-265,
+		// schema pinned by TestStageCredentials_AuthPayloadMatchesOpenCodeSchema):
+		// {key, type} always; metadata.baseURL when the provider carries
+		// one (the #1296 review's shape-divergence finding — config's
+		// options.baseURL is plausibly sufficient, but plausibly-unpinned
+		// is what caused the outage).
+		entry := map[string]any{"key": p.APIKey, "type": "api"}
+		if p.BaseURL != "" {
+			entry["metadata"] = map[string]string{"baseURL": p.BaseURL}
+		}
+		b, err := json.Marshal(entry)
+		if err != nil {
+			return fmt.Errorf("marshal auth entry %s: %w", p.Slug, err)
+		}
+		// Reserved slug: a user provider literally named "opencode" would
+		// trip shouldSkipRelay's personal-key detection (a non-public key
+		// under that slug silently disables relay injection) — skip it and
+		// SAY SO (the skipped convention: silent divergence between config
+		// and store is how this bug class hides).
+		if p.Slug == "opencode" {
+			fmt.Fprintf(w, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
+			continue
+		}
+		auth[p.Slug] = b
+	}
+	out, err := json.MarshalIndent(auth, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal auth store: %w", err)
+	}
+	// Atomic replace (r4: the plain read-modify-write raced opencode's own
+	// auth writes): write a sibling temp at the #1296 mode, then rename
+	// over the target. CRITICAL: resolve the symlink FIRST — a rename
+	// onto the LINK path replaces the link with a regular file, breaking
+	// the production shape (~/.local/opencode/auth.json ->
+	// /sandbox-runtime/rt/auth.json); the rename must land on the TARGET
+	// (the e2e symlink fixture pins this). The rename replaces a
+	// legacy-mode file outright — the #1119/#1296 mode repair falls out
+	// of the create, no chmod chase needed. The temp is removed on every
+	// failure path.
+	storePath := authPath
+	if resolved, rErr := filepath.EvalSymlinks(authPath); rErr == nil {
+		storePath = resolved
+	} else {
+		// FIRST BOOT: the PVC-side link dangles (init plants the link;
+		// rt/auth.json does not exist yet — the merge is the store's
+		// first writer). Resolving the LINK ITSELF and creating the
+		// target keeps the rename on the tmpfs side; renaming onto the
+		// dangling link would replace the link with a plaintext file ON
+		// THE PVC (US-35.7: no plaintext at rest) — the r5 regression.
+		if li, lErr := os.Lstat(authPath); lErr == nil && li.Mode()&os.ModeSymlink != 0 {
+			if dest, dErr := os.Readlink(authPath); dErr == nil {
+				if abs, aErr := filepath.Abs(dest); aErr == nil {
+					storePath = abs
+				}
+			}
+		}
+	}
+	// Unique temp in the TARGET's directory: CreateTemp's unpredictable
+	// O_EXCL name resists pre-planting (a predictable temp path is a
+	// symlink-clobber primitive — WriteFile follows symlinks) and never
+	// reuses unknown-provenance files (the r5 no-chmod shape published
+	// a crashed run's 0600 through WriteFile-on-existing).
+	tmpF, err := os.CreateTemp(filepath.Dir(storePath), ".auth-merge-*")
+	if err != nil {
+		return fmt.Errorf("create auth store temp: %w", err)
+	}
+	tmp := tmpF.Name()
+	// Umask-immune mode (the mkdirExact doctrine): the umask masks
+	// CreateTemp's 0600 anyway — chmod to the #1296 mode BEFORE writing
+	// the plaintext so no window exists at another mode.
+	// #nosec G302 -- 0660 is the #1296 mode: cross-uid read+write via
+	// the pod's shared gid 1000 (opencode PUTs /auth through this file
+	// at boot and on reload; 0640 wedged every provider fleet-wide).
+	if err := tmpF.Chmod(0o660); err != nil {
+		_ = tmpF.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod auth store temp: %w", err)
+	}
+	if _, err := tmpF.Write(append(out, '\n')); err != nil {
+		_ = tmpF.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write auth store temp: %w", err)
+	}
+	if err := tmpF.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close auth store temp: %w", err)
+	}
+	if err := os.Rename(tmp, storePath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("rename auth store: %w", err)
+	}
+	return nil
 }

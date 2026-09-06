@@ -690,21 +690,26 @@ func TestStartRelayInjector_SuccessTerminal(t *testing.T) {
 		"successful injection must mark the generation ok (state 1)")
 }
 
-// TestUpdateAuthJSONForRelay_CrossUIDMode (2026-08-29 regression): the
-// auth store is written across the uid split — this writer runs as the
-// uid-2000 sidecar boot while uid-1000 opencode reads the file through
-// the ~/.local/opencode symlink. A 0600 landing made every custom
-// provider unresolvable fleet-wide (#1119, ModelUnavailableError). The
-// mode must be 0640 on create AND on rewrite of a legacy 0600 file.
+// TestUpdateAuthJSONForRelay_CrossUIDMode (2026-08-29 + 2026-09-06
+// regressions): the auth store is written across the uid split — this
+// writer runs as the uid-2000 sidecar boot while uid-1000 opencode READS
+// AND WRITES the file through the ~/.local/opencode symlink. A 0600
+// landing made every custom provider unresolvable fleet-wide (#1119,
+// ModelUnavailableError — the read half). 0640 fixed the read but left
+// opencode unable to WRITE its own auth store: every PUT /auth died
+// PermissionDenied, provider registration failed at boot, and the model
+// registry came up empty — "Model unavailable" for EVERY provider on any
+// pod whose auth.json the sidecar created (#1296, the write half; the
+// mode must be 0660: shared-gid read AND write).
 func TestUpdateAuthJSONForRelay_CrossUIDMode(t *testing.T) {
 	dir := t.TempDir()
 	authPath := filepath.Join(dir, "auth.json")
 
-	t.Run("create lands 0640", func(t *testing.T) {
+	t.Run("create lands 0660", func(t *testing.T) {
 		require.NoError(t, updateAuthJSONForRelay(authPath))
 		info, err := os.Stat(authPath)
 		require.NoError(t, err)
-		require.Equal(t, fs.FileMode(0o640), info.Mode().Perm(), "auth.json must be shared-gid readable (design 0051 D1/T2)")
+		require.Equal(t, fs.FileMode(0o660), info.Mode().Perm(), "auth.json must be shared-gid read+write (#1296: opencode PUTs /auth through it)")
 	})
 
 	t.Run("legacy 0600 file is repaired on rewrite", func(t *testing.T) {
@@ -713,8 +718,8 @@ func TestUpdateAuthJSONForRelay_CrossUIDMode(t *testing.T) {
 		require.NoError(t, updateAuthJSONForRelay(authPath))
 		info, err := os.Stat(authPath)
 		require.NoError(t, err)
-		require.Equal(t, fs.FileMode(0o640), info.Mode().Perm(),
-			"WriteFile perm applies only on CREATE — the rewrite must explicitly repair legacy 0600 modes")
+		require.Equal(t, fs.FileMode(0o660), info.Mode().Perm(),
+			"WriteFile perm applies only on CREATE — the rewrite must explicitly repair legacy 0600/0640 modes")
 		// The preserved entry survives the repair.
 		data, err := os.ReadFile(authPath)
 		require.NoError(t, err)

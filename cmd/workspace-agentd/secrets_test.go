@@ -22,6 +22,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,10 +31,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
+	sec "github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1400,4 +1403,335 @@ func TestShouldNotRestart_FileClassOnly(t *testing.T) {
 	if hasFileClassEntries([]secrets.Secret{{Type: "env-secret", Name: "x"}}) {
 		t.Fatal("env-secret is not file-class")
 	}
+}
+
+// #1296: the bootstrap materialize must MERGE staged provider credentials
+// into opencode's auth store — the config file alone does not register
+// providers with the session runner, and nothing else writes non-relay
+// credentials at boot (StageCredentials PUTs to a live opencode; the
+// relay injector writes only the relay entry). The file must land 0660
+// (opencode WRITES it through the uid-split symlink) and the merge must
+// preserve existing entries.
+func TestWriteStagedProvidersToAuthStore(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// Pre-existing: the relay entry (written by the injector) + an
+	// opencode-written entry — both must survive the merge.
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode-relay":{"key":"public","type":"api"},"anthropic":{"key":"sk-live","type":"api"}}`), 0o640))
+
+	staged := []sec.LLMProviderData{
+		// BaseURL carried — payload parity with the live PUT /auth path
+		// (client.go:258-265: metadata.baseURL when present).
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-kao-123", BaseURL: "https://ai.thekao.cloud/v1"},
+		// The reserved slug: a user provider literally named "opencode"
+		// would trip shouldSkipRelay's personal-key detection — skipped.
+		{Kind: "openai_compatible", Slug: "opencode", APIKey: "sk-personal"},
+	}
+	var obs bytes.Buffer
+	require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, authPath, staged))
+	require.Contains(t, obs.String(), "reserved", "the reserved-slug skip is OBSERVABLE (r3: deletable-with-green-suite)")
+
+	var auth map[string]struct {
+		Key      string `json:"key"`
+		Type     string `json:"type"`
+		Metadata *struct {
+			BaseURL string `json:"baseURL"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+	require.Len(t, auth, 3)
+	require.Equal(t, "sk-kao-123", auth["thekaocloud"].Key)
+	require.Equal(t, "https://ai.thekao.cloud/v1", auth["thekaocloud"].Metadata.BaseURL,
+		"payload parity with the live PUT /auth path — metadata.baseURL when the provider carries one")
+	require.Equal(t, "public", auth["opencode-relay"].Key, "the relay entry must survive the merge")
+	require.Equal(t, "sk-live", auth["anthropic"].Key, "opencode's own entries must survive the merge")
+	_, hasReserved := auth["opencode"]
+	require.False(t, hasReserved, "the reserved 'opencode' slug must not enter the store (shouldSkipRelay collision)")
+
+	info, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), info.Mode().Perm(),
+		"#1296: opencode (uid 1000) must be able to WRITE the store the sidecar (uid 2000) owns")
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(p)
+	require.NoError(t, err)
+	return b
+}
+
+// #1296 wiring pin: runMaterializeCommand must deliver llm-provider
+// entries to the AUTH STORE (not just agent-config). Deleting the
+// writeStagedProvidersToAuthStore call ships green without this — the
+// exact review finding (the behavioral fix unpinned).
+func TestRunMaterialize_WritesProvidersToAuthStore(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(from, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\",\"baseURL\":\"https://kao/v1\"}"}
+	]}`), 0o600))
+
+	// Isolate the materialize paths (env file, staging tree) into the
+	// temp dir — the defaults point at /sandbox-runtime (prod-only).
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
+	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", filepath.Join(dir, "secrets-base"))
+	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "ssh"))
+	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_DATA_HOME", "")
+
+	var stderrBuf bytes.Buffer
+	code := runMaterializeCommand([]string{"--from", from}, nil, &stderrBuf)
+	require.Equal(t, 0, code, "materialize must succeed; code=%d stderr=%s", code, stderrBuf.String())
+	t.Logf("full stderr: %s", stderrBuf.String())
+
+	authPath := filepath.Join(dir, ".local", "opencode", "auth.json")
+	var auth map[string]struct {
+		Key string `json:"key"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key,
+		"the bootstrap materialize MUST write provider credentials to the auth store (#1296)")
+}
+
+// r2: the two new failure branches, pinned.
+func TestWriteStagedProvidersToAuthStore_FailureBranches(t *testing.T) {
+	t.Run("corrupt store is replaced with an alarm", func(t *testing.T) {
+		dir := t.TempDir()
+		authPath := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.WriteFile(authPath, []byte(`{not json`), 0o640))
+		var obs bytes.Buffer
+		require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, authPath, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		}))
+		require.Contains(t, obs.String(), "unparseable", "the corrupt-store alarm is OBSERVABLE (r3: deletable-with-green-suite)")
+		var auth map[string]struct {
+			Key string `json:"key"`
+		}
+		require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+		require.Equal(t, "k1", auth["p1"].Key, "the merge replaces the corrupt store")
+	})
+	t.Run("zero-byte store is not an alarm and merges", func(t *testing.T) {
+		dir := t.TempDir()
+		authPath := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.WriteFile(authPath, nil, 0o640)) // fresh-create sentinel
+		require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		}))
+		var auth map[string]struct {
+			Key string `json:"key"`
+		}
+		require.NoError(t, json.Unmarshal(mustRead(t, authPath), &auth))
+		require.Equal(t, "k1", auth["p1"].Key)
+	})
+	t.Run("non-fatal continue on write failure", func(t *testing.T) {
+		// A directory at the auth path makes WriteFile fail — the CALLER's
+		// doctrine (log + continue, no exit 3) is pinned by the wiring test
+		// below; here we pin the helper returns the error (the caller
+		// branch is exercised through runMaterializeCommand).
+		dir := t.TempDir()
+		blocked := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.Mkdir(blocked, 0o755))
+		err := writeStagedProvidersToAuthStore(blocked, []sec.LLMProviderData{
+			{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+		})
+		require.Error(t, err, "the helper surfaces the write failure; the caller logs and continues")
+	})
+}
+
+// r2: the merge failure is NON-FATAL at the wiring level — materialize
+// exits 0 (the pre-boot relay doctrine), with the failure on stderr.
+func TestRunMaterialize_AuthStoreWriteFailureNonFatal(t *testing.T) {
+	dir := t.TempDir()
+	from := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(from, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\"}"}
+	]}`), 0o600))
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
+	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", filepath.Join(dir, "secrets-base"))
+	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "ssh"))
+	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "git-credentials"))
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_DATA_HOME", "")
+	// Block the auth path with a directory → WriteFile fails.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".local", "opencode", "auth.json"), 0o755))
+
+	var stderrBuf bytes.Buffer
+	code := runMaterializeCommand([]string{"--from", from}, nil, &stderrBuf)
+	require.Equal(t, 0, code, "auth-store failure is NON-fatal (log + continue; the pre-boot relay doctrine)")
+	require.Contains(t, stderrBuf.String(), "auth store merge", "the failure is surfaced on stderr")
+}
+
+// r4 e2e-happy: subprocess-level assert of the auth store — CONTENT and
+// MODE — through the existing binary harness, plus the symlink invariant
+// (the store is reached through the ~/.local/opencode/auth.json symlink
+// in production; the writer must follow it, not replace it).
+func TestMaterializeSubcommand_AuthStoreContentModeAndSymlink(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	secretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(secretsPath, []byte(`{"entries":[
+		{"secretID":"c1","version":1,"type":"llm-provider","name":"thekaocloud",
+		 "value":"{\"kind\":\"openai_compatible\",\"slug\":\"thekaocloud\",\"apiKey\":\"sk-k\",\"baseURL\":\"https://kao/v1\"}"}
+	]}`), 0o600))
+
+	home := filepath.Join(dir, "home")
+	targetDir := filepath.Join(dir, "runtime", "rt")
+	require.NoError(t, os.MkdirAll(filepath.Join(home, ".local", "opencode"), 0o755))
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	target := filepath.Join(targetDir, "auth.json")
+	// Pre-existing entries the merge must PRESERVE (the relay entry shape).
+	require.NoError(t, os.WriteFile(target, []byte(`{"opencode-relay":{"key":"public","type":"api"}}`), 0o640))
+	// The production symlink: ~/.local/opencode/auth.json -> rt/auth.json.
+	link := filepath.Join(home, ".local", "opencode", "auth.json")
+	require.NoError(t, os.Symlink(target, link))
+
+	exit, _, stderr := runMaterializeSubcommand(t, bin, secretsPath,
+		filepath.Join(dir, "secrets-base"), filepath.Join(home, ".ssh"),
+		filepath.Join(dir, "agent-config.json"), filepath.Join(dir, "env"),
+		filepath.Join(dir, "git-credentials"), "XDG_DATA_HOME=")
+	require.Equal(t, 0, exit, "stderr=%q", stderr)
+
+	// Read THROUGH the symlink (the invariant: the link survives).
+	fi, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, fi.Mode()&os.ModeSymlink, "the symlink must survive the merge (production shape)")
+
+	var auth map[string]struct {
+		Key  string `json:"key"`
+		Meta *struct {
+			BaseURL string `json:"baseURL"`
+		} `json:"metadata"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, link), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key, "subprocess e2e: the provider credential reached the store")
+	require.Equal(t, "https://kao/v1", auth["thekaocloud"].Meta.BaseURL, "payload parity end-to-end")
+	require.Equal(t, "public", auth["opencode-relay"].Key, "the pre-existing entry survived the subprocess merge")
+
+	st, err := os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "subprocess e2e: the store lands 0660 (#1296)")
+}
+
+// r6: the first-boot dangling-symlink case — init plants the link,
+// rt/auth.json does not exist. The merge must create the TARGET on the
+// tmpfs side and leave the PVC-side link intact (renaming onto the
+// dangling link = plaintext credentials on the PVC, US-35.7).
+func TestWriteStagedProvidersToAuthStore_DanglingSymlinkFirstBoot(t *testing.T) {
+	dir := t.TempDir()
+	targetDir := filepath.Join(dir, "runtime", "rt")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "home", ".local", "opencode"), 0o755))
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	link := filepath.Join(dir, "home", ".local", "opencode", "auth.json")
+	target := filepath.Join(targetDir, "auth.json")
+	require.NoError(t, os.Symlink(target, link)) // dangles: target absent
+
+	var obs bytes.Buffer
+	require.NoError(t, writeStagedProvidersToAuthStoreW(&obs, link, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-k"},
+	}))
+
+	fi, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.NotZero(t, fi.Mode()&os.ModeSymlink, "the PVC-side link must survive first boot")
+
+	var auth map[string]struct {
+		Key string `json:"key"`
+	}
+	require.NoError(t, json.Unmarshal(mustRead(t, target), &auth))
+	require.Equal(t, "sk-k", auth["thekaocloud"].Key, "the credential landed on the TARGET (tmpfs side)")
+
+	st, err := os.Stat(target)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "umask-immune 0660 (the r6 umask regression)")
+}
+
+// r6: the umask regression — the explicit chmod makes the mode
+// umask-independent (the sidecar's production umask is 022).
+func TestWriteStagedProvidersToAuthStore_UmaskImmune(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	oldMask := syscall.Umask(0o022)
+	defer syscall.Umask(oldMask)
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+	}))
+	st, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "0660 under umask 022 — the create-mode-only variant lands 0640 (the outage mode)")
+}
+
+// r7: a crashed prior merge leaves a stale temp — the unique-temp create
+// never touches files it did not create (the r5 no-chmod fixed-name
+// shape published the stale temp's 0600 through WriteFile-on-existing;
+// the chmod'd r6 shape did not — the property here is non-reuse).
+func TestWriteStagedProvidersToAuthStore_StaleTempNotInherited(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// Simulate a crashed prior run: a stale temp at 0600 (any name — the
+	// assertion is that the PUBLISHED store does not inherit its mode).
+	stale := filepath.Join(dir, ".auth-merge-stale")
+	require.NoError(t, os.WriteFile(stale, []byte(`{"stale":"x"}`), 0o600))
+	oldMask := syscall.Umask(0o022)
+	defer syscall.Umask(oldMask)
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "p1", APIKey: "k1"},
+	}))
+	st, err := os.Stat(authPath)
+	require.NoError(t, err)
+	require.Equal(t, fs.FileMode(0o660), st.Mode().Perm(), "a stale temp's mode must not leak into the published store")
+	// The unique temp is consumed by the rename (none of ITS pattern
+	// remains); the crashed run's file is unrelated litter, not reused.
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		if e.Name() == filepath.Base(stale) {
+			continue
+		}
+		require.NotContains(t, e.Name(), ".auth-merge-", "the unique temp is consumed by the rename")
+	}
+}
+
+// r9: pins the symlink-plant resistance of THIS writer's temp strategy
+// (os.CreateTemp's unpredictable O_EXCL name). Discriminator: a symlink
+// planted at the fixed ".merge-tmp" path the r5/r6 shapes used — both
+// historical writers follow the plant and the credential is captured
+// (verified red against 97ef2b21 and 1240cf3c). SCOPE: this pins the
+// specific historical regression, not the general property — a fixed-
+// name writer under a DIFFERENT suffix evades this fixture (verified:
+// a .tmp fixed-name writer passes). The general property (unpredictable
+// names resist pre-planting) is the reason CreateTemp is used; the
+// mechanism comment below documents it.
+func TestWriteStagedProvidersToAuthStore_UniqueTempResistsSymlinkPlanting(t *testing.T) {
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	// The attacker's plant: a symlink at the one path a fixed-name writer
+	// would touch, pointing at their capture file.
+	capture := filepath.Join(dir, "captured")
+	plant := authPath + ".merge-tmp"
+	require.NoError(t, os.Symlink(capture, plant))
+
+	require.NoError(t, writeStagedProvidersToAuthStore(authPath, []sec.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "thekaocloud", APIKey: "sk-secret"},
+	}))
+
+	// The security property: no plaintext credential outside the store.
+	if _, err := os.Stat(capture); err == nil {
+		captured, _ := os.ReadFile(capture)
+		require.NotContains(t, string(captured), "sk-secret",
+			"a planted symlink captured the credential — the writer followed a predictable temp path (fixed-name shape)")
+	}
+	// And the plant itself was not followed into the store's slot.
+	st, err := os.Lstat(plant)
+	require.NoError(t, err)
+	require.NotZero(t, st.Mode()&os.ModeSymlink, "the plant survives untouched (CreateTemp never wrote through it)")
+	// The store published correctly.
+	require.Contains(t, string(mustRead(t, authPath)), "sk-secret")
 }
