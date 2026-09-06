@@ -1269,7 +1269,7 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 			// 0-byte file is the injector's fresh-create sentinel, not a
 			// corruption (the sibling writer guards the same).
 			auth = map[string]json.RawMessage{}
-			fmt.Fprintf(w, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
+			_, _ = fmt.Fprintf(w, "materialize: auth store unparseable at boot (%v) — replacing\n", jErr)
 		}
 	}
 	for _, p := range staged {
@@ -1296,7 +1296,7 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 		// SAY SO (the skipped convention: silent divergence between config
 		// and store is how this bug class hides).
 		if p.Slug == "opencode" {
-			fmt.Fprintf(w, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
+			_, _ = fmt.Fprintf(w, "materialize: auth store: provider slug %q is reserved (relay personal-key detection) — credential not delivered to the store\n", p.Slug)
 			continue
 		}
 		auth[p.Slug] = b
