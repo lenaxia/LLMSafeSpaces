@@ -37,7 +37,7 @@ env:
   CLUSTER_NAME: llmsafespaces-ci
   IMAGE_TAG: ci
   NS: llmsafespaces
-  FAULT_COUNT: "8"
+  FAULT_COUNT: "16"
 
 jobs:
   us70-delivery-pool:
@@ -455,7 +455,7 @@ jobs:
         # key-row corruption with the #1114 loud-degrade audit (F3),
         # SA-token tamper/expiry via kubectl-minted tokens (F4 — the JWT's
         # own .exp bounds the time-travel sleep to ≤~3700s), and chaos
-        # kills (F5). FAULT_COUNT defaults to 8 in the script; override
+        # kills (F5). FAULT_COUNT defaults to 16 in the script; override
         # here only in lockstep with the arming step's env.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}

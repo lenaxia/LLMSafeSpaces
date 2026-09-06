@@ -141,16 +141,7 @@ ok "AC-1 PASS"
 WS1B=$(ws_id 90)
 log "AC-1b — llm-provider credential bound before Active → registry admits the model (#1300)"
 
-CRED_BODY=$(mktemp)
-CRED_CODE=$(curl -sm 30 -o "${CRED_BODY}" -w '%{http_code}' -X POST \
-    -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"ac1b-stub","kind":"openai_compatible","slug":"ac1b-stub","apiKey":"sk-ac1b-stub","baseURL":"http://127.0.0.1:9/v1","modelAllowlist":["stub-model-1"]}' \
-    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials")
-[[ "${CRED_CODE}" == 2* ]] || die "AC-1b: credential create failed: HTTP ${CRED_CODE}: $(head -c 300 "${CRED_BODY}")"
-CRED_ID=$(jq -r '.id // .credential.id // empty' "${CRED_BODY}")
-[[ -n "${CRED_ID}" ]] || die "AC-1b: credential create returned no id: $(head -c 300 "${CRED_BODY}")"
-rm -f "${CRED_BODY}"
+CRED_ID=$(create_stub_credential "ac1b-stub" "stub-model-1")
 ok "provider credential created (${CRED_ID})"
 
 seed_workspace "${WS1B}"
@@ -177,24 +168,13 @@ ok "XDG registry-layer symlink present (→ ${XDG_LINK})"
 kc exec "${POD1B}" -c workspace -- grep -q '"ac1b-stub"' /agentd-config/agent-config.json \
     || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
 
-# (4) THE REGISTRY: opencode's model.available() via GET /api/model with
-# the workspace password (basic auth). This is the endpoint that lied
-# by omission in #1300 — /config/providers stayed green throughout.
-WS_PW=$(kc get secret "workspace-pw-${WS1B}" -o jsonpath='{.data.password}' | base64 -d)
-REG_OK=""
-for _i in $(seq 1 30); do
-    REG=$(kc exec "${POD1B}" -c workspace -- curl -sfm 5 -u "opencode:${WS_PW}" \
-        http://127.0.0.1:4096/api/model 2>/dev/null || true)
-    if printf '%s' "${REG}" | jq -e --arg p "ac1b-stub" --arg m "stub-model-1" \
-        '[.data[] | select(.providerID == $p and .id == $m)] | length == 1' >/dev/null 2>&1; then
-        REG_OK=true
-        break
-    fi
-    sleep 4
-done
-[[ "${REG_OK}" == "true" ]] \
-    || die "AC-1b FAIL: ac1b-stub/stub-model-1 NOT in the model registry (model.available()) after 120s — the #1300 failure mode"
-ok "AC-1b PASS: registry admits ac1b-stub/stub-model-1 (model.available(), not just /config/providers)"
+# (4) THE REGISTRY: opencode's model.available() via GET /api/model —
+# the endpoint that lied by omission in #1300.
+if registry_admits "${WS1B}" "ac1b-stub" "stub-model-1" 120; then
+    ok "AC-1b PASS: registry admits ac1b-stub/stub-model-1 (model.available(), not just /config/providers)"
+else
+    die "AC-1b FAIL: ac1b-stub/stub-model-1 NOT in the model registry (model.available()) after 120s — the #1300 failure mode"
+fi
 
 # -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload

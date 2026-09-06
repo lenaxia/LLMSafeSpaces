@@ -591,3 +591,52 @@ us70_resume_p95() {
     echo "${p95} ${mid} ${min} ${count}"
 }
 # <<< resume-p95
+
+# >>> registry-admission (#1300)
+# Helpers for the model-REGISTRY admission contract: GET /api/model is
+# model.available() — the list SessionRunnerModel.resolve searches. It is
+# NOT /config/providers (the config-service view that stayed green
+# throughout #1300 while every turn failed "Model unavailable").
+# create_stub_credential SLUG MODEL — create a user provider credential
+# with an UNREACHABLE baseURL so the allowlist render is the model
+# source (the production shape for allowlisted credentials); echoes the
+# credential id.
+create_stub_credential() {
+    local slug="$1" model="$2" body code
+    body=$(mktemp)
+    code=$(curl -sm 30 -o "${body}" -w '%{http_code}' -X POST \
+        -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"${slug}\",\"kind\":\"openai_compatible\",\"slug\":\"${slug}\",\"apiKey\":\"sk-${slug}\",\"baseURL\":\"http://127.0.0.1:9/v1\",\"modelAllowlist\":[\"${model}\"]}" \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials")
+    if [[ "${code}" != 2* ]]; then
+        die "create_stub_credential ${slug} failed: HTTP ${code}: $(head -c 300 "${body}")"
+    fi
+    local id
+    id=$(jq -r '.id // .credential.id // empty' "${body}")
+    rm -f "${body}"
+    [[ -n "${id}" ]] || die "create_stub_credential ${slug}: no id in response"
+    echo "${id}"
+}
+
+# registry_admits WS SLUG MODEL [TIMEOUT_S] — poll GET /api/model until
+# slug/model is admitted by the registry (basic auth with the workspace
+# password secret). Returns 0 once admitted; 1 on timeout.
+registry_admits() {
+    local ws="$1" slug="$2" model="$3" timeout_s="${4:-120}"
+    local pod pw reg i
+    pod=$(pod_of "${ws}")
+    [[ -n "${pod}" ]] || return 1
+    pw=$(kc get secret "workspace-pw-${ws}" -o jsonpath='{.data.password}' | base64 -d)
+    for i in $(seq 1 $(( timeout_s / 4 ))); do
+        reg=$(kc exec "${pod}" -c workspace -- curl -sfm 5 -u "opencode:${pw}" \
+            http://127.0.0.1:4096/api/model 2>/dev/null || true)
+        if printf '%s' "${reg}" | jq -e --arg p "${slug}" --arg m "${model}" \
+            '[.data[] | select(.providerID == $p and .id == $m)] | length == 1' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 4
+    done
+    return 1
+}
+# <<< registry-admission
