@@ -153,15 +153,17 @@ func newAuthedServer(t *testing.T, h http.Handler) abiclientIface {
 // {id,provider} must reach the admitter as "provider/id". Empirically
 // revertible leg before this pin (GetId() dropped the provider).
 type modelRecordingAdmitter struct {
-	mu    sync.Mutex
-	model string
+	model atomic.Value // string; every access synchronized (r4: the Eventually read raced the guarded write under -race)
 }
 
 func (m *modelRecordingAdmitter) Admit(_ context.Context, _, _, model string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.model = model
+	m.model.Store(model)
 	return "wire-msg", nil
+}
+
+func (m *modelRecordingAdmitter) current() string {
+	v, _ := m.model.Load().(string)
+	return v
 }
 
 func TestDeliverOp_ModelProviderCrossesWire(t *testing.T) {
@@ -186,6 +188,6 @@ func TestDeliverOp_ModelProviderCrossesWire(t *testing.T) {
 	}
 	_, err = c.Deliver(context.Background(), connect.NewRequest(body))
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return admitter.model != "" }, 10*time.Second, 50*time.Millisecond)
-	assert.Equal(t, "thekaocloud/glm-5.3", admitter.model, "the provider must cross the Deliver boundary as provider/id — id-only re-runs the wrong model")
+	require.Eventually(t, func() bool { return admitter.current() != "" }, 10*time.Second, 50*time.Millisecond)
+	assert.Equal(t, "thekaocloud/glm-5.3", admitter.current(), "the provider must cross the Deliver boundary as provider/id — id-only re-runs the wrong model")
 }
