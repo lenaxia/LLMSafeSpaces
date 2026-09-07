@@ -84,3 +84,11 @@ Pod `8daf4ef8…-ad3695a4`: symlink installed 22:46 → registry `{"opencode":31
 3. **Single-container topology gap** — boot layers + watcher now wired in `main()` too via shared `ensureOpencodeBootLayers`; pinned by `TestOpencodeBootLayersWiring` (source-scan across both entry points).
 4. **Tests** — added: wiring pin, `needsOwnershipNormalization` decision extract + test (chown-to-other-uid is unprivileged-impossible; the decision is the testable unit), last-good-skip-retry (`…_LastGoodBatchSkipsRetry`: exactly 1 call, byte-preserved batch). The `/api/model` `.data[]` shape is validated by the live-pod probes throughout session 2 AND the pool's AC-1b/F6 rows.
 5. **Worklog numbering** — renamed to the `NNNN_` sentinel (the post-merge renumber bot assigns the real number; manual picks race concurrent PRs).
+
+## Pool validation round 1 (run 34066476127 — AC-1b's first live execution)
+
+**Failed at the symlink target — correctly.** The row caught a real bug in the fix: in sidecar mode the controller sets `OPENCODE_CONFIG=/agentd-config/agent-config.json` directly on the workspace container but NOT `LLMSAFESPACES_AGENT_CONFIG_PATH`, so `ensureOpencodeRegistryConfig` resolved the `/sandbox-runtime` default and linked at the wrong target while the child read the controller's path. The watcher had the same divergence (would have watched a file that never changes — a dead heal path).
+
+Fix: `effectiveAgentConfigPath` mirrors the child-env resolution (`OPENCODE_CONFIG` env first, `LLMSAFESPACES_AGENT_CONFIG_PATH` default second; unit-pinned). AC-1b's assertion is now the true topology-independent contract: the XDG link target must equal the live child's `OPENCODE_CONFIG` (read from `/proc/<pid>/environ`), and the provider-block grep uses that same path.
+
+Meta: this is the regression row doing exactly what it was built for — the live-pod manual validation had the right symlink BY HAND, which masked the code's wrong resolution.
