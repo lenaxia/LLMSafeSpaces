@@ -326,11 +326,23 @@ kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X 
 # Pre-flight: the mock upstream must be reachable FROM the workspace
 # pod before the turn — the synchronous V1 request hangs to its client
 # timeout if the model call blocks (signature: HTTP 000).
-MOCK_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}' \
+MOCK_URL="http://mock-llm.${NS}.svc/v1/chat/completions"
+probe_mock() { # container args... — POSTs the mock, echoes the http code
+    local ctr="$1"; shift
+    kc exec "${POD1D}" -c "${ctr}" -- curl -sm 5 -o /dev/null -w '%{http_code}' \
+        -X POST -H 'content-type: application/json' -d '{"m":1}' \
+        "${MOCK_URL}" 2>/dev/null || echo 000
+}
+WS_MOCK=$(probe_mock workspace)
+SC_MOCK=$(probe_mock agentd 2>/dev/null || echo no-sidecar)
+SVC_IP=$(kc get svc -n "${NS}" mock-llm -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
+DNS_INFO=$(kc exec "${POD1D}" -c workspace -- getent hosts "mock-llm.${NS}.svc" 2>&1 | head -1)
+IP_MOCK=$(kc exec "${POD1D}" -c workspace -- curl -sm 5 -o /dev/null -w '%{http_code}' \
     -X POST -H 'content-type: application/json' -d '{"m":1}' \
-    http://mock-llm.${NS}.svc/v1/chat/completions 2>/dev/null || echo 000)
-[[ "${MOCK_CODE}" == "200" ]] \
-    || die "AC-1d: mock upstream unreachable from the workspace pod (HTTP ${MOCK_CODE}) — fix reachability before judging the turn"
+    "http://${SVC_IP}/v1/chat/completions" 2>/dev/null || echo 000)
+ok "AC-1d mock probes: workspace=${WS_MOCK} sidecar=${SC_MOCK} direct-ClusterIP=${IP_MOCK} dns='${DNS_INFO}' svcIP=${SVC_IP}"
+[[ "${WS_MOCK}" == "200" ]] \
+    || die "AC-1d: mock upstream unreachable from the workspace container (HTTP ${WS_MOCK}; sidecar=${SC_MOCK}, ClusterIP=${IP_MOCK})"
 
 TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o /tmp/ac1d-send.json -w '%{http_code}' \
     "${OC_AUTH[@]}" -X POST \
