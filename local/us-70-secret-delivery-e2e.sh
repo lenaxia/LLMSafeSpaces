@@ -218,15 +218,16 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# AC-1d — a V2 TURN resolves through a credential-backed provider
+# AC-1d — a TURN resolves through a credential-backed provider
 #         (fix-design item 4: "V2 provider turn resolves through real
 #         opencode serve")
 #
 # Registry admission alone (AC-1b/1c) does not prove a turn executes;
-# this row drives a real session-model-pinned steer against a mock
-# OpenAI-compatible upstream deployed in the pool cluster, and asserts
-# the assistant reply arrives. This is the row that would have caught
-# both #1292b and #1300 as user-visible failures.
+# this row drives a real session-model-pinned turn (the platform's
+# synchronous V1 first-turn route) against a mock OpenAI-compatible
+# upstream deployed in the pool cluster, and asserts the assistant
+# reply arrives. This is the row that would have caught both #1292b
+# and #1300 as user-visible failures.
 # -----------------------------------------------------------------------------
 log "AC-1d — credential-backed V2 TURN resolves against a mock upstream"
 
@@ -319,9 +320,9 @@ kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X 
 
 # First-turn shape: the platform's adapter path sends first turns via
 # the SYNCHRONOUS V1 route (POST /session/:id/message — proxy_handlers
-# "Adapter path"; steer is the admission-dedup path for runs with
-# history, and V2 queue never drains per #755). The binary-contract
-# B1 row pins the same route.
+# "Adapter path", pinned by adapter_path_test.go: "V1 must be called
+# exactly once, V2 must NEVER"; steer is the admission-dedup path for
+# runs with history, and V2 queue never drains per #755).
 TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 60 -o /tmp/ac1d-send.json -w '%{http_code}' \
     "${OC_AUTH[@]}" -X POST \
     -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
@@ -350,9 +351,9 @@ if [[ "${TURN_OK}" != "true" ]]; then
         http://mock-llm.${NS}.svc/v1/chat/completions 2>&1 || true
     echo "--- AC-1d diagnostics: opencode log tail ---"
     kc exec "${POD1D}" -c workspace -- sh -c 'grep -aiE "error|fail" /workspace/.local/opencode/log/opencode.log 2>/dev/null | tail -5' || true
-    die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the V2 turn did not resolve through the credential-backed provider"
+    die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the turn did not resolve through the credential-backed provider"
 fi
-ok "AC-1d PASS: session-model-pinned V2 turn completed against the mock upstream (reply: ${REPLY:0:40})"
+ok "AC-1d PASS: session-model-pinned turn completed against the mock upstream (reply: ${REPLY:0:40})"
 
 # -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
