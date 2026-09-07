@@ -580,3 +580,20 @@ func TestFormatOpenCodeConfig_SkipsModellessZenCredentials(t *testing.T) {
 	_, proxy := provs["proxy"]
 	require.True(t, proxy, "allowlisted compatible provider renders")
 }
+
+// TestFormatOpenCodeConfig_DisabledProvidersNotEmitted pins fix-design
+// 3(b): the render does NOT emit disabled_providers (the V1-only key
+// the boot-time platform blocks carry); opencode's V1→V2 migration
+// does not map it, so the V2 catalog keeps the zen provider enabled —
+// intentional and load-bearing (zen stays reachable for zen-kind
+// credentials delivered via the auth store).
+func TestFormatOpenCodeConfig_DisabledProvidersNotEmitted(t *testing.T) {
+	providers := []secrets.LLMProviderData{
+		{Kind: "openai_compatible", Slug: "proxy", APIKey: "sk-1", BaseURL: "https://p.example/v1",
+			Models: []secrets.LLMModelConfig{{ID: "m1"}}},
+	}
+	out, err := FormatOpenCodeConfig(providers)
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "disabled_providers",
+		"the credential render must not emit the V1-only disabled_providers key (V2 ignores it — the zen provider intentionally stays V2-enabled)")
+}

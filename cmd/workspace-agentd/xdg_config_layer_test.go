@@ -322,8 +322,10 @@ func TestOpencodeBootLayersWiring(t *testing.T) {
 		if strings.Contains(body, "watchAgentConfigForChanges(") {
 			t.Error("watcher start lives inside maybeStartRelayInjector — unreachable when the relay is disabled (chart default)")
 		}
+	} else if start < 0 {
+		t.Fatal("maybeStartRelayInjector not found in main.go — layout changed; revisit this reachability pin")
 	} else {
-		t.Log("maybeStartRelayInjector bounds not found — layout changed, revisit this pin")
+		t.Fatal("could not bound maybeStartRelayInjector in main.go — layout changed; revisit this reachability pin")
 	}
 }
 
