@@ -597,17 +597,18 @@ us70_resume_p95() {
 # model.available() — the list SessionRunnerModel.resolve searches. It is
 # NOT /config/providers (the config-service view that stayed green
 # throughout #1300 while every turn failed "Model unavailable").
-# create_stub_credential SLUG MODEL — create a user provider credential
-# with an UNREACHABLE baseURL so the allowlist render is the model
-# source (the production shape for allowlisted credentials); echoes the
-# credential id.
+# create_stub_credential SLUG MODEL [BASEURL] — create a user provider
+# credential; baseURL defaults to an UNREACHABLE address so the
+# allowlist render is the model source (the production shape for
+# allowlisted credentials); the turn-level row passes a live mock
+# upstream. Echoes the credential id.
 create_stub_credential() {
-    local slug="$1" model="$2" body code
+    local slug="$1" model="$2" baseurl="${3:-http://127.0.0.1:9/v1}" body code
     body=$(mktemp)
     code=$(curl -sm 30 -o "${body}" -w '%{http_code}' -X POST \
         -H "Authorization: Bearer ${AUTH_TOKEN:?}" \
         -H "Content-Type: application/json" \
-        -d "{\"name\":\"${slug}\",\"kind\":\"openai_compatible\",\"slug\":\"${slug}\",\"apiKey\":\"sk-${slug}\",\"baseURL\":\"http://127.0.0.1:9/v1\",\"modelAllowlist\":[\"${model}\"]}" \
+        -d "{\"name\":\"${slug}\",\"kind\":\"openai_compatible\",\"slug\":\"${slug}\",\"apiKey\":\"sk-${slug}\",\"baseURL\":\"${baseurl}\",\"modelAllowlist\":[\"${model}\"]}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials")
     if [[ "${code}" != 2* ]]; then
         die "create_stub_credential ${slug} failed: HTTP ${code}: $(head -c 300 "${body}")"

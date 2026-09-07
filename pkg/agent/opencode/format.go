@@ -53,6 +53,19 @@ func FormatOpenCodeConfig(providers []secrets.LLMProviderData) ([]byte, error) {
 	}
 
 	for _, p := range providers {
+		// #1300 fix-design 2(a): kind:"opencode" (zen) credentials carry
+		// no model list and no baseURL — they would render
+		// {"options":{"apiKey":…}} blocks that contribute nothing (their
+		// delivery path is the auth-store merge, per #1296). opencode
+		// admits such blocks, but they widen the config the V2 ingest
+		// must tolerate for zero value. Skip exactly that shape —
+		// NOT first-party keys without an allowlist (anthropic/openai/
+		// … with Models empty): those blocks are the config-side key
+		// delivery that opencode's catalog merges with built-in models.
+		if p.Kind == "opencode" && len(p.Models) == 0 {
+			continue
+		}
+
 		op := &opencodeProvider{
 			Options: opencodeOptions{
 				APIKey:  p.APIKey,

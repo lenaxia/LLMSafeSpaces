@@ -256,6 +256,19 @@ func main() {
 	// same context discipline as the credential-reload path (secrets.go).
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
+	// #1300 layer 3, UNCONDITIONAL (r3 review: starting this inside
+	// maybeStartRelayInjector left it dead code in the chart-default
+	// posture — relay disabled + sidecar disabled — where a mid-life
+	// llm-provider reload rewrote agent-config and PUT auth with no
+	// restart, freezing the V2 registry until pod recreation; the
+	// exact #1300 class). Session-aware restart (in-flight turns
+	// defer); nil-proc guard mirrors the injector's.
+	if deps.proc != nil {
+		liveSessions := liveSessionsLister(deps)
+		go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,
+			relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions))
+	}
+
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
 
 	select {
@@ -417,14 +430,6 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
 		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
 	})
-
-	// #1300: watch agent-config for post-spawn changes and rebuild the
-	// registry with a SESSION-AWARE restart (same machinery as the relay
-	// injector's kill switch — in-flight turns defer, they are not
-	// killed). Single-container topology only; supervise-opencode starts
-	// its own watcher with that topology's grace-restart semantics.
-	go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,
-		relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions))
 }
 
 // liveSessionsLister returns the opencode /session probe used to prune stale

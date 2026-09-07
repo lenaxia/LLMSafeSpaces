@@ -812,18 +812,32 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (s
 		return "", false
 	}
 
-	// Already qualified: deterministic — the provider entry either exists
-	// in this boot's config or the default is unusable this boot. Split on
-	// the FIRST "/" — opencode's own routing convention (a bare ID parses
-	// as first-segment provider + empty modelID, per the incident), so a
-	// catalog-sourced value like "openrouter/anthropic/claude-sonnet"
-	// means provider "openrouter", model "anthropic/claude-sonnet". The
-	// full value is passed through verbatim once its provider exists.
+	// Already qualified: deterministic — the provider entry either
+	// exists in this boot's config WITH the model in its models map, or
+	// the default is unusable this boot. #1300 fix-design 2(b):
+	// provider-existence alone passed STALE qualified defaults through
+	// (a re-render after an allowlist change kept pinning a model the
+	// provider no longer lists) — both forms must verify the model.
+	// Split on the FIRST "/" — opencode's own routing convention (a
+	// bare ID parses as first-segment provider + empty modelID, per the
+	// incident), so a catalog-sourced value like
+	// "openrouter/anthropic/claude-sonnet" means provider "openrouter",
+	// model "anthropic/claude-sonnet".
 	// The empty-tail guard ("a/") rejects the incident's own parse shape
 	// (provider + EMPTY modelID) rather than passing it downstream.
 	if idx := strings.Index(modelID, "/"); idx > 0 && idx < len(modelID)-1 {
-		if _, exists := providers[modelID[:idx]]; exists {
-			return modelID, true
+		if p, exists := providers[modelID[:idx]]; exists {
+			// Providers WITH an allowlist (models map present) must
+			// claim the model — provider existence alone would pass
+			// stale qualified defaults after an allowlist change.
+			// Providers WITHOUT one (first-party keys — catalog-sourced
+			// models) cannot be verified config-side; existence stands.
+			if len(p.Models) == 0 {
+				return modelID, true
+			}
+			if _, found := p.Models[modelID[idx+1:]]; found {
+				return modelID, true
+			}
 		}
 		return "", false
 	}

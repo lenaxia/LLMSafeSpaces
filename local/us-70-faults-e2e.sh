@@ -234,30 +234,33 @@ BIND6=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED6}/bind/${WS6}")
 [[ "${BIND6}" == 2* ]] || die "F6: credential bind failed: HTTP ${BIND6}"
 
-if (( FAULT_SEEN6 > 0 )); then
+if (( FAULT_SEEN6 == 0 )); then
+    # r3 review: a warn would let the fault row silently degrade to the
+    # unfaulted path. skip_row records it in the exit tracker instead —
+    # the fault-path guarantee is only claimed when the seam fired.
+    skip_row "F6" "seam inert at F6 (F1 + retries consumed the budget) — end-state convergence is covered by AC-1c; the faulted-boot path needs a larger FAULT_COUNT"
+else
     ok "F6: seam still active (500 on try ${FAULT_SEEN6}) — this boot is faulted"
-else
-    warn "F6: seam inert at F6 (F1 consumed the budget) — row still asserts the end-state convergence, just through the unfaulted path"
-fi
 
-wait_phase "${WS6}" Active 300 || die "F6: workspace never Active (never-block-boot violated with retries armed)"
+    wait_phase "${WS6}" Active 300 || die "F6: workspace never Active (never-block-boot violated with retries armed)"
 
-# Soft evidence: the retry actually firing shows in the sidecar's boot
-# stderr. Non-deterministic (depends on whether this boot straddled the
-# remaining fault budget) — observed, never gating.
-POD6=$(pod_of "${WS6}")
-if [[ -n "${POD6}" ]] && kc logs "${POD6}" -c agentd 2>/dev/null | grep -q 'bootstrap: fetch attempt'; then
-    ok "F6: retry observed in sidecar boot logs (bootstrap: fetch attempt)"
-fi
+    # Soft evidence: the retry actually firing shows in the sidecar's boot
+    # stderr. Non-deterministic (depends on whether this boot straddled the
+    # remaining fault budget) — observed, never gating.
+    POD6=$(pod_of "${WS6}")
+    if [[ -n "${POD6}" ]] && kc logs "${POD6}" -c agentd 2>/dev/null | grep -q 'bootstrap: fetch attempt'; then
+        ok "F6: retry observed in sidecar boot logs (bootstrap: fetch attempt)"
+    fi
 
-# The end-state contract: registry admission via the truthful endpoint,
-# through heal + watcher restart + opencode boot. Generous budget: the
-# reconcile re-push interval + materialize + one opencode restart.
-if registry_admits "${WS6}" "f6-stub" "f6-model-1" 360; then
-    ok "F6 PASS: f6-stub/f6-model-1 admitted by the registry after a faulted boot + heal (#1300 path closed)"
-    PASS=$((PASS + 1))
-else
-    die "F6 FAIL: model never reached the registry within 360s of Active — the #1300 failure mode through the fault path"
+    # The end-state contract: registry admission via the truthful endpoint,
+    # through heal + watcher restart + opencode boot. Generous budget: the
+    # reconcile re-push interval + materialize + one opencode restart.
+    if registry_admits "${WS6}" "f6-stub" "f6-model-1" 360; then
+        ok "F6 PASS: f6-stub/f6-model-1 admitted by the registry after a faulted boot + heal (#1300 path closed)"
+        PASS=$((PASS + 1))
+    else
+        die "F6 FAIL: model never reached the registry within 360s of Active — the #1300 failure mode through the fault path"
+    fi
 fi
 
 # -----------------------------------------------------------------------------

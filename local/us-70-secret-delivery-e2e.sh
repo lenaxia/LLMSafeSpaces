@@ -185,6 +185,155 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# AC-1c — mid-life llm-provider bind → reconcile re-push → registry
+#         admission (the #1300 heal path, fix-design item 3(c))
+#
+# A credential bound to an ALREADY-RUNNING workspace must converge the
+# registry: reconcile re-push → sidecar materialize rewrites
+# agent-config → the supervisor's config watcher restarts opencode
+# (session-aware in single-container, grace in sidecar) → the model
+# appears in GET /api/model. This is the exact mid-life reload that
+# previously left the V2 registry stale until pod recreation.
+# -----------------------------------------------------------------------------
+WS1C=$(ws_id 91)
+log "AC-1c — mid-life credential bind → registry converges (the heal path)"
+
+seed_workspace "${WS1C}"
+wait_phase "${WS1C}" Active 240 || die "AC-1c: workspace never Active"
+secrets_converged "${WS1C}" 120 || die "AC-1c: secretsDelivery not converged"
+
+CRED1C=$(create_stub_credential "ac1c-stub" "late-model-1")
+BIND1C=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED1C}/bind/${WS1C}")
+[[ "${BIND1C}" == 2* ]] || die "AC-1c: credential bind failed: HTTP ${BIND1C}"
+ok "credential bound to the RUNNING workspace (mid-life)"
+
+# Budget: reconcile interval (5s) + push + materialize + watcher tick
+# (5s) + opencode restart (~10s) + registry settle — 360s is generous.
+if registry_admits "${WS1C}" "ac1c-stub" "late-model-1" 360; then
+    ok "AC-1c PASS: mid-life bind converged the registry (reconcile → materialize → watcher restart)"
+else
+    die "AC-1c FAIL: mid-life bind never reached the registry within 360s — the stale-registry class"
+fi
+
+# -----------------------------------------------------------------------------
+# AC-1d — a V2 TURN resolves through a credential-backed provider
+#         (fix-design item 4: "V2 provider turn resolves through real
+#         opencode serve")
+#
+# Registry admission alone (AC-1b/1c) does not prove a turn executes;
+# this row drives a real session-model-pinned steer against a mock
+# OpenAI-compatible upstream deployed in the pool cluster, and asserts
+# the assistant reply arrives. This is the row that would have caught
+# both #1292b and #1300 as user-visible failures.
+# -----------------------------------------------------------------------------
+log "AC-1d — credential-backed V2 TURN resolves against a mock upstream"
+
+kubectl --context "${CTX}" apply -f - >/dev/null <<'MOCK'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-llm-config
+  namespace: llmsafespaces
+data:
+  serve.py: |
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(n)
+            resp = json.dumps({
+                "id": "chatcmpl-mock", "object": "chat.completion",
+                "created": 0, "model": "mock-model-1",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+        def log_message(self, *a):
+            pass
+    HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: llmsafespaces
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mock-llm}}
+  template:
+    metadata: {labels: {app: mock-llm}}
+    spec:
+      containers:
+        - name: serve
+          image: python:3.12-alpine
+          command: ["python", "/srv/serve.py"]
+          volumeMounts: [{name: cfg, mountPath: /srv}]
+      volumes:
+        - name: cfg
+          configMap: {name: mock-llm-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: llmsafespaces
+spec:
+  selector: {app: mock-llm}
+  ports: [{port: 80, targetPort: 8080}]
+MOCK
+kubectl --context "${CTX}" -n "${NS}" rollout status deployment/mock-llm --timeout=180s >/dev/null \
+    || die "AC-1d: mock upstream failed to deploy"
+
+WS1D=$(ws_id 92)
+CRED1D=$(create_stub_credential "ac1d-stub" "mock-model-1" "http://mock-llm.${NS}.svc/v1")
+seed_workspace "${WS1D}"
+BIND1D=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED1D}/bind/${WS1D}")
+[[ "${BIND1D}" == 2* ]] || die "AC-1d: credential bind failed: HTTP ${BIND1D}"
+wait_phase "${WS1D}" Active 240 || die "AC-1d: workspace never Active"
+secrets_converged "${WS1D}" 120 || die "AC-1d: secretsDelivery not converged"
+registry_admits "${WS1D}" "ac1d-stub" "mock-model-1" 120 \
+    || die "AC-1d: mock provider never admitted to the registry"
+
+POD1D=$(pod_of "${WS1D}")
+PW1D=$(kc get secret "workspace-pw-${WS1D}" -o jsonpath='{.data.password}' | base64 -d)
+OC_AUTH=(-u "opencode:${PW1D}" -H 'content-type: application/json')
+
+SID1D=$(kc exec "${POD1D}" -c workspace -- curl -sfm 10 "${OC_AUTH[@]}" -X POST \
+    -d '{"directory":"/workspace"}' http://127.0.0.1:4096/session \
+    | jq -r '.id // empty')
+[[ -n "${SID1D}" ]] || die "AC-1d: session create failed"
+
+kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X POST \
+    -d '{"model":{"id":"mock-model-1","providerID":"ac1d-stub"}}' \
+    "http://127.0.0.1:4096/api/session/${SID1D}/model" \
+    || die "AC-1d: session-model pin rejected (model not resolvable)"
+
+ADM1D=$(kc exec "${POD1D}" -c workspace -- curl -sfm 15 "${OC_AUTH[@]}" -X POST \
+    -d '{"prompt":{"text":"reply with the canned marker"},"delivery":"steer"}' \
+    "http://127.0.0.1:4096/api/session/${SID1D}/prompt" | jq -r '.data.admittedSeq // empty')
+[[ -n "${ADM1D}" ]] || die "AC-1d: steer not admitted"
+
+TURN_OK=""
+for _i in $(seq 1 30); do
+    REPLY=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
+        "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>/dev/null | jq -r '[.data[] | select(.type=="assistant") | .content[]? | select(.type=="text") | .text] | last // empty' 2>/dev/null || true)
+    if [[ "${REPLY}" == *MOCK-TURN-OK* ]]; then TURN_OK=true; break; fi
+    sleep 4
+done
+[[ "${TURN_OK}" == "true" ]] \
+    || die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 120s — the V2 turn did not resolve through the credential-backed provider"
+ok "AC-1d PASS: session-model-pinned V2 turn completed against the mock upstream (reply: ${REPLY:0:40})"
+
+# -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
 # -----------------------------------------------------------------------------
 WS2=$(ws_id 2)

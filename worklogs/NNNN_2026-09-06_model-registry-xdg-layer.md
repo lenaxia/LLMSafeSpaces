@@ -59,13 +59,29 @@ The pool pinned env/file delivery (SD_FIRST, ~/.ssh) and the #1296 auth-store mo
 
 ## Files
 
-- `cmd/workspace-agentd/xdg_config_layer.go` (new) — symlink install, quarantine, JSONC parser, watcher, ownership normalization
-- `cmd/workspace-agentd/xdg_config_layer_test.go` (new) — 8 tests incl. the production `\$schema` artifact
+- `cmd/workspace-agentd/xdg_config_layer.go` (new) — symlink install (env-precedence target resolution), quarantine, JSONC parser, watcher (topology-split restart semantics), ownership normalization (coupled decision extract)
+- `cmd/workspace-agentd/xdg_config_layer_test.go` (new) — symlink contract, quarantine, JSONC table, watcher discipline, wiring + reachability pins, env-precedence + child-env pair pin, ownership decision
 - `cmd/workspace-agentd/bootstrap.go` — bounded first-boot retry
-- `cmd/workspace-agentd/bootstrap_retry_test.go` (new) — 3 tests
-- `cmd/workspace-agentd/supervise_opencode.go` — boot wiring
-- `cmd/workspace-agentd/secrets.go` — typed authStoreEntry
-- `local/us-70-secret-delivery-e2e.sh` — AC-1b registry row
+- `cmd/workspace-agentd/bootstrap_retry_test.go` (new) — transient/persistent/401/last-good
+- `cmd/workspace-agentd/main.go` + `cmd/workspace-agentd/supervise_opencode.go` — boot-layer + watcher wiring in BOTH supervisor topologies (unconditional; r3 moved the single-container start out of the relay-gated path)
+- `cmd/workspace-agentd/secrets.go` — typed authStoreEntry; resolveModelWithProvider allowlist strictness (2(b))
+- `cmd/workspace-agentd/reload_credentials_e2e_test.go` — fixtures updated for the 2(a) render split
+- `pkg/agent/opencode/format.go` — 2(a): zen-kind (kind:"opencode") no-model credentials render no config block; first-party allowlist-less keys still render (+ test)
+- `local/lib/us70-common.sh` — create_stub_credential (optional baseURL), registry_admits helpers
+- `local/us-70-secret-delivery-e2e.sh` — AC-1b (registry admission), AC-1c (mid-life bind heal), AC-1d (V2 TURN against a mock upstream — fix-design 4)
+- `local/us-70-faults-e2e.sh` — F6 faulted-boot → registry convergence (loud skip when the seam is inert)
+- `.github/workflows/us-70-delivery-pool.yml` — FAULT_COUNT 8→16 (retries burn 3× per faulted first boot)
+
+## Review round r3 (all findings fixed)
+
+- **Watcher reachability (the big one)**: the single-container watcher start sat inside maybeStartRelayInjector AFTER its relay-off early return — dead code in the chart-default posture (relay off + sidecar off): a mid-life llm-provider reload rewrote config and PUT auth with NO restart, the exact #1300 class at mid-life. Moved to an unconditional block in main(); negative source-pin asserts the watcher is not inside the injector.
+- `needsOwnershipNormalization` was a test-only copy — now called by normalizeAuthStoreOwnership.
+- Fix-design 2(a): zen-kind no-model credentials no longer render config blocks (narrowed from "all models-less" after realizing first-party allowlist-less keys NEED their block for catalog key-merge); reload e2e fixtures updated to match the split.
+- Fix-design 2(b): qualified defaults against ALLOWLISTED providers must verify the model in the models map (stale re-pin guard); allowlist-less first-party providers keep existence-only (catalog-sourced, unverifiable config-side). Both pinned.
+- Fix-design 3(a)/(b) disclosures: with the XDG layer live, V2 turns now see the admin prompt/MCP from the delivered config (V1 saw them, V2 did not — behavior change, surfaced here); `disabled_providers:["opencode"]` is V1-only — the V2 catalog keeps the zen provider enabled, which is harmless and load-bearing (zen stays reachable for zen-kind credentials).
+- Fix-design 4: AC-1d drives a session-model-pinned V2 TURN against an in-cluster mock OpenAI-compatible upstream and asserts the assistant reply — the row that would have caught #1292b and #1300 as user-visible failures.
+- AC-1c: mid-life bind → reconcile → materialize → watcher restart → registry admission (the 3(c) heal contract, both topologies).
+- Child-env PAIR pin: effectiveAgentConfigPath must equal the child's OPENCODE_CONFIG across every topology's env combination (would have caught round 1's bug pre-pool).
 
 ## Live-validation record
 
@@ -82,7 +98,7 @@ Pod `8daf4ef8…-ad3695a4`: symlink installed 22:46 → registry `{"opencode":31
 1. **authStoreEntry emitted `"metadata":{}`** — struct fields ignore omitempty (encoding/json never omits non-pointer structs). Fixed: `*authStoreMetadata` pointer, set only when BaseURL != "". New pins: `TestAuthStoreEntry_MarshalMatchesLivePutShape`, `TestWriteStagedProvidersToAuthStore_NoBaseURLOmitsMetadataKey` (byte-parity with the live PUT shape both ways).
 2. **Watcher defeated session-aware restarts** — now topology-split: single-container composes `relayKillFunc` (makeSessionAwareRestartDecision — in-flight turns defer, same as the relay injector's kill switch); supervise-opencode keeps a grace restart, matching that topology's incumbent socket-restart semantics for credential changes (spawn_env_consumer.restart → cc.Restart is unconditional there). Cooldown coalesces any same-window double-restart.
 3. **Single-container topology gap** — boot layers + watcher now wired in `main()` too via shared `ensureOpencodeBootLayers`; pinned by `TestOpencodeBootLayersWiring` (source-scan across both entry points).
-4. **Tests** — added: wiring pin, `needsOwnershipNormalization` decision extract + test (chown-to-other-uid is unprivileged-impossible; the decision is the testable unit), last-good-skip-retry (`…_LastGoodBatchSkipsRetry`: exactly 1 call, byte-preserved batch). The `/api/model` `.data[]` shape is validated by the live-pod probes throughout session 2 AND the pool's AC-1b/F6 rows.
+4. **Tests** — added: wiring pin, `needsOwnershipNormalization` decision extract + test (chown-to-other-uid is unprivileged-impossible; the decision is the testable unit), last-good-skip-retry (`…_LastGoodBatchSkipsRetry`: exactly 1 call, byte-preserved batch). The `/api/model` `.data[]` shape is validated by the session-2 live-pod probes; the pool rows (AC-1b/1c/1d, F6) re-prove it on execution — round 1's run is the only execution so far and it failed at the (then-buggy) symlink target, before reaching the registry assertions.
 5. **Worklog numbering** — renamed to the `NNNN_` sentinel (the post-merge renumber bot assigns the real number; manual picks race concurrent PRs).
 
 ## Pool validation round 1 (run 34066476127 — AC-1b's first live execution)

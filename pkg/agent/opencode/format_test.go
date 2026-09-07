@@ -547,3 +547,36 @@ func TestFormatOpenCodeConfig_ExactSnapshot_WithBothLimits(t *testing.T) {
 	require.Equal(t, expected, string(out),
 		"snapshot mismatch — update the snapshot after re-validating against a live opencode pod")
 }
+
+func TestFormatOpenCodeConfig_SkipsModellessZenCredentials(t *testing.T) {
+	// #1300 fix-design 2(a): kind:"opencode" credentials render nothing —
+	// their delivery path is the auth-store merge (#1296). First-party
+	// keys WITHOUT an allowlist must still render (config-side key
+	// delivery for the built-in catalog merge).
+	providers := []secrets.LLMProviderData{
+		{Kind: "opencode", Slug: "opencode-free-tier", APIKey: "public"},
+		{Kind: "opencode", Slug: "opencode-free-user", APIKey: "free"},
+		{Kind: "anthropic", Slug: "anthropic", APIKey: "sk-ant-123"},
+		{Kind: "openai_compatible", Slug: "proxy", APIKey: "sk-1", BaseURL: "https://p.example/v1",
+			Models: []secrets.LLMModelConfig{{ID: "m1", Label: "M1"}}},
+	}
+
+	out, err := FormatOpenCodeConfig(providers)
+	require.NoError(t, err)
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	provs := parsed["provider"].(map[string]any)
+
+	_, zen := provs["opencode-free-tier"]
+	require.False(t, zen, "zen credential must not render a config block")
+	_, zen2 := provs["opencode-free-user"]
+	require.False(t, zen2, "zen credential must not render a config block")
+
+	anth, ok := provs["anthropic"].(map[string]any)
+	require.True(t, ok, "first-party key without allowlist MUST still render")
+	require.Equal(t, "sk-ant-123", anth["options"].(map[string]any)["apiKey"])
+
+	_, proxy := provs["proxy"]
+	require.True(t, proxy, "allowlisted compatible provider renders")
+}

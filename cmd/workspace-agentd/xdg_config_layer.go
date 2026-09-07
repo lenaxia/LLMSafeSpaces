@@ -257,10 +257,11 @@ func normalizeAuthStoreOwnership(logger *zap.Logger) {
 	if err != nil {
 		return
 	}
-	cur := os.Getuid()
-	if stat, ok := fi.Sys().(*syscall.Stat_t); ok && int(stat.Uid) == cur {
-		return // already consuming-uid-owned
+	if !needsOwnershipNormalization(fi, os.Getuid()) {
+		return // already consuming-uid-owned (or no uid info — never
+		// rewrite blind)
 	}
+	cur := os.Getuid()
 	data, err := os.ReadFile(resolved)
 	if err != nil {
 		logger.Warn("auth store ownership: read failed", zap.String("path", resolved), zap.Error(err))

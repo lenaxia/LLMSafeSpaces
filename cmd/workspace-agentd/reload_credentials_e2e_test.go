@@ -165,6 +165,7 @@ type reloadBinding struct {
 	ownerType string
 	provider  string
 	apiKey    string
+	kind      string // defaults to provider when empty
 }
 
 // deterministicKeyReload returns a 32-byte key where every byte == seed.
@@ -205,13 +206,17 @@ func buildReloadSecretService(t *testing.T, bindings []reloadBinding, wireAdmin,
 		default:
 			t.Fatalf("unknown ownerType %q", b.ownerType)
 		}
-		plaintext, err := json.Marshal(secrets.LLMProviderData{Kind: b.provider, Slug: b.provider, APIKey: b.apiKey})
+		bindKind := b.kind
+		if bindKind == "" {
+			bindKind = b.provider
+		}
+		plaintext, err := json.Marshal(secrets.LLMProviderData{Kind: bindKind, Slug: b.provider, APIKey: b.apiKey})
 		require.NoError(t, err)
 		cipher, err := secrets.EncryptSecret(kek, plaintext)
 		require.NoError(t, err)
 		credBindings = append(credBindings, secrets.CredentialBinding{
 			ID: "cred-" + b.ownerType + "-" + b.provider, OwnerType: b.ownerType,
-			Kind: b.provider, Slug: b.provider, Ciphertext: cipher, Version: 1, SourceType: "auto",
+			Kind: bindKind, Slug: b.provider, Ciphertext: cipher, Version: 1, SourceType: "auto",
 		})
 	}
 	store := &reloadE2EStore{cred: &reloadE2ECredStore{bindings: credBindings}}
@@ -287,10 +292,16 @@ func readReloadAgentConfig(t *testing.T, path string) struct {
 // and asserts all three providers appear in agent-config.json. A regression
 // where org credentials stop surviving the reload decrypt path fails here.
 func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
+	// The admin credential is a zen-kind (kind:"opencode") slug —
+	// #1300 fix-design 2(a): such credentials do NOT render config
+	// blocks (their delivery path is the auth-store merge at boot
+	// materialize / the live PUT on reload — pinned separately by
+	// TestWriteStagedProvidersToAuthStore_NoBaseURLOmitsMetadataKey).
+	// This row pins the RELOAD decrypt path for model-bearing kinds.
 	agentCfgPath, status, body := runReloadE2E(t,
 		[]reloadBinding{
 			{ownerType: "org", provider: "anthropic", apiKey: "sk-org"},
-			{ownerType: "admin", provider: "opencode", apiKey: "sk-admin"},
+			{ownerType: "admin", provider: "opencode-admin", apiKey: "sk-admin", kind: "opencode"},
 			{ownerType: "user", provider: "openai", apiKey: "sk-user"},
 		},
 		true, true,
@@ -299,8 +310,8 @@ func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
 
 	cfg := readReloadAgentConfig(t, agentCfgPath)
 	assert.Contains(t, cfg.Provider, "anthropic", "org provider must survive reload decrypt path")
-	assert.Contains(t, cfg.Provider, "opencode", "admin provider must survive reload decrypt path")
 	assert.Contains(t, cfg.Provider, "openai", "user provider must survive reload decrypt path")
+	assert.NotContains(t, cfg.Provider, "opencode-admin", "zen-kind credentials render no config block (#1300 2(a))")
 
 	var anthropicEntry struct {
 		Options struct {
@@ -310,6 +321,7 @@ func TestE2E_ReloadSecrets_AllOwnerTypesMaterialized(t *testing.T) {
 	require.NoError(t, json.Unmarshal(cfg.Provider["anthropic"], &anthropicEntry))
 	assert.Equal(t, "sk-org", anthropicEntry.Options.APIKey,
 		"org apiKey must round-trip through the batch builder → reload → agent-config.json")
+
 }
 
 // TestE2E_ReloadSecrets_OrgOnly pins that a sole org-scoped credential
@@ -334,10 +346,13 @@ func TestE2E_ReloadSecrets_OrgOnly(t *testing.T) {
 // ever becomes a hard error or (worse) the org provider appears via a
 // wrong-key fallback.
 func TestE2E_ReloadSecrets_OrgProviderUnwired_OrgAbsentButReloadSucceeds(t *testing.T) {
+	// #1300 2(a): zen-kind credentials assert via the auth store, not
+	// the config render — the surviving-provider check uses a
+	// first-party kind so the assertion still pins materialization.
 	agentCfgPath, status, body := runReloadE2E(t,
 		[]reloadBinding{
 			{ownerType: "org", provider: "anthropic", apiKey: "sk-org"},
-			{ownerType: "admin", provider: "opencode", apiKey: "sk-admin"},
+			{ownerType: "admin", provider: "openrouter", apiKey: "sk-admin"},
 		},
 		true, false, // org provider NOT wired — the regression
 	)
@@ -346,7 +361,7 @@ func TestE2E_ReloadSecrets_OrgProviderUnwired_OrgAbsentButReloadSucceeds(t *test
 	cfg := readReloadAgentConfig(t, agentCfgPath)
 	assert.NotContains(t, cfg.Provider, "anthropic",
 		"org provider must NOT appear when SetOrgProvider was not called (would indicate wrong-key fallback)")
-	assert.Contains(t, cfg.Provider, "opencode", "admin provider must still materialize")
+	assert.Contains(t, cfg.Provider, "openrouter", "admin provider must still materialize")
 }
 
 // TestE2E_ReloadSecrets_EmptyBindings_Returns200 verifies the graceful

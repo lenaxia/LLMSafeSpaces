@@ -295,7 +295,7 @@ func TestOpencodeBootLayersWiring(t *testing.T) {
 		{"supervise_opencode.go", "ensureOpencodeBootLayers(log)", "supervise-opencode boot layers"},
 		{"main.go", "go watchAgentConfigForChanges(bgCtx", "single-container watcher started"},
 		{"supervise_opencode.go", "go watchAgentConfigForChanges(rootCtx", "supervisor watcher started"},
-		{"main.go", "relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions))", "session-aware restart in single-container watcher"},
+		{"main.go", "relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions))", "session-aware restart in single-container watcher (unconditional, outside maybeStartRelayInjector)"},
 		{"supervise_opencode.go", "proc.restartWithGrace(5 * time.Second)", "grace restart in supervisor watcher"},
 	} {
 		body, err := os.ReadFile(tc.file)
@@ -305,6 +305,25 @@ func TestOpencodeBootLayersWiring(t *testing.T) {
 		if !strings.Contains(string(body), tc.needle) {
 			t.Errorf("%s: missing %s (%s)", tc.file, tc.needle, tc.what)
 		}
+	}
+
+	// r3 review reachability pin: the watcher must NOT live inside
+	// maybeStartRelayInjector — its relayURL=="" early return makes the
+	// watcher dead code in the chart-default posture (relay off, sidecar
+	// off), the exact #1300 mid-life class.
+	inj, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(inj), "func maybeStartRelayInjector(")
+	end := strings.Index(string(inj[start:]), "\nfunc ")
+	if start >= 0 && end > 0 {
+		body := string(inj[start : start+end])
+		if strings.Contains(body, "watchAgentConfigForChanges(") {
+			t.Error("watcher start lives inside maybeStartRelayInjector — unreachable when the relay is disabled (chart default)")
+		}
+	} else {
+		t.Log("maybeStartRelayInjector bounds not found — layout changed, revisit this pin")
 	}
 }
 
@@ -384,5 +403,50 @@ func TestEffectiveAgentConfigPath_EnvPrecedence(t *testing.T) {
 	t.Setenv("OPENCODE_CONFIG", "/agentd-config/agent-config.json")
 	if got := effectiveAgentConfigPath(); got != "/agentd-config/agent-config.json" {
 		t.Fatalf("OPENCODE_CONFIG precedence broken: %q", got)
+	}
+}
+
+// TestEffectiveAgentConfigPath_MatchesChildEnv pins the PAIR contract
+// the pool's round-1 red exposed: whatever the supervisor resolves for
+// the symlink/watcher must equal what the opencode child actually gets
+// in OPENCODE_CONFIG — across every env combination the topologies
+// produce. appendEnvIfAbsent semantics: an existing base entry wins.
+func TestEffectiveAgentConfigPath_MatchesChildEnv(t *testing.T) {
+	cases := []struct {
+		name         string
+		opencode     string // OPENCODE_CONFIG in the supervisor env
+		llmsafespces string // LLMSAFESPACES_AGENT_CONFIG_PATH
+	}{
+		{"sidecar posture (controller sets OPENCODE_CONFIG)", "/agentd-config/agent-config.json", ""},
+		{"single-container defaults", "", ""},
+		{"explicit platform override", "", "/custom/agent-config.json"},
+		{"controller env plus platform override (controller wins in child)", "/agentd-config/agent-config.json", "/custom/agent-config.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.opencode == "" {
+				os.Unsetenv("OPENCODE_CONFIG")
+			} else {
+				t.Setenv("OPENCODE_CONFIG", tc.opencode)
+			}
+			if tc.llmsafespces == "" {
+				os.Unsetenv("LLMSAFESPACES_AGENT_CONFIG_PATH")
+			} else {
+				t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", tc.llmsafespces)
+			}
+			childEnv := opencodeChildEnv(os.Environ())
+			var childCfg string
+			for _, kv := range childEnv {
+				if strings.HasPrefix(kv, "OPENCODE_CONFIG=") {
+					childCfg = strings.TrimPrefix(kv, "OPENCODE_CONFIG=")
+				}
+			}
+			if childCfg == "" {
+				t.Fatal("child env lacks OPENCODE_CONFIG")
+			}
+			if eff := effectiveAgentConfigPath(); eff != childCfg {
+				t.Fatalf("supervisor resolution %q != child OPENCODE_CONFIG %q — the symlink/watcher would track a different file than the child reads", eff, childCfg)
+			}
+		})
 	}
 }
