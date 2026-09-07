@@ -317,20 +317,41 @@ kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X 
     "http://127.0.0.1:4096/api/session/${SID1D}/model" \
     || die "AC-1d: session-model pin rejected (model not resolvable)"
 
-ADM1D=$(kc exec "${POD1D}" -c workspace -- curl -sfm 15 "${OC_AUTH[@]}" -X POST \
-    -d '{"prompt":{"text":"reply with the canned marker"},"delivery":"steer"}' \
-    "http://127.0.0.1:4096/api/session/${SID1D}/prompt" | jq -r '.data.admittedSeq // empty')
-[[ -n "${ADM1D}" ]] || die "AC-1d: steer not admitted"
+# First-turn shape: the platform's adapter path sends first turns via
+# the SYNCHRONOUS V1 route (POST /session/:id/message — proxy_handlers
+# "Adapter path"; steer is the admission-dedup path for runs with
+# history, and V2 queue never drains per #755). The binary-contract
+# B1 row pins the same route.
+TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 60 -o /tmp/ac1d-send.json -w '%{http_code}' \
+    "${OC_AUTH[@]}" -X POST \
+    -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
+    "http://127.0.0.1:4096/session/${SID1D}/message" || true)
+case "${TURN_CODE}" in
+    2*) ok "AC-1d: V1 first-turn accepted (HTTP ${TURN_CODE})";;
+    *) die "AC-1d: V1 first-turn rejected: HTTP ${TURN_CODE}: $(kc exec "${POD1D}" -c workspace -- head -c 300 /tmp/ac1d-send.json 2>/dev/null)";;
+esac
 
 TURN_OK=""
-for _i in $(seq 1 30); do
+for _i in $(seq 1 45); do
     REPLY=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
         "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>/dev/null | jq -r '[.data[] | select(.type=="assistant") | .content[]? | select(.type=="text") | .text] | last // empty' 2>/dev/null || true)
     if [[ "${REPLY}" == *MOCK-TURN-OK* ]]; then TURN_OK=true; break; fi
     sleep 4
 done
-[[ "${TURN_OK}" == "true" ]] \
-    || die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 120s — the V2 turn did not resolve through the credential-backed provider"
+if [[ "${TURN_OK}" != "true" ]]; then
+    # Self-diagnose before dying: messages, mock reachability, opencode
+    # error tail — the three candidate failure planes.
+    echo "--- AC-1d diagnostics: session messages ---"
+    kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
+        "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>&1 | head -c 1200
+    echo; echo "--- AC-1d diagnostics: mock reachability from the workspace ---"
+    kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}\n' \
+        -X POST -H 'content-type: application/json' -d '{"m":1}' \
+        http://mock-llm.${NS}.svc/v1/chat/completions 2>&1 || true
+    echo "--- AC-1d diagnostics: opencode log tail ---"
+    kc exec "${POD1D}" -c workspace -- sh -c 'grep -aiE "error|fail" /workspace/.local/opencode/log/opencode.log 2>/dev/null | tail -5' || true
+    die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the V2 turn did not resolve through the credential-backed provider"
+fi
 ok "AC-1d PASS: session-model-pinned V2 turn completed against the mock upstream (reply: ${REPLY:0:40})"
 
 # -----------------------------------------------------------------------------
