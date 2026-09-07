@@ -323,13 +323,22 @@ kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X 
 # "Adapter path", pinned by adapter_path_test.go: "V1 must be called
 # exactly once, V2 must NEVER"; steer is the admission-dedup path for
 # runs with history, and V2 queue never drains per #755).
-TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 60 -o /tmp/ac1d-send.json -w '%{http_code}' \
+# Pre-flight: the mock upstream must be reachable FROM the workspace
+# pod before the turn — the synchronous V1 request hangs to its client
+# timeout if the model call blocks (signature: HTTP 000).
+MOCK_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}' \
+    -X POST -H 'content-type: application/json' -d '{"m":1}' \
+    http://mock-llm.${NS}.svc/v1/chat/completions 2>/dev/null || echo 000)
+[[ "${MOCK_CODE}" == "200" ]] \
+    || die "AC-1d: mock upstream unreachable from the workspace pod (HTTP ${MOCK_CODE}) — fix reachability before judging the turn"
+
+TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o /tmp/ac1d-send.json -w '%{http_code}' \
     "${OC_AUTH[@]}" -X POST \
     -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
     "http://127.0.0.1:4096/session/${SID1D}/message" || true)
 case "${TURN_CODE}" in
     2*) ok "AC-1d: V1 first-turn accepted (HTTP ${TURN_CODE})";;
-    *) die "AC-1d: V1 first-turn rejected: HTTP ${TURN_CODE}: $(kc exec "${POD1D}" -c workspace -- head -c 300 /tmp/ac1d-send.json 2>/dev/null)";;
+    *) warn "AC-1d: V1 first-turn HTTP ${TURN_CODE} — polling for the reply anyway (the synchronous request may outlive its client timeout while the turn completes server-side)";;
 esac
 
 TURN_OK=""
