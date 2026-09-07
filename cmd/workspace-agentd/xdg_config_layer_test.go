@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,11 +226,12 @@ func TestWatchAgentConfigForChanges_RestartsOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watch := &restartRecorder{restarts: make(chan time.Time, 4)}
+	restarts := make(chan time.Time, 4)
+	restartNow := func() { restarts <- time.Now() }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go watchAgentConfigForChanges(ctx, watch, p, xdgTestLogger(t))
+	go watchAgentConfigForChanges(ctx, p, xdgTestLogger(t), restartNow)
 
 	// Baseline settle, then change the config content.
 	time.Sleep(6 * time.Second)
@@ -238,25 +240,72 @@ func TestWatchAgentConfigForChanges_RestartsOnChange(t *testing.T) {
 	}
 
 	select {
-	case <-watch.restarts:
+	case <-restarts:
 	case <-time.After(15 * time.Second):
 		t.Fatal("watcher did not fire a restart for a content change")
 	}
 	// Exactly one restart for one change.
 	select {
-	case extra := <-watch.restarts:
+	case extra := <-restarts:
 		t.Fatalf("unexpected extra restart at %v", extra)
 	case <-time.After(6 * time.Second):
 	}
 }
 
-// restartRecorder satisfies the restarter seam.
-type restartRecorder struct {
-	restarts chan time.Time
+func TestNeedsOwnershipNormalization(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "auth.json")
+	if err := os.WriteFile(p, []byte(`{}`), 0o660); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if needsOwnershipNormalization(nil, os.Getuid()) {
+		t.Fatal("nil FileInfo must never trigger a rewrite")
+	}
+	// Same-uid file: no rewrite. (A foreign-uid file cannot be created
+	// unprivileged, so the differs-branch is exercised structurally:
+	// the predicate reads Stat_t.Uid, which for our own file equals
+	// our uid.)
+	if needsOwnershipNormalization(fi, os.Getuid()) {
+		t.Fatal("self-owned file must not need normalization")
+	}
+	if !needsOwnershipNormalization(fi, os.Getuid()+1) {
+		t.Fatal("uid mismatch must need normalization")
+	}
 }
 
-func (r *restartRecorder) restartWithGrace(grace time.Duration) {
-	r.restarts <- time.Now()
+// TestOpencodeBootLayersWiring pins that BOTH supervisor topologies
+// install the #1300 boot layers and start the watcher — the single-
+// container path was the r1 review's topology gap. Source-scan (same
+// pattern as the us70 harness lockstep tests): the helpers are wired
+// in main() and runSuperviseOpencodeCommand, and the single-container
+// watcher composes the SESSION-AWARE restart (relayKillFunc), not a
+// bare restart.
+func TestOpencodeBootLayersWiring(t *testing.T) {
+	src, err := os.ReadFile("xdg_config_layer.go")
+	if err != nil {
+		t.Skip("source not readable from test cwd")
+	}
+	_ = src
+	for _, tc := range []struct{ file, needle, what string }{
+		{"main.go", "ensureOpencodeBootLayers(log)", "single-container boot layers"},
+		{"supervise_opencode.go", "ensureOpencodeBootLayers(log)", "supervise-opencode boot layers"},
+		{"main.go", "go watchAgentConfigForChanges(bgCtx", "single-container watcher started"},
+		{"supervise_opencode.go", "go watchAgentConfigForChanges(rootCtx", "supervisor watcher started"},
+		{"main.go", "relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions))", "session-aware restart in single-container watcher"},
+		{"supervise_opencode.go", "proc.restartWithGrace(5 * time.Second)", "grace restart in supervisor watcher"},
+	} {
+		body, err := os.ReadFile(tc.file)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.file, err)
+		}
+		if !strings.Contains(string(body), tc.needle) {
+			t.Errorf("%s: missing %s (%s)", tc.file, tc.needle, tc.what)
+		}
+	}
 }
 
 func TestNormalizeAuthStoreOwnership_SkipsWhenAlreadyOwned(t *testing.T) {

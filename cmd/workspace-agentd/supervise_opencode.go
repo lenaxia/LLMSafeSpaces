@@ -80,16 +80,11 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// file (/agentd-config/agent-config.json) feeds the config service
 	// but never the catalog, so every platform-delivered provider was
 	// "Model unavailable". Install the XDG symlink (PVC holds only the
-	// link — US-35.7 intact) and quarantine malformed user configs
-	// that would crashloop opencode at boot. Both best-effort, both
-	// before the first spawn.
-	quarantineMalformedUserConfigs(log)
-	ensureOpencodeRegistryConfig(log)
-
-	// opencode chmods the auth store on its own live writes; a
-	// cross-uid (sidecar) writer leaves it foreign-owned, which EPERMs
-	// every PUT /auth. Normalize to the consuming uid before spawn.
-	normalizeAuthStoreOwnership(log)
+	// link — US-35.7 intact), quarantine malformed user configs that
+	// would crashloop opencode at boot, and normalize auth-store
+	// ownership — all before the first spawn (topology-shared with the
+	// single-container boot path in main.go).
+	ensureOpencodeBootLayers(log)
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -102,8 +97,13 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// re-ingest it into its registry (catalog re-transform is
 	// unreliable for late config under the sandbox runtime). Watch the
 	// file and restart opencode once per change with the existing
-	// credential_reload attribution.
-	go watchAgentConfigForChanges(rootCtx, proc, agentConfigPathFromEnv(), log)
+	// credential_reload attribution. This topology restarts with grace
+	// (matching the sidecar reload path's socket-restart semantics);
+	// the single-container path in main.go uses the session-aware
+	// decision instead.
+	go watchAgentConfigForChanges(rootCtx, agentConfigPathFromEnv(), log, func() {
+		proc.restartWithGrace(5 * time.Second)
+	})
 
 	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
 	// (Appendix A.0) and production never sets the override — it exists

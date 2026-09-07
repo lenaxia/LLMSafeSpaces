@@ -114,3 +114,36 @@ func TestRunBootstrapCommand_UnauthorizedNotRetried(t *testing.T) {
 	data, _ := os.ReadFile(outPath)
 	assert.Equal(t, "[]", string(data))
 }
+
+func TestRunBootstrapCommand_LastGoodBatchSkipsRetry(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "secrets.json")
+	tokenPath := writeBootstrapToken(t, dir)
+
+	// A prior batch on disk is the last-good state; a failing pull must
+	// keep it after exactly ONE attempt (the resync path is the heal —
+	// retrying a resumable boot only delays it).
+	if err := os.WriteFile(outPath, []byte(`{"entries":[{"name":"k"}],"revision":{"seq":7,"manifestHash":"h"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	code := runBootstrap([]string{
+		"--workspace-id", "ws-lastgood",
+		"--api-url", srv.URL,
+		"--token-file", tokenPath,
+		"--out", outPath,
+	})
+	require.Equal(t, 0, code)
+
+	assert.Equal(t, int32(1), calls.Load(), "last-good batch must not be retried")
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"manifestHash":"h"`, "last-good batch preserved byte-for-byte")
+}

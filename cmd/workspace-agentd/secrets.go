@@ -1253,18 +1253,19 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 // corrupt-store alarm assert through it — os.Stderr in production).
 // authStoreEntry is the compile-time contract for one provider entry
 // in opencode's auth store (auth.json): {key, type} always;
-// metadata.baseURL only when the provider carries one (omitted via
-// omitempty, so the marshaled bytes are byte-identical to the
-// historically-pinned shape — TestStageCredentials_AuthPayloadMatchesOpenCodeSchema
-// and the #1300 live validation hold the wire side).
+// metadata ONLY when the provider carries a baseURL. Metadata is a
+// POINTER so omitempty actually elides it — a struct field emits
+// "metadata":{} even with omitempty, diverging from the live PUT
+// path's shape (the r1 review finding; pinned by
+// TestAuthStoreEntry_MarshalMatchesLivePutShape).
 //
 // type is "api" for delivered API-key credentials (the only kind this
 // platform writes; opencode's own connection resolver branches on
 // key/oauth for its zen login flows, which we never emit).
 type authStoreEntry struct {
-	Key      string            `json:"key"`
-	Type     string            `json:"type"`
-	Metadata authStoreMetadata `json:"metadata,omitempty"`
+	Key      string             `json:"key"`
+	Type     string             `json:"type"`
+	Metadata *authStoreMetadata `json:"metadata,omitempty"`
 }
 
 type authStoreMetadata struct {
@@ -1310,9 +1311,11 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 		// (#1300: the auth-service predicate accepts type:"api" entries;
 		// key/oauth branch differently and are NOT written here).
 		entry := authStoreEntry{
-			Key:      p.APIKey,
-			Type:     authStoreEntryTypeAPI,
-			Metadata: authStoreMetadata{BaseURL: p.BaseURL},
+			Key:  p.APIKey,
+			Type: authStoreEntryTypeAPI,
+		}
+		if p.BaseURL != "" {
+			entry.Metadata = &authStoreMetadata{BaseURL: p.BaseURL}
 		}
 		b, err := json.Marshal(entry)
 		if err != nil {

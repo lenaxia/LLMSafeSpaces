@@ -299,10 +299,30 @@ func agentConfigFingerprint(path string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// restarter is the supervisor seam the watcher drives — *managedProcess
-// satisfies it; tests inject a recorder.
-type restarter interface {
-	restartWithGrace(grace time.Duration)
+// ensureOpencodeBootLayers runs the three #1300 boot fixes that must
+// precede the first opencode spawn in EVERY topology that supervises
+// opencode (single-container --supervise and sidecar supervise-opencode
+// alike): quarantine malformed XDG user configs, install the registry
+// symlink, normalize auth-store ownership. Each step is best-effort
+// with loud failure logging; none blocks boot.
+func ensureOpencodeBootLayers(logger *zap.Logger) {
+	quarantineMalformedUserConfigs(logger)
+	ensureOpencodeRegistryConfig(logger)
+	normalizeAuthStoreOwnership(logger)
+}
+
+// needsOwnershipNormalization decides whether the auth store file must
+// be rewritten as the consuming uid: extract of the supervisor's stat
+// check so the decision (not the syscall) is unit-testable.
+func needsOwnershipNormalization(fi os.FileInfo, uid int) bool {
+	if fi == nil {
+		return false
+	}
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return int(stat.Uid) != uid
+	}
+	// Non-Linux stat backends carry no uid — never rewrite blind.
+	return false
 }
 
 // watchAgentConfigForChanges heals the frozen-registry window (#1300):
@@ -315,13 +335,23 @@ type restarter interface {
 // watches the file hash and restarts opencode once per change with the
 // existing credential_reload reason marker.
 //
+// restartNow carries the TOPOLOGY-SPECIFIC restart semantics:
+//   - single-container (--supervise): the session-aware decision
+//     (makeSessionAwareRestartDecision — the same machinery the relay
+//     injector uses), so in-flight turns are deferred, not killed.
+//   - sidecar supervise-opencode: a grace restart — matching the
+//     incumbent credential-change semantics of that topology, where
+//     the sidecar's reload path already restarts unconditionally via
+//     the control socket (spawn_env_consumer.restart → cc.Restart).
+//
 // Poll (5s) rather than inotify: the sandbox runtime's inotify
 // semantics for bind-mounted files are exactly what we do not trust
 // here. Hashing ~7KiB every 5s is negligible. Cooldown (60s) bounds
 // restart churn when the sidecar rewrites the file several times in
 // quick succession (atomic temp+rename sequences land as distinct
-// hashes only when content actually changed).
-func watchAgentConfigForChanges(ctx context.Context, proc restarter, configPath string, logger *zap.Logger) {
+// hashes only when content actually changed) and coalesces this
+// watcher with any same-window restart the relay injector triggers.
+func watchAgentConfigForChanges(ctx context.Context, configPath string, logger *zap.Logger, restartNow func()) {
 	const (
 		interval = 5 * time.Second
 		cooldown = 60 * time.Second
@@ -362,7 +392,7 @@ func watchAgentConfigForChanges(ctx context.Context, proc restarter, configPath 
 			logRestartReasonAtWrite("credential_reload", nil, logger.Core())
 			logger.Info("agent-config watcher: restarting opencode to rebuild the model registry",
 				zap.String("path", configPath))
-			proc.restartWithGrace(5 * time.Second)
+			restartNow()
 		}
 	}
 }

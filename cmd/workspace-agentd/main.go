@@ -182,6 +182,12 @@ func main() {
 	// the sidecar container's mounts).
 	ensureRedactWrapper(log)
 
+	// #1300 boot layers (topology-shared with supervise-opencode):
+	// quarantine malformed XDG user configs, install the registry
+	// symlink, normalize auth-store ownership — all before the first
+	// opencode spawn. Best-effort, loud on failure.
+	ensureOpencodeBootLayers(log)
+
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
 	// its first read sees the completed config regardless of which
@@ -411,6 +417,14 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
 		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
 	})
+
+	// #1300: watch agent-config for post-spawn changes and rebuild the
+	// registry with a SESSION-AWARE restart (same machinery as the relay
+	// injector's kill switch — in-flight turns defer, they are not
+	// killed). Single-container topology only; supervise-opencode starts
+	// its own watcher with that topology's grace-restart semantics.
+	go watchAgentConfigForChanges(bgCtx, agentConfigPathFromEnv(), log,
+		relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions))
 }
 
 // liveSessionsLister returns the opencode /session probe used to prune stale

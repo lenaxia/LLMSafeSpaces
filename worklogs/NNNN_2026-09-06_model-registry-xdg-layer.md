@@ -76,3 +76,11 @@ Pod `8daf4ef8…-ad3695a4`: symlink installed 22:46 → registry `{"opencode":31
 - Sidecar auth-store merge flips ownership back to uid 2000 on every mid-life reload (temp+rename) — the supervisor normalizes at boot; a durable fix is an in-place-write or ownership-preserving merge on the sidecar side.
 - Watcher fingerprints agent-config only; auth-only batch changes rely on the same materialize rewriting config (true today).
 - The `.16–.18` migration-window note in the Dockerfile stands; the contract-differential pool idea (characterize binary behavior per pin) would have caught this class before prod.
+
+## Review round r1 (auto-reviewer, REQUEST_CHANGES — all five findings fixed)
+
+1. **authStoreEntry emitted `"metadata":{}`** — struct fields ignore omitempty (encoding/json never omits non-pointer structs). Fixed: `*authStoreMetadata` pointer, set only when BaseURL != "". New pins: `TestAuthStoreEntry_MarshalMatchesLivePutShape`, `TestWriteStagedProvidersToAuthStore_NoBaseURLOmitsMetadataKey` (byte-parity with the live PUT shape both ways).
+2. **Watcher defeated session-aware restarts** — now topology-split: single-container composes `relayKillFunc` (makeSessionAwareRestartDecision — in-flight turns defer, same as the relay injector's kill switch); supervise-opencode keeps a grace restart, matching that topology's incumbent socket-restart semantics for credential changes (spawn_env_consumer.restart → cc.Restart is unconditional there). Cooldown coalesces any same-window double-restart.
+3. **Single-container topology gap** — boot layers + watcher now wired in `main()` too via shared `ensureOpencodeBootLayers`; pinned by `TestOpencodeBootLayersWiring` (source-scan across both entry points).
+4. **Tests** — added: wiring pin, `needsOwnershipNormalization` decision extract + test (chown-to-other-uid is unprivileged-impossible; the decision is the testable unit), last-good-skip-retry (`…_LastGoodBatchSkipsRetry`: exactly 1 call, byte-preserved batch). The `/api/model` `.data[]` shape is validated by the live-pod probes throughout session 2 AND the pool's AC-1b/F6 rows.
+5. **Worklog numbering** — renamed to the `NNNN_` sentinel (the post-merge renumber bot assigns the real number; manual picks race concurrent PRs).
