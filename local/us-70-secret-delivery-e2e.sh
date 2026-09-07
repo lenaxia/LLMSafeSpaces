@@ -269,7 +269,19 @@ spec:
   replicas: 1
   selector: {matchLabels: {app: mock-llm}}
   template:
-    metadata: {labels: {app: mock-llm}}
+    metadata:
+      labels:
+        app: mock-llm
+        # Ride the chart's in-cluster LLM-endpoint egress exemption
+        # (workspace-network-policy.yaml's relay-router podSelector rule):
+        # sandbox egress blocks all RFC1918 by design, with one carve-out
+        # for the relay-router component on port 8080. The mock IS this
+        # pool's in-cluster LLM endpoint (serves 8080, same semantic
+        # class); the alternative — emptying blockedEgressCIDRs — would
+        # weaken the egress posture the pool exists to test.
+        app.kubernetes.io/name: llmsafespaces
+        app.kubernetes.io/instance: llmsafespaces
+        app.kubernetes.io/component: relay-router
     spec:
       containers:
         - name: serve
