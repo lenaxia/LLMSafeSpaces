@@ -876,14 +876,18 @@ func TestE2E_BootstrapMaterialize_PartialFailure_DoesNotBlockGoodProviders(t *te
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				// #1300 2(a): zen-kind (kind:"opencode") credentials render
+				// no config block (auth-store delivery path) — the
+				// surviving-admin assertion uses a first-party kind so it
+				// still pins materialization.
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"},
 			},
 			wireOrg: boolPtr(false), // org binding will fail to decrypt
 		})
 	require.Equal(t, 0, materializeExit, "partial decrypt failure must not fail materialize; stderr=%s", materializeStderr)
 	cfg := readAgentConfig(t, agentCfgPath)
 	assert.NotContains(t, cfg.Provider, "anthropic", "failed org binding must be absent")
-	assert.Contains(t, cfg.Provider, "opencode", "unrelated admin provider must still materialize despite the org failure")
+	assert.Contains(t, cfg.Provider, "openrouter", "unrelated admin provider must still materialize despite the org failure")
 }
 
 // --- Password reset erasure guarantee ---
