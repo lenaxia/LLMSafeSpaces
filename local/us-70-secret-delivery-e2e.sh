@@ -341,15 +341,24 @@ probe_mock() { # container args... — POSTs the mock, echoes the http code
         "${MOCK_URL}" 2>/dev/null || echo 000
 }
 WS_MOCK=$(probe_mock workspace)
-SC_MOCK=$(probe_mock agentd 2>/dev/null || echo no-sidecar)
 SVC_IP=$(kc get svc -n "${NS}" mock-llm -o jsonpath='{.spec.clusterIP}' 2>/dev/null)
 DNS_INFO=$(kc exec "${POD1D}" -c workspace -- getent hosts "mock-llm.${NS}.svc" 2>&1 | head -1)
 IP_MOCK=$(kc exec "${POD1D}" -c workspace -- curl -sm 5 -o /dev/null -w '%{http_code}' \
     -X POST -H 'content-type: application/json' -d '{"m":1}' \
     "http://${SVC_IP}/v1/chat/completions" 2>/dev/null || echo 000)
-ok "AC-1d mock probes: workspace=${WS_MOCK} sidecar=${SC_MOCK} direct-ClusterIP=${IP_MOCK} dns='${DNS_INFO}' svcIP=${SVC_IP}"
+EP_INFO=$(kc get endpoints -n "${NS}" mock-llm -o jsonpath='{.subsets[0].addresses[0].ip}:{.subsets[0].ports[0].port}' 2>/dev/null)
+# Plain-pod probe: a fresh non-gVisor, non-workspace pod in the same ns —
+# bisects workspace-specific vs service-level reachability.
+kc --context "${CTX}" -n "${NS}" delete pod mock-probe --ignore-not-found >/dev/null 2>&1
+kc --context "${CTX}" -n "${NS}" run mock-probe --image=curlimages/curl --restart=Never \
+    --command -- curl -sm 5 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+    -d '{"m":1}' "http://${SVC_IP}/v1/chat/completions" >/dev/null 2>&1
+PLAIN_MOCK=$(kc --context "${CTX}" -n "${NS}" logs mock-probe 2>/dev/null | tail -1)
+VERBOSE_ERR=$(kc exec "${POD1D}" -c workspace -- curl -vm 5 -o /dev/null \
+    "http://${SVC_IP}/v1/chat/completions" 2>&1 | grep -aiE 'connect|timed|refused|resolve' | head -2 | tr '\n' ' ')
+ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=${IP_MOCK} endpoints='${EP_INFO}' dns='${DNS_INFO}' err='${VERBOSE_ERR}'"
 [[ "${WS_MOCK}" == "200" ]] \
-    || die "AC-1d: mock upstream unreachable from the workspace container (HTTP ${WS_MOCK}; sidecar=${SC_MOCK}, ClusterIP=${IP_MOCK})"
+    || die "AC-1d: mock unreachable from the workspace container (HTTP ${WS_MOCK}; plain-pod='${PLAIN_MOCK}', endpoints='${EP_INFO}', err='${VERBOSE_ERR}')"
 
 TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o /tmp/ac1d-send.json -w '%{http_code}' \
     "${OC_AUTH[@]}" -X POST \
