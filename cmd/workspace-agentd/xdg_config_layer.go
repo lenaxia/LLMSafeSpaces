@@ -64,12 +64,30 @@ func opencodeXDGConfigDir() string {
 	return filepath.Join(home, ".config", "opencode")
 }
 
+// effectiveAgentConfigPath resolves the config file opencode will
+// actually read: the controller sets OPENCODE_CONFIG directly on the
+// workspace container in sidecar mode (agentd_sidecar.go) while the
+// single-container topology relies on the supervisor's
+// LLMSAFESPACES_AGENT_CONFIG_PATH default — mirroring
+// managedProcess's appendEnvIfAbsent(OPENCODE_CONFIG, …) child-env
+// resolution so the symlink and the watcher track the SAME file the
+// child reads. (Pool run 34066476127: the symlink pointed at the
+// /sandbox-runtime default while the child read /agentd-config —
+// env-precedence divergence.)
+func effectiveAgentConfigPath() string {
+	if oc := os.Getenv("OPENCODE_CONFIG"); oc != "" {
+		return oc
+	}
+	return agentConfigPathFromEnv()
+}
+
 // ensureOpencodeRegistryConfig installs the XDG-layer symlink
-// ~/.config/opencode/opencode.json → agent-config (the sidecar-stamped
-// file at LLMSAFESPACES_AGENT_CONFIG_PATH). Best-effort, idempotent,
-// never blocks boot — but failure is loud because without the link the
-// model registry will not admit any platform-delivered provider
-// (#1300). Runs before the first opencode spawn.
+// ~/.config/opencode/opencode.json → the effective agent-config (the
+// sidecar-stamped file in sidecar mode; the /sandbox-runtime default
+// in single-container). Best-effort, idempotent, never blocks boot —
+// but failure is loud because without the link the model registry will
+// not admit any platform-delivered provider (#1300). Runs before the
+// first opencode spawn.
 //
 // A real (non-symlink) file at the link path is LEFT ALONE with a
 // warning: the user took over the config layer. opencode layers XDG
@@ -77,7 +95,7 @@ func opencodeXDGConfigDir() string {
 // providers keeps registry behavior broken — the warning names the
 // exact consequence rather than silently clobbering user bytes.
 func ensureOpencodeRegistryConfig(logger *zap.Logger) string {
-	target := agentConfigPathFromEnv()
+	target := effectiveAgentConfigPath()
 	dir := opencodeXDGConfigDir()
 	link := filepath.Join(dir, "opencode.json")
 

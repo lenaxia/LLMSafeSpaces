@@ -158,14 +158,22 @@ POD1B=$(pod_of "${WS1B}")
 [[ -n "${POD1B}" ]] || die "AC-1b: no pod name on CR"
 
 # (3) The XDG registry-layer contract (#1300 fix): the supervisor
-# installs ~/.config/opencode/opencode.json → /agentd-config/agent-config.json.
+# installs ~/.config/opencode/opencode.json pointing at the config file
+# opencode ACTUALLY reads — verified against the live child's
+# OPENCODE_CONFIG env (topology-dependent: /agentd-config in sidecar
+# mode, /sandbox-runtime single-container; pool run 34066476127 caught
+# a hard-coded sidecar path).
+OC_PID=$(kc exec "${POD1B}" -c workspace -- pgrep -f 'opencode serve' | head -1)
+[[ -n "${OC_PID}" ]] || die "AC-1b: opencode process not found"
+OC_CFG=$(kc exec "${POD1B}" -c workspace -- sh -c "tr '\\0' '\\n' < /proc/${OC_PID}/environ | grep '^OPENCODE_CONFIG=' | cut -d= -f2-")
+[[ -n "${OC_CFG}" ]] || die "AC-1b: opencode child has no OPENCODE_CONFIG env"
 XDG_LINK=$(kc exec "${POD1B}" -c workspace -- readlink -f /home/sandbox/.config/opencode/opencode.json 2>/dev/null || true)
-[[ "${XDG_LINK}" == "/agentd-config/agent-config.json" ]] \
-    || die "AC-1b: XDG registry layer missing or wrong (readlink: '${XDG_LINK}')"
-ok "XDG registry-layer symlink present (→ ${XDG_LINK})"
+[[ "${XDG_LINK}" == "${OC_CFG}" ]] \
+    || die "AC-1b: XDG registry layer target '${XDG_LINK}' != child OPENCODE_CONFIG '${OC_CFG}'"
+ok "XDG registry-layer symlink matches the child's OPENCODE_CONFIG (→ ${XDG_LINK})"
 
 # The rendered config must contain the credential's provider block.
-kc exec "${POD1B}" -c workspace -- grep -q '"ac1b-stub"' /agentd-config/agent-config.json \
+kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${OC_CFG}" \
     || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
 
 # (4) THE REGISTRY: opencode's model.available() via GET /api/model —

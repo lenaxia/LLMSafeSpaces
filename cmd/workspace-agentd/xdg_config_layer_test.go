@@ -370,3 +370,19 @@ func TestNormalizeAuthStoreOwnership_SymlinkTargetNormalized(t *testing.T) {
 		t.Fatalf("symlink must be preserved (fi=%v err=%v)", fi, err)
 	}
 }
+
+func TestEffectiveAgentConfigPath_EnvPrecedence(t *testing.T) {
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", "/custom/agent-config.json")
+	if got := effectiveAgentConfigPath(); got != "/custom/agent-config.json" {
+		t.Fatalf("LLMSAFESPACES override ignored: %q", got)
+	}
+	// The controller sets OPENCODE_CONFIG directly on the workspace
+	// container in sidecar mode — it WINS over the LLMSAFESPACES_
+	// default (pool run 34066476127: the symlink followed the default
+	// while the child read the controller's path).
+	t.Setenv("OPENCODE_CONFIG", "/agentd-config/agent-config.json")
+	if got := effectiveAgentConfigPath(); got != "/agentd-config/agent-config.json" {
+		t.Fatalf("OPENCODE_CONFIG precedence broken: %q", got)
+	}
+}

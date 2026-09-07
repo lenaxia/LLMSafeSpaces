@@ -101,7 +101,7 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// (matching the sidecar reload path's socket-restart semantics);
 	// the single-container path in main.go uses the session-aware
 	// decision instead.
-	go watchAgentConfigForChanges(rootCtx, agentConfigPathFromEnv(), log, func() {
+	go watchAgentConfigForChanges(rootCtx, effectiveAgentConfigPath(), log, func() {
 		proc.restartWithGrace(5 * time.Second)
 	})
 

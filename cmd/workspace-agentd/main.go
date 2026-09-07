@@ -423,7 +423,7 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 	// injector's kill switch — in-flight turns defer, they are not
 	// killed). Single-container topology only; supervise-opencode starts
 	// its own watcher with that topology's grace-restart semantics.
-	go watchAgentConfigForChanges(bgCtx, agentConfigPathFromEnv(), log,
+	go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,
 		relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions))
 }
 
