@@ -108,3 +108,9 @@ Pod `8daf4ef8…-ad3695a4`: symlink installed 22:46 → registry `{"opencode":31
 Fix: `effectiveAgentConfigPath` mirrors the child-env resolution (`OPENCODE_CONFIG` env first, `LLMSAFESPACES_AGENT_CONFIG_PATH` default second; unit-pinned). AC-1b's assertion is now the true topology-independent contract: the XDG link target must equal the live child's `OPENCODE_CONFIG` (read from `/proc/<pid>/environ`), and the provider-block grep uses that same path.
 
 Meta: this is the regression row doing exactly what it was built for — the live-pod manual validation had the right symlink BY HAND, which masked the code's wrong resolution.
+
+## Validation status at r5 (honest record)
+
+- **AC-1b PASS, AC-1c PASS in CI** (run 34083965519, head ec11fc9e — production code byte-identical to eb04c8b2 per the r5 review's diff verification). The #1300 root-cause row and the mid-life heal are proven end-to-end.
+- **AC-1d (turn-level, fix-design 4) and F6 (faulted boot) are unexecuted.** Every pool dispatch since the AC-1d rework died on runner-host infrastructure before reaching the rows: two runs on DiskPressure evictions (kind-in-dind full builds exhausting node disk), one on a mid-build runner loss, and two fast-mode runs on resource-starved builds breaking the kind image import (worker CPU overcommitted; the runtime-base layer downloads alone ran 10-12 min). The runner blob was right-sized twice tonight (3→2500m→2300m CPU, talos-ops-prod #2435/#2436) just to become schedulable at all — the cluster lost cp-01 (physical, #2434) and worker-04's memory to the monitoring relocation.
+- The merge gate (one green pool run at head executing AC-1b/1c/1d/F6) therefore waits on infra recovery (cp-01 power-on or a dedicated runner host), not on code. AC-1d's row mechanics are source-corroborated (adapter_path_test.go pins the V1 first-turn route; #755 rules out V2 queue; the registry triple-gate precedes the turn).
