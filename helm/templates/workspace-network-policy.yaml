@@ -183,5 +183,18 @@ spec:
             {{- end }}
         {{- end }}
     {{- end }}
+    {{- with .Values.networkPolicy.extraEgressCIDRs }}
+    # Operator-granted internal egress (e.g. an in-cluster LLM endpoint
+    # for CI pools): plain ipBlock allows WITHOUT the blockedEgressCIDRs
+    # subtraction — the whole point is carving specific RFC1918
+    # destinations out of the blanket private-range block. Keep this
+    # list empty in production unless the operator has explicitly
+    # accepted the destination as part of the sandbox trust boundary.
+    - to:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+    {{- end }}
 {{- end }}
 {{- end }}

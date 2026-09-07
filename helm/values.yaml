@@ -953,6 +953,13 @@ networkPolicy:
   # tighter operators can replace with a strict allowlist.
   allowedEgressCIDRs:
     - 0.0.0.0/0
+  # Operator-granted egress OUTSIDE the blockedEgressCIDRs subtraction:
+  # plain ipBlock allows for specific internal destinations (e.g. an
+  # in-cluster mock LLM endpoint in CI pools). Empty by default; each
+  # entry must be an operator-accepted member of the sandbox trust
+  # boundary (it is reachable from every workspace pod on all ports).
+  extraEgressCIDRs: []
+
   # Block egress to RFC1918 + cloud metadata; sandbox pods should never
   # reach in-cluster services or the cloud metadata endpoint.
   blockedEgressCIDRs:
