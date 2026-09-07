@@ -32,6 +32,10 @@ on:
         description: "Pull ghcr :dev images instead of building (debug cycles only)"
         default: false
         type: boolean
+      agentd_dev_image:
+        description: "Override the fast-mode agentd image (full ref incl. tag) — e.g. ghcr.io/lenaxia/llmsafespaces/agentd:sha-<short> from a ci.yml dispatch on the branch; lets a pre-PR branch validate its agentd without the full four-image build (the kind-in-dind full build can exhaust node disk)"
+        default: ""
+        type: string
 
 env:
   CLUSTER_NAME: llmsafespaces-ci
@@ -127,8 +131,10 @@ jobs:
             docker pull "ghcr.io/lenaxia/llmsafespaces/${img}:dev"
             docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "llmsafespaces/${img}:$IMAGE_TAG"
           done
-          docker pull ghcr.io/lenaxia/llmsafespaces/agentd:dev
-          docker tag ghcr.io/lenaxia/llmsafespaces/agentd:dev "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
+          AGENTD_SOURCE="${{ inputs.agentd_dev_image }}"
+          if [[ -z "${AGENTD_SOURCE}" ]]; then AGENTD_SOURCE="ghcr.io/lenaxia/llmsafespaces/agentd:dev"; fi
+          docker pull "${AGENTD_SOURCE}"
+          docker tag "${AGENTD_SOURCE}" "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
           docker push "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" >/dev/null
           # Digest MUST come from the registry's tag resolution, NOT
           # docker-inspect RepoDigests: ghcr :dev images are multi-arch
