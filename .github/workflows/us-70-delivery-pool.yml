@@ -127,10 +127,23 @@ jobs:
         if: ${{ inputs.use_prebuilt_images == true }}
         run: |
           set -e
+          # ghcr :dev images are buildx manifest LISTS carrying provenance
+          # attestations; docker pull fetches only the amd64 child, so the
+          # attestation blobs stay UNFETCHED — kind load's
+          # `docker save | ctr import` then dies on "content digest not
+          # found" (the failure that killed every fast-mode dispatch
+          # 2026-09-07). Route through the local registry instead: the
+          # push re-wraps to the single amd64 child manifest (same path
+          # agentd/opencode already use below), and the kind node's
+          # containerd pulls from localhost:5001 via the certs.d mirror.
           for img in api controller; do
             docker pull "ghcr.io/lenaxia/llmsafespaces/${img}:dev"
-            docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "llmsafespaces/${img}:$IMAGE_TAG"
+            docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "localhost:5001/llmsafespaces/${img}:$IMAGE_TAG"
+            docker push "localhost:5001/llmsafespaces/${img}:$IMAGE_TAG" >/dev/null
           done
+          echo "API_REPO=localhost:5001/llmsafespaces/api" >> "$GITHUB_ENV"
+          echo "CTRL_REPO=localhost:5001/llmsafespaces/controller" >> "$GITHUB_ENV"
+          echo "PULL_POLICY=Always" >> "$GITHUB_ENV"
           AGENTD_SOURCE="${{ inputs.agentd_dev_image }}"
           if [[ -z "${AGENTD_SOURCE}" ]]; then AGENTD_SOURCE="ghcr.io/lenaxia/llmsafespaces/agentd:dev"; fi
           docker pull "${AGENTD_SOURCE}"
@@ -169,8 +182,6 @@ jobs:
           E2E_VERSION="${{ env.IMAGE_TAG }}"
           docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t "llmsafespaces/runtime-base:$IMAGE_TAG" .
           docker tag "llmsafespaces/runtime-base:$IMAGE_TAG" "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG"
-          kind load docker-image "llmsafespaces/api:$IMAGE_TAG" --name $CLUSTER_NAME
-          kind load docker-image "llmsafespaces/controller:$IMAGE_TAG" --name $CLUSTER_NAME
           kind load docker-image "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG" --name $CLUSTER_NAME
 
       - name: Build and load images
@@ -316,12 +327,12 @@ jobs:
           # interval rides index 2.
           helm upgrade --install llmsafespaces helm \
             -n $NS --create-namespace \
-            --set api.image.repository=llmsafespaces/api \
+            --set api.image.repository=${API_REPO:-llmsafespaces/api} \
             --set api.image.tag=$IMAGE_TAG \
-            --set api.image.pullPolicy=IfNotPresent \
-            --set controller.image.repository=llmsafespaces/controller \
+            --set api.image.pullPolicy=${PULL_POLICY:-IfNotPresent} \
+            --set controller.image.repository=${CTRL_REPO:-llmsafespaces/controller} \
             --set controller.image.tag=$IMAGE_TAG \
-            --set controller.image.pullPolicy=IfNotPresent \
+            --set controller.image.pullPolicy=${PULL_POLICY:-IfNotPresent} \
             --set controller.maxConcurrentReconciles=8 \
             --set mcp.enabled=false \
             --set postgresql.host=postgres \
