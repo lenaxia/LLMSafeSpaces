@@ -330,9 +330,10 @@ OC_AUTH=(-u "opencode:${PW1D}" -H 'content-type: application/json')
 # non-executing in the pool workspace (accepted, persisted, never run)
 # while the same route works bare-server (binary-contract B1) and in
 # production through this platform endpoint.
-SID1D=$(curl -sfm 30 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
-    -d '{"title":"ac1d-turn","directory":"/workspace","modelID":"mock-model-1","providerID":"ac1d-stub"}' \
-    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/new" | jq -r '.session.id // .id // empty')
+# EnsureSession takes no body (the service ensures a default session):
+# response is {workspaceId, workspacePhase, sessionId, resumed}.
+SID1D=$(curl -sfm 60 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/new" | jq -r '.sessionId // empty')
 [[ -n "${SID1D}" ]] || die "AC-1d: platform session create failed"
 
 # First-turn shape: the platform's adapter path sends first turns via
