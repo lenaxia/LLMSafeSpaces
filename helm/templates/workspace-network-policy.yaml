@@ -153,8 +153,12 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.api.service.port }}
-    {{- if .Values.controller.inferenceRelay.enabled }}
-    # Epic 42: In-cluster relay-router egress. The agentd reads
+    {{- if or .Values.controller.inferenceRelay.enabled .Values.networkPolicy.allowRelayRouterEgress }}
+    # Epic 42: In-cluster relay-router egress (also rendered when
+    # networkPolicy.allowRelayRouterEgress is set: CI pools label their
+    # in-cluster mock LLM endpoint with the relay-router component
+    # labels — ipBlock carve-outs do NOT work for Service VIPs because
+    # egress policy matches the post-DNAT endpoint pod IP). The agentd reads
     # INFERENCE_RELAY_BASEURL pointing at the router's ClusterIP, which
     # falls under the RFC1918 exclude in the general-egress rule below.
     # Without an explicit pod-selector allow, the agentd cannot reach the

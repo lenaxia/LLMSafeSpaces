@@ -272,6 +272,13 @@ spec:
     metadata:
       labels:
         app: mock-llm
+        # Ride the relay-router egress allow (rendered via
+        # networkPolicy.allowRelayRouterEgress): podSelector rules match
+        # the post-DNAT endpoint pod — the only mechanism that admits
+        # sandbox traffic to an in-cluster Service.
+        app.kubernetes.io/name: llmsafespaces
+        app.kubernetes.io/instance: llmsafespaces
+        app.kubernetes.io/component: relay-router
     spec:
       containers:
         - name: serve

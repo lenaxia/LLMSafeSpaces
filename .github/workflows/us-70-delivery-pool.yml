@@ -353,7 +353,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
-            --set "networkPolicy.extraEgressCIDRs[0]=10.217.200.200/32" \
+            --set networkPolicy.allowRelayRouterEgress=true \
             --set "api.extraEnv[0].name=OPENCODE_V2_DELIVERY,api.extraEnv[0].value=1" \
             --set "api.extraEnv[1].name=AGENTD_STATE_AUTHORITY,api.extraEnv[1].value=1" \
             --set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s" \
