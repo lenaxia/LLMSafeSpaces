@@ -507,6 +507,16 @@ fi
 # AC-13 — concurrent resumes → p95 within budget; identical spawned_rev
 #         (gVisor leg feature-detected)
 # -----------------------------------------------------------------------------
+# Free the kind node's disk before the scale wave: every delivery-row
+# workspace (image volume + PVC + logs) accumulates, and 40 concurrent
+# gVisor sandboxes then hit "gofer: fork/exec: no space left on device"
+# (runs 34195326798, 34198630872). Row workspaces use ids < 100; the
+# wave uses 101+ — sweep the rows' and earlier legs' leftovers.
+kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
+    | grep -E 'e2e5d000-0000-4000-8000-0000000000[0-9]{1,2}$' \
+    | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+log "AC-13 — pre-wave sweep: row workspaces deleted"
+
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
 # gVisor feature-detection: is there a controllable runtimeClass (runsc)?

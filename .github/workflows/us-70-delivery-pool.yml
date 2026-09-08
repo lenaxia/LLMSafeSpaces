@@ -36,6 +36,10 @@ on:
         description: "Override the fast-mode agentd image (full ref incl. tag) — e.g. ghcr.io/lenaxia/llmsafespaces/agentd:sha-<short> from a ci.yml dispatch on the branch; lets a pre-PR branch validate its agentd without the full four-image build (the kind-in-dind full build can exhaust node disk)"
         default: ""
         type: string
+      resume_scale:
+        description: "AC-13 concurrent-resume wave size (default 40 = the nightly gate; lower values for constrained-runner validation dispatches — the nightly re-proves the full wave)"
+        default: "40"
+        type: string
 
 env:
   CLUSTER_NAME: llmsafespaces-ci
@@ -416,7 +420,7 @@ jobs:
           # is deferred until a dedicated pool runner or a >=100 fleet
           # promise exists; bump RESUME_SCALE back — the wave pacing and
           # budgets scale with it.
-          RESUME_SCALE: 40
+          RESUME_SCALE: ${{ inputs.resume_scale }}
           RESUME_SCALE_TIMEOUT_S: 600
           # Must match the helm api.extraEnv reconcile-interval set above
           # (now index 2 — indexes 0/1 are the V2 delivery flags) —
