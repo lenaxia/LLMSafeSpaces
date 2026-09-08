@@ -213,8 +213,21 @@ fi
 # -----------------------------------------------------------------------------
 log "F6 — faulted bootstrap → heal → model REGISTRY converges (#1300 path)"
 
+# F6 re-arms its OWN seam (r21 follow-up): the count budget is shared
+# across rows, and F1's autopush heal loop legitimately burns one fault
+# per reconcile re-pull while faulted — at FAULT_COUNT=16 AND 24 the
+# seam was inert by F6's turn (runs 34276744182, 34284549387). A fresh
+# small arm (probe 1 + faulted-boot retries 3 + slack 2) makes F6
+# deterministic instead of budget-lottery. Same mechanism as the arm
+# step: env change → API rollout → fresh process with a full budget.
+F6_ARM="6:POST:/internal/v1/pod-bootstrap"
+kc set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${F6_ARM}" >/dev/null
+kc rollout status deployment/llmsafespaces-api --timeout=300s >/dev/null \
+    || die "F6: seam re-arm rollout failed"
+ok "F6: seam re-armed (${F6_ARM})"
+
 FAULT_SEEN6=0
-for _i in $(seq 1 "${FAULT_COUNT}"); do
+for _i in $(seq 1 6); do
     CODE=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
         -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe6"}' \
         "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
@@ -238,7 +251,7 @@ if (( FAULT_SEEN6 == 0 )); then
     # r3 review: a warn would let the fault row silently degrade to the
     # unfaulted path. skip_row records it in the exit tracker instead —
     # the fault-path guarantee is only claimed when the seam fired.
-    skip_row "F6" "seam inert at F6 (F1 + retries consumed the budget) — end-state convergence is covered by AC-1c; the faulted-boot path needs a larger FAULT_COUNT"
+    skip_row "F6" "seam inert even after the dedicated re-arm — the boot consumed all 6 faults without F6's probe seeing one (timing); end-state convergence covered by AC-1c"
 else
     ok "F6: seam still active (500 on try ${FAULT_SEEN6}) — this boot is faulted"
 
