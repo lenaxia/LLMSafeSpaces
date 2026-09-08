@@ -380,11 +380,16 @@ ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=
 # message — assert on it directly; the event-feed poll below stays as
 # the async fallback (the feed carries lifecycle events like
 # model-switched, and completed message entries only later).
-TURN_BODY=$(mktemp)
-TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o "${TURN_BODY}" -w '%{http_code}' \
-    "${OC_AUTH[@]}" -X POST \
+# NOTE: response captured via STDOUT — kc exec runs curl inside the
+# pod, so -o file paths land container-side where the runner cannot
+# read them (the earlier body checks silently read nothing). The last
+# stdout line is the http_code; everything above it is the body.
+TURN_RAW=$(kc exec "${POD1D}" -c workspace -- sh -c "curl -sm 120 -w '\n%{http_code}' \
+    -u opencode:${PW1D} -H 'content-type: application/json' -X POST \
     -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
-    "http://127.0.0.1:4096/session/${SID1D}/message" || true)
+    http://127.0.0.1:4096/session/${SID1D}/message" 2>/dev/null || true)
+TURN_CODE=$(printf '%s' "${TURN_RAW}" | tail -1)
+TURN_BODY=$(mktemp); printf '%s' "${TURN_RAW}" | sed '$d' > "${TURN_BODY}"
 case "${TURN_CODE}" in
     2*) ok "AC-1d: V1 first-turn accepted (HTTP ${TURN_CODE})";;
     *) warn "AC-1d: V1 first-turn HTTP ${TURN_CODE} — polling for the reply anyway (the synchronous request may outlive its client timeout while the turn completes server-side)";;
@@ -417,8 +422,8 @@ if [[ "${TURN_OK}" != "true" ]]; then
     echo
     echo "--- AC-1d diagnostics: mock request log (did opencode call it?) ---"
     kc --context "${CTX}" -n "${NS}" logs deployment/mock-llm --tail=10 2>&1 | head -12
-    echo "--- AC-1d diagnostics: opencode log tail ---"
-    kc exec "${POD1D}" -c workspace -- sh -c 'grep -aiE "error|fail" /workspace/.local/opencode/log/opencode.log 2>/dev/null | tail -5' || true
+    echo "--- AC-1d diagnostics: opencode log tail (full, last 15) ---"
+    kc exec "${POD1D}" -c workspace -- sh -c 'tail -15 /workspace/.local/opencode/log/opencode.log 2>/dev/null' || true
     die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the turn did not resolve through the credential-backed provider"
 fi
 ok "AC-1d PASS: session-model-pinned turn completed against the mock upstream (reply: ${REPLY:0:40})"
