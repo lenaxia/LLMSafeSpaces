@@ -387,7 +387,7 @@ ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=
 # http_code, the body above it is the translated session.Message.
 TURN_RAW=$(curl -sm 180 -w '\n%{http_code}' -X POST \
     -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
-    -d '{"text":"reply with the canned marker","model":{"modelID":"mock-model-1","providerID":"ac1d-stub"}}' \
+    -d '{"parts":[{"type":"text","text":"reply with the canned marker"}],"model":{"modelID":"mock-model-1","providerID":"ac1d-stub"}}' \
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/${SID1D}/message" 2>/dev/null || true)
 TURN_CODE=$(printf '%s' "${TURN_RAW}" | tail -1)
 TURN_BODY=$(mktemp); printf '%s' "${TURN_RAW}" | sed '$d' > "${TURN_BODY}"
