@@ -323,15 +323,17 @@ POD1D=$(pod_of "${WS1D}")
 PW1D=$(kc get secret "workspace-pw-${WS1D}" -o jsonpath='{.data.password}' | base64 -d)
 OC_AUTH=(-u "opencode:${PW1D}" -H 'content-type: application/json')
 
-SID1D=$(kc exec "${POD1D}" -c workspace -- curl -sfm 10 "${OC_AUTH[@]}" -X POST \
-    -d '{"directory":"/workspace"}' http://127.0.0.1:4096/session \
-    | jq -r '.id // empty')
-[[ -n "${SID1D}" ]] || die "AC-1d: session create failed"
-
-kc exec "${POD1D}" -c workspace -- curl -sfm 10 -o /dev/null "${OC_AUTH[@]}" -X POST \
-    -d '{"model":{"id":"mock-model-1","providerID":"ac1d-stub"}}' \
-    "http://127.0.0.1:4096/api/session/${SID1D}/model" \
-    || die "AC-1d: session-model pin rejected (model not resolvable)"
+# THE PRODUCTION TURN PATH (r6): the platform's synchronous message
+# endpoint — adapter.Send (V1 POST /session/:id/message) with the
+# per-prompt model override the platform pins to the session before
+# sending, exactly as the SPA does it. Raw-opencode sends proved
+# non-executing in the pool workspace (accepted, persisted, never run)
+# while the same route works bare-server (binary-contract B1) and in
+# production through this platform endpoint.
+SID1D=$(curl -sfm 30 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{"title":"ac1d-turn","directory":"/workspace","modelID":"mock-model-1","providerID":"ac1d-stub"}' \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/new" | jq -r '.session.id // .id // empty')
+[[ -n "${SID1D}" ]] || die "AC-1d: platform session create failed"
 
 # First-turn shape: the platform's adapter path sends first turns via
 # the SYNCHRONOUS V1 route (POST /session/:id/message — proxy_handlers
@@ -380,14 +382,12 @@ ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=
 # message — assert on it directly; the event-feed poll below stays as
 # the async fallback (the feed carries lifecycle events like
 # model-switched, and completed message entries only later).
-# NOTE: response captured via STDOUT — kc exec runs curl inside the
-# pod, so -o file paths land container-side where the runner cannot
-# read them (the earlier body checks silently read nothing). The last
-# stdout line is the http_code; everything above it is the body.
-TURN_RAW=$(kc exec "${POD1D}" -c workspace -- sh -c "curl -sm 120 -w '\n%{http_code}' \
-    -u opencode:${PW1D} -H 'content-type: application/json' -X POST \
-    -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
-    http://127.0.0.1:4096/session/${SID1D}/message" 2>/dev/null || true)
+# Platform synchronous send: response via stdout; last line is the
+# http_code, the body above it is the translated session.Message.
+TURN_RAW=$(curl -sm 180 -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{"text":"reply with the canned marker","model":{"modelID":"mock-model-1","providerID":"ac1d-stub"}}' \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/${SID1D}/message" 2>/dev/null || true)
 TURN_CODE=$(printf '%s' "${TURN_RAW}" | tail -1)
 TURN_BODY=$(mktemp); printf '%s' "${TURN_RAW}" | sed '$d' > "${TURN_BODY}"
 case "${TURN_CODE}" in
@@ -417,8 +417,8 @@ if [[ "${TURN_OK}" != "true" ]]; then
     kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}\n' \
         -X POST -H 'content-type: application/json' -d '{"m":1}' \
         http://mock-llm.${NS}.svc/v1/chat/completions 2>&1 || true
-    echo "--- AC-1d diagnostics: V1 response body (first 500 chars) ---"
-    head -c 500 /tmp/ac1d-send.json 2>/dev/null || head -c 500 "${TURN_BODY:-/nonexistent}" 2>/dev/null || echo "(no body captured)"
+    echo "--- AC-1d diagnostics: platform send response (first 600 chars) ---"
+    head -c 600 "${TURN_BODY}" 2>/dev/null || echo "(no body captured)"
     echo
     echo "--- AC-1d diagnostics: mock request log (did opencode call it?) ---"
     kc --context "${CTX}" -n "${NS}" logs deployment/mock-llm --tail=10 2>&1 | head -12
