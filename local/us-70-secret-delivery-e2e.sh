@@ -375,7 +375,12 @@ ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=
 [[ "${WS_MOCK}" == "200" ]] \
     || die "AC-1d: mock unreachable from the workspace container (HTTP ${WS_MOCK}; plain-pod='${PLAIN_MOCK}', endpoints='${EP_INFO}', err='${VERBOSE_ERR}')"
 
-TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o /tmp/ac1d-send.json -w '%{http_code}' \
+# The V1 route is SYNCHRONOUS: the POST response body IS the assistant
+# message — assert on it directly; the event-feed poll below stays as
+# the async fallback (the feed carries lifecycle events like
+# model-switched, and completed message entries only later).
+TURN_BODY=$(mktemp)
+TURN_CODE=$(kc exec "${POD1D}" -c workspace -- curl -sfm 120 -o "${TURN_BODY}" -w '%{http_code}' \
     "${OC_AUTH[@]}" -X POST \
     -d '{"parts":[{"type":"text","text":"reply with the canned marker"}]}' \
     "http://127.0.0.1:4096/session/${SID1D}/message" || true)
@@ -383,8 +388,14 @@ case "${TURN_CODE}" in
     2*) ok "AC-1d: V1 first-turn accepted (HTTP ${TURN_CODE})";;
     *) warn "AC-1d: V1 first-turn HTTP ${TURN_CODE} — polling for the reply anyway (the synchronous request may outlive its client timeout while the turn completes server-side)";;
 esac
-
 TURN_OK=""
+if grep -aq MOCK-TURN-OK "${TURN_BODY}" 2>/dev/null; then
+    ok "AC-1d PASS: credential-backed turn resolved against the mock upstream (synchronous reply carries MOCK-TURN-OK)"
+    TURN_OK=true
+fi
+rm -f "${TURN_BODY}"
+
+if [[ "${TURN_OK}" != "true" ]]; then
 for _i in $(seq 1 45); do
     REPLY=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
         "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>/dev/null | jq -r '[.data[] | select(.type=="assistant") | .content[]? | select(.type=="text") | .text] | last // empty' 2>/dev/null || true)
@@ -406,6 +417,7 @@ if [[ "${TURN_OK}" != "true" ]]; then
     die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the turn did not resolve through the credential-backed provider"
 fi
 ok "AC-1d PASS: session-model-pinned turn completed against the mock upstream (reply: ${REPLY:0:40})"
+fi
 
 # -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
