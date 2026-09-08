@@ -114,3 +114,10 @@ Meta: this is the regression row doing exactly what it was built for — the liv
 - **AC-1b PASS, AC-1c PASS in CI** (run 34083965519, head ec11fc9e — production code byte-identical to eb04c8b2 per the r5 review's diff verification). The #1300 root-cause row and the mid-life heal are proven end-to-end.
 - **AC-1d (turn-level, fix-design 4) and F6 (faulted boot) are unexecuted.** Every pool dispatch since the AC-1d rework died on runner-host infrastructure before reaching the rows: two runs on DiskPressure evictions (kind-in-dind full builds exhausting node disk), one on a mid-build runner loss, and two fast-mode runs on resource-starved builds breaking the kind image import (worker CPU overcommitted; the runtime-base layer downloads alone ran 10-12 min). The runner blob was right-sized twice tonight (3→2500m→2300m CPU, talos-ops-prod #2435/#2436) just to become schedulable at all — the cluster lost cp-01 (physical, #2434) and worker-04's memory to the monitoring relocation.
 - The merge gate (one green pool run at head executing AC-1b/1c/1d/F6) therefore waits on infra recovery (cp-01 power-on or a dedicated runner host), not on code. AC-1d's row mechanics are source-corroborated (adapter_path_test.go pins the V1 first-turn route; #755 rules out V2 queue; the registry triple-gate precedes the turn).
+
+## Validation final (runs 34217857014, 34231075177)
+
+- **Delivery suite ALL GREEN in one run** (34231075177): AC-1/1b/1c/1d/2/3/5/6/8/11/13 + chaos — the #1300 contract proven end-to-end in CI.
+- AC-13 scale: 20-way PASS p95=153s (34217857014); 10-way in the green run. The 40-way number is nightly-owned (worker-04-class host); this 8-core runner host cannot sustain it plus the remaining suites.
+- Root cause of the AC-13 "no space left on device": worker-00's re-image reset `user.max_user_namespaces` to Talos default 0 (the #2389 regression); runtime value restored via sysadmin-profile debug pod; **a talhelper config re-apply is needed for persistence across reboots**.
+- Remaining suites (revisions/Epic 69/faults-F6) blocked by host throughput (Postgres auth 503 fail-closed under accumulated load), not by branch code.
