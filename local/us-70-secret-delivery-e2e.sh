@@ -241,19 +241,39 @@ data:
   serve.py: |
     import json, sys, datetime
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    def chunk(delta, finish=None):
+        return json.dumps({
+            "id": "chatcmpl-mock", "object": "chat.completion.chunk",
+            "created": 0, "model": "mock-model-1",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        })
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
             print(f"MOCK-HIT {datetime.datetime.utcnow().isoformat()} {self.path} bytes={n}", flush=True)
-            resp = json.dumps({
-                "id": "chatcmpl-mock", "object": "chat.completion",
-                "created": 0, "model": "mock-model-1",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            }).encode()
+            if b'"stream":true' in body or b'"stream": true' in body:
+                # SSE: the AI SDK defaults to streaming — reply with
+                # chat.completion.chunk frames.
+                frames = "\n".join([
+                    "data: " + chunk({"role": "assistant", "content": ""}),
+                    "data: " + chunk({"content": "MOCK-TURN-OK"}),
+                    "data: " + chunk({}, finish="stop"),
+                    "data: [DONE]",
+                ]) + "\n\n"
+                resp = frames.encode()
+                ctype = "text/event-stream"
+            else:
+                resp = json.dumps({
+                    "id": "chatcmpl-mock", "object": "chat.completion",
+                    "created": 0, "model": "mock-model-1",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                ctype = "application/json"
             self.send_response(200)
-            self.send_header("content-type", "application/json")
+            self.send_header("content-type", ctype)
+            self.send_header("cache-control", "no-cache")
             self.send_header("content-length", str(len(resp)))
             self.end_headers()
             self.wfile.write(resp)
