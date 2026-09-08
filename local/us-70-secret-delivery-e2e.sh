@@ -255,12 +255,15 @@ data:
             if b'"stream":true' in body or b'"stream": true' in body:
                 # SSE: the AI SDK defaults to streaming — reply with
                 # chat.completion.chunk frames.
-                frames = "\n".join([
-                    "data: " + chunk({"role": "assistant", "content": ""}),
-                    "data: " + chunk({"content": "MOCK-TURN-OK"}),
-                    "data: " + chunk({}, finish="stop"),
-                    "data: [DONE]",
-                ]) + "\n\n"
+                # Each SSE event MUST be terminated by a blank line
+                # (data: <json>\n\n) — a single \n concatenates frames
+                # into one malformed multi-line event.
+                frames = "".join([
+                    "data: " + chunk({"role": "assistant", "content": ""}) + "\n\n",
+                    "data: " + chunk({"content": "MOCK-TURN-OK"}) + "\n\n",
+                    "data: " + chunk({}, finish="stop") + "\n\n",
+                    "data: [DONE]\n\n",
+                ])
                 resp = frames.encode()
                 ctype = "text/event-stream"
             else:
