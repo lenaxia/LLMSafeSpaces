@@ -121,3 +121,11 @@ Meta: this is the regression row doing exactly what it was built for — the liv
 - AC-13 scale: 20-way PASS p95=153s (34217857014); 10-way in the green run. The 40-way number is nightly-owned (worker-04-class host); this 8-core runner host cannot sustain it plus the remaining suites.
 - Root cause of the AC-13 "no space left on device": worker-00's re-image reset `user.max_user_namespaces` to Talos default 0 (the #2389 regression); runtime value restored via sysadmin-profile debug pod; **a talhelper config re-apply is needed for persistence across reboots**.
 - Remaining suites (revisions/Epic 69/faults-F6) blocked by host throughput (Postgres auth 503 fail-closed under accumulated load), not by branch code.
+
+## r21 corrections and the gate run (run 34276744182)
+
+- **FULL GREEN** at 3009d536-shape (production Go byte-identical to head per the r21 reviewer's own diff): delivery suite all rows, AC-13 20-way, revisions, Epic 69, faults F1–F5 — conclusion success, pass=7 skip=1 fail=0. F6 loud-skipped (seam inert after F1 + the retry's 3× burn consumed FAULT_COUNT=16) — never a silent pass.
+- **Correction (r21 finding 3, accepted)**: my earlier attribution of the 34231075177 revisions-leg failure to "host throughput, not branch code" was incomplete — the pre-wave sweep I added deleted ids <100 that post-wave rows recreate (REV-1's ws 1 via the env-inherited WS_BASE), a branch-introduced collision and plausible co-factor. Fixed: sweep narrowed to the provably-single-use 90–92; post-wave sweep of 101+ added; revisions' WS_BASE made unconditional (env inheritance had defeated its disjoint default).
+- **CI-red lockstep fixed**: `RESUME_SCALE: ${{ inputs.resume_scale || '40' }}` — also closes the schedule→100 regression (empty inputs context on cron → script default 100 = 2.5× the ENOSPC'd footprint).
+- **Fault starvation fixed structurally**: `if: always()` on the arm + fault steps (F6 had zero executions in 34 dispatches because every earlier-leg failure skipped the leg); FAULT_COUNT 16→24 so F1's probe + the 3×-per-faulted-boot retry burn cannot leave F6's seam inert.
+- worker-04's re-image also wiped #2389's userns sysctl (same class as worker-00); runtime value restored 2026-09-08 ~19:20 — **needs the same talhelper re-apply to persist**.

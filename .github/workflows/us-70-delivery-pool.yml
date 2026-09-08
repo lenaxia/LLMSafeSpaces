@@ -45,7 +45,7 @@ env:
   CLUSTER_NAME: llmsafespaces-ci
   IMAGE_TAG: ci
   NS: llmsafespaces
-  FAULT_COUNT: "16"
+  FAULT_COUNT: "24"
 
 jobs:
   us70-delivery-pool:
@@ -420,7 +420,7 @@ jobs:
           # is deferred until a dedicated pool runner or a >=100 fleet
           # promise exists; bump RESUME_SCALE back — the wave pacing and
           # budgets scale with it.
-          RESUME_SCALE: ${{ inputs.resume_scale }}
+          RESUME_SCALE: ${{ inputs.resume_scale || '40' }}
           RESUME_SCALE_TIMEOUT_S: 600
           # Must match the helm api.extraEnv reconcile-interval set above
           # (now index 2 — indexes 0/1 are the V2 delivery flags) —
@@ -460,6 +460,11 @@ jobs:
         run: bash local/us-69-evidence-leg.sh
 
       - name: Arm fault seam (fresh API process, after the delivery suite)
+        # if: always() — r21: without it, any delivery/revisions-leg
+        # failure SKIPS the fault leg, structurally starving F6 (zero
+        # executions in 34 dispatches). The fault leg must run even
+        # after an earlier leg dies.
+        if: ${{ always() }}
         # B1/M10: arming at helm install would spend the fault budget on
         # the delivery suite's ~105 pod bootstraps (AC-1 would boot against
         # 500s). The API reads LLMSAFESPACES_FAULT_INJECTION once per
@@ -472,12 +477,13 @@ jobs:
           kubectl --context "kind-$CLUSTER_NAME" -n $NS set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${FAULT_COUNT}:POST:/internal/v1/pod-bootstrap"
           kubectl --context "kind-$CLUSTER_NAME" -n $NS rollout status deployment/llmsafespaces-api --timeout=600s
 
-      - name: Run fault/chaos e2e rows (Epic 70 US-70.0 F1–F5)
+      - name: Run fault/chaos e2e rows (Epic 70 US-70.0 F1–F6)
+        if: ${{ always() }}
         # Fault-injected bootstraps (F1), API partition at resume (F2),
         # key-row corruption with the #1114 loud-degrade audit (F3),
         # SA-token tamper/expiry via kubectl-minted tokens (F4 — the JWT's
         # own .exp bounds the time-travel sleep to ≤~3700s), and chaos
-        # kills (F5). FAULT_COUNT defaults to 16 in the script; override
+        # kills (F5). FAULT_COUNT defaults to 24 in the script; override
         # here only in lockstep with the arming step's env.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}

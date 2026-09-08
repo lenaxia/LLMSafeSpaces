@@ -507,15 +507,16 @@ fi
 # AC-13 — concurrent resumes → p95 within budget; identical spawned_rev
 #         (gVisor leg feature-detected)
 # -----------------------------------------------------------------------------
-# Free the kind node's disk before the scale wave: every delivery-row
-# workspace (image volume + PVC + logs) accumulates, and 40 concurrent
-# gVisor sandboxes then hit "gofer: fork/exec: no space left on device"
-# (runs 34195326798, 34198630872). Row workspaces use ids < 100; the
-# wave uses 101+ — sweep the rows' and earlier legs' leftovers.
+# Pre-wave sweep (r21-narrowed): ids < 100 are REUSED by the post-wave
+# rows (AC-17 ws 2, chaos 3, AC-F 4, AC-3 5, AC-8 6, AC-5 7, AC-6 8,
+# AC-4-lite 9, AC-11 10) — the original <100 sweep deleted workspaces
+# those rows recreate, spending minutes in deletion-pending reconcile
+# churn (run 34231075177's AC-17/REV-1 window). Only 90-92 (AC-1b/1c/
+# 1d) are provably single-use pre-wave rows.
 kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
-    | grep -E 'e2e5d000-0000-4000-8000-0000000000[0-9]{1,2}$' \
+    | grep -E 'e2e5d000-0000-4000-8000-0000000000(09[0-2])$' \
     | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
-log "AC-13 — pre-wave sweep: row workspaces deleted"
+log "AC-13 — pre-wave sweep: single-use row workspaces (90-92) deleted"
 
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
@@ -737,7 +738,13 @@ if (( SCALE > 0 )); then
     else
         warn "AC-13 gVisor leg SKIPPED (no runsc RuntimeClass) — see note above"
     fi
-    ok "AC-13 PASS (runc leg; runsc pending pool)"
+    \1
+# Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
+# free their image volumes/PVCs so the post-wave rows (AC-17 onward,
+# which recreate ws 1..10) get the kind node's disk back.
+kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
+    | grep -E 'e2e5d000-0000-4000-8000-0000000(0[1-9][0-9]|[1-9][0-9]{2})[0-9]$' \
+    | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
 fi

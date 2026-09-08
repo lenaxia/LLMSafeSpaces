@@ -398,8 +398,11 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		"runs-on: lenaxia-dind-runner",
 		// Calibrated 2026-09-03 (#1252): knee on the dind runner class
 		// measured ~55 concurrent gVisor workspaces across runs
-		// 33733697430/33773343318; 40 = 0.72x knee.
-		"RESUME_SCALE: 40",
+		// 33733697430/33773343318; 40 = 0.72x knee. The || '40' fallback
+		// is load-bearing: on the Sunday cron the inputs context is empty
+		// (defaults apply to workflow_dispatch only) and without it the
+		// script default (100) would run a 100-wave (r21 blocker 2).
+		"RESUME_SCALE: ${{ inputs.resume_scale || '40' }}",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Fatalf("pool workflow must contain %q (found missing)", pin)

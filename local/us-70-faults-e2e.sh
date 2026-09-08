@@ -39,7 +39,7 @@
 #          converge; (b) pod-delete mid-bind → recreate + converge.
 #
 # Environment (beyond lib/us70-common.sh):
-#   FAULT_COUNT    - expected fault-rule count (default 16); the workflow's
+#   FAULT_COUNT    - expected fault-rule count (default 24); the workflow's
 #                    arming step sets LLMSAFESPACES_FAULT_INJECTION from the
 #                    SAME number (workflow env FAULT_COUNT) — one source.
 #   WS_BASE        - distinct UUID workspace base (default e2e5f000-…; the
@@ -50,7 +50,7 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
-export FAULT_COUNT="${FAULT_COUNT:-16}"
+export FAULT_COUNT="${FAULT_COUNT:-24}"
 WS_BASE="${WS_BASE:-e2e5f000-0000-4000-8000-000000000000}"
 
 PASS=0
