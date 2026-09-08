@@ -738,13 +738,13 @@ if (( SCALE > 0 )); then
     else
         warn "AC-13 gVisor leg SKIPPED (no runsc RuntimeClass) — see note above"
     fi
-    \1
-# Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
-# free their image volumes/PVCs so the post-wave rows (AC-17 onward,
-# which recreate ws 1..10) get the kind node's disk back.
-kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
-    | grep -E 'e2e5d000-0000-4000-8000-0000000(0[1-9][0-9]|[1-9][0-9]{2})[0-9]$' \
-    | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+
+    # Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
+    # free their image volumes/PVCs so the post-wave rows (AC-17 onward,
+    # which recreate ws 1..10) get the kind node's disk back.
+    kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
+        | grep -E 'e2e5d000-0000-4000-8000-0000000(1[0-9][0-9])$' \
+        | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
 fi
