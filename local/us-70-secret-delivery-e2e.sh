@@ -239,12 +239,13 @@ metadata:
   namespace: llmsafespaces
 data:
   serve.py: |
-    import json
+    import json, sys, datetime
     from http.server import BaseHTTPRequestHandler, HTTPServer
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
+            print(f"MOCK-HIT {datetime.datetime.utcnow().isoformat()} {self.path} bytes={n}", flush=True)
             resp = json.dumps({
                 "id": "chatcmpl-mock", "object": "chat.completion",
                 "created": 0, "model": "mock-model-1",
@@ -393,7 +394,6 @@ if grep -aq MOCK-TURN-OK "${TURN_BODY}" 2>/dev/null; then
     ok "AC-1d PASS: credential-backed turn resolved against the mock upstream (synchronous reply carries MOCK-TURN-OK)"
     TURN_OK=true
 fi
-rm -f "${TURN_BODY}"
 
 if [[ "${TURN_OK}" != "true" ]]; then
 for _i in $(seq 1 45); do
@@ -412,6 +412,11 @@ if [[ "${TURN_OK}" != "true" ]]; then
     kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}\n' \
         -X POST -H 'content-type: application/json' -d '{"m":1}' \
         http://mock-llm.${NS}.svc/v1/chat/completions 2>&1 || true
+    echo "--- AC-1d diagnostics: V1 response body (first 500 chars) ---"
+    head -c 500 /tmp/ac1d-send.json 2>/dev/null || head -c 500 "${TURN_BODY:-/nonexistent}" 2>/dev/null || echo "(no body captured)"
+    echo
+    echo "--- AC-1d diagnostics: mock request log (did opencode call it?) ---"
+    kc --context "${CTX}" -n "${NS}" logs deployment/mock-llm --tail=10 2>&1 | head -12
     echo "--- AC-1d diagnostics: opencode log tail ---"
     kc exec "${POD1D}" -c workspace -- sh -c 'grep -aiE "error|fail" /workspace/.local/opencode/log/opencode.log 2>/dev/null | tail -5' || true
     die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the turn did not resolve through the credential-backed provider"
