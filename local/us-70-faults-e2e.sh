@@ -224,7 +224,11 @@ F6_ARM="6:POST:/internal/v1/pod-bootstrap"
 kc set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${F6_ARM}" >/dev/null
 kc rollout status deployment/llmsafespaces-api --timeout=300s >/dev/null \
     || die "F6: seam re-arm rollout failed"
-ok "F6: seam re-armed (${F6_ARM})"
+# The rollout replaced the API pod the port-forward was pinned to —
+# re-establish it (reconnect_api, the same dance F2 uses after scale-0)
+# or every subsequent API call dies with HTTP 000.
+reconnect_api
+ok "F6: seam re-armed (${F6_ARM}) + API forward re-established"
 
 FAULT_SEEN6=0
 for _i in $(seq 1 6); do
