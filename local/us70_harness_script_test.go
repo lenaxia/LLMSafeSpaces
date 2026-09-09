@@ -835,7 +835,7 @@ func TestUS70SweepSelection(t *testing.T) {
 	// not reimplementations).
 	script, err := os.ReadFile("us-70-secret-delivery-e2e.sh")
 	if err != nil {
-		t.Skip("script not readable from test cwd")
+		t.Fatalf("script not readable from test cwd (r31: fail, never silent-skip): %v", err)
 	}
 	preRe := regexp.MustCompile(`(?s)PRE_SWEPT=.*?awk -F/ '(.*?)'`)
 	mPre := preRe.FindStringSubmatch(string(script))
@@ -863,25 +863,34 @@ func TestUS70SweepSelection(t *testing.T) {
 		t.Fatal("post-wave awk not found in us-70-secret-delivery-e2e.sh")
 	}
 	postProgram := mPost[1]
-	// count-expression pin (r28): the log lines' counters must be exact
-	// for multi-item sweeps — wc -l undercounts by one on stripped
-	// trailing newlines (run 34309009157 logged 19 for 20).
-	sh := exec.Command("bash", "-c", `printf '%s' "a
-b
-c" | wc -l; printf '%s
-' "a
-b
-c" | grep -c .`)
-	out, _ := sh.Output()
-	lines := strings.Fields(string(out))
-	require := func(cond bool, msg string) {
-		if !cond {
-			t.Fatal(msg)
-		}
+	// count-expression pin (r31, extract-and-execute the PRODUCTION
+	// expressions): the post-wave counter must use the grep -c . form —
+	// wc -l undercounts by one on stripped trailing newlines (run
+	// 34309009157 logged 19 for 20); a revert to wc -l FAILS this pin.
+	if !regexp.MustCompile(`(?s)post-wave sweep deleted: \$\(printf '%s\\n' "\$\{POST_SWEPT\}" \| grep -c \.`).MatchString(string(script)) {
+		t.Fatal("post-wave production count expression not found (or regressed to wc -l) — the off-by-one class returns")
 	}
-	require(len(lines) == 2, "count pin output shape")
-	require(lines[0] == "2", "wc -l undercount not reproduced: "+lines[0])
-	require(lines[1] == "3", "grep -c . exact count broken: "+lines[1])
+	if !regexp.MustCompile(`(?m)PRE_N=\$\(printf '%s' "\$\{PRE_SWEPT\}" \| grep -c \.`).MatchString(string(script)) {
+		t.Fatal("pre-wave production count expression not found")
+	}
+	// execute both forms: old undercounts, production is exact
+	sh := exec.Command("bash", "-c", `N=$(printf '%s' "a
+b
+c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); echo "$old $new"`)
+	out, err := sh.Output()
+	if err != nil {
+		t.Fatalf("count probe failed: %v", err)
+	}
+	lines := strings.Fields(string(out))
+	if len(lines) != 2 {
+		t.Fatalf("count pin output shape: %v", lines)
+	}
+	if lines[0] != "2" {
+		t.Fatalf("wc -l undercount not reproduced: %s", lines[0])
+	}
+	if lines[1] != "3" {
+		t.Fatalf("production count form broken: %s", lines[1])
+	}
 
 	for _, tc := range []struct {
 		name string
