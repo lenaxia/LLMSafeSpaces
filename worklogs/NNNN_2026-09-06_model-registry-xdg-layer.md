@@ -152,7 +152,7 @@ The e7b02a33 commit message and the prior worklog section claimed the pre-wave s
 
 ## Final gate-run register (r34, completing the record)
 
-- 34293579352 / 34298632229 / 34314527110 / 34322013940 / 34333163267 — five fully-green pool runs with F6's faulted path green (the first F6 execution, then four consecutive).
+- F6's faulted path is green in five runs: 34293579352 (conclusion failure at AC-11 — F6 green, delivery near-miss; the first F6 execution), then four FULLY-green runs: 34298632229, 34314527110, 34322013940, 34333163267.
 - **34365633303 at c04651bb (the merge candidate itself): SUCCESS** — delivery all rows, revisions pass=5, Epic 69, faults fail=0 (pass=6 + 2 loud environment-gated skips: F1 seam-gate and F6 seam-timing; both disclosed, F6's path green in the five runs above on byte-identical production Go). The head's own shell delta executed live.
 
 ## r31 correction: e0a672b4's pin claims did not land (second occurrence of the aborted-edit-script class)
