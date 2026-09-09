@@ -756,7 +756,10 @@ if (( SCALE > 0 )); then
         | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
     if [[ -n "${POST_SWEPT}" ]]; then
         printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
-        ok "AC-13 — post-wave sweep deleted: $(printf '%s' "${POST_SWEPT}" | wc -l) wave workspace(s) (ids 101+)"
+        # grep -c . (r28): wc -l undercounts by one — command
+        # substitution strips the trailing newline and printf '%s' adds
+        # none (run 34309009157: 20 deleted, logged "19").
+        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+)"
     fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"

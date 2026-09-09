@@ -863,6 +863,26 @@ func TestUS70SweepSelection(t *testing.T) {
 		t.Fatal("post-wave awk not found in us-70-secret-delivery-e2e.sh")
 	}
 	postProgram := mPost[1]
+	// count-expression pin (r28): the log lines' counters must be exact
+	// for multi-item sweeps — wc -l undercounts by one on stripped
+	// trailing newlines (run 34309009157 logged 19 for 20).
+	sh := exec.Command("bash", "-c", `printf '%s' "a
+b
+c" | wc -l; printf '%s
+' "a
+b
+c" | grep -c .`)
+	out, _ := sh.Output()
+	lines := strings.Fields(string(out))
+	require := func(cond bool, msg string) {
+		if !cond {
+			t.Fatal(msg)
+		}
+	}
+	require(len(lines) == 2, "count pin output shape")
+	require(lines[0] == "2", "wc -l undercount not reproduced: "+lines[0])
+	require(lines[1] == "3", "grep -c . exact count broken: "+lines[1])
+
 	for _, tc := range []struct {
 		name string
 		want bool
