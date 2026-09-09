@@ -863,10 +863,11 @@ func TestUS70SweepSelection(t *testing.T) {
 		t.Fatal("post-wave awk not found in us-70-secret-delivery-e2e.sh")
 	}
 	postProgram := mPost[1]
-	// count-expression pin (r31, extract-and-execute the PRODUCTION
-	// expressions): the post-wave counter must use the grep -c . form —
-	// wc -l undercounts by one on stripped trailing newlines (run
-	// 34309009157 logged 19 for 20); a revert to wc -l FAILS this pin.
+	// count-expression pin (r32 wording corrected): TEXTUALLY asserts the
+	// production expressions (reverting either count line to wc -l FAILS
+	// — proven by falsification both ways) and separately executes both
+	// forms to demonstrate the undercount. Not extract-and-execute like
+	// the awk pins — the guarantee is identical, the mechanism is not.
 	if !regexp.MustCompile(`(?s)post-wave sweep deleted: \$\(printf '%s\\n' "\$\{POST_SWEPT\}" \| grep -c \.`).MatchString(string(script)) {
 		t.Fatal("post-wave production count expression not found (or regressed to wc -l) — the off-by-one class returns")
 	}

@@ -425,7 +425,9 @@ TURN_OK=""
 if grep -aq MOCK-TURN-OK "${TURN_BODY}" 2>/dev/null; then
     ok "AC-1d PASS: credential-backed turn resolved against the mock upstream (synchronous reply carries MOCK-TURN-OK)"
     TURN_OK=true
+    rm -f "${TURN_BODY}"
 fi
+# (TURN_BODY intentionally kept on failure — the diagnostics print it.)
 
 if [[ "${TURN_OK}" != "true" ]]; then
 for _i in $(seq 1 45); do
