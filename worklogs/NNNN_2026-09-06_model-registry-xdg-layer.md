@@ -148,7 +148,12 @@ The e7b02a33 commit message and the prior worklog section claimed the pre-wave s
 - **Run 34322013940 (d0dfed08): SUCCESS** — second consecutive fully-green head run; the r28 count fix carried.
 - Earlier near-misses for the record: 34309009157 (3e07f4bf) — all legs green except Epic 69's cgo build failure; 34293579352/34298632229 — the F6-first and gate-first milestones on byte-identical production Go.
 - **The stale r5 claims are now false in both directions**: AC-1d and F6 are executed and green, repeatedly — not "unexecuted, waiting on infra".
-- r30 hygiene cluster closed: VERBOSE_ERR pipeline guarded (the last row-killer — grep-no-match and head-SIGPIPE both die under set -Eeuo pipefail), the kindnet comment corrected (the probe differential PROVED enforcement), values.yaml's extraEgressCIDRs docs no longer advertise the impossible Service-VIP use, the :ci asymmetry annotated, workflow-input interpolation moved to env indirection, the stale "V2 TURN" log line renamed to the synchronous V1 reality. ~~count pins extract-and-execute production expressions, silent t.Skip pins now fail~~ **[STRUCK r31: those two claims did not land in r30 — the aborted-edit-script failure; see the r31 section]**
+- r30 hygiene cluster closed: VERBOSE_ERR pipeline guarded (the last row-killer — grep-no-match and head-SIGPIPE both die under set -Eeuo pipefail), the kindnet comment corrected (the probe differential PROVED enforcement), values.yaml's extraEgressCIDRs docs no longer advertise the impossible Service-VIP use, the :ci asymmetry annotated, workflow-input interpolation moved to env indirection, the stale "V2 TURN" log line renamed to the synchronous V1 reality. ~~count pins extract-and-execute production expressions, silent t.Skip pins now fail~~ **[STRUCK r32: those two claims did not land in r30 — the aborted-edit-script failure; see the r31 section. Attribution corrected r34: the strike itself landed in the r32 commit, not r31]**
+
+## Final gate-run register (r34, completing the record)
+
+- 34293579352 / 34298632229 / 34314527110 / 34322013940 / 34333163267 — five fully-green pool runs with F6's faulted path green (the first F6 execution, then four consecutive).
+- **34365633303 at c04651bb (the merge candidate itself): SUCCESS** — delivery all rows, revisions pass=5, Epic 69, faults fail=0 (pass=6 + 2 loud environment-gated skips: F1 seam-gate and F6 seam-timing; both disclosed, F6's path green in the five runs above on byte-identical production Go). The head's own shell delta executed live.
 
 ## r31 correction: e0a672b4's pin claims did not land (second occurrence of the aborted-edit-script class)
 
