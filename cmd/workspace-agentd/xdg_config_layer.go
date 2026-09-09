@@ -140,11 +140,16 @@ func ensureOpencodeRegistryConfig(logger *zap.Logger) string {
 	// (opencode.jsonc, config.json) which opencode layers on top.
 
 	// Atomic copy: temp file + rename. Owned by uid 1000 (the supervisor),
-	// mode 0644 (no credential bytes — the config carries provider slugs
-	// and baseURLs, not keys; keys live in the auth store).
+	// mode 0640 — group-readable for the same cross-uid read the
+	// /agentd-config original provides, no credential bytes (the config
+	// carries provider slugs and baseURLs, not keys; keys live in the
+	// auth store).
+	// #nosec G306 -- 0640 mirrors the sidecar's own mode on the source
+	// file; the copy carries no secrets (US-35.7: keys are auth-store
+	// only) and opencode (uid 1000) must be able to WRITE it.
 	tmp := link + ".agentd-tmp"
 	_ = os.Remove(tmp)
-	if err := os.WriteFile(tmp, targetData, 0o644); err != nil {
+	if err := os.WriteFile(tmp, targetData, 0o640); err != nil {
 		logger.Warn("registry config layer: temp write failed (model registry may not admit providers)",
 			zap.String("link", link), zap.Error(err))
 		return link
