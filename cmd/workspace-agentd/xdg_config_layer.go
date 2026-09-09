@@ -149,7 +149,7 @@ func ensureOpencodeRegistryConfig(logger *zap.Logger) string {
 	// only) and opencode (uid 1000) must be able to WRITE it.
 	tmp := link + ".agentd-tmp"
 	_ = os.Remove(tmp)
-	if err := os.WriteFile(tmp, targetData, 0o640); err != nil {
+	if err := os.WriteFile(tmp, targetData, 0o640); err != nil { // #nosec G306
 		logger.Warn("registry config layer: temp write failed (model registry may not admit providers)",
 			zap.String("link", link), zap.Error(err))
 		return link
