@@ -59,7 +59,12 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
-WS_BASE="${WS_BASE:-e2e57000-0000-4000-8000-000000000000}"
+# UNCONDITIONAL (r21): the inherited WS_BASE from the delivery step's
+# environment defeated the :- default, landing revisions' workspaces in
+# the delivery rows' e2e5d000 range — inside the pre-wave sweep's blast
+# radius (run 34231075177: REV-1 recreated swept ws 1 → 4m of reconcile
+# churn on a deletion-pending name). Revisions always uses its own base.
+WS_BASE="e2e57000-0000-4000-8000-000000000000"
 REV_PF_PORT_1="${REV_PF_PORT_1:-18091}"
 REV_PF_PORT_2="${REV_PF_PORT_2:-18092}"
 

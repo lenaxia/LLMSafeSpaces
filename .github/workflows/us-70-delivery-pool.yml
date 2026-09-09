@@ -32,12 +32,20 @@ on:
         description: "Pull ghcr :dev images instead of building (debug cycles only)"
         default: false
         type: boolean
+      agentd_dev_image:
+        description: "Override the fast-mode agentd image (full ref incl. tag) — e.g. ghcr.io/lenaxia/llmsafespaces/agentd:sha-<short> from a ci.yml dispatch on the branch; lets a pre-PR branch validate its agentd without the full four-image build (the kind-in-dind full build can exhaust node disk)"
+        default: ""
+        type: string
+      resume_scale:
+        description: "AC-13 concurrent-resume wave size (default 40 = the nightly gate; lower values for constrained-runner validation dispatches — the nightly re-proves the full wave)"
+        default: "40"
+        type: string
 
 env:
   CLUSTER_NAME: llmsafespaces-ci
   IMAGE_TAG: ci
   NS: llmsafespaces
-  FAULT_COUNT: "8"
+  FAULT_COUNT: "24"
 
 jobs:
   us70-delivery-pool:
@@ -116,19 +124,47 @@ jobs:
           fi
 
       - name: Prepare prebuilt images (fast mode)
+        # r30 note on the :ci asymmetry: agentd/opencode ride digest-pinned
+        # refs from the local registry because the supervisor verifies
+        # their binary SHA at pod spawn (the delivery contract); api/
+        # controller carry the per-run mutable :ci tag with
+        # PULL_POLICY=Always — they exist only inside this ephemeral
+        # kind cluster, are re-pushed every run, and have no spawn-time
+        # verification to satisfy, so a per-run tag IS their identity.
+
         # Debug-cycle shortcut: pull the HEAD-built ghcr :dev images instead
         # of building api/controller/agentd/opencode (~7 min saved). Only
         # runtime-base builds (no :dev channel). The scheduled run never
         # takes this path (input defaults false there).
         if: ${{ inputs.use_prebuilt_images == true }}
+        env:
+          AGENTD_DEV_IMAGE: ${{ inputs.agentd_dev_image }}
         run: |
           set -e
+          # ghcr :dev images are buildx manifest LISTS carrying provenance
+          # attestations; docker pull fetches only the amd64 child, so the
+          # attestation blobs stay UNFETCHED — kind load's
+          # `docker save | ctr import` then dies on "content digest not
+          # found" (the failure that killed every fast-mode dispatch
+          # 2026-09-07). Route through the local registry instead: the
+          # push re-wraps to the single amd64 child manifest (same path
+          # agentd/opencode already use below), and the kind node's
+          # containerd pulls from localhost:5001 via the certs.d mirror.
           for img in api controller; do
             docker pull "ghcr.io/lenaxia/llmsafespaces/${img}:dev"
-            docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "llmsafespaces/${img}:$IMAGE_TAG"
+            docker tag "ghcr.io/lenaxia/llmsafespaces/${img}:dev" "localhost:5001/llmsafespaces/${img}:$IMAGE_TAG"
+            docker push "localhost:5001/llmsafespaces/${img}:$IMAGE_TAG" >/dev/null
           done
-          docker pull ghcr.io/lenaxia/llmsafespaces/agentd:dev
-          docker tag ghcr.io/lenaxia/llmsafespaces/agentd:dev "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
+          echo "API_REPO=localhost:5001/llmsafespaces/api" >> "$GITHUB_ENV"
+          echo "CTRL_REPO=localhost:5001/llmsafespaces/controller" >> "$GITHUB_ENV"
+          echo "PULL_POLICY=Always" >> "$GITHUB_ENV"
+          # r30 hardening: workflow-input interpolation never lands in a
+          # run: block directly — indirection via env (the dispatch is
+          # write-access gated regardless; this removes the class).
+          AGENTD_SOURCE="${AGENTD_DEV_IMAGE:-}"
+          if [[ -z "${AGENTD_SOURCE}" ]]; then AGENTD_SOURCE="ghcr.io/lenaxia/llmsafespaces/agentd:dev"; fi
+          docker pull "${AGENTD_SOURCE}"
+          docker tag "${AGENTD_SOURCE}" "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"
           docker push "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG" >/dev/null
           # Digest MUST come from the registry's tag resolution, NOT
           # docker-inspect RepoDigests: ghcr :dev images are multi-arch
@@ -163,8 +199,6 @@ jobs:
           E2E_VERSION="${{ env.IMAGE_TAG }}"
           docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t "llmsafespaces/runtime-base:$IMAGE_TAG" .
           docker tag "llmsafespaces/runtime-base:$IMAGE_TAG" "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG"
-          kind load docker-image "llmsafespaces/api:$IMAGE_TAG" --name $CLUSTER_NAME
-          kind load docker-image "llmsafespaces/controller:$IMAGE_TAG" --name $CLUSTER_NAME
           kind load docker-image "ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG" --name $CLUSTER_NAME
 
       - name: Build and load images
@@ -310,12 +344,12 @@ jobs:
           # interval rides index 2.
           helm upgrade --install llmsafespaces helm \
             -n $NS --create-namespace \
-            --set api.image.repository=llmsafespaces/api \
+            --set api.image.repository=${API_REPO:-llmsafespaces/api} \
             --set api.image.tag=$IMAGE_TAG \
-            --set api.image.pullPolicy=IfNotPresent \
-            --set controller.image.repository=llmsafespaces/controller \
+            --set api.image.pullPolicy=${PULL_POLICY:-IfNotPresent} \
+            --set controller.image.repository=${CTRL_REPO:-llmsafespaces/controller} \
             --set controller.image.tag=$IMAGE_TAG \
-            --set controller.image.pullPolicy=IfNotPresent \
+            --set controller.image.pullPolicy=${PULL_POLICY:-IfNotPresent} \
             --set controller.maxConcurrentReconciles=8 \
             --set mcp.enabled=false \
             --set postgresql.host=postgres \
@@ -336,6 +370,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
+            --set networkPolicy.allowRelayRouterEgress=true \
             --set "api.extraEnv[0].name=OPENCODE_V2_DELIVERY,api.extraEnv[0].value=1" \
             --set "api.extraEnv[1].name=AGENTD_STATE_AUTHORITY,api.extraEnv[1].value=1" \
             --set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s" \
@@ -398,7 +433,7 @@ jobs:
           # is deferred until a dedicated pool runner or a >=100 fleet
           # promise exists; bump RESUME_SCALE back — the wave pacing and
           # budgets scale with it.
-          RESUME_SCALE: 40
+          RESUME_SCALE: ${{ inputs.resume_scale || '40' }}
           RESUME_SCALE_TIMEOUT_S: 600
           # Must match the helm api.extraEnv reconcile-interval set above
           # (now index 2 — indexes 0/1 are the V2 delivery flags) —
@@ -408,6 +443,9 @@ jobs:
         run: bash local/us-70-secret-delivery-e2e.sh
 
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
+        # if: always() — r25: same starvation class that consumed F6 for
+        # 34 dispatches; a delivery-leg failure must not skip this leg.
+        if: ${{ always() }}
         # Two-tier-revision acceptance rows (see the nightly's copy):
         # contract feature-detect + loud-skip, two-replica identical
         # revisions, conditional pull 304/ETag, anchored spawned_rev,
@@ -423,6 +461,7 @@ jobs:
         run: bash local/us-70-revisions-e2e.sh
 
       - name: Run Epic 69 evidence leg (admission-ID matrix + flip drill)
+        if: ${{ always() }}
         # #1218/#1219: the cluster-bound close-out rows. The admission-ID
         # probe reports its matrix as DATA (the disposition rule is applied
         # by the tracker, not this step); the flip drill FAILS on an
@@ -438,6 +477,11 @@ jobs:
         run: bash local/us-69-evidence-leg.sh
 
       - name: Arm fault seam (fresh API process, after the delivery suite)
+        # if: always() — r21: without it, any delivery/revisions-leg
+        # failure SKIPS the fault leg, structurally starving F6 (zero
+        # executions in 34 dispatches). The fault leg must run even
+        # after an earlier leg dies.
+        if: ${{ always() }}
         # B1/M10: arming at helm install would spend the fault budget on
         # the delivery suite's ~105 pod bootstraps (AC-1 would boot against
         # 500s). The API reads LLMSAFESPACES_FAULT_INJECTION once per
@@ -450,12 +494,13 @@ jobs:
           kubectl --context "kind-$CLUSTER_NAME" -n $NS set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${FAULT_COUNT}:POST:/internal/v1/pod-bootstrap"
           kubectl --context "kind-$CLUSTER_NAME" -n $NS rollout status deployment/llmsafespaces-api --timeout=600s
 
-      - name: Run fault/chaos e2e rows (Epic 70 US-70.0 F1–F5)
+      - name: Run fault/chaos e2e rows (Epic 70 US-70.0 F1–F6)
+        if: ${{ always() }}
         # Fault-injected bootstraps (F1), API partition at resume (F2),
         # key-row corruption with the #1114 loud-degrade audit (F3),
         # SA-token tamper/expiry via kubectl-minted tokens (F4 — the JWT's
         # own .exp bounds the time-travel sleep to ≤~3700s), and chaos
-        # kills (F5). FAULT_COUNT defaults to 8 in the script; override
+        # kills (F5). FAULT_COUNT defaults to 24 in the script; override
         # here only in lockstep with the arming step's env.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}

@@ -1735,3 +1735,34 @@ func TestWriteStagedProvidersToAuthStore_UniqueTempResistsSymlinkPlanting(t *tes
 	// The store published correctly.
 	require.Contains(t, string(mustRead(t, authPath)), "sk-secret")
 }
+
+// TestResolveModelWithProvider_AllowlistStrictness pins #1300 fix-design
+// 2(b): a qualified default against an ALLOWLISTED provider must verify
+// the model in the provider's models map (stale re-pin guard), while a
+// first-party provider WITHOUT an allowlist (no models map —
+// catalog-sourced) passes on existence alone.
+func TestResolveModelWithProvider_AllowlistStrictness(t *testing.T) {
+	buildCfg := func(providerJSON string) map[string]json.RawMessage {
+		cfg := map[string]json.RawMessage{}
+		cfg["provider"] = json.RawMessage(providerJSON)
+		return cfg
+	}
+
+	t.Run("qualified model dropped from allowlist is unresolvable", func(t *testing.T) {
+		// Allowlist changed glm-5.3 -> glm-5.4; the stale persisted
+		// default "thekao/glm-5.3" must NOT pass provider-existence.
+		cfg := buildCfg(`{"thekao": {"models": {"glm-5.4": {}}}}`)
+		got, ok := resolveModelWithProvider(cfg, "thekao/glm-5.3")
+		assert.False(t, ok, "stale qualified default must not pass")
+		assert.Empty(t, got)
+	})
+
+	t.Run("qualified default on allowlist-less first-party provider resolves", func(t *testing.T) {
+		// First-party key without an allowlist: block carries options
+		// only — models are catalog-sourced, unverifiable config-side.
+		cfg := buildCfg(`{"anthropic": {"options": {"apiKey": "sk-1"}}}`)
+		got, ok := resolveModelWithProvider(cfg, "anthropic/claude-sonnet-4")
+		assert.True(t, ok, "existence must stand when no models map exists")
+		assert.Equal(t, "anthropic/claude-sonnet-4", got)
+	})
+}

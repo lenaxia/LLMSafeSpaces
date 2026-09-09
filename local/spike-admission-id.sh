@@ -87,7 +87,10 @@ func clip(s string) string {
 	return s
 }
 EOF
-  (cd "$BUILDDIR" && go mod init spike-admission-id >/dev/null 2>&1 || true && go build -o admissionid .)
+  # CGO_ENABLED=0 (run 34309009157): the default cgo build needs C
+  # headers the runner image does not ship — it only ever worked by
+  # environment luck. The probe is pure net/http; static build.
+  (cd "$BUILDDIR" && go mod init spike-admission-id >/dev/null 2>&1 || true && CGO_ENABLED=0 go build -o admissionid .)
 fi
 
 "$BUILDDIR/admissionid" "$HOST" "$PORT" "$PASS" "$SESSION"

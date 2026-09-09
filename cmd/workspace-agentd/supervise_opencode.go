@@ -75,11 +75,35 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// fallback and never blocks boot.
 	ensureRedactWrapper(log)
 
+	// #1300 root-cause fix: opencode's V2 model registry only ingests
+	// provider blocks from the XDG config layer; our OPENCODE_CONFIG
+	// file (/agentd-config/agent-config.json) feeds the config service
+	// but never the catalog, so every platform-delivered provider was
+	// "Model unavailable". Install the XDG symlink (PVC holds only the
+	// link — US-35.7 intact), quarantine malformed user configs that
+	// would crashloop opencode at boot, and normalize auth-store
+	// ownership — all before the first spawn (topology-shared with the
+	// single-container boot path in main.go).
+	ensureOpencodeBootLayers(log)
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
 	proc, adapter := newSupervisorProcess(rootCtx)
 	proc.start()
+
+	// #1300 heal path: if the agent-config changes AFTER spawn (sidecar
+	// resync delivering a late batch), the running opencode may never
+	// re-ingest it into its registry (catalog re-transform is
+	// unreliable for late config under the sandbox runtime). Watch the
+	// file and restart opencode once per change with the existing
+	// credential_reload attribution. This topology restarts with grace
+	// (matching the sidecar reload path's socket-restart semantics);
+	// the single-container path in main.go uses the session-aware
+	// decision instead.
+	go watchAgentConfigForChanges(rootCtx, effectiveAgentConfigPath(), log, func() {
+		proc.restartWithGrace(5 * time.Second)
+	})
 
 	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
 	// (Appendix A.0) and production never sets the override — it exists

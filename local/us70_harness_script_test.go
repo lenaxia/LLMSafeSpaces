@@ -13,6 +13,7 @@ package local_test
 // key-corruption assertions so rows cannot be silently dropped.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -398,8 +399,11 @@ func TestUS70PoolWorkflow_Pins(t *testing.T) {
 		"runs-on: lenaxia-dind-runner",
 		// Calibrated 2026-09-03 (#1252): knee on the dind runner class
 		// measured ~55 concurrent gVisor workspaces across runs
-		// 33733697430/33773343318; 40 = 0.72x knee.
-		"RESUME_SCALE: 40",
+		// 33733697430/33773343318; 40 = 0.72x knee. The || '40' fallback
+		// is load-bearing: on the Sunday cron the inputs context is empty
+		// (defaults apply to workflow_dispatch only) and without it the
+		// script default (100) would run a 100-wave (r21 blocker 2).
+		"RESUME_SCALE: ${{ inputs.resume_scale || '40' }}",
 	} {
 		if !strings.Contains(src, pin) {
 			t.Fatalf("pool workflow must contain %q (found missing)", pin)
@@ -762,5 +766,149 @@ func TestUS70_StopwatchWorkersAreSetESafe(t *testing.T) {
 	}
 	if !strings.Contains(src, `> "${TDIR}/${ws}.ms"`) {
 		t.Fatalf("stopwatch workers must write one integer to TDIR/<ws>.ms (never `wait $pid` stdout capture)")
+	}
+}
+
+// TestUS70SweepSelection pins the sweep id-selection arithmetic against
+// names rendered with the REAL ws_id() format (r25: two regex attempts
+// matched zero names — a 32-char prefix + %04d, not the 36-char base).
+func TestUS70SweepSelection(t *testing.T) {
+	render := func(id int) string {
+		base := "e2e5d000-0000-4000-8000-000000000000"
+		return fmt.Sprintf("%s%04d", base[:32], id)
+	}
+	sweepPre := func(name string) bool { // pre-wave: ids 90-92
+		n := strings.TrimPrefix(name, "workspace/")
+		if !strings.HasPrefix(n, "e2e5d000-0000-4000-8000-") {
+			return false
+		}
+		suffix := n[len(n)-4:]
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		id, _ := strconv.Atoi(suffix)
+		return id >= 90 && id <= 92
+	}
+	sweepPost := func(name string) bool { // post-wave: ids >= 101
+		n := strings.TrimPrefix(name, "workspace/")
+		if !strings.HasPrefix(n, "e2e5d000-0000-4000-8000-") {
+			return false
+		}
+		suffix := n[len(n)-4:]
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		id, _ := strconv.Atoi(suffix)
+		return id >= 101
+	}
+	// render sanity: the exact production shape
+	if render(90) != "e2e5d000-0000-4000-8000-000000000090" || render(101) != "e2e5d000-0000-4000-8000-000000000101" {
+		t.Fatalf("ws_id render drift: %q %q", render(90), render(101))
+	}
+	// pre-wave selects exactly {90,91,92} of ids 0..300
+	var pre []int
+	for id := 0; id <= 300; id++ {
+		if sweepPre(render(id)) {
+			pre = append(pre, id)
+		}
+	}
+	if len(pre) != 3 || pre[0] != 90 || pre[1] != 91 || pre[2] != 92 {
+		t.Fatalf("pre-wave selection = %v, want [90 91 92]", pre)
+	}
+	// post-wave selects every id >= 101 (incl. 200 at scale 100, and 1000+)
+	for _, id := range []int{101, 140, 199, 200, 240, 999, 1000} {
+		if !sweepPost(render(id)) {
+			t.Fatalf("post-wave must select id %d", id)
+		}
+	}
+	for _, id := range []int{0, 1, 9, 90, 92, 100} {
+		if sweepPost(render(id)) {
+			t.Fatalf("post-wave must NOT select id %d", id)
+		}
+	}
+	// BOTH production awks are extracted from the script and executed
+	// (r26: five rounds of inert sweeps — pins must run production code,
+	// not reimplementations).
+	script, err := os.ReadFile("us-70-secret-delivery-e2e.sh")
+	if err != nil {
+		t.Fatalf("script not readable from test cwd (r31: fail, never silent-skip): %v", err)
+	}
+	preRe := regexp.MustCompile(`(?s)PRE_SWEPT=.*?awk -F/ '(.*?)'`)
+	mPre := preRe.FindStringSubmatch(string(script))
+	if mPre == nil {
+		t.Fatal("pre-wave awk not found in us-70-secret-delivery-e2e.sh — did the sweep change shape?")
+	}
+	preProgram := mPre[1]
+	for _, tc := range []struct {
+		id   int
+		want bool
+	}{
+		{89, false}, {90, true}, {91, true}, {92, true}, {93, false}, {100, false}, {101, false}, {200, false},
+	} {
+		cmd := exec.Command("awk", "-F/", preProgram)
+		cmd.Stdin = strings.NewReader("workspace/" + render(tc.id) + "\n")
+		out, _ := cmd.Output()
+		got := strings.TrimSpace(string(out)) != ""
+		if got != tc.want {
+			t.Fatalf("PRODUCTION pre-wave awk for id %d: got %v want %v", tc.id, got, tc.want)
+		}
+	}
+	postRe := regexp.MustCompile(`(?s)POST_SWEPT=.*?awk -F/ '(.*?)'`)
+	mPost := postRe.FindStringSubmatch(string(script))
+	if mPost == nil {
+		t.Fatal("post-wave awk not found in us-70-secret-delivery-e2e.sh")
+	}
+	postProgram := mPost[1]
+	// count-expression pin (r32 wording corrected): TEXTUALLY asserts the
+	// production expressions (reverting either count line to wc -l FAILS
+	// — proven by falsification both ways) and separately executes both
+	// forms to demonstrate the undercount. Not extract-and-execute like
+	// the awk pins — the guarantee is identical, the mechanism is not.
+	if !regexp.MustCompile(`(?s)post-wave sweep deleted: \$\(printf '%s\\n' "\$\{POST_SWEPT\}" \| grep -c \.`).MatchString(string(script)) {
+		t.Fatal("post-wave production count expression not found (or regressed to wc -l) — the off-by-one class returns")
+	}
+	if !regexp.MustCompile(`(?m)PRE_N=\$\(printf '%s' "\$\{PRE_SWEPT\}" \| grep -c \.`).MatchString(string(script)) {
+		t.Fatal("pre-wave production count expression not found")
+	}
+	// execute both forms: old undercounts, production is exact
+	sh := exec.Command("bash", "-c", `N=$(printf '%s' "a
+b
+c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); echo "$old $new"`)
+	out, err := sh.Output()
+	if err != nil {
+		t.Fatalf("count probe failed: %v", err)
+	}
+	lines := strings.Fields(string(out))
+	if len(lines) != 2 {
+		t.Fatalf("count pin output shape: %v", lines)
+	}
+	if lines[0] != "2" {
+		t.Fatalf("wc -l undercount not reproduced: %s", lines[0])
+	}
+	if lines[1] != "3" {
+		t.Fatalf("production count form broken: %s", lines[1])
+	}
+
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"workspace/" + render(92), false},
+		{"workspace/" + render(93), false},
+		{"workspace/" + render(101), true},
+		{"workspace/" + render(200), true},
+		{"workspace/other-000000000200", false},
+	} {
+		cmd := exec.Command("awk", "-F/", postProgram)
+		cmd.Stdin = strings.NewReader(tc.name + "\n")
+		out, _ := cmd.Output()
+		got := strings.TrimSpace(string(out)) != ""
+		if got != tc.want {
+			t.Fatalf("awk post-wave selection for %s: got %v want %v", tc.name, got, tc.want)
+		}
 	}
 }

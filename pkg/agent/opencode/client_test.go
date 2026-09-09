@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -130,4 +132,36 @@ func TestPushCredentials_PartialFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, "anthropic", calledProvider)
 	assert.Contains(t, err.Error(), "anthropic")
+}
+
+// TestPushCredentials_ZenKindDeliveredToAuthStore pins the #1300 2(a)
+// delivery split's reload half: zen-kind (kind:"opencode") credentials
+// render no CONFIG block, so the reload path's auth-store PUT is their
+// ONLY live delivery — nothing may filter them out of the staged set.
+func TestPushCredentials_ZenKindDeliveredToAuthStore(t *testing.T) {
+	var mu sync.Mutex
+	var puts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || !strings.HasPrefix(r.URL.Path, "/auth/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		puts = append(puts, r.URL.Path[len("/auth/"):])
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "test-pw", zaptest.NewLogger(t))
+	err := c.PushCredentials(context.Background(), []secrets.LLMProviderData{
+		{Kind: "opencode", Slug: "opencode-free-tier", APIKey: "public"},
+		{Kind: "openai_compatible", Slug: "proxy", APIKey: "sk-1", BaseURL: "https://p/v1",
+			Models: []secrets.LLMModelConfig{{ID: "m1"}}},
+	})
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.ElementsMatch(t, []string{"opencode-free-tier", "proxy"}, puts,
+		"zen-kind credentials must reach the auth store on the reload path (their only live delivery — the config render skips them per 2(a))")
 }

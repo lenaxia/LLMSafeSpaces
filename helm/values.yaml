@@ -953,6 +953,24 @@ networkPolicy:
   # tighter operators can replace with a strict allowlist.
   allowedEgressCIDRs:
     - 0.0.0.0/0
+  # Render the in-cluster relay-router egress allow (podSelector-based,
+  # port 8080) even when controller.inferenceRelay.enabled is false.
+  # CI pools use it to admit sandbox traffic to an in-cluster mock LLM
+  # endpoint carrying the relay-router component labels. NOTE: ipBlock
+  # carve-outs cannot do this — egress policy matches the post-DNAT
+  # endpoint pod IP, not the Service VIP.
+  allowRelayRouterEgress: false
+
+  # Operator-granted egress OUTSIDE the blockedEgressCIDRs subtraction:
+  # plain ipBlock allows for specific internal destinations. Empty by
+  # default; each entry must be an operator-accepted member of the
+  # sandbox trust boundary (it is reachable from every workspace pod on
+  # all ports). NOTE: these DO NOT work for Service VIPs — egress policy
+  # matches the post-DNAT endpoint pod IP, not the ClusterIP (proven by
+  # the #1300 AC-1d probes; use allowRelayRouterEgress for in-cluster
+  # LLM endpoints). Only direct pod-IP destinations are meaningful here.
+  extraEgressCIDRs: []
+
   # Block egress to RFC1918 + cloud metadata; sandbox pods should never
   # reach in-cluster services or the cloud metadata endpoint.
   blockedEgressCIDRs:

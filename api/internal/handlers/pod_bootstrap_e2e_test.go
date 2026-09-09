@@ -620,7 +620,7 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_NoActiveSession(t *t
 		runBootstrapMaterializeE2E(t,
 			[]e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 				{ownerType: "user", ownerID: "user-e2e", provider: "openai", apiKey: "sk-user"},
 			},
 			"anthropic/claude-sonnet-4-5",
@@ -636,7 +636,7 @@ func TestE2E_BootstrapMaterialize_AllOwnerTypesMaterialized_NoActiveSession(t *t
 	// Server-KEK encrypted creds (admin/org) MUST materialize at boot.
 	assert.Contains(t, cfg.Provider, "anthropic",
 		"org-owned provider must materialize (the org-provider regression)")
-	assert.Contains(t, cfg.Provider, "opencode",
+	assert.Contains(t, cfg.Provider, "openrouter",
 		"admin-owned provider must materialize")
 
 	// User-DEK encrypted creds MUST materialize with no active session:
@@ -693,7 +693,7 @@ func TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider(t 
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 				{ownerType: "user", ownerID: "user-e2e", provider: "openai", apiKey: "sk-user-happy"},
 			},
 			defaultModel:    "anthropic/claude-sonnet-4-5",
@@ -708,7 +708,7 @@ func TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider(t 
 	// Server-KEK creds still materialize (regression guard for both changes).
 	assert.Contains(t, cfg.Provider, "anthropic",
 		"org-owned provider must materialize on the happy path too")
-	assert.Contains(t, cfg.Provider, "opencode",
+	assert.Contains(t, cfg.Provider, "openrouter",
 		"admin-owned provider must materialize on the happy path too")
 
 	// User-DEK cred MUST materialize — the server-side unwrap delivers it
@@ -781,7 +781,7 @@ func TestE2E_BootstrapMaterialize_OrgProviderUnwired_OrgDegradesGracefully(t *te
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 			},
 			wireOrg: boolPtr(false), // the misconfiguration
 		})
@@ -791,7 +791,7 @@ func TestE2E_BootstrapMaterialize_OrgProviderUnwired_OrgDegradesGracefully(t *te
 	cfg := readAgentConfig(t, agentCfgPath)
 	assert.NotContains(t, cfg.Provider, "anthropic",
 		"org provider must NOT materialize when SetOrgProvider was not called (would indicate a wrong-key fallback bug)")
-	assert.Contains(t, cfg.Provider, "opencode",
+	assert.Contains(t, cfg.Provider, "openrouter",
 		"admin provider must still materialize — only the unwired ownerType is skipped")
 }
 
@@ -803,7 +803,7 @@ func TestE2E_BootstrapMaterialize_TokenRejected_StillBoots(t *testing.T) {
 	agentCfgPath, _, materializeExit, _, _ :=
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 			},
 			reviewerErr: errTokenNotAuthenticated,
 		})
@@ -829,7 +829,7 @@ func TestE2E_BootstrapMaterialize_WorkspaceNotFound_StillBoots(t *testing.T) {
 	_, _, materializeExit, _, materializeStderr :=
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 			},
 			workspaceNil: true,
 		})
@@ -849,7 +849,7 @@ func TestE2E_BootstrapMaterialize_WrongKEK_SkipsBinding(t *testing.T) {
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"}, // #1300 2(a): zen-kind renders no block — assert via first-party kind
 			},
 			// Wire a WRONG org key — decrypt is attempted and fails (AES-GCM
 			// auth tag mismatch), exercising injection.go:74-82. Distinct from
@@ -859,7 +859,7 @@ func TestE2E_BootstrapMaterialize_WrongKEK_SkipsBinding(t *testing.T) {
 	require.Equal(t, 0, materializeExit, "wrong-KEK binding must be skipped, not crash; stderr=%s", materializeStderr)
 	cfg := readAgentConfig(t, agentCfgPath)
 	assert.NotContains(t, cfg.Provider, "anthropic", "undecryptable binding must not materialize")
-	assert.Contains(t, cfg.Provider, "opencode", "decryptable admin binding must still materialize")
+	assert.Contains(t, cfg.Provider, "openrouter", "decryptable admin binding must still materialize")
 }
 
 // TestE2E_BootstrapMaterialize_PartialFailure_DoesNotBlockGoodProviders
@@ -876,14 +876,18 @@ func TestE2E_BootstrapMaterialize_PartialFailure_DoesNotBlockGoodProviders(t *te
 		runBootstrapMaterializeE2EWith(t, bootstrapE2EConfig{
 			bindings: []e2eProviderBinding{
 				{ownerType: "org", ownerID: "org-1", provider: "anthropic", apiKey: "sk-org"},
-				{ownerType: "admin", ownerID: "_platform", provider: "opencode", apiKey: "sk-admin"},
+				// #1300 2(a): zen-kind (kind:"opencode") credentials render
+				// no config block (auth-store delivery path) — the
+				// surviving-admin assertion uses a first-party kind so it
+				// still pins materialization.
+				{ownerType: "admin", ownerID: "_platform", provider: "openrouter", apiKey: "sk-admin"},
 			},
 			wireOrg: boolPtr(false), // org binding will fail to decrypt
 		})
 	require.Equal(t, 0, materializeExit, "partial decrypt failure must not fail materialize; stderr=%s", materializeStderr)
 	cfg := readAgentConfig(t, agentCfgPath)
 	assert.NotContains(t, cfg.Provider, "anthropic", "failed org binding must be absent")
-	assert.Contains(t, cfg.Provider, "opencode", "unrelated admin provider must still materialize despite the org failure")
+	assert.Contains(t, cfg.Provider, "openrouter", "unrelated admin provider must still materialize despite the org failure")
 }
 
 // --- Password reset erasure guarantee ---

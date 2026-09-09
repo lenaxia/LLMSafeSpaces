@@ -182,6 +182,12 @@ func main() {
 	// the sidecar container's mounts).
 	ensureRedactWrapper(log)
 
+	// #1300 boot layers (topology-shared with supervise-opencode):
+	// quarantine malformed XDG user configs, install the registry
+	// symlink, normalize auth-store ownership — all before the first
+	// opencode spawn. Best-effort, loud on failure.
+	ensureOpencodeBootLayers(log)
+
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
 	// its first read sees the completed config regardless of which
@@ -249,6 +255,19 @@ func main() {
 	// canceled by runShutdown's bgCancel so bgWg drains within its 5s wait —
 	// same context discipline as the credential-reload path (secrets.go).
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
+
+	// #1300 layer 3, UNCONDITIONAL (r3 review: starting this inside
+	// maybeStartRelayInjector left it dead code in the chart-default
+	// posture — relay disabled + sidecar disabled — where a mid-life
+	// llm-provider reload rewrote agent-config and PUT auth with no
+	// restart, freezing the V2 registry until pod recreation; the
+	// exact #1300 class). Session-aware restart (in-flight turns
+	// defer); nil-proc guard mirrors the injector's.
+	if deps.proc != nil {
+		liveSessions := liveSessionsLister(deps)
+		go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,
+			relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions))
+	}
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
 

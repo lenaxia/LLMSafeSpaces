@@ -39,7 +39,7 @@
 #          converge; (b) pod-delete mid-bind → recreate + converge.
 #
 # Environment (beyond lib/us70-common.sh):
-#   FAULT_COUNT    - expected fault-rule count (default 8); the workflow's
+#   FAULT_COUNT    - expected fault-rule count (default 24); the workflow's
 #                    arming step sets LLMSAFESPACES_FAULT_INJECTION from the
 #                    SAME number (workflow env FAULT_COUNT) — one source.
 #   WS_BASE        - distinct UUID workspace base (default e2e5f000-…; the
@@ -50,7 +50,7 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
-export FAULT_COUNT="${FAULT_COUNT:-8}"
+export FAULT_COUNT="${FAULT_COUNT:-24}"
 WS_BASE="${WS_BASE:-e2e5f000-0000-4000-8000-000000000000}"
 
 PASS=0
@@ -181,13 +181,102 @@ else
         ok "F1: degrade-window sample: SD_F1 absent from child env while seam faults exhaust (sessionless boot observed)"
     fi
     # Count-exhaustion leg: exercised by F2's burn loop below — the
-    # bootstrap client itself never retries (autopush is the retry path).
+    # bootstrap client's retry (#1300 Fix B) absorbs transient faults
+    # itself; sustained faults fall through to autopush, which remains
+    # the guaranteed heal path.
 
     if secrets_converged "${WS1}" 300 && wait_env_present "${WS1}" "SD_F1=fault-f1-value" 300; then
         ok "F1 PASS: Active through faulted bootstraps, autopush healed env (SD_F1 present, spawnedRev converged)"
         PASS=$((PASS + 1))
     else
         die "F1 FAIL: autopush heal did not converge env delivery within 300s"
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# F6 — faulted bootstrap → registry convergence (the #1300 end-to-end path)
+#
+# F1 pins env delivery through faulted bootstraps; F6 pins the MODEL
+# REGISTRY — the layer #1300 broke. A workspace booting while the seam
+# fires gets a degraded (empty) credential batch (retries exhausted or
+# straddled), boots sessionless, then the heal path (autopush +
+# reconcile re-push) re-delivers the batch → materialize re-writes
+# agent-config → the supervisor's config watcher restarts opencode so
+# the registry rebuilds (Fix C) → the credential-backed model must
+# appear in GET /api/model (model.available()). Asserting on
+# /config/providers here would repeat #1300's blind spot — that view
+# goes green as soon as the file lands, registry or not.
+#
+# Budget note: the bootstrap retry burns up to 3 faults per faulted
+# first boot (3× the pre-#1300 rate) — FAULT_COUNT is sized so F1 +
+# F6 both fit (see the lockstep pin).
+# -----------------------------------------------------------------------------
+log "F6 — faulted bootstrap → heal → model REGISTRY converges (#1300 path)"
+
+# F6 re-arms its OWN seam (r21 follow-up): the count budget is shared
+# across rows, and F1's autopush heal loop legitimately burns one fault
+# per reconcile re-pull while faulted — at FAULT_COUNT=16 AND 24 the
+# seam was inert by F6's turn (runs 34276744182, 34284549387). A fresh
+# small arm (probe 1 + faulted-boot retries 3 + slack 2) makes F6
+# deterministic instead of budget-lottery. Same mechanism as the arm
+# step: env change → API rollout → fresh process with a full budget.
+F6_ARM="6:POST:/internal/v1/pod-bootstrap"
+kc set env deployment/llmsafespaces-api LLMSAFESPACES_FAULT_INJECTION="${F6_ARM}" >/dev/null
+kc rollout status deployment/llmsafespaces-api --timeout=300s >/dev/null \
+    || die "F6: seam re-arm rollout failed"
+# The rollout replaced the API pod the port-forward was pinned to —
+# re-establish it (reconnect_api, the same dance F2 uses after scale-0)
+# or every subsequent API call dies with HTTP 000.
+reconnect_api
+ok "F6: seam re-armed (${F6_ARM}) + API forward re-established"
+
+FAULT_SEEN6=0
+for _i in $(seq 1 6); do
+    CODE=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe6"}' \
+        "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
+    if [[ "${CODE}" == "500" ]]; then
+        FAULT_SEEN6=$_i
+        break
+    fi
+done
+
+CRED6=$(create_stub_credential "f6-stub" "f6-model-1")
+ok "F6: stub credential created (${CRED6})"
+
+WS6=$(ws_id 6)
+seed_workspace "${WS6}"
+BIND6=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED6}/bind/${WS6}")
+[[ "${BIND6}" == 2* ]] || die "F6: credential bind failed: HTTP ${BIND6}"
+
+if (( FAULT_SEEN6 == 0 )); then
+    # r3 review: a warn would let the fault row silently degrade to the
+    # unfaulted path. skip_row records it in the exit tracker instead —
+    # the fault-path guarantee is only claimed when the seam fired.
+    skip_row "F6" "seam inert even after the dedicated re-arm — the boot consumed all 6 faults without F6's probe seeing one (timing); end-state convergence covered by AC-1c"
+else
+    ok "F6: seam still active (500 on try ${FAULT_SEEN6}) — this boot is faulted"
+
+    wait_phase "${WS6}" Active 300 || die "F6: workspace never Active (never-block-boot violated with retries armed)"
+
+    # Soft evidence: the retry actually firing shows in the sidecar's boot
+    # stderr. Non-deterministic (depends on whether this boot straddled the
+    # remaining fault budget) — observed, never gating.
+    POD6=$(pod_of "${WS6}")
+    if [[ -n "${POD6}" ]] && kc logs "${POD6}" -c agentd 2>/dev/null | grep -q 'bootstrap: fetch attempt'; then
+        ok "F6: retry observed in sidecar boot logs (bootstrap: fetch attempt)"
+    fi
+
+    # The end-state contract: registry admission via the truthful endpoint,
+    # through heal + watcher restart + opencode boot. Generous budget: the
+    # reconcile re-push interval + materialize + one opencode restart.
+    if registry_admits "${WS6}" "f6-stub" "f6-model-1" 360; then
+        ok "F6 PASS: f6-stub/f6-model-1 admitted by the registry after a faulted boot + heal (#1300 path closed)"
+        PASS=$((PASS + 1))
+    else
+        die "F6 FAIL: model never reached the registry within 360s of Active — the #1300 failure mode through the fault path"
     fi
 fi
 

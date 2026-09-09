@@ -121,6 +121,344 @@ fi
 ok "AC-1 PASS"
 
 # -----------------------------------------------------------------------------
+# AC-1b — llm-provider credential bound before first Active → the model
+#         REGISTRY admits the provider's model (the #1300 contract)
+#
+# #1300 regression row: /config/providers (the config-service view)
+# showed credential-backed providers as healthy while
+# model.available() — the registry SessionRunnerModel.resolve searches —
+# admitted NOTHING, because the OPENCODE_CONFIG file never feeds the V2
+# catalog. This row pins the real contract end-to-end:
+#   1. create a user provider credential (openai_compatible stub),
+#   2. bind it BEFORE the pod exists (same cold-create shape as AC-1),
+#   3. assert the XDG registry-layer symlink the supervisor installs,
+#   4. assert the provider's allowlisted model appears in GET /api/model
+#      (the registry), NOT merely in /config/providers (the lying view).
+# The stub baseURL is unreachable on purpose — the enricher's /models
+# fetch fails and the allowlist render is the model source, which is
+# exactly the production shape for allowlisted credentials.
+# -----------------------------------------------------------------------------
+WS1B=$(ws_id 90)
+log "AC-1b — llm-provider credential bound before Active → registry admits the model (#1300)"
+
+CRED_ID=$(create_stub_credential "ac1b-stub" "stub-model-1")
+ok "provider credential created (${CRED_ID})"
+
+seed_workspace "${WS1B}"
+BIND_CODE=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED_ID}/bind/${WS1B}")
+[[ "${BIND_CODE}" == 2* ]] || die "AC-1b: credential bind failed: HTTP ${BIND_CODE}"
+ok "credential bound before pod creation"
+
+wait_phase "${WS1B}" Active 240 || die "AC-1b: workspace never Active"
+secrets_converged "${WS1B}" 120 || die "AC-1b: secretsDelivery not converged"
+
+POD1B=$(pod_of "${WS1B}")
+[[ -n "${POD1B}" ]] || die "AC-1b: no pod name on CR"
+
+# (3) The XDG registry-layer contract (#1300 fix): the supervisor
+# installs ~/.config/opencode/opencode.json pointing at the config file
+# opencode ACTUALLY reads — verified against the live child's
+# OPENCODE_CONFIG env (topology-dependent: /agentd-config in sidecar
+# mode, /sandbox-runtime single-container; pool run 34066476127 caught
+# a hard-coded sidecar path).
+OC_PID=$(kc exec "${POD1B}" -c workspace -- pgrep -f 'opencode serve' | head -1)
+[[ -n "${OC_PID}" ]] || die "AC-1b: opencode process not found"
+OC_CFG=$(kc exec "${POD1B}" -c workspace -- sh -c "tr '\\0' '\\n' < /proc/${OC_PID}/environ | grep '^OPENCODE_CONFIG=' | cut -d= -f2-")
+[[ -n "${OC_CFG}" ]] || die "AC-1b: opencode child has no OPENCODE_CONFIG env"
+XDG_LINK=$(kc exec "${POD1B}" -c workspace -- readlink -f /home/sandbox/.config/opencode/opencode.json 2>/dev/null || true)
+[[ "${XDG_LINK}" == "${OC_CFG}" ]] \
+    || die "AC-1b: XDG registry layer target '${XDG_LINK}' != child OPENCODE_CONFIG '${OC_CFG}'"
+ok "XDG registry-layer symlink matches the child's OPENCODE_CONFIG (→ ${XDG_LINK})"
+
+# The rendered config must contain the credential's provider block.
+kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${OC_CFG}" \
+    || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
+
+# (4) THE REGISTRY: opencode's model.available() via GET /api/model —
+# the endpoint that lied by omission in #1300.
+if registry_admits "${WS1B}" "ac1b-stub" "stub-model-1" 120; then
+    ok "AC-1b PASS: registry admits ac1b-stub/stub-model-1 (model.available(), not just /config/providers)"
+else
+    die "AC-1b FAIL: ac1b-stub/stub-model-1 NOT in the model registry (model.available()) after 120s — the #1300 failure mode"
+fi
+
+# -----------------------------------------------------------------------------
+# AC-1c — mid-life llm-provider bind → reconcile re-push → registry
+#         admission (the #1300 heal path, fix-design item 3(c))
+#
+# A credential bound to an ALREADY-RUNNING workspace must converge the
+# registry: reconcile re-push → sidecar materialize rewrites
+# agent-config → the supervisor's config watcher restarts opencode
+# (session-aware in single-container, grace in sidecar) → the model
+# appears in GET /api/model. This is the exact mid-life reload that
+# previously left the V2 registry stale until pod recreation.
+# -----------------------------------------------------------------------------
+WS1C=$(ws_id 91)
+log "AC-1c — mid-life credential bind → registry converges (the heal path)"
+
+seed_workspace "${WS1C}"
+wait_phase "${WS1C}" Active 240 || die "AC-1c: workspace never Active"
+secrets_converged "${WS1C}" 120 || die "AC-1c: secretsDelivery not converged"
+
+CRED1C=$(create_stub_credential "ac1c-stub" "late-model-1")
+BIND1C=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED1C}/bind/${WS1C}")
+[[ "${BIND1C}" == 2* ]] || die "AC-1c: credential bind failed: HTTP ${BIND1C}"
+ok "credential bound to the RUNNING workspace (mid-life)"
+
+# Budget: reconcile interval (5s) + push + materialize + watcher tick
+# (5s) + opencode restart (~10s) + registry settle — 360s is generous.
+if registry_admits "${WS1C}" "ac1c-stub" "late-model-1" 360; then
+    ok "AC-1c PASS: mid-life bind converged the registry (reconcile → materialize → watcher restart)"
+else
+    die "AC-1c FAIL: mid-life bind never reached the registry within 360s — the stale-registry class"
+fi
+
+# -----------------------------------------------------------------------------
+# AC-1d — a TURN resolves through a credential-backed provider
+#         (fix-design item 4: "V2 provider turn resolves through real
+#         opencode serve")
+#
+# Registry admission alone (AC-1b/1c) does not prove a turn executes;
+# this row drives a real session-model-pinned turn (the platform's
+# synchronous V1 first-turn route) against a mock OpenAI-compatible
+# upstream deployed in the pool cluster, and asserts the assistant
+# reply arrives. This is the row that would have caught both #1292b
+# and #1300 as user-visible failures.
+# -----------------------------------------------------------------------------
+log "AC-1d — credential-backed TURN resolves against a mock upstream (synchronous V1 route)"
+
+kubectl --context "${CTX}" apply -f - >/dev/null <<'MOCK'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mock-llm-config
+  namespace: llmsafespaces
+data:
+  serve.py: |
+    import json, sys, datetime
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    def chunk(delta, finish=None):
+        return json.dumps({
+            "id": "chatcmpl-mock", "object": "chat.completion.chunk",
+            "created": 0, "model": "mock-model-1",
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        })
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("content-length", 0))
+            body = self.rfile.read(n)
+            print(f"MOCK-HIT {datetime.datetime.utcnow().isoformat()} {self.path} bytes={n}", flush=True)
+            if b'"stream":true' in body or b'"stream": true' in body:
+                # SSE: the AI SDK defaults to streaming — reply with
+                # chat.completion.chunk frames.
+                # Each SSE event MUST be terminated by a blank line
+                # (data: <json>\n\n) — a single \n concatenates frames
+                # into one malformed multi-line event.
+                frames = "".join([
+                    "data: " + chunk({"role": "assistant", "content": ""}) + "\n\n",
+                    "data: " + chunk({"content": "MOCK-TURN-OK"}) + "\n\n",
+                    "data: " + chunk({}, finish="stop") + "\n\n",
+                    "data: [DONE]\n\n",
+                ])
+                resp = frames.encode()
+                ctype = "text/event-stream"
+            else:
+                resp = json.dumps({
+                    "id": "chatcmpl-mock", "object": "chat.completion",
+                    "created": 0, "model": "mock-model-1",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                ctype = "application/json"
+            self.send_response(200)
+            self.send_header("content-type", ctype)
+            self.send_header("cache-control", "no-cache")
+            self.send_header("content-length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+        def log_message(self, *a):
+            pass
+    HTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm
+  namespace: llmsafespaces
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mock-llm}}
+  template:
+    metadata:
+      labels:
+        app: mock-llm
+        # Ride the relay-router egress allow (rendered via
+        # networkPolicy.allowRelayRouterEgress): podSelector rules match
+        # the post-DNAT endpoint pod — the only mechanism that admits
+        # sandbox traffic to an in-cluster Service.
+        app.kubernetes.io/name: llmsafespaces
+        app.kubernetes.io/instance: llmsafespaces
+        app.kubernetes.io/component: relay-router
+    spec:
+      containers:
+        - name: serve
+          image: python:3.12-alpine
+          command: ["python", "/srv/serve.py"]
+          volumeMounts: [{name: cfg, mountPath: /srv}]
+      volumes:
+        - name: cfg
+          configMap: {name: mock-llm-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm
+  namespace: llmsafespaces
+spec:
+  # Pinned inside the kind serviceSubnet (10.217/16): the helm install
+  # pre-grants exactly this /32 via networkPolicy.extraEgressCIDRs —
+  # the operator-carve-out for an in-cluster LLM endpoint (sandbox
+  # egress otherwise blocks all RFC1918 by design).
+  clusterIP: 10.217.200.200
+  selector: {app: mock-llm}
+  ports: [{port: 80, targetPort: 8080}]
+MOCK
+kubectl --context "${CTX}" -n "${NS}" rollout status deployment/mock-llm --timeout=180s >/dev/null \
+    || die "AC-1d: mock upstream failed to deploy"
+
+WS1D=$(ws_id 92)
+CRED1D=$(create_stub_credential "ac1d-stub" "mock-model-1" "http://mock-llm.${NS}.svc/v1")
+seed_workspace "${WS1D}"
+BIND1D=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${CRED1D}/bind/${WS1D}")
+[[ "${BIND1D}" == 2* ]] || die "AC-1d: credential bind failed: HTTP ${BIND1D}"
+wait_phase "${WS1D}" Active 240 || die "AC-1d: workspace never Active"
+secrets_converged "${WS1D}" 120 || die "AC-1d: secretsDelivery not converged"
+registry_admits "${WS1D}" "ac1d-stub" "mock-model-1" 120 \
+    || die "AC-1d: mock provider never admitted to the registry"
+
+POD1D=$(pod_of "${WS1D}")
+PW1D=$(kc get secret "workspace-pw-${WS1D}" -o jsonpath='{.data.password}' | base64 -d)
+OC_AUTH=(-u "opencode:${PW1D}" -H 'content-type: application/json')
+
+# THE PRODUCTION TURN PATH (r6): the platform's synchronous message
+# endpoint — adapter.Send (V1 POST /session/:id/message) with the
+# per-prompt model override the platform pins to the session before
+# sending, exactly as the SPA does it. Raw-opencode sends proved
+# non-executing in the pool workspace (accepted, persisted, never run)
+# while the same route works bare-server (binary-contract B1) and in
+# production through this platform endpoint.
+# EnsureSession takes no body (the service ensures a default session):
+# response is {workspaceId, workspacePhase, sessionId, resumed}.
+SID1D=$(curl -sfm 60 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/new" | jq -r '.sessionId // empty')
+[[ -n "${SID1D}" ]] || die "AC-1d: platform session create failed"
+
+# First-turn shape: the platform's adapter path sends first turns via
+# the SYNCHRONOUS V1 route (POST /session/:id/message — proxy_handlers
+# "Adapter path", pinned by adapter_path_test.go: "V1 must be called
+# exactly once, V2 must NEVER"; steer is the admission-dedup path for
+# runs with history, and V2 queue never drains per #755).
+# Pre-flight: the mock upstream must be reachable FROM the workspace
+# pod before the turn — the synchronous V1 request hangs to its client
+# timeout if the model call blocks (signature: HTTP 000).
+MOCK_URL="http://mock-llm.${NS}.svc/v1/chat/completions"
+probe_mock() { # container args... — POSTs the mock, echoes the http code
+    local ctr="$1"; shift
+    kc exec "${POD1D}" -c "${ctr}" -- curl -sm 5 -o /dev/null -w '%{http_code}' \
+        -X POST -H 'content-type: application/json' -d '{"m":1}' \
+        "${MOCK_URL}" 2>/dev/null || echo 000
+}
+# Every probe line is failure-guarded: diagnostics must never kill the
+# row under set -euo pipefail.
+WS_MOCK=$(probe_mock workspace) || WS_MOCK=000
+SVC_IP=$(kc get svc -n "${NS}" mock-llm -o jsonpath='{.spec.clusterIP}' 2>/dev/null) || SVC_IP=""
+DNS_INFO=$( { kc exec "${POD1D}" -c workspace -- getent hosts "mock-llm.${NS}.svc" 2>&1 || true; } | head -1)
+IP_MOCK=$( { kc exec "${POD1D}" -c workspace -- curl -sm 5 -o /dev/null -w '%{http_code}' \
+    -X POST -H 'content-type: application/json' -d '{"m":1}' \
+    "http://${SVC_IP}/v1/chat/completions" 2>/dev/null; } || echo 000)
+EP_INFO=$(kc get endpoints -n "${NS}" mock-llm -o jsonpath='{.subsets[0].addresses[0].ip}:{.subsets[0].ports[0].port}' 2>/dev/null) || EP_INFO="(none)"
+# Plain-pod probe: a fresh non-gVisor, non-workspace pod in the same ns —
+# bisects workspace-specific vs service-level reachability. Wait for the
+# probe pod to finish before reading its logs.
+kc --context "${CTX}" -n "${NS}" delete pod mock-probe --ignore-not-found >/dev/null 2>&1 || true
+kc --context "${CTX}" -n "${NS}" run mock-probe --image=curlimages/curl --restart=Never \
+    --command -- curl -sm 8 -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' \
+    -d '{"m":1}' "http://${SVC_IP}/v1/chat/completions" >/dev/null 2>&1 || true
+for _p in $(seq 1 12); do
+    kc --context "${CTX}" -n "${NS}" wait --for=condition=Ready pod/mock-probe --timeout=10s >/dev/null 2>&1 && break
+    sleep 3
+done
+sleep 10
+PLAIN_MOCK=$( { kc --context "${CTX}" -n "${NS}" logs mock-probe 2>/dev/null || true; } | tail -1)
+# r30: the bare grep|head in an assignment is a row-killer under
+# set -Eeuo pipefail — grep exits 1 on no-match and head SIGPIPEs on
+# >2 matches. Guard the whole pipeline; diagnostics must never die.
+VERBOSE_ERR=$( { { kc exec "${POD1D}" -c workspace -- curl -vm 5 -o /dev/null \
+    "http://${SVC_IP}/v1/chat/completions" 2>&1 || true; } | { grep -aiE 'connect|timed|refused|resolve' || true; } | { head -2 || true; } | tr '\n' ' '; } || true)
+ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=${IP_MOCK} endpoints='${EP_INFO}' dns='${DNS_INFO}' err='${VERBOSE_ERR}'"
+[[ "${WS_MOCK}" == "200" ]] \
+    || die "AC-1d: mock unreachable from the workspace container (HTTP ${WS_MOCK}; plain-pod='${PLAIN_MOCK}', endpoints='${EP_INFO}', err='${VERBOSE_ERR}')"
+
+# The V1 route is SYNCHRONOUS: the POST response body IS the assistant
+# message — assert on it directly; the event-feed poll below stays as
+# the async fallback (the feed carries lifecycle events like
+# model-switched, and completed message entries only later).
+# Platform synchronous send: response via stdout; last line is the
+# http_code, the body above it is the translated session.Message.
+TURN_RAW=$(curl -sm 180 -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{"parts":[{"type":"text","text":"reply with the canned marker"}],"model":{"modelID":"mock-model-1","providerID":"ac1d-stub"}}' \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/${SID1D}/message" 2>/dev/null || true)
+TURN_CODE=$(printf '%s' "${TURN_RAW}" | tail -1)
+TURN_BODY=$(mktemp); printf '%s' "${TURN_RAW}" | sed '$d' > "${TURN_BODY}"
+case "${TURN_CODE}" in
+    2*) ok "AC-1d: V1 first-turn accepted (HTTP ${TURN_CODE})";;
+    *) warn "AC-1d: V1 first-turn HTTP ${TURN_CODE} — polling for the reply anyway (the synchronous request may outlive its client timeout while the turn completes server-side)";;
+esac
+TURN_OK=""
+if grep -aq MOCK-TURN-OK "${TURN_BODY}" 2>/dev/null; then
+    ok "AC-1d PASS: credential-backed turn resolved against the mock upstream (synchronous reply carries MOCK-TURN-OK)"
+    TURN_OK=true
+    rm -f "${TURN_BODY}"
+fi
+# (TURN_BODY intentionally kept on failure — the diagnostics print it.)
+
+if [[ "${TURN_OK}" != "true" ]]; then
+for _i in $(seq 1 45); do
+    REPLY=$(kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
+        "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>/dev/null | jq -r '[.data[] | select(.type=="assistant") | .content[]? | select(.type=="text") | .text] | last // empty' 2>/dev/null || true)
+    if [[ "${REPLY}" == *MOCK-TURN-OK* ]]; then TURN_OK=true; break; fi
+    sleep 4
+done
+if [[ "${TURN_OK}" != "true" ]]; then
+    # Self-diagnose before dying: messages, mock reachability, opencode
+    # error tail — the three candidate failure planes.
+    echo "--- AC-1d diagnostics: session messages ---"
+    kc exec "${POD1D}" -c workspace -- curl -sfm 5 "${OC_AUTH[@]}" \
+        "http://127.0.0.1:4096/api/session/${SID1D}/message" 2>&1 | head -c 1200
+    echo; echo "--- AC-1d diagnostics: mock reachability from the workspace ---"
+    kc exec "${POD1D}" -c workspace -- curl -sfm 5 -o /dev/null -w '%{http_code}\n' \
+        -X POST -H 'content-type: application/json' -d '{"m":1}' \
+        http://mock-llm.${NS}.svc/v1/chat/completions 2>&1 || true
+    echo "--- AC-1d diagnostics: platform send response (first 600 chars) ---"
+    head -c 600 "${TURN_BODY}" 2>/dev/null || echo "(no body captured)"
+    echo
+    echo "--- AC-1d diagnostics: mock request log (did opencode call it?) ---"
+    kc --context "${CTX}" -n "${NS}" logs deployment/mock-llm --tail=10 2>&1 | head -12
+    echo "--- AC-1d diagnostics: opencode log tail (full, last 15) ---"
+    kc exec "${POD1D}" -c workspace -- sh -c 'tail -15 /workspace/.local/opencode/log/opencode.log 2>/dev/null' || true
+    die "AC-1d FAIL: no assistant reply carrying MOCK-TURN-OK within 180s — the turn did not resolve through the credential-backed provider"
+fi
+ok "AC-1d PASS: session-model-pinned turn completed against the mock upstream (reply: ${REPLY:0:40})"
+fi
+
+# -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
 # -----------------------------------------------------------------------------
 WS2=$(ws_id 2)
@@ -174,6 +512,24 @@ fi
 # AC-13 — concurrent resumes → p95 within budget; identical spawned_rev
 #         (gVisor leg feature-detected)
 # -----------------------------------------------------------------------------
+# Pre-wave sweep (r21-narrowed): ids < 100 are REUSED by the post-wave
+# rows (AC-17 ws 2, chaos 3, AC-F 4, AC-3 5, AC-8 6, AC-5 7, AC-6 8,
+# AC-4-lite 9, AC-11 10) — the original <100 sweep deleted workspaces
+# those rows recreate, spending minutes in deletion-pending reconcile
+# churn (run 34231075177's AC-17/REV-1 window). Only 90-92 (AC-1b/1c/
+# 1d) are provably single-use pre-wave rows.
+# id-arithmetic (r26: the r25 "fix" never landed — an aborted edit
+# script wrote nothing and its commit message claimed otherwise; this
+# time the diff is the proof). Guarded assignment: a transient kc
+# failure must not kill the leg (same class as r13's diagnostics).
+PRE_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
+    | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
+PRE_N=$(printf '%s' "${PRE_SWEPT}" | grep -c . || true)
+if [[ "${PRE_N}" -gt 0 ]]; then
+    printf '%s\n' "${PRE_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+fi
+ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted"
+
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
 # gVisor feature-detection: is there a controllable runtimeClass (runsc)?
@@ -394,7 +750,22 @@ if (( SCALE > 0 )); then
     else
         warn "AC-13 gVisor leg SKIPPED (no runsc RuntimeClass) — see note above"
     fi
-    ok "AC-13 PASS (runc leg; runsc pending pool)"
+
+    # Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
+    # free their image volumes/PVCs so the post-wave rows (AC-17 onward,
+    # which recreate ws 1..10) get the kind node's disk back.
+    # Guarded (r26): transient kc failure must not kill the leg. The
+    # 4-char suffix read bounds ids to <10000 — fine at every supported
+    # scale (max id 200 at RESUME_SCALE=100).
+    POST_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
+        | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
+    if [[ -n "${POST_SWEPT}" ]]; then
+        printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+        # grep -c . (r28): wc -l undercounts by one — command
+        # substitution strips the trailing newline and printf '%s' adds
+        # none (run 34309009157: 20 deleted, logged "19").
+        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+)"
+    fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
 fi
@@ -626,6 +997,19 @@ env_in_child "${WSRS}" "SD_AC11_VAR=ac11-value" || die "AC-11: baseline env miss
 
 resync_forward_start "${WSRS}"
 resync_call
+if [[ "${RESC_CODE}" == "429" ]]; then
+    # MAINLINE path (r26, correcting r25's still-unapplied claim): the
+    # warmer is this row's OWN baseline — bind_env → notify → admitted
+    # pull seconds earlier sets lastAdmitted, and the 2s min-interval
+    # spans the first resync_call whenever the round-trip lands inside
+    # it (run 34293579352: retryAfterMs=1349 ⇒ lastAdmitted ~0.65s
+    # prior; AC-3's pull was 46s earlier — arithmetically exonerated).
+    # Honor the advertised retryAfterMs once, then proceed.
+    wait_ms=$(jq -r '.retryAfterMs // 2000' <<<"${RESC_BODY}")
+    warn "AC-11: first resync rate-limited (limiter warm from a prior pull) — retrying after ${wait_ms}ms"
+    sleep $(( (wait_ms + 250) / 1000 + 1 ))
+    resync_call
+fi
 [[ "${RESC_CODE}" == "200" ]] || die "AC-11: first resync HTTP ${RESC_CODE}: ${RESC_BODY}"
 RESC_STATUS=$(jq -r '.status // empty' <<<"${RESC_BODY}")
 [[ "${RESC_STATUS}" == "applied" || "${RESC_STATUS}" == "not_modified" ]] \

@@ -812,18 +812,32 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (s
 		return "", false
 	}
 
-	// Already qualified: deterministic — the provider entry either exists
-	// in this boot's config or the default is unusable this boot. Split on
-	// the FIRST "/" — opencode's own routing convention (a bare ID parses
-	// as first-segment provider + empty modelID, per the incident), so a
-	// catalog-sourced value like "openrouter/anthropic/claude-sonnet"
-	// means provider "openrouter", model "anthropic/claude-sonnet". The
-	// full value is passed through verbatim once its provider exists.
+	// Already qualified: deterministic — the provider entry either
+	// exists in this boot's config WITH the model in its models map, or
+	// the default is unusable this boot. #1300 fix-design 2(b):
+	// provider-existence alone passed STALE qualified defaults through
+	// (a re-render after an allowlist change kept pinning a model the
+	// provider no longer lists) — both forms must verify the model.
+	// Split on the FIRST "/" — opencode's own routing convention (a
+	// bare ID parses as first-segment provider + empty modelID, per the
+	// incident), so a catalog-sourced value like
+	// "openrouter/anthropic/claude-sonnet" means provider "openrouter",
+	// model "anthropic/claude-sonnet".
 	// The empty-tail guard ("a/") rejects the incident's own parse shape
 	// (provider + EMPTY modelID) rather than passing it downstream.
 	if idx := strings.Index(modelID, "/"); idx > 0 && idx < len(modelID)-1 {
-		if _, exists := providers[modelID[:idx]]; exists {
-			return modelID, true
+		if p, exists := providers[modelID[:idx]]; exists {
+			// Providers WITH an allowlist (models map present) must
+			// claim the model — provider existence alone would pass
+			// stale qualified defaults after an allowlist change.
+			// Providers WITHOUT one (first-party keys — catalog-sourced
+			// models) cannot be verified config-side; existence stands.
+			if len(p.Models) == 0 {
+				return modelID, true
+			}
+			if _, found := p.Models[modelID[idx+1:]]; found {
+				return modelID, true
+			}
 		}
 		return "", false
 	}
@@ -1251,6 +1265,29 @@ func writeStagedProvidersToAuthStore(authPath string, staged []sec.LLMProviderDa
 // writeStagedProvidersToAuthStoreW is writeStagedProvidersToAuthStore with
 // an injectable observability writer (the reserved-slug skip and the
 // corrupt-store alarm assert through it — os.Stderr in production).
+// authStoreEntry is the compile-time contract for one provider entry
+// in opencode's auth store (auth.json): {key, type} always;
+// metadata ONLY when the provider carries a baseURL. Metadata is a
+// POINTER so omitempty actually elides it — a struct field emits
+// "metadata":{} even with omitempty, diverging from the live PUT
+// path's shape (the r1 review finding; pinned by
+// TestAuthStoreEntry_MarshalMatchesLivePutShape).
+//
+// type is "api" for delivered API-key credentials (the only kind this
+// platform writes; opencode's own connection resolver branches on
+// key/oauth for its zen login flows, which we never emit).
+type authStoreEntry struct {
+	Key      string             `json:"key"`
+	Type     string             `json:"type"`
+	Metadata *authStoreMetadata `json:"metadata,omitempty"`
+}
+
+type authStoreMetadata struct {
+	BaseURL string `json:"baseURL,omitempty"`
+}
+
+const authStoreEntryTypeAPI = "api"
+
 func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec.LLMProviderData) error {
 	if len(staged) == 0 {
 		return nil
@@ -1283,10 +1320,16 @@ func writeStagedProvidersToAuthStoreW(w io.Writer, authPath string, staged []sec
 		// {key, type} always; metadata.baseURL when the provider carries
 		// one (the #1296 review's shape-divergence finding — config's
 		// options.baseURL is plausibly sufficient, but plausibly-unpinned
-		// is what caused the outage).
-		entry := map[string]any{"key": p.APIKey, "type": "api"}
+		// is what caused the outage). authStoreEntry is the compile-time
+		// form of that contract — validated against the 1.18.15 binary
+		// (#1300: the auth-service predicate accepts type:"api" entries;
+		// key/oauth branch differently and are NOT written here).
+		entry := authStoreEntry{
+			Key:  p.APIKey,
+			Type: authStoreEntryTypeAPI,
+		}
 		if p.BaseURL != "" {
-			entry["metadata"] = map[string]string{"baseURL": p.BaseURL}
+			entry.Metadata = &authStoreMetadata{BaseURL: p.BaseURL}
 		}
 		b, err := json.Marshal(entry)
 		if err != nil {
