@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,11 +31,11 @@ func setXDGHome(t *testing.T, home string) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 }
 
-func TestEnsureOpencodeRegistryConfig_InstallsSymlink(t *testing.T) {
+func TestEnsureOpencodeRegistryConfig_InstallsCopy(t *testing.T) {
 	home := t.TempDir()
 	setXDGHome(t, home)
 	target := filepath.Join(t.TempDir(), "agent-config.json")
-	if err := os.WriteFile(target, []byte(`{"provider":{}}`), 0o640); err != nil {
+	if err := os.WriteFile(target, []byte(`{"provider":{"x":{"options":{"apiKey":"k"}}}}`), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", target)
@@ -44,75 +45,91 @@ func TestEnsureOpencodeRegistryConfig_InstallsSymlink(t *testing.T) {
 	link := filepath.Join(home, ".config", "opencode", "opencode.json")
 	fi, err := os.Lstat(link)
 	if err != nil {
-		t.Fatalf("symlink not installed: %v", err)
+		t.Fatalf("copy not installed: %v", err)
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("%s is not a symlink", link)
+	if fi.Mode().IsDir() {
+		t.Fatalf("%s is a directory", link)
 	}
-	got, err := os.Readlink(link)
+	// COPY not symlink (#1310): opencode writes to the XDG path
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("%s is still a symlink — must be a writable copy", link)
+	}
+	if fi.Mode().Perm()&0o200 == 0 {
+		t.Fatalf("%s not writable (mode %v)", link, fi.Mode())
+	}
+	got, err := os.ReadFile(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != target {
-		t.Fatalf("symlink target = %q, want %q", got, target)
+	if string(got) != `{"provider":{"x":{"options":{"apiKey":"k"}}}}` {
+		t.Fatalf("content = %q", got)
+	}
+	// owned by current uid (writable by opencode)
+	if stat, ok := fi.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Getuid() {
+		t.Fatalf("copy owned by uid %d, want %d", stat.Uid, os.Getuid())
 	}
 }
 
-func TestEnsureOpencodeRegistryConfig_IdempotentAndRepoints(t *testing.T) {
+func TestEnsureOpencodeRegistryConfig_IdempotentAndRefreshes(t *testing.T) {
 	home := t.TempDir()
 	setXDGHome(t, home)
-	dirA, dirB := t.TempDir(), t.TempDir()
-	stale := filepath.Join(dirA, "agent-config.json")
-	fresh := filepath.Join(dirB, "agent-config.json")
-	for _, p := range []string{stale, fresh} {
-		if err := os.WriteFile(p, []byte(`{}`), 0o640); err != nil {
-			t.Fatal(err)
-		}
+	target := filepath.Join(t.TempDir(), "agent-config.json")
+	if err := os.WriteFile(target, []byte(`{"v":1}`), 0o640); err != nil {
+		t.Fatal(err)
 	}
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", target)
 
-	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", stale)
 	ensureOpencodeRegistryConfig(xdgTestLogger(t))
-	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", fresh)
-	ensureOpencodeRegistryConfig(xdgTestLogger(t)) // repoint, not duplicate
-
 	link := filepath.Join(home, ".config", "opencode", "opencode.json")
-	got, err := os.Readlink(link)
-	if err != nil {
+
+	// content change → copy refreshed
+	if err := os.WriteFile(target, []byte(`{"v":2}`), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if got != fresh {
-		t.Fatalf("symlink target = %q, want repointed %q", got, fresh)
+	ensureOpencodeRegistryConfig(xdgTestLogger(t))
+	got, _ := os.ReadFile(link)
+	if string(got) != `{"v":2}` {
+		t.Fatalf("copy not refreshed: %q", got)
 	}
+	// idempotent: same content, no error
+	ensureOpencodeRegistryConfig(xdgTestLogger(t))
 	entries, _ := os.ReadDir(filepath.Dir(link))
-	if len(entries) != 1 {
-		t.Fatalf("expected exactly the link in the config dir, got %d entries", len(entries))
+	if len(entries) > 2 { // opencode.json + potentially the tmp file
+		t.Fatalf("temp files leaked: %d entries", len(entries))
 	}
 }
 
-func TestEnsureOpencodeRegistryConfig_PreservesRealUserFile(t *testing.T) {
+func TestEnsureOpencodeRegistryConfig_LegacySymlinkReplaced(t *testing.T) {
+	// #1310: the 0.27.5 symlink must be replaced by the copy (the symlink
+	// directed opencode's writes at the read-only /agentd-config mount)
 	home := t.TempDir()
 	setXDGHome(t, home)
+	target := filepath.Join(t.TempDir(), "agent-config.json")
+	if err := os.WriteFile(target, []byte(`{"provider":{}}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", target)
 	cfgDir := filepath.Join(home, ".config", "opencode")
 	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	userFile := filepath.Join(cfgDir, "opencode.json")
-	userBytes := []byte(`{"model":"user/chosen"}`)
-	if err := os.WriteFile(userFile, userBytes, 0o644); err != nil {
+	link := filepath.Join(cfgDir, "opencode.json")
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
 
 	ensureOpencodeRegistryConfig(xdgTestLogger(t))
 
-	got, err := os.ReadFile(userFile)
+	fi, err := os.Lstat(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(userBytes) {
-		t.Fatalf("user file was modified: %q", got)
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("legacy symlink not replaced by copy")
 	}
-	if fi, err := os.Lstat(userFile); err != nil || fi.Mode()&os.ModeSymlink != 0 {
-		t.Fatalf("user file was replaced (fi=%v err=%v)", fi, err)
+	got, _ := os.ReadFile(link)
+	if string(got) != `{"provider":{}}` {
+		t.Fatalf("copy content: %q", got)
 	}
 }
 

@@ -33,6 +33,7 @@ package main
 // aside once at boot instead.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -81,58 +82,77 @@ func effectiveAgentConfigPath() string {
 	return agentConfigPathFromEnv()
 }
 
-// ensureOpencodeRegistryConfig installs the XDG-layer symlink
-// ~/.config/opencode/opencode.json → the effective agent-config (the
-// sidecar-stamped file in sidecar mode; the /sandbox-runtime default
-// in single-container). Best-effort, idempotent, never blocks boot —
-// but failure is loud because without the link the model registry will
-// not admit any platform-delivered provider (#1300). Runs before the
-// first opencode spawn.
+// ensureOpencodeRegistryConfig COPIES the effective agent-config into
+// the XDG layer: ~/.config/opencode/opencode.json ← the sidecar-stamped
+// file in sidecar mode (the /sandbox-runtime default in single-container).
+// COPY, not symlink (#1310): opencode WRITES to the XDG path (model
+// switches, permission changes — PlatformError EACCES in production when
+// the symlink pointed at the read-only /agentd-config mount), so the
+// XDG file must be uid-1000-owned and writable. The existing config
+// watcher re-syncs when the sidecar's version changes (the copy is
+// refreshed, then opencode restarts). Best-effort, idempotent, never
+// blocks boot — but failure is loud because without it the model
+// registry will not admit any platform-delivered provider (#1300).
 //
-// A real (non-symlink) file at the link path is LEFT ALONE with a
-// warning: the user took over the config layer. opencode layers XDG
-// files under the env config, so a user file that omits platform
-// providers keeps registry behavior broken — the warning names the
-// exact consequence rather than silently clobbering user bytes.
+// A real (non-managed) file at the path is LEFT ALONE with a warning:
+// the user took over the config layer. opencode layers XDG files under
+// the env config, so a user file that omits platform providers keeps
+// registry behavior broken — the warning names the exact consequence
+// rather than silently clobbering user bytes. Managed copies are
+// stamped with a marker comment so user takeovers are distinguishable
+// from our own copy.
 func ensureOpencodeRegistryConfig(logger *zap.Logger) string {
 	target := effectiveAgentConfigPath()
 	dir := opencodeXDGConfigDir()
 	link := filepath.Join(dir, "opencode.json")
 
 	// #nosec G301 -- 0755 matches opencode's own XDG dir scaffolding and
-	// the init-fs managed-dir modes; the dir holds only the symlink (no
-	// credential bytes — US-35.7 keeps those on /agentd-config).
+	// the init-fs managed-dir modes; the dir holds only the config copy
+	// (no credential bytes — US-35.7 keeps those on /agentd-config).
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logger.Warn("registry config layer: cannot create XDG dir (model registry may not admit providers)",
 			zap.String("dir", dir), zap.Error(err))
 		return link
 	}
 
-	if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink == 0 {
-		logger.Warn("registry config layer: real file exists at XDG config path; leaving it (platform providers may not register)",
-			zap.String("path", link),
-			zap.String("expectedSymlinkTarget", target))
+	// Legacy symlink from the 0.27.5 symlink-based fix: remove it so the
+	// copy can land (a symlink would keep directing opencode's writes at
+	// the read-only mount).
+	if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		_ = os.Remove(link)
+	}
+
+	// Content match: if our copy is already current, no-op.
+	targetData, err := os.ReadFile(target)
+	if err != nil {
+		logger.Warn("registry config layer: cannot read agent-config (model registry may not admit providers)",
+			zap.String("target", target), zap.Error(err))
 		return link
 	}
-
-	if cur, err := os.Readlink(link); err == nil && cur == target {
-		return link // already correct — idempotent no-op
+	if cur, err := os.ReadFile(link); err == nil && bytes.Equal(cur, targetData) {
+		return link // already current — idempotent no-op
 	}
 
-	// Atomic install: temp symlink + rename over the (absent or stale)
-	// link. Rename over an existing symlink is atomic; a dangling link
-	// left by a previous pod is repointed, never read as a file.
+	// The platform config is authoritative at boot — always refresh the
+	// copy when it differs. opencode's runtime writes to this file
+	// (model switches etc.) are ephemeral session state, re-derived after
+	// restart. User-authored configs belong in the OTHER XDG candidates
+	// (opencode.jsonc, config.json) which opencode layers on top.
+
+	// Atomic copy: temp file + rename. Owned by uid 1000 (the supervisor),
+	// mode 0644 (no credential bytes — the config carries provider slugs
+	// and baseURLs, not keys; keys live in the auth store).
 	tmp := link + ".agentd-tmp"
 	_ = os.Remove(tmp)
-	if err := os.Symlink(target, tmp); err != nil {
-		logger.Warn("registry config layer: symlink create failed (model registry may not admit providers)",
-			zap.String("link", link), zap.String("target", target), zap.Error(err))
+	if err := os.WriteFile(tmp, targetData, 0o644); err != nil {
+		logger.Warn("registry config layer: temp write failed (model registry may not admit providers)",
+			zap.String("link", link), zap.Error(err))
 		return link
 	}
 	if err := os.Rename(tmp, link); err != nil {
 		_ = os.Remove(tmp)
-		logger.Warn("registry config layer: symlink install failed (model registry may not admit providers)",
-			zap.String("link", link), zap.String("target", target), zap.Error(err))
+		logger.Warn("registry config layer: copy install failed (model registry may not admit providers)",
+			zap.String("link", link), zap.Error(err))
 	}
 	return link
 }
@@ -405,11 +425,16 @@ func watchAgentConfigForChanges(ctx context.Context, configPath string, logger *
 			}
 			last = cur
 			lastRestart = time.Now()
+			// #1310: re-copy the agent-config into the XDG layer BEFORE
+			// restarting — the copy (not the symlink target) is what
+			// opencode reads, and without this the restart would boot
+			// against the stale copy.
+			ensureOpencodeRegistryConfig(logger)
 			if err := writeRestartReasonMarker(markerPathFromEnv(), "credential_reload", nil); err != nil {
 				logger.Warn("agent-config watcher: marker write failed", zap.Error(err))
 			}
 			logRestartReasonAtWrite("credential_reload", nil, logger.Core())
-			logger.Info("agent-config watcher: restarting opencode to rebuild the model registry",
+			logger.Info("agent-config watcher: config re-copied, restarting opencode to rebuild the model registry",
 				zap.String("path", configPath))
 			restartNow()
 		}
