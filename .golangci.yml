@@ -155,6 +155,7 @@ linters:
         # config-loading paths. Re-enable after a real incident.
         - G304
         - G306
+        - G306
         # G101 (hardcoded credentials) fires on constant *names* matching
         # "Credential", "Password", "Token", etc. — e.g.
         # `ReasonCredentialInvalid = "CredentialInvalid"` in CRD types,
