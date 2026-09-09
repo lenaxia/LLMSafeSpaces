@@ -129,3 +129,11 @@ Meta: this is the regression row doing exactly what it was built for — the liv
 - **CI-red lockstep fixed**: `RESUME_SCALE: ${{ inputs.resume_scale || '40' }}` — also closes the schedule→100 regression (empty inputs context on cron → script default 100 = 2.5× the ENOSPC'd footprint).
 - **Fault starvation fixed structurally**: `if: always()` on the arm + fault steps (F6 had zero executions in 34 dispatches because every earlier-leg failure skipped the leg); FAULT_COUNT 16→24 so F1's probe + the 3×-per-faulted-boot retry burn cannot leave F6's seam inert.
 - worker-04's re-image also wiped #2389's userns sysctl (same class as worker-00); runtime value restored 2026-09-08 ~19:20 — **needs the same talhelper re-apply to persist**.
+
+## r25 corrections + the completed gate run (34298632229)
+
+- **THE GATE RUN COMPLETED SUCCESS at d21bd6c7**: delivery all rows, revisions pass=5, Epic 69, faults pass=8 **skip=0 — F6 executed green** (dedicated 6-fault seam + reconnect_api after the rollout killed the pinned forward). First fully-green head run in 41 dispatches.
+- **Sweep regexes were dead code (two rounds, zero matches)** — the r25 reviewer exhaustively proved both patterns matched nothing (ws_id renders a 32-char prefix + %04d, not the shapes I regexed). Replaced with id-arithmetic awk filters, now pinned by TestUS70SweepSelection against the real render (the pin immediately caught a wrong test-vector of my own — its first catch).
+- **AC-11 attribution corrected**: the 429 warmer is the row's OWN baseline pull (retryAfterMs=1349 ⇒ lastAdmitted ~0.65s prior; AC-3 was 46s earlier — arithmetically exonerated). The tolerance is mainline, not a hedge; comment rewritten accordingly.
+- **if: always() extended to revisions + Epic 69 steps** (the same starvation class that consumed F6; both were silently skipped in 34293579352).
+- FAULT_COUNT=24 alone was a budget lottery (F1's heal loop burns one fault per reconcile re-pull) — F6's dedicated re-arm is the deterministic answer, run-proven twice.

@@ -742,9 +742,12 @@ if (( SCALE > 0 )); then
     # Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
     # free their image volumes/PVCs so the post-wave rows (AC-17 onward,
     # which recreate ws 1..10) get the kind node's disk back.
-    kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
-        | grep -E 'e2e5d000-0000-4000-8000-0000000(1[0-9][0-9])$' \
-        | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+    POST_SWEPT=$(kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
+        | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
+    if [[ -n "${POST_SWEPT}" ]]; then
+        printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+        ok "AC-13 — post-wave sweep deleted: $(printf '%s' "${POST_SWEPT}" | wc -l) wave workspace(s) (ids 101+)"
+    fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
 fi

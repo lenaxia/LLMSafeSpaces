@@ -13,6 +13,7 @@ package local_test
 // key-corruption assertions so rows cannot be silently dropped.
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -765,5 +766,86 @@ func TestUS70_StopwatchWorkersAreSetESafe(t *testing.T) {
 	}
 	if !strings.Contains(src, `> "${TDIR}/${ws}.ms"`) {
 		t.Fatalf("stopwatch workers must write one integer to TDIR/<ws>.ms (never `wait $pid` stdout capture)")
+	}
+}
+
+// TestUS70SweepSelection pins the sweep id-selection arithmetic against
+// names rendered with the REAL ws_id() format (r25: two regex attempts
+// matched zero names — a 32-char prefix + %04d, not the 36-char base).
+func TestUS70SweepSelection(t *testing.T) {
+	render := func(id int) string {
+		base := "e2e5d000-0000-4000-8000-000000000000"
+		return fmt.Sprintf("%s%04d", base[:32], id)
+	}
+	sweepPre := func(name string) bool { // pre-wave: ids 90-92
+		n := strings.TrimPrefix(name, "workspace/")
+		if !strings.HasPrefix(n, "e2e5d000-0000-4000-8000-") {
+			return false
+		}
+		suffix := n[len(n)-4:]
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		id, _ := strconv.Atoi(suffix)
+		return id >= 90 && id <= 92
+	}
+	sweepPost := func(name string) bool { // post-wave: ids >= 101
+		n := strings.TrimPrefix(name, "workspace/")
+		if !strings.HasPrefix(n, "e2e5d000-0000-4000-8000-") {
+			return false
+		}
+		suffix := n[len(n)-4:]
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		id, _ := strconv.Atoi(suffix)
+		return id >= 101
+	}
+	// render sanity: the exact production shape
+	if render(90) != "e2e5d000-0000-4000-8000-000000000090" || render(101) != "e2e5d000-0000-4000-8000-000000000101" {
+		t.Fatalf("ws_id render drift: %q %q", render(90), render(101))
+	}
+	// pre-wave selects exactly {90,91,92} of ids 0..300
+	var pre []int
+	for id := 0; id <= 300; id++ {
+		if sweepPre(render(id)) {
+			pre = append(pre, id)
+		}
+	}
+	if len(pre) != 3 || pre[0] != 90 || pre[1] != 91 || pre[2] != 92 {
+		t.Fatalf("pre-wave selection = %v, want [90 91 92]", pre)
+	}
+	// post-wave selects every id >= 101 (incl. 200 at scale 100, and 1000+)
+	for _, id := range []int{101, 140, 199, 200, 240, 999, 1000} {
+		if !sweepPost(render(id)) {
+			t.Fatalf("post-wave must select id %d", id)
+		}
+	}
+	for _, id := range []int{0, 1, 9, 90, 92, 100} {
+		if sweepPost(render(id)) {
+			t.Fatalf("post-wave must NOT select id %d", id)
+		}
+	}
+	// the awk itself is pinned by running it
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"workspace/" + render(92), false},
+		{"workspace/" + render(93), false},
+		{"workspace/" + render(200), true},
+		{"workspace/other-000000000200", false},
+	} {
+		cmd := exec.Command("awk", `-F/`, `{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}`)
+		cmd.Stdin = strings.NewReader(tc.name + "\n")
+		out, _ := cmd.Output()
+		got := strings.TrimSpace(string(out)) != ""
+		if got != tc.want {
+			t.Fatalf("awk post-wave selection for %s: got %v want %v", tc.name, got, tc.want)
+		}
 	}
 }

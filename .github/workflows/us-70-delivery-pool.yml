@@ -430,6 +430,9 @@ jobs:
         run: bash local/us-70-secret-delivery-e2e.sh
 
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
+        # if: always() — r25: same starvation class that consumed F6 for
+        # 34 dispatches; a delivery-leg failure must not skip this leg.
+        if: ${{ always() }}
         # Two-tier-revision acceptance rows (see the nightly's copy):
         # contract feature-detect + loud-skip, two-replica identical
         # revisions, conditional pull 304/ETag, anchored spawned_rev,
@@ -445,6 +448,7 @@ jobs:
         run: bash local/us-70-revisions-e2e.sh
 
       - name: Run Epic 69 evidence leg (admission-ID matrix + flip drill)
+        if: ${{ always() }}
         # #1218/#1219: the cluster-bound close-out rows. The admission-ID
         # probe reports its matrix as DATA (the disposition rule is applied
         # by the tracker, not this step); the flip drill FAILS on an
