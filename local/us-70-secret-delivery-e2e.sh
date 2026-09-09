@@ -513,10 +513,17 @@ fi
 # those rows recreate, spending minutes in deletion-pending reconcile
 # churn (run 34231075177's AC-17/REV-1 window). Only 90-92 (AC-1b/1c/
 # 1d) are provably single-use pre-wave rows.
-kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
-    | grep -E 'e2e5d000-0000-4000-8000-0000000000(09[0-2])$' \
-    | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
-log "AC-13 — pre-wave sweep: single-use row workspaces (90-92) deleted"
+# id-arithmetic (r26: the r25 "fix" never landed — an aborted edit
+# script wrote nothing and its commit message claimed otherwise; this
+# time the diff is the proof). Guarded assignment: a transient kc
+# failure must not kill the leg (same class as r13's diagnostics).
+PRE_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
+    | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
+PRE_N=$(printf '%s' "${PRE_SWEPT}" | grep -c . || true)
+if [[ "${PRE_N}" -gt 0 ]]; then
+    printf '%s\n' "${PRE_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+fi
+ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted"
 
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
@@ -742,7 +749,10 @@ if (( SCALE > 0 )); then
     # Post-wave sweep (r21): the wave's workspaces (101+) are single-use —
     # free their image volumes/PVCs so the post-wave rows (AC-17 onward,
     # which recreate ws 1..10) get the kind node's disk back.
-    POST_SWEPT=$(kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null \
+    # Guarded (r26): transient kc failure must not kill the leg. The
+    # 4-char suffix read bounds ids to <10000 — fine at every supported
+    # scale (max id 200 at RESUME_SCALE=100).
+    POST_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
         | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
     if [[ -n "${POST_SWEPT}" ]]; then
         printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
@@ -980,9 +990,12 @@ env_in_child "${WSRS}" "SD_AC11_VAR=ac11-value" || die "AC-11: baseline env miss
 resync_forward_start "${WSRS}"
 resync_call
 if [[ "${RESC_CODE}" == "429" ]]; then
-    # Row-coupling tolerance: a prior legitimate pull (e.g. AC-3's
-    # notify→pull minutes earlier) leaves the pod's min-interval limiter
-    # warm — a first-call 429 is state coupling, not a contract failure.
+    # MAINLINE path (r26, correcting r25's still-unapplied claim): the
+    # warmer is this row's OWN baseline — bind_env → notify → admitted
+    # pull seconds earlier sets lastAdmitted, and the 2s min-interval
+    # spans the first resync_call whenever the round-trip lands inside
+    # it (run 34293579352: retryAfterMs=1349 ⇒ lastAdmitted ~0.65s
+    # prior; AC-3's pull was 46s earlier — arithmetically exonerated).
     # Honor the advertised retryAfterMs once, then proceed.
     wait_ms=$(jq -r '.retryAfterMs // 2000' <<<"${RESC_BODY}")
     warn "AC-11: first resync rate-limited (limiter warm from a prior pull) — retrying after ${wait_ms}ms"

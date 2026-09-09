@@ -830,17 +830,50 @@ func TestUS70SweepSelection(t *testing.T) {
 			t.Fatalf("post-wave must NOT select id %d", id)
 		}
 	}
-	// the awk itself is pinned by running it
+	// BOTH production awks are extracted from the script and executed
+	// (r26: five rounds of inert sweeps — pins must run production code,
+	// not reimplementations).
+	script, err := os.ReadFile("us-70-secret-delivery-e2e.sh")
+	if err != nil {
+		t.Skip("script not readable from test cwd")
+	}
+	preRe := regexp.MustCompile(`(?s)PRE_SWEPT=.*?awk -F/ '(.*?)'`)
+	mPre := preRe.FindStringSubmatch(string(script))
+	if mPre == nil {
+		t.Fatal("pre-wave awk not found in us-70-secret-delivery-e2e.sh — did the sweep change shape?")
+	}
+	preProgram := mPre[1]
+	for _, tc := range []struct {
+		id   int
+		want bool
+	}{
+		{89, false}, {90, true}, {91, true}, {92, true}, {93, false}, {100, false}, {101, false}, {200, false},
+	} {
+		cmd := exec.Command("awk", "-F/", preProgram)
+		cmd.Stdin = strings.NewReader("workspace/" + render(tc.id) + "\n")
+		out, _ := cmd.Output()
+		got := strings.TrimSpace(string(out)) != ""
+		if got != tc.want {
+			t.Fatalf("PRODUCTION pre-wave awk for id %d: got %v want %v", tc.id, got, tc.want)
+		}
+	}
+	postRe := regexp.MustCompile(`(?s)POST_SWEPT=.*?awk -F/ '(.*?)'`)
+	mPost := postRe.FindStringSubmatch(string(script))
+	if mPost == nil {
+		t.Fatal("post-wave awk not found in us-70-secret-delivery-e2e.sh")
+	}
+	postProgram := mPost[1]
 	for _, tc := range []struct {
 		name string
 		want bool
 	}{
 		{"workspace/" + render(92), false},
 		{"workspace/" + render(93), false},
+		{"workspace/" + render(101), true},
 		{"workspace/" + render(200), true},
 		{"workspace/other-000000000200", false},
 	} {
-		cmd := exec.Command("awk", `-F/`, `{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}`)
+		cmd := exec.Command("awk", "-F/", postProgram)
 		cmd.Stdin = strings.NewReader(tc.name + "\n")
 		out, _ := cmd.Output()
 		got := strings.TrimSpace(string(out)) != ""

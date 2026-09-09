@@ -137,3 +137,7 @@ Meta: this is the regression row doing exactly what it was built for — the liv
 - **AC-11 attribution corrected**: the 429 warmer is the row's OWN baseline pull (retryAfterMs=1349 ⇒ lastAdmitted ~0.65s prior; AC-3 was 46s earlier — arithmetically exonerated). The tolerance is mainline, not a hedge; comment rewritten accordingly.
 - **if: always() extended to revisions + Epic 69 steps** (the same starvation class that consumed F6; both were silently skipped in 34293579352).
 - FAULT_COUNT=24 alone was a budget lottery (F1's heal loop burns one fault per reconcile re-pull) — F6's dedicated re-arm is the deterministic answer, run-proven twice.
+
+## r26: correcting the false records of e7b02a33
+
+The e7b02a33 commit message and the prior worklog section claimed the pre-wave sweep and the AC-11 comment were rewritten. **They were not** — the edit script aborted at a later assertion BEFORE writing, and I committed the claims without verifying the diff. The r26 reviewer caught both (plus a genuinely new unguarded pipeline I did introduce). This round: both edits actually applied (diff-verified before commit), the unguarded `POST_SWEPT`/`PRE_SWEPT` assignments wrapped in `{ … || true; }`, and **TestUS70SweepSelection now extracts and executes the production awk programs from the script itself** (both legs) — the pin caught two of its own bugs during development (a wrong test-vector, then a quoting bug), which is the falsifiability working as intended.
