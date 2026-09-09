@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.6] - 2026-09-09
+
+### Fixed (#1310 — opencode writes config; the 0.27.5 symlink pointed at a read-only mount)
+- **XDG config COPY not symlink**: opencode WRITES to
+  ~/.config/opencode/opencode.json (model switches, permission changes);
+  the 0.27.5 symlink directed those writes into the read-only
+  /agentd-config mount → PlatformError EACCES, wedging every turn that
+  touched config (production: workspace d0116a27). The copy is
+  uid-1000-owned, 0640, atomic (temp+rename); legacy symlinks are
+  detected and replaced at boot.
+- **Watcher re-copies before restart**: mid-life credential changes
+  previously restarted opencode against the stale XDG copy; the copy is
+  now refreshed before the restart fires.
+- Same-class audit: auth store (already fixed, verified writable in
+  production), opencode.jsonc/package.json/node_modules (PVC,
+  uid-1000, no issue), opencode.db (PVC, no issue),
+  workspace-config.json/secrets.json (agentd-internal, opencode never
+  touches them). The managedCopyMarker concept was dropped — the
+  platform config is authoritative at boot; user configs belong in the
+  other XDG candidates opencode layers on top.
+
 ## [0.27.5] - 2026-09-09
 
 ### Fixed (the model registry never ingested provider config — #1300)
