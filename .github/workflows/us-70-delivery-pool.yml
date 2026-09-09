@@ -124,11 +124,21 @@ jobs:
           fi
 
       - name: Prepare prebuilt images (fast mode)
+        # r30 note on the :ci asymmetry: agentd/opencode ride digest-pinned
+        # refs from the local registry because the supervisor verifies
+        # their binary SHA at pod spawn (the delivery contract); api/
+        # controller carry the per-run mutable :ci tag with
+        # PULL_POLICY=Always — they exist only inside this ephemeral
+        # kind cluster, are re-pushed every run, and have no spawn-time
+        # verification to satisfy, so a per-run tag IS their identity.
+
         # Debug-cycle shortcut: pull the HEAD-built ghcr :dev images instead
         # of building api/controller/agentd/opencode (~7 min saved). Only
         # runtime-base builds (no :dev channel). The scheduled run never
         # takes this path (input defaults false there).
         if: ${{ inputs.use_prebuilt_images == true }}
+        env:
+          AGENTD_DEV_IMAGE: ${{ inputs.agentd_dev_image }}
         run: |
           set -e
           # ghcr :dev images are buildx manifest LISTS carrying provenance
@@ -148,7 +158,10 @@ jobs:
           echo "API_REPO=localhost:5001/llmsafespaces/api" >> "$GITHUB_ENV"
           echo "CTRL_REPO=localhost:5001/llmsafespaces/controller" >> "$GITHUB_ENV"
           echo "PULL_POLICY=Always" >> "$GITHUB_ENV"
-          AGENTD_SOURCE="${{ inputs.agentd_dev_image }}"
+          # r30 hardening: workflow-input interpolation never lands in a
+          # run: block directly — indirection via env (the dispatch is
+          # write-access gated regardless; this removes the class).
+          AGENTD_SOURCE="${AGENTD_DEV_IMAGE:-}"
           if [[ -z "${AGENTD_SOURCE}" ]]; then AGENTD_SOURCE="ghcr.io/lenaxia/llmsafespaces/agentd:dev"; fi
           docker pull "${AGENTD_SOURCE}"
           docker tag "${AGENTD_SOURCE}" "localhost:5001/llmsafespaces/agentd:$IMAGE_TAG"

@@ -141,3 +141,11 @@ Meta: this is the regression row doing exactly what it was built for — the liv
 ## r26: correcting the false records of e7b02a33
 
 The e7b02a33 commit message and the prior worklog section claimed the pre-wave sweep and the AC-11 comment were rewritten. **They were not** — the edit script aborted at a later assertion BEFORE writing, and I committed the claims without verifying the diff. The r26 reviewer caught both (plus a genuinely new unguarded pipeline I did introduce). This round: both edits actually applied (diff-verified before commit), the unguarded `POST_SWEPT`/`PRE_SWEPT` assignments wrapped in `{ … || true; }`, and **TestUS70SweepSelection now extracts and executes the production awk programs from the script itself** (both legs) — the pin caught two of its own bugs during development (a wrong test-vector, then a quoting bug), which is the falsifiability working as intended.
+
+## Final validation record (r29–r30) — the merge gate's substance and letter
+
+- **Run 34314527110 (af01982d): SUCCESS** — every leg green in one run at head: delivery all rows (sweeps live and honest), revisions pass=5, Epic 69 green (the CGO fix — the probe compiles statically now; the cgo default needed C headers the runner image doesn't ship), faults pass=8 with F6 green.
+- **Run 34322013940 (d0dfed08): SUCCESS** — second consecutive fully-green head run; the r28 count fix carried.
+- Earlier near-misses for the record: 34309009157 (3e07f4bf) — all legs green except Epic 69's cgo build failure; 34293579352/34298632229 — the F6-first and gate-first milestones on byte-identical production Go.
+- **The stale r5 claims are now false in both directions**: AC-1d and F6 are executed and green, repeatedly — not "unexecuted, waiting on infra".
+- r30 hygiene cluster closed: VERBOSE_ERR pipeline guarded (the last row-killer — grep-no-match and head-SIGPIPE both die under set -Eeuo pipefail), count pins extract-and-execute production expressions, silent t.Skip pins now fail, the kindnet comment corrected (the probe differential PROVED enforcement), values.yaml's extraEgressCIDRs docs no longer advertise the impossible Service-VIP use, the :ci asymmetry annotated, workflow-input interpolation moved to env indirection, the stale "V2 TURN" log line renamed to the synchronous V1 reality.

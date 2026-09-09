@@ -22,9 +22,11 @@ nodes:
       # cert-manager webhook traffic is internal; no host mapping needed.
 networking:
   # kind defaults to disableDefaultCNI=false and uses kindnet, which works
-  # for our purposes: kindnet does not ENFORCE NetworkPolicy, so the chart's
-  # default networkPolicy.enabled=true policies are rendered but inert in
-  # this dev cluster. No override is needed.
+  # for our purposes — INCLUDING NetworkPolicy enforcement: the #1300 AC-1d
+  # probe differential proved it live (sandbox→ClusterIP 000000 with the
+  # egress deny in force, 200 the moment the podSelector allow rendered).
+  # The chart's networkPolicy values are real in this cluster; the pool's
+  # allowRelayRouterEgress grant exists because of that enforcement.
   apiServerAddress: "127.0.0.1"
   # MUST NOT overlap the host cluster's ranges. The lenaxia-dind-runner
   # runs kind INSIDE docker:dind inside a pod of the home cluster

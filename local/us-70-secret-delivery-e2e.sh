@@ -229,7 +229,7 @@ fi
 # reply arrives. This is the row that would have caught both #1292b
 # and #1300 as user-visible failures.
 # -----------------------------------------------------------------------------
-log "AC-1d — credential-backed V2 TURN resolves against a mock upstream"
+log "AC-1d — credential-backed TURN resolves against a mock upstream (synchronous V1 route)"
 
 kubectl --context "${CTX}" apply -f - >/dev/null <<'MOCK'
 apiVersion: v1
@@ -396,8 +396,11 @@ for _p in $(seq 1 12); do
 done
 sleep 10
 PLAIN_MOCK=$( { kc --context "${CTX}" -n "${NS}" logs mock-probe 2>/dev/null || true; } | tail -1)
-VERBOSE_ERR=$( { kc exec "${POD1D}" -c workspace -- curl -vm 5 -o /dev/null \
-    "http://${SVC_IP}/v1/chat/completions" 2>&1 || true; } | grep -aiE 'connect|timed|refused|resolve' | head -2 | tr '\n' ' ')
+# r30: the bare grep|head in an assignment is a row-killer under
+# set -Eeuo pipefail — grep exits 1 on no-match and head SIGPIPEs on
+# >2 matches. Guard the whole pipeline; diagnostics must never die.
+VERBOSE_ERR=$( { { kc exec "${POD1D}" -c workspace -- curl -vm 5 -o /dev/null \
+    "http://${SVC_IP}/v1/chat/completions" 2>&1 || true; } | { grep -aiE 'connect|timed|refused|resolve' || true; } | { head -2 || true; } | tr '\n' ' '; } || true)
 ok "AC-1d mock probes: workspace=${WS_MOCK} plain-pod='${PLAIN_MOCK}' ClusterIP=${IP_MOCK} endpoints='${EP_INFO}' dns='${DNS_INFO}' err='${VERBOSE_ERR}'"
 [[ "${WS_MOCK}" == "200" ]] \
     || die "AC-1d: mock unreachable from the workspace container (HTTP ${WS_MOCK}; plain-pod='${PLAIN_MOCK}', endpoints='${EP_INFO}', err='${VERBOSE_ERR}')"

@@ -285,11 +285,8 @@ func TestNeedsOwnershipNormalization(t *testing.T) {
 // watcher composes the SESSION-AWARE restart (relayKillFunc), not a
 // bare restart.
 func TestOpencodeBootLayersWiring(t *testing.T) {
-	src, err := os.ReadFile("xdg_config_layer.go")
-	if err != nil {
-		t.Skip("source not readable from test cwd")
-	}
-	_ = src
+	// r30: fail on unreadable source — a wiring pin that silently skips
+	// is a pin that stops pinning (29-round flag).
 	for _, tc := range []struct{ file, needle, what string }{
 		{"main.go", "ensureOpencodeBootLayers(log)", "single-container boot layers"},
 		{"supervise_opencode.go", "ensureOpencodeBootLayers(log)", "supervise-opencode boot layers"},

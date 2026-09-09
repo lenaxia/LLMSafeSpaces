@@ -962,10 +962,13 @@ networkPolicy:
   allowRelayRouterEgress: false
 
   # Operator-granted egress OUTSIDE the blockedEgressCIDRs subtraction:
-  # plain ipBlock allows for specific internal destinations (e.g. an
-  # in-cluster mock LLM endpoint in CI pools). Empty by default; each
-  # entry must be an operator-accepted member of the sandbox trust
-  # boundary (it is reachable from every workspace pod on all ports).
+  # plain ipBlock allows for specific internal destinations. Empty by
+  # default; each entry must be an operator-accepted member of the
+  # sandbox trust boundary (it is reachable from every workspace pod on
+  # all ports). NOTE: these DO NOT work for Service VIPs — egress policy
+  # matches the post-DNAT endpoint pod IP, not the ClusterIP (proven by
+  # the #1300 AC-1d probes; use allowRelayRouterEgress for in-cluster
+  # LLM endpoints). Only direct pod-IP destinations are meaningful here.
   extraEgressCIDRs: []
 
   # Block egress to RFC1918 + cloud metadata; sandbox pods should never
