@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.5] - 2026-09-09
+
+### Fixed (the model registry never ingested provider config — #1300)
+- **The XDG registry layer**: opencode's V2 model registry
+  (model.available(), the list SessionRunnerModel.resolve searches)
+  only ingests provider blocks from the XDG config layer; our
+  OPENCODE_CONFIG file fed the config service (/config/providers —
+  healthy-looking throughout) but never the catalog, so every
+  platform-delivered provider was "Model unavailable" on every fresh
+  pod. The supervisor now installs the XDG symlink before the first
+  spawn (env-precedence resolution matching the child's
+  OPENCODE_CONFIG; PVC holds only the link — US-35.7 intact) in BOTH
+  supervisor topologies.
+- **Bootstrap bounded retry**: first-boot fetch failures retry 3x
+  (2s/4s) before the empty degrade — absorbs transient CNI warming;
+  401 never retried; last-good batches skip the retry.
+- **Post-spawn config watcher**: late-arriving credential batches
+  restart opencode once per change (session-aware in single-container,
+  grace in sidecar) to rebuild the frozen registry.
+- **Quarantine + ownership**: malformed user configs are renamed
+  aside at boot (a PVC-persisted artifact crashlooped opencode across
+  pod recreations); foreign-owned auth stores normalize to the
+  consuming uid (PUT /auth EPERM class).
+- **Render/resolver residuals**: zen-kind credentials render no
+  config block (auth-store delivery path); qualified defaults verify
+  against allowlisted providers' model maps (stale re-pin guard).
+- **Pool coverage (the gap that let this ship)**: AC-1b (registry
+  admission via /api/model, not the lying view), AC-1c (mid-life bind
+  heal), AC-1d (credential-backed TURN against a mock upstream), F6
+  (faulted boot → heal → registry convergence); the mock rides the
+  relay-router egress exemption (podSelector — ipBlock grants cannot
+  carve Service VIPs, post-DNAT matching).
+- helm: networkPolicy.allowRelayRouterEgress + extraEgressCIDRs
+  (operator-granted internal egress knobs, both documented with the
+  post-DNAT constraint).
+
 ## [0.27.4] - 2026-09-06
 
 ### Fixed (the fleet-wide "Model unavailable" — provider credentials never usable on fresh pods)
