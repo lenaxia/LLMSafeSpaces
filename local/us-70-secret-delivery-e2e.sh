@@ -976,6 +976,16 @@ env_in_child "${WSRS}" "SD_AC11_VAR=ac11-value" || die "AC-11: baseline env miss
 
 resync_forward_start "${WSRS}"
 resync_call
+if [[ "${RESC_CODE}" == "429" ]]; then
+    # Row-coupling tolerance: a prior legitimate pull (e.g. AC-3's
+    # notify→pull minutes earlier) leaves the pod's min-interval limiter
+    # warm — a first-call 429 is state coupling, not a contract failure.
+    # Honor the advertised retryAfterMs once, then proceed.
+    wait_ms=$(jq -r '.retryAfterMs // 2000' <<<"${RESC_BODY}")
+    warn "AC-11: first resync rate-limited (limiter warm from a prior pull) — retrying after ${wait_ms}ms"
+    sleep $(( (wait_ms + 250) / 1000 + 1 ))
+    resync_call
+fi
 [[ "${RESC_CODE}" == "200" ]] || die "AC-11: first resync HTTP ${RESC_CODE}: ${RESC_BODY}"
 RESC_STATUS=$(jq -r '.status // empty' <<<"${RESC_BODY}")
 [[ "${RESC_STATUS}" == "applied" || "${RESC_STATUS}" == "not_modified" ]] \
