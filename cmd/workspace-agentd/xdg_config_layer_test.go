@@ -29,6 +29,13 @@ func setXDGHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	// OPENCODE_CONFIG outranks LLMSAFESPACES_AGENT_CONFIG_PATH in
+	// effectiveAgentConfigPath — when unset it leaks the AMBIENT pod env
+	// (this repo's dev workspaces are themselves llmsafespaces pods with
+	// OPENCODE_CONFIG=/agentd-config/agent-config.json) into the test,
+	// reading a live credential-bearing config instead of the fixture and
+	// dumping its secrets into test output. Tests must be hermetic.
+	t.Setenv("OPENCODE_CONFIG", "")
 }
 
 func TestEnsureOpencodeRegistryConfig_InstallsCopy(t *testing.T) {

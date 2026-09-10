@@ -37,6 +37,10 @@ func (s seedStoreN) SessionStates(ctx context.Context) (map[string]SessionSeed, 
 	return out, nil
 }
 
+func (s seedStoreN) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func benchAuthority(tb testing.TB, sessions int, partsPer int, pendingPer int) *Authority {
 	tb.Helper()
 	seeds := make(map[string]SessionSeed, sessions)

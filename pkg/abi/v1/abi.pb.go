@@ -487,8 +487,13 @@ type SessionSnapshot struct {
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Status        SessionStatus          `protobuf:"varint,2,opt,name=status,proto3,enum=llmsafespaces.abi.v1.SessionStatus" json:"status,omitempty"`
 	InFlightParts []*Part                `protobuf:"bytes,3,rep,name=in_flight_parts,json=inFlightParts,proto3" json:"in_flight_parts,omitempty"`
-	QueueDepth    int32                  `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
-	PendingInputs []*InputRequest        `protobuf:"bytes,5,rep,name=pending_inputs,json=pendingInputs,proto3" json:"pending_inputs,omitempty"`
+	// queue_depth is ADMISSION-INTERNAL (#1311 disposition): the authority's
+	// unresolved delivery-admission count (ledgered ∪ admitted ∪ stalled),
+	// converged against store evidence by the reconcile sweep. It is NOT the
+	// user-facing message queue — the outbox owns that (#1312 ownership
+	// table); frontends must not render it as a send queue.
+	QueueDepth    int32           `protobuf:"varint,4,opt,name=queue_depth,json=queueDepth,proto3" json:"queue_depth,omitempty"`
+	PendingInputs []*InputRequest `protobuf:"bytes,5,rep,name=pending_inputs,json=pendingInputs,proto3" json:"pending_inputs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

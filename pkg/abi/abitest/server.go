@@ -26,11 +26,15 @@ import (
 type Server struct {
 	mu         sync.Mutex
 	deliveries map[string]*abiv1.DeliveryStatus
+	suppressed map[abiv1.EventType]bool
 	handler    http.Handler
 }
 
 func New() *Server {
-	s := &Server{deliveries: map[string]*abiv1.DeliveryStatus{}}
+	s := &Server{
+		deliveries: map[string]*abiv1.DeliveryStatus{},
+		suppressed: map[abiv1.EventType]bool{},
+	}
 	path, handler := abiconnect.NewHarnessABIServiceHandler(s)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
@@ -41,6 +45,38 @@ func New() *Server {
 // Handler returns the HTTP handler serving the ABI at the connect protocol
 // path.
 func (s *Server) Handler() http.Handler { return s.handler }
+
+// SuppressEventTypes arms the epic-71 fault-matrix event-suppression knob
+// (legs 3 and 5): the Events stream omits every event frame carrying one
+// of the listed types. Leg 5's harness-OOM-mid-turn shape is
+// SuppressEventTypes(SESSION_STATUS, MESSAGE_START, MESSAGE_END) — the
+// mid-turn death emits nothing further. Composable with the other knobs;
+// SuppressedEventTypes exposes the armed set for assertions.
+func (s *Server) SuppressEventTypes(types ...abiv1.EventType) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range types {
+		s.suppressed[t] = true
+	}
+}
+
+// SuppressedEventTypes reports the armed suppression set (knob-state
+// inspection for test assertions).
+func (s *Server) SuppressedEventTypes() []abiv1.EventType {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]abiv1.EventType, 0, len(s.suppressed))
+	for t := range s.suppressed {
+		out = append(out, t)
+	}
+	return out
+}
+
+func (s *Server) eventTypeSuppressed(t abiv1.EventType) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suppressed[t]
+}
 
 // SetDeliveryState overwrites a ledger row's state (or creates one). Test
 // scaffolding for consumers that need to drive LEDGERED -> ADMITTED against
@@ -86,9 +122,11 @@ func (s *Server) Events(ctx context.Context, req *connect.Request[abiv1.EventsRe
 	if err := stream.Send(&abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Snapshot{Snapshot: frame}}); err != nil {
 		return err
 	}
-	event := &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "sess-ref", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE}
-	if err := stream.Send(&abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: 1, Event: event}}}); err != nil {
-		return err
+	if !s.eventTypeSuppressed(abiv1.EventType_EVENT_TYPE_SESSION_STATUS) {
+		event := &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "sess-ref", Status: abiv1.SessionStatus_SESSION_STATUS_IDLE}
+		if err := stream.Send(&abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Event{Event: &abiv1.SequencedEvent{Seq: 1, Event: event}}}); err != nil {
+			return err
+		}
 	}
 	return stream.Send(&abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Reseeded{Reseeded: &abiv1.ReseedNotice{Seq: 2, Reason: abiv1.ReseedReason_RESEED_REASON_BOOT}}})
 }

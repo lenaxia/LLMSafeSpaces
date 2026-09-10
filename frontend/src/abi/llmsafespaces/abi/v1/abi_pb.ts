@@ -224,6 +224,12 @@ export type SessionSnapshot = Message<"llmsafespaces.abi.v1.SessionSnapshot"> & 
   inFlightParts: Part[];
 
   /**
+   * queue_depth is ADMISSION-INTERNAL (#1311 disposition): the authority's
+   * unresolved delivery-admission count (ledgered ∪ admitted ∪ stalled),
+   * converged against store evidence by the reconcile sweep. It is NOT the
+   * user-facing message queue — the outbox owns that (#1312 ownership
+   * table); frontends must not render it as a send queue.
+   *
    * @generated from field: int32 queue_depth = 4;
    */
   queueDepth: number;

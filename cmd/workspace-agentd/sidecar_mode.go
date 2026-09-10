@@ -220,6 +220,10 @@ func runSidecarCommand(_ []string) int {
 
 	if sidecarAuthority != nil {
 		startStateAuthorityReseed(bgCtx, sidecarAuthority, sessionstate.ReseedReasonBoot)
+		// #1311: sidecar mode previously ran NO watchdog — no stall
+		// detection, no metric refresh, and (with the convergence pass)
+		// no L4/L5 cadence. Same loop, same cadence as single-container.
+		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), sidecarAuthority, sessionstate.ReconcileCadence)
 	}
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	startSupervisorStatusPoller(bgCtx, &bgWg, newControlClient(ControlSocketAddr()), supervisorStatus)

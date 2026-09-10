@@ -51,6 +51,11 @@ func (hangingStore) SessionStates(ctx context.Context) (map[string]sessionstate.
 	return nil, ctx.Err()
 }
 
+func (hangingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 type mapStore struct {
 	m   map[string]abiv1.SessionStatus
 	err error
@@ -65,6 +70,10 @@ func (s *mapStore) SessionStates(ctx context.Context) (map[string]sessionstate.S
 		out[k] = sessionstate.SessionSeed{Status: v}
 	}
 	return out, nil
+}
+
+func (s *mapStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
 }
 
 func testConfig(t *testing.T, dir string, parser sessionstate.EventParser, store sessionstate.StoreReader) sessionstate.Config {
@@ -396,6 +405,15 @@ func (s *slowStore) SessionStates(ctx context.Context) (map[string]sessionstate.
 	select {
 	case <-time.After(s.delay):
 		return s.inner.SessionStates(ctx)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *slowStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	select {
+	case <-time.After(s.delay):
+		return s.inner.MessagePresence(ctx, sessionID, messageIDs)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

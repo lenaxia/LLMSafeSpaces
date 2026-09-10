@@ -53,6 +53,10 @@ func (s *countingStore) SessionStates(ctx context.Context) (map[string]sessionst
 	return s.seed, nil
 }
 
+func (s *countingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func (s *countingStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

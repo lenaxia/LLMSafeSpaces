@@ -24,19 +24,21 @@ import (
 )
 
 var sessionStateMetrics = struct {
-	seqStall          *prometheus.GaugeVec
-	ledgerDepth       *prometheus.GaugeVec
-	stalledEntries    prometheus.Gauge
-	promotionStall    *prometheus.GaugeVec
-	snapshotSize      prometheus.Histogram
-	snapshotLatency   prometheus.Histogram
-	deliveryLatency   prometheus.Histogram
-	wakeFailures      prometheus.Counter
-	droppedEvents     prometheus.Gauge
-	parserFailures    prometheus.Gauge
-	panicsContained   prometheus.Gauge
-	subscribers       prometheus.Gauge
-	customValveEvents prometheus.Counter
+	seqStall               *prometheus.GaugeVec
+	ledgerDepth            *prometheus.GaugeVec
+	stalledEntries         prometheus.Gauge
+	promotionStall         *prometheus.GaugeVec
+	snapshotSize           prometheus.Histogram
+	snapshotLatency        prometheus.Histogram
+	deliveryLatency        prometheus.Histogram
+	wakeFailures           prometheus.Counter
+	droppedEvents          prometheus.Gauge
+	parserFailures         prometheus.Gauge
+	panicsContained        prometheus.Gauge
+	subscribers            prometheus.Gauge
+	customValveEvents      prometheus.Counter
+	reconciled             *prometheus.CounterVec
+	reconcileEvidenceFails prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -93,6 +95,14 @@ var sessionStateMetrics = struct {
 		Name: "llmsafespaces_custom_valve_events_total",
 		Help: "Custom (PART_TYPE_CUSTOM) part applications folded into the projection — the unknown-taxonomy drift signal's agentd successor (US-69.11): growth means extension kinds the pinned taxonomy does not name are flowing through the valve.",
 	}),
+	reconciled: promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmsafespaces_ledger_reconciled_total",
+		Help: "Delivery-ledger rows converged by the #1311 store-evidence sweep (outcome: promoted | turn_ended | failed | busy_cleared) — S7's observable surface.",
+	}, []string{"outcome"}),
+	reconcileEvidenceFails: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_reconcile_evidence_failures_total",
+		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
+	}),
 }
 
 // customValveLast carries the last cumulative per-workspace snapshot so
@@ -146,11 +156,14 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	}
 }
 
-// runSessionStateWatchdog drives the stall detector + gauge refresh: one
-// pass per interval (production: 1m — the promotion deadline is 10m, so
-// the cadence sees a stall within ~1m of crossing it; tests shrink it).
-// Wake failures increment the counter per errored attempt (the
-// escalation signal).
+// runSessionStateWatchdog drives the ledger convergence pass + stall
+// detector + gauge refresh: one pass per interval (production:
+// sessionstate.ReconcileCadence — half the 30s lease-convergence bound, so
+// one missed tick still converges inside L4/L5; tests shrink it). Wake
+// failures increment the counter per errored attempt (the escalation
+// signal). The reconcile pass is store-evidence-driven (#1311): stranded
+// rows sweep, BUSY re-derives from harness truth, evidence failures are
+// visible and never authoritative.
 func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *sessionstate.Authority, every time.Duration) {
 	if a == nil {
 		return
@@ -162,6 +175,25 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			rec := a.Reconcile(ctx)
+			if rec.EvidenceFailures > 0 {
+				log.Warn("agentd: sessionstate reconcile — store evidence read failed (rows untouched, retrying next pass)",
+					zap.Int("evidenceFailures", rec.EvidenceFailures))
+				sessionStateMetrics.reconcileEvidenceFails.Add(float64(rec.EvidenceFailures))
+			}
+			if advanced := rec.Promoted + rec.TurnEnded + rec.Failed + rec.BusyCleared; advanced > 0 {
+				log.Info("agentd: sessionstate reconcile — converged stranded state",
+					zap.Int("promoted", rec.Promoted), zap.Int("turnEnded", rec.TurnEnded),
+					zap.Int("failed", rec.Failed), zap.Int("busyCleared", rec.BusyCleared))
+			}
+			for _, outcome := range []struct {
+				name string
+				n    int
+			}{{"promoted", rec.Promoted}, {"turn_ended", rec.TurnEnded}, {"failed", rec.Failed}, {"busy_cleared", rec.BusyCleared}} {
+				if outcome.n > 0 {
+					sessionStateMetrics.reconciled.WithLabelValues(outcome.name).Add(float64(outcome.n))
+				}
+			}
 			stats := a.CheckStalls(ctx)
 			if stats.WakeFailures > 0 {
 				sessionStateMetrics.wakeFailures.Add(float64(stats.WakeFailures))
