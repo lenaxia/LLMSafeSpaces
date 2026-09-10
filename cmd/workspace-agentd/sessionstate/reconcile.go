@@ -26,6 +26,16 @@ import (
 // reseed satisfies S7 with no operator action — the sweep runs inside every
 // Reseed, so deploying it auto-heals wedged sessions), L4/L5 (bounded
 // convergence on the ReconcileCadence ticker).
+//
+// Concurrency shape (review r1): evidence is gathered OUTSIDE the session
+// locks (a live V1 admission holds its session lock for the whole LLM
+// turn, up to 3 minutes); the sweep then takes each session's lock with
+// TryLock — a session mid-admission is SKIPPED this pass (its rows are
+// being driven; the next tick converges), so one long turn can never
+// head-of-line-block the sweep. Staleness across the gather→lock window
+// is closed two ways: rows whose messageID was not queried for this
+// pass's evidence are never resolved on it, and a busy-mark newer than
+// the evidence (rec.lastBusySeq > seqAtEvidence) blocks the busy-clear.
 
 // LeaseConvergenceBound is the epic-71 lease clock: the shared convergence
 // bound for every lease this authority holds (#1311's ledger deadlines and
@@ -41,6 +51,11 @@ const ReconcileCadence = LeaseConvergenceBound / 2
 // admitted within this window (retry envelope ~6s + boot replay) is swept
 // to FAILED — re-armable at attempt+1 by the outbox.
 const defaultAdmissionDeadline = 1 * time.Minute
+
+// defaultReconcileTimeout bounds one pass's evidence I/O: a hung store
+// must not wedge the watchdog (page budgets bound the happy path; this
+// caps the pathological one).
+const defaultReconcileTimeout = 10 * time.Second
 
 // ReconcileStats reports one reconcile pass's outcome (S7's observable
 // surface: what the sweep advanced, what it could not).
@@ -60,13 +75,16 @@ type ReconcileStats struct {
 
 // Reconcile runs one store-evidence convergence pass over the ledger and
 // the BUSY projection. Serialized against Reseed (reseedMu); per-session
-// row advancement runs under the session's single-flight lock so it can
-// never interleave with an in-flight admission. Store I/O happens outside
-// every authority lock (M3.1: no synchronous harness call on a hot path —
-// this is a background/ cadence pass, never request-scoped).
+// row advancement runs under the session's single-flight lock (TryLock —
+// skip, never wait) so it can never interleave with an in-flight admission
+// nor block behind one. Store I/O happens outside every authority lock and
+// is bounded by the pass deadline (M3.1: no synchronous harness call on a
+// hot path — this is a background/ cadence pass, never request-scoped).
 func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 	a.reseedMu.Lock()
 	defer a.reseedMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, a.reconcileTimeout)
+	defer cancel()
 	return a.reconcileLocked(ctx)
 }
 
@@ -76,7 +94,7 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 	if a.ledger == nil || a.cfg.Store == nil {
 		return ReconcileStats{}
 	}
-	rows := a.ledger.unresolvedBySession()
+	rows := a.ledger.unresolvedSessions()
 	busy := a.busySessions()
 
 	// Cheap no-op: nothing unresolved, nothing wedged busy. The pass must
@@ -98,23 +116,26 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 
 // sweepAgainstEvidence applies the reconciliation matrix per session:
 //
-//	LEDGERED  past admission deadline               → FAILED (re-armable)
-//	ADMITTED/STALLED + message present in store     → PROMOTED
-//	ADMITTED/STALLED + turn ended (idle/absent)     → TURN_ENDED
-//	ADMITTED/STALLED + busy + message absent        → stays (turn running)
+//	LEDGERED  past admission deadline + NO evidence of live work → FAILED (re-armable)
+//	ADMITTED/STALLED + message present in store                   → PROMOTED
+//	ADMITTED/STALLED + turn ended (idle/ERROR/absent)             → TURN_ENDED
+//	anything else (busy session, unqueried messageID)             → stays
 //
+// "No evidence" for LEDGERED is the session status: a BUSY store session
+// is evidence an admission/turn may be live for the row — the sweep holds.
 // Message-absence is only consulted from a SUCCESSFUL read: an evidence
-// error skips that session's rows (counted), never treats them as absent.
-// BUSY is re-derived on the same pass: a session whose evidence is idle
-// and whose rows all resolved clears busy/status/in-flight parts.
+// error skips the refinement (counted) but status evidence still applies.
+// BUSY is re-derived on the same evidence, gated by seq: a busy-mark newer
+// than the evidence read is not cleared.
 func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]SessionSeed) ReconcileStats {
 	var stats ReconcileStats
 	if a.ledger == nil {
 		return stats
 	}
+	seqAtEvidence := a.currentSeq()
 
 	sessions := make(map[string]struct{}, len(seeds))
-	for sid := range a.ledger.unresolvedBySession() {
+	for sid := range a.ledger.unresolvedSessions() {
 		sessions[sid] = struct{}{}
 	}
 	for _, sid := range a.busySessions() {
@@ -128,6 +149,9 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 
 	for _, sid := range ordered {
 		if ctx.Err() != nil {
+			// A canceled pass still records what DID happen — the
+			// cumulative counters must match the returned stats.
+			a.recordReconcile(stats)
 			return stats
 		}
 		seed, inStore := seeds[sid]
@@ -155,10 +179,19 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 				present = p
 			}
 		}
+		queried := make(map[string]bool, len(need))
+		for _, id := range need {
+			queried[id] = true
+		}
 
 		lock := a.sessionLock(sid)
-		lock.Lock()
-		promoted, ended, failed := a.ledger.sweepSession(sid, present, turnEnded, time.Now())
+		if !lock.TryLock() {
+			// A live admission holds the session (a V1 turn runs up to
+			// 3 minutes under this lock): skipping keeps the pass bounded
+			// — its rows are being driven, the next tick converges them.
+			continue
+		}
+		promoted, ended, failed := a.ledger.sweepSession(sid, present, queried, turnEnded, time.Now())
 		lock.Unlock()
 		stats.Promoted += promoted
 		stats.TurnEnded += ended
@@ -167,14 +200,14 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 		// Busy re-derivation (L4): busy/idle ground truth is the harness
 		// (#1312 ownership table — busy iff a turn runs). A LEDGERED row
 		// is queued-not-running, so evidence-idle clears busy regardless
-		// of queued entries; queued admissions re-mark busy via their
-		// MESSAGE_START/PART_START folds when the turn actually starts.
+		// of queued entries; a busy-mark NEWER than the evidence read is
+		// not cleared (a turn started while the pass was gathering).
 		if turnEnded {
 			evStatus := abiv1.SessionStatus_SESSION_STATUS_IDLE
 			if inStore {
 				evStatus = seed.Status
 			}
-			stats.BusyCleared += a.clearBusyFromEvidence(sid, evStatus)
+			stats.BusyCleared += a.clearBusyFromEvidence(sid, evStatus, seqAtEvidence)
 		}
 	}
 	// Single recording site: every sweep's outcomes (cadence pass AND the
@@ -201,13 +234,16 @@ func (a *Authority) recordReconcile(stats ReconcileStats) {
 // clearBusyFromEvidence re-derives one session's BUSY view from sweep
 // evidence: the harness is not running a turn, so busy must not survive
 // (L4). evStatus carries the evidence's own status (IDLE for an absent
-// session; ERROR keeps the error visible). Returns 1 when the view was
-// cleared. The a.mu hold is tiny (no I/O) — projection reads/writes only.
-func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStatus) int {
+// session; ERROR keeps the error visible). seqAtEvidence gates staleness:
+// a busy-mark folded AFTER the evidence read (rec.lastBusySeq newer) is a
+// live turn the evidence never saw — it survives the pass. Returns 1 when
+// the view was cleared. The a.mu hold is tiny (no I/O) — projection
+// reads/writes only.
+func (a *Authority) clearBusyFromEvidence(sid string, evStatus abiv1.SessionStatus, seqAtEvidence uint64) int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	rec, ok := a.sessions[sid]
-	if !ok || !rec.busy {
+	if !ok || !rec.busy || rec.lastBusySeq > seqAtEvidence {
 		return 0
 	}
 	rec.busy = false
@@ -228,4 +264,20 @@ func (a *Authority) busySessions() []string {
 		}
 	}
 	return out
+}
+
+// currentSeq reads the projection's seq stamp (the evidence-freshness
+// clock for the busy-clear gate).
+func (a *Authority) currentSeq() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.seq
+}
+
+// SetReconcileTimeoutForTest reshapes the pass's evidence-I/O deadline
+// (fault-injection harnesses).
+func (a *Authority) SetReconcileTimeoutForTest(d time.Duration) {
+	a.mu.Lock()
+	a.reconcileTimeout = d
+	a.mu.Unlock()
 }

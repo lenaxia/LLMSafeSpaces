@@ -166,7 +166,9 @@ type Authority struct {
 	panicsContained   atomic.Int64 // no lock: the reseed flush parses UNDER a.mu; reads go through .Load()
 	customValveEvents int64
 	// Cumulative #1311 reconcile outcomes (Metrics bridge; a.mu-guarded).
-	reconPromoted      int64
+	reconPromoted int64
+	// reconcileTimeout bounds one reconcile pass's evidence I/O.
+	reconcileTimeout   time.Duration
 	reconTurnEnded     int64
 	reconFailed        int64
 	reconBusyCleared   int64
@@ -213,15 +215,16 @@ func New(cfg Config) (*Authority, error) {
 		cfg.ABIVersion = "1"
 	}
 	a := &Authority{
-		cfg:          cfg,
-		logger:       logger,
-		seq:          cursor.last(),
-		sessions:     map[string]*sessionRecord{},
-		subs:         map[*subscriber]struct{}{},
-		cursor:       cursor,
-		limiter:      newSessionLimiter(cfg.RateLimit),
-		ledger:       ledger,
-		sessionLocks: map[string]*sync.Mutex{},
+		cfg:              cfg,
+		logger:           logger,
+		seq:              cursor.last(),
+		sessions:         map[string]*sessionRecord{},
+		subs:             map[*subscriber]struct{}{},
+		cursor:           cursor,
+		limiter:          newSessionLimiter(cfg.RateLimit),
+		ledger:           ledger,
+		sessionLocks:     map[string]*sync.Mutex{},
+		reconcileTimeout: defaultReconcileTimeout,
 	}
 	if cfg.Admitter != nil {
 		// The driver joins the authority's per-session single-flight —

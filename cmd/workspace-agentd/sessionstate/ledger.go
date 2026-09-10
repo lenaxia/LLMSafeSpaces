@@ -454,16 +454,17 @@ func (l *deliveryLedger) queueDepth(sessionID string) int {
 	return n
 }
 
-// unresolvedBySession snapshots non-terminal rows keyed by session (#1311:
-// the sweep's work list). PROMOTED/TURN_ENDED/FAILED are resolved.
-func (l *deliveryLedger) unresolvedBySession() map[string][]ledgerKey {
+// unresolvedSessions snapshots the session IDs holding non-terminal rows
+// (#1311: the sweep's work list — the rows themselves are re-read per
+// session under the session lock). PROMOTED/TURN_ENDED/FAILED are resolved.
+func (l *deliveryLedger) unresolvedSessions() map[string]struct{} {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	out := map[string][]ledgerKey{}
-	for key, rec := range l.rows {
+	out := map[string]struct{}{}
+	for _, rec := range l.rows {
 		switch rec.State {
 		case LedgerStateLedgered, LedgerStateAdmitted, LedgerStateStalled:
-			out[rec.SessionID] = append(out[rec.SessionID], key)
+			out[rec.SessionID] = struct{}{}
 		}
 	}
 	return out
@@ -491,25 +492,30 @@ func (l *deliveryLedger) rowsForSweep(sessionID string) []ledgerRecord {
 // rows in a single ledger critical section (caller holds the session's
 // single-flight lock, so no admission can interleave):
 //
-//	LEDGERED past admissionDeadline               → FAILED (re-armable)
+//	LEDGERED past admissionDeadline + no evidence → FAILED (re-armable)
 //	ADMITTED/STALLED + message present            → PROMOTED
 //	ADMITTED/STALLED + turnEnded                  → TURN_ENDED
 //
-// Message presence is only consulted from evidence that was successfully
-// read (present == nil means "no usable message evidence" — the turn-ended
-// arm still applies). Returns per-outcome advance counts.
-func (l *deliveryLedger) sweepSession(sessionID string, present map[string]bool, turnEnded bool, now time.Time) (promoted, turnEndedN, failed int) {
+// Evidence discipline (review r1): "no evidence" for a LEDGERED row is the
+// session status — a BUSY store session may be running this row's
+// admission/turn, so the sweep holds; the FAILED transition fires only on
+// the no-evidence arms (idle/ERROR/absent). An ADMITTED/STALLED row whose
+// messageID was NOT queried for this pass's evidence (it appeared after
+// the evidence gather — a live turn landing mid-pass) is never resolved on
+// that evidence; present == nil means "no usable message evidence" and the
+// turn-ended arm still applies. Returns per-outcome advance counts.
+func (l *deliveryLedger) sweepSession(sessionID string, present map[string]bool, queried map[string]bool, turnEnded bool, now time.Time) (promoted, turnEndedN, failed int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for key, rec := range l.rows {
+	for _, rec := range l.rows {
 		if rec.SessionID != sessionID {
 			continue
 		}
 		switch rec.State {
 		case LedgerStateLedgered:
-			if now.Sub(rec.UpdatedAt) > l.admissionDeadline {
+			if turnEnded && now.Sub(rec.UpdatedAt) > l.admissionDeadline {
 				rec.State = LedgerStateFailed
-				rec.Failure = "admission deadline exceeded (store-evidence sweep)"
+				rec.Failure = "admission deadline exceeded with no admission evidence (store-evidence sweep)"
 				if err := l.advanceSweepLocked(rec); err != nil {
 					l.warnSweepAppend("FAILED", err)
 				} else {
@@ -517,6 +523,9 @@ func (l *deliveryLedger) sweepSession(sessionID string, present map[string]bool,
 				}
 			}
 		case LedgerStateAdmitted, LedgerStateStalled:
+			if rec.MessageID != "" && !queried[rec.MessageID] {
+				continue // landed after this pass's evidence gather
+			}
 			if present[rec.MessageID] {
 				rec.State = LedgerStatePromoted
 				if err := l.advanceSweepLocked(rec); err != nil {
@@ -533,7 +542,6 @@ func (l *deliveryLedger) sweepSession(sessionID string, present map[string]bool,
 				}
 			}
 		}
-		_ = key
 	}
 	return promoted, turnEndedN, failed
 }

@@ -60,8 +60,9 @@ The production incident this kills: ws `47962542` reported `SESSION_STATUS_BUSY,
 
 1. **Evidence-idle clears BUSY even with queued LEDGERED rows** — busy/idle ground truth is the harness (#1312 ownership table: busy iff a turn runs); queued ≠ running. V1 admission is synchronous, and a queued admission's `MESSAGE_START`/`PART_START` folds re-mark busy when its turn actually starts. Documented residual: the evidence-read-to-clear window is bounded by event latency (L4's 30s dwarfs it).
 2. **Message-evidence failure falls through on status evidence** (instead of skipping the session) — the turn-ended arm is truthful from status alone; only the promote-refinement is lost. Counted, retried next pass.
-3. **Sweep takes session single-flight locks** — serialization vs in-flight admissions is the exactly-once protection (a sweep can't fail a row an admission is about to land). Bounded worst case: a 3-minute V1 admission blocks ITS session's sweep only; other sessions sweep independently; no hot path (Ingest/GetSnapshot/Stream) takes these locks.
-4. **LEDGERED admission deadline = 1m** vs the ~6.2s retry chain: wide enough to never race a healthy boot replay; tight enough to converge inside L5 with the 15s cadence.
+3. **Sweep TryLocks session single-flight locks — skip, never wait** (review r1 correction of this worklog's first draft, which claimed a long admission "blocks ITS session's sweep only": wrong — a blocking take would head-of-line-block every later-sorted session AND stall concurrent Reseeds, breaking the 30s bound). A session mid-admission is skipped this pass; its rows are being driven and the next tick (15s) converges them. Serialization where it matters is preserved: a sweep can never fail a row an admission is about to land, because it never touches a locked session at all.
+4. **LEDGERED admission deadline = 1m, gated on status evidence** ("with no evidence" per the issue): a BUSY store session may be running the row's admission/turn — the sweep holds; FAILED fires only on the no-evidence arms (idle/ERROR/absent session). Residual, documented: the crash window "Admit succeeded server-side, agentd died before markAdmitted" leaves a LEDGERED row with no messageID — ID-based evidence cannot exist for it, and content matching is the retired text-oracle (design 0055 rejects it; the design accepts this residual for the attempt-driven failure path — same-clock localhost single-flight bounds it to one entry). FAILED rows are excluded from `admittedAnywhere` ("never reached opencode"), so an outbox re-arm of this residual CAN duplicate a turn — identical to the pre-existing replay-window residual (#1288 class), not a new class introduced by the sweep; the sweep's status-evidence gate removes every variant of it where the store shows live work. The {LEDGERED × message-present} matrix cell is therefore unimplementable without content matching — pinned instead as {LEDGERED × busy-holds / idle-fails / absent-fails}.
+   **STALLED has no clock deadline of its own — decision:** resolution is evidence-driven (present→PROMOTED, turn-ended→TURN_ENDED); while store evidence AGREES with the row (busy session, message absent) it persists — S7's letter ("no row past deadline against CONTRARY evidence") needs no clock there, and the seq-stall/starvation alerts own a wedged harness. Pinned by the `stalled busy no message stays` matrix cell.
 5. **queueDepth documented, not dropped** — removing a field is non-additive schema surgery in a frozen ABI; Wave 4 owns the schema pass.
 6. **One lease clock** — `LeaseConvergenceBound` introduced here; #1310's 2a consumes it for the pending-set lease (epic convergence requirement recorded in both reserved comments).
 
@@ -80,6 +81,21 @@ The production incident this kills: ws `47962542` reported `SESSION_STATUS_BUSY,
 
 ---
 
+## Review round 1 (automated reviewer, PR #1317 — REQUEST CHANGES → remediated)
+
+Validated real findings, all fixed with regression tests:
+1. **LEDGERED sweep dropped the issue's "with no evidence" qualifier** (duplication-on-rearm hazard) → status-evidence gate (busy holds; idle/absent fails) + matrix cells; residual documented above.
+2. **Stale-evidence window across the session-lock wait** (a live turn landing mid-pass could be TURN_ENDED'd on unqueried evidence; a fresh busy-mark could be clobbered) → rows whose messageID was not queried are never resolved on that evidence + `sessionRecord.lastBusySeq` gates the busy-clear (a busy-mark newer than the evidence read survives). Pinned by `TestReconcile_LiveTurnDuringEvidenceWaitNotMisresolved`.
+3. **Head-of-line blocking** (blocking session-lock takes + reseedMu held across the pass could stall the sweep and Reseeds for a 3-minute admission) → TryLock-and-skip (`TestReconcile_LockedSessionSkippedNotBlocked`); pass-scoped evidence deadline (10s default, `SetReconcileTimeoutForTest`) bounds a hung store (`TestReconcile_EvidenceDeadlineBounds`).
+4. **Metrics divergence on ctx-cancelled passes** → outcomes recorded before the early return (`TestReconcile_ContextCancelRecordsOutcomes`).
+5. Style: `unresolvedBySession` slices were computed and discarded → `unresolvedSessions` set; `_ = key` loop idiom dropped.
+
+False alarm, documented with evidence: "hand-inserted comment in abi.pb.go" — the comment is emitted by protoc-gen-go from the proto source; CI's "Harness ABI schema (…codegen freshness)" check passed, proving regeneration reproduces the file byte-for-byte.
+
+Disposition on the kind-level e2e rows: the epic's merge gate routes the delivery-pool kind workflow (AC-1b..1e, F6) at this PR — those rows execute there; the in-repo executable forms committed here are the wire-level reopen/boot-heal/crash-matrix/watchdog-loop rows. No cluster is available in the authoring environment; shipping unexecuted kind scripts would violate Rule 7 (unvalidated assumptions) — the pool run is the validating step.
+
+---
+
 ## Blockers
 
 None. Coordination notes: `actions.go` untouched (1a's); the shared lease clock landed here for 2a to consume; delivery-pool kind rows (AC-1b..1e, F6) ride the weekly CI workflow on the PR — the in-repo executable forms (crash matrix, incident replay, watchdog loop) are committed here.
@@ -93,6 +109,7 @@ None. Coordination notes: `actions.go` untouched (1a's); the shared lease clock 
 - `go test ./pkg/abi/...` — ok (abitest knob rows: suppression omits event frames only, knob inspectable, default-off).
 - `make abi-lint`, `make abi-breaking` (freeze ARMED) — pass; `make abi-generate` regenerated `abi.pb.go`/`abi_pb.ts` from the comment delta.
 - `gofmt -l`, `go vet` on touched packages — clean.
+- Review round 1 regression rows added: matrix cells (ledgered×busy-holds/idle-fails/absent-fails, stalled×busy-persists), live-turn-during-evidence-wait, locked-session-skip, ctx-cancel metrics, evidence deadline bound — all green under `-race` with the full sessionstate suite.
 
 ---
 

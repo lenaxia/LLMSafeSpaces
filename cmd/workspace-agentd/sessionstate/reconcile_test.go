@@ -161,12 +161,38 @@ func TestReconcile_Matrix(t *testing.T) {
 			want:   LedgerStateLedgered,
 		},
 		{
-			name:       "ledgered past deadline fails re-armable",
+			// "with no evidence" (#1311): a BUSY session is evidence an
+			// admission/turn may be live for this row — the sweep holds.
+			name:       "ledgered past deadline busy session holds",
 			start:      LedgerStateLedgered,
 			states:     map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+			want:       LedgerStateLedgered,
+			passesDead: true,
+		},
+		{
+			name:       "ledgered past deadline idle no evidence fails",
+			start:      LedgerStateLedgered,
+			states:     map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE},
 			want:       LedgerStateFailed,
 			wantStats:  ReconcileStats{Failed: 1},
 			passesDead: true,
+		},
+		{
+			name:       "ledgered past deadline absent session fails",
+			start:      LedgerStateLedgered,
+			states:     map[string]abiv1.SessionStatus{},
+			want:       LedgerStateFailed,
+			wantStats:  ReconcileStats{Failed: 1},
+			passesDead: true,
+		},
+		{
+			// STALLED with AGREEING evidence (busy, message absent)
+			// persists — no clock forces it off while evidence agrees.
+			name:   "stalled busy no message stays",
+			start:  LedgerStateStalled,
+			states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY},
+			msgs:   map[string]map[string]bool{"s1": {}},
+			want:   LedgerStateStalled,
 		},
 	}
 	for _, tt := range tests {
@@ -189,7 +215,7 @@ func TestReconcile_Matrix(t *testing.T) {
 			require.True(t, ok)
 			assert.Equal(t, tt.want, row.State, "row state")
 			wantDepth := tt.wantDepth
-			if wantDepth == 0 && (tt.want == LedgerStateLedgered || tt.want == LedgerStateAdmitted) {
+			if wantDepth == 0 && (tt.want == LedgerStateLedgered || tt.want == LedgerStateAdmitted || tt.want == LedgerStateStalled) {
 				wantDepth = 1
 			}
 			assert.Equal(t, wantDepth, a.ledger.queueDepth("s1"), "queue depth after reconcile")
@@ -200,7 +226,7 @@ func TestReconcile_Matrix(t *testing.T) {
 // TestReconcile_FailedRowIsReArmable: the FAILED sweep outcome is re-armable
 // — attempt+1 creates a fresh row that admits normally.
 func TestReconcile_FailedRowIsReArmable(t *testing.T) {
-	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY}}
+	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE}}
 	a := newReconcileAuthority(t, store)
 	seedRow(t, a, "s1", "e1", "m1", LedgerStateLedgered)
 	a.SetAdmissionDeadlineForTest(-time.Second)
@@ -434,10 +460,11 @@ func TestReconcile_Leg5HarnessDeadMidTurn(t *testing.T) {
 	assert.Equal(t, LedgerStatePromoted, row.State, "harness-dead turn resolves via store evidence")
 }
 
-// TestReconcile_SerializesWithInFlightAdmission: the sweep holds the
-// session's single-flight lock — an admission completing during a sweep can
-// never land on a row the sweep already FAILED (the FAILED-with-landed-
-// message duplication hazard).
+// TestReconcile_SerializesWithInFlightAdmission: a session mid-admission
+// (its single-flight lock held across the V1 turn) is SKIPPED by the sweep
+// — never waited on, never failed — so an admission completing during a
+// pass can never land on a row the sweep already FAILED (the
+// FAILED-with-landed-message duplication hazard).
 func TestReconcile_SerializesWithInFlightAdmission(t *testing.T) {
 	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_BUSY}}
 	a := newReconcileAuthority(t, store)
@@ -458,24 +485,25 @@ func TestReconcile_SerializesWithInFlightAdmission(t *testing.T) {
 		return block.entered
 	}, "admission in flight under the session lock")
 
-	// Zero deadline + a reconcile that must wait on the session lock: the
-	// sweep cannot fail the row while the admission holds it.
+	// Past-deadline row + a pass that must NOT touch the locked session.
 	a.SetAdmissionDeadlineForTest(-time.Second)
 	done := make(chan ReconcileStats, 1)
 	go func() { done <- a.Reconcile(context.Background()) }()
 	select {
-	case <-done:
-		t.Fatal("reconcile completed while an admission held the session lock — serialization broken")
-	case <-time.After(50 * time.Millisecond):
+	case stats := <-done:
+		assert.Equal(t, ReconcileStats{}, stats, "the locked session is skipped entirely")
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile blocked behind a live admission — head-of-line blocking")
 	}
 	block.mu.Lock()
 	block.proceed <- struct{}{}
 	block.mu.Unlock()
 	<-released
-	<-done
 
-	row, _ := a.ledger.status("e1", 1)
-	assert.Equal(t, LedgerStateAdmitted, row.State, "admission wins over the concurrent sweep; no manufactured failure")
+	waitFor(t, func() bool {
+		row, ok := a.ledger.status("e1", 1)
+		return ok && row.State == LedgerStateAdmitted
+	}, "admission lands after the skipped pass (no manufactured failure)")
 }
 
 // blockingAdmit blocks inside Admit until released (serialization proofs).
@@ -511,4 +539,137 @@ func TestObserveEvent_IdleTurnEndsPromotedRows(t *testing.T) {
 func TestLeaseConvergenceBoundIsExported(t *testing.T) {
 	assert.Equal(t, 30*time.Second, LeaseConvergenceBound)
 	assert.True(t, ReconcileCadence <= LeaseConvergenceBound, "sweep cadence must fit the convergence bound")
+}
+
+// --- review round 1 findings ------------------------------------------------
+
+// gateStore lets the test hold the pass at a chosen point (review r1
+// finding 2: state that lands between evidence-gather and the session lock
+// must not be resolved on stale evidence).
+type gateStore struct {
+	evidenceStore
+	onMessages func()
+}
+
+func (g *gateStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	if g.onMessages != nil {
+		g.onMessages()
+	}
+	return g.evidenceStore.MessagePresence(ctx, sessionID, messageIDs)
+}
+
+// TestReconcile_LiveTurnDuringEvidenceWaitNotMisresolved (r1-2): while the
+// sweep waits between evidence-gather and the session lock, a live turn
+// starts — a NEW admitted row appears and the view re-marks busy. The stale
+// evidence must not turn-end the new row (its messageID was never queried)
+// and must not clear the freshly-marked busy.
+func TestReconcile_LiveTurnDuringEvidenceWaitNotMisresolved(t *testing.T) {
+	store := &gateStore{evidenceStore: evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE},
+		msgs:   map[string]map[string]bool{"s1": {"m-old": true}},
+	}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e-old", "m-old", LedgerStateAdmitted)
+
+	store.onMessages = func() {
+		// The live turn lands while the pass holds stale (idle) evidence:
+		// a fresh busy fold + a new admitted row the pass never queried.
+		a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+		seedRow(t, a, "s1", "e-new", "m-new", LedgerStateAdmitted)
+		store.onMessages = nil
+	}
+
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.Promoted, "the queried row resolves on real evidence")
+
+	newRow, ok := a.ledger.status("e-new", 1)
+	require.True(t, ok)
+	assert.Equal(t, LedgerStateAdmitted, newRow.State, "a row whose messageID was never queried must not resolve on stale evidence")
+
+	st := a.State()
+	require.NotNil(t, st.Sessions["s1"])
+	assert.True(t, st.Sessions["s1"].Busy, "busy marked AFTER the evidence read must survive the pass")
+}
+
+// TestReconcile_LockedSessionSkippedNotBlocked (r1-robustness-1): a session
+// whose single-flight lock is held (a live admission — up to 3 minutes) is
+// SKIPPED this pass, not waited on: one in-flight turn must not stall the
+// whole sweep (head-of-line blocking would break the 30s bound).
+func TestReconcile_LockedSessionSkippedNotBlocked(t *testing.T) {
+	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE}, msgs: map[string]map[string]bool{"s1": {"m1": true}}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e1", "m1", LedgerStateAdmitted)
+
+	lock := a.sessionLock("s1")
+	lock.Lock()
+	done := make(chan ReconcileStats, 1)
+	go func() { done <- a.Reconcile(context.Background()) }()
+	select {
+	case stats := <-done:
+		assert.Equal(t, ReconcileStats{}, stats, "locked session skipped, nothing converged this pass")
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile blocked on a session mid-admission — head-of-line blocking")
+	}
+	row, _ := a.ledger.status("e1", 1)
+	assert.Equal(t, LedgerStateAdmitted, row.State, "locked session's rows untouched")
+
+	lock.Unlock()
+	require.Equal(t, ReconcileStats{Promoted: 1}, a.Reconcile(context.Background()), "next pass converges")
+}
+
+// TestReconcile_ContextCancelRecordsOutcomes (r1-3): a pass canceled
+// mid-sweep still records the outcomes that DID happen — the cumulative
+// Metrics counters must not diverge from the returned stats.
+func TestReconcile_ContextCancelRecordsOutcomes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &gateStore{evidenceStore: evidenceStore{
+		states: map[string]abiv1.SessionStatus{
+			"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE,
+			"s2": abiv1.SessionStatus_SESSION_STATUS_IDLE,
+		},
+		msgs: map[string]map[string]bool{"s1": {"m1": true}, "s2": {"m2": true}},
+	}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e1", "m1", LedgerStateAdmitted)
+	seedRow(t, a, "s2", "e2", "m2", LedgerStateAdmitted)
+
+	store.onMessages = func() {
+		cancel() // after s1's evidence, before s2's loop turn
+		store.onMessages = nil
+	}
+	stats := a.Reconcile(ctx)
+	m := a.Metrics()
+	assert.Equal(t, int64(stats.Promoted), m.ReconcilePromoted, "returned stats and cumulative counters agree on a canceled pass")
+	assert.GreaterOrEqual(t, m.ReconcilePromoted, int64(1), "the outcome that happened before cancellation is recorded")
+}
+
+// TestReconcile_EvidenceDeadlineBounds (r1-robustness-2): the pass bounds
+// its own evidence I/O — a hung store cannot wedge the watchdog.
+func TestReconcile_EvidenceDeadlineBounds(t *testing.T) {
+	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e1", "m1", LedgerStateAdmitted)
+	a.SetReconcileTimeoutForTest(50 * time.Millisecond)
+
+	// Swap in a hanging store AFTER construction.
+	hang := &hangMessagesStore{inner: store}
+	a.SetStoreForTest(hang)
+
+	start := time.Now()
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.EvidenceFailures)
+	assert.Less(t, time.Since(start), 5*time.Second, "evidence I/O is deadline-bounded")
+}
+
+type hangMessagesStore struct {
+	inner StoreReader
+}
+
+func (h *hangMessagesStore) SessionStates(ctx context.Context) (map[string]SessionSeed, error) {
+	return h.inner.SessionStates(ctx)
+}
+
+func (h *hangMessagesStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
