@@ -41,8 +41,13 @@ import (
 // spike: deleted on this path).
 
 const (
-	agentdDeliverInlineWindow = 10 * time.Second
-	agentdDeliverPollEvery    = 100 * time.Millisecond
+	// #1313: V1 delivery is synchronous — the LLM turn takes 30-120s.
+	// The 10s window was designed for V2 steer's fast admission. The
+	// poll must outlast the admitter's 3-minute timeout or the outbox
+	// retries, each retry creates a new admission, and the message
+	// duplicates (the #1296 class through the outbox layer).
+	agentdDeliverInlineWindow = 3*time.Minute + 30*time.Second
+	agentdDeliverPollEvery    = 500 * time.Millisecond
 )
 
 // agentdDeliverer is the outbox Deliverer against the pod's ledger.
