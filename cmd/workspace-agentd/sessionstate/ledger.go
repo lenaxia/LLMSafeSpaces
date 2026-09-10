@@ -646,7 +646,15 @@ func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uin
 		}
 		return true
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second) //nolint:contextcheck // queue-scoped by design
+	// #1313 follow-up: V1 is SYNCHRONOUS — the response IS the assistant
+	// message, which takes 30-120s for an LLM turn. The 10s timeout was
+	// designed for V2 steer's fast admission (admit-and-return). With V1,
+	// a 10s window causes timeout → markFailed → retry ladder → duplicate
+	// messages (the #1296 triplication class reborn through a different
+	// mechanism). The admitter runs in a goroutine (driveAdmission), so
+	// this timeout doesn't block anything else — it just needs to be
+	// long enough for the model to finish.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) //nolint:contextcheck // queue-scoped by design
 	msgID, err := d.admit.Admit(ctx, sessionID, text, model)
 	cancel()
 	if err == nil {
