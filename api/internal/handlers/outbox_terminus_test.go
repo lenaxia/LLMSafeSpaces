@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -82,6 +83,11 @@ type ledgerStub struct {
 	admit  *scriptAdmitter
 	muxx   sync.Mutex
 	rows   map[string]string
+	// deliverHits counts POSTs to the Deliver endpoint — the #1316
+	// sweeper/guard tests assert re-POST never happens (S9).
+	deliverHits atomic.Int64
+	// statusHits counts GetDeliveryStatus polls (0b e2e diagnostics).
+	statusHits atomic.Int64
 }
 
 type scriptAdmitter struct {
@@ -118,6 +124,7 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 		}
 		switch r.URL.Path {
 		case "/llmsafespaces.abi.v1.HarnessABIService/Deliver":
+			stub.deliverHits.Add(1)
 			var req struct {
 				SessionId string          `json:"sessionId"`
 				EntryId   string          `json:"entryId"`
@@ -140,6 +147,7 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 				"state": stubStates[state],
 			})
 		case "/llmsafespaces.abi.v1.HarnessABIService/GetDeliveryStatus":
+			stub.statusHits.Add(1)
 			var req struct {
 				EntryId string `json:"entryId"`
 				Attempt uint32 `json:"attempt"`

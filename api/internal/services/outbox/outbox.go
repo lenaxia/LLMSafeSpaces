@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -237,6 +238,12 @@ type Service struct {
 	// onStaged fires when an entry is staged out for delivery
 	// (nil = no-op). See StagedHook.
 	onStaged StagedHook
+	// ledgerProbe is the agentd ledger truth source for #1316's parked
+	// sweeper and park guard; nil (adapter mode) disables both.
+	ledgerProbe LedgerProbe
+	// parkedSweeping makes the periodic sweep non-reentrant: a slow pass
+	// must not stack on the next interval.
+	parkedSweeping atomic.Bool
 }
 
 // New returns a Service backed by client, or nil if client is nil
@@ -663,6 +670,21 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	e.Attempts++
 	e.LastError = derr.Error()
 	if e.Attempts >= MaxAttempts {
+		// #1316 park guard: never park an entry the ledger still holds.
+		// Admission ownership is agentd's — an error pill here fuels the
+		// retry → re-admission cycle (ses_f73747f8).
+		completes, holds := s.parkGuard(bctx, ws, ses, e)
+		switch {
+		case completes:
+			s.client.LRem(bctx, dKey(ws, ses), 1, staged)
+			s.fireOnDelivered(ws, ses, e)
+			return true
+		case holds:
+			e.Status = StatusDelivering
+			e.NextAttemptAt = time.Now().UTC().Add(ownsAdmissionRePollBackoff)
+			s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+			return true
+		}
 		e.Status = StatusError
 	} else {
 		e.Status = StatusPending
@@ -824,6 +846,10 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	tickN := 0
+	// Captured before the loop: tests tune ParkedSweepInterval per-Run,
+	// and the ticker goroutine must not race those writes.
+	sweepEvery := ParkedSweepInterval
+	lastParkedSweep := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -833,6 +859,18 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 			pairs := s.sessions(ctx)
 			if tickN%metricsEveryNTicks == 0 {
 				s.updateMetrics(ctx, pairs)
+			}
+			// #1316: the parked-error sweep runs detached from the tick
+			// (its probes are network I/O — an inline sweep would stall
+			// delivery behind a hung pod) and never stacks on itself.
+			if time.Since(lastParkedSweep) >= sweepEvery && s.parkedSweeping.CompareAndSwap(false, true) {
+				lastParkedSweep = time.Now()
+				go func() {
+					defer s.parkedSweeping.Store(false)
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sweepEvery)
+					defer cancel()
+					_, _ = s.sweepParkedErrors(sctx, "")
+				}()
 			}
 			for _, pair := range pairs {
 				select {

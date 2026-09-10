@@ -132,6 +132,19 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 					} else if n > 0 {
 						h.logger.Info("outbox unverifiable sweep re-armed entries", "count", n, "workspace_id", wsName)
 					}
+					// #1316: re-verify the workspace's parked error
+					// entries against the ledger on the same transition —
+					// a resume is when an unreachable (probe-failing) pod
+					// becomes reachable and stranded admissions resolve.
+					// Gated on the terminus regime (the probe is wired
+					// iff the ledger is the delivery truth source).
+					if h.agentdTerminus {
+						if n, err := h.outbox.SweepWorkspaceParkedErrors(sctx, wsName); err != nil {
+							h.logger.Warn("outbox parked-error sweep failed", "error", err, "workspace_id", wsName)
+						} else if n > 0 {
+							h.logger.Info("outbox parked-error sweep recovered entries", "count", n, "workspace_id", wsName)
+						}
+					}
 				}()
 			}
 		} else {

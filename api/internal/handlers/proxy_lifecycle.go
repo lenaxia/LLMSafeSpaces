@@ -78,6 +78,11 @@ func (h *ProxyHandler) Start() error {
 				h.outbox.SetOnDelivered(h.outboxOnDelivered)
 				h.outbox.SetOnStaged(h.outboxOnStaged)
 			}
+			// #1316: the parked-error sweeper and park guard need the
+			// ledger as truth source — wired iff the terminus regime is.
+			if h.agentdTerminus {
+				h.outbox.SetLedgerProbe(h.outboxLedgerProbe)
+			}
 			wctx, wcancel := context.WithCancel(context.Background())
 			h.outboxCancel = wcancel
 			go func() {

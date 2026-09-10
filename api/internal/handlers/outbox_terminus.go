@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
@@ -144,6 +145,30 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 // hung agentd connection can never pin an outbox worker indefinitely
 // (request contexts carry their own deadlines on top of this cap).
 var agentdHTTPClient = &http.Client{Timeout: agentdDeliverInlineWindow}
+
+// ledgerProbeHTTPClient bounds the sweeper/park-guard probes: a status
+// lookup is one cheap pod-local round trip — a hung pod must fail fast
+// so a sweep pass never stalls behind it (indeterminate, next pass).
+var ledgerProbeHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+// outboxLedgerProbe adapts the outbox's LedgerProbe seam (#1316) to the
+// pod's ABI status surface with the proxy's resume-safe resolution. A
+// not_found row maps to ("", nil) — no row — so the outbox's decision
+// table can distinguish absence from unreachability.
+func (h *ProxyHandler) outboxLedgerProbe(ctx context.Context, workspaceID, sessionID, entryID string, attempt uint32) (string, error) {
+	base, pw, err := h.agentdEndpoint(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	state, err := ledgerLookup(ctx, ledgerProbeHTTPClient, base, pw, entryID, attempt)
+	if err != nil {
+		if strings.Contains(err.Error(), "not_found") {
+			return "", nil
+		}
+		return "", err
+	}
+	return state, nil
+}
 
 func (d *agentdDeliverer) httpClient() *http.Client {
 	if d.client != nil {
