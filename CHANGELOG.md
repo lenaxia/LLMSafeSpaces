@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.7] - 2026-09-10
+
+### Fixed (#1313 - V2 steer delivery drops MCP tools; switch to V1)
+- **The admitter uses the V1 message path** (POST /session/:sid/message,
+  parts-based, synchronous) instead of V2 steer (POST /api/session/:sid/
+  prompt). opencode 1.18.15's V2 session runner does NOT include MCP
+  tools in the model's function definitions - every platform-delivered
+  message silently lost workspace tools (session_list,
+  dev_preview_url, etc.). Proven with controlled variables: same
+  session, same wording - steer -> "no MCP tools", V1 -> all present.
+- The ledger, admission retry, cross-attempt dedup, model pinning, and
+  promotion correlation are unchanged - only the final POST to
+  opencode changed.
+- **The tests that would have caught it**: admitter wire-shape pins
+  (V1 endpoint, parts body, V2-never-called), full-chain e2e with
+  model pinning, and pool row AC-1e (MCP tools visible through the
+  platform delivery path).
+- Also in this release: the MCP startup race fix (#1312) -
+  createSessionOnWorkspace waits for /mcp to report all-connected
+  before returning the session to the frontend (bounded 10s).
+
 ## [0.27.6] - 2026-09-09
 
 ### Fixed (#1310 — opencode writes config; the 0.27.5 symlink pointed at a read-only mount)
