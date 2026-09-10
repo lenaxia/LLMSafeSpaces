@@ -459,6 +459,47 @@ ok "AC-1d PASS: session-model-pinned turn completed against the mock upstream (r
 fi
 
 # -----------------------------------------------------------------------------
+# AC-1e — MCP tools available through the platform's delivery path (#1313)
+#
+# THE GAP THAT LET #1313 SHIP: no test drove the platform's actual
+# delivery path and verified MCP tool availability in the model's
+# function definitions. The V2 steer endpoint silently dropped MCP
+# tools on opencode 1.18.15 — every platform-delivered message lost
+# workspace tools (session_list, dev_preview_url, etc.) while V1 and
+# the TUI worked. This row pins the contract: a message delivered
+# through the platform's proxy must reach a model that can see MCP
+# tools.
+# -----------------------------------------------------------------------------
+log "AC-1e — MCP tools visible through the platform delivery path (#1313)"
+
+# The mock opencode's /mcp endpoint is already verified (AC-1d setup).
+# The contract: ask the model to enumerate its tools and verify MCP
+# tool names appear. We do this through the same V1 session used in
+# AC-1d (proven to include MCP tools) and through the platform proxy
+# (the delivery path the frontend uses).
+MCP_SID=$(curl -sfm 60 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/new" | jq -r '.sessionId // empty')
+[[ -n "${MCP_SID}" ]] || die "AC-1e: platform session create failed"
+
+# Send through the platform proxy (the frontend's path)
+MCP_RAW=$(curl -sm 180 -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{"parts":[{"type":"text","text":"List every tool name you have available, one per line, including any tools with underscores or dots in their names. Do NOT use any tools to answer this."}]}' \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS1D}/sessions/${MCP_SID}/message" 2>/dev/null || true)
+MCP_CODE=$(printf '%s' "${MCP_RAW}" | tail -1)
+MCP_BODY=$(mktemp); printf '%s' "${MCP_RAW}" | sed '$d' > "${MCP_BODY}"
+
+if [[ "${MCP_CODE}" == "2"* ]] && grep -aq "llmsafespaces_" "${MCP_BODY}"; then
+    ok "AC-1e PASS: MCP tools visible in model function definitions through the platform delivery path"
+    rm -f "${MCP_BODY}"
+else
+    echo "--- AC-1e diagnostics: platform send response (first 600 chars) ---"
+    head -c 600 "${MCP_BODY}" 2>/dev/null
+    echo
+    die "AC-1e FAIL: MCP tools NOT in model function definitions through the delivery path — the #1313 regression"
+fi
+
+# -----------------------------------------------------------------------------
 # AC-2 — suspend → resume → env present <=90s, no manual reload
 # -----------------------------------------------------------------------------
 WS2=$(ws_id 2)

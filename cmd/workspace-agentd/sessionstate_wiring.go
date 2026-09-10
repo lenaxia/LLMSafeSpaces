@@ -327,24 +327,23 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model stri
 			return "", fmt.Errorf("admit: set session model: %w", err)
 		}
 	}
+	// #1313: V1 message path, not V2 steer. The V2 prompt endpoint's
+	// session runner does NOT include MCP tools in the model's function
+	// definitions on opencode 1.18.15 (proven with controlled variables:
+	// same session, same wording — steer → "no MCP tools", V1 → all
+	// present). The TUI calls the session runner directly with the full
+	// tool registry; V1 is the HTTP surface that matches. The V2 path
+	// also strips model overrides (#1292b above). The ledger, admission
+	// retry, dedup, and promotion correlation all stay — only the final
+	// POST to opencode changes.
 	body := map[string]any{
-		"prompt":   map[string]any{"text": text},
-		"delivery": "steer",
-	}
-	if model != "" {
-		// Kept for forward-compat with builds that honor it; stripped by
-		// the pinned endpoint (see above). providerID key — same golden.
-		if prov, id, ok := strings.Cut(model, "/"); ok && id != "" {
-			body["model"] = map[string]any{"id": id, "providerID": prov}
-		} else {
-			body["model"] = map[string]any{"id": model}
-		}
+		"parts": []map[string]any{{"type": "text", "text": text}},
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
-	url := fmt.Sprintf("%s/api/session/%s/prompt", getAgentAddr(), sessionID)
+	url := fmt.Sprintf("%s/session/%s/message", getAgentAddr(), sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return "", err
@@ -360,15 +359,17 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model stri
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", fmt.Errorf("admit: status %d: %s", resp.StatusCode, string(errBody))
 	}
+	// V1 returns the assistant message synchronously — the info.id is
+	// the message ID the ledger's promotion correlation needs.
 	var out struct {
-		Data struct {
+		Info struct {
 			ID string `json:"id"`
-		} `json:"data"`
+		} `json:"info"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
 		return "", err
 	}
-	return out.Data.ID, nil
+	return out.Info.ID, nil
 }
 
 // --- US-69.9: the typed-actions seam (design 0055 M1 op 5) ---------------

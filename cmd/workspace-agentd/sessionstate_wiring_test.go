@@ -14,15 +14,25 @@ import (
 // vanished; the API's adapter path abandoned it for the same reason) and
 // the #1288 incident ran on queue-mode admission. A regression to "queue"
 // must fail here first.
-func TestOpencodeAdmitter_UsesSteerDelivery(t *testing.T) {
-	var gotDelivery string
+func TestOpencodeAdmitter_UsesV1MessagePath(t *testing.T) {
+	// #1313: V1 message path, not V2 steer. The V2 session runner on
+	// opencode 1.18.15 does NOT include MCP tools in the model's function
+	// definitions — every platform-delivered message through V2 silently
+	// lost workspace tools. V1 is the HTTP surface that matches the TUI's
+	// behavior (the TUI calls the session runner directly).
+	var gotPath string
+	var gotBodyType string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Delivery string `json:"delivery"`
-		}
+		gotPath = r.URL.Path
+		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		gotDelivery = body.Delivery
-		_, _ = w.Write([]byte(`{"data":{"id":"msg_x"}}`))
+		if _, ok := body["parts"]; ok {
+			gotBodyType = "parts"
+		}
+		if _, ok := body["delivery"]; ok {
+			gotBodyType = "V2_SHAPE"
+		}
+		_, _ = w.Write([]byte(`{"info":{"id":"msg_x"}}`))
 	}))
 	defer srv.Close()
 	orig := agentAddrAtomic.Load()
@@ -37,8 +47,11 @@ func TestOpencodeAdmitter_UsesSteerDelivery(t *testing.T) {
 	if id != "msg_x" {
 		t.Fatalf("messageID roundtrip: %q", id)
 	}
-	if gotDelivery != "steer" {
-		t.Fatalf("delivery mode = %q, want \"steer\" (the TUI semantics; queue never drains on the pinned opencode, #755/#1288)", gotDelivery)
+	if gotPath != "/session/ses_1/message" {
+		t.Fatalf("path = %q — must be the V1 message endpoint, not V2 prompt (#1313)", gotPath)
+	}
+	if gotBodyType != "parts" {
+		t.Fatalf("body shape = %q — must be parts-based V1, not V2 prompt/delivery (#1313)", gotBodyType)
 	}
 }
 
@@ -55,9 +68,9 @@ func TestOpencodeAdmitter_SetsSessionModelBeforeSteer(t *testing.T) {
 		case "/api/session/ses_1/model":
 			order = append(order, "model:"+mustJSON(t, body))
 			w.WriteHeader(200)
-		case "/api/session/ses_1/prompt":
+		case "/session/ses_1/message":
 			order = append(order, "prompt")
-			_, _ = w.Write([]byte(`{"data":{"id":"msg_x"}}`))
+			_, _ = w.Write([]byte(`{"info":{"id":"msg_x"}}`))
 		default:
 			w.WriteHeader(404)
 		}
