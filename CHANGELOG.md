@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.9] - 2026-09-10
+
+### Fixed (#1313 completion — history reads from the V1 store)
+- The adapter's history reads now use the V1 store
+  (GET /session/:id/message) matching the V1 delivery path. The
+  disappearing-history bug: WithV2Store(true) routed reads to the V2
+  store which never sees V1-delivered messages — responses were
+  visible during the turn (SSE) but vanished on reload. The 0851
+  worklog documented this store split precisely; the adapter now
+  reads from the same store it writes to.
+
 ## [0.27.8] - 2026-09-10
 
 ### Fixed (#1313 follow-up — V1 admission timeout caused duplicate messages)
