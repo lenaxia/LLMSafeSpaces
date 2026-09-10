@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-09-10
+
+### Fixed (outbox stranded as error pills — Connect unary ack misparse)
+- The outbox deliverer's hand-rolled Connect client parsed unary
+  responses as `{"message": {...}}` envelopes — a streaming-frame shape
+  connect-go's unary codec never emits. Every real Deliver ack failed
+  as "empty message envelope" while the agentd ledger held the
+  successful admission: messages were delivered (transcript correct,
+  no duplicates) but the outbox rows stranded as error pills in the
+  frontend queue, and each retry skipped prior-attempt resolution and
+  re-POSTed. Same bug in the typed-actions edge (proxy_actions
+  abiAct). Unary wire shapes are now parsed (bare JSON body on 200;
+  `{"code","message"}` on HTTP >= 400) and pinned against the real
+  generated handler (abiconnect over abitest) so the stubs can never
+  drift from the wire again.
+
 ## [0.28.1] - 2026-09-10
 
 ### Fixed (#1313 — outbox delivery poll window matched to V1 timing)
