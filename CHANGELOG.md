@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-09-10
+
+### Fixed (#1313 — outbox delivery poll window matched to V1 timing)
+- The outbox's pollToCompletion window was 10 seconds (designed for
+  V2 steer's fast admission). With V1 synchronous delivery, the LLM
+  turn takes 30-120 seconds. The poll timed out, the outbox retried,
+  each retry created a new admission, and messages duplicated every
+  10 seconds. Window now 3.5 minutes (exceeds the admitter's 3-minute
+  timeout).
+
 ## [0.28.0] - 2026-09-10
 
 ### Breaking: adapter split (#1314) + V1 delivery complete (#1313)
