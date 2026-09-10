@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -1612,6 +1613,21 @@ func (s *Service) createSessionOnWorkspace(ctx context.Context, workspaceID, pod
 	if port == 0 {
 		port = 4096
 	}
+
+	// MCP startup race (#1312): opencode's MCP servers connect
+	// asynchronously after boot. If the first turn executes before
+	// they're connected, the model truthfully reports "no MCP tools" —
+	// permanently coloring the user's perception of the workspace (the
+	// registry IS dynamic and the tools appear on later turns, but the
+	// first response said they're absent). Poll /mcp until every
+	// configured server reports connected, bounded: on timeout we
+	// proceed anyway (a degraded session beats a hung one).
+	if err := s.waitForMCPServers(ctx, podIP, port, password); err != nil {
+		// Log but don't block session creation — the tools will
+		// connect eventually and later turns will have them.
+		log.Printf("[workspace %s] MCP servers not ready: %v (proceeding anyway)", workspaceID, err)
+	}
+
 	url := fmt.Sprintf("http://%s:%d/session", podIP, port)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
@@ -1988,4 +2004,56 @@ var sessionIDContextKey = sessionIDCtxKey{}
 // ContextWithSessionID adds the session ID to context for secret injection during activation.
 func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, sessionIDContextKey, sessionID)
+}
+
+// waitForMCPServers polls the workspace pod's /mcp endpoint until every
+// configured server reports "connected" (the MCP startup race — the tool
+// registry is dynamic but the FIRST turn may execute before remote MCP
+// servers finish their DNS+TLS+handshake). Bounded to 10s: on timeout we
+// return the error and the caller proceeds anyway (degraded > hung).
+func (s *Service) waitForMCPServers(ctx context.Context, podIP string, port int, password string) error {
+	deadline := time.Now().Add(10 * time.Second)
+	url := fmt.Sprintf("http://%s:%d/mcp", podIP, port)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		req.SetBasicAuth("opencode", password)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		var status map[string]struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		allConnected := len(status) > 0
+		for _, srv := range status {
+			if srv.Status != "connected" {
+				allConnected = false
+				break
+			}
+		}
+		if allConnected {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout after 10s waiting for MCP servers")
 }
