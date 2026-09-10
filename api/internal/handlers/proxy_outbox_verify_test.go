@@ -308,14 +308,13 @@ func newVerifyEnv(t *testing.T, backend *fakeAgentBackend, v2 ...bool) *e2eEnv {
 	env := newE2EEnv(t, srv)
 	if len(v2) > 0 && v2[0] {
 		handler := env.handler
-		handler.SetAdapter(opencode.NewAdapter(
+		handler.SetAdapter(opencode.NewAdapterV2(opencode.NewAdapter(
 			handler.AdapterPasswordResolver(),
 			handler.AdapterPodIPResolver(),
 			nil,
 			opencode.WithAdapterHTTPClient(srv.Client()),
 			opencode.WithAdapterPort(extractPort(t, srv.URL)),
-			opencode.WithV2Store(true),
-		))
+		)))
 	}
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	mr := miniredis.RunT(t)
