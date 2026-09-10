@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-09-10
+
+### Breaking: adapter split (#1314) + V1 delivery complete (#1313)
+
+- **Separate V1 and V2 adapters**: the v2Store flag is gone. AdapterV1
+  reads history from GET /session/:id/message (the store V1 delivery
+  writes to). AdapterV2 reads from GET /api/session/:id/message.
+  Each adapter is internally consistent — you cannot accidentally
+  read V2 history from V1 delivery.
+- **V1 delivery**: the admitter POSTs to /session/:id/message
+  (synchronous, parts-based). MCP tools are included in the model's
+  function definitions. The 3-minute timeout accommodates the
+  synchronous LLM response.
+- **MCP startup race fix** (#1312): createSessionOnWorkspace polls
+  /mcp until all servers report connected before returning the
+  session to the frontend (bounded 10s).
+- **XDG config copy** (#1310): opencode writes config through the
+  XDG path; the copy replaces the symlink (the read-only mount
+  caused EACCES).
+
+
 ## [0.27.9] - 2026-09-10
 
 ### Fixed (#1313 completion — history reads from the V1 store)
