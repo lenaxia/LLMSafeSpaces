@@ -242,9 +242,9 @@ func TestVerifyDelivery_V2StoreBranch(t *testing.T) {
 		srv := newV2VerifyServer(t,
 			`{"data":[`+v2User(since.Add(2*time.Minute), "the queued text")+`]}`, &hits)
 		a := newTestAdapter(t, srv)
-		a.v2Store = true
+		av2 := NewAdapterV2(a)
 
-		delivered, definitive, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "the queued text", since)
+		delivered, definitive, err := av2.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "the queued text", since)
 		require.NoError(t, err)
 		assert.True(t, delivered)
 		assert.True(t, definitive)
@@ -257,9 +257,9 @@ func TestVerifyDelivery_V2StoreBranch(t *testing.T) {
 		srv := newV2VerifyServer(t,
 			`{"data":[`+v2User(since.Add(-30*time.Minute), "older message")+`]}`, &hits)
 		a := newTestAdapter(t, srv)
-		a.v2Store = true
+		av2 := NewAdapterV2(a)
 
-		delivered, definitive, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "never landed", since)
+		delivered, definitive, err := av2.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "never landed", since)
 		require.NoError(t, err)
 		assert.False(t, delivered)
 		assert.True(t, definitive, "newest-first list fully below the floor: absence is proven")

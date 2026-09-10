@@ -51,20 +51,24 @@ const (
 // false means coverage was incomplete — treat as inconclusive and
 // recheck later, never re-send. err is a transport failure (also
 // inconclusive).
-func (a *Adapter) VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (delivered, definitive bool, err error) {
+
+// verifyDeliveryV1Store checks the V1 history store (GET /session/:id/message)
+// for the delivered text (#1314: extracted from the flag-dependent dispatch —
+// the V1 and V2 stores are queried by their respective adapters).
+func (a *Adapter) verifyDeliveryV1StoreResolved(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (bool, bool, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return false, false, err
 	}
-	// #1119 follow-up 2: verify runs on its own bounded, keep-alive-free
-	// client (copy, not mutation — the resolved Client's pooled transport
-	// stays shared for Send/admissions). One wedged agent connection can
-	// then cost at most a single bounded verify pass, never the pool or
-	// the promotion-await budget.
-	c = a.withVerifyClient(c)
-	if a.v2Store {
-		return a.verifyDeliveryV2(ctx, c, sessionID, text, since)
-	}
+	return a.verifyDeliveryV1Store(ctx, a.withVerifyClient(c), sessionID, text, since)
+}
+
+// VerifyDelivery checks the V1 store (the shared adapter's default).
+func (a *Adapter) VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (bool, bool, error) {
+	return a.verifyDeliveryV1StoreResolved(ctx, userID, workspaceID, sessionID, text, since)
+}
+
+func (a *Adapter) verifyDeliveryV1Store(ctx context.Context, c *Client, sessionID, text string, since time.Time) (bool, bool, error) {
 	floor := since.Add(-verifyClockSkew).UnixMilli()
 	cursor := ""
 	for page := 0; page < verifyPageBudget; page++ {
@@ -128,7 +132,15 @@ func userTextMatches(m ocMessage, text string) bool {
 // a single fetch is either definitive (match → delivered; list fully
 // below the window start → absent) or inconclusive on transport error
 // only — there is no partial-coverage window like the paged V1 scan.
-func (a *Adapter) verifyDeliveryV2(ctx context.Context, c *Client, sessionID, text string, since time.Time) (bool, bool, error) {
+func (a *Adapter) verifyDeliveryV2StoreResolved(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (bool, bool, error) {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return false, false, err
+	}
+	return a.verifyDeliveryV2Store(ctx, a.withVerifyClient(c), sessionID, text, since)
+}
+
+func (a *Adapter) verifyDeliveryV2Store(ctx context.Context, c *Client, sessionID, text string, since time.Time) (bool, bool, error) {
 	msgs, err := c.MessagesV2(ctx, sessionID)
 	if err != nil {
 		return false, false, err

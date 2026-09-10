@@ -82,11 +82,6 @@ type Adapter struct {
 	// endpoint (see capabilities.go). sync.Map: written once per
 	// workspace endpoint, read on every model-ref send.
 	capsCache sync.Map
-	// v2Store routes history reads and delivery verification through
-	// the V2 store (design 0052: OPENCODE_V2_DELIVERY). V2-queue
-	// messages persist ONLY there — a verify against the wrong store
-	// reports false absence and re-sends (the #987 duplicate class).
-	v2Store bool
 }
 
 // AdapterOption configures an Adapter at construction.
@@ -120,17 +115,6 @@ func WithFileDiffProducer(p *filediff.Producer) AdapterOption {
 func WithAdapterPort(port int) AdapterOption {
 	return func(a *Adapter) { a.port = port }
 }
-
-// WithV2Store routes history reads (GetHistory/GetHistoryPage) and
-// delivery verification through the V2 store (design 0052). Pair with
-// the proxy's V2 delivery flag — the adapter and the outbox deliverer
-// MUST agree on the store, or verification reports false absence.
-func WithV2Store(enabled bool) AdapterOption {
-	return func(a *Adapter) { a.v2Store = enabled }
-}
-
-// V2Store reports whether the adapter reads the V2 store.
-func (a *Adapter) V2Store() bool { return a.v2Store }
 
 // NewAdapter constructs an opencode Adapter that resolves workspace →
 // podIP + password on each call. The httpCli is shared across all
@@ -455,25 +439,21 @@ func (a *Adapter) Abort(ctx context.Context, userID, workspaceID, sessionID stri
 	return c.Abort(ctx, sessionID)
 }
 
+// GetHistory returns the full message list (V1 store — the shared
+// adapter's default). Use AdapterV1/AdapterV2 for explicit store paths.
 func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error) {
-	return a.getHistory(ctx, userID, workspaceID, sessionID, 0)
+	return a.getHistoryV1(ctx, userID, workspaceID, sessionID, 0)
 }
 
-// GetHistoryPage returns the NEWEST limit messages (oldest-first within
-// the page) via opencode's native ?limit=N (#971). Verified live on
-// 1.18.10: limit=N returns the newest N in ascending time order — 26ms
-// for a page vs 1.8s for the full 2.4MB transcript decode.
+// GetHistoryPage returns the NEWEST limit messages (V1 store — default).
 func (a *Adapter) GetHistoryPage(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
-	return a.getHistory(ctx, userID, workspaceID, sessionID, limit)
+	return a.getHistoryV1(ctx, userID, workspaceID, sessionID, limit)
 }
 
-func (a *Adapter) getHistory(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
+func (a *Adapter) getHistoryV1(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
-	}
-	if a.v2Store {
-		return a.getHistoryV2(ctx, c, sessionID, limit)
 	}
 	url := "/session/" + sessionID + "/message"
 	if limit > 0 {
@@ -524,7 +504,11 @@ func (a *Adapter) getHistory(ctx context.Context, userID, workspaceID, sessionID
 // the V1 contract's "newest limit, oldest-first within the page"
 // semantics. The full fetch is acceptable: sessions are per-workspace
 // and bounded, and the fetch streams with a 64MB cap like the V1 path.
-func (a *Adapter) getHistoryV2(ctx context.Context, c *Client, sessionID string, limit int) ([]session.Message, error) {
+func (a *Adapter) getHistoryV2Store(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.MessagesV2(ctx, sessionID)
 	if err != nil {
 		return nil, err

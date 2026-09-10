@@ -108,15 +108,15 @@ func TestVerifyDelivery_V2WedgedConnection(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := newTestAdapter(t, srv)
-	a.v2Store = true
+	av2 := NewAdapterV2(a)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, _, err := a.VerifyDelivery(ctx, "", "ws-1", "ses_1", "hello", time.Now().UTC().Add(-time.Minute))
+	_, _, err := av2.VerifyDelivery(ctx, "", "ws-1", "ses_1", "hello", time.Now().UTC().Add(-time.Minute))
 	require.Error(t, err)
 
-	delivered, definitive, err := a.VerifyDelivery(ctx, "", "ws-1", "ses_1", "hello", time.Now().UTC().Add(-time.Minute))
+	delivered, definitive, err := av2.VerifyDelivery(ctx, "", "ws-1", "ses_1", "hello", time.Now().UTC().Add(-time.Minute))
 	require.NoError(t, err)
 	assert.True(t, delivered)
 	assert.True(t, definitive)

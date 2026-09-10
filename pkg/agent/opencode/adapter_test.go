@@ -1356,11 +1356,11 @@ func TestGetHistory_V2StoreBranch(t *testing.T) {
 	a := NewAdapter(pw, ip, zap.NewNop(),
 		WithAdapterHTTPClient(srv.Client()),
 		WithAdapterPort(port),
-		WithV2Store(true),
 	)
-	assert.True(t, a.V2Store())
+	// #1314: V2 store tests use AdapterV2
+	av2 := NewAdapterV2(a)
 
-	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_1")
+	msgs, err := av2.GetHistory(context.Background(), "u-1", "ws-1", "ses_1")
 	require.NoError(t, err)
 	assert.True(t, served)
 	require.Len(t, msgs, 6, "fixture carries 6 messages")
@@ -1371,7 +1371,7 @@ func TestGetHistory_V2StoreBranch(t *testing.T) {
 	assert.Equal(t, session.MessageAssistant, msgs[len(msgs)-1].Type)
 
 	// Limit slices the NEWEST N (V1 GetHistoryPage semantics).
-	paged, err := a.GetHistoryPage(context.Background(), "u-1", "ws-1", "ses_1", 2)
+	paged, err := av2.GetHistoryPage(context.Background(), "u-1", "ws-1", "ses_1", 2)
 	require.NoError(t, err)
 	require.Len(t, paged, 2)
 	assert.Equal(t, session.MessageAssistant, paged[0].Type, "oldest-first within the newest-2 page")
