@@ -42,6 +42,19 @@ func New() *Server {
 // path.
 func (s *Server) Handler() http.Handler { return s.handler }
 
+// SetDeliveryState overwrites a ledger row's state (or creates one). Test
+// scaffolding for consumers that need to drive LEDGERED -> ADMITTED against
+// the real wire shape.
+func (s *Server) SetDeliveryState(entryID string, attempt uint32, state abiv1.LedgerState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deliveries[entryID+"/"+itoa(attempt)] = &abiv1.DeliveryStatus{
+		EntryId: entryID,
+		Attempt: attempt,
+		State:   state,
+	}
+}
+
 func (s *Server) Capabilities() *abiv1.CapabilityReport {
 	return &abiv1.CapabilityReport{
 		Provenance:     abiv1.Provenance_PROVENANCE_PLATFORM_PINNED,

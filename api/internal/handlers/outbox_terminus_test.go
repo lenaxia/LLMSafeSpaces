@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/pkg/abi/abitest"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 )
 
@@ -35,17 +36,43 @@ func decodeJSONBody(r *http.Request, v any) error {
 	return json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(v)
 }
 
-// writeJSONBody emits the Connect-protocol JSON success envelope the
-// generated clients decode: {"message": {...}}.
+// writeJSONBody emits the Connect-protocol unary JSON success body: the
+// response message itself, bare (connect-go's unary codec never wraps it
+// in {"message": ...} — that is the streaming frame shape). Mirrors what
+// abiconnect.NewHarnessABIServiceHandler emits; pinned against the real
+// handler in TestAgentdDeliver_RealConnectHandler.
 func writeJSONBody(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"message": v})
+	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeJSONErr emits the Connect error envelope: {"error": {code,message}}.
+// connectHTTPStatus maps connect codes to the HTTP statuses the real
+// connect-go unary handler uses (connectrpc.com/docs/protocol#http-errors).
+func connectHTTPStatus(code string) int {
+	switch code {
+	case "invalid_argument", "out_of_range":
+		return http.StatusBadRequest
+	case "unauthenticated":
+		return http.StatusUnauthorized
+	case "permission_denied":
+		return http.StatusForbidden
+	case "not_found":
+		return http.StatusNotFound
+	case "resource_exhausted":
+		return http.StatusTooManyRequests
+	case "unimplemented":
+		return http.StatusNotImplemented
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+// writeJSONErr emits the Connect unary error shape: HTTP status + bare
+// {"code","message"} body.
 func writeJSONErr(w http.ResponseWriter, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+	w.WriteHeader(connectHTTPStatus(code))
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code, "message": message})
 }
 
 // ledgerStub stands in for the pod's ABI surface: a real connect handler
@@ -86,7 +113,7 @@ func newLedgerStub(t *testing.T, failN int) *ledgerStub {
 	stub.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Minimal Connect-protocol JSON transport for the two ops.
 		if r.Header.Get("Authorization") == "" {
-			w.WriteHeader(http.StatusUnauthorized)
+			writeJSONErr(w, "unauthenticated", "missing basic credential")
 			return
 		}
 		switch r.URL.Path {
@@ -349,4 +376,90 @@ func TestStateMapping_Guard(t *testing.T) {
 	require.NoError(t, err, "promoted implies admitted — completes (no live-lock across promotion)")
 	assert.Equal(t, "promoted", stub.rowState(rowKey("e-1", 1)), "prior row untouched")
 	assert.Empty(t, stub.rowState(rowKey("e-1", 2)), "no attempt-2 row: the mapping table is the single completion authority")
+}
+
+// --- Wire-shape pin: the REAL generated connect handler --------------------
+//
+// The stub above mimics the transport, but the terminus once shipped a
+// {"message": ...} envelope parser that connect-go's unary codec never
+// emits — every real Deliver ack failed as "empty message envelope" while
+// the ledger (and the transcript) held a successful admission, stranding
+// the outbox rows as error pills (production probe, 2026-09-10: 200
+// {"entryId","attempt","state"}; 404 {"code":"not_found",...}). These
+// tests drive the deliverer against the actual generated handler
+// (abiconnect.NewHarnessABIServiceHandler over abitest.Server) so shape
+// drift between the stub and the wire can never re-emerge.
+
+func newRealABIStub(t *testing.T) *abitest.Server {
+	t.Helper()
+	return abitest.New()
+}
+
+// TestAgentdDeliver_RealConnectHandler: POST + poll against the real
+// generated handler — the Deliver ack parses (no "empty message
+// envelope"), and a row advanced to ADMITTED completes the terminus
+// through the real status wire shape.
+func TestAgentdDeliver_RealConnectHandler(t *testing.T) {
+	abi := newRealABIStub(t)
+	srv := httptest.NewServer(abi.Handler())
+	t.Cleanup(srv.Close)
+
+	// Admit the (entry, attempt) the moment the ledger row exists: swap
+	// the deliverer's poll cadence for the server-side state advance.
+	d := &agentdDeliverer{
+		baseURL: srv.URL,
+		client:  &http.Client{},
+		resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+			return srv.URL, "pw", nil
+		},
+		inlineWindow: 2 * time.Second,
+		pollEvery:    10 * time.Millisecond,
+	}
+	go func() {
+		// The handler LEDGERs on Deliver; advance it shortly after.
+		time.Sleep(20 * time.Millisecond)
+		abi.SetDeliveryState("e-real-1", 1, abiv1.LedgerState_LEDGER_STATE_ADMITTED)
+	}()
+	err := d.deliver(context.Background(), "ws1", "sess-ref", outbox.Entry{ID: "e-real-1", Text: "hello"})
+	require.NoError(t, err, "real unary ack must parse: LEDGERED poll -> ADMITTED completes")
+}
+
+// TestAgentdDeliver_RealConnectHandlerLedgeredTimesOut: with the row never
+// advancing past LEDGERED, the terminus surfaces the retryable window
+// timeout — parsed from the REAL wire shapes, never "empty message
+// envelope".
+func TestAgentdDeliver_RealConnectHandlerLedgeredTimesOut(t *testing.T) {
+	abi := newRealABIStub(t)
+	srv := httptest.NewServer(abi.Handler())
+	t.Cleanup(srv.Close)
+
+	d := &agentdDeliverer{
+		baseURL: srv.URL,
+		client:  &http.Client{},
+		resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+			return srv.URL, "pw", nil
+		},
+		inlineWindow: 100 * time.Millisecond,
+		pollEvery:    10 * time.Millisecond,
+	}
+	err := d.deliver(context.Background(), "ws1", "sess-ref", outbox.Entry{ID: "e-real-2", Text: "hello"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ledgered but not admitted")
+	assert.NotContains(t, err.Error(), "empty message envelope")
+	_, retryable := err.(*retryableError)
+	assert.True(t, retryable, "window timeout stays retryable")
+}
+
+// TestLedgerLookup_RealConnectHandlerNotFound: the real handler's 404 +
+// bare {"code":"not_found"} body surfaces as a parseable error (the
+// deliverer's retry path treats it as fall-through-to-re-POST).
+func TestLedgerLookup_RealConnectHandlerNotFound(t *testing.T) {
+	abi := newRealABIStub(t)
+	srv := httptest.NewServer(abi.Handler())
+	t.Cleanup(srv.Close)
+
+	_, err := ledgerLookup(context.Background(), &http.Client{}, srv.URL, "pw", "ob_missing", 7)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not_found")
+	assert.NotContains(t, err.Error(), "empty message envelope")
 }

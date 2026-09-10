@@ -221,24 +221,26 @@ func (d *agentdDeliverer) post(ctx context.Context, path string, pw string, payl
 	if out == nil {
 		return nil
 	}
-	// Connect JSON envelope: {"messageId":..., "code":..., "message":...}
-	var env struct {
-		Message json.RawMessage `json:"message"`
-		Error   *struct {
+	// Connect-protocol unary JSON: a 200 body IS the response message
+	// (bare JSON — connect-go's unary codec never wraps it in a
+	// {"message": ...} envelope; that wrapper is the streaming frame
+	// shape). Errors ride HTTP >= 400 with a bare {"code","message"}
+	// body — matching what abiconnect.NewHarnessABIServiceHandler emits
+	// (pinned against the real generated handler in
+	// TestAgentdDeliver_RealConnectHandler, and probed against
+	// production agentd: 200 {"entryId","attempt","state"} / 404
+	// {"code":"not_found","message":...}).
+	if resp.StatusCode >= 400 {
+		var e struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
-		} `json:"error"`
+		}
+		if json.Unmarshal(data, &e) == nil && e.Code != "" {
+			return fmt.Errorf("agentd terminus: %s: %s: %s", path, e.Code, e.Message)
+		}
+		return fmt.Errorf("agentd terminus: %s: status %d: %s", path, resp.StatusCode, string(data))
 	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		return fmt.Errorf("agentd terminus: decode envelope: %w", err)
-	}
-	if env.Error != nil {
-		return fmt.Errorf("agentd terminus: %s: %s", env.Error.Code, env.Error.Message)
-	}
-	if len(env.Message) == 0 {
-		return fmt.Errorf("agentd terminus: %s: empty message envelope", path)
-	}
-	return json.Unmarshal(env.Message, out)
+	return json.Unmarshal(data, out)
 }
 
 func ledgerPost(ctx context.Context, hc *http.Client, base, pw, sessionID, entryID string, attempt uint32, text string, model json.RawMessage) (string, error) {
