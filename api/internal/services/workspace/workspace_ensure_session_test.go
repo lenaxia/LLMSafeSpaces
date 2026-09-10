@@ -118,6 +118,14 @@ func TestEnsureSession_WorkspaceNotFound_ReturnsError(t *testing.T) {
 
 func TestEnsureSession_ActiveWorkspace_ReturnsSession(t *testing.T) {
 	fakeBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// #1312: the MCP readiness poll precedes session creation
+		if r.URL.Path == "/mcp" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]map[string]string{
+				"llmsafespaces": {"status": "connected"},
+			})
+			return
+		}
 		assert.Equal(t, "/session", r.URL.Path)
 		assert.Equal(t, http.MethodPost, r.Method)
 		user, pass, ok := r.BasicAuth()
