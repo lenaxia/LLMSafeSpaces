@@ -244,7 +244,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
 			proxyHandler.AdapterPodIPResolver(),
 			log.ZapLogger(),
-			agentoc.WithV2Store(true),
+			// #1313: delivery switched to V1 (the admitter POSTs
+			// /session/:sid/message). History MUST read from the same
+			// store V1 writes to — WithV2Store(true) routes reads to
+			// the V2 store which never sees V1-delivered messages
+			// (the disappearing-history bug). The v2Delivery flag
+			// remains for the outbox/terminus wiring only.
+			agentoc.WithV2Store(false),
 		)
 	} else {
 		agentAdapter = agentoc.NewAdapter(
