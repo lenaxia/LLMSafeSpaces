@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.8] - 2026-09-10
+
+### Fixed (#1313 follow-up — V1 admission timeout caused duplicate messages)
+- The V1 admission timeout was 10s (designed for V2 steer's fast
+  admit-and-return). V1 is SYNCHRONOUS — the response IS the LLM turn
+  (30-120s). The 10s window fired before the model finished, marked
+  the admission failed, and the retry ladder re-sent the same message
+  (the #1296 triplication class through a different mechanism).
+  Timeout increased to 3 minutes; the admitter already runs in a
+  goroutine so nothing blocks.
+
 ## [0.27.7] - 2026-09-10
 
 ### Fixed (#1313 - V2 steer delivery drops MCP tools; switch to V1)
