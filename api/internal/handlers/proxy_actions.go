@@ -94,28 +94,20 @@ func abiAct(ctx context.Context, base, pw string, payload any, out any) error {
 	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
-	}
-	var env struct {
-		Message json.RawMessage `json:"message"`
-		Error   *struct {
+		// Connect unary error: bare {"code","message"} body (same wire
+		// shape the real generated handler emits — pinned in
+		// proxy_actions_test against abiconnect.NewHarnessABIServiceHandler).
+		var e struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
-		} `json:"error"`
+		}
+		if json.Unmarshal(data, &e) == nil && e.Code != "" {
+			return &connectCodeError{code: e.Code, msg: e.Message}
+		}
+		return fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
 	}
-	if err := json.Unmarshal(data, &env); err != nil {
-		return fmt.Errorf("act: decode envelope: %w", err)
-	}
-	if env.Error != nil {
-		return &connectCodeError{code: env.Error.Code, msg: env.Error.Message}
-	}
-	if len(env.Message) == 0 {
-		return fmt.Errorf("act: empty message envelope")
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(env.Message, out)
+	// Connect unary success: the body IS the message (bare JSON).
+	return json.Unmarshal(data, out)
 }
 
 // connectCodeError carries the connect error code string off the wire.

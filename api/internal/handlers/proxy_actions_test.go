@@ -22,6 +22,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	"github.com/lenaxia/llmsafespaces/pkg/abi/abitest"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
@@ -47,14 +48,17 @@ func newActStubPod(t *testing.T, fail bool) *actStubPod {
 		stub.got <- m
 		w.Header().Set("Content-Type", "application/json")
 		if stub.fail {
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			// Connect unary error: HTTP status + bare {"code","message"}.
+			w.WriteHeader(http.StatusNotImplemented)
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"code": "unimplemented", "message": "not declared in this authority's capability report",
-			}})
+			})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{
+		// Connect unary success: the response message itself, bare.
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"sessionId": m["sessionId"], "interrupt": map[string]any{},
-		}})
+		})
 	})
 	stub.server = httptest.NewServer(mux)
 	t.Cleanup(stub.server.Close)
@@ -174,4 +178,41 @@ func TestSessionAction_NonObjectBodyIs400(t *testing.T) {
 		strings.NewReader(`"interrupt"`))
 	router.ServeHTTP(res, req)
 	assert.Equal(t, http.StatusBadRequest, res.Code)
+}
+
+// TestAbiAct_RealConnectHandler pins the Act wire shape against the real
+// generated handler (abiconnect.NewHarnessABIServiceHandler over
+// abitest.Server): unary success is a bare JSON body and errors ride
+// HTTP >= 400 with {"code","message"} — never a {"message": ...}
+// envelope (the parser bug that stranded every real unary ack).
+func TestAbiAct_RealConnectHandler(t *testing.T) {
+	abi := abitest.New()
+	srv := httptest.NewServer(abi.Handler())
+	t.Cleanup(srv.Close)
+
+	var out json.RawMessage
+	err := abiAct(context.Background(), srv.URL, "pw", map[string]any{
+		"sessionId": "sess-ref",
+		"interrupt": map[string]any{},
+	}, &out)
+	require.NoError(t, err, "real unary success body must parse as the message")
+	assert.Equal(t, "sess-ref", gjson(t, out, "sessionId"))
+
+	err = abiAct(context.Background(), srv.URL, "pw", map[string]any{
+		"sessionId": "sess-ref",
+		"compact":   map[string]any{},
+	}, &out)
+	require.Error(t, err)
+	cce, ok := err.(*connectCodeError)
+	require.True(t, ok, "real connect error maps to connectCodeError, got %T", err)
+	assert.Equal(t, "unimplemented", cce.code)
+}
+
+// gjson extracts a top-level string field from raw JSON (test-local).
+func gjson(t *testing.T, raw json.RawMessage, key string) string {
+	t.Helper()
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(raw, &m))
+	s, _ := m[key].(string)
+	return s
 }
