@@ -20,7 +20,7 @@ Get the US-70 delivery pool green on main by root-causing the F1 row ("autopush 
 - The heal driver is `api/internal/services/secretsreconcile` (60s level-triggered pass; per-workspace exponential backoff 5s doubling toward a 10-min cap, +25% jitter). Every eligible re-notify → agentpush POST /v1/resync-secrets → pod's in-process conditional pull → one faulted pod-bootstrap → burn 1.
 - Arithmetic: burns at 5+10+20+40+80… cannot exhaust a 24-budget inside F1's 300s converge window. Observed: last fault burned 01:27:45, deadline ~01:27:04 — 41s past — then the heal still needed a clean pull + apply + session-aware restart + statusz mirror (≤60s). **Unsatisfiable by construction at 24** with any bounded cadence. This matches F6's own history: at 16 AND 24 the seam was budget-lottery (runs 34276744182, 34284549387), which is why F6 self-arms 6.
 - Pod-side rate limit is NOT a factor: `resyncDefaultMinInterval = 2s`.
-- AC-1b (the other pool-red) was already fixed by #1317; F1 was the remaining blocker.
+- AC-1b (the other pool-red) was NEVER fixed by #1317 (r3 correction of this bullet: #1317 fixed only the unit-test env-leak; the cluster row failed byte-identically on #1317's own head, 34552707878) — it is a separate root cause, fixed by #1326. F1 and AC-1b were BOTH blockers; this PR owns F1.
 
 ### Fix (TDD)
 
