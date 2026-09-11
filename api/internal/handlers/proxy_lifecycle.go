@@ -47,6 +47,13 @@ func (h *ProxyHandler) Start() error {
 			return
 		}
 
+		// #1316: wire the ledger probe BEFORE the watcher starts — an
+		// Active event in the seed window must find it armed, and the
+		// write must happen-before any goroutine that reads it.
+		if h.outbox != nil && h.agentdTerminus {
+			h.outbox.SetLedgerProbe(h.outboxLedgerProbe)
+		}
+
 		watcher, err := workspace.NewWatcher(h.k8sClient, h.logger, h.namespace, h.onPhaseChange)
 		if err != nil {
 			_ = h.activityTracker.Stop()
@@ -78,18 +85,17 @@ func (h *ProxyHandler) Start() error {
 				h.outbox.SetOnDelivered(h.outboxOnDelivered)
 				h.outbox.SetOnStaged(h.outboxOnStaged)
 			}
-			// #1316: the parked-error sweeper and park guard need the
-			// ledger as truth source — wired iff the terminus regime is.
-			if h.agentdTerminus {
-				h.outbox.SetLedgerProbe(h.outboxLedgerProbe)
-			}
 			wctx, wcancel := context.WithCancel(context.Background())
 			h.outboxCancel = wcancel
+			h.outboxDone = make(chan struct{})
 			go func() {
 				<-h.stopCh
 				wcancel()
 			}()
-			go h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
+			go func() {
+				defer close(h.outboxDone)
+				h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
+			}()
 		}
 	})
 	return startErr
@@ -109,6 +115,16 @@ func (h *ProxyHandler) Stop() error {
 		}
 		if h.activityTracker != nil {
 			_ = h.activityTracker.Stop()
+		}
+		// Bounded join of the outbox Run loop (it joins its own workers;
+		// a mid-turn delivery can legitimately hold it for
+		// DeliveryTimeout, so the wait is best-effort in production —
+		// but deterministic in tests, where no delivery is in flight).
+		if h.outboxDone != nil {
+			select {
+			case <-h.outboxDone:
+			case <-time.After(5 * time.Second):
+			}
 		}
 	})
 	return nil

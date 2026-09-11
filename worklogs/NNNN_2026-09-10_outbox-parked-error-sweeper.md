@@ -39,10 +39,10 @@ Kill the parked-error stranding class from the 2026-09-10 ses_f73747f8 incident:
 ## Key Decisions
 
 1. **Probe-based, not message-based, park discrimination.** `SweepWorkspaceUnverifiable`'s single-lastError-string match is documented as a gap; the new sweeper consults ledger state exclusively.
-2. **The sweeper holds the per-session delivery lock** (with a bounded 2s retry): its LRange→LSet/LRem window would race same-session `deliverOne` (or a peer replica's sweep) on a periodic cadence — an index-based LSet against a mutated list overwrites the wrong entry. Found in adversarial review (F1); the retry (not skip) matters because same-tick deliverOne routinely wins the spawn race (found as an e2e regression: deterministic skip → 60s starvation).
+2. **The sweeper holds the per-session delivery lock** (with a bounded 2s retry): its LRange→LSet/LRem window would race same-session `deliverOne` (or a peer replica's sweep) on a periodic cadence — an index-based LSet against a mutated list overwrites the wrong entry. Found in adversarial review (F1); the retry (not skip) matters because same-tick deliverOne routinely wins the spawn race (found as an e2e regression: deterministic skip → 60s starvation). *(Round 2 tightened the scope: `Retry`, `ParkWorkspace`/`UnparkWorkspace`, and `SweepWorkspaceUnverifiable` mutate the same lists and now hold the same lock; all snapshot-index mutators iterate descending.)*
 3. **`indeterminate` vs `stayed` outcome labels** (F2): the canary must not treat a dead pod like a confirmed terminal.
 4. **Guard applies only at the park threshold.** Below it, the existing re-arm + prior-attempt resolution already prevents re-POSTing live rows (pinned by existing terminus tests); minimal diff, no new loop.
-5. **Attempt-numbering truthfulness:** the guard keeps the `Attempts` increment for owns-admission timeouts; the sweeper adopts an observed attempt+1 FAILED row. Both keep the terminus's `attemptOf(Attempts)+1` contract intact so re-picks poll, never re-POST.
+5. **Attempt-numbering truthfulness** *(superseded in review round 1 — see corrections)*: the shipped behavior is stricter — owns-admission poll timeouts (`PriorAttemptPendingError`) and no-attempt failures (`TransientDeliveryError` + `TransientFails` budget) never mint numbers at all; only a driven POST does. The sweeper adopts an observed attempt+1 FAILED row.
 6. **Full LEDGERED-forever convergence needs 1b** (#1311's per-state deadlines flip stranded LEDGERED rows to FAILED, which this sweeper then dispositions). Documented in code; the streams compose per the epic's design.
 
 ## Assumptions (Rule 7) — stated and validated
@@ -119,3 +119,13 @@ Two claims in this worklog were wrong and are corrected here (discipline: correc
 - `api/internal/handlers/proxy_lifecycle.go` (SetLedgerProbe wiring)
 - `api/internal/handlers/proxy_events.go` (Active-transition trigger)
 - `worklogs/NNNN_2026-09-10_outbox-parked-error-sweeper.md` (this file)
+---
+
+## Review round 2 corrections (PR #1318, commit 82aaac07)
+
+Round-2 findings — all validated real, all fixed with regression tests:
+
+1. **Lock-free sibling mutators** (`Retry`, `ParkWorkspace`/`UnparkWorkspace`, `SweepWorkspaceUnverifiable`) carried the same snapshot-index corruption class (reviewer reproduced silent neighbor destruction). All now hold the per-session lock and iterate descending; `TestRetryVsSweepConcurrency` pins any-interleaving safety.
+2. **Attempt-counter drift on no-POST cycles** (resolve failures, cancelled prior-row polls) could park past a live LEDGERED row — unrecoverable, with a Retry re-POST tail. New `TransientDeliveryError` marker + `TransientFails` budget: transient failures never mint numbers, converge to an honest park without ledger rows, and the guard (now probing Attempts AND Attempts+1) holds/completes whenever the ledger holds. Pinned by `TestDeliverOne_TransientDriftNeverParksWhileAdmitted` and `TestTransientFailuresConvergeToParkWithoutLedger`.
+3. The vacuous second half of `TestDeliverOne_PriorPendingNeverMints` was removed; the guard-held recovery composition (hold → admit → re-poll completes) is pinned by `TestDeliverOne_GuardHeldRecoveryComposition`.
+4. `SetLedgerProbe` now wires BEFORE `watcher.Start()` (seed-window Active events find it armed; write happens-before all reader goroutines); `TestSweeperE2E_SeedTransitionArmedBeforeWatcher` pins it with the periodic path disabled.

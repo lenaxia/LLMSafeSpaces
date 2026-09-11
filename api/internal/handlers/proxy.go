@@ -139,6 +139,11 @@ type ProxyHandler struct {
 
 	// outboxCancel stops the outbox delivery worker on Stop().
 	outboxCancel context.CancelFunc
+	// outboxDone closes when the outbox Run loop has fully returned
+	// (workers joined). Stop waits on it (bounded) so no Run goroutine
+	// leaks past the handler's lifetime into later tests' package-var
+	// tuning — the #1316 review round 2 race.
+	outboxDone chan struct{}
 
 	// outbox is the D3 durable-prompt outbox (design 0050, #907). nil
 	// means the outbox is disabled (dev/test) and the legacy synchronous

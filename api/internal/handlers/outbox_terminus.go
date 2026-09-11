@@ -92,7 +92,9 @@ func (d *agentdDeliverer) endpoint(ctx context.Context, workspaceID, sessionID s
 func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	base, pw, err := d.endpoint(ctx, workspaceID, sessionID)
 	if err != nil {
-		return fmt.Errorf("agentd terminus: resolve: %w", err)
+		// Resolve drove no attempt — transient: the outbox must not
+		// mint an attempt number for it (#1316 review round 2).
+		return outbox.Transient(fmt.Errorf("agentd terminus: resolve: %w", err))
 	}
 
 	// I10/I6: resolve the prior attempt first — a retry must never
@@ -118,7 +120,9 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 				if timedOut {
 					return outbox.PriorAttemptPending(&retryableError{fmt.Errorf("agentd terminus: attempt %d still %s (agentd owns admission)", e.Attempts, prior)})
 				}
-				return perr
+				// A canceled/errored prior-row poll drove no attempt —
+				// transient, never mints a number.
+				return outbox.Transient(perr)
 			}
 			// failed (or unknown non-completing terminal): fall through
 			// to a fresh POST at attempt+1 — the re-arm path.

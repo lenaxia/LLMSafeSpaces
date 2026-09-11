@@ -171,6 +171,11 @@ func (s *Service) acquireLockWithRetry(ctx context.Context, ws, ses string) (str
 	}
 }
 
+// Note (r2 robustness): the session lock is held across probes (up to
+// 2 x probeTimeout per entry, bounded by the pass budget), so a
+// black-holed pod's sessions consume sweep-pass budget and can starve
+// other sessions' sweeps for that cycle — delivery is blocked only for
+// the held session, and L9 retains headroom at the 60s cadence.
 func (s *Service) sweepSessionParked(ctx context.Context, ws, ses string, now time.Time) int {
 	qk := qKey(ws, ses)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
@@ -259,6 +264,7 @@ func (s *Service) dispositionParked(ctx context.Context, ws, ses string, e *Entr
 	e.Status = StatusPending
 	e.Attempts = attempts
 	e.LastError = ""
+	e.TransientFails = 0
 	e.NextAttemptAt = now
 	return "rearmed"
 }
@@ -279,9 +285,11 @@ func (s *Service) probeLedger(ctx context.Context, ws, ses, entryID string, atte
 //     delivering on a bounded re-poll, never park
 //   - neither: park as before (failed row, no row, or indeterminate probe)
 //
-// Only consulted at the park threshold; below it the failure branch
-// re-arms to pending exactly as before, and the terminus's prior-attempt
-// resolution already prevents re-POSTing a live row.
+// Only consulted at a park threshold (attempt or transient budget);
+// below it the failure branch re-arms to pending exactly as before, and
+// the terminus's prior-attempt resolution already prevents re-POSTing a
+// live row. Probes the entry's real attempt rows both ways (Attempts
+// and Attempts+1) so counter alignment can never hide an admitted row.
 func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (completes, holds bool) {
 	if s.ledgerProbe == nil {
 		return false, false
@@ -293,5 +301,31 @@ func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (compl
 	if ledgerStateCompletes(state) {
 		return true, false
 	}
-	return false, state == LedgerStateLedgered
+	if state == LedgerStateLedgered {
+		return false, true
+	}
+	if state == "" {
+		next, nerr := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts+1)
+		if nerr == nil {
+			if ledgerStateCompletes(next) {
+				return true, false
+			}
+			return false, next == LedgerStateLedgered
+		}
+	}
+	return false, false
+}
+
+// applyParkGuardDisposition executes a guard override at a park
+// threshold: completes → finish the entry (staging drain + the single
+// confirmed-delivery seam); holds → stay delivering on a bounded re-poll.
+func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context, ws, ses, qk, dk string, idx int, staged []byte, e Entry, now time.Time) {
+	if completes {
+		s.client.LRem(ctx, dk, 1, staged)
+		s.fireOnDelivered(ws, ses, e)
+		return
+	}
+	e.Status = StatusDelivering
+	e.NextAttemptAt = now.Add(ownsAdmissionRePollBackoff)
+	s.restoreStaged(ctx, qk, dk, idx, staged, e)
 }

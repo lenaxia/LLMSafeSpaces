@@ -419,16 +419,13 @@ func TestDeliverOne_PriorPendingNeverMints(t *testing.T) {
 	assert.Equal(t, MaxAttempts, entries[0].Attempts, "no phantom attempt minted")
 	assert.False(t, entries[0].NextAttemptAt.Before(time.Now().Add(time.Second)),
 		"re-poll backoff-gated")
-
-	// The sweeper still sees the row: LEDGERED at attempt 5 → stays (no
-	// park, no loss), and once agentd admits it, the same probe
-	// dispositions it — never stranded by a phantom attempt number.
-	before := probeCalls.Load()
-	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
-	require.NoError(t, err)
-	assert.Equal(t, 0, n, "LEDGERED stays this pass")
-	assert.GreaterOrEqual(t, probeCalls.Load(), before, "the row remains visible to the sweeper")
+	_ = probeCalls
 }
+
+// (The guard-held entry's full recovery composition — hold → ledger
+// admits → re-poll completes — is pinned by
+// TestDeliverOne_GuardHeldRecoveryComposition; the sweeper itself only
+// touches status:error entries, so probing it here was vacuous.)
 
 func outboxErrPriorPendingForTest() error {
 	return PriorAttemptPending(errors.New("agentd terminus: attempt 5 still LEDGER_STATE_LEDGERED (agentd owns admission)"))
@@ -639,4 +636,144 @@ func TestSweeperFaultLeg_AgentdDownThenAdmitted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "pod back with the row admitted: next pass completes it")
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+}
+
+// TestRetryVsSweepConcurrency (review r2 finding 1): the lock-free
+// snapshot LSet in Retry racing the sweeper's LRem used to shift
+// indices and overwrite an innocent neighbor. With both under the
+// session delivery lock, ANY interleaving leaves every non-swept entry
+// exactly once — the victim survives.
+func TestRetryVsSweepConcurrency(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, map[string]string{"eA|5": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 5, "context deadline exceeded")
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eB", 5, "context deadline exceeded")
+	seedQueueEntry(t, s, "ws-1", "ses-1", "eC", StatusPending) // the victim
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	}()
+	go func() {
+		defer wg.Done()
+		s.Retry(context.Background(), "ws-1", "ses-1", "eB")
+	}()
+	wg.Wait()
+
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	ids := map[string]int{}
+	states := map[string]string{}
+	for _, e := range entries {
+		ids[e.ID]++
+		states[e.ID] = e.Status
+	}
+	assert.Equal(t, 1, ids["eC"], "the innocent neighbor survives exactly once (S3)")
+	assert.Equal(t, StatusPending, states["eC"])
+	assert.Equal(t, 1, ids["eB"], "the retried entry survives exactly once")
+	assert.NotContains(t, ids, "eA", "the ledger-admitted entry completed")
+}
+
+// TestDeliverOne_GuardHeldRecoveryComposition (review r2 missing-test
+// 2): the full owns-admission lifecycle — hold (prior LEDGERED → stays
+// delivering, numbering frozen) → ledger admits → the re-poll completes
+// the entry through the single onDelivered seam.
+
+// shrinkRePoll speeds up guard-held re-poll cycles for tests.
+func shrinkRePoll(t *testing.T) {
+	t.Helper()
+	old := ownsAdmissionRePollBackoff
+	ownsAdmissionRePollBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { ownsAdmissionRePollBackoff = old })
+}
+
+func TestDeliverOne_GuardHeldRecoveryComposition(t *testing.T) {
+	s, _ := newTestService(t)
+	shrinkRePoll(t)
+	var delivered atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { delivered.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusDelivering, Attempts: MaxAttempts}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	hold := func(ctx context.Context, ws, ses string, e Entry) error {
+		return PriorAttemptPending(errors.New("attempt 5 still LEDGER_STATE_LEDGERED"))
+	}
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", hold))
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusDelivering, entries[0].Status)
+	assert.Equal(t, MaxAttempts, entries[0].Attempts, "numbering frozen while agentd owns admission")
+
+	time.Sleep(20 * time.Millisecond)                                             // let the re-poll backoff lapse
+	ok := func(ctx context.Context, ws, ses string, e Entry) error { return nil } // the poll observed admission
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", ok))
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"), "admitted re-poll completes")
+	assert.Equal(t, int32(1), delivered.Load())
+}
+
+// TestDeliverOne_TransientDriftNeverParksWhileAdmitted (review r2
+// finding 2): resolve-error cycles during an owns-admission hold must
+// never mint attempt numbers — at the transient budget the guard still
+// sees the real row (numbering aligned), holds the entry delivering,
+// and the admission completes it. No parked-while-admitted, ever.
+func TestDeliverOne_TransientDriftNeverParksWhileAdmitted(t *testing.T) {
+	s, _ := newTestService(t)
+	shrinkRePoll(t)
+	probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateLedgered})
+	s.SetLedgerProbe(probe)
+	var delivered atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { delivered.Add(1) })
+
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusDelivering,
+		Attempts: MaxAttempts, TransientFails: MaxTransientFailures - 1}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	blip := func(ctx context.Context, ws, ses string, e Entry) error {
+		return Transient(errors.New("agentd terminus: resolve: no pod IP"))
+	}
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", blip))
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusDelivering, entries[0].Status, "transient budget reached, row LEDGERED — held, never parked")
+	assert.Equal(t, MaxAttempts, entries[0].Attempts, "no drift: numbering stays on the real row")
+	assert.Equal(t, MaxTransientFailures, entries[0].TransientFails)
+
+	// The row admits; the re-poll completes — never a false terminal.
+	time.Sleep(20 * time.Millisecond) // let the re-poll backoff lapse
+	ok := func(ctx context.Context, ws, ses string, e Entry) error { return nil }
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", ok))
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+	assert.Equal(t, int32(1), delivered.Load())
+}
+
+// TestTransientFailuresConvergeToParkWithoutLedger: with no ledger rows
+// at all (adapter-era entry, probe finds nothing), transient failures
+// still converge to an honest terminal park on their own budget.
+func TestTransientFailuresConvergeToParkWithoutLedger(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, nil) // no rows anywhere
+	s.SetLedgerProbe(probe)
+
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusPending, TransientFails: MaxTransientFailures - 1}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	blip := func(ctx context.Context, ws, ses string, e Entry) error {
+		return Transient(errors.New("agentd terminus: resolve: no pod IP"))
+	}
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", blip))
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusError, entries[0].Status, "no-attempt failures converge on their own budget")
+	assert.Equal(t, 0, entries[0].Attempts, "no attempt was ever minted")
 }

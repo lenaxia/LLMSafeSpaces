@@ -72,7 +72,8 @@ type Entry struct {
 	Attempts        int             `json:"attempts"`                // definitive failures only
 	LastAttemptAt   time.Time       `json:"lastAttemptAt,omitempty"` // send-window start (verifier anchor)
 	VerifyAttempts  int             `json:"verifyAttempts,omitempty"`
-	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"` // backoff gate (zero = now)
+	TransientFails  int             `json:"transientFails,omitempty"` // no-attempt-driven failures (never mint numbering)
+	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"`  // backoff gate (zero = now)
 	LastError       string          `json:"lastError,omitempty"`
 	Status          string          `json:"status"` // pending | delivering | verifying | error
 
@@ -134,6 +135,11 @@ var (
 	// MaxVerifyAttempts bounds inconclusive passes before the entry
 	// parks as error (agent unreachable for the full backoff span).
 	MaxVerifyAttempts = 40
+	// MaxTransientFailures bounds no-attempt-driven failures (resolve
+	// errors, canceled polls) before the entry parks — transient
+	// failures never mint attempt numbers (#1316 review round 2), so
+	// they need their own convergence bound.
+	MaxTransientFailures = 20
 )
 
 // ErrCapped is returned when the session's outbox is at Cap.
@@ -202,6 +208,27 @@ func PriorAttemptPending(err error) error {
 		return nil
 	}
 	return &PriorAttemptPendingError{Err: err}
+}
+
+// TransientDeliveryError marks a failure in which NO attempt was driven
+// (endpoint resolve failure, a canceled prior-row poll): minting an
+// attempt number would drift the counter past the real ledger row —
+// parking an entry whose admitted row the sweeper can then never find
+// (#1316 review round 2). Transient failures retry on their own bounded
+// budget (MaxTransientFailures) without touching attempt numbering.
+type TransientDeliveryError struct{ Err error }
+
+func (t *TransientDeliveryError) Error() string {
+	return "transient delivery failure: " + t.Err.Error()
+}
+func (t *TransientDeliveryError) Unwrap() error { return t.Err }
+
+// Transient wraps err as a no-attempt-driven delivery failure.
+func Transient(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TransientDeliveryError{Err: err}
 }
 
 // Verdict is a verifier's decision about an ambiguous delivery attempt.
@@ -308,12 +335,21 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 		if ws != workspaceID {
 			continue
 		}
+		// Same lock discipline as the parked sweep (#1316 review round 2
+		// finding 1): a lock-free snapshot LSet racing another mutator's
+		// LRem shifts indices and overwrites an innocent neighbor.
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue
+		}
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
+			s.releaseLock(ctx, ws, ses, token)
 			continue // best-effort sweep; the next transition retries
 		}
-		for i, v := range vals {
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := vals[i]
 			var e Entry
 			if json.Unmarshal([]byte(v), &e) != nil {
 				continue
@@ -333,6 +369,7 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 			}
 			swept++
 		}
+		s.releaseLock(ctx, ws, ses, token)
 	}
 	return swept, nil
 }
@@ -696,22 +733,34 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
 		return true
 	}
+	var transient *TransientDeliveryError
+	if errors.As(derr, &transient) {
+		// No attempt was driven (resolve failure, canceled poll):
+		// attempt numbering must stay aligned with real ledger rows.
+		// Transient failures converge on their own bounded budget.
+		e.LastError = derr.Error()
+		e.TransientFails++
+		if e.TransientFails >= MaxTransientFailures {
+			if completes, holds := s.parkGuard(bctx, ws, ses, e); completes || holds {
+				s.applyParkGuardDisposition(completes, bctx, ws, ses, qk, dKey(ws, ses), idx, staged, e, now)
+				return true
+			}
+			e.Status = StatusError
+		} else {
+			e.Status = StatusPending
+			e.NextAttemptAt = now.Add(backoffFor(e.TransientFails))
+		}
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		return true
+	}
 	e.Attempts++
 	e.LastError = derr.Error()
 	if e.Attempts >= MaxAttempts {
 		// #1316 park guard: never park an entry the ledger still holds.
 		// Admission ownership is agentd's — an error pill here fuels the
 		// retry → re-admission cycle (ses_f73747f8).
-		completes, holds := s.parkGuard(bctx, ws, ses, e)
-		switch {
-		case completes:
-			s.client.LRem(bctx, dKey(ws, ses), 1, staged)
-			s.fireOnDelivered(ws, ses, e)
-			return true
-		case holds:
-			e.Status = StatusDelivering
-			e.NextAttemptAt = time.Now().UTC().Add(ownsAdmissionRePollBackoff)
-			s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		if completes, holds := s.parkGuard(bctx, ws, ses, e); completes || holds {
+			s.applyParkGuardDisposition(completes, bctx, ws, ses, qk, dKey(ws, ses), idx, staged, e, now)
 			return true
 		}
 		e.Status = StatusError
@@ -952,7 +1001,15 @@ func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string
 }
 
 // Retry clears an error entry back to pending (the queue UI's retry).
+// Holds the session delivery lock: a lock-free snapshot LSet racing a
+// concurrent sweep's LRem shifts indices and overwrites an innocent
+// neighbor (#1316 review round 2 finding 1).
 func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) bool {
+	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
+	if !ok {
+		return false // a delivery owns the session; the retry lands after it
+	}
+	defer s.releaseLock(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
@@ -964,6 +1021,7 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 			e.Status = StatusPending
 			e.Attempts = 0
 			e.VerifyAttempts = 0
+			e.TransientFails = 0
 			e.LastError = ""
 			e.NextAttemptAt = time.Time{}
 			s.client.LSet(ctx, qk, int64(i), string(mustMarshal(e)))

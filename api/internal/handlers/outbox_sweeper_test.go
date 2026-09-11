@@ -299,3 +299,32 @@ func TestSweeperFaultLeg_RolloverAdmitsViaPlusOne(t *testing.T) {
 	assert.Empty(t, queueOf(t, rdb, "ws-leg6", "ses-1"))
 	assert.Equal(t, int64(0), stub.deliverHits.Load(), "lookup-only recovery (S9)")
 }
+
+// TestSweeperE2E_SeedTransitionArmedBeforeWatcher (#1316 review r2
+// finding 4): the probe is wired BEFORE the watcher starts, so the
+// Start() seed's own Active transition can sweep — pinned by shrinking
+// the periodic interval to nothing-relevant (an hour), leaving the
+// seed transition as the only possible recovery path.
+func TestSweeperE2E_SeedTransitionArmedBeforeWatcher(t *testing.T) {
+	stub := newLedgerStub(t, 1<<30)
+	stub.muxx.Lock()
+	stub.rows[rowKey("ob-seed", 5)] = "admitted"
+	stub.muxx.Unlock()
+	handler, svc, rdb := newSweeperEnv(t, "ws-swp70seed", stub.server.URL)
+	handler.SetAgentdTerminus(true)
+
+	old := outbox.ParkedSweepInterval
+	outbox.ParkedSweepInterval = time.Hour // kill the periodic path
+	t.Cleanup(func() { outbox.ParkedSweepInterval = old })
+
+	seedParked(t, svc, "ws-swp70seed", "ses-1", "ob-seed", 5, "context deadline exceeded")
+	handler.SetPriorPhaseForTest("ws-swp70seed", "Suspended") // the seed IS a transition
+
+	require.NoError(t, handler.Start())
+	t.Cleanup(func() { _ = handler.Stop() })
+
+	waitFor(t, func() bool { return len(queueOf(t, rdb, "ws-swp70seed", "ses-1")) == 0 })
+	assert.Empty(t, queueOf(t, rdb, "ws-swp70seed", "ses-1"),
+		"the seed-window transition found the probe armed (wire-before-watch)")
+	assert.Equal(t, int64(0), stub.deliverHits.Load())
+}
