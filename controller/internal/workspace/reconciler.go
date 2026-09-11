@@ -71,6 +71,18 @@ type WorkspaceReconciler struct {
 	// Empty = path-based dev preview (unchanged behavior).
 	PreviewOriginBaseDomain string
 
+	// APIPublicURL (#1332) is the externally reachable API origin wired
+	// into every container that runs agentd tooling as
+	// LLMSAFESPACE_API_PUBLIC_URL — the origin the dev_preview_url MCP
+	// tool bakes into user-facing URLs. Distinct from APIServiceURL
+	// (in-cluster, load-bearing for bootstrap): in sidecar mode the tool
+	// runs in the sidecar, whose LLMSAFESPACE_API_URL is deliberately the
+	// svc coordinate. When unset and PreviewOriginBaseDomain is set, the
+	// controller derives https://api.<baseDomain>; when both are unset
+	// the env is omitted and the tool validates LLMSAFESPACE_API_URL,
+	// refusing cluster-internal values. Same value as --api-public-url
+	// (Helm value api.publicUrl).
+	APIPublicURL string
 	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
 	// digest-addressed image volume into every workspace pod and the
 	// entrypoint verifies the binary's sha256 against the per-arch pins
@@ -309,6 +321,22 @@ func tagFromSpecImage(image string) string {
 		return image[lastColon+1:]
 	}
 	return image
+}
+
+// publicAPIURL resolves the origin wired as LLMSAFESPACE_API_PUBLIC_URL
+// (#1332): the explicit flag, else the https://api.<baseDomain> derivation
+// when only preview origins are configured, else empty (env omitted — the
+// agentd tool then validates LLMSAFESPACE_API_URL and refuses
+// cluster-internal values). Single derivation point; both pod builders
+// consume it.
+func (r *WorkspaceReconciler) publicAPIURL() string {
+	if r.APIPublicURL != "" {
+		return r.APIPublicURL
+	}
+	if r.PreviewOriginBaseDomain != "" {
+		return "https://api." + r.PreviewOriginBaseDomain
+	}
+	return ""
 }
 
 // --- Operations Metrics ---

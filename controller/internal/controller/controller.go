@@ -42,7 +42,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -65,6 +65,7 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 		OrgStatusClient:           orgStatusClient,
 		DefaultRuntimeClass:       defaultRuntimeClass,
 		APIServiceURL:             apiServiceURL,
+		APIPublicURL:              apiPublicURL,
 		PreviewOriginBaseDomain:   previewOriginBaseDomain,
 		AgentdImage:               agentdDelivery.Image,
 		AgentdBinarySHA256AMD64:   agentdDelivery.BinarySHA256AMD64,

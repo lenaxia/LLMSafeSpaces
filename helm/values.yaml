@@ -270,6 +270,16 @@ controller:
   # clear internalToken — by default both are wired so D20 is functional.
   apiServiceURL: ""
 
+  # #1332: the PUBLICLY reachable API origin (e.g. https://api.example.com)
+  # wired into workspace pods as LLMSAFESPACE_API_PUBLIC_URL — the origin the
+  # agentd dev_preview_url MCP tool bakes into user-facing URLs. This is NOT
+  # the in-cluster service URL (apiServiceURL above): in sidecar mode the tool
+  # runs where LLMSAFESPACE_API_URL is deliberately the in-cluster coordinate.
+  # Empty ("") derives https://api.<previewOrigin.baseDomain> when preview
+  # origins are enabled; agentd refuses to emit cluster-internal origins either
+  # way, so a misconfiguration fails loudly instead of handing users dead links.
+  apiPublicURL: ""
+
   # #863 agentd overlay delivery. When enabled, workspace pods receive the
   # workspace-agentd binary via a digest-pinned read-only image volume
   # (KEP-4639) instead of the copy baked into runtimes/base, and the

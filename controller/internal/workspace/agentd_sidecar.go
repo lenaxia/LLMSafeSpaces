@@ -157,6 +157,19 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// in cmd/workspace-agentd/sidecar_boot.go.
 		{Name: "LLMSAFESPACE_BOOTSTRAP_SECRETS_OUT", Value: "/sandbox-runtime/rt/secrets.json"},
 	}
+	// #1332: the dev_preview_url MCP tool runs in THIS container in
+	// sidecar mode. LLMSAFESPACE_API_URL above is the in-cluster svc
+	// coordinate the boot phase requires — user-facing URLs must come
+	// from the dedicated public origin instead. The preview-origin base
+	// domain rides along so origin mode (bootstrap URL → per-workspace
+	// preview origin) works from the sidecar exactly as it does from the
+	// main container.
+	if public := r.publicAPIURL(); public != "" {
+		env = append(env, corev1.EnvVar{Name: "LLMSAFESPACE_API_PUBLIC_URL", Value: public})
+	}
+	if r.PreviewOriginBaseDomain != "" {
+		env = append(env, corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain})
+	}
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
 	}
