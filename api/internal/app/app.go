@@ -32,6 +32,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/cache"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/canary"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
@@ -94,6 +95,7 @@ type App struct {
 	keyRewrapSvc       *keyrewrap.Service         // US-70.4: login-independent user_keys re-wrap reconciler
 	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
 	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
+	canarySvc          *canary.Service            // epic-71 / 0c: metrics-only canary probe runner; nil when the knob is off
 	invitationsHandler *handlers.InvitationsHandler
 	emailService       *emailsvc.Service
 	emailHandler       *handlers.EmailHandler
@@ -1469,6 +1471,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		keyRewrapSvc:       keyRewrapSvc,
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
+		canarySvc:          newCanaryService(cfg, k8sClient, log),
 		invitationsHandler: invitationsHandler,
 		emailService:       emailService,
 		emailHandler:       emailHandler,
@@ -1517,6 +1520,19 @@ func (a *App) Run() error {
 	if a.jwtSessionJanitor != nil {
 		go a.jwtSessionJanitor.Run(a.ctx)
 		a.logger.Info("jwt_sessions janitor started", "interval", secrets.DefaultJWTSessionJanitorInterval.String())
+	}
+
+	// Epic-71 / 0c (#1312): the metrics-only canary probe runner.
+	// Janitor lifecycle — Stop is the root-context cancel in Shutdown.
+	// Nil unless the knob is on (nil-service gating); every replica may
+	// run it: probes are idempotent reads/absence-resolves on synthetic
+	// ids, and per-replica series expose replica-local network paths.
+	if a.canarySvc != nil {
+		go a.canarySvc.Run(a.ctx)
+		a.logger.Info("canary probe service started",
+			"interval", a.config.Canary.Interval.String(),
+			"timeout", a.config.Canary.Timeout.String(),
+			"classes", len(a.config.Canary.Classes))
 	}
 
 	// US-70.4: start the user_keys re-wrap reconciler (immediate startup

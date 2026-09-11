@@ -257,6 +257,26 @@ type Config struct {
 		DefaultStorageClass string `mapstructure:"defaultStorageClass"`
 	} `mapstructure:"workspace"`
 
+	// Canary is the epic-71 / 0c production canary (#1312, metrics-only):
+	// a per-class probe runner (snapshot-path liveness + S6
+	// resolve-by-absence) that turns stale-state incidents into metrics
+	// while the wave fixes land. Fail-closed like Turnstile: Enabled
+	// without Classes refuses to boot (a canary probing nothing is a
+	// false sense of coverage). Off by default; alerts are gated until
+	// L3/L4 are green per the epic's wave plan.
+	//
+	// Wired via ops-prod cluster-config → chart values → env:
+	//   LLMSAFESPACES_CANARY_ENABLED   ("true" | unset)
+	//   LLMSAFESPACES_CANARY_INTERVAL  (Go duration; default 60s)
+	//   LLMSAFESPACES_CANARY_TIMEOUT   (Go duration; default 2s)
+	//   LLMSAFESPACES_CANARY_CLASSES   (comma-separated runtime-env names)
+	Canary struct {
+		Enabled  bool          `mapstructure:"enabled"`
+		Interval time.Duration `mapstructure:"interval"`
+		Timeout  time.Duration `mapstructure:"timeout"`
+		Classes  []string      `mapstructure:"classes"`
+	} `mapstructure:"canary"`
+
 	// ImageFactory holds the image-factory config (design/0046).
 	// When GHDispatcher.APIToken is empty, image builds are disabled
 	// (POST /configs returns 503). When LLMExplainer.BaseURL is empty,
@@ -388,6 +408,9 @@ func Load(path string) (*Config, error) {
 	if err := applyPreviewOriginEnv(&config); err != nil {
 		return nil, err
 	}
+	if err := validateCanary(&config); err != nil {
+		return nil, err
+	}
 	if err := validateSecurity(&config); err != nil {
 		return nil, err
 	}
@@ -424,6 +447,49 @@ func applyEnvOverrides(config *Config) {
 
 	// Image factory config overrides.
 	applyImageFactoryEnvOverrides(config)
+
+	// Epic-71 / 0c: canary knob plumbing.
+	applyCanaryEnv(config)
+}
+
+// applyCanaryEnv loads the canary config from env vars that viper's
+// AutomaticEnv doesn't reliably reach (nested keys, comma-separated
+// lists, durations). Malformed durations degrade to the defaults
+// (IntervalFromEnv convention); Enabled+Classes validation is
+// validateCanary's, applied in Load.
+func applyCanaryEnv(config *Config) {
+	if v := os.Getenv("LLMSAFESPACES_CANARY_ENABLED"); v != "" {
+		config.Canary.Enabled = isTruthy(v)
+	}
+	if v := os.Getenv("LLMSAFESPACES_CANARY_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			config.Canary.Interval = d
+		}
+	}
+	if v := os.Getenv("LLMSAFESPACES_CANARY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			config.Canary.Timeout = d
+		}
+	}
+	if v := os.Getenv("LLMSAFESPACES_CANARY_CLASSES"); v != "" {
+		var classes []string
+		for _, c := range strings.Split(v, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				classes = append(classes, c)
+			}
+		}
+		config.Canary.Classes = classes
+	}
+}
+
+// validateCanary fails boot on the one partial-config state that would
+// silently defeat the canary's purpose: enabled with no classes probes
+// nothing while looking enabled (the Turnstile fail-closed discipline).
+func validateCanary(config *Config) error {
+	if config.Canary.Enabled && len(config.Canary.Classes) == 0 {
+		return fmt.Errorf("canary.enabled is true but canary.classes is empty — a canary probing nothing is false coverage; configure classes or disable the knob")
+	}
+	return nil
 }
 
 // applyImageFactoryEnvOverrides loads image-factory secrets from env vars
