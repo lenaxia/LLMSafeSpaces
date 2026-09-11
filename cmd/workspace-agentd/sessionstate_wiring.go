@@ -656,3 +656,70 @@ func (o opencodeActor) post(ctx context.Context, path string, body any, out any)
 	}
 	return resp.StatusCode, nil
 }
+
+// PendingInputs is the lease diff's truth source: the live ask registries
+// with STRICT failure semantics — anything but a clean 200-with-valid-JSON
+// on each endpoint is an error (the caller skips the diff), because a
+// transient 5xx on /question must never read as "no questions asked"
+// (the r1 review's resolve/appeared flap). 404 and connection-refused are
+// ALSO errors here, not absence: unlike the boot reseed (which treats
+// them as never-had-questions), the lease pass runs against a live
+// opencode that was answering moments ago — a refused connection is
+// indeterminate, and skipping one 15s tick is free.
+func (r opencodeStoreReader) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	d := &opencode.Dialect{}
+	out := map[string][]*abiv1.InputRequest{}
+	qs, err := fetchListStrict(ctx, r.client, "/question", d.ParseQuestionListItem)
+	if err != nil {
+		return nil, err
+	}
+	for _, q := range qs {
+		if q.SessionID == "" || q.ID == "" {
+			continue
+		}
+		out[q.SessionID] = append(out[q.SessionID], questionToABI(q))
+	}
+	ps, err := fetchListStrict(ctx, r.client, "/permission", d.ParsePermissionListItem)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ps {
+		if p.SessionID == "" || p.ID == "" {
+			continue
+		}
+		out[p.SessionID] = append(out[p.SessionID], permissionToABI(p))
+	}
+	return out, nil
+}
+
+// fetchListStrict is fetchList with lease semantics: every failure mode
+// (transport, non-2xx, malformed body, item parse) is an error — the
+// caller must treat the list as indeterminate, never empty.
+func fetchListStrict[T any](ctx context.Context, client *OpenCodeClient, path string, parse func(json.RawMessage) (T, error)) ([]T, error) {
+	resp, err := client.doRequest(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("lease gather %s: %w", path, err)
+	}
+	if resp.StatusCode >= 400 {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("lease gather %s: status %d", path, resp.StatusCode)
+	}
+	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	_ = resp.Body.Close()
+	if rerr != nil {
+		return nil, fmt.Errorf("lease gather %s: read: %w", path, rerr)
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || strings.TrimSpace(string(raw)) == "null" {
+		return nil, fmt.Errorf("lease gather %s: malformed body", path)
+	}
+	out := make([]T, 0, len(items))
+	for _, item := range items {
+		v, perr := parse(item)
+		if perr != nil {
+			return nil, fmt.Errorf("lease gather %s: item parse: %w", path, perr)
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}

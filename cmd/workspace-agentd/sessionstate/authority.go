@@ -71,6 +71,13 @@ type EventParser interface {
 type StoreReader interface {
 	SessionStates(ctx context.Context) (map[string]SessionSeed, error)
 	MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error)
+	// PendingInputs is the lease diff's truth source (#1310 slice B):
+	// the harness live ask registries, keyed by session. STRICT failure
+	// semantics — unlike SessionStates (whose reseed tolerates
+	// endpoint-absence-as-empty), any fetch that is not a clean read
+	// returns an error and the caller MUST treat the pending set as
+	// indeterminate (skip the diff), never as empty.
+	PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error)
 }
 
 // RateLimitConfig bounds per-session mutating-op rates (I8).
@@ -145,6 +152,16 @@ type Authority struct {
 
 	mu  sync.Mutex
 	seq uint64
+	// leaseBoundOverride is SetLeaseBoundForTest's override (0 = default).
+	leaseBoundOverride time.Duration
+	serveGathersMu     sync.Mutex
+	serveGathers       map[string]*serveGather
+	// leaseGatherFails counts cadence pending-gather failures (the
+	// unnoticed-source-failure signal; Metrics-exposed).
+	leaseGatherFails int64
+	leaseResolvedCum int64
+	leaseAppearedCum int64
+	closeOnce        sync.Once
 	// lastSeqAt is when the projection last advanced (the seq-stall
 	// signal's clock, R5/US-69.12).
 	lastSeqAt time.Time
@@ -225,6 +242,7 @@ func New(cfg Config) (*Authority, error) {
 		logger:              logger,
 		seq:                 cursor.last(),
 		sessions:            map[string]*sessionRecord{},
+		serveGathers:        map[string]*serveGather{},
 		subs:                map[*subscriber]struct{}{},
 		cursor:              cursor,
 		limiter:             newSessionLimiter(cfg.RateLimit),
@@ -383,8 +401,12 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	// wedge the reseed — the sweep gives up, rows retry next pass.
 	if a.ledger != nil {
 		sweepCtx, sweepCancel := context.WithTimeout(ctx, a.reconcileTimeout())
-		a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
+		stats := a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
 		sweepCancel()
+		// The reseed-embedded sweep records through the same single site
+		// the cadence pass uses (r3: the pass end owns recording), so its
+		// outcomes reach the cumulative Metrics counters identically.
+		a.recordReconcile(stats)
 	}
 
 	flush := func() {
@@ -506,8 +528,23 @@ func (a *Authority) dropSub(sub *subscriber) {
 	a.mu.Unlock()
 }
 
-// Close persists the final cursor and releases resources.
+// Close persists the final cursor and releases resources. Idempotent
+// (once-guarded): test cleanups and shutdown paths may both close.
 func (a *Authority) Close() error {
+	var err error
+	a.closeOnce.Do(func() {
+		err = a.closeLocked()
+	})
+	return err
+}
+
+func (a *Authority) closeLocked() error {
+	a.serveGathersMu.Lock()
+	// A fresh map, never nil: an in-flight serve past this point would
+	// assign into nil and panic (r3 finding 4). Post-Close the authority
+	// is discarded with the map.
+	a.serveGathers = map[string]*serveGather{}
+	a.serveGathersMu.Unlock()
 	if a.ledger != nil {
 		_ = a.ledger.close()
 	}
@@ -545,7 +582,14 @@ type Metrics struct {
 	LedgerDepths map[string]int64
 	// StalledEntries is the current stalled-row count (the #1119 class,
 	// visible).
-	StalledEntries int64
+	// LeaseResolved/LeaseAppeared are the cumulative pending-lease diff
+	// outcomes (#1310 slice B: asks resolved by absence; asks appeared
+	// from live truth); LeaseGatherFails counts cadence pending-gather
+	// failures (the unnoticed-source-failure signal).
+	LeaseResolved    int64
+	LeaseAppeared    int64
+	LeaseGatherFails int64
+	StalledEntries   int64
 	// OldestPromotionStallSeconds is the age of the oldest
 	// admitted-unpromoted row (0 when none).
 	OldestPromotionStallSeconds float64
@@ -573,6 +617,9 @@ func (a *Authority) Metrics() Metrics {
 		LedgerDepths:                nil,
 		StalledEntries:              0,
 		OldestPromotionStallSeconds: 0,
+		LeaseGatherFails:            a.leaseGatherFails,
+		LeaseResolved:               a.leaseResolvedCum,
+		LeaseAppeared:               a.leaseAppearedCum,
 	}
 	if a.ledger != nil {
 		m.LedgerDepths = a.ledger.depths()

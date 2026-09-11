@@ -219,3 +219,7 @@ func TestProjection_SnapshotCompleteness(t *testing.T) {
 		t.Fatal("pod snapshot must enumerate sessions")
 	}
 }
+
+func (s seedStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}

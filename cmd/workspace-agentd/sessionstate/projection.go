@@ -4,6 +4,8 @@
 package sessionstate
 
 import (
+	"time"
+
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,12 +33,21 @@ type SessionView struct {
 // gate for #1311's evidence-driven busy-clear (a busy-mark newer than the
 // evidence read survives the pass).
 type sessionRecord struct {
-	status      abiv1.SessionStatus
-	busy        bool
-	title       string
-	inFly       []*abiv1.Part
-	pending     map[string]*abiv1.InputRequest
-	lastBusySeq uint64
+	status abiv1.SessionStatus
+	busy   bool
+	// busySince stamps the busy-mark's wall clock — the lease-window gate
+	// for #1310 slice B's harness-side status re-derivation (a fresh
+	// busy-mark holds; past the bound, harness truth wins).
+	busySince time.Time
+	title     string
+	inFly     []*abiv1.Part
+	pending   map[string]*abiv1.InputRequest
+	// pendingSince/resolvedSeq carry each ask's last fold seq — the
+	// lease diff's staleness gate: a gather's truth is only applied to
+	// entries whose fold predates the gather (r5 findings 2-3).
+	pendingSince map[string]uint64
+	resolvedSeq  map[string]uint64
+	lastBusySeq  uint64
 }
 
 func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
@@ -47,6 +58,7 @@ func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
 // evidence-freshness gate for the reconcile busy-clear).
 func (r *sessionRecord) markBusy(seq uint64) {
 	r.busy = true
+	r.busySince = time.Now()
 	r.lastBusySeq = seq
 }
 
@@ -100,7 +112,11 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		switch evt.Status {
 		case abiv1.SessionStatus_SESSION_STATUS_BUSY:
 			rec.markBusy(a.seq)
-		case abiv1.SessionStatus_SESSION_STATUS_IDLE:
+		case abiv1.SessionStatus_SESSION_STATUS_IDLE, abiv1.SessionStatus_SESSION_STATUS_ERROR:
+			// ERROR ends the turn exactly as IDLE does (the ERROR event
+			// case below already cleared busy; the status arrival must
+			// too, or the snapshot's busy override keeps reporting BUSY
+			// forever — r5 finding 1).
 			rec.busy = false
 			rec.inFly = nil
 		}
@@ -164,10 +180,18 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 	case abiv1.EventType_EVENT_TYPE_INPUT_REQUEST:
 		if in := evt.GetInput(); in != nil && in.GetId() != "" {
 			rec.pending[in.GetId()] = proto.Clone(in).(*abiv1.InputRequest)
+			if rec.pendingSince == nil {
+				rec.pendingSince = map[string]uint64{}
+			}
+			rec.pendingSince[in.GetId()] = a.seq
 		}
 	case abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED:
 		if in := evt.GetInput(); in != nil {
 			delete(rec.pending, in.GetId())
+			if rec.resolvedSeq == nil {
+				rec.resolvedSeq = map[string]uint64{}
+			}
+			rec.resolvedSeq[in.GetId()] = a.seq
 		}
 	case abiv1.EventType_EVENT_TYPE_ERROR:
 		// A failed step clears busy (the 2026-08-15 orphaned-busy class):

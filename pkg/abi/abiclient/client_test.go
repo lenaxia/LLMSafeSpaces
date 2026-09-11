@@ -18,6 +18,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	abiconnect "github.com/lenaxia/llmsafespaces/pkg/abi/v1/abiconnect"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,9 +42,10 @@ func (p *scriptedParser) Parse(raw []byte) (*abiv1.Event, bool, error) {
 }
 
 type countingStore struct {
-	mu    sync.Mutex
-	calls int
-	seed  map[string]sessionstate.SessionSeed
+	mu      sync.Mutex
+	calls   int
+	pending int
+	seed    map[string]sessionstate.SessionSeed
 }
 
 func (s *countingStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
@@ -53,8 +55,38 @@ func (s *countingStore) SessionStates(ctx context.Context) (map[string]sessionst
 	return s.seed, nil
 }
 
+func (s *countingStore) pendingCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending
+}
+
 func (s *countingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
 	return map[string]bool{}, nil
+}
+
+// setSeeds swaps the truth the store serves (models the harness having
+// changed its mind — e.g. an ask dropped).
+func (s *countingStore) setSeeds(seed map[string]sessionstate.SessionSeed) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seed = seed
+}
+func (s *countingStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	s.mu.Lock()
+	s.pending++
+	s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]*abiv1.InputRequest{}
+	for sid, sd := range s.seed {
+		for _, in := range sd.PendingInputs {
+			if in != nil && in.GetId() != "" {
+				out[sid] = append(out[sid], in)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *countingStore) count() int {
@@ -119,28 +151,45 @@ func inputEvt(id, sid string) *abiv1.Event {
 		Input: &abiv1.InputRequest{Id: id, SessionId: sid, Kind: abiv1.InputKind_INPUT_KIND_QUESTION}}
 }
 
-// TestGetSnapshot_ZeroOpencodeCalls: the snapshot serves from the
-// projection — the store reader counts ZERO calls; and the payload is
-// I12-complete (issue #1138: snapshot_zero_opencode_calls).
-func TestGetSnapshot_ZeroOpencodeCalls(t *testing.T) {
-	a, ts, store := newSurface(t, map[string]sessionstate.SessionSeed{
+// TestGetSnapshot_LeaseRefreshBudget: the snapshot serves from the
+// projection with EXACTLY ONE store gather — the #1310 slice B lease
+// refresh (a serve is when humans notice staleness, so it re-verifies the
+// session's pending lease; the ask set is a lease, not a cached fact).
+// This supersedes the US-69.4 zero-call pin: the epic's lease model makes
+// the gather pod-local and O(sessions), bounded to one per serve. The
+// payload stays I12-complete (issue #1138), and a divergent ask converges
+// on the serve (the 2026-09-10 stranding cure).
+func TestGetSnapshot_LeaseRefreshBudget(t *testing.T) {
+	seeds := map[string]sessionstate.SessionSeed{
 		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_BUSY, PendingInputs: []*abiv1.InputRequest{
 			{Id: "q1", SessionId: "s1", Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "Proceed?"},
 		}},
-	}, nil)
+	}
+	a, ts, store := newSurface(t, seeds, nil)
 	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
-	store.reset() // the reseed legitimately reads the store; snapshots must not
+	store.reset() // the reseed legitimately reads the store
 
 	c := clientFor(ts)
 	snap, err := c.GetSnapshot(context.Background(), "s1")
 	require.NoError(t, err)
-	require.Equal(t, 0, store.count(), "snapshot must make ZERO store/opencode calls")
+	require.Equal(t, 1, store.pendingCalls(), "a serve refreshes the lease with EXACTLY ONE pending gather")
 	require.Equal(t, abiv1.SessionStatus_SESSION_STATUS_BUSY, snap.GetStatus())
 	require.Len(t, snap.GetPendingInputs(), 1)
 	require.Equal(t, "Proceed?", snap.GetPendingInputs()[0].GetQuestion())
 
 	_, err = c.GetSnapshot(context.Background(), "")
 	require.Error(t, err, "empty session id must be rejected")
+
+	// Convergence on serve: the harness dropped the ask; a serve past the
+	// gather singleflight's TTL clears it (the stranded-prompt cure at
+	// the moment of refresh — within TTL, serves reuse the cached gather).
+	time.Sleep(600 * time.Millisecond)
+	store.setSeeds(map[string]sessionstate.SessionSeed{
+		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
+	})
+	snap, err = c.GetSnapshot(context.Background(), "s1")
+	require.NoError(t, err)
+	assert.Empty(t, snap.GetPendingInputs(), "the dropped ask cleared on serve")
 }
 
 // TestSnapshotLatencyLocal: p99 < 250ms locally against a projection with
@@ -165,7 +214,11 @@ func TestSnapshotLatencyLocal(t *testing.T) {
 	}
 	p99 := latencies[(len(latencies)-1)*99/100]
 	require.Less(t, p99, 250*time.Millisecond, "snapshot p99 %v exceeds the 250ms budget", p99)
-	require.Equal(t, 0, store.count(), "snapshots must never touch the store")
+	// #1310 slice B: serves coalesce onto the gather singleflight — a
+	// rapid refresh storm costs at most one gather per TTL window, never
+	// one per serve (leg 9).
+	require.Less(t, store.pendingCalls(), 30, "no gather stampede under a refresh storm (%d serves)", 300)
+	require.Equal(t, 0, store.count(), "serves never touch the session-status store read")
 }
 
 // TestDiscardRulePropertyFuzz: random snapshot/event interleavings — the

@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // #1288: the admission seam uses the TUI's delivery semantics — "steer".
@@ -126,4 +129,54 @@ func mustJSON(t *testing.T, v any) string {
 	t.Helper()
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// TestOpencodeStoreReader_PendingInputsStrict (r5 missing test 5): the
+// production strict seam — every non-clean read is an error (503, 404,
+// malformed body, non-array body); a clean 200 maps the asks.
+func TestOpencodeStoreReader_PendingInputsStrict(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		wantErr bool
+	}{
+		{"clean 200 maps asks", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/question") {
+				_, _ = w.Write([]byte(`[{"id":"que_1","sessionID":"s1","title":"Proceed?","options":["yes"]}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		}, false},
+		{"503 is an error", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}, true},
+		{"404 is an error (strict: indeterminate, not absence)", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}, true},
+		{"malformed body is an error", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{not json`))
+		}, true},
+		{"non-array body (null) is an error", func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`null`))
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(tt.handler)
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+			rd := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: &http.Client{}}}
+			got, err := rd.PendingInputs(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got["s1"], 1)
+			assert.Equal(t, "que_1", got["s1"][0].GetId())
+		})
+	}
 }

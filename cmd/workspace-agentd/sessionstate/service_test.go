@@ -290,3 +290,7 @@ func TestEventsStreamReseedNoticeOnWire(t *testing.T) {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func (s hangingStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return nil, ctx.Err()
+}
