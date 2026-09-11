@@ -52,8 +52,13 @@ func (a *Authority) SetLeaseBoundForTest(d time.Duration) { a.leaseBoundOverride
 const gatherTTL = 500 * time.Millisecond
 
 // serveGatherMapLimit bounds the serve-gather cache: beyond it, stale
-// entries (idle past the TTL horizon) are pruned before insertion.
+// entries are pruned before insertion. serveGatherPruneHorizon is the
+// staleness threshold (var for tests).
 const serveGatherMapLimit = 4096
+
+// serveGatherPruneHorizon is the staleness threshold for pruning (var
+// for tests).
+var serveGatherPruneHorizon = 10 * gatherTTL
 
 // serveGatherTimeout bounds ONE serve's lease gather: tighter than the
 // reconcile pass budget — a snapshot serve must degrade fast, never hold
@@ -92,8 +97,11 @@ func (a *Authority) diffPendingLeases(ctx context.Context) (resolved, appeared i
 	if err != nil {
 		// Counted, not just logged: an unnoticed pending-source failure
 		// was r1's incident shape (the flap only exists because nobody
-		// saw the 503s).
+		// saw the 503s). Under a.mu — Metrics() reads the field there
+		// (the module's race convention).
+		a.mu.Lock()
 		a.leaseGatherFails++
+		a.mu.Unlock()
 		a.logger.Warn("sessionstate lease: pending gather failed — projection untouched",
 			zap.Error(err))
 		return 0, 0, err
@@ -240,7 +248,17 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 		// and this is the sessionLimiter's own pruning discipline.
 		now := time.Now()
 		for k, g := range a.serveGathers {
-			if g != nil && now.Sub(g.gatheredAt) > 10*gatherTTL {
+			if g == nil {
+				delete(a.serveGathers, k)
+				continue
+			}
+			// g.mu for the staleness read: gatheredAt is written under
+			// g.mu by the gather path (r3 finding 3 — the two-mutex
+			// read had no happens-before edge).
+			g.mu.Lock()
+			stale := now.Sub(g.gatheredAt) > serveGatherPruneHorizon
+			g.mu.Unlock()
+			if stale {
 				delete(a.serveGathers, k)
 			}
 		}

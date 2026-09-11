@@ -41,6 +41,7 @@ var sessionStateMetrics = struct {
 	customValveEvents      prometheus.Counter
 	reconciled             *prometheus.CounterVec
 	reconcileEvidenceFails prometheus.Counter
+	leaseGatherFails       prometheus.Counter
 	loopLastRun            *prometheus.GaugeVec
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -100,8 +101,12 @@ var sessionStateMetrics = struct {
 	}),
 	reconciled: promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "llmsafespaces_ledger_reconciled_total",
-		Help: "Delivery-ledger rows converged by the #1311 store-evidence sweep (outcome: promoted | turn_ended | failed | busy_cleared) — S7's observable surface.",
+		Help: "Convergence outcomes per reconcile pass (outcome: ledger rows promoted | turn_ended | failed | busy_cleared by the #1311 store-evidence sweep; input_resolved_by_absence | input_appeared_from_truth pending-input lease diffs by #1310 slice B) — S7/S5's observable surface.",
 	}, []string{"outcome"}),
+	leaseGatherFails: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_lease_gather_failures_total",
+		Help: "Cadence pending-gather failures (#1310 slice B): the lease truth source errored — the projection is untouched (skipped), and the flap-class outage is visible instead of silent.",
+	}),
 	reconcileEvidenceFails: promauto.NewCounter(prometheus.CounterOpts{
 		Name: "llmsafespaces_reconcile_evidence_failures_total",
 		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
@@ -134,11 +139,29 @@ func leaseResolvedDelta(workspaceID string, v int64) float64 {
 	leaseLast.mu.Lock()
 	defer leaseLast.mu.Unlock()
 	prev, seen := leaseLast.resolved[workspaceID]
-	if !seen || v < prev {
-		leaseLast.resolved[workspaceID] = v
-		return 0
-	}
 	leaseLast.resolved[workspaceID] = v
+	if !seen || v < prev {
+		// First scrape / monotonicity break: the FULL cumulative, per the
+		// file's own convention (reconcileDeltas) — outcomes that
+		// predate the watchdog's first tick still reach the series.
+		return float64(v)
+	}
+	return float64(v - prev)
+}
+
+var leaseFailLast = struct {
+	mu sync.Mutex
+	m  map[string]int64
+}{m: map[string]int64{}}
+
+func leaseGatherFailDelta(workspaceID string, v int64) float64 {
+	leaseFailLast.mu.Lock()
+	defer leaseFailLast.mu.Unlock()
+	prev, seen := leaseFailLast.m[workspaceID]
+	leaseFailLast.m[workspaceID] = v
+	if !seen || v < prev {
+		return float64(v)
+	}
 	return float64(v - prev)
 }
 
@@ -146,11 +169,10 @@ func leaseAppearedDelta(workspaceID string, v int64) float64 {
 	leaseLast.mu.Lock()
 	defer leaseLast.mu.Unlock()
 	prev, seen := leaseLast.appeared[workspaceID]
-	if !seen || v < prev {
-		leaseLast.appeared[workspaceID] = v
-		return 0
-	}
 	leaseLast.appeared[workspaceID] = v
+	if !seen || v < prev {
+		return float64(v)
+	}
 	return float64(v - prev)
 }
 
@@ -261,6 +283,9 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	}
 	if d := leaseAppearedDelta(workspaceID, m.LeaseAppeared); d > 0 {
 		sessionStateMetrics.reconciled.WithLabelValues("input_appeared_from_truth").Add(d)
+	}
+	if d := leaseGatherFailDelta(workspaceID, m.LeaseGatherFails); d > 0 {
+		sessionStateMetrics.leaseGatherFails.Add(d)
 	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.

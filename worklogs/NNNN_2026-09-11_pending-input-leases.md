@@ -78,3 +78,18 @@ All findings validated real, fixed:
 3. **Unbounded serveGathers pinning full gathers:** entries now hold THIS session's slice only (never the workspace map), the map prunes stale entries past a horizon when it exceeds `serveGatherMapLimit` (4096 — the sessionLimiter's own discipline), and `Close` clears it. Also fixed while here: the TTL cache never hit for pending-less sessions (`nil` slice) — an explicit `cached` flag makes coalescing uniform (the latency-storm pin now genuinely dedupes: 300 serves ≪ 300 gathers).
 4. **TTL resurrect:** cached slices are trusted for the RESOLVE half only (`diffSessionResolveOnly`) — a just-resolved ask can never flicker back from a stale cache; fresh gathers apply both halves. Pinned by `TestSnapshotServe_CachedSliceNeverResurrects`.
 5. **Stale contract text:** abi.proto's GetSnapshot doc, the client's doc comment, and the latency metric's Help now state the lease-refresh contract (one coalesced pod-local gather, degraded-served on failure); proto regenerated (Go+TS+connect), `buf breaking` green vs frozen.
+
+---
+
+## Review round 3 (PR #1329)
+
+All findings validated real, fixed:
+
+1. **Failure signal missing the scrape surface:** `recordReconcile` moved to the single pass-end site (reconcileLocked records complete stats — ledger sweep + lease diff + failures — so ledger-less authorities and canceled passes record too); `Metrics.LeaseGatherFails` is now consumed by the bridge as `llmsafespaces_lease_gather_failures_total` (delta-of-cumulative). The reseed-embedded sweep records through the same site.
+2. **Race on `leaseGatherFails`:** incremented under `a.mu` (the Metrics() read lock — the module convention).
+3. **Race on `serveGather.gatheredAt`:** the prune pass reads staleness under `g.mu` (the writer's lock); horizon is `serveGatherPruneHorizon` (var for tests).
+4. **Close nil-map panic:** Close swaps a fresh map under the same mutex (never nil) and is once-guarded (idempotent — cleanups and shutdown may both close).
+5. **First-scrape drop:** `leaseResolved/Appeared/GatherFail` deltas return the FULL cumulative on first sight (the file's own reconcileDeltas convention — the restart-heal window reaches the series).
+6. **Stale Help:** `llmsafespaces_ledger_reconciled_total` Help now enumerates all six outcome labels and their owning issues.
+
+New tests: failing-gather export + concurrent-Metrics race pin, outcomes export, prune/close-safety (internal-package test for the unexported cache), canceled-pass recording regression.

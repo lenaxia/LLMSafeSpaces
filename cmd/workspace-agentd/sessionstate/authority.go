@@ -161,6 +161,7 @@ type Authority struct {
 	leaseGatherFails int64
 	leaseResolvedCum int64
 	leaseAppearedCum int64
+	closeOnce        sync.Once
 	// lastSeqAt is when the projection last advanced (the seq-stall
 	// signal's clock, R5/US-69.12).
 	lastSeqAt time.Time
@@ -400,8 +401,12 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	// wedge the reseed — the sweep gives up, rows retry next pass.
 	if a.ledger != nil {
 		sweepCtx, sweepCancel := context.WithTimeout(ctx, a.reconcileTimeout())
-		a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
+		stats := a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
 		sweepCancel()
+		// The reseed-embedded sweep records through the same single site
+		// the cadence pass uses (r3: the pass end owns recording), so its
+		// outcomes reach the cumulative Metrics counters identically.
+		a.recordReconcile(stats)
 	}
 
 	flush := func() {
@@ -523,10 +528,22 @@ func (a *Authority) dropSub(sub *subscriber) {
 	a.mu.Unlock()
 }
 
-// Close persists the final cursor and releases resources.
+// Close persists the final cursor and releases resources. Idempotent
+// (once-guarded): test cleanups and shutdown paths may both close.
 func (a *Authority) Close() error {
+	var err error
+	a.closeOnce.Do(func() {
+		err = a.closeLocked()
+	})
+	return err
+}
+
+func (a *Authority) closeLocked() error {
 	a.serveGathersMu.Lock()
-	a.serveGathers = nil
+	// A fresh map, never nil: an in-flight serve past this point would
+	// assign into nil and panic (r3 finding 4). Post-Close the authority
+	// is discarded with the map.
+	a.serveGathers = map[string]*serveGather{}
 	a.serveGathersMu.Unlock()
 	if a.ledger != nil {
 		_ = a.ledger.close()

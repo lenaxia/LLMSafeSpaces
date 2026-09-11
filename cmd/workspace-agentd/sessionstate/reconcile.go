@@ -146,6 +146,12 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		// never just an inline line (r2 finding: the discarded error).
 		stats.EvidenceFailures++
 	}
+	// Recorded HERE, with the complete stats (ledger sweep + lease diff
+	// + failures): sweepAgainstEvidence no longer records on its own, so
+	// lease outcomes and gather failures reach the exported counters
+	// even on ledger-less authorities (r3 finding 1) — and a canceled
+	// sweep's partial outcomes still record.
+	a.recordReconcile(stats)
 	return stats
 }
 
@@ -183,9 +189,9 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 
 	for _, sid := range ordered {
 		if ctx.Err() != nil {
-			// A canceled pass still records what DID happen — the
-			// cumulative counters must match the returned stats.
-			a.recordReconcile(stats)
+			// A canceled pass returns partial stats; reconcileLocked
+			// records them with the lease outcomes attached (r3: the
+			// single recording point is the pass end).
 			return stats
 		}
 		seed, inStore := seeds[sid]
@@ -244,9 +250,8 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 			stats.BusyCleared += a.clearBusyFromEvidence(sid, evStatus, seqAtEvidence)
 		}
 	}
-	// Single recording site: every sweep's outcomes (cadence pass AND the
-	// reseed-embedded boot heal) land in the cumulative Metrics counters.
-	a.recordReconcile(stats)
+	// The pass end (reconcileLocked) is the single recording site —
+	// cadence passes AND reseed-embedded sweeps flow through it.
 	return stats
 }
 

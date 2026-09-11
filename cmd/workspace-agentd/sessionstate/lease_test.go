@@ -434,3 +434,46 @@ func TestSnapshotServe_CachedSliceNeverResurrects(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, pendingCount(a, "ses-1"), "truth holds nothing; the fresh gather agrees")
 }
+
+// TestLeasePass_FailureSignalIsExported (r3 findings 1-2): a failing
+// pending gather increments EvidenceFailures in the pass stats AND the
+// cumulative LeaseGatherFails on Metrics — counted, not just logged, and
+// race-safe against a concurrent Metrics scrape.
+func TestLeasePass_FailureSignalIsExported(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := leaseAuthority(t, store)
+	seedPendingInput(t, a, "ses-1", "per_1")
+	store.failPending(errStringOf("lease gather /question: status 503"))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			a.Reconcile(context.Background())
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		_ = a.Metrics() // concurrent scrapes — -race pins the convention
+	}
+	<-done
+
+	m := a.Metrics()
+	assert.Equal(t, int64(50), m.LeaseGatherFails, "cumulative gather failures exported")
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.EvidenceFailures, "the pass stats carry the failure (watchdog Warn gate)")
+}
+
+// TestLeasePass_OutcomesExported (r3 finding 1): resolved/appeared reach
+// the cumulative Metrics fields — the heal is observable.
+func TestLeasePass_OutcomesExported(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_new"))
+	a := leaseAuthority(t, store)
+	seedPendingInput(t, a, "ses-1", "per_old")
+
+	a.Reconcile(context.Background())
+	m := a.Metrics()
+	assert.Equal(t, int64(1), m.LeaseResolved, "resolved-by-absence cumulative")
+	assert.Equal(t, int64(1), m.LeaseAppeared, "appeared-from-truth cumulative")
+}
