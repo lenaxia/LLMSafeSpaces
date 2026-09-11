@@ -178,7 +178,13 @@ func (s *Service) sweepSessionParked(ctx context.Context, ws, ses string, now ti
 		return 0
 	}
 	recovered := 0
-	for i, v := range vals {
+	// Descending: a completed entry's LRem shifts every later index
+	// down, so an ascending LSet against the snapshot would overwrite
+	// the WRONG entry — silently destroying an innocent neighbor (S3).
+	// Mutations at index i only ever affect indices > i; iterating from
+	// the tail keeps every remaining snapshot index valid.
+	for i := len(vals) - 1; i >= 0; i-- {
+		v := vals[i]
 		var e Entry
 		if json.Unmarshal([]byte(v), &e) != nil || e.Status != StatusError {
 			continue

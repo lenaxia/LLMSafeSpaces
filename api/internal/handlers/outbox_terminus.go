@@ -105,7 +105,10 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 			}
 			if prior == ledgerStateLedgered {
 				// Admission still owned by agentd's retry loop — poll the
-				// PRIOR attempt's window, never re-POST.
+				// PRIOR attempt's window, never re-POST. A timeout here
+				// drove NO attempt: PriorAttemptPending keeps the outbox
+				// from minting a phantom attempt number (the #1316
+				// review's unrecoverable-park defect).
 				st, timedOut, perr := pollToCompletion(ctx, d.httpClient(), base, pw, e.ID, attemptOf(e.Attempts), d.window(), d.every())
 				if perr == nil {
 					if done, _ := completionFor(st); done {
@@ -113,7 +116,7 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 					}
 				}
 				if timedOut {
-					return &retryableError{fmt.Errorf("agentd terminus: attempt %d still %s (agentd owns admission)", e.Attempts, prior)}
+					return outbox.PriorAttemptPending(&retryableError{fmt.Errorf("agentd terminus: attempt %d still %s (agentd owns admission)", e.Attempts, prior)})
 				}
 				return perr
 			}

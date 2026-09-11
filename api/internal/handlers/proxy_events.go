@@ -116,12 +116,13 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			// previous pod.
 			h.invalidateCaches(context.Background(), workspace.Name)
 			h.UsageStream().Close(workspace.Name)
-			// Resume self-heal: an agent that was unreachable (suspend,
-			// OOM, restart) is now reachable — re-arm outbox entries
-			// parked as "delivery unverifiable" so the #987 verify-first
-			// path can confirm-and-remove them (or resume bounded
-			// verification) instead of waiting for manual Retry.
+			// Resume self-heal, part 1: an agent that was unreachable
+			// (suspend, OOM, restart) is now reachable — re-arm outbox
+			// entries parked as "delivery unverifiable" so the #987
+			// verify-first path can confirm-and-remove them (or resume
+			// bounded verification) instead of waiting for manual Retry.
 			// Detached + bounded: phase handling must not block on Redis.
+			// Gated on the adapter (the verify path's dependency).
 			if h.outbox != nil && h.adapter != nil {
 				wsName := workspace.Name
 				go func() {
@@ -132,18 +133,24 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 					} else if n > 0 {
 						h.logger.Info("outbox unverifiable sweep re-armed entries", "count", n, "workspace_id", wsName)
 					}
-					// #1316: re-verify the workspace's parked error
-					// entries against the ledger on the same transition —
-					// a resume is when an unreachable (probe-failing) pod
-					// becomes reachable and stranded admissions resolve.
-					// Gated on the terminus regime (the probe is wired
-					// iff the ledger is the delivery truth source).
-					if h.agentdTerminus {
-						if n, err := h.outbox.SweepWorkspaceParkedErrors(sctx, wsName); err != nil {
-							h.logger.Warn("outbox parked-error sweep failed", "error", err, "workspace_id", wsName)
-						} else if n > 0 {
-							h.logger.Info("outbox parked-error sweep recovered entries", "count", n, "workspace_id", wsName)
-						}
+				}()
+			}
+			// Resume self-heal, part 2 (#1316): re-verify the
+			// workspace's parked error entries against the ledger on the
+			// same transition — a resume is when an unreachable
+			// (probe-failing) pod becomes reachable and stranded
+			// admissions resolve. Gated on the terminus regime (the
+			// probe is wired iff the ledger is the delivery truth
+			// source) — deliberately independent of the adapter gate.
+			if h.outbox != nil && h.agentdTerminus {
+				wsName := workspace.Name
+				go func() {
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 30*time.Second)
+					defer cancel()
+					if n, err := h.outbox.SweepWorkspaceParkedErrors(sctx, wsName); err != nil {
+						h.logger.Warn("outbox parked-error sweep failed", "error", err, "workspace_id", wsName)
+					} else if n > 0 {
+						h.logger.Info("outbox parked-error sweep recovered entries", "count", n, "workspace_id", wsName)
 					}
 				}()
 			}

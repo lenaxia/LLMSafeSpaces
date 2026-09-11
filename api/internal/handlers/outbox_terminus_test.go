@@ -288,6 +288,32 @@ func TestAgentdDeliver_TimeoutIsLedgeredPoll(t *testing.T) {
 	assert.False(t, isAmbiguous(err), "ledgered is NOT ambiguous — the ledger is the truth source")
 }
 
+// TestAgentdDeliver_PriorLedgeredTimeoutIsPriorPending (#1316 review
+// defect 2): the prior-attempt poll timeout drove NO new attempt — it
+// must surface as outbox.PriorAttemptPending so the outbox neither
+// mints an attempt number nor parks (a phantom attempt parked the entry
+// against a row the sweeper could never find).
+func TestAgentdDeliver_PriorLedgeredTimeoutIsPriorPending(t *testing.T) {
+	stub := newLedgerStub(t, 1<<30)
+	stub.muxx.Lock()
+	stub.rows[rowKey("e-1", 2)] = "ledgered" // prior attempt (Attempts=2) LEDGERED
+	stub.muxx.Unlock()
+	d := &agentdDeliverer{
+		baseURL: stub.server.URL,
+		client:  &http.Client{},
+		resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+			return stub.server.URL, "pw", nil
+		},
+		inlineWindow: 100 * time.Millisecond,
+		pollEvery:    20 * time.Millisecond,
+	}
+	err := d.deliver(context.Background(), "ws1", "s1", outbox.Entry{ID: "e-1", Text: "hello", Attempts: 2})
+	require.Error(t, err)
+	var pp *outbox.PriorAttemptPendingError
+	require.ErrorAs(t, err, &pp, "prior-row poll timeout is PriorAttemptPending — no attempt minted")
+	assert.Equal(t, int64(0), stub.deliverHits.Load(), "the prior branch never re-POSTs")
+}
+
 // TestAgentdDeliver_FailedAttemptReArms (M2 table): a terminally failed
 // attempt re-arms at attempt+1 (a NEW ledger row) and completes when that
 // admits.

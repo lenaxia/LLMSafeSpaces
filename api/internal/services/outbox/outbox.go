@@ -186,6 +186,24 @@ func Ambiguous(err error) error {
 	return &AmbiguousError{Err: err}
 }
 
+// PriorAttemptPendingError marks a terminus outcome where the PRIOR
+// attempt's ledger row is still LEDGERED and agentd owns admission: no
+// new attempt was driven, so the outbox must not mint an attempt
+// number (a phantom attempt parks the entry against a row the sweeper
+// can never find — the unrecoverable shape from the #1316 review).
+type PriorAttemptPendingError struct{ Err error }
+
+func (p *PriorAttemptPendingError) Error() string { return "prior attempt pending: " + p.Err.Error() }
+func (p *PriorAttemptPendingError) Unwrap() error { return p.Err }
+
+// PriorAttemptPending wraps err as an agentd-owned prior-attempt timeout.
+func PriorAttemptPending(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PriorAttemptPendingError{Err: err}
+}
+
 // Verdict is a verifier's decision about an ambiguous delivery attempt.
 type Verdict int
 
@@ -667,6 +685,17 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	// Failure: restore main FIRST (LInsert before the current occupant,
 	// preserving order), then LREM staging — the mirrored crash window
 	// duplicates rather than loses.
+	var priorPending *PriorAttemptPendingError
+	if errors.As(derr, &priorPending) {
+		// The terminus only re-POLLED an agentd-owned LEDGERED row — no
+		// attempt was driven, no number may be minted, no park may land
+		// (#1316 review defect 2: a minted attempt parked the entry
+		// against a row the sweeper could never find).
+		e.Status = StatusDelivering
+		e.NextAttemptAt = time.Now().UTC().Add(ownsAdmissionRePollBackoff)
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		return true
+	}
 	e.Attempts++
 	e.LastError = derr.Error()
 	if e.Attempts >= MaxAttempts {
@@ -863,9 +892,13 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 			// #1316: the parked-error sweep runs detached from the tick
 			// (its probes are network I/O — an inline sweep would stall
 			// delivery behind a hung pod) and never stacks on itself.
+			// Joined via the workers WaitGroup so "Run returned" means
+			// no sweep is still mutating lists (bounded by sweepEvery).
 			if time.Since(lastParkedSweep) >= sweepEvery && s.parkedSweeping.CompareAndSwap(false, true) {
 				lastParkedSweep = time.Now()
+				workers.Add(1)
 				go func() {
+					defer workers.Done()
 					defer s.parkedSweeping.Store(false)
 					sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sweepEvery)
 					defer cancel()

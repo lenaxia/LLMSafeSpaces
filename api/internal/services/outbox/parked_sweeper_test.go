@@ -355,6 +355,85 @@ func TestSweepParkedErrors_OnlyErrorEntries(t *testing.T) {
 	assert.Len(t, readQueueEntries(t, s, "ws-1", "ses-1"), 3, "nothing touched")
 }
 
+// TestSweepParkedErrors_MultiEntrySamePass (review defect 1): with a
+// completing entry BEFORE a re-arming one in the same session, the
+// completed LRem shifts indices — an ascending snapshot LSet overwrote
+// the wrong entry, silently destroying an innocent neighbor (S3) and
+// duplicating the re-armed one. Descending iteration must leave every
+// non-error neighbor intact.
+func TestSweepParkedErrors_MultiEntrySamePass(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, map[string]string{
+		"eA|5": LedgerStateAdmitted, // completes (LRem shifts later indices)
+		"eB|2": LedgerStateFailed,   // re-arms (LSet at snapshot index)
+	})
+	s.SetLedgerProbe(probe)
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 5, "context deadline exceeded")
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eB", 2, "context deadline exceeded")
+	seedQueueEntry(t, s, "ws-1", "ses-1", "eC", StatusPending) // the victim that died ascending
+
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, n, "eA completed, eB re-armed")
+
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	require.Len(t, entries, 2, "eA removed; eB and eC survive exactly once each")
+	byID := map[string]Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	assert.Contains(t, byID, "eB", "eB survives")
+	assert.Equal(t, StatusPending, byID["eB"].Status)
+	assert.Equal(t, 2, byID["eB"].Attempts)
+	assert.Contains(t, byID, "eC", "the innocent pending neighbor is never destroyed (S3)")
+	assert.Equal(t, StatusPending, byID["eC"].Status)
+}
+
+// TestDeliverOne_PriorPendingNeverMints (review defect 2): cycle 2 of
+// an owns-admission timeout — the terminus only re-POLLED the prior
+// LEDGERED row — must not increment Attempts (a phantom attempt parked
+// the entry against a row the sweeper probes can never find). The
+// entry stays delivering, numbering stays truthful, and the sweeper
+// still resolves the row.
+func TestDeliverOne_PriorPendingNeverMints(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, probeCalls := probeFunc(t, map[string]string{"e1|5": LedgerStateLedgered})
+	s.SetLedgerProbe(probe)
+
+	// The guard-held shape cycle 1 leaves behind: delivering, Attempts
+	// == the LEDGERED row's number, re-poll due.
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusDelivering, Attempts: MaxAttempts}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	d := func(ctx context.Context, ws, ses string, e Entry) error {
+		return outboxErrPriorPendingForTest()
+	}
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", d))
+
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusDelivering, entries[0].Status, "never parks while agentd owns admission")
+	assert.Equal(t, MaxAttempts, entries[0].Attempts, "no phantom attempt minted")
+	assert.False(t, entries[0].NextAttemptAt.Before(time.Now().Add(time.Second)),
+		"re-poll backoff-gated")
+
+	// The sweeper still sees the row: LEDGERED at attempt 5 → stays (no
+	// park, no loss), and once agentd admits it, the same probe
+	// dispositions it — never stranded by a phantom attempt number.
+	before := probeCalls.Load()
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "LEDGERED stays this pass")
+	assert.GreaterOrEqual(t, probeCalls.Load(), before, "the row remains visible to the sweeper")
+}
+
+func outboxErrPriorPendingForTest() error {
+	return PriorAttemptPending(errors.New("agentd terminus: attempt 5 still LEDGER_STATE_LEDGERED (agentd owns admission)"))
+}
+
 // TestSweepParkedErrors_Metrics: outcomes counters and the last-run
 // gauge move (the #1312 canary consumes them; a dead loop must be
 // detectable). Delta-based: the counters are package-level and
@@ -505,6 +584,7 @@ func TestRun_SweepsParkedPeriodically(t *testing.T) {
 	ParkedSweepInterval = 50 * time.Millisecond
 	t.Cleanup(func() { ParkedSweepInterval = old })
 
+	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -524,4 +604,39 @@ func TestRun_SweepsParkedPeriodically(t *testing.T) {
 	assert.Equal(t, int32(1), delivered.Load(), "parked entry completed by the periodic sweep")
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
 	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun), float64(0))
+	// L9 mechanism bound: parked → dispositioned within one sweep
+	// interval's worth of scheduling slop (2x the configured cadence —
+	// the 5-minute L9 budget implies a configured cadence well under it).
+	assert.Less(t, time.Since(started), 2*ParkedSweepInterval+2*time.Second,
+		"convergence latency tracks the configured sweep cadence (L9 mechanism)")
+}
+
+// TestSweeperFaultLeg_AgentdDownThenAdmitted (#1316 leg 4 shape): while
+// the pod is down the probe fails — indeterminate, the entry stays
+// parked, nothing is lost; once agentd is back holding the row
+// admitted, the next pass completes it. S3/L9 under the crash-restart
+// fault.
+func TestSweeperFaultLeg_AgentdDownThenAdmitted(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateAdmitted})
+	reachable := true
+	s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+		if !reachable {
+			return "", errors.New("agent unreachable")
+		}
+		return probe(ctx, ws, ses, id, attempt)
+	})
+	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
+
+	reachable = false
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "pod down: indeterminate, never guesses")
+	require.Len(t, readQueueEntries(t, s, "ws-1", "ses-1"), 1, "nothing lost")
+
+	reachable = true
+	n, err = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "pod back with the row admitted: next pass completes it")
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
 }

@@ -84,9 +84,27 @@ None for 0b. Cross-stream findings:
 
 ## Next Steps
 
-- Merge-gate check for 0b: L9 asserted in unit+integration (60s sweep ≪ 5min bound); the E2E row (deploy → wedged entries clear within L9, no Valkey surgery) is the epic's post-deploy ops checklist item — confirm on the Wave 0/1 deploy.
+- Merge-gate check for 0b: L9's mechanism is asserted (convergence latency tracks the configured sweep cadence, tested at 2× cadence bound); the 5-minute L9 budget itself is a deployment configuration argument (60s cadence ≪ 5min) plus the epic's post-deploy ops row — a wall-clock production measurement remains the Wave 0/1 deploy check.
 - 1b lands the shared lease-clock constant: reconcile `ParkedSweepInterval`/`probeTimeout` into the #1312 budget table's single owner if conventions differ.
 - Whoever owns the agentd config layer fixes the pre-existing xdg fixture failure (flagged on #1314).
+
+---
+
+## Review round 1 corrections (automated review on PR #1318)
+
+Two claims in this worklog were wrong and are corrected here (discipline: corrections in-entry, visibly):
+
+1. *"gated on the terminus regime (not the adapter)"* — was FALSE as first pushed: the transition sweep sat inside the adapter gate (`h.outbox != nil && h.adapter != nil`) and was dead in adapter-less wirings; the original e2e passed via Run's first tick, not the transition. Fixed: the parked sweep is hoisted to its own `h.outbox != nil && h.agentdTerminus` gate; the e2e was rewritten to drive `onPhaseChange` directly (no Start/Run confound) with a no-transition control, and a Start-based test now pins the periodic-path wiring separately.
+2. *"L9 asserted: ✅ unit + integration"* — overstated. Corrected to the mechanism bound (convergence latency ≤ ~2× configured cadence, now asserted in `TestRun_SweepsParkedPeriodically`); the 5-min budget is a configuration argument until the post-deploy measurement.
+
+### Review findings fixed (with regression tests)
+
+- **Defect 1 (critical):** same-pass index-shift corruption — a completed entry's `LRem` shifted snapshot indices and a later `rearmed` `LSet` overwrote an innocent neighbor (S3 violation, duplicate-delivery exposure). Fixed with descending iteration; `TestSweepParkedErrors_MultiEntrySamePass` asserts the victim survives.
+- **Defect 2 (high):** cycle-2 of an owns-admission timeout minted a phantom attempt (`Attempts++` on a poll-only cycle), parked the entry against a LEDGERED row the sweeper could never find — unrecoverable, and a later user `Retry` would re-POST against an admitted row (the ses_f73747f8 class). Fixed with `outbox.PriorAttemptPendingError` (parallel to `Ambiguous`): the terminus wraps the prior-row poll timeout; the failure branch neither increments nor parks. `TestDeliverOne_PriorPendingNeverMints` + `TestAgentdDeliver_PriorLedgeredTimeoutIsPriorPending` pin it.
+- **Finding 4:** the periodic sweep goroutine now joins `Run`'s workers WaitGroup (no post-Run mutations).
+- **Finding 3 (documented, no code):** `verifyOne`'s park writes remain unguarded at write time; the 60s sweeper reconciles them (except the deliberately-excluded unverifiable class) — the sweeper is the systemic guard.
+- **Fault legs:** leg-4 shape (probe down → indeterminate → pod back + admitted → next pass completes) and leg-6 shape (rollover-parked unverifiable completed via the admitted in-flight `+1` row, zero Deliver POSTs) now tested; the full fault matrix rides the #1312 harness knobs (1a/1b waves).
+- Commit type: follow-up commits use the conventional `feat(outbox):` prefix.
 
 ---
 

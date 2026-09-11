@@ -191,36 +191,111 @@ func TestSweeperReplay_2026_09_10(t *testing.T) {
 	assert.Equal(t, int64(0), stub.deliverHits.Load(), "S9: recovery never re-POSTs an admitted row")
 }
 
-// TestSweeperE2E_PhaseChangeWiring: the full production wiring —
-// Start() wires the probe iff the terminus regime is on, and the
-// Active phase transition (a resume) triggers the workspace sweep that
-// clears the stranded admission — the #1308 manual-recovery box,
-// automated.
-func TestSweeperE2E_PhaseChangeWiring(t *testing.T) {
+// TestSweeperE2E_PhaseChangeTransitionSweeps: the Active phase
+// transition itself (a resume) drives the workspace's parked-error
+// sweep — proven WITHOUT Start()/Run so the periodic pass cannot
+// confound the result (review finding: the previous e2e passed via
+// Run's first tick while the transition path was dead behind the
+// adapter gate). Also pins the gate semantics: terminus on, adapter
+// absent — the transition sweep must still fire.
+func TestSweeperE2E_PhaseChangeTransitionSweeps(t *testing.T) {
 	stub := newLedgerStub(t, 1<<30)
 	stub.muxx.Lock()
-	stub.rows[rowKey("ob-e2e", 5)] = "admitted"
+	stub.rows[rowKey("ob-tr", 5)] = "admitted"
 	stub.muxx.Unlock()
-	handler, svc, rdb := newSweeperEnv(t, "ws-swp70b", stub.server.URL)
+	handler, svc, rdb := newSweeperEnv(t, "ws-swp70tr", stub.server.URL)
 	handler.SetAgentdTerminus(true)
+	// No Start() here (its Run loop would confound the periodic path);
+	// wire the probe exactly as Start does — the Start wiring has its
+	// own test below.
+	svc.SetLedgerProbe(handler.outboxLedgerProbe)
+	assert.Nil(t, handler.adapter, "gate pin: terminus without adapter must still sweep")
 	var delivered atomic.Int32
 	svc.SetOnDelivered(func(ws, ses string, e outbox.Entry) { delivered.Add(1) })
 
-	seedParked(t, svc, "ws-swp70b", "ses-1", "ob-e2e", 5, "context deadline exceeded")
-	handler.SetPriorPhaseForTest("ws-swp70b", "Suspended") // make the Active event a real transition
+	seedParked(t, svc, "ws-swp70tr", "ses-1", "ob-tr", 5, "context deadline exceeded")
+	handler.SetPriorPhaseForTest("ws-swp70tr", "Suspended") // real transition into Active
+	handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-swp70tr", "127.0.0.1",
+		string(v1.WorkspacePhaseActive), "ws-swp70tr"))
+
+	waitFor(t, func() bool { return len(queueOf(t, rdb, "ws-swp70tr", "ses-1")) == 0 })
+	assert.Empty(t, queueOf(t, rdb, "ws-swp70tr", "ses-1"), "the TRANSITION swept the stranded admission")
+	assert.Equal(t, int32(1), delivered.Load())
+	assert.Equal(t, int64(0), stub.deliverHits.Load(), "recovery is lookup-only")
+}
+
+// TestSweeperE2E_NoTransitionNoSweep: the control for the above — an
+// activity-driven Active→Active update (no transition) must not sweep.
+func TestSweeperE2E_NoTransitionNoSweep(t *testing.T) {
+	stub := newLedgerStub(t, 1<<30)
+	stub.muxx.Lock()
+	stub.rows[rowKey("ob-nt", 5)] = "admitted"
+	stub.muxx.Unlock()
+	handler, svc, rdb := newSweeperEnv(t, "ws-swp70nt", stub.server.URL)
+	handler.SetAgentdTerminus(true)
+
+	seedParked(t, svc, "ws-swp70nt", "ses-1", "ob-nt", 5, "context deadline exceeded")
+	handler.SetPriorPhaseForTest("ws-swp70nt", "Active") // no transition
+	handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-swp70nt", "127.0.0.1",
+		string(v1.WorkspacePhaseActive), "ws-swp70nt"))
+
+	time.Sleep(300 * time.Millisecond) // the sweep is async — give a false positive room to fire
+	assert.Len(t, queueOf(t, rdb, "ws-swp70nt", "ses-1"), 1, "no transition, no sweep")
+	assert.Equal(t, int64(0), stub.statusHits.Load())
+}
+
+// TestSweeperE2E_StartWiresProbeAndRunSweeps: the Start() wiring —
+// terminus on wires the probe (the Run loop's periodic pass recovers a
+// parked entry with no phase change at all), and off wires nothing.
+func TestSweeperE2E_StartWiresProbeAndRunSweeps(t *testing.T) {
+	stub := newLedgerStub(t, 1<<30)
+	stub.muxx.Lock()
+	stub.rows[rowKey("ob-run", 5)] = "admitted"
+	stub.muxx.Unlock()
+	handler, svc, rdb := newSweeperEnv(t, "ws-swp70run", stub.server.URL)
+	handler.SetAgentdTerminus(true)
+
+	seedParked(t, svc, "ws-swp70run", "ses-1", "ob-run", 5, "context deadline exceeded")
+	handler.SetPriorPhaseForTest("ws-swp70run", "Active") // no transition: only the periodic pass can recover
 
 	require.NoError(t, handler.Start())
 	t.Cleanup(func() { _ = handler.Stop() })
 
+	waitFor(t, func() bool { return len(queueOf(t, rdb, "ws-swp70run", "ses-1")) == 0 })
+	assert.Empty(t, queueOf(t, rdb, "ws-swp70run", "ses-1"),
+		"Start wired the probe — the Run periodic sweep recovered the entry with no phase change")
+	assert.Equal(t, int64(0), stub.deliverHits.Load(), "recovery is lookup-only (S9)")
+}
+
+// waitFor polls cond until true or fails the test (bounded 10s).
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(queueOf(t, rdb, "ws-swp70b", "ses-1")) == 0 {
-			break
+		if cond() {
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	assert.Empty(t, queueOf(t, rdb, "ws-swp70b", "ses-1"),
-		"Start-seeded Active transition swept the stranded admission")
-	assert.Equal(t, int32(1), delivered.Load())
-	assert.Equal(t, int64(0), stub.deliverHits.Load(), "recovery is lookup-only")
+}
+
+// TestSweeperFaultLeg_RolloverAdmitsViaPlusOne (#1316 leg 6 shape): an
+// API rollover mid-delivery leaves the entry parked unverifiable while
+// the ledger's in-flight row (attempt+1) went admitted — the sweeper's
+// +1 probe completes it with zero Deliver POSTs.
+func TestSweeperFaultLeg_RolloverAdmitsViaPlusOne(t *testing.T) {
+	stub := newLedgerStub(t, 1<<30)
+	stub.muxx.Lock()
+	stub.rows[rowKey("ob-leg6", 3)] = "admitted" // the ambiguous in-flight row
+	stub.muxx.Unlock()
+	handler, svc, rdb := newSweeperEnv(t, "ws-leg6", stub.server.URL)
+	handler.SetAgentdTerminus(true)
+	svc.SetLedgerProbe(handler.outboxLedgerProbe)
+
+	seedParked(t, svc, "ws-leg6", "ses-1", "ob-leg6", 2, "delivery unverifiable: agent unreachable")
+	n, err := svc.SweepWorkspaceParkedErrors(context.Background(), "ws-leg6")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "the admitted in-flight row completes even the unverifiable park")
+	assert.Empty(t, queueOf(t, rdb, "ws-leg6", "ses-1"))
+	assert.Equal(t, int64(0), stub.deliverHits.Load(), "lookup-only recovery (S9)")
 }
