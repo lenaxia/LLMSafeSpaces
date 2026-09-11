@@ -134,6 +134,13 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
 	a.rederiveStatuses(seeds)
+	if ctx.Err() != nil {
+		// The sweep already returned partial stats; running the lease
+		// diff against a dead context would only classify the
+		// cancellation itself as a gather failure on the scrape (r4).
+		a.recordReconcile(stats)
+		return stats
+	}
 	r, ap, lerr := a.diffPendingLeases(ctx)
 	stats.LeaseResolved, stats.LeaseAppeared = r, ap
 	a.mu.Lock()

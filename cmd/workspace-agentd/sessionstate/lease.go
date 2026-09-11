@@ -54,7 +54,7 @@ const gatherTTL = 500 * time.Millisecond
 // serveGatherMapLimit bounds the serve-gather cache: beyond it, stale
 // entries are pruned before insertion. serveGatherPruneHorizon is the
 // staleness threshold (var for tests).
-const serveGatherMapLimit = 4096
+var serveGatherMapLimit = 4096 // var for tests
 
 // serveGatherPruneHorizon is the staleness threshold for pruning (var
 // for tests).

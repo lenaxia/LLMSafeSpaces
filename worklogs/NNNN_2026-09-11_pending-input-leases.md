@@ -92,4 +92,4 @@ All findings validated real, fixed:
 5. **First-scrape drop:** `leaseResolved/Appeared/GatherFail` deltas return the FULL cumulative on first sight (the file's own reconcileDeltas convention — the restart-heal window reaches the series).
 6. **Stale Help:** `llmsafespaces_ledger_reconciled_total` Help now enumerates all six outcome labels and their owning issues.
 
-New tests: failing-gather export + concurrent-Metrics race pin, outcomes export, prune/close-safety (internal-package test for the unexported cache), canceled-pass recording regression.
+New tests: failing-gather export + concurrent-Metrics race pin, outcomes export, prune/close-safety (internal-package test for the unexported cache). Correction (r4): the canceled-pass recording coverage is #1317's pre-existing `TestReconcile_ContextCancelRecordsOutcomes`, unchanged by this PR — this round's work re-homed its recording site and kept that test green, and r4 adds a canceled-pass-does-not-count-as-gather-failure pin below.

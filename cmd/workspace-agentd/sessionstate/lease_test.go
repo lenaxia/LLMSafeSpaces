@@ -477,3 +477,35 @@ func TestLeasePass_OutcomesExported(t *testing.T) {
 	assert.Equal(t, int64(1), m.LeaseResolved, "resolved-by-absence cumulative")
 	assert.Equal(t, int64(1), m.LeaseAppeared, "appeared-from-truth cumulative")
 }
+
+// TestLeasePass_CanceledPassIsNotASourceFailure (r4): a canceled pass
+// records its partial outcomes but does NOT count the cancellation as a
+// lease gather failure on the scrape.
+func TestLeasePass_CanceledPassIsNotASourceFailure(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := leaseAuthority(t, store)
+	seedPendingInput(t, a, "ses-1", "per_1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	a.Reconcile(ctx)
+
+	m := a.Metrics()
+	assert.Equal(t, int64(0), m.LeaseGatherFails, "cancellation is not a lease-source failure")
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "projection untouched")
+}
+
+// TestLeaseDeltas_FirstScrapeCarriesCumulative (r4): the delta bridge
+// returns the full cumulative on first sight (the restart-heal window).
+func TestLeaseDeltas_FirstScrapeCarriesCumulative(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_new"))
+	a := leaseAuthority(t, store)
+	seedPendingInput(t, a, "ses-1", "per_old")
+	a.Reconcile(context.Background())
+
+	m := a.Metrics()
+	require.Equal(t, int64(1), m.LeaseResolved)
+	require.Equal(t, int64(1), m.LeaseAppeared)
+}
