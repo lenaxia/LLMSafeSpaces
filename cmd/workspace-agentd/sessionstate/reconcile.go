@@ -71,6 +71,10 @@ type ReconcileStats struct {
 	// were left untouched (never an authoritative empty) and retry on the
 	// next pass.
 	EvidenceFailures int
+	// LeaseResolved/LeaseAppeared: #1310 slice B pending-lease diff
+	// outcomes (asks resolved by absence; asks appeared from live truth).
+	LeaseResolved int
+	LeaseAppeared int
 }
 
 // Reconcile runs one store-evidence convergence pass over the ledger and
@@ -91,15 +95,24 @@ func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 // reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
 // it with seeds it already read).
 func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
-	if a.ledger == nil || a.cfg.Store == nil {
+	if a.cfg.Store == nil {
 		return ReconcileStats{}
 	}
-	rows := a.ledger.unresolvedSessions()
+	var rows map[string]struct{}
+	if a.ledger != nil {
+		rows = a.ledger.unresolvedSessions()
+	}
 	busy := a.busySessions()
+	pending := a.pendingSessions()
+	known := a.knownSessionCount()
 
-	// Cheap no-op: nothing unresolved, nothing wedged busy. The pass must
-	// stay pod-local-free when there is nothing to converge.
-	if len(rows) == 0 && len(busy) == 0 {
+	// Cheap no-op gate: no ledger rows, no wedged busy, no projected asks,
+	// and no known sessions at all. Known sessions keep the pass on the
+	// cadence even from a fully idle projection — status-event loss in the
+	// harness→idle→busy direction has no projection-side signal (#1310
+	// slice B's L4 leg); the gather IS the slow cadence the lease model
+	// prescribes, and it stays pod-local.
+	if len(rows) == 0 && len(busy) == 0 && len(pending) == 0 && known == 0 {
 		return ReconcileStats{}
 	}
 
@@ -116,7 +129,12 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		a.recordReconcile(stats)
 		return stats
 	}
-	return a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
+	var stats ReconcileStats
+	if a.ledger != nil {
+		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
+	}
+	stats.LeaseResolved, stats.LeaseAppeared = a.diffPendingLeases(seeds)
+	return stats
 }
 
 // sweepAgainstEvidence applies the reconciliation matrix per session:

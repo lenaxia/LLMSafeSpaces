@@ -145,6 +145,8 @@ type Authority struct {
 
 	mu  sync.Mutex
 	seq uint64
+	// leaseBoundOverride is SetLeaseBoundForTest's override (0 = default).
+	leaseBoundOverride time.Duration
 	// lastSeqAt is when the projection last advanced (the seq-stall
 	// signal's clock, R5/US-69.12).
 	lastSeqAt time.Time

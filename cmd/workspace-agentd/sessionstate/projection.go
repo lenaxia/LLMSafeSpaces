@@ -4,6 +4,8 @@
 package sessionstate
 
 import (
+	"time"
+
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -31,8 +33,12 @@ type SessionView struct {
 // gate for #1311's evidence-driven busy-clear (a busy-mark newer than the
 // evidence read survives the pass).
 type sessionRecord struct {
-	status      abiv1.SessionStatus
-	busy        bool
+	status abiv1.SessionStatus
+	busy   bool
+	// busySince stamps the busy-mark's wall clock — the lease-window gate
+	// for #1310 slice B's harness-side status re-derivation (a fresh
+	// busy-mark holds; past the bound, harness truth wins).
+	busySince   time.Time
 	title       string
 	inFly       []*abiv1.Part
 	pending     map[string]*abiv1.InputRequest
@@ -47,6 +53,7 @@ func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
 // evidence-freshness gate for the reconcile busy-clear).
 func (r *sessionRecord) markBusy(seq uint64) {
 	r.busy = true
+	r.busySince = time.Now()
 	r.lastBusySeq = seq
 }
 
