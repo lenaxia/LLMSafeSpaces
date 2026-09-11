@@ -1071,7 +1071,7 @@ func TestLoopLiveness_NamePinnedOnScrapeSurface(t *testing.T) {
 // never-materialized series as "outbox not wired").
 func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 	s, _ := newTestService(t) // no probe wired — adapter mode
-	assert.Nil(t, s.ledgerProbeForTest())
+	require.Nil(t, s.ledgerProbeForTest())
 	before := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper))
 	if before == 0 {
 		parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).Set(1) // materialize; baseline 1
