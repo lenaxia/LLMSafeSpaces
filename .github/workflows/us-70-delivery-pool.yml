@@ -50,7 +50,7 @@ env:
   # (backoff 5s doubling), so the budget must exhaust AND the heal must
   # converge inside F1's 300s window — 24 cannot (last fault burned 41s
   # past the deadline). 8 = probe 1 + boot retries 3 (#1300 Fix B) +
-  # divergent-pod slack 2 + heal burns 2. Pinned ≤8 by
+  # divergent-pod slack 2 + heal burns 2. Pinned to the [6,8] band by
   # TestUS70FaultsScript_F1BudgetSizedToConvergeWindow; F6 self-arms 6.
   FAULT_COUNT: "8"
 

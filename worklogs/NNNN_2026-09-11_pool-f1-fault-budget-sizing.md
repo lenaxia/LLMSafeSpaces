@@ -1,7 +1,7 @@
 # Worklog: F1 autopush-heal fault-budget sizing (pool-green)
 
 **Date:** 2026-09-11
-**Session:** Root-cause and fix the pre-existing `F1 autopush heal timeout` delivery-pool failure on main (epic-71 #1314, flagged unowned in comment 5628098598; agent: opencode-vesper)
+**Session:** Root-cause and fix the pre-existing `F1 autopush heal timeout` delivery-pool failure on main (epic-71 #1314, flagged unowned in comment 5628098598; agent: opencode-vesper). Scope: the F1 ROW — the pool's other red row (AC-1b XDG) is a separate root cause, fixed in PR #1326 (r2 correction: an earlier draft of this worklog said "AC-1b already fixed by #1317"; that claim was WRONG — #1317 fixed the unit-test env-leak manifestation only. The AC-1b cluster row failed byte-identically on main pre-#1317 (34549292454), on #1317's own head (34552707878), and on this branch (34566214570) — it is deterministically red wherever it runs and owed its own fix, now #1326: the row pinned the #1301 symlink mechanism that 1d0e5be1 legitimately replaced with a copy.)
 **Status:** In Review (PR #1321; merge gate = green F1 pool dispatch on the branch)
 
 ---
@@ -55,7 +55,7 @@ None. (Product finding handed to #1312 owner — see above.)
 - `go test -timeout 120s ./local/` — green (new pin red-first at 24, green at 8; lockstep + all harness pins pass).
 - `bash -n local/us-70-faults-e2e.sh` — clean.
 - `gofmt -l local/`, `go vet ./local/` — clean.
-- Cluster rows (F1 in-pool) — to be validated by the pool dispatch on this branch before merge (merge gate: pool green).
+- Cluster rows: **merge-gate run 34566214570 on head 97560fb3** — F1 PASS (~57s seed→converge), F2–F6 all green (faults step SUCCESS). The run's only red is the AC-1b row (pre-existing main-red; see the corrected Session note — fixed separately in #1326). Full-pool green evidence rides the combined dispatch on the final heads.
 
 ## Next Steps
 
