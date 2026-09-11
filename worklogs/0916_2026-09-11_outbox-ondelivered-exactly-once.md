@@ -31,7 +31,7 @@ Land hot-fix; main CI re-run green; release checklist unaffected (the double-fir
 
 - `api/internal/services/outbox/parked_sweeper.go`
 - `api/internal/services/outbox/outbox.go`
-- `worklogs/NNNN_2026-09-11_outbox-ondelivered-exactly-once.md` (this file)
+- `worklogs/0916_2026-09-11_outbox-ondelivered-exactly-once.md` (this file)
 
 ---
 
