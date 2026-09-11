@@ -251,9 +251,12 @@ const (
 // per-session lock with a timeout-bounded context.
 type Verifier func(ctx context.Context, workspaceID, sessionID string, e Entry) Verdict
 
-// DeliveredHook fires exactly once per entry on confirmed delivery —
-// both the synchronous 2xx path and the verified path. SSE
-// queue.update/sent, metering, and session-index recording ride it.
+// DeliveredHook fires exactly once per entry COPY on confirmed delivery
+// — the synchronous 2xx path and the verified path. The documented
+// crash window (an entry in both the main list and staging) permits one
+// fire per copy; the LRem-count claim token enforces the same bound
+// cross-replica. SSE queue.update/sent, metering, and session-index
+// recording ride it.
 type DeliveredHook func(workspaceID, sessionID string, e Entry)
 
 // StagedHook fires when a pending entry is staged out for delivery —
@@ -714,8 +717,9 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer bcancel()
 	if derr == nil {
-		s.client.LRem(bctx, dKey(ws, ses), 1, staged)
-		s.fireOnDelivered(ws, ses, e)
+		if n, err := s.client.LRem(bctx, dKey(ws, ses), 1, staged).Result(); err == nil && n > 0 {
+			s.fireOnDelivered(ws, ses, e)
+		}
 		return true
 	}
 	var amb *AmbiguousError
@@ -799,8 +803,11 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	}
 	switch s.verifier(ctx, ws, ses, e) {
 	case VerdictDelivered:
-		s.client.LRem(ctx, qk, 1, vals[idx])
-		s.fireOnDelivered(ws, ses, e)
+		// Exactly-once token: only the removal's winner fires the hook
+		// (a peer replica's sweeper may complete the same entry).
+		if n, err := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); err == nil && n > 0 {
+			s.fireOnDelivered(ws, ses, e)
+		}
 		return true
 	case VerdictAbsent:
 		e.Status = StatusPending
@@ -827,8 +834,12 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 			// completes it — holding it delivering here would need a
 			// re-poll driver this path lacks.
 			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
-				s.client.LRem(ctx, qk, 1, vals[idx])
-				s.fireOnDelivered(ws, ses, e)
+				// Exactly-once token (the fifth site — r1: verifyOne's
+				// lock-loss window means a peer may complete while our
+				// probes ran; only the LRem winner fires).
+				if n, lerr := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); lerr == nil && n > 0 {
+					s.fireOnDelivered(ws, ses, e)
+				}
 				return true
 			}
 			e.Status = StatusError

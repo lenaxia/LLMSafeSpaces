@@ -1,0 +1,57 @@
+# Worklog: OnDelivered exactly-once across completers (main-red hotfix)
+
+**Date:** 2026-09-11
+**Session:** Main went red post-2a-merge: `TestStress_AmbiguityStormMultiReplica` — "OnDelivered fired 2 times for storm-1-0". Root cause is 0b's (#1318): the sweeper and the park guard became SECOND completers racing the verify path on a peer replica, and every complete site fired the hook unconditionally — even when its LRem removed nothing because the peer had already completed the entry.
+**Status:** Complete
+
+---
+
+## Objective
+
+Restore `DeliveredHook`'s "exactly once per entry" contract across ALL completion sites, cross-replica included.
+
+## Work Completed
+
+- Every completion site now uses **LRem's removal count as the exactly-once token**: the hook fires only from the caller whose LRem actually removed the entry (winner-takes-the-hook). Applied uniformly: the sweeper's `completed` branch, `applyParkGuardDisposition`'s completes arm (guard + transient-threshold sites), `verifyOne`'s VerdictDelivered arm, and the inline success path in `deliverOne`.
+- Losers of the race do nothing — the entry is gone; their no-op LRem is harmless.
+
+## Key Decision
+
+LRem-by-value's return count is the natural cross-replica atomic claim: Redis executes LRem atomically, so exactly one caller (per copy) receives a non-zero count. No new locks, tokens, or round-trips.
+
+## Tests Run
+
+`TestStress_AmbiguityStormMultiReplica` green at `-count=5 -race` (the failing row); full outbox suite green with `-race`; golangci-lint 0 issues. The stress suite IS the regression test (it caught the bug on main) — no duplicate hand-rolled flake added.
+
+## Next Steps
+
+Land hot-fix; main CI re-run green; release checklist unaffected (the double-fire was observability/metering-level, not message duplication — S9’s no-re-POST was never violated).
+
+## Files Modified
+
+- `api/internal/services/outbox/parked_sweeper.go`
+- `api/internal/services/outbox/outbox.go`
+- `worklogs/NNNN_2026-09-11_outbox-ondelivered-exactly-once.md` (this file)
+
+---
+
+## Review round 1 (PR #1339)
+
+- **Fifth completion site (fixed):** `verifyOne`'s unverifiable-park guard site still fired unconditionally — the lock-loss two-replica window (our verifier/probe I/O spanning a lock expiry, the peer completing meanwhile) double-fired. Same `n > 0` LRem token applied. Pinned deterministically by `TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss`: the verifier itself plays the peer (removes the entry mid-window); the completion must not fire our hook.
+
+---
+
+## Review round 2 (PR #1339)
+
+- **Vacuous test (fixed):** the r1 pin's probe key (`e1|5`) never matched the seeded entry's `Attempts: 0` — the fixed branch was unreachable and the test passed on the pre-fix head. Corrected to `e1|0` (the reviewer verified red on pre-fix / green on fix with exactly this key). The r1 worklog claim of a deterministic pin was false as committed — corrected here.
+- **Loser-suppression coverage (added):** `TestCompleteSites_LoserSuppression` drives the loser half at three sites (deliverOne inline success — the peer drains the STAGED copy mid-deliverer; sweeper completed; verifyOne delivered arm) — each asserts the hook stays silent on a no-op LRem. Together with the lock-loss pin (fifth site) and the storm row (VerdictDelivered arm cross-replica), every gate is now delete-one-site-and-a-test-fails.
+
+---
+
+## Review round 3 (PR #1339)
+
+- **Vacuous sweeper row (fixed):** the r2 "sweeper completed" subtest pre-removed the queue, the SCAN found no session, and the site was never reached (proven passing on main). The peer removal now runs INSIDE the probe window — the sweeper's snapshot holds the entry, its LRem removes 0, the hook stays silent. Mutation-verified locally: unconditional-fire at site 4 → this row fails; restored → green.
+- **Site 5 loser coverage (added):** the guard-disposition completes arm gets its loser row — the probe plays the peer draining the STAGED copy; the completes arm's staging LRem removes 0 and fires nothing. Mutation-verified: unconditional-fire at site 5 → this row fails.
+- **r2 claim corrected:** "every gate is delete-one-site-and-a-test-fails" was false as committed (sites 4/5 unpinned, mutation-proven by the reviewer); with this round it is true — all five sites mutation-verified locally, red under unconditional-fire, green gated.
+- **Finding 3 (tracked, not solved here):** lost-reply LRem (`err != nil` after server-side application) drops the delivered signal with no re-drive at the qk sites — filed for follow-up rather than entrenched silently; the hotfix scope is the double-fire class.
+- **Doc correction:** the DeliveredHook contract comment now says exactly-once per entry COPY (the crash window permits one fire per copy) — landing in this round's diff.

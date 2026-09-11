@@ -1096,3 +1096,139 @@ func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 	assert.Greater(t, promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)), before,
 		"adapter mode stamps too — loop liveness is regime-independent")
 }
+
+// TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss (r1): the
+// verifyOne park-guard site must not double-fire when a peer completes
+// the entry during our verifier/probe window (the lock-loss two-replica
+// interleaving) — only the LRem winner fires.
+func TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss(t *testing.T) {
+	s, _ := newTestService(t)
+	// Attempts is 0 — the guard probes e1|0/e1|1, NOT e1|5 (r2: the
+	// e1|5 key made this test vacuous; the one-character fix makes it
+	// the real red->green pin).
+	probe, _ := probeFunc(t, map[string]string{"e1|0": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying, VerifyAttempts: MaxVerifyAttempts - 1}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	// The inconclusive verifier is where the interleaving lives: on each
+	// call (the probe window), a "peer" removes the entry — the shape of
+	// replica B completing while replica A's verifyOne sits between its
+	// snapshot and its completion write.
+	s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict {
+		s.client.LRem(ctx, qKey("ws-1", "ses-1"), 1, mustMarshal(e))
+		return VerdictInconclusive
+	})
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+		func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+	assert.Equal(t, int32(0), fired.Load(),
+		"the peer's completion owns the hook — our no-op LRem must not fire it")
+}
+
+// TestCompleteSites_LoserSuppression (r2 missing test 2): every
+// completion site fires the hook exactly once when a peer (simulated by
+// a pre-removal) beats us to the entry — delete any site's n>0 gate and
+// one of these rows fails.
+func TestCompleteSites_LoserSuppression(t *testing.T) {
+	preRemove := func(t *testing.T, s *Service) {
+		t.Helper()
+		vals, err := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+		require.NoError(t, err)
+		for _, v := range vals {
+			s.client.LRem(context.Background(), qKey("ws-1", "ses-1"), 1, v)
+		}
+	}
+	t.Run("deliverOne inline success", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedQueueEntry(t, s, "ws-1", "ses-1", "e1", StatusPending)
+		// The peer drains the STAGED copy while our deliverer runs (the
+		// entry leaves main for staging before the deliverer is called).
+		ok := s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error {
+				staged, err := s.client.LRange(ctx, dKey(ws, ses), 0, -1).Result()
+				require.NoError(t, err)
+				for _, v := range staged {
+					s.client.LRem(ctx, dKey(ws, ses), 1, v)
+				}
+				return nil
+			})
+		require.True(t, ok)
+		assert.Equal(t, int32(0), fired.Load(), "loser's no-op LRem fires nothing")
+	})
+	t.Run("sweeper completed", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
+		// The peer removes the entry INSIDE the probe window: the
+		// sweeper's snapshot holds it, its completion LRem removes 0
+		// (the r3 shape — pre-removal emptied the queue and the SCAN
+		// found no session, making the row vacuous).
+		s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+			vals, err := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
+			if err == nil {
+				for _, v := range vals {
+					s.client.LRem(ctx, qKey(ws, ses), 1, v)
+				}
+			}
+			return LedgerStateAdmitted, nil
+		})
+		n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+		require.NoError(t, err)
+		assert.Equal(t, 0, n)
+		assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+		assert.Equal(t, int32(0), fired.Load(), "the peer's removal owns the hook")
+	})
+	t.Run("guard disposition completes arm", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		// Park-threshold entry: the failure branch's guard probes, the
+		// probe plays the peer draining the STAGED copy, returns
+		// ADMITTED → the completes arm's staging LRem removes 0.
+		e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+			AcceptedAt: time.Now().UTC(), Status: StatusPending, Attempts: MaxAttempts - 1}
+		raw, err := json.Marshal(e)
+		require.NoError(t, err)
+		require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+		s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+			vals, derr := s.client.LRange(ctx, dKey(ws, ses), 0, -1).Result()
+			if derr == nil {
+				for _, v := range vals {
+					s.client.LRem(ctx, dKey(ws, ses), 1, v)
+				}
+			}
+			return LedgerStateAdmitted, nil
+		})
+		require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error {
+				return errors.New("context deadline exceeded")
+			}))
+		assert.Equal(t, int32(0), fired.Load(), "loser's staging LRem fires nothing")
+		staged, err := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+		require.NoError(t, err)
+		assert.Empty(t, staged, "staging drained (by the peer)")
+	})
+	t.Run("verifyOne delivered arm", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedQueueEntry(t, s, "ws-1", "ses-1", "e1", StatusVerifying)
+		s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict {
+			preRemove(t, s)
+			return VerdictDelivered
+		})
+		require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+		assert.Equal(t, int32(0), fired.Load())
+	})
+}
