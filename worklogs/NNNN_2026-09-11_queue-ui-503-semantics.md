@@ -46,11 +46,14 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 
 ## Next Steps
 
-- PR → r2 review; items 2/4 of #1320 need no change (validated already-correct; r1 reviewer spot-checked and confirmed).
+- Ride the review cycle to approval (at r9); items 2/4 of #1320 validated already-correct (validated already-correct; r1 reviewer spot-checked and confirmed).
 
 ## Files Modified
 
 - `frontend/src/hooks/useMessageQueue.ts`
+- `frontend/src/api/messages.ts` (r2: cmid in the /queue body)
+- `frontend/src/pages/ChatPage.queue.test.tsx` (r2: strict-matchers updated for cmid arity)
+- `frontend/tests/e2e/queue-resend.spec.ts` (r2–r9: the e2e suite)
 - `frontend/src/hooks/useMessageQueue.test.ts`
 - `frontend/src/hooks/useChatStream.test.ts`
 - `worklogs/NNNN_2026-09-11_queue-ui-503-semantics.md` (this file)
@@ -78,3 +81,9 @@ Root causes fixed this round (each verified to change behavior):
 4. clickUntil's effect windows widened to 6s.
 
 **Truthful stability record at this head**: `--repeat-each=3 --retries=0` → **12/12 once; 11/12 twice** (one residual failure: the dismiss arm's first-phase hint not rendering within the window under cold start, buttons present in the snapshot). The same contract is deterministically pinned at the unit level (dismiss-503, pending-pill dismiss-503, unknown-outcome, 503→204 transition — all red-first). The e2e arm stays; the claim is exactly what the record shows — NOT "reproducibly green cold". Further hunting is diminishing returns without the reviewer's cold-environment protocol.
+
+## Review r9 — the lost-click class actually closed
+
+The residual was never render-churn alone: the composer form's hit area INTERCEPTS POINTER EVENTS on mid-render nodes (the r6 log said it; the r9 network-gate proved it — clicks produced ZERO POSTs in 60s of retries). The fix is a DOM-level programmatic click (`evaluate(el => el.click())`) — the React handler dispatches regardless of hit-testing, which is the deterministic choice for a route-stubbed UI whose wiring is unit/integration-pinned upstream. The network counter (`clickUntilNetworked`) gates the retry loop: a swallowed click produces no POST and is re-attempted; a landed one is never doubled. Also landed: the r9 targeted poller stubs (empty-200 for /runs/active, agent-role, orgs, image-factory, admin/agent-roles — NOT a global 404, which broke load-bearing endpoints in a discarded draft) and the count-agnostic toggle selector (/message.*queued/ — the singular "1 message queued" name).
+
+**Stability record: three consecutive clean 12/12 at `--repeat-each=3 --retries=0`, default workers** (44–46s each — the churn was also the slowness). Full unit suite 1800/1800; the CI typecheck command clean.

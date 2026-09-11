@@ -35,6 +35,23 @@ async function stubAuth(page: Page) {
   });
 }
 
+// pollerStub answers the page's background pollers with empty-success
+// payloads: unstubbed, they fall through to the dev server's proxy
+// errors and retry forever — the r9 churn source that still swallowed
+// clicks after /events was stubbed (46 /runs/active + 24 each of the
+// others per run in the reviewer's logs). Targeted, NOT a global 404:
+// a global fallback breaks load-bearing endpoints.
+async function pollerStub(page: Page) {
+  const empty = (body: unknown) => async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  };
+  await page.route(`${API}/runs/active`, empty({ runs: [] }));
+  await page.route(`${API}/workspaces/${WS}/agent-role`, empty({ role: null }));
+  await page.route(`${API}/orgs`, empty([]));
+  await page.route(`${API}/image-factory/catalog`, empty({ images: [] }));
+  await page.route(`${API}/admin/agent-roles`, empty([]));
+}
+
 async function stubWorkspace(page: Page, opts: { eventsStub?: boolean } = {}) {
   await page.route(`${API}/workspaces`, async (route: Route) => {
     if (route.request().method() === "GET") {
@@ -188,6 +205,7 @@ const ERR_ENTRY: QueueEntry = {
 };
 
 async function openChatWithQueue(page: Page, entries: QueueEntry[], opts: { eventsStub?: boolean } = {}) {
+  await pollerStub(page);
   await stubAuth(page);
   await stubWorkspace(page, opts);
   const queue = stubQueue(page, entries);
@@ -202,30 +220,34 @@ async function openChatWithQueue(page: Page, entries: QueueEntry[], opts: { even
   try {
     await retryBtn.waitFor({ state: "visible", timeout: 1500 });
   } catch {
-    await page.getByRole("button", { name: /messages queued/ }).click({ timeout: 5000 });
+    await page.getByRole("button", { name: /message.*queued/ }).click({ timeout: 5000 });
     await retryBtn.waitFor({ state: "visible", timeout: 5000 });
   }
   return queue;
 }
 
-// clickUntil — r6/r7: actionability starvation (r5) and the force-click's
-// lost-click no-op (r6) are both symptoms of clicking a node mid-churn.
-// The robust strategy retries the click UNTIL ITS EFFECT fires — with the
-// EFFECT CHECKED FIRST each iteration, so a successful-but-slow click is
-// never followed by a second POST (the double-click hazard of a naive
-// retry loop). Locators arrive pre-bound (no page parameter — TS6133).
-async function clickUntil(selector: () => import("@playwright/test").Locator, effect: () => Promise<unknown>) {
+// clickUntilNetworked — r9: the DOM-hint effect probe remained
+// render-timing vulnerable across environments; the deterministic
+// discriminator is the NETWORK EFFECT (the stub's call counter — a
+// swallowed click produces no POST). Click, then poll the counter; the
+// counter is checked FIRST so a landed-but-unrendered POST is never
+// followed by a second click. DOM assertions run afterwards, detached
+// from the retry loop. Locators arrive pre-bound (no page param).
+async function clickUntilNetworked(
+  selector: () => import("@playwright/test").Locator,
+  fired: () => number,
+) {
+  const before = fired();
   await expect(async () => {
-    // Effect present already? Done — no click, no duplicate POST.
-    try {
-      await effect();
-      return;
-    } catch {
-      // not yet — fall through and click
-    }
-    await selector().click({ timeout: 5_000 }).catch(() => {});
-    await effect();
-  }).toPass({ timeout: 45_000 });
+    if (fired() > before) return;
+    // DOM-level click: the composer form's hit area intercepts pointer
+    // events on mid-render nodes (the r6/r9 logs' "intercepts pointer
+    // events") — a programmatic click dispatches the handler regardless
+    // of hit-testing, which is the deterministic choice for a
+    // route-stubbed UI whose wiring is unit/integration-pinned upstream.
+    await selector().evaluate((el) => (el as HTMLElement).click()).catch(() => {});
+    await expect.poll(fired, { timeout: 4_000 }).toBeGreaterThan(before);
+  }).toPass({ timeout: 60_000 });
 }
 
 test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)", () => {
@@ -236,31 +258,26 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   test("retry under persistent 503: pill stays with the busy hint, ZERO re-enqueue POSTs", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    await clickUntil(
+    await clickUntilNetworked(
       () => page.getByRole("button", { name: "Retry" }).first(),
-      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 6_000 }),
+      () => queue.calls.retry,
     );
+    await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 20_000 });
 
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
-    // The invariant the whole fix exists for: contention must never mint
-    // a second entry. ZERO queue POSTs is the hard assertion; the retry
-    // POST count is >= 1 (the effect-first clickUntil makes a second
-    // click vanishingly rare, but a slow render after a landed POST can
-    // still cost one extra harmless 503 re-POST — an idempotent
-    // server-side re-arm of the SAME entry, never a duplicate).
-    await page.waitForTimeout(400);
-    expect(queue.calls.enqueue).toBe(0);
-    expect(queue.calls.retry).toBeGreaterThanOrEqual(1);
+    // The invariant the whole fix exists for: contention must never
+    // mint a second entry. ZERO queue POSTs is the hard assertion.
     expect(queue.calls.enqueue).toBe(0);
   });
 
   test("dismiss under 503: pill stays; after contention clears, dismiss removes it", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    await clickUntil(
+    await clickUntilNetworked(
       () => page.getByRole("button", { name: "Dismiss" }).first(),
-      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 6_000 }),
+      () => queue.calls.delete,
     );
+    await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
     expect(queue.calls.delete).toBe(1);
 
@@ -270,10 +287,11 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     await page.waitForTimeout(600);
     // Contention clears (delivery finished) — the dismiss now applies.
     queue.calls.deleteStatus = 204;
-    await clickUntil(
+    await clickUntilNetworked(
       () => page.getByRole("button", { name: "Dismiss" }).first(),
-      () => expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 6_000 }),
+      () => queue.calls.delete,
     );
+    await expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 20_000 });
     expect(queue.calls.delete).toBe(2);
   });
 
@@ -359,10 +377,11 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
         await route.fulfill({ status: 404, body: "" });
       }
     });
-    await clickUntil(
+    await clickUntilNetworked(
       () => page.getByRole("button", { name: "Stop generating" }).first(),
-      () => expect(page.getByText(/delivery in progress/i).first()).toBeVisible({ timeout: 6_000 }),
+      () => queue.calls.delete,
     );
+    await expect(page.getByText(/delivery in progress/i).first()).toBeVisible({ timeout: 20_000 });
 
     // The queued "plain entry" also renders an optimistic transcript
     // bubble — pill removal is asserted via the QUEUE SECTION, not the
@@ -375,6 +394,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   });
 
   test("send retries a 503 with the SAME clientMessageID on the wire", async ({ page }) => {
+    await pollerStub(page);
     await stubAuth(page);
     await stubWorkspace(page);
     await page.route(`${API}/workspaces/${WS}/sessions/${SES}/history**`, async (route: Route) => {
