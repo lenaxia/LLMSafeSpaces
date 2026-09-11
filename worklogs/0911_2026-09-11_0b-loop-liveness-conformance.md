@@ -33,7 +33,7 @@ My landed-notes commitment from 0b: "reconcile ParkedSweepInterval/probeTimeout 
 
 - `api/internal/services/outbox/parked_sweeper.go`
 - `api/internal/services/outbox/parked_sweeper_test.go`
-- `worklogs/NNNN_2026-09-11_0b-loop-liveness-conformance.md` (this file)
+- `worklogs/0911_2026-09-11_0b-loop-liveness-conformance.md` (this file)
 
 ---
 
