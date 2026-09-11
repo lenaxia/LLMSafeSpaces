@@ -140,12 +140,14 @@ activate_ws() { # ws — API activate + wait Active
 total_start=$(date +%s%3N)
 harness_start
 
-# The arm step rolled the API deployment to inject the fault seam — the
-# port-forward established before that rollout is pinned to the REPLACED
-# pod (run 34618847909: rollout at 16:34:39, F1's probe at 16:34:40 hit
-# the dead forward and skipped the row). Re-establish the forward against
-# the armed process before any seam probing; idempotent (F2/F6 reuse the
-# same dance).
+# The arm step rolls the API deployment to inject the fault seam BEFORE
+# this script starts (sequential workflow steps). harness_start then
+# establishes the svc port-forward inside the rollout-complete →
+# old-pod-reap overlap window: the forward resolves to the DYING pod and
+# is pinned there for this script's lifetime (run 34618847909: rollout
+# at 16:34:39, F1's probe at 16:34:40 hit the dead pod and skipped the
+# row). Re-establish the forward after the reap window settles — the
+# same dance F2/F6 do after their own rollouts; idempotent.
 reconnect_api
 
 # -----------------------------------------------------------------------------

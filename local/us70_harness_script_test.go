@@ -955,7 +955,7 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 // a dead forward one second after rollout).
 func TestUS70FaultsScript_ReconnectsAfterArm(t *testing.T) {
 	src := mustRead(t, us70FaultsScript)
-	if !strings.Contains(src, "harness_start\n\n# The arm step rolled the API deployment") {
+	if !strings.Contains(src, "harness_start\n\n# The arm step rolls the API deployment") {
 		t.Fatalf("faults script must document WHY it reconnects after harness_start (the arm-step rollout replaces the forwarded pod)")
 	}
 	idxHarness := strings.Index(src, "harness_start")
