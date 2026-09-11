@@ -373,9 +373,13 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	// against the store evidence BEFORE the projection swap, so the first
 	// post-reseed snapshot serves converged queueDepth/status — deploying
 	// this auto-heals every currently-wedged session with no operator
-	// action. Evidence I/O stays outside a.mu (M3.1).
+	// action. Evidence I/O stays outside a.mu (M3.1) and carries the SAME
+	// pass deadline the cadence path has (r3-2): a hung store must not
+	// wedge the reseed — the sweep gives up, rows retry next pass.
 	if a.ledger != nil {
-		a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
+		sweepCtx, sweepCancel := context.WithTimeout(ctx, a.reconcileTimeout())
+		a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
+		sweepCancel()
 	}
 
 	flush := func() {

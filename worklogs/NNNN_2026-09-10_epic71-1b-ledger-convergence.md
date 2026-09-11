@@ -107,6 +107,14 @@ Merge gate (delivery-pool kind suite): dispatched `us-70-delivery-pool.yml` agai
 
 ---
 
+## Review round 3 (PR #1317 — r1/r2 fixes verified; one item remediated)
+
+Reviewer verified all r1+r2 fixes with empirical red/green pins. Remaining item fixed: **the reseed-embedded sweep now carries the same pass deadline the cadence path has** (`Reseed` wraps its sweep call in `reconcileTimeout()`); pinned by `TestReseedSweep_EvidenceDeadlineBounds` (hung message evidence → prompt reseed; the r2 status-evidence fall-through converges the row via the turn-ended arm under the deadline — the pin doubles as the fall-through's deadline-case documentation).
+
+**Merge gate executed and dispositioned:** pool dispatched on this branch (34547093034) AND on unmodified main (34549292454) — identical outcomes (40 passes, same 2 failures: AC-1b XDG mismatch, F1 autopush timeout — both byte-identical on main). Zero new pool regressions from this branch; the pre-existing main-red surfaced on epic #1314 (comment 5628098598) for the owning stream. Pool flake history noted (same-branch failure/success alternation on fix/1300 runs).
+
+---
+
 ## Blockers
 
 None. Coordination notes: `actions.go` untouched (1a's); the shared lease clock landed here for 2a to consume; delivery-pool kind rows (AC-1b..1e, F6) ride the weekly CI workflow on the PR — the in-repo executable forms (crash matrix, incident replay, watchdog loop) are committed here.

@@ -704,3 +704,31 @@ func TestReconcile_BusyFoldDuringStatesReadSurvives(t *testing.T) {
 	require.NotNil(t, st.Sessions["s1"])
 	assert.True(t, st.Sessions["s1"].Busy, "busy folded DURING the store read survives the pass — the stamp predates the read")
 }
+
+// TestReseedSweep_EvidenceDeadlineBounds (r3-2): the reseed-embedded sweep
+// carries the same pass deadline the cadence path has — a hung store must
+// not wedge the reseed; the sweep gives up and rows retry on the next
+// reconcile pass.
+func TestReseedSweep_EvidenceDeadlineBounds(t *testing.T) {
+	store := &evidenceStore{states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e1", "m1", LedgerStateAdmitted)
+	a.SetReconcileTimeoutForTest(50 * time.Millisecond)
+	a.SetStoreForTest(&hangMessagesStore{inner: store})
+
+	done := make(chan error, 1)
+	go func() { done <- a.Reseed(context.Background(), ReseedReasonBoot) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reseed wedged on hung evidence I/O — the embedded sweep needs the pass deadline")
+	}
+
+	// The message leg hung, but the status evidence (idle) was read: the
+	// r2 fall-through decision applies — the row converges via the
+	// turn-ended arm (promotion refinement lost, truth preserved).
+	row, ok := a.ledger.status("e1", 1)
+	require.True(t, ok)
+	assert.Equal(t, LedgerStateTurnEnded, row.State, "status evidence alone converges the row under the pass deadline")
+	assert.Equal(t, 0, a.ledger.queueDepth("s1"))
+}
