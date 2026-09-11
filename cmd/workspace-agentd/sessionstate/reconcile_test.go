@@ -513,7 +513,7 @@ type blockingAdmit struct {
 	proceed chan struct{}
 }
 
-func (b *blockingAdmit) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (b *blockingAdmit) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	b.mu.Lock()
 	b.entered = true
 	b.mu.Unlock()

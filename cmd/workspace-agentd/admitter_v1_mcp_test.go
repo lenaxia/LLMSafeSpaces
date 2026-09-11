@@ -58,7 +58,7 @@ func TestAdmitterUsesV1MessagePath(t *testing.T) {
 	adm := opencodeAdmitter{password: "test"}
 	agentAddrAtomic.Store(srv.URL)
 
-	msgID, err := adm.Admit(context.Background(), "test-ses", "hello", "")
+	msgID, err := adm.Admit(context.Background(), "test-ses", "msg_ob_t", "hello", "")
 	if err != nil {
 		t.Fatalf("Admit failed: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestAdmitterV2EndpointNotUsed(t *testing.T) {
 	adm := opencodeAdmitter{password: "test"}
 	agentAddrAtomic.Store(srv.URL)
 
-	_, err := adm.Admit(context.Background(), "ses", "test", "thekaocloud/glm-5.3")
+	_, err := adm.Admit(context.Background(), "ses", "msg_ob_t", "test", "thekaocloud/glm-5.3")
 	if err != nil {
 		t.Fatalf("Admit with model failed: %v", err)
 	}

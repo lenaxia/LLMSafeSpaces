@@ -177,6 +177,6 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 // instantAdmitter admits synchronously (the watchdog e2e's ledger).
 type instantAdmitter struct{}
 
-func (instantAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (instantAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	return "msg-1", nil
 }

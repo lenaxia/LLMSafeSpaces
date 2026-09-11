@@ -22,6 +22,7 @@ func TestOpencodeAdmitter_UsesV1MessagePath(t *testing.T) {
 	// behavior (the TUI calls the session runner directly).
 	var gotPath string
 	var gotBodyType string
+	var gotMessageID any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		var body map[string]any
@@ -32,6 +33,7 @@ func TestOpencodeAdmitter_UsesV1MessagePath(t *testing.T) {
 		if _, ok := body["delivery"]; ok {
 			gotBodyType = "V2_SHAPE"
 		}
+		gotMessageID = body["messageID"]
 		_, _ = w.Write([]byte(`{"info":{"id":"msg_x"}}`))
 	}))
 	defer srv.Close()
@@ -40,12 +42,19 @@ func TestOpencodeAdmitter_UsesV1MessagePath(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 
 	a := opencodeAdmitter{password: "pw"}
-	id, err := a.Admit(context.Background(), "ses_1", "hello", "")
+	id, err := a.Admit(context.Background(), "ses_1", "msg_ob_w1", "hello", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if id != "msg_x" {
 		t.Fatalf("messageID roundtrip: %q", id)
+	}
+	// S2 (#1315): the entry-derived dedupe key MUST ride the POST body —
+	// the pinned harness uses it verbatim as the user message's store ID
+	// and upserts on collision, so dropping the field reopens the 16-copy
+	// class (every re-POST an unconditional transcript append).
+	if gotMessageID != "msg_ob_w1" {
+		t.Fatalf("body messageID = %v — the entry dedupe key must ride the V1 POST body (S2)", gotMessageID)
 	}
 	if gotPath != "/session/ses_1/message" {
 		t.Fatalf("path = %q — must be the V1 message endpoint, not V2 prompt (#1313)", gotPath)
@@ -81,7 +90,7 @@ func TestOpencodeAdmitter_SetsSessionModelBeforeSteer(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 
 	a := opencodeAdmitter{password: "pw"}
-	id, err := a.Admit(context.Background(), "ses_1", "hello", "thekaocloud/glm-5.3")
+	id, err := a.Admit(context.Background(), "ses_1", "msg_ob_w1", "hello", "thekaocloud/glm-5.3")
 	if err != nil || id != "msg_x" {
 		t.Fatalf("admit: %v %q", err, id)
 	}
@@ -108,7 +117,7 @@ func TestOpencodeAdmitter_ModelSetFailureFailsClosed(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 
 	a := opencodeAdmitter{password: "pw"}
-	if _, err := a.Admit(context.Background(), "ses_1", "hello", "bogus-model"); err == nil {
+	if _, err := a.Admit(context.Background(), "ses_1", "msg_ob_w1", "hello", "bogus-model"); err == nil {
 		t.Fatal("a rejected model must fail the admission loudly, not run the session default")
 	}
 }

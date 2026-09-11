@@ -56,7 +56,7 @@ func TestAdmitterE2E_V1DeliveryWithModel(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 	adm := opencodeAdmitter{password: "e2e-pw"}
 
-	msgID, err := adm.Admit(context.Background(), "e2e-ses", "list your tools", "thekaocloud/glm-5.3")
+	msgID, err := adm.Admit(context.Background(), "e2e-ses", "msg_ob_e2e", "list your tools", "thekaocloud/glm-5.3")
 	if err != nil {
 		t.Fatalf("full delivery chain failed: %v", err)
 	}
@@ -125,8 +125,8 @@ func TestAdmitterE2E_V2EndpointNeverCalled(t *testing.T) {
 	agentAddrAtomic.Store(srv.URL)
 	adm := opencodeAdmitter{password: "guard"}
 
-	_, _ = adm.Admit(context.Background(), "guard", "test", "")
-	_, _ = adm.Admit(context.Background(), "guard", "test", "provider/model")
+	_, _ = adm.Admit(context.Background(), "guard", "msg_ob_g", "test", "")
+	_, _ = adm.Admit(context.Background(), "guard", "msg_ob_g", "test", "provider/model")
 	if v2Hit {
 		t.Fatal("V2 endpoint was called — the #1313 fix regressed")
 	}

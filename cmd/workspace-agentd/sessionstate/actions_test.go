@@ -31,7 +31,7 @@ func newBlockingAdmitter() *blockingAdmitter {
 	return &blockingAdmitter{entered: make(chan string, 16), release: make(chan struct{})}
 }
 
-func (b *blockingAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (b *blockingAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	b.mu.Lock()
 	b.calls++
 	b.mu.Unlock()
