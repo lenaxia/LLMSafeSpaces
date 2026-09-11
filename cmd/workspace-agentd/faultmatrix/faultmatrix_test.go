@@ -154,17 +154,21 @@ func TestRow_Leg4_CrashRestart_S7_S8_L5(t *testing.T) {
 	v := NewViolations()
 	log := NewConvergenceLog()
 
-	// Restart: a fresh reseed embeds the sweep (boot auto-heal).
-	start := time.Now()
+	// Restart: a fresh reseed embeds the sweep (boot auto-heal); a
+	// session whose admission ladder still holds the single-flight lock
+	// is SKIPPED that pass (correct — never wait behind a live turn),
+	// so convergence is the watchdog's cadence contract, not the first
+	// pass: tick Reconcile until the stranded row clears, inside L5.
 	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
-	elapsed := time.Since(start)
+	elapsed, ok := WaitConverges(context.Background(), 30*time.Second, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths == nil || m.LedgerDepths["admitted"] == 0
+	})
 	log.Record("L5", elapsed)
-	if elapsed > 30*time.Second {
+	if !ok {
+		v.Add("S7") // stranded admitted row against present evidence, past L5
 		v.Add("L5")
-	}
-	m := a.Metrics()
-	if m.LedgerDepths == nil || m.LedgerDepths["admitted"] != 0 {
-		v.Add("S7") // stranded admitted row against present evidence
 	}
 
 	// S8: reconstitutability — a second boot reseed keeps S7 holding.
