@@ -1089,3 +1089,47 @@ func TestUS70AC1BRow_GuardDiscipline(t *testing.T) {
 		}
 	}
 }
+
+// TestUS70AC1BRow_SeedDecisionExecutes runs the script's ACTUAL seed
+// guard + decision expression (r4: `-ge 1`→`-ge 2` mutation left the
+// suite green — the threshold was Go-re-implemented, not executed).
+// A fake kc serves the captured value; every outcome is asserted
+// against the script's own die branches.
+func TestUS70AC1BRow_SeedDecisionExecutes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	block := regexp.MustCompile("(?s)if ! XDG_SEED=\\$\\(kc exec.*?\\nfi\\n\\[\\[.*?\\n.*?\\n").
+		FindString(src)
+	if block == "" {
+		t.Fatalf("AC-1b seed guard+decision block not found in %s", us70DeliveryScript)
+	}
+	for _, tc := range []struct {
+		name, kcOut, want string
+		kcExit            int
+	}{
+		{"seeded (count 1) passes", "1", "", 0},
+		{"seeded (count 3) passes", "3", "", 0},
+		{"not seeded (count 0) dies with the content message", "0", "not seeded from the live config", 0},
+		{"transport failure dies with the exec message", "Error from server: timeout", "kc exec failed grepping", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := `set -u
+die() { echo "DIE:$*"; exit 1; }
+POD1B=pod-fake
+XDG_CFG=/probe/path
+kc() { printf '%s\n' '` + tc.kcOut + `'; return ` + strconv.Itoa(tc.kcExit) + `; }
+` + block + "\necho OK\n"
+			out, err := exec.Command(bash, "-c", script).CombinedOutput()
+			got := strings.TrimSpace(string(out))
+			if tc.want == "" {
+				if err != nil || got != "OK" {
+					t.Fatalf("must pass clean, got err=%v out=%q", err, got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(got, tc.want) {
+				t.Fatalf("must die with %q, got err=%v out=%q", tc.want, err, got)
+			}
+		})
+	}
+}
