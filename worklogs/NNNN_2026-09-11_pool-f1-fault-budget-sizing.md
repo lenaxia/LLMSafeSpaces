@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-11
 **Session:** Root-cause and fix the pre-existing `F1 autopush heal timeout` delivery-pool failure on main (epic-71 #1314, flagged unowned in comment 5628098598; agent: opencode-vesper)
-**Status:** Complete
+**Status:** In Review (PR #1321; merge gate = green F1 pool dispatch on the branch)
 
 ---
 
@@ -24,7 +24,7 @@ Get the US-70 delivery pool green on main by root-causing the F1 row ("autopush 
 
 ### Fix (TDD)
 
-- `local/us70_harness_script_test.go` — new pin `TestUS70FaultsScript_F1BudgetSizedToConvergeWindow` + `f1BudgetCeiling = 8`: workflow FAULT_COUNT must be ≤8, with the sizing arithmetic in the comment. Verified red at 24 before the fix.
+- `local/us70_harness_script_test.go` — new pin `TestUS70FaultsScript_F1BudgetSizedToConvergeWindow` + `f1BudgetCeiling = 8` and `f1BudgetFloor = 6` (review r1): workflow FAULT_COUNT must be within [6,8], with the sizing arithmetic in the comment. Verified red-first at 24 (ceiling) and at 5 (floor, review r1) before the fix.
 - `.github/workflows/us-70-delivery-pool.yml` — `FAULT_COUNT: "24"` → `"8"` with the sizing rationale; updated the faults-suite step comment.
 - `local/us-70-faults-e2e.sh` — default `:-24` → `:-8`; header + F6 budget-note comments updated (F1-sized; F6 self-arms — the "sized so F1+F6 both fit" rationale was stale).
 
@@ -44,7 +44,7 @@ Get the US-70 delivery pool green on main by root-causing the F1 row ("autopush 
 1. Each eligible re-notify burns exactly one fault — validated in `agentpush.go` (notify → pod pull chain) + the run log (15 heal-window fires, gaps matching 5/10/20/40/80×jitter ladder).
 2. Pod-side rate limit is not the bottleneck — validated: `resyncDefaultMinInterval=2s`.
 3. Only F1 consumes the initial arm; F6 self-arms — validated by reading both rows; F2-F5 don't use the seam.
-4. The lockstep pin has no other hardcoded 24 — validated by grep (only workflow line 48 + script line 53).
+4. The lockstep pin has no other hardcoded 24 — validated by grep (workflow line 55 + script line 57 post-change; pre-fix 48/53).
 
 ## Blockers
 
