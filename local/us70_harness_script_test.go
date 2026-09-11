@@ -912,3 +912,66 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 		}
 	}
 }
+
+// TestUS70AC1BRow_XDGLayerTrichotomy executes the AC-1b XDG-layer probe's
+// classification logic against a temp dir (the #1326 fix): the row must
+// classify a writable regular file as `file`, a read-only file as
+// `readonly` (the EACCES class 1d0e5be1 exists to close), a symlink as
+// `symlink` (the 0.27.5-era mechanism), and an absent path as `missing`.
+// Mirrors the executed-bash pattern of TestUS70NotifyHelpers_SpawnedSeq.
+func TestUS70AC1BRow_XDGLayerTrichotomy(t *testing.T) {
+	bash := requireBash(t)
+	dir := t.TempDir()
+	writable := filepath.Join(dir, "writable.json")
+	readOnly := filepath.Join(dir, "readonly.json")
+	link := filepath.Join(dir, "symlink.json")
+	absent := filepath.Join(dir, "absent.json")
+	for _, p := range []string{writable, readOnly} {
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(readOnly, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(writable, link); err != nil {
+		t.Fatal(err)
+	}
+	script := `probe() {
+  XDG_CFG="$1"
+  if [ -L "${XDG_CFG}" ]; then echo symlink; elif [ -f "${XDG_CFG}" ] && [ -w "${XDG_CFG}" ]; then echo file; elif [ -f "${XDG_CFG}" ]; then echo readonly; else echo missing; fi
+}
+printf '%s %s %s %s\n' "$(probe "$1")" "$(probe "$2")" "$(probe "$3")" "$(probe "$4")"
+`
+	out, err := exec.Command(bash, "-c", script, "probe", writable, readOnly, link, absent).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute trichotomy probe: %v\n%s", err, out)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "file readonly symlink missing" {
+		t.Fatalf("trichotomy must classify writable/readonly/symlink/absent in order, got %q", got)
+	}
+}
+
+// TestUS70AC1BRow_CopyContractPins pins the AC-1b row's copy-contract
+// structurally: the symlink-equality form that 1d0e5be1 invalidated must
+// stay gone, and the copy-contract assertions (writable-file case arms
+// and the seeded-copy grep) must stay present — the row was silently red
+// for two days precisely because nothing pinned it.
+func TestUS70AC1BRow_CopyContractPins(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if strings.Contains(src, "readlink -f /home/sandbox/.config/opencode/opencode.json") {
+		t.Fatalf("AC-1b must not carry the symlink-equality form — 1d0e5be1 replaced the symlink with a copy; the row pins the copy contract")
+	}
+	for _, pin := range []string{
+		`[ -f '${XDG_CFG}' ] && [ -w '${XDG_CFG}' ]`,
+		"XDG registry layer at ${XDG_CFG} is a READ-ONLY regular file",
+		"the 0.27.5-era mechanism",
+		"XDG registry layer MISSING at ${XDG_CFG}",
+		"not seeded from the live config",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("AC-1b copy-contract pin missing from %s: %q", us70DeliveryScript, pin)
+		}
+	}
+}

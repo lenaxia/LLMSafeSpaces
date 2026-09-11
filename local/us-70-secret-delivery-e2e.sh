@@ -131,7 +131,10 @@ ok "AC-1 PASS"
 # catalog. This row pins the real contract end-to-end:
 #   1. create a user provider credential (openai_compatible stub),
 #   2. bind it BEFORE the pod exists (same cold-create shape as AC-1),
-#   3. assert the XDG registry-layer symlink the supervisor installs,
+#   3. assert the XDG registry-layer COPY the supervisor installs and
+#      keeps writable (the post-1d0e5be1/#1310 mechanism: opencode writes
+#      to the XDG path, so a symlink at the read-only /agentd-config mount
+#      broke model-selection persistence),
 #   4. assert the provider's allowlisted model appears in GET /api/model
 #      (the registry), NOT merely in /config/providers (the lying view).
 # The stub baseURL is unreachable on purpose — the enricher's /models
@@ -173,10 +176,28 @@ OC_PID=$(kc exec "${POD1B}" -c workspace -- pgrep -f 'opencode serve' | head -1)
 OC_CFG=$(kc exec "${POD1B}" -c workspace -- sh -c "tr '\\0' '\\n' < /proc/${OC_PID}/environ | grep '^OPENCODE_CONFIG=' | cut -d= -f2-")
 [[ -n "${OC_CFG}" ]] || die "AC-1b: opencode child has no OPENCODE_CONFIG env"
 XDG_CFG=/home/sandbox/.config/opencode/opencode.json
-XDG_KIND=$(kc exec "${POD1B}" -c workspace -- sh -c "if [ -L '${XDG_CFG}' ]; then echo symlink; elif [ -f '${XDG_CFG}' ]; then echo file; else echo missing; fi")
-[[ "${XDG_KIND}" == "file" ]] \
-    || die "AC-1b: XDG registry layer is '${XDG_KIND}' at ${XDG_CFG} (want a regular-file copy — the copy-not-symlink design of 1d0e5be1/#1310; symlink-era assertions ended there)"
-kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${XDG_CFG}" \
+# r13/r30: diagnostics never die — a transient kc exec failure must not
+# kill the leg; capture under a guard and die with full context instead.
+if ! XDG_KIND=$(kc exec "${POD1B}" -c workspace -- sh -c "if [ -L '${XDG_CFG}' ]; then echo symlink; elif [ -f '${XDG_CFG}' ] && [ -w '${XDG_CFG}' ]; then echo file; elif [ -f '${XDG_CFG}' ]; then echo readonly; else echo missing; fi" 2>&1); then
+    die "AC-1b: kc exec failed probing the XDG layer at ${XDG_CFG}: ${XDG_KIND}"
+fi
+case "${XDG_KIND}" in
+    file) ;;
+    readonly)
+        die "AC-1b: XDG registry layer at ${XDG_CFG} is a READ-ONLY regular file — the copy exists but opencode cannot write model-selection persistence (the exact EACCES class 1d0e5be1 exists to close, xdg_config_layer.go:88-91)";;
+    symlink)
+        die "AC-1b: XDG registry layer is a SYMLINK at ${XDG_CFG} — the 0.27.5-era mechanism; the copy-not-symlink design landed with 1d0e5be1/#1310 and the legacy-symlink removal runs at boot";;
+    missing)
+        die "AC-1b: XDG registry layer MISSING at ${XDG_CFG} — the supervisor never installed the copy";;
+    *)
+        die "AC-1b: XDG layer probe returned unexpected '${XDG_KIND}' at ${XDG_CFG}";;
+esac
+# Distinguish exec failure from content mismatch (r13): the grep runs
+# under the same guard discipline.
+if ! XDG_SEED=$(kc exec "${POD1B}" -c workspace -- grep -c 'ac1b-stub' "${XDG_CFG}" 2>&1); then
+    die "AC-1b: kc exec failed grepping the XDG copy at ${XDG_CFG}: ${XDG_SEED}"
+fi
+[[ "${XDG_SEED}" -ge 1 ]] \
     || die "AC-1b: XDG copy lacks the ac1b-stub provider block (not seeded from the live config)"
 
 # The rendered config must contain the credential's provider block.
