@@ -118,7 +118,7 @@ Two claims in this worklog were wrong and are corrected here (discipline: correc
 - `api/internal/handlers/outbox_sweeper_test.go` (new)
 - `api/internal/handlers/proxy_lifecycle.go` (SetLedgerProbe wiring)
 - `api/internal/handlers/proxy_events.go` (Active-transition trigger)
-- `worklogs/NNNN_2026-09-10_outbox-parked-error-sweeper.md` (this file)
+- `worklogs/0908_2026-09-10_outbox-parked-error-sweeper.md` (this file)
 ---
 
 ## Review round 2 corrections (PR #1318, commit 82aaac07)
