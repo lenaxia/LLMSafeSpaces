@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-11
+
+### Epic 71 — input & delivery robustness, waves 0-2 (issues #1310/#1311/#1312/#1315/#1316)
+
+- **Entry-level admission idempotency (#1323, #1315)**: the dedupe key
+  travels through Deliver and is enforced at the harness write — the
+  ~3-minute re-admission loop that duplicated a hung-turn message 16
+  times is dead; retries and re-drives can no longer duplicate.
+- **Ledger store-evidence convergence (#1317, #1311)**: the ledger joins
+  the reseed — stranded admitted/ledgered rows resolve against store
+  evidence (message present → promoted; turn ended → turn-ended), every
+  state carries a deadline, and the boot sweep auto-heals wedged
+  BUSY/queueDepth sessions on deploy.
+- **Parked-error sweeper (#1318, #1322, #1316)**: outbox status:error
+  entries re-verify against the ledger and recover automatically
+  (admitted → completed; failed-with-budget → re-armed); entries never
+  park error while the ledger holds them admitted. The #1308 manual
+  Valkey recovery is automated. L9 ≤ 5min.
+- **Resolve-by-absence + permission reply contract (#1324, #1310)**:
+  AnswerInput treats a harness not-found as the resolution (S6) —
+  stale prompts clear on click; AnswerInputAction gains the additive
+  `reply` field (once/always/reject).
+- **Pending-input leases (#1335, #1310)**: the authority's pending set
+  and BUSY status re-derive from harness truth on snapshot serve and a
+  15s reconcile cadence (30s convergence bound) — event loss is now
+  bounded staleness, not permanent zombie prompts.
+- **Loop-liveness gauges + canary probe service (#1319, #1328, #1312)**:
+  every periodic loop exports last-run (dead loops detectable); the
+  canary skeleton ships metrics-only with #1312 classification.
+- **Fault-matrix knobs legs 7/8/10 (#1331, #1312)**: abitest gains
+  duplicate/out-of-order Deliver, boundary-stall, and wire-drift
+  corruption controls — the contract's failure modes are executable.
+
+
 ## [0.28.2] - 2026-09-10
 
 ### Fixed (outbox stranded as error pills — Connect unary ack misparse)
