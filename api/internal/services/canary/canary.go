@@ -93,6 +93,7 @@ const (
 	OutcomeUnauthenticated  = "unauthenticated"
 	OutcomeTimeout          = "timeout"
 	OutcomeUnavailable      = "unavailable"
+	OutcomeCanceled         = "canceled"
 	OutcomeError            = "error"
 	OutcomeNoTarget         = "no_target"
 	OutcomePickError        = "pick_error"
@@ -298,6 +299,11 @@ func classifyCommon(err error) (string, bool) {
 		return OutcomeTimeout, true
 	case connect.CodeUnavailable:
 		return OutcomeUnavailable, true
+	case connect.CodeCanceled:
+		// Shutdown-race noise (the Run loop's ctx dying mid-probe) —
+		// distinct from pod verdicts so a rolling restart's one tick of
+		// cancellations never reads as fleet errors (review r1 note).
+		return OutcomeCanceled, true
 	}
 	return "", false
 }

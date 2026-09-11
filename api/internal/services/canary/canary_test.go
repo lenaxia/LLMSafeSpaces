@@ -248,6 +248,7 @@ func TestProbeClass_ClassificationTable(t *testing.T) {
 		{"unauthenticated", typedErr(connect.CodeUnauthenticated, "bad pw"), OutcomeUnauthenticated},
 		{"not supported", typedErr(connect.CodeUnimplemented, "gated"), OutcomeNotSupported},
 		{"unavailable", typedErr(connect.CodeUnavailable, "pod down"), OutcomeUnavailable},
+		{"canceled", typedErr(connect.CodeCanceled, "shutdown race"), OutcomeCanceled},
 		{"deadline via connect code", typedErr(connect.CodeDeadlineExceeded, "slow"), OutcomeTimeout},
 		{"plain error", errors.New("boom"), OutcomeError},
 	} {
