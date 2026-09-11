@@ -46,7 +46,7 @@ Leg 1 (ask silently dropped): covered red-green on cadence + serve. Leg 2 (stale
 - `cmd/workspace-agentd/sessionstate/projection.go` (busySince stamp)
 - `cmd/workspace-agentd/sessionstate/reconcile.go` (gate + stats + lease-diff call)
 - `cmd/workspace-agentd/sessionstate/service.go` (serve refresh)
-- `worklogs/NNNN_2026-09-11_pending-input-leases.md` (this file)
+- `worklogs/0914_2026-09-11_pending-input-leases.md` (this file)
 
 ---
 
