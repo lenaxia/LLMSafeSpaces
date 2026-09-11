@@ -265,3 +265,7 @@ func TestRecordSessionStateMetrics_ExportsReseedSweepOutcomes(t *testing.T) {
 	assert.Equal(t, before+1.0, testutil.ToFloat64(sessionStateMetrics.reconciled.WithLabelValues("promoted")),
 		"the reseed-embedded outcome reaches the Prometheus series via the delta bridge")
 }
+
+func (s wiringEvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}

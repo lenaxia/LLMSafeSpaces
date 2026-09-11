@@ -42,9 +42,10 @@ func (p *scriptedParser) Parse(raw []byte) (*abiv1.Event, bool, error) {
 }
 
 type countingStore struct {
-	mu    sync.Mutex
-	calls int
-	seed  map[string]sessionstate.SessionSeed
+	mu      sync.Mutex
+	calls   int
+	pending int
+	seed    map[string]sessionstate.SessionSeed
 }
 
 func (s *countingStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
@@ -52,6 +53,12 @@ func (s *countingStore) SessionStates(ctx context.Context) (map[string]sessionst
 	s.calls++
 	s.mu.Unlock()
 	return s.seed, nil
+}
+
+func (s *countingStore) pendingCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending
 }
 
 func (s *countingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
@@ -64,6 +71,22 @@ func (s *countingStore) setSeeds(seed map[string]sessionstate.SessionSeed) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.seed = seed
+}
+func (s *countingStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	s.mu.Lock()
+	s.pending++
+	s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]*abiv1.InputRequest{}
+	for sid, sd := range s.seed {
+		for _, in := range sd.PendingInputs {
+			if in != nil && in.GetId() != "" {
+				out[sid] = append(out[sid], in)
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *countingStore) count() int {
@@ -149,7 +172,7 @@ func TestGetSnapshot_LeaseRefreshBudget(t *testing.T) {
 	c := clientFor(ts)
 	snap, err := c.GetSnapshot(context.Background(), "s1")
 	require.NoError(t, err)
-	require.Equal(t, 1, store.count(), "a serve refreshes the lease with EXACTLY ONE store gather")
+	require.Equal(t, 1, store.pendingCalls(), "a serve refreshes the lease with EXACTLY ONE pending gather")
 	require.Equal(t, abiv1.SessionStatus_SESSION_STATUS_BUSY, snap.GetStatus())
 	require.Len(t, snap.GetPendingInputs(), 1)
 	require.Equal(t, "Proceed?", snap.GetPendingInputs()[0].GetQuestion())
@@ -157,8 +180,10 @@ func TestGetSnapshot_LeaseRefreshBudget(t *testing.T) {
 	_, err = c.GetSnapshot(context.Background(), "")
 	require.Error(t, err, "empty session id must be rejected")
 
-	// Convergence on serve: the harness dropped the ask; the next serve
-	// clears it (the stranded-prompt cure at the moment of refresh).
+	// Convergence on serve: the harness dropped the ask; a serve past the
+	// gather singleflight's TTL clears it (the stranded-prompt cure at
+	// the moment of refresh — within TTL, serves reuse the cached gather).
+	time.Sleep(600 * time.Millisecond)
 	store.setSeeds(map[string]sessionstate.SessionSeed{
 		"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
 	})
@@ -189,9 +214,11 @@ func TestSnapshotLatencyLocal(t *testing.T) {
 	}
 	p99 := latencies[(len(latencies)-1)*99/100]
 	require.Less(t, p99, 250*time.Millisecond, "snapshot p99 %v exceeds the 250ms budget", p99)
-	// #1310 slice B: each serve performs exactly one lease gather —
-	// bounded per serve (leg 9), never a per-part/message stampede.
-	require.Equal(t, 300, store.count(), "one gather per serve, no stampede under a refresh storm")
+	// #1310 slice B: serves coalesce onto the gather singleflight — a
+	// rapid refresh storm costs at most one gather per TTL window, never
+	// one per serve (leg 9).
+	require.Less(t, store.pendingCalls(), 30, "no gather stampede under a refresh storm (%d serves)", 300)
+	require.Equal(t, 0, store.count(), "serves never touch the session-status store read")
 }
 
 // TestDiscardRulePropertyFuzz: random snapshot/event interleavings — the

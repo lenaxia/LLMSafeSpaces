@@ -71,6 +71,13 @@ type EventParser interface {
 type StoreReader interface {
 	SessionStates(ctx context.Context) (map[string]SessionSeed, error)
 	MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error)
+	// PendingInputs is the lease diff's truth source (#1310 slice B):
+	// the harness live ask registries, keyed by session. STRICT failure
+	// semantics — unlike SessionStates (whose reseed tolerates
+	// endpoint-absence-as-empty), any fetch that is not a clean read
+	// returns an error and the caller MUST treat the pending set as
+	// indeterminate (skip the diff), never as empty.
+	PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error)
 }
 
 // RateLimitConfig bounds per-session mutating-op rates (I8).
@@ -147,6 +154,8 @@ type Authority struct {
 	seq uint64
 	// leaseBoundOverride is SetLeaseBoundForTest's override (0 = default).
 	leaseBoundOverride time.Duration
+	serveGathersMu     sync.Mutex
+	serveGathers       map[string]*serveGather
 	// lastSeqAt is when the projection last advanced (the seq-stall
 	// signal's clock, R5/US-69.12).
 	lastSeqAt time.Time
@@ -227,6 +236,7 @@ func New(cfg Config) (*Authority, error) {
 		logger:              logger,
 		seq:                 cursor.last(),
 		sessions:            map[string]*sessionRecord{},
+		serveGathers:        map[string]*serveGather{},
 		subs:                map[*subscriber]struct{}{},
 		cursor:              cursor,
 		limiter:             newSessionLimiter(cfg.RateLimit),

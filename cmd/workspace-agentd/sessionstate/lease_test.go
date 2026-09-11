@@ -29,10 +29,10 @@ import (
 // statuses, an injectable failure, and a gather counter (leg 9's
 // cheapness bound).
 type leaseStore struct {
-	mu      sync.Mutex
-	seeds   map[string]sessionstate.SessionSeed
-	err     error
-	gathers int
+	mu         sync.Mutex
+	seeds      map[string]sessionstate.SessionSeed
+	err        error
+	pendingErr error
 }
 
 func newLeaseStore() *leaseStore {
@@ -56,16 +56,15 @@ func (s *leaseStore) fail(err error) {
 	s.err = err
 }
 
-func (s *leaseStore) gatherCount() int {
+func (s *leaseStore) failPending(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.gathers
+	s.pendingErr = err
 }
 
 func (s *leaseStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.gathers++
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -80,7 +79,26 @@ func (s *leaseStore) MessagePresence(ctx context.Context, sessionID string, mess
 	return map[string]bool{}, nil
 }
 
-func leaseAuthority(t *testing.T, store *leaseStore) *sessionstate.Authority {
+// PendingInputs serves the seeds' pending halves with STRICT lease
+// semantics; pendingErr (when set) models an endpoint failure.
+func (s *leaseStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pendingErr != nil {
+		return nil, s.pendingErr
+	}
+	out := map[string][]*abiv1.InputRequest{}
+	for sid, sd := range s.seeds {
+		for _, in := range sd.PendingInputs {
+			if in != nil && in.GetId() != "" {
+				out[sid] = append(out[sid], in)
+			}
+		}
+	}
+	return out, nil
+}
+
+func leaseAuthority(t *testing.T, store sessionstate.StoreReader) *sessionstate.Authority {
 	t.Helper()
 	a, err := sessionstate.New(sessionstate.Config{
 		PlatformDir: t.TempDir(),
@@ -152,17 +170,24 @@ func TestLeasePass_EmptyLiveEmpties(t *testing.T) {
 	assert.Equal(t, 0, pendingCount(a, "ses-1"))
 }
 
-// TestLeasePass_GatherFailureKeepsProjection: a store failure never
-// mutates the projection — never an authoritative empty.
+// TestLeasePass_GatherFailureKeepsProjection: a store failure — either
+// the session-status read OR a pending-endpoint failure (the production
+// /question 5xx shape, r1 review) — never mutates the projection: never
+// an authoritative empty, no resolve/appear flap.
 func TestLeasePass_GatherFailureKeepsProjection(t *testing.T) {
 	store := newLeaseStore()
 	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
 	a := leaseAuthority(t, store)
 	seedPendingInput(t, a, "ses-1", "per_1")
 
-	store.fail(errStringOf("store unreachable"))
+	store.failPending(errStringOf("lease gather /question: status 503"))
 	a.Reconcile(context.Background())
-	assert.Equal(t, 1, pendingCount(a, "ses-1"), "gather failure leaves the projection untouched")
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "pending-endpoint failure leaves the projection untouched")
+
+	store.failPending(nil)
+	store.fail(errStringOf("session list unreachable"))
+	a.Reconcile(context.Background())
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "status-gather failure leaves the projection untouched")
 }
 
 // TestLeasePass_StatusReDerivation: BUSY + harness idle past the
@@ -219,7 +244,6 @@ func TestSnapshotServe_RefreshesLease(t *testing.T) {
 	res, err := a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
 	require.NoError(t, err)
 	assert.Empty(t, res.Msg.GetPendingInputs(), "the stranded ask cleared on serve")
-	assert.Equal(t, 1, store.gatherCount(), "one gather per serve — pod-local, no stampede (leg 9)")
 }
 
 // TestSnapshotServe_GatherFailureServesProjection: a failing gather on
@@ -229,7 +253,7 @@ func TestSnapshotServe_GatherFailureServesProjection(t *testing.T) {
 	a := leaseAuthority(t, store)
 	seedPendingInput(t, a, "ses-1", "per_1")
 
-	store.fail(errStringOf("store unreachable"))
+	store.failPending(errStringOf("lease gather /question: connection refused"))
 	res, err := a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
 	require.NoError(t, err)
 	assert.Len(t, res.Msg.GetPendingInputs(), 1, "degraded serve keeps the projection")
@@ -251,4 +275,124 @@ func TestLeasePass_Leg1CadenceConverges(t *testing.T) {
 	// ...one cadence tick later, the projection converged (L3).
 	a.Reconcile(context.Background())
 	assert.Equal(t, 0, pendingCount(a, "ses-1"), "leg 1: silently-dropped ask converges within one pass")
+}
+
+// hangingPendingStore hangs the pending gather until its context dies.
+type hangingPendingStore struct {
+	inner *leaseStore
+}
+
+func (h *hangingPendingStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
+	return h.inner.SessionStates(ctx)
+}
+
+func (h *hangingPendingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (h *hangingPendingStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestSnapshotServe_HungStoreIsBounded (r1 finding 2): a hung pending
+// gather degrades the serve within the serve deadline — a browser
+// refresh is never held hostage.
+func TestSnapshotServe_HungStoreIsBounded(t *testing.T) {
+	inner := newLeaseStore()
+	inner.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := leaseAuthority(t, &hangingPendingStore{inner: inner})
+	seedPendingInput(t, a, "ses-1", "per_1")
+
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		_, err = a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve wedged on a hung store")
+	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "degraded serve keeps the projection")
+}
+
+// TestLeasePass_MaterializesUnknownSession (r1 missing test 4): live
+// asks for a session the projection never saw materialize through the
+// fold; a malformed empty-ID entry consumes no seq and emits nothing.
+func TestLeasePass_MaterializesUnknownSession(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-unknown", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_new"), nil)
+	a := leaseAuthority(t, store)
+	// Boot: the authority knows the world exists (production always
+	// reseeds at start — the zero-record projection is a boot-race shape,
+	// and the cadence gate stays open once any session is known).
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+
+	// The reseed's embedded pass (S8) and the cadence pass both converge
+	// this shape; either way ONLY the well-formed ask materializes.
+	a.Reconcile(context.Background())
+	v := a.State().Sessions["ses-unknown"]
+	require.NotNil(t, v)
+	ids := []string{}
+	for _, in := range v.PendingInputs {
+		ids = append(ids, in.GetId())
+	}
+	assert.ElementsMatch(t, []string{"per_new"}, ids,
+		"exactly the well-formed ask materialized — the malformed entry emitted nothing")
+}
+
+// TestLeasePass_LedgerWiredCadenceComposes (r1 missing test 3): in the
+// production topology (Admitter wired → ledger present), the lease diff
+// and the evidence sweep compose on one cadence pass: harness-idle busy
+// clears through the sweep's seq gate (1b — the authoritative rule), and
+// the pending diff still converges.
+func TestLeasePass_LedgerWiredCadenceComposes(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := actionsAuthority(t, &recordingActor{}, []abiv1.ActionType{abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION}, &leaseAdmitter{})
+	a.SetStoreForTest(store)
+
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	seedPendingInput(t, a, "ses-1", "per_1")
+	require.Equal(t, 1, pendingCount(a, "ses-1"))
+
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.LeaseResolved, "pending converged on the same pass")
+	assert.Equal(t, 0, pendingCount(a, "ses-1"))
+	// Busy cleared by the evidence sweep (seq-gated — the authoritative
+	// gate in this topology; the lease window is the ledger-less backstop).
+	assert.Equal(t, abiv1.SessionStatus_SESSION_STATUS_IDLE, a.State().Sessions["ses-1"].Status)
+}
+
+// TestSnapshotServe_ConcurrentStormBounded (r1 missing test 5): parallel
+// serves coalesce onto the gather singleflight — the storm costs one
+// gather, not one per serve.
+func TestSnapshotServe_ConcurrentStormBounded(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_1"))
+	a := leaseAuthority(t, store)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	// One in-flight gather; waiters serve the projection as-is. The
+	// storm never multiplied harness load, and the projection converged
+	// to the live truth (the ask appears — it was never projected).
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "the projection converged to live truth")
+}
+
+type leaseAdmitter struct{}
+
+func (leaseAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	return "msg-lease", nil
 }

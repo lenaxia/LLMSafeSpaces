@@ -53,3 +53,16 @@ Leg 1 (ask silently dropped): covered red-green on cadence + serve. Leg 2 (stale
 ## CI round 1: the US-69.4 zero-call pins moved with the design
 
 Three CI legs failed on two `abiclient` tests pinning the OLD snapshot contract (`TestGetSnapshot_ZeroOpencodeCalls`, `TestSnapshotLatencyLocal`'s zero-store assertion). #1310 slice B explicitly orders serve-time lease refresh ("pod-local call, O(pending) — cheap"), superseding US-69.4's zero-harness-call read for the pending set: the ask set is a lease, not a cached fact, and the serve is the human-visible staleness moment. The pins are updated to the new contract, which is STRONGER where it matters: `TestGetSnapshot_LeaseRefreshBudget` — exactly ONE gather per serve (no per-part/message stampede) + a divergent ask CONVERGES on the serve (the stranding cure, asserted end-to-end through the real client); `TestSnapshotLatencyLocal` — the 250ms p99 budget unchanged (the gather is localhost and must stay cheap) + 300 serves ⇒ exactly 300 gathers (leg 9's bound). All `pkg/abi/...` green with `-race`; lint 0 issues.
+
+---
+
+## Review round 1 (PR #1329)
+
+All four findings validated real, fixed:
+
+1. **Endpoint-failure-as-empty (blocking):** the wiring's `fetchList` treats /question + /permission failures as authoritative-empty — a transient 5xx would resolve every live ask (a resolve/appear flap, the incident class agent-induced). New `StoreReader.PendingInputs` seam with STRICT semantics (any non-clean read → error → the diff skips; 404/conn-refused are ALSO errors here — indeterminate beats one free skipped tick); the wiring implements it via `fetchListStrict`; the lease diff consumes it. Pinned with the production failure shape (pending-endpoint 503 → projection untouched).
+2. **Unbounded serve gather:** the serve's gather now carries `serveGatherTimeout` (2s — tighter than the pass budget: a browser refresh degrades fast, never hostages to a hung store). Pinned by `TestSnapshotServe_HungStoreIsBounded`.
+3. **Lease-window hold dead in the ledger topology:** reconciled — 1b's seq-gated evidence sweep is the authoritative busy-clear in production; the window governs ledger-less authorities and is documented as the backstop. Pinned by `TestLeasePass_LedgerWiredCadenceComposes` (ledger-wired: pending converges AND busy clears through the sweep on one pass).
+4. **Unfiltered materialization loop:** the rec==nil branch now applies the same nil/empty-ID filter; `TestLeasePass_MaterializesUnknownSession` pins exactly-the-well-formed-ask materializing (malformed entries consume no seq, emit nothing).
+
+Plus the reviewer's missing tests 1–5: production endpoint-failure skip ✓, hung-store bounded serve ✓, ledger-wired topology ✓, unknown-session materialization ✓, concurrent-serve storm — coalesced by a per-Authority serve-gather singleflight (500ms TTL; one in-flight gather, waiters serve the projection; the abiclient storm pin now asserts gathers ≪ serves) ✓. The zero-record L3 gap the reviewer noted is closed by composition: production always reseeds at boot (S8), after which the known-session gate keeps the cadence open — pinned via the Reseed-modeled materialization test.

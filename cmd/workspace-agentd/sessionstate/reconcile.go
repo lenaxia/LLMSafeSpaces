@@ -133,7 +133,8 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 	if a.ledger != nil {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
-	stats.LeaseResolved, stats.LeaseAppeared = a.diffPendingLeases(seeds)
+	a.rederiveStatuses(seeds)
+	stats.LeaseResolved, stats.LeaseAppeared, _ = a.diffPendingLeases(ctx)
 	return stats
 }
 

@@ -76,6 +76,10 @@ func (s *mapStore) MessagePresence(ctx context.Context, sessionID string, messag
 	return map[string]bool{}, nil
 }
 
+func (s *mapStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
 func testConfig(t *testing.T, dir string, parser sessionstate.EventParser, store sessionstate.StoreReader) sessionstate.Config {
 	t.Helper()
 	return sessionstate.Config{
@@ -408,6 +412,10 @@ func (s *slowStore) SessionStates(ctx context.Context) (map[string]sessionstate.
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+func (s *slowStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
 }
 
 func (s *slowStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
