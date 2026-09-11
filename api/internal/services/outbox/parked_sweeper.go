@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -69,7 +70,11 @@ var (
 	// ParkedSweepInterval bounds parked-entry indeterminacy: L9
 	// (#1312/#1316 proposed budget) caps parked → {completed, re-armed,
 	// confirmed-terminal} at ≤5min; a 60s sweep leaves four re-tries of
-	// headroom for unreachable pods.
+	// headroom for unreachable pods. This is an API-side recovery bound,
+	// distinct from the agentd lease clock (#1319: LeaseConvergenceBound
+	// 30s / ReconcileCadence 15s governs lease expiry, not parked-pill
+	// recovery); coherence between the two families is pinned in the
+	// #1312 budget table (proposal on #1314).
 	ParkedSweepInterval = 60 * time.Second
 	// ownsAdmissionRePollBackoff gates the re-poll of a guard-held
 	// (still delivering) entry. The poll itself blocks up to the
@@ -96,10 +101,16 @@ var (
 		Name: "llmsafespaces_outbox_parked_sweeper_outcomes_total",
 		Help: "Parked-error sweeper outcomes (#1316): verified (probed), completed (ledger admitted-or-later), rearmed (failed with budget), stayed (ledgered/terminal), indeterminate (probe failed — next pass).",
 	}, []string{"outcome"})
-	parkedSweepLastRun = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "llmsafespaces_outbox_parked_sweeper_last_run_timestamp_seconds",
-		Help: "Unixtime of the last completed parked-error sweep pass. Staleness on a probe-wired deployment = dead sweep loop.",
-	})
+	// parkedSweepLastRun joins the epic-71 shared loop-liveness family
+	// (0c, #1319): constants live in pkg/obs so this registration and
+	// agentd's cannot drift. Stamped ONLY by the Run loop's periodic
+	// pass — the on-transition sweep share is NOT loop liveness, and
+	// stamping there would keep a dead loop looking fresh under
+	// transition churn (false negatives for dead-loop detection).
+	parkedSweepLastRun = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: obs.LoopLivenessMetric,
+		Help: obs.LoopLivenessHelp,
+	}, []string{obs.LoopLivenessLabel})
 )
 
 // SetLedgerProbe wires the ledger truth source. Call before Run.
@@ -143,7 +154,6 @@ func (s *Service) sweepParkedErrors(ctx context.Context, workspaceID string) (in
 		s.releaseLockDetached(ctx, ws, ses, token)
 		recovered += n
 	}
-	parkedSweepLastRun.SetToCurrentTime()
 	return recovered, nil
 }
 
@@ -324,3 +334,12 @@ func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context,
 	e.NextAttemptAt = now.Add(ownsAdmissionRePollBackoff)
 	s.restoreStaged(ctx, qk, dk, idx, staged, e)
 }
+
+// stampLoopLiveness records the periodic loop's completed pass on the
+// shared epic-71 family (pkg/obs). Call sites: the Run loop only.
+func (s *Service) stampLoopLiveness() {
+	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).SetToCurrentTime()
+}
+
+// ledgerProbeForTest reports whether a probe is wired (regime assertions).
+func (s *Service) ledgerProbeForTest() LedgerProbe { return s.ledgerProbe }

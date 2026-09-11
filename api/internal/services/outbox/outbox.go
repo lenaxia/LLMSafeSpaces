@@ -996,6 +996,10 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 					sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sweepEvery)
 					defer cancel()
 					_, _ = s.sweepParkedErrors(sctx, "")
+					// Loop-owned liveness stamp (this goroutine IS the
+					// periodic loop): direct/transition sweep callers must
+					// not refresh it — only completed loop passes do.
+					s.stampLoopLiveness()
 				}()
 			}
 			for _, pair := range pairs {

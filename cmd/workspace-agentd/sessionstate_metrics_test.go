@@ -14,6 +14,7 @@ import (
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -147,6 +148,18 @@ func TestSessionStateWatchdog_EndToEnd(t *testing.T) {
 // ACTUAL :4098 scrape surface — registration is package-init, so a wiring
 // typo would otherwise silently drop a metric.
 func TestMetricsScrape_Completeness(t *testing.T) {
+	// A *Vec with no children emits NO series in the text format — its
+	// family is invisible on the scrape regardless of registration. This
+	// test therefore materializes every vec family first (sentinel
+	// labels), making it order-independent: previously it passed only
+	// when earlier tests in the binary happened to create children, and
+	// loop_last_run depended on the watchdog goroutine's timing.
+	sessionStateMetrics.seqStall.WithLabelValues("seed")
+	sessionStateMetrics.ledgerDepth.WithLabelValues("seed", "stalled")
+	sessionStateMetrics.promotionStall.WithLabelValues("seed")
+	sessionStateMetrics.reconciled.WithLabelValues("failed")
+	sessionStateMetrics.loopLastRun.WithLabelValues(obs.LoopReconcileWatchdog).SetToCurrentTime()
+
 	ts := httptest.NewServer(promhttp.Handler())
 	t.Cleanup(ts.Close)
 	res, err := http.Get(ts.URL)
