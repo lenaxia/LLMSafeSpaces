@@ -51,4 +51,4 @@ Authority: drops-projection-and-succeeds (entry gone + exactly one resolved even
 - `cmd/workspace-agentd/sessionstate/resolve_absence_test.go` (new)
 - `cmd/workspace-agentd/sessionstate_actor_test.go` (reply-routing tests)
 - `pkg/abi/abitest/server_test.go` (knob tests)
-- `worklogs/NNNN_2026-09-11_resolve-by-absence-answer-input.md` (this file)
+- `worklogs/0909_2026-09-11_resolve-by-absence-answer-input.md` (this file)
