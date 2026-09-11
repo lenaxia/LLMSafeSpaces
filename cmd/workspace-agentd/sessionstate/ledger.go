@@ -804,8 +804,13 @@ func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uin
 	// messages (the #1296 triplication class reborn through a different
 	// mechanism). The admitter runs in a goroutine (driveAdmission), so
 	// this timeout doesn't block anything else — it just needs to be
-	// long enough for the model to finish.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) //nolint:contextcheck // queue-scoped by design
+	// long enough for the model to finish. AdmitterTimeout (0 ⇒ default)
+	// lets the #1315 incident repro drive the hung-turn window fast.
+	timeout := d.cfg.AdmitterTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout) //nolint:contextcheck // queue-scoped by design
 	msgID, err := d.admit.Admit(ctx, sessionID, harnessMessageID(entryID), text, model)
 	cancel()
 	if err == nil {
