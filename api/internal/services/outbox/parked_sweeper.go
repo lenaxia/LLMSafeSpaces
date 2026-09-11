@@ -69,7 +69,11 @@ var (
 	// ParkedSweepInterval bounds parked-entry indeterminacy: L9
 	// (#1312/#1316 proposed budget) caps parked → {completed, re-armed,
 	// confirmed-terminal} at ≤5min; a 60s sweep leaves four re-tries of
-	// headroom for unreachable pods.
+	// headroom for unreachable pods. This is an API-side recovery bound,
+	// distinct from the agentd lease clock (#1319: LeaseConvergenceBound
+	// 30s / ReconcileCadence 15s governs lease expiry, not parked-pill
+	// recovery); coherence between the two families is pinned in the
+	// #1312 budget table (proposal on #1314).
 	ParkedSweepInterval = 60 * time.Second
 	// ownsAdmissionRePollBackoff gates the re-poll of a guard-held
 	// (still delivering) entry. The poll itself blocks up to the
@@ -96,10 +100,14 @@ var (
 		Name: "llmsafespaces_outbox_parked_sweeper_outcomes_total",
 		Help: "Parked-error sweeper outcomes (#1316): verified (probed), completed (ledger admitted-or-later), rearmed (failed with budget), stayed (ledgered/terminal), indeterminate (probe failed — next pass).",
 	}, []string{"outcome"})
-	parkedSweepLastRun = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "llmsafespaces_outbox_parked_sweeper_last_run_timestamp_seconds",
-		Help: "Unixtime of the last completed parked-error sweep pass. Staleness on a probe-wired deployment = dead sweep loop.",
-	})
+	// parkedSweepLastRun joins the epic-71 shared loop-liveness family
+	// (landed by 0c in #1319, agentd-side): every periodic loop exports
+	// the SAME metric with its own `loop` label so dead-loop alerting is
+	// one query. This is the API-binary's registration of that family.
+	parkedSweepLastRun = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_loop_last_run_timestamp_seconds",
+		Help: "Unix timestamp of each periodic loop's last COMPLETED pass (epic-71 dead-loop detection; label `loop` names the exporter — agentd: reconcile_watchdog, api: outbox_parked_sweeper).",
+	}, []string{"loop"})
 )
 
 // SetLedgerProbe wires the ledger truth source. Call before Run.
@@ -143,7 +151,7 @@ func (s *Service) sweepParkedErrors(ctx context.Context, workspaceID string) (in
 		s.releaseLockDetached(ctx, ws, ses, token)
 		recovered += n
 	}
-	parkedSweepLastRun.SetToCurrentTime()
+	parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper").SetToCurrentTime()
 	return recovered, nil
 }
 

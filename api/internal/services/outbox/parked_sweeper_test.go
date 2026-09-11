@@ -443,11 +443,11 @@ func TestSweepParkedErrors_Metrics(t *testing.T) {
 	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
 
 	completedBefore := promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))
-	lastRunBefore := promtestutil.ToFloat64(parkedSweepLastRun)
+	lastRunBefore := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper"))
 	_, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))-completedBefore)
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun), lastRunBefore)
+	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper")), lastRunBefore)
 }
 
 // --- The park-write guard ---------------------------------------------------
@@ -601,7 +601,7 @@ func TestRun_SweepsParkedPeriodically(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, int32(1), delivered.Load(), "parked entry completed by the periodic sweep")
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun), float64(0))
+	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper")), float64(0))
 	// L9 mechanism bound: parked → dispositioned within one sweep
 	// interval's worth of scheduling slop (2x the configured cadence —
 	// the 5-minute L9 budget implies a configured cadence well under it).
