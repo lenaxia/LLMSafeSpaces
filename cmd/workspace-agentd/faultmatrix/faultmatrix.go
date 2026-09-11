@@ -91,8 +91,22 @@ func (l *ConvergenceLog) Max(bound string) time.Duration {
 	return max
 }
 
+// Within reports whether every sample under the bound fits the budget.
+// An UNRECORDED bound fails closed: a row that never measured has not
+// converged within anything (review r1 — no vacuous L-gate passes).
 func (l *ConvergenceLog) Within(bound string, budget time.Duration) bool {
-	return l.Max(bound) <= budget
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	samples := l.samples[bound]
+	if len(samples) == 0 {
+		return false
+	}
+	for _, d := range samples {
+		if d > budget {
+			return false
+		}
+	}
+	return true
 }
 
 // WaitConverges polls fn until it holds or the bound breaches; the

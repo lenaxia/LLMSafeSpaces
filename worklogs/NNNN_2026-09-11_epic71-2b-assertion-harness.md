@@ -62,3 +62,18 @@ None for this unit. S5/L3 rows + the full matrix completion wait on a landed 2a.
 
 - cmd/workspace-agentd/faultmatrix/faultmatrix.go (new)
 - cmd/workspace-agentd/faultmatrix/faultmatrix_test.go (new)
+
+---
+
+## Review r1 remediation (2026-09-11, PR #1337)
+
+- **Engine contract pinned directly** (`faultmatrix_engine_test.go`, 8 tests): WaitConverges immediate-hold / breach (elapsed carries the full bound — the L-sample's evidence) / ctx-cancel; Violations copy-semantics + Empty; ConvergenceLog Max/Within; **Within now FAILS CLOSED on unrecorded bounds** (a row that never measured has not converged within anything — the vacuous-pass hole closed in code, pinned in test); AnswerActor live-ask success + non-answer CodeUnimplemented; InstantAdmitter distinct ids + Out=nil no-panic.
+- **Leg-4 resolution arm pinned both ways:** the evidence-present row now asserts `LedgerDepths["promoted"] ≥ 1 || ReconcilePromoted ≥ 1` (the promoted-from-evidence arm, not the turn-ended fallback); a new evidence-absent variant (`InstantAdmitter{Out:nil}` — the harness-OOM shape) asserts `ReconcileTurnEnded ≥ 1` and `ReconcilePromoted == 0`.
+- Also fixed en route: the CI-exposed leg-4 race — convergence is the cadence contract (tick Reconcile inside L5), not first-pass instant promotion (the sweep's TryLock skip of a live admission ladder is correct behavior, now relied upon rather than raced).
+
+Counts at this revision: 17 test functions across the package's two test files (3 rows + 1 companion row + 13 engine/fake contract tests); all `-race` green; lint 0.
+
+## Tests Run (r1)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
+- `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
