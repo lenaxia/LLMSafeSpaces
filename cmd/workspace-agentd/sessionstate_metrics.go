@@ -105,6 +105,53 @@ var sessionStateMetrics = struct {
 	}),
 }
 
+// reconcileLast carries the last cumulative reconcile counters so the
+// Prometheus counters advance by DELTAS (r2-2): boot/reseed-embedded
+// sweeps record into the cumulative Metrics() counters only — the wiring
+// bridge (recordSessionStateMetrics) is the single export path, so every
+// sweep outcome (cadence pass AND the reseed-embedded boot heal) reaches
+// the scrape surface. A monotonicity break (authority recreated) resets
+// the baseline.
+var reconcileLast = struct {
+	mu sync.Mutex
+	m  map[string]*sessionstate.Metrics
+}{m: map[string]*sessionstate.Metrics{}}
+
+func reconcileDeltas(workspaceID string, m *sessionstate.Metrics) (promoted, turnEnded, failed, busyCleared, evidenceFails float64) {
+	reconcileLast.mu.Lock()
+	defer reconcileLast.mu.Unlock()
+	prev, seen := reconcileLast.m[workspaceID]
+	if !seen || m.ReconcilePromoted < prev.ReconcilePromoted {
+		reconcileLast.m[workspaceID] = &sessionstate.Metrics{
+			ReconcilePromoted:      m.ReconcilePromoted,
+			ReconcileTurnEnded:     m.ReconcileTurnEnded,
+			ReconcileFailed:        m.ReconcileFailed,
+			ReconcileBusyCleared:   m.ReconcileBusyCleared,
+			ReconcileEvidenceFails: m.ReconcileEvidenceFails,
+		}
+		if seen {
+			return 0, 0, 0, 0, 0 // baseline reset after authority recreation
+		}
+		// First scrape carries the full cumulative (customValveDelta's
+		// convention): outcomes that predate the watchdog's first tick —
+		// the boot-heal sweep — still reach the series.
+		return float64(m.ReconcilePromoted), float64(m.ReconcileTurnEnded), float64(m.ReconcileFailed), float64(m.ReconcileBusyCleared), float64(m.ReconcileEvidenceFails)
+	}
+	promoted = float64(m.ReconcilePromoted - prev.ReconcilePromoted)
+	turnEnded = float64(m.ReconcileTurnEnded - prev.ReconcileTurnEnded)
+	failed = float64(m.ReconcileFailed - prev.ReconcileFailed)
+	busyCleared = float64(m.ReconcileBusyCleared - prev.ReconcileBusyCleared)
+	evidenceFails = float64(m.ReconcileEvidenceFails - prev.ReconcileEvidenceFails)
+	reconcileLast.m[workspaceID] = &sessionstate.Metrics{
+		ReconcilePromoted:      m.ReconcilePromoted,
+		ReconcileTurnEnded:     m.ReconcileTurnEnded,
+		ReconcileFailed:        m.ReconcileFailed,
+		ReconcileBusyCleared:   m.ReconcileBusyCleared,
+		ReconcileEvidenceFails: m.ReconcileEvidenceFails,
+	}
+	return promoted, turnEnded, failed, busyCleared, evidenceFails
+}
+
 // customValveLast carries the last cumulative per-workspace snapshot so
 // the prometheus counter advances by DELTAS — Metrics() exposes
 // cumulative counts and the watchdog scrapes repeatedly; re-Adding the
@@ -149,6 +196,26 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	if d := customValveDelta(workspaceID, m.CustomValveEvents); d > 0 {
 		sessionStateMetrics.customValveEvents.Add(float64(d))
 	}
+	// r2-2: the single Prometheus export for reconcile outcomes — deltas
+	// of the cumulative counters, so reseed-embedded sweeps (which never
+	// pass through this loop's own Reconcile return) are counted too.
+	if p, te, f, bc, ev := reconcileDeltas(workspaceID, &m); p+te+f+bc+ev > 0 {
+		if p > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("promoted").Add(p)
+		}
+		if te > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("turn_ended").Add(te)
+		}
+		if f > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("failed").Add(f)
+		}
+		if bc > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("busy_cleared").Add(bc)
+		}
+		if ev > 0 {
+			sessionStateMetrics.reconcileEvidenceFails.Add(ev)
+		}
+	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.
 	for state, n := range m.LedgerDepths {
@@ -179,21 +246,16 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 			if rec.EvidenceFailures > 0 {
 				log.Warn("agentd: sessionstate reconcile — store evidence read failed (rows untouched, retrying next pass)",
 					zap.Int("evidenceFailures", rec.EvidenceFailures))
-				sessionStateMetrics.reconcileEvidenceFails.Add(float64(rec.EvidenceFailures))
 			}
 			if advanced := rec.Promoted + rec.TurnEnded + rec.Failed + rec.BusyCleared; advanced > 0 {
 				log.Info("agentd: sessionstate reconcile — converged stranded state",
 					zap.Int("promoted", rec.Promoted), zap.Int("turnEnded", rec.TurnEnded),
 					zap.Int("failed", rec.Failed), zap.Int("busyCleared", rec.BusyCleared))
 			}
-			for _, outcome := range []struct {
-				name string
-				n    int
-			}{{"promoted", rec.Promoted}, {"turn_ended", rec.TurnEnded}, {"failed", rec.Failed}, {"busy_cleared", rec.BusyCleared}} {
-				if outcome.n > 0 {
-					sessionStateMetrics.reconciled.WithLabelValues(outcome.name).Add(float64(outcome.n))
-				}
-			}
+			// Counter export rides recordSessionStateMetrics' delta
+			// bridge below — the SINGLE export path, so reseed-embedded
+			// sweeps (whose outcomes never appear in this loop's return)
+			// are counted identically (r2-2).
 			stats := a.CheckStalls(ctx)
 			if stats.WakeFailures > 0 {
 				sessionStateMetrics.wakeFailures.Add(float64(stats.WakeFailures))

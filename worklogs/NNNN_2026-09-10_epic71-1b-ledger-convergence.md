@@ -96,6 +96,17 @@ Disposition on the kind-level e2e rows: the epic's merge gate routes the deliver
 
 ---
 
+## Review round 2 (PR #1317 — REQUEST CHANGES → remediated)
+
+r1 fixes verified by the reviewer; three residuals, all fixed:
+1. **`seqAtEvidence` stamped after the evidence read** (a busy-fold DURING the `SessionStates` read would postdate nothing and get cleared — the exact class the gate exists to refuse) → the stamp now happens BEFORE the store read in BOTH paths (`reconcileLocked`, `Reseed`); pinned by `TestReconcile_BusyFoldDuringStatesReadSurvives` (gateStore hook moved to `SessionStates`).
+2. **Reseed-embedded sweep outcomes never reached Prometheus** (only `Metrics()` cumulative counters; the watchdog exported only its own returns) → single export path: `recordSessionStateMetrics` now bridges cumulative-counter DELTAS (customValveDelta convention: first scrape carries the cumulative — the boot-heal pre-dates the first tick) into `llmsafespaces_ledger_reconciled_total` / `..._reconcile_evidence_failures_total`; the watchdog's direct per-pass adds removed (double-count). Pinned by `TestRecordSessionStateMetrics_ExportsReseedSweepOutcomes`.
+3. **`reconcileTimeout` unsynchronized read** (test-only race) → a.mu-guarded field + accessor.
+
+Merge gate (delivery-pool kind suite): dispatched `us-70-delivery-pool.yml` against this branch post-push (builds the commit's own artifacts — the pool's contract); recorded in the PR. Reviewer-cleared items accepted as documented: LEDGERED×message-present cell re-pinned with disposition; STALLED no-clock decision pinned; leg-4 "kill semantics" comment softened to WAL-reopen semantics.
+
+---
+
 ## Blockers
 
 None. Coordination notes: `actions.go` untouched (1a's); the shared lease clock landed here for 2a to consume; delivery-pool kind rows (AC-1b..1e, F6) ride the weekly CI workflow on the PR — the in-repo executable forms (crash matrix, incident replay, watchdog loop) are committed here.

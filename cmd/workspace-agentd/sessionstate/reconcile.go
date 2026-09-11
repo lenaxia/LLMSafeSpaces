@@ -83,7 +83,7 @@ type ReconcileStats struct {
 func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 	a.reseedMu.Lock()
 	defer a.reseedMu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, a.reconcileTimeout)
+	ctx, cancel := context.WithTimeout(ctx, a.reconcileTimeout())
 	defer cancel()
 	return a.reconcileLocked(ctx)
 }
@@ -103,6 +103,11 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		return ReconcileStats{}
 	}
 
+	// Stamp the freshness clock BEFORE the evidence read (review r2-1):
+	// a busy-fold landing DURING the store read must postdate the stamp,
+	// or the busy-clear gate would clear a live turn the evidence never
+	// saw.
+	seqAtEvidence := a.currentSeq()
 	seeds, err := a.cfg.Store.SessionStates(ctx)
 	if err != nil {
 		a.logger.Warn("sessionstate reconcile: store evidence read failed — rows untouched",
@@ -111,7 +116,7 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		a.recordReconcile(stats)
 		return stats
 	}
-	return a.sweepAgainstEvidence(ctx, seeds)
+	return a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 }
 
 // sweepAgainstEvidence applies the reconciliation matrix per session:
@@ -127,12 +132,11 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 // error skips the refinement (counted) but status evidence still applies.
 // BUSY is re-derived on the same evidence, gated by seq: a busy-mark newer
 // than the evidence read is not cleared.
-func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]SessionSeed) ReconcileStats {
+func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]SessionSeed, seqAtEvidence uint64) ReconcileStats {
 	var stats ReconcileStats
 	if a.ledger == nil {
 		return stats
 	}
-	seqAtEvidence := a.currentSeq()
 
 	sessions := make(map[string]struct{}, len(seeds))
 	for sid := range a.ledger.unresolvedSessions() {
@@ -278,6 +282,12 @@ func (a *Authority) currentSeq() uint64 {
 // (fault-injection harnesses).
 func (a *Authority) SetReconcileTimeoutForTest(d time.Duration) {
 	a.mu.Lock()
-	a.reconcileTimeout = d
+	a.reconcileTimeoutVal = d
 	a.mu.Unlock()
+}
+
+func (a *Authority) reconcileTimeout() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reconcileTimeoutVal
 }

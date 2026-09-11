@@ -167,12 +167,13 @@ type Authority struct {
 	customValveEvents int64
 	// Cumulative #1311 reconcile outcomes (Metrics bridge; a.mu-guarded).
 	reconPromoted int64
-	// reconcileTimeout bounds one reconcile pass's evidence I/O.
-	reconcileTimeout   time.Duration
-	reconTurnEnded     int64
-	reconFailed        int64
-	reconBusyCleared   int64
-	reconEvidenceFails int64
+	// reconcileTimeoutVal bounds one reconcile pass's evidence I/O
+	// (a.mu-guarded; accessor reconcileTimeout).
+	reconcileTimeoutVal time.Duration
+	reconTurnEnded      int64
+	reconFailed         int64
+	reconBusyCleared    int64
+	reconEvidenceFails  int64
 }
 
 // New constructs the authority and loads the durable seq cursor from
@@ -215,16 +216,16 @@ func New(cfg Config) (*Authority, error) {
 		cfg.ABIVersion = "1"
 	}
 	a := &Authority{
-		cfg:              cfg,
-		logger:           logger,
-		seq:              cursor.last(),
-		sessions:         map[string]*sessionRecord{},
-		subs:             map[*subscriber]struct{}{},
-		cursor:           cursor,
-		limiter:          newSessionLimiter(cfg.RateLimit),
-		ledger:           ledger,
-		sessionLocks:     map[string]*sync.Mutex{},
-		reconcileTimeout: defaultReconcileTimeout,
+		cfg:                 cfg,
+		logger:              logger,
+		seq:                 cursor.last(),
+		sessions:            map[string]*sessionRecord{},
+		subs:                map[*subscriber]struct{}{},
+		cursor:              cursor,
+		limiter:             newSessionLimiter(cfg.RateLimit),
+		ledger:              ledger,
+		sessionLocks:        map[string]*sync.Mutex{},
+		reconcileTimeoutVal: defaultReconcileTimeout,
 	}
 	if cfg.Admitter != nil {
 		// The driver joins the authority's per-session single-flight —
@@ -354,6 +355,10 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	if a.cfg.Store == nil {
 		return ErrNoStore
 	}
+	// Freshness clock BEFORE the evidence read (review r2-1 — same rule
+	// as the cadence pass): a busy-fold landing during the store read
+	// must postdate the sweep's stamp.
+	seqAtEvidence := a.currentSeq()
 	seeds, err := a.cfg.Store.SessionStates(ctx)
 	if err != nil {
 		return fmt.Errorf("sessionstate: store read during reseed: %w", err)
@@ -370,7 +375,7 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	// this auto-heals every currently-wedged session with no operator
 	// action. Evidence I/O stays outside a.mu (M3.1).
 	if a.ledger != nil {
-		a.sweepAgainstEvidence(ctx, seeds)
+		a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
 
 	flush := func() {

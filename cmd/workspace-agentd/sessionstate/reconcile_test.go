@@ -545,10 +545,19 @@ func TestLeaseConvergenceBoundIsExported(t *testing.T) {
 
 // gateStore lets the test hold the pass at a chosen point (review r1
 // finding 2: state that lands between evidence-gather and the session lock
-// must not be resolved on stale evidence).
+// must not be resolved on stale evidence; r2-1: state that lands DURING
+// the store read must postdate the freshness stamp).
 type gateStore struct {
 	evidenceStore
+	onStates   func()
 	onMessages func()
+}
+
+func (g *gateStore) SessionStates(ctx context.Context) (map[string]SessionSeed, error) {
+	if g.onStates != nil {
+		g.onStates()
+	}
+	return g.evidenceStore.SessionStates(ctx)
 }
 
 func (g *gateStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
@@ -672,4 +681,26 @@ func (h *hangMessagesStore) SessionStates(ctx context.Context) (map[string]Sessi
 func (h *hangMessagesStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+// TestReconcile_BusyFoldDuringStatesReadSurvives (r2-1): the freshness
+// stamp is taken BEFORE the store read — a busy-fold landing DURING the
+// SessionStates read must postdate it and survive the busy-clear.
+func TestReconcile_BusyFoldDuringStatesReadSurvives(t *testing.T) {
+	store := &gateStore{evidenceStore: evidenceStore{
+		states: map[string]abiv1.SessionStatus{"s1": abiv1.SessionStatus_SESSION_STATUS_IDLE},
+		msgs:   map[string]map[string]bool{"s1": {"m1": true}},
+	}}
+	a := newReconcileAuthority(t, store)
+	seedRow(t, a, "s1", "e1", "m1", LedgerStateAdmitted)
+	store.onStates = func() {
+		a.IngestForTest(&abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: "s1", Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+		store.onStates = nil
+	}
+
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 1, stats.Promoted, "queried evidence still resolves the row")
+	st := a.State()
+	require.NotNil(t, st.Sessions["s1"])
+	assert.True(t, st.Sessions["s1"].Busy, "busy folded DURING the store read survives the pass — the stamp predates the read")
 }

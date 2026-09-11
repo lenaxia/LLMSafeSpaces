@@ -211,3 +211,57 @@ func TestSessionStateWatchdog_ReconcilesLedger(t *testing.T) {
 	m := a.Metrics()
 	assert.Equal(t, int64(1), m.ReconcilePromoted, "Metrics() carries the cumulative sweep outcome")
 }
+
+// TestRecordSessionStateMetrics_ExportsReseedSweepOutcomes (r2-2): a
+// reseed-embedded boot-heal sweep's outcomes reach the Prometheus series —
+// the delta bridge in recordSessionStateMetrics is the single export path,
+// so sweeps that never pass through the watchdog's own Reconcile return
+// are counted identically.
+func TestRecordSessionStateMetrics_ExportsReseedSweepOutcomes(t *testing.T) {
+	store := wiringEvidenceStore{
+		states: map[string]sessionstate.SessionSeed{
+			"s1": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
+		},
+		msgs: map[string]map[string]bool{"s1": {"msg-1": true}},
+	}
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      noopParser{},
+		Store:       store,
+		Passwords:   []string{"pw"},
+		Admitter:    instantAdmitter{},
+		FastCursor:  true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.Close() })
+
+	// Land an admitted row through the real wire op, then let it strand
+	// (no events arrive — the harness-dead shape).
+	_, h := a.Handler()
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/llmsafespaces.abi.v1.HarnessABIService/Deliver",
+		strings.NewReader(`{"sessionId":"s1","entryId":"e-1","attempt":1,"parts":[{"text":"hi"}]}`))
+	req.SetBasicAuth("opencode", "pw")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, res.StatusCode)
+	_ = res.Body.Close()
+	require.Eventually(t, func() bool {
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 1
+	}, 3*time.Second, 10*time.Millisecond, "row admitted")
+
+	// Baseline scrape (prom counters are process-global across tests —
+	// assert the DELTA), then the BOOT RESEED (the sweep runs inside it).
+	recordSessionStateMetrics("ws-r22", a)
+	before := testutil.ToFloat64(sessionStateMetrics.reconciled.WithLabelValues("promoted"))
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+
+	m := a.Metrics()
+	require.Equal(t, int64(1), m.ReconcilePromoted, "boot-embedded sweep recorded in cumulative counters")
+	recordSessionStateMetrics("ws-r22", a)
+	assert.Equal(t, before+1.0, testutil.ToFloat64(sessionStateMetrics.reconciled.WithLabelValues("promoted")),
+		"the reseed-embedded outcome reaches the Prometheus series via the delta bridge")
+}
