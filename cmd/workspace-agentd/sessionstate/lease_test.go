@@ -400,3 +400,37 @@ type leaseAdmitter struct{}
 func (leaseAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	return "msg-lease", nil
 }
+
+// TestSnapshotServe_CachedSliceNeverResurrects (r2 finding 4): a resolve
+// folding just after a gather, followed by a serve inside the TTL window,
+// must NOT re-emit the ask from the cached slice — cached data is trusted
+// for absence (resolve) only, never for addition.
+func TestSnapshotServe_CachedSliceNeverResurrects(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_1"))
+	a := leaseAuthority(t, store)
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+
+	// First serve: fresh gather; the ask appears from live truth.
+	_, err := a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	require.NoError(t, err)
+	require.Equal(t, 1, pendingCount(a, "ses-1"))
+
+	// The user answers; the harness accepts (truth drops the ask) — the
+	// projection folds away right after the cached gather was taken.
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, Input: input("per_1")})
+	require.Equal(t, 0, pendingCount(a, "ses-1"))
+
+	// A serve inside the TTL window reuses the cached slice — it must NOT
+	// resurrect the just-resolved ask.
+	_, err = a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	require.NoError(t, err)
+	assert.Equal(t, 0, pendingCount(a, "ses-1"), "cached serves resolve, never add — no click-then-refresh flicker")
+
+	// Past the TTL, a fresh gather re-syncs both halves from truth.
+	time.Sleep(600 * time.Millisecond)
+	_, err = a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	require.NoError(t, err)
+	assert.Equal(t, 0, pendingCount(a, "ses-1"), "truth holds nothing; the fresh gather agrees")
+}

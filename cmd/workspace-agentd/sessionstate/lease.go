@@ -51,6 +51,10 @@ func (a *Authority) SetLeaseBoundForTest(d time.Duration) { a.leaseBoundOverride
 // serve (leg 9).
 const gatherTTL = 500 * time.Millisecond
 
+// serveGatherMapLimit bounds the serve-gather cache: beyond it, stale
+// entries (idle past the TTL horizon) are pruned before insertion.
+const serveGatherMapLimit = 4096
+
 // serveGatherTimeout bounds ONE serve's lease gather: tighter than the
 // reconcile pass budget — a snapshot serve must degrade fast, never hold
 // a browser refresh hostage to a hung store (r1 finding 2).
@@ -86,6 +90,10 @@ func (a *Authority) knownSessionCount() int {
 func (a *Authority) diffPendingLeases(ctx context.Context) (resolved, appeared int, err error) {
 	live, err := a.cfg.Store.PendingInputs(ctx)
 	if err != nil {
+		// Counted, not just logged: an unnoticed pending-source failure
+		// was r1's incident shape (the flap only exists because nobody
+		// saw the 503s).
+		a.leaseGatherFails++
 		a.logger.Warn("sessionstate lease: pending gather failed — projection untouched",
 			zap.Error(err))
 		return 0, 0, err
@@ -203,9 +211,16 @@ func (a *Authority) rederiveStatuses(seeds map[string]SessionSeed) {
 // at a time, results reused within gatherTTL. A refresh storm costs one
 // gather per TTL window (leg 9).
 type serveGather struct {
-	mu         sync.Mutex
-	inFlight   bool
-	pending    map[string][]*abiv1.InputRequest
+	mu sync.Mutex
+	// inFlight coalesces concurrent serves onto one gather.
+	inFlight bool
+	// slice is THIS session's pending from the last completed gather
+	// (never the full workspace map — an entry must not pin the whole
+	// payload), fresh for gatherTTL. Cached slices are trusted for the
+	// RESOLVE half only (see applyServeDiff): a stale addition could
+	// resurrect an ask a just-folded resolve cleared.
+	slice      []*abiv1.InputRequest
+	cached     bool
 	gatheredAt time.Time
 }
 
@@ -219,6 +234,17 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 		return
 	}
 	a.serveGathersMu.Lock()
+	if len(a.serveGathers) > serveGatherMapLimit {
+		// Prune stale entries (idle past the TTL horizon): the map is
+		// attacker-shaped in size only (reads are unauthenticated-rate),
+		// and this is the sessionLimiter's own pruning discipline.
+		now := time.Now()
+		for k, g := range a.serveGathers {
+			if g != nil && now.Sub(g.gatheredAt) > 10*gatherTTL {
+				delete(a.serveGathers, k)
+			}
+		}
+	}
 	g, ok := a.serveGathers[sid]
 	if !ok {
 		g = &serveGather{}
@@ -231,10 +257,10 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 		g.mu.Unlock()
 		return // a concurrent serve is gathering; this serve reads the projection as-is
 	}
-	if time.Since(g.gatheredAt) < gatherTTL && g.pending != nil {
-		live := g.pending
+	if g.cached && time.Since(g.gatheredAt) < gatherTTL {
+		slice := g.slice
 		g.mu.Unlock()
-		a.applyServeDiff(sid, live)
+		a.applyServeDiff(sid, slice, true)
 		return
 	}
 	g.inFlight = true
@@ -254,17 +280,48 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 		return
 	}
 	g.mu.Lock()
-	g.pending = live
+	g.slice = live[sid]
+	g.cached = true
 	g.gatheredAt = time.Now()
 	g.mu.Unlock()
-	a.applyServeDiff(sid, live)
+	a.applyServeDiff(sid, g.slice, false)
 }
 
-func (a *Authority) applyServeDiff(sid string, live map[string][]*abiv1.InputRequest) {
+// applyServeDiff applies the session's lease diff from a gather result.
+// cached=true (a TTL-window reuse) applies the RESOLVE half only: cached
+// additions could resurrect an ask a just-folded resolve cleared — the
+// click-then-refresh flicker. Fresh gathers apply both halves.
+func (a *Authority) applyServeDiff(sid string, liveIn []*abiv1.InputRequest, cached bool) {
 	lock := a.sessionLock(sid)
 	if !lock.TryLock() {
 		return // an admission owns the session; the snapshot serves current projection
 	}
 	defer lock.Unlock()
-	a.diffSessionLease(sid, live[sid])
+	if cached {
+		a.diffSessionResolveOnly(sid, liveIn)
+		return
+	}
+	a.diffSessionLease(sid, liveIn)
+}
+
+// diffSessionResolveOnly drops projected asks absent from liveIn and adds
+// nothing — the cached-slice half-trust rule.
+func (a *Authority) diffSessionResolveOnly(sid string, liveIn []*abiv1.InputRequest) {
+	live := map[string]bool{}
+	for _, in := range liveIn {
+		if in != nil && in.GetId() != "" {
+			live[in.GetId()] = true
+		}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	rec := a.sessions[sid]
+	if rec == nil {
+		return
+	}
+	for id := range rec.pending {
+		if !live[id] {
+			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, Input: &abiv1.InputRequest{Id: id}})
+		}
+	}
 }

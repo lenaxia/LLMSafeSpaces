@@ -60,8 +60,10 @@ func (s *SessionState) clone() *SessionState {
 	return out
 }
 
-// GetSnapshot fetches one session's authoritative snapshot (I12) — a pure
-// projection read; zero harness calls.
+// GetSnapshot fetches one session's authoritative snapshot (I12) — a
+// projection read plus ONE pod-local lease-refresh gather (#1310: pending
+// asks are leases re-verified on serve; coalesced, TTL-bounded, and
+// degraded-served on failure).
 func (c *Client) GetSnapshot(ctx context.Context, sessionID string) (*abiv1.SessionSnapshot, error) {
 	resp, err := c.svc.GetSnapshot(ctx, connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: sessionID}))
 	if err != nil {

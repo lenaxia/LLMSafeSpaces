@@ -66,3 +66,15 @@ All four findings validated real, fixed:
 4. **Unfiltered materialization loop:** the rec==nil branch now applies the same nil/empty-ID filter; `TestLeasePass_MaterializesUnknownSession` pins exactly-the-well-formed-ask materializing (malformed entries consume no seq, emit nothing).
 
 Plus the reviewer's missing tests 1–5: production endpoint-failure skip ✓, hung-store bounded serve ✓, ledger-wired topology ✓, unknown-session materialization ✓, concurrent-serve storm — coalesced by a per-Authority serve-gather singleflight (500ms TTL; one in-flight gather, waiters serve the projection; the abiclient storm pin now asserts gathers ≪ serves) ✓. The zero-record L3 gap the reviewer noted is closed by composition: production always reseeds at boot (S8), after which the known-session gate keeps the cadence open — pinned via the Reseed-modeled materialization test.
+
+---
+
+## Review round 2 (PR #1329)
+
+All findings validated real, fixed:
+
+1. **Lease outcomes invisible:** `Metrics()` gains cumulative `LeaseResolved`/`LeaseAppeared`/`LeaseGatherFails`; the metrics bridge exports them as deltas into the `llmsafespaces_ledger_reconciled_total` family (`input_resolved_by_absence`, `input_appeared_from_truth`); the watchdog logs a "pending leases converged" line beside the converged-stranded-state one.
+2. **Discarded gather error:** the cadence pass now counts a failed pending gather into `EvidenceFailures` (counter + watchdog Warn — never just the inline line); `Metrics.LeaseGatherFails` carries the cumulative signal.
+3. **Unbounded serveGathers pinning full gathers:** entries now hold THIS session's slice only (never the workspace map), the map prunes stale entries past a horizon when it exceeds `serveGatherMapLimit` (4096 — the sessionLimiter's own discipline), and `Close` clears it. Also fixed while here: the TTL cache never hit for pending-less sessions (`nil` slice) — an explicit `cached` flag makes coalescing uniform (the latency-storm pin now genuinely dedupes: 300 serves ≪ 300 gathers).
+4. **TTL resurrect:** cached slices are trusted for the RESOLVE half only (`diffSessionResolveOnly`) — a just-resolved ask can never flicker back from a stale cache; fresh gathers apply both halves. Pinned by `TestSnapshotServe_CachedSliceNeverResurrects`.
+5. **Stale contract text:** abi.proto's GetSnapshot doc, the client's doc comment, and the latency metric's Help now state the lease-refresh contract (one coalesced pod-local gather, degraded-served on failure); proto regenerated (Go+TS+connect), `buf breaking` green vs frozen.

@@ -156,6 +156,11 @@ type Authority struct {
 	leaseBoundOverride time.Duration
 	serveGathersMu     sync.Mutex
 	serveGathers       map[string]*serveGather
+	// leaseGatherFails counts cadence pending-gather failures (the
+	// unnoticed-source-failure signal; Metrics-exposed).
+	leaseGatherFails int64
+	leaseResolvedCum int64
+	leaseAppearedCum int64
 	// lastSeqAt is when the projection last advanced (the seq-stall
 	// signal's clock, R5/US-69.12).
 	lastSeqAt time.Time
@@ -520,6 +525,9 @@ func (a *Authority) dropSub(sub *subscriber) {
 
 // Close persists the final cursor and releases resources.
 func (a *Authority) Close() error {
+	a.serveGathersMu.Lock()
+	a.serveGathers = nil
+	a.serveGathersMu.Unlock()
 	if a.ledger != nil {
 		_ = a.ledger.close()
 	}
@@ -557,7 +565,14 @@ type Metrics struct {
 	LedgerDepths map[string]int64
 	// StalledEntries is the current stalled-row count (the #1119 class,
 	// visible).
-	StalledEntries int64
+	// LeaseResolved/LeaseAppeared are the cumulative pending-lease diff
+	// outcomes (#1310 slice B: asks resolved by absence; asks appeared
+	// from live truth); LeaseGatherFails counts cadence pending-gather
+	// failures (the unnoticed-source-failure signal).
+	LeaseResolved    int64
+	LeaseAppeared    int64
+	LeaseGatherFails int64
+	StalledEntries   int64
 	// OldestPromotionStallSeconds is the age of the oldest
 	// admitted-unpromoted row (0 when none).
 	OldestPromotionStallSeconds float64
@@ -585,6 +600,9 @@ func (a *Authority) Metrics() Metrics {
 		LedgerDepths:                nil,
 		StalledEntries:              0,
 		OldestPromotionStallSeconds: 0,
+		LeaseGatherFails:            a.leaseGatherFails,
+		LeaseResolved:               a.leaseResolvedCum,
+		LeaseAppeared:               a.leaseAppearedCum,
 	}
 	if a.ledger != nil {
 		m.LedgerDepths = a.ledger.depths()

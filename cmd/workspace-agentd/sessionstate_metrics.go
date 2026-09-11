@@ -66,7 +66,7 @@ var sessionStateMetrics = struct {
 	}),
 	snapshotLatency: promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "llmsafespaces_snapshot_latency_seconds",
-		Help:    "GetSnapshot serving latency (the zero-harness-call read; US-69.4 budget).",
+		Help:    "GetSnapshot serving latency (the projection read plus ONE coalesced pod-local lease-refresh gather, #1310 slice B; US-69.4 budget unchanged).",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 13), // 1ms .. ~4s
 	}),
 	deliveryLatency: promauto.NewHistogram(prometheus.HistogramOpts{
@@ -123,6 +123,36 @@ var reconcileLast = struct {
 	mu sync.Mutex
 	m  map[string]*sessionstate.Metrics
 }{m: map[string]*sessionstate.Metrics{}}
+
+var leaseLast = struct {
+	mu       sync.Mutex
+	resolved map[string]int64
+	appeared map[string]int64
+}{resolved: map[string]int64{}, appeared: map[string]int64{}}
+
+func leaseResolvedDelta(workspaceID string, v int64) float64 {
+	leaseLast.mu.Lock()
+	defer leaseLast.mu.Unlock()
+	prev, seen := leaseLast.resolved[workspaceID]
+	if !seen || v < prev {
+		leaseLast.resolved[workspaceID] = v
+		return 0
+	}
+	leaseLast.resolved[workspaceID] = v
+	return float64(v - prev)
+}
+
+func leaseAppearedDelta(workspaceID string, v int64) float64 {
+	leaseLast.mu.Lock()
+	defer leaseLast.mu.Unlock()
+	prev, seen := leaseLast.appeared[workspaceID]
+	if !seen || v < prev {
+		leaseLast.appeared[workspaceID] = v
+		return 0
+	}
+	leaseLast.appeared[workspaceID] = v
+	return float64(v - prev)
+}
 
 func reconcileDeltas(workspaceID string, m *sessionstate.Metrics) (promoted, turnEnded, failed, busyCleared, evidenceFails float64) {
 	reconcileLast.mu.Lock()
@@ -223,6 +253,15 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 			sessionStateMetrics.reconcileEvidenceFails.Add(ev)
 		}
 	}
+	// #1310 slice B: lease outcomes ride the same convergence counter
+	// family (resolved_by_absence / appeared_from_truth) so the incident
+	// class's heal is as observable as every other one.
+	if d := leaseResolvedDelta(workspaceID, m.LeaseResolved); d > 0 {
+		sessionStateMetrics.reconciled.WithLabelValues("input_resolved_by_absence").Add(d)
+	}
+	if d := leaseAppearedDelta(workspaceID, m.LeaseAppeared); d > 0 {
+		sessionStateMetrics.reconciled.WithLabelValues("input_appeared_from_truth").Add(d)
+	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.
 	for state, n := range m.LedgerDepths {
@@ -258,6 +297,10 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 				log.Info("agentd: sessionstate reconcile — converged stranded state",
 					zap.Int("promoted", rec.Promoted), zap.Int("turnEnded", rec.TurnEnded),
 					zap.Int("failed", rec.Failed), zap.Int("busyCleared", rec.BusyCleared))
+			}
+			if rec.LeaseResolved+rec.LeaseAppeared > 0 {
+				log.Info("agentd: sessionstate reconcile — pending leases converged",
+					zap.Int("resolvedByAbsence", rec.LeaseResolved), zap.Int("appearedFromTruth", rec.LeaseAppeared))
 			}
 			// Counter export rides recordSessionStateMetrics' delta
 			// bridge below — the SINGLE export path, so reseed-embedded

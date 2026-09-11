@@ -294,7 +294,10 @@ export const HarnessABIService: GenService<{
   /**
    * Op 2 — session snapshot: busy/streaming state, in-flight parts with
    * partials, ledger-derived queue depth, pending question/permission
-   * requests. Served from the projection with zero harness calls; a
+   * requests. Served from the projection with ONE pod-local lease-refresh
+   * gather per serve (#1310: pending asks are leases re-verified against
+   * the live registries — coalesced and TTL-bounded, never a per-part
+   * fetch; a failed or hung gather serves the projection degraded); a
    * snapshot alone is sufficient to render state and act (I12).
    *
    * @generated from rpc llmsafespaces.abi.v1.HarnessABIService.GetSnapshot

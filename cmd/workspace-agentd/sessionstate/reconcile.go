@@ -134,7 +134,18 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
 	}
 	a.rederiveStatuses(seeds)
-	stats.LeaseResolved, stats.LeaseAppeared, _ = a.diffPendingLeases(ctx)
+	r, ap, lerr := a.diffPendingLeases(ctx)
+	stats.LeaseResolved, stats.LeaseAppeared = r, ap
+	a.mu.Lock()
+	a.leaseResolvedCum += int64(r)
+	a.leaseAppearedCum += int64(ap)
+	a.mu.Unlock()
+	if lerr != nil {
+		// Same observable-surface discipline as evidence failures: a
+		// failed pending gather bumps the counter and the watchdog log,
+		// never just an inline line (r2 finding: the discarded error).
+		stats.EvidenceFailures++
+	}
 	return stats
 }
 
