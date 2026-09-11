@@ -119,3 +119,17 @@ func TestInstantAdmitter_DistinctIDsAndNilOut(t *testing.T) {
 	_, err = nilOut.Admit(context.Background(), "s1", "m-3", "text", "model")
 	require.NoError(t, err, "Out==nil skips the evidence write without panicking (the turn-ended arm's lever)")
 }
+
+// TestWaitConverges_PostDeadlineSuccessIsBreach: fn flipping true JUST
+// past the bound reports (elapsed > bound, ok == false) — the pin for
+// the round-2 contract change (deleting that branch passes everything
+// else; this is the test that catches it).
+func TestWaitConverges_PostDeadlineSuccessIsBreach(t *testing.T) {
+	bound := 60 * time.Millisecond
+	flipAt := time.Now().Add(bound + 20*time.Millisecond)
+	elapsed, ok := WaitConverges(context.Background(), bound, 2*time.Millisecond, func() bool {
+		return time.Now().After(flipAt)
+	})
+	require.False(t, ok, "a success observed past the deadline is a breach, not a convergence")
+	assert.Greater(t, elapsed, bound, "the elapsed span evidences the breach")
+}

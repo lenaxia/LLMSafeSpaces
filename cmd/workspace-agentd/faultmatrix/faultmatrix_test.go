@@ -77,7 +77,9 @@ func TestRow_Leg2_StaleClickResolves_S6_L2(t *testing.T) {
 	}))
 	if err != nil {
 		v.Add("S6") // absence must resolve, never error
-		t.Fatalf("answer on dropped input errored: %v", err)
+		t.Errorf("answer on dropped input errored: %v", err)
+		assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+		return
 	}
 	require.NotNil(t, res.Msg.GetAnswerQuestion())
 	clickElapsed := time.Since(clickStart)

@@ -67,7 +67,7 @@ None for this unit. S5/L3 rows + the full matrix completion wait on a landed 2a.
 
 ## Review r1 remediation (2026-09-11, PR #1337)
 
-- **Engine contract pinned directly** (`faultmatrix_engine_test.go`, 8 tests): WaitConverges immediate-hold / breach (elapsed carries the full bound — the L-sample's evidence) / ctx-cancel; Violations copy-semantics + Empty; ConvergenceLog Max/Within; **Within now FAILS CLOSED on unrecorded bounds** (a row that never measured has not converged within anything — the vacuous-pass hole closed in code, pinned in test); AnswerActor live-ask success + non-answer CodeUnimplemented; InstantAdmitter distinct ids + Out=nil no-panic.
+- **Engine contract pinned directly** (`faultmatrix_engine_test.go`, 9 tests): WaitConverges immediate-hold / breach (elapsed carries the full bound — the L-sample's evidence) / ctx-cancel; Violations copy-semantics + Empty; ConvergenceLog Max/Within; **Within now FAILS CLOSED on unrecorded bounds** (a row that never measured has not converged within anything — the vacuous-pass hole closed in code, pinned in test); AnswerActor live-ask success + non-answer CodeUnimplemented; InstantAdmitter distinct ids + Out=nil no-panic.
 - **Leg-4 resolution arm pinned both ways:** the evidence-present row now asserts `LedgerDepths["promoted"] ≥ 1 || ReconcilePromoted ≥ 1` (the promoted-from-evidence arm, not the turn-ended fallback); a new evidence-absent variant (`InstantAdmitter{Out:nil}` — the harness-OOM shape) asserts `ReconcileTurnEnded ≥ 1` and `ReconcilePromoted == 0`.
 - Also fixed en route: the CI-exposed leg-4 race — convergence is the cadence contract (tick Reconcile inside L5), not first-pass instant promotion (the sweep's TryLock skip of a live admission ladder is correct behavior, now relied upon rather than raced).
 
@@ -89,6 +89,21 @@ Counts at this revision: 13 test functions across the package's two test files (
 Counts at this revision: 13 test functions (4 rows + 9 engine/fake contract tests).
 
 ## Tests Run (round 2)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
+- `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
+
+---
+
+## Review round 3 remediation (2026-09-11, PR #1337)
+
+- **The round-2 contract is now pinned by its own regression test:** `TestWaitConverges_PostDeadlineSuccessIsBreach` — fn flipping true just past the bound reports `(elapsed > bound, ok == false)`; deleting the post-deadline branch fails this test.
+- Leg 2's dead `v.Add("S6")`-before-Fatalf replaced with Add + `t.Errorf` + gate check + return — the violation counter is observable on the failure path.
+- Worklog r1 inline count corrected (8 → 9 engine tests; the file-level headline was already right).
+
+Counts at this revision: 14 test functions (4 rows + 10 engine/fake contract tests), verified by grep this time.
+
+## Tests Run (round 3)
 
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
 - `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
