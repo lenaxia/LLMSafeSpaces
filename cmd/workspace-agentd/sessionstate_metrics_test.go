@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 )
 
 // --- US-69.12: the metrics wiring (gauge refresh + ABI-surface
@@ -134,9 +135,9 @@ func TestSessionStateWatchdog_EndToEnd(t *testing.T) {
 	// pass — a boot-once stamp (or a dead loop) cannot satisfy this, and
 	// staleness alerting consumes exactly this property (alerts themselves
 	// are gated per the wave plan).
-	first := testutil.ToFloat64(sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog"))
+	first := testutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopReconcileWatchdog))
 	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog")) > first
+		return testutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopReconcileWatchdog)) > first
 	}, 3*time.Second, 5*time.Millisecond, "the gauge advances with the loop (per-pass refresh)")
 	assert.True(t, wakeFailed, "the configured wake fired")
 	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.ledgerDepth.WithLabelValues(wsID, "stalled")),

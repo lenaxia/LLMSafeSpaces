@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 )
 
 var sessionStateMetrics = struct {
@@ -41,7 +42,6 @@ var sessionStateMetrics = struct {
 	customValveEvents      prometheus.Counter
 	reconciled             *prometheus.CounterVec
 	reconcileEvidenceFails prometheus.Counter
-	loopLastRun            *prometheus.GaugeVec
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -106,10 +106,6 @@ var sessionStateMetrics = struct {
 		Name: "llmsafespaces_reconcile_evidence_failures_total",
 		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
 	}),
-	loopLastRun: promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: obs.LoopLivenessMetric,
-		Help: obs.LoopLivenessHelp,
-	}, []string{obs.LoopLivenessLabel}),
 }
 
 // reconcileLast carries the last cumulative reconcile counters so the
@@ -275,7 +271,9 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 			// End-of-pass stamp: the Help contract says last COMPLETED
 			// pass — a wedge anywhere in this tick (reconcile, stalls,
 			// metrics) freezes the stamp at the previous pass (review r1).
-			sessionStateMetrics.loopLastRun.WithLabelValues(obs.LoopReconcileWatchdog).Set(float64(time.Now().Unix()))
+			// The family lives in pkg/obs (single registration shared
+			// with the API binary's loops — 0c part 2).
+			obs.StampLoopLastRun(obs.LoopReconcileWatchdog)
 		}
 	}
 }
