@@ -131,7 +131,10 @@ ok "AC-1 PASS"
 # catalog. This row pins the real contract end-to-end:
 #   1. create a user provider credential (openai_compatible stub),
 #   2. bind it BEFORE the pod exists (same cold-create shape as AC-1),
-#   3. assert the XDG registry-layer symlink the supervisor installs,
+#   3. assert the XDG registry-layer COPY the supervisor installs and
+#      keeps writable (the post-1d0e5be1/#1310 mechanism: opencode writes
+#      to the XDG path, so a symlink at the read-only /agentd-config mount
+#      broke model-selection persistence),
 #   4. assert the provider's allowlisted model appears in GET /api/model
 #      (the registry), NOT merely in /config/providers (the lying view).
 # The stub baseURL is unreachable on purpose — the enricher's /models
@@ -157,24 +160,52 @@ secrets_converged "${WS1B}" 120 || die "AC-1b: secretsDelivery not converged"
 POD1B=$(pod_of "${WS1B}")
 [[ -n "${POD1B}" ]] || die "AC-1b: no pod name on CR"
 
-# (3) The XDG registry-layer contract (#1300 fix): the supervisor
-# installs ~/.config/opencode/opencode.json pointing at the config file
-# opencode ACTUALLY reads — verified against the live child's
-# OPENCODE_CONFIG env (topology-dependent: /agentd-config in sidecar
-# mode, /sandbox-runtime single-container; pool run 34066476127 caught
-# a hard-coded sidecar path).
+# (3) The XDG registry-layer contract (#1300 fix, as-built post-#1310:
+#     COPY, not symlink — opencode WRITES to the XDG path (model-selection
+#     persistence), so the 0.27.5 symlink at the read-only /agentd-config
+#     mount broke those writes; the watcher re-copies on sidecar version
+#     changes, commit 1d0e5be1). The pinned relationship is layered, not
+#     byte-equality (opencode's own writes legitimately diverge the
+#     copy): the XDG path is a regular-file copy seeded from the live
+#     config (carries the credential's provider block), the child's
+#     OPENCODE_CONFIG carries it too, and assertion (4) below proves the
+#     registry actually admits the model — the check that caught #1300's
+#     lying view.
 OC_PID=$(kc exec "${POD1B}" -c workspace -- pgrep -f 'opencode serve' | head -1)
 [[ -n "${OC_PID}" ]] || die "AC-1b: opencode process not found"
 OC_CFG=$(kc exec "${POD1B}" -c workspace -- sh -c "tr '\\0' '\\n' < /proc/${OC_PID}/environ | grep '^OPENCODE_CONFIG=' | cut -d= -f2-")
 [[ -n "${OC_CFG}" ]] || die "AC-1b: opencode child has no OPENCODE_CONFIG env"
-XDG_LINK=$(kc exec "${POD1B}" -c workspace -- readlink -f /home/sandbox/.config/opencode/opencode.json 2>/dev/null || true)
-[[ "${XDG_LINK}" == "${OC_CFG}" ]] \
-    || die "AC-1b: XDG registry layer target '${XDG_LINK}' != child OPENCODE_CONFIG '${OC_CFG}'"
-ok "XDG registry-layer symlink matches the child's OPENCODE_CONFIG (→ ${XDG_LINK})"
+XDG_CFG=/home/sandbox/.config/opencode/opencode.json
+# r13/r30: diagnostics never die — a transient kc exec failure must not
+# kill the leg; capture under a guard and die with full context instead.
+if ! XDG_KIND=$(kc exec "${POD1B}" -c workspace -- sh -c "if [ -L '${XDG_CFG}' ]; then echo symlink; elif [ -f '${XDG_CFG}' ] && [ -w '${XDG_CFG}' ]; then echo file; elif [ -f '${XDG_CFG}' ]; then echo readonly; else echo missing; fi" 2>&1); then
+    die "AC-1b: kc exec failed probing the XDG layer at ${XDG_CFG}: ${XDG_KIND}"
+fi
+case "${XDG_KIND}" in
+    file) ;;
+    readonly)
+        die "AC-1b: XDG registry layer at ${XDG_CFG} is a READ-ONLY regular file — the copy exists but opencode cannot write model-selection persistence (the exact EACCES class 1d0e5be1 exists to close, xdg_config_layer.go:88-91)";;
+    symlink)
+        die "AC-1b: XDG registry layer is a SYMLINK at ${XDG_CFG} — the 0.27.5-era mechanism; the copy-not-symlink design landed with 1d0e5be1/#1310 and the legacy-symlink removal runs at boot";;
+    missing)
+        die "AC-1b: XDG registry layer MISSING at ${XDG_CFG} — the supervisor never installed the copy";;
+    *)
+        die "AC-1b: XDG layer probe returned unexpected '${XDG_KIND}' at ${XDG_CFG}";;
+esac
+# Distinguish exec failure from content mismatch (r13): grep exits 1 on
+# ZERO matches, so the remote command appends `; true` to normalize its
+# exit — a transport/exec failure is the only nonzero path, and the
+# count itself decides seeded-vs-not.
+if ! XDG_SEED=$(kc exec "${POD1B}" -c workspace -- sh -c "grep -c 'ac1b-stub' '${XDG_CFG}'; true" 2>&1); then
+    die "AC-1b: kc exec failed grepping the XDG copy at ${XDG_CFG}: ${XDG_SEED}"
+fi
+[[ "${XDG_SEED}" =~ ^[0-9]+$ && "${XDG_SEED}" -ge 1 ]] \
+    || die "AC-1b: XDG copy lacks the ac1b-stub provider block (not seeded from the live config; grep said '${XDG_SEED}')"
 
 # The rendered config must contain the credential's provider block.
 kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${OC_CFG}" \
     || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
+ok "XDG registry layer: regular-file copy seeded from the live config (child reads ${OC_CFG})"
 
 # (4) THE REGISTRY: opencode's model.available() via GET /api/model —
 # the endpoint that lied by omission in #1300.
@@ -252,15 +283,35 @@ data:
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
             print(f"MOCK-HIT {datetime.datetime.utcnow().isoformat()} {self.path} bytes={n}", flush=True)
+            # AC-1e's contract is "MCP tools visible in the model's
+            # function definitions" — the definitions travel in the
+            # REQUEST's tools array. Echo their names in the reply (one
+            # per line) so the row discriminates V1 (tools present ⇒
+            # llmsafespaces_* lines) from the #1313 V2-steer regression
+            # (no tools ⇒ marker only). The MOCK-TURN-OK marker stays
+            # first — AC-1d greps for it as a substring.
+            marker = "MOCK-TURN-OK"
+            try:
+                parsed = json.loads(body)
+                names = []
+                for t in parsed.get("tools") or []:
+                    fn = t.get("function") or {}
+                    nm = fn.get("name") or t.get("name") or ""
+                    if nm:
+                        names.append(nm)
+                if names:
+                    marker = marker + "\n" + "\n".join(sorted(set(names)))
+            except Exception:
+                pass
             if b'"stream":true' in body or b'"stream": true' in body:
                 # SSE: the AI SDK defaults to streaming — reply with
                 # chat.completion.chunk frames.
-                # Each SSE event MUST be terminated by a blank line
+                # Each SSE event MUST be terminated with a blank line
                 # (data: <json>\n\n) — a single \n concatenates frames
                 # into one malformed multi-line event.
                 frames = "".join([
                     "data: " + chunk({"role": "assistant", "content": ""}) + "\n\n",
-                    "data: " + chunk({"content": "MOCK-TURN-OK"}) + "\n\n",
+                    "data: " + chunk({"content": marker}) + "\n\n",
                     "data: " + chunk({}, finish="stop") + "\n\n",
                     "data: [DONE]\n\n",
                 ])
@@ -270,7 +321,7 @@ data:
                 resp = json.dumps({
                     "id": "chatcmpl-mock", "object": "chat.completion",
                     "created": 0, "model": "mock-model-1",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": marker}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                 }).encode()
                 ctype = "application/json"
