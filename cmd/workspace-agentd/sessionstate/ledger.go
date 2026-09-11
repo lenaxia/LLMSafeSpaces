@@ -415,8 +415,14 @@ func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, 
 // posted-but-never-completed message — the restart-destroyed window;
 // re-POSTing it is exactly the duplication this function exists to
 // prevent) — makes a new attempt return that outcome instead of
-// re-POSTing. FAILED and LEDGERED never reached opencode and correctly
-// fall through to a fresh admission.
+// re-POSTing. LEDGERED never reached opencode and falls through to the
+// evidence check. FAILED means the ladder exhausted without a returning
+// admission — but the #1315 incident proved a POST can land in the
+// transcript while the synchronous turn hangs past the client ctx
+// (FAILED-compatible-with-write), so FAILED too falls through to the
+// evidence check, which resolves ADMITTED-by-evidence when the store
+// holds the entry's keyed message and only otherwise proceeds to a
+// fresh keyed admission.
 func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
