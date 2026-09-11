@@ -422,14 +422,17 @@ func TestMetrics_ScrapeCompleteness(t *testing.T) {
 
 // TestNewAbiClient_WireRoundTrip runs the production client against a REAL
 // generated handler over abitest behind a Basic-auth gate: pins the §D1
-// credential discipline and the connect protocol end-to-end. abitest (main)
-// answers any GetSnapshot and resolves any answer_question — the transport
-// is under test; classification is covered by the fakes above.
+// credential discipline and the connect protocol end-to-end against the
+// post-1a reference contract — a SEEDED pending input resolves
+// (registry hit), an UNSEEDED input answers typed not_found (the S6
+// trigger wire shape; the resolve-by-absence conversion lives one level
+// up in agentd's authority, modeled by the classification fakes).
 func TestNewAbiClient_WireRoundTrip(t *testing.T) {
 	const password = "canary-wire-pw"
 	var sawAuth bool
+	srv := abitest.New()
 	mux := http.NewServeMux()
-	mux.Handle(abiconnect.NewHarnessABIServiceHandler(abitest.New()))
+	mux.Handle(abiconnect.NewHarnessABIServiceHandler(srv))
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
 		if !ok || user != "opencode" || pass != password {
@@ -449,15 +452,30 @@ func TestNewAbiClient_WireRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, SyntheticSessionID("wiretest"), snap.GetSessionId())
 
+	// Seeded registry hit → resolved.
+	seeded := SyntheticInputID("wiretest")
+	srv.SeedPendingInput(SyntheticSessionID("wiretest"), &abiv1.InputRequest{Id: seeded})
 	res, err := cl.Act(ctx, &abiv1.ActionRequest{
 		SessionId: SyntheticSessionID("wiretest"),
 		Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{
-			InputId:    SyntheticInputID("wiretest"),
+			InputId:    seeded,
 			CustomText: strPtr(canaryAnswerText),
 		}},
 	})
 	require.NoError(t, err)
-	assert.Equal(t, SyntheticInputID("wiretest"), res.GetAnswerQuestion().GetInputId())
+	assert.Equal(t, seeded, res.GetAnswerQuestion().GetInputId())
+
+	// Unseeded input → the S6 trigger wire shape: typed not_found.
+	_, err = cl.Act(ctx, &abiv1.ActionRequest{
+		SessionId: SyntheticSessionID("wiretest"),
+		Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{
+			InputId:    SyntheticInputID("unseeded"),
+			CustomText: strPtr(canaryAnswerText),
+		}},
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
 	assert.True(t, sawAuth, "every wire request carries the §D1 Basic credential")
 
 	// The unauthenticated path must surface a typed error, not a blob.
