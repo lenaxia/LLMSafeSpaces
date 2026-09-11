@@ -44,9 +44,11 @@ const (
 // (DISK_WARNING_THRESHOLD / DISK_CRITICAL_THRESHOLD). Values outside
 // (0,1) or a collapsed/inverted tier pair (warning >= critical) fall
 // back to the defaults so the warning tier is never silently made
-// unreachable. Single source of truth: the legacy raw-proxy injector
-// (api/internal/handlers/proxy_disk_pressure.go) reads these via
-// Thresholds() so the two paths cannot drift.
+// unreachable. Thresholds() serves every in-repo consumer of the
+// thresholds (e.g. the uploads disk gate) from this one place; the
+// legacy raw-proxy injector that used to read it was deleted with its
+// transport path (#828 batch 1) — the noticingAdapter here is the
+// sole injector.
 var (
 	warningThreshold  = envFloatOr("DISK_WARNING_THRESHOLD", defaultWarningThreshold)
 	criticalThreshold = envFloatOr("DISK_CRITICAL_THRESHOLD", defaultCriticalThreshold)
