@@ -374,6 +374,10 @@ func TestSnapshotServe_ConcurrentStormBounded(t *testing.T) {
 	store := newLeaseStore()
 	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE, input("per_1"))
 	a := leaseAuthority(t, store)
+	// The session is known to the projection before anything asks for its
+	// snapshot (production shape: events/reseed precede API snapshot
+	// calls — a never-seen session's serve is a 404 by contract).
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
