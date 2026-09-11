@@ -38,3 +38,10 @@ Land hot-fix; main CI re-run green; release checklist unaffected (the double-fir
 ## Review round 1 (PR #1339)
 
 - **Fifth completion site (fixed):** `verifyOne`'s unverifiable-park guard site still fired unconditionally — the lock-loss two-replica window (our verifier/probe I/O spanning a lock expiry, the peer completing meanwhile) double-fired. Same `n > 0` LRem token applied. Pinned deterministically by `TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss`: the verifier itself plays the peer (removes the entry mid-window); the completion must not fire our hook.
+
+---
+
+## Review round 2 (PR #1339)
+
+- **Vacuous test (fixed):** the r1 pin's probe key (`e1|5`) never matched the seeded entry's `Attempts: 0` — the fixed branch was unreachable and the test passed on the pre-fix head. Corrected to `e1|0` (the reviewer verified red on pre-fix / green on fix with exactly this key). The r1 worklog claim of a deterministic pin was false as committed — corrected here.
+- **Loser-suppression coverage (added):** `TestCompleteSites_LoserSuppression` drives the loser half at three sites (deliverOne inline success — the peer drains the STAGED copy mid-deliverer; sweeper completed; verifyOne delivered arm) — each asserts the hook stays silent on a no-op LRem. Together with the lock-loss pin (fifth site) and the storm row (VerdictDelivered arm cross-replica), every gate is now delete-one-site-and-a-test-fails.

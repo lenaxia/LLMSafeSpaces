@@ -1103,7 +1103,10 @@ func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 // interleaving) — only the LRem winner fires.
 func TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss(t *testing.T) {
 	s, _ := newTestService(t)
-	probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateAdmitted})
+	// Attempts is 0 — the guard probes e1|0/e1|1, NOT e1|5 (r2: the
+	// e1|5 key made this test vacuous; the one-character fix makes it
+	// the real red->green pin).
+	probe, _ := probeFunc(t, map[string]string{"e1|0": LedgerStateAdmitted})
 	s.SetLedgerProbe(probe)
 
 	var fired atomic.Int32
@@ -1127,4 +1130,64 @@ func TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss(t *testing.T) {
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
 	assert.Equal(t, int32(0), fired.Load(),
 		"the peer's completion owns the hook — our no-op LRem must not fire it")
+}
+
+// TestCompleteSites_LoserSuppression (r2 missing test 2): every
+// completion site fires the hook exactly once when a peer (simulated by
+// a pre-removal) beats us to the entry — delete any site's n>0 gate and
+// one of these rows fails.
+func TestCompleteSites_LoserSuppression(t *testing.T) {
+	preRemove := func(t *testing.T, s *Service) {
+		t.Helper()
+		vals, err := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+		require.NoError(t, err)
+		for _, v := range vals {
+			s.client.LRem(context.Background(), qKey("ws-1", "ses-1"), 1, v)
+		}
+	}
+	t.Run("deliverOne inline success", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedQueueEntry(t, s, "ws-1", "ses-1", "e1", StatusPending)
+		// The peer drains the STAGED copy while our deliverer runs (the
+		// entry leaves main for staging before the deliverer is called).
+		ok := s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error {
+				staged, err := s.client.LRange(ctx, dKey(ws, ses), 0, -1).Result()
+				require.NoError(t, err)
+				for _, v := range staged {
+					s.client.LRem(ctx, dKey(ws, ses), 1, v)
+				}
+				return nil
+			})
+		require.True(t, ok)
+		assert.Equal(t, int32(0), fired.Load(), "loser's no-op LRem fires nothing")
+	})
+	t.Run("sweeper completed", func(t *testing.T) {
+		s, _ := newTestService(t)
+		probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateAdmitted})
+		s.SetLedgerProbe(probe)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
+		preRemove(t, s)
+		n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+		require.NoError(t, err)
+		assert.Equal(t, 0, n)
+		assert.Equal(t, int32(0), fired.Load())
+	})
+	t.Run("verifyOne delivered arm", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		seedQueueEntry(t, s, "ws-1", "ses-1", "e1", StatusVerifying)
+		s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict {
+			preRemove(t, s)
+			return VerdictDelivered
+		})
+		require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+		assert.Equal(t, int32(0), fired.Load())
+	})
 }
