@@ -180,6 +180,18 @@ async function openChatWithQueue(page: Page, entries: QueueEntry[]) {
   return queue;
 }
 
+// clickUntil — r6: actionability starvation (r5) and the force-click's
+// lost-click no-op (r6) are both symptoms of clicking a node mid-churn;
+// the robust strategy is retrying the click UNTIL ITS EFFECT fires,
+// bounded by toPass. The effect assertion is the discriminator — a
+// swallowed click produces no POST and the poll retries.
+async function clickUntil(page: import("@playwright/test").Page, selector: () => import("@playwright/test").Locator, effect: () => Promise<void>) {
+  await expect(async () => {
+    await selector().click({ timeout: 5_000 }).catch(() => {});
+    await effect();
+  }).toPass({ timeout: 45_000 });
+}
+
 test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)", () => {
   // Cold-start (first browser boot + app load) can consume most of the
   // default 30s before the assertions begin.
@@ -188,13 +200,12 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   test("retry under persistent 503: pill stays with the busy hint, ZERO re-enqueue POSTs", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    // Cold-start actionability (r5): the pill re-renders on every
-    // refresh cycle — clicking mid-churn starves the actionability check
-    // on a detaching node (same class the dismiss test settles around).
-    await page.waitForTimeout(600);
-    await page.getByRole("button", { name: "Retry" }).first().click({ force: true });
+    await clickUntil(
+      page,
+      () => page.getByRole("button", { name: "Retry" }).first(),
+      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 2_000 }),
+    );
 
-    await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 5000 });
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
     // The invariant the whole fix exists for: contention must never mint
     // a second entry. Exactly one retry POST, zero queue POSTs.
@@ -206,8 +217,11 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   test("dismiss under 503: pill stays; after contention clears, dismiss removes it", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    await page.getByRole("button", { name: "Dismiss" }).first().click({ force: true });
-    await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 5000 });
+    await clickUntil(
+      page,
+      () => page.getByRole("button", { name: "Dismiss" }).first(),
+      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 2_000 }),
+    );
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
     expect(queue.calls.delete).toBe(1);
 
@@ -217,8 +231,11 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     await page.waitForTimeout(600);
     // Contention clears (delivery finished) — the dismiss now applies.
     queue.calls.deleteStatus = 204;
-    await page.getByRole("button", { name: "Dismiss" }).first().click({ force: true });
-    await expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 5000 });
+    await clickUntil(
+      page,
+      () => page.getByRole("button", { name: "Dismiss" }).first(),
+      () => expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 2_000 }),
+    );
     expect(queue.calls.delete).toBe(2);
   });
 
@@ -238,15 +255,20 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
       lastError: undefined,
       clientMessageID: "cmid-srv-2",
     };
+    // Stateful (r6): the GET payload must reflect confirmed deletes —
+    // clearAll's trailing refreshQueue re-adds any entry the stub still
+    // lists, so a stateless stub invalidates the very state under assert.
+    const liveEntries: typeof ERR_ENTRY[] = [ERR_ENTRY, PLAIN];
     await page.route("**/api/v1/workspaces/ws-queue-e2e/sessions/sess-queue-e2e/queue", async (route) => {
       if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ messages: [ERR_ENTRY, PLAIN] }),
+          body: JSON.stringify({ messages: liveEntries }),
         });
       } else {
         queue.calls.enqueue++;
+        liveEntries.push(PLAIN);
         await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ messageID: "srv_2" }) });
       }
     });
@@ -285,13 +307,19 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
         if (url.endsWith("/srv_1")) {
           await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "session busy delivering; retry shortly" }) });
         } else {
+          const idx = liveEntries.findIndex((m) => url.endsWith("/" + m.id));
+          if (idx >= 0) liveEntries.splice(idx, 1);
           await route.fulfill({ status: 204, body: "" });
         }
       } else {
         await route.fulfill({ status: 404, body: "" });
       }
     });
-    await stop.click({ force: true });
+    await clickUntil(
+      page,
+      () => page.getByRole("button", { name: "Stop generating" }).first(),
+      () => expect(page.getByText(/delivery in progress/i).first()).toBeVisible({ timeout: 2_000 }),
+    );
 
     // The queued "plain entry" also renders an optimistic transcript
     // bubble — pill removal is asserted via the QUEUE SECTION, not the

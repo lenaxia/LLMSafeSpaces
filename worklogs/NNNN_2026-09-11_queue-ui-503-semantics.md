@@ -54,3 +54,10 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 - `frontend/src/hooks/useMessageQueue.test.ts`
 - `frontend/src/hooks/useChatStream.test.ts`
 - `worklogs/NNNN_2026-09-11_queue-ui-503-semantics.md` (this file)
+
+## Review r6 corrections (record hygiene — r4's undelivered items)
+
+- The r5 "repeat-each stable" claim was FALSIFIED in review (cold runs failed 1/12 and 2/12): the settle+force-click converted actionability starvation into a silently lost click. r6 replaces both with `clickUntil` — an effect-gated `expect(...).toPass()` retry loop where a swallowed click (no POST, no hint) is re-attempted until ITS EFFECT fires; structurally closed against the lost-click class.
+- The r6 clearAll e2e arm was flaky by construction (its stateless GET let the trailing refreshQueue re-add the 204-deleted entry); the stub is now stateful — the GET payload mutates on confirmed deletes, the same discipline `stubQueue` already had.
+- The dismiss contract in the earlier sections is SUPERSEDED (r4): unknown-outcome deletes KEEP the pill error-marked (the refresh reconcile claim was false for delivering entries); 2xx/404 remove immediately.
+- `.at(-1)` in the err_-pill pin violated the ES2020 lib target (TS2550, CI typecheck gate) — replaced with indexed access.
