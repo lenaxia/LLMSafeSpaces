@@ -509,3 +509,139 @@ func TestLeaseDeltas_FirstScrapeCarriesCumulative(t *testing.T) {
 	require.Equal(t, int64(1), m.LeaseResolved)
 	require.Equal(t, int64(1), m.LeaseAppeared)
 }
+
+// TestLeasePass_ErrorTruthConverges (r5 finding 1): harness ERROR past
+// the bound converges the snapshot off BUSY and does not re-emit per tick.
+func TestLeasePass_ErrorTruthConverges(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_ERROR)
+	a := leaseAuthority(t, store)
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_BUSY})
+	require.Equal(t, abiv1.SessionStatus_SESSION_STATUS_BUSY, a.State().Sessions["ses-1"].Status)
+
+	a.SetLeaseBoundForTest(-time.Second)
+	seqAfterFirst := a.Reconcile(context.Background())
+	assert.Equal(t, abiv1.SessionStatus_SESSION_STATUS_ERROR, a.State().Sessions["ses-1"].Status,
+		"ERROR truth converges the snapshot off BUSY")
+
+	seqBefore := a.State().Seq
+	second := a.Reconcile(context.Background())
+	assert.Equal(t, 0, second.LeaseResolved+second.LeaseAppeared)
+	assert.Equal(t, seqBefore, a.State().Seq, "no per-tick event spam once converged")
+	_ = seqAfterFirst
+}
+
+// TestSnapshotServe_CachedSliceSparesNewlyFoldedAsk (r5 finding 2): an
+// ask that folded AFTER the cached gather is invisible to the stale slice
+// and must survive a TTL-window serve.
+func TestSnapshotServe_CachedSliceSparesNewlyFoldedAsk(t *testing.T) {
+	store := newLeaseStore()
+	store.seed("ses-1", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := leaseAuthority(t, store)
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+
+	// Prime the cache with an empty truth.
+	_, err := a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	require.NoError(t, err)
+
+	// A NEW ask folds via the event path after the gather.
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, Input: input("per_new")})
+	require.Equal(t, 1, pendingCount(a, "ses-1"))
+
+	// A serve inside the TTL window reuses the cached (empty) slice —
+	// the post-gather ask must NOT be cleared by stale truth.
+	_, err = a.GetSnapshot(context.Background(), connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: "ses-1"}))
+	require.NoError(t, err)
+	assert.Equal(t, 1, pendingCount(a, "ses-1"), "stale truth never clears a post-gather ask")
+}
+
+// TestLeasePass_ResolveAfterGatherNotResurrected (r5 finding 3): a
+// resolve folding between the gather and the diff must not re-add the
+// ask — the seq-gate blocks phantom INPUT_REQUESTs on the cadence path.
+func TestLeasePass_ResolveAfterGatherNotResurrected(t *testing.T) {
+	store := newLeaseStore()
+	// A gated store: PendingInputs holds {per_a} but lets us fold a
+	// resolve AFTER the gather returns, before the diff applies.
+	g := &gateStore2{inner: store}
+	g.live = map[string][]*abiv1.InputRequest{"ses-1": {input("per_a")}}
+	a := leaseAuthority(t, g)
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+	a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, Input: input("per_a")})
+	require.Equal(t, 1, pendingCount(a, "ses-1"))
+
+	g.onGathered = func() {
+		// The user's resolve folds between gather and diff.
+		a.IngestForTest(&abiv1.Event{SessionId: "ses-1", Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, Input: input("per_a")})
+		g.onGathered = nil
+	}
+	stats := a.Reconcile(context.Background())
+	assert.Equal(t, 0, pendingCount(a, "ses-1"), "the resolve stands")
+	assert.Equal(t, 0, stats.LeaseAppeared, "no phantom re-add of the just-resolved ask")
+}
+
+// gateStore2 wraps a leaseStore with a pending-set override and an
+// onGathered hook firing after PendingInputs returns.
+type gateStore2 struct {
+	inner      *leaseStore
+	live       map[string][]*abiv1.InputRequest
+	onGathered func()
+}
+
+func (g *gateStore2) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
+	return g.inner.SessionStates(ctx)
+}
+
+func (g *gateStore2) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (g *gateStore2) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	out := g.live
+	if g.onGathered != nil {
+		f := g.onGathered
+		defer f()
+	}
+	return out, nil
+}
+
+// TestLeasePass_MaterializesWithoutReseed (r5 missing test 4): the
+// rec==nil fold-materialization branch driven directly — a session in
+// live truth but never projected materializes with its asks; a malformed
+// empty-ID entry emits nothing.
+func TestLeasePass_MaterializesWithoutReseed(t *testing.T) {
+	// No reseed: the projection has NEVER seen ses-fresh (the cadence
+	// gate stays open via the other session's record). The raw store
+	// bypasses the fake's filter so the malformed entries actually reach
+	// the diff's materialization branch.
+	raw := &rawPendingStore{
+		states: map[string]sessionstate.SessionSeed{"other": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE}},
+		live:   map[string][]*abiv1.InputRequest{"ses-fresh": {input("per_x"), {Id: ""}, nil}},
+	}
+	a := leaseAuthority(t, raw)
+	a.IngestForTest(&abiv1.Event{SessionId: "other", Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, Status: abiv1.SessionStatus_SESSION_STATUS_IDLE})
+
+	a.Reconcile(context.Background())
+	assert.Equal(t, 1, pendingCount(a, "ses-fresh"), "the never-projected session materialized through the fold")
+	v := a.State().Sessions["ses-fresh"]
+	require.Len(t, v.PendingInputs, 1)
+	assert.Equal(t, "per_x", v.PendingInputs[0].GetId(), "only the well-formed ask materialized")
+}
+
+// rawPendingStore serves a raw pending map verbatim (no filtering) plus
+// empty session states.
+type rawPendingStore struct {
+	states map[string]sessionstate.SessionSeed
+	live   map[string][]*abiv1.InputRequest
+}
+
+func (s *rawPendingStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
+	return s.states, nil
+}
+
+func (s *rawPendingStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (s *rawPendingStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return s.live, nil
+}

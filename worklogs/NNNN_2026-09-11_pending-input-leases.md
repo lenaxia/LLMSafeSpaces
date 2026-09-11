@@ -102,3 +102,14 @@ New tests: failing-gather export + concurrent-Metrics race pin, outcomes export,
 - **Prune test never executed the prune branch (fixed):** `serveGatherMapLimit` is a var; the test overfills past a shrunk limit so the serve EXECUTES the prune and asserts eviction; the close-race half stays.
 - **Delta bridge zero coverage (fixed):** first-scrape-cumulative semantics pinned via `TestLeaseDeltas_FirstScrapeCarriesCumulative` (Metrics deltas through a real authority).
 - **Worklog accuracy (corrected):** the r3 note's "canceled-pass recording regression" claim was wrong — that coverage is #1317's pre-existing `TestReconcile_ContextCancelRecordsOutcomes` (kept green by the recording-site re-home, not added here). Corrected in-entry per the record's own standard.
+
+---
+
+## Review round 5 (PR #1335 — the fresh-PR re-arm of #1329 after platform-side event drops; same branch)
+
+- **Finding 1 (ERROR truth never converges + per-tick spam, fixed):** the fold's SESSION_STATUS switch now treats ERROR like IDLE — busy clears, inFly drops — so the snapshot's busy override stops forcing BUSY forever, and the `rec.busy` guard stops re-emitting. Pinned by `TestLeasePass_ErrorTruthConverges` (converges; no seq consumed on the second pass).
+- **Findings 2-3 (stale-gather flicker both directions, fixed with one mechanism):** per-entry fold seqs (`pendingSince`/`resolvedSeq` on the record, stamped by the INPUT_REQUEST/INPUT_RESOLVED folds) gate every diff application by `seqAtGather` (captured before the truth read on both serve and cadence paths; cached slices carry their gather's seq): an ask folded after the gather is never cleared by stale truth, and an ask resolved after the gather is never resurrected. Pinned by `TestSnapshotServe_CachedSliceSparesNewlyFoldedAsk` and `TestLeasePass_ResolveAfterGatherNotResurrected` (gated store folds a resolve between gather and diff).
+- **Missing test 4 (materialization branch, fixed):** `TestLeasePass_MaterializesWithoutReseed` drives the `rec == nil` branch directly — no reseed, a raw pending map with malformed entries (`{Id:""}`, nil) → exactly the well-formed ask materializes.
+- **Missing test 5 (production strict seam, fixed):** `TestOpencodeStoreReader_PendingInputsStrict` — httptest matrix over the real `fetchListStrict` path: clean 200 maps asks; 503/404/malformed/non-array (`null`) bodies are errors (the `null` body case closed in the wiring too: non-array bodies are rejected outright).
+
+Platform note recorded: pushes to this branch after the Docker Hub outage window updated the PR head but fired no workflow events (verified: zero runs for two SHAs; dispatch worked; other branches normal). #1329 was closed and #1335 opened from the same branch to re-arm the `opened` triggers; the merge-conflict with main (sessionstate_metrics.go, main's `obs.StampLoopLastRun` refactor absorbing my loopLastRun field) was resolved in 34b90c3d.

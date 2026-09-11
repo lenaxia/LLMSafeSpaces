@@ -93,6 +93,7 @@ func (a *Authority) knownSessionCount() int {
 // established. A PendingInputs failure skips the pending diff entirely
 // (statuses still converge — their gather has its own error path).
 func (a *Authority) diffPendingLeases(ctx context.Context) (resolved, appeared int, err error) {
+	seqAtGather := a.currentSeq()
 	live, err := a.cfg.Store.PendingInputs(ctx)
 	if err != nil {
 		// Counted, not just logged: an unnoticed pending-source failure
@@ -123,7 +124,7 @@ func (a *Authority) diffPendingLeases(ctx context.Context) (resolved, appeared i
 		if !lock.TryLock() {
 			continue // a live admission owns the session; next tick converges
 		}
-		r, ap := a.diffSessionLease(sid, live[sid])
+		r, ap := a.diffSessionLease(sid, live[sid], seqAtGather)
 		resolved += r
 		appeared += ap
 		lock.Unlock()
@@ -132,8 +133,11 @@ func (a *Authority) diffPendingLeases(ctx context.Context) (resolved, appeared i
 }
 
 // diffSessionLease applies the lease diff for one session; the session
-// single-flight must be held.
-func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest) (resolved, appeared int) {
+// single-flight must be held. seqAtGather is the projection seq when the
+// truth read began: entries folded AFTER the gather are left alone — an
+// ask that arrived post-gather is not "missing from truth" (stale read),
+// and an ask resolved post-gather must not resurrect (r5 findings 2-3).
+func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest, seqAtGather uint64) (resolved, appeared int) {
 	live := map[string]*abiv1.InputRequest{}
 	for _, in := range liveIn {
 		if in != nil && in.GetId() != "" {
@@ -164,6 +168,9 @@ func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest) (
 
 	for id := range rec.pending {
 		if _, stillLive := live[id]; !stillLive {
+			if rec.pendingSince != nil && rec.pendingSince[id] > seqAtGather {
+				continue // folded after the gather — the truth read never saw it
+			}
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, Input: &abiv1.InputRequest{Id: id}})
 			resolved++
 		}
@@ -173,6 +180,9 @@ func (a *Authority) diffSessionLease(sid string, liveIn []*abiv1.InputRequest) (
 			continue
 		}
 		if _, projected := rec.pending[in.GetId()]; !projected {
+			if rec.resolvedSeq != nil && rec.resolvedSeq[in.GetId()] > seqAtGather {
+				continue // resolved after the gather — never resurrect a just-clicked ask
+			}
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_INPUT_REQUEST, Input: in})
 			appeared++
 		}
@@ -222,6 +232,9 @@ type serveGather struct {
 	mu sync.Mutex
 	// inFlight coalesces concurrent serves onto one gather.
 	inFlight bool
+	// gatherSeq is the projection seq when the cached gather began —
+	// the staleness gate for applying the cached slice.
+	gatherSeq uint64
 	// slice is THIS session's pending from the last completed gather
 	// (never the full workspace map — an entry must not pin the whole
 	// payload), fresh for gatherTTL. Cached slices are trusted for the
@@ -277,8 +290,9 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 	}
 	if g.cached && time.Since(g.gatheredAt) < gatherTTL {
 		slice := g.slice
+		seq := g.gatherSeq
 		g.mu.Unlock()
-		a.applyServeDiff(sid, slice, true)
+		a.applyServeDiff(sid, slice, true, seq)
 		return
 	}
 	g.inFlight = true
@@ -291,6 +305,7 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 
 	gctx, cancel := context.WithTimeout(ctx, serveGatherTimeout)
 	defer cancel()
+	seqAtGather := a.currentSeq()
 	live, err := a.cfg.Store.PendingInputs(gctx)
 	if err != nil {
 		a.logger.Warn("sessionstate: lease gather on serve failed — serving projection degraded",
@@ -299,32 +314,35 @@ func (a *Authority) refreshSessionLeaseOnServe(ctx context.Context, sid string) 
 	}
 	g.mu.Lock()
 	g.slice = live[sid]
+	g.gatherSeq = seqAtGather
 	g.cached = true
 	g.gatheredAt = time.Now()
 	g.mu.Unlock()
-	a.applyServeDiff(sid, g.slice, false)
+	a.applyServeDiff(sid, g.slice, false, seqAtGather)
 }
 
 // applyServeDiff applies the session's lease diff from a gather result.
 // cached=true (a TTL-window reuse) applies the RESOLVE half only: cached
 // additions could resurrect an ask a just-folded resolve cleared — the
 // click-then-refresh flicker. Fresh gathers apply both halves.
-func (a *Authority) applyServeDiff(sid string, liveIn []*abiv1.InputRequest, cached bool) {
+func (a *Authority) applyServeDiff(sid string, liveIn []*abiv1.InputRequest, cached bool, seqAtGather uint64) {
 	lock := a.sessionLock(sid)
 	if !lock.TryLock() {
 		return // an admission owns the session; the snapshot serves current projection
 	}
 	defer lock.Unlock()
 	if cached {
-		a.diffSessionResolveOnly(sid, liveIn)
+		a.diffSessionResolveOnly(sid, liveIn, seqAtGather)
 		return
 	}
-	a.diffSessionLease(sid, liveIn)
+	a.diffSessionLease(sid, liveIn, seqAtGather)
 }
 
 // diffSessionResolveOnly drops projected asks absent from liveIn and adds
-// nothing — the cached-slice half-trust rule.
-func (a *Authority) diffSessionResolveOnly(sid string, liveIn []*abiv1.InputRequest) {
+// nothing — the cached-slice half-trust rule. seqAtGather gates the same
+// staleness rule as the full diff: an ask folded after the cached gather
+// is invisible to it and must survive (r5 finding 2).
+func (a *Authority) diffSessionResolveOnly(sid string, liveIn []*abiv1.InputRequest, seqAtGather uint64) {
 	live := map[string]bool{}
 	for _, in := range liveIn {
 		if in != nil && in.GetId() != "" {
@@ -339,6 +357,9 @@ func (a *Authority) diffSessionResolveOnly(sid string, liveIn []*abiv1.InputRequ
 	}
 	for id := range rec.pending {
 		if !live[id] {
+			if rec.pendingSince != nil && rec.pendingSince[id] > seqAtGather {
+				continue // folded after the cached gather — not stale truth's to clear
+			}
 			a.applyLocked(&abiv1.Event{SessionId: sid, Type: abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED, Input: &abiv1.InputRequest{Id: id}})
 		}
 	}

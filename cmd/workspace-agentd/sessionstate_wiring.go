@@ -710,7 +710,7 @@ func fetchListStrict[T any](ctx context.Context, client *OpenCodeClient, path st
 		return nil, fmt.Errorf("lease gather %s: read: %w", path, rerr)
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(raw, &items) != nil {
+	if json.Unmarshal(raw, &items) != nil || strings.TrimSpace(string(raw)) == "null" {
 		return nil, fmt.Errorf("lease gather %s: malformed body", path)
 	}
 	out := make([]T, 0, len(items))
