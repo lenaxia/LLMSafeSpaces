@@ -354,16 +354,22 @@ func normalizeOrigin(raw string) string {
 // assertPublicAPIOrigin rejects cluster-internal origins: Kubernetes
 // service suffixes (.svc, .svc.cluster.local, .cluster.local) and the
 // dotless same-namespace service form (http://api-name:8080 — a single
-// DNS label is never a publicly resolvable name), localhost names, and
-// loopback/RFC1918/link-local/unspecified IPs (v4 and v6).
+// DNS label is never a publicly resolvable name), localhost names
+// INCLUDING RFC 6761 subdomains (foo.localhost — browsers resolve the
+// whole special-use domain to loopback, so it is as internal as
+// localhost itself), and loopback/RFC1918/link-local/unspecified IPs
+// (v4 and v6). Hosts are compared with ONE trailing DNS dot stripped
+// (the FQDN-terminus form): svc.cluster.local. is the same internal
+// name, while a public example.com. stays allowed.
 func assertPublicAPIOrigin(origin string) error {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || u.Scheme == "" {
 		return fmt.Errorf("dev preview URL unavailable: configured API origin %q is not a usable absolute URL — %s", origin, apiPublicOriginHint)
 	}
-	host := u.Hostname()
+	host := strings.TrimSuffix(u.Hostname(), ".")
 	ip := net.ParseIP(host)
 	internal := host == "localhost" ||
+		strings.HasSuffix(host, ".localhost") ||
 		strings.HasSuffix(host, ".svc") ||
 		strings.HasSuffix(host, ".svc.cluster.local") ||
 		strings.HasSuffix(host, ".cluster.local") ||

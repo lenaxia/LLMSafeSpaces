@@ -164,6 +164,76 @@ dev preview URL should always be the true fqdn that is publicly facing"):
    this environment; if the reviewer sandbox has a reproducible seed,
    that's a separate issue with the steps to trigger it.
 
+## Review iteration 3 (PR #1334, round-2 review findings)
+
+1. **#1332-B assertion never passes (validated by reviewer)** — the tool
+   output's line 1 is always the `LSP_DEV_PREVIEW_V1` marker; a
+   whole-payload origin-prefix match is unpassable. Fixed: `tool_url`
+   extracts the markdown-link URL (line 2) and asserts on that; the
+   marker's presence is now separately pinned.
+2. **Non-atomic controller mutation** — a die between patch and restore
+   left the cluster carrying the e2e flags. Fixed: `restore_controller`
+   under `trap … EXIT`, idempotent, rewrites controller args by filtering
+   the two e2e flags out of the live list (order-independent).
+3. **`*.localhost` refusal gap** — RFC 6761 subdomains resolve to
+   loopback in browsers; `host == "localhost"` alone missed them. Fixed:
+   `.localhost` suffix refused; hosts compared with ONE trailing DNS dot
+   stripped (`svc.cluster.local.` == `svc.cluster.local`; a public
+   `example.com.` stays allowed). Table extended: `api.localhost`,
+   trailing-dot internal forms, `localhost.`.
+4. **Origin-mode e2e leg added (#1332-C)** — patches
+   `--preview-origin-base-domain` alongside the public URL and asserts
+   the marker carries `origin=` and the bootstrap URL lands on the
+   public origin.
+
+### The e2e executed for real (the round-2 hard gate)
+
+`local/dev-preview-tunnel-e2e.sh` run against a live kind cluster
+(`kind-lss-repro`: full install, helm release upgraded to this branch —
+api/controller images + digest-pinned agentd overlay rebuilt from the
+working tree):
+
+```
+✓ #1333-A  bare /dev-preview/3000 → 308 → …/3000/ (Location path-absolute)
+✓ #1333-A2 308 preserves ?v=3&x=1
+✓ #1333-B  redirect followed → HTML + relative style.css through the
+           tunnel (200 text/css, body verified — the incident regression)
+✓ #1333-C  /dev-preview/style.css and bare /4096 stay 400
+✓ #1332-A  tool fails loud naming LLMSAFESPACE_API_PUBLIC_URL; no .svc
+✓ #1332-B  controller patched --api-public-url → pod recreated → tool
+           emits https://api.e2e.example/api/v1/workspaces/<ws>/dev-preview/3000/
+✓ #1332-C  + --preview-origin-base-domain → marker origin=e2e.example,
+           bootstrap URL on the public origin
+```
+
+The execution itself caught four script bugs no structure pin could
+(hence the reviewer's demand): CR-seeded before `harness_start` resolved
+`OWNER_ID` (required-field 422); `runtime_container` takes a POD name,
+not workspace id; Location is path-relative (asserted absolute);
+and the recreate wait — the controller recreates pods with a
+DETERMINISTIC name (spec-hash suffix), so a different-NAME wait never
+terminates and the port-forward raced the dying object — now waits on
+the pod UID changing with a per-call port and a POST-is-the-probe retry.
+
+### The disputed outbox test — evidence, precisely
+
+`TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes`
+(`api/internal/handlers/proxy_outbox_verify_test.go:547`): the round-1
+and round-2 reviews report it failing 5/5 in their sandbox (and at
+merge-base — their verification, accepted). In THIS environment it does
+not fail: standalone `-count=5` green, `-race -count=3` green, full
+`./api/internal/handlers/` suite green across every commit of this
+branch (f0291154, 28cac256, 6c048d06), and the branch's CI
+"Test (full suite, race detector)" job is green on all three heads.
+Both statements are true; they describe different environments. Not
+changed here: the PR's diff shares no files with that package, and a
+fix cannot be validated without a reproducing environment. The
+sibling symptom `TestStress_AmbiguityStormMultiReplica`
+("OnDelivered fired 2 times") failed on MAIN at 2026-09-11T07:13Z (CI
+run 34573362745) and in one PR-CI run (34633345888; rerun green) —
+filed as #1336 with both run links. If a reproducible seed for the
+verify-test exists, that issue is the vehicle.
+
 ## Deployment verification (post-merge)
 
 1. Helm: set `controller.apiPublicURL=https://api.safespaces.dev`

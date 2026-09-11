@@ -60,10 +60,25 @@ func TestDevPreviewScript_AssertionRows(t *testing.T) {
 		}
 	}
 
-	// The controller patch is restored so later nightly suites see the
-	// unmodified deployment.
-	if !strings.Contains(s, `"op":"remove","path":"/spec/template/spec/containers/0/args/-"`) {
-		t.Error("script must restore the controller args after the #1332-B leg")
+	// The controller patch is restored ATOMICALLY (trap on EXIT) so later
+	// nightly suites — and a mid-leg die — never see a controller carrying
+	// the e2e flags.
+	if !strings.Contains(s, "trap restore_controller EXIT") {
+		t.Error("script must guarantee controller restoration via an EXIT trap")
+	}
+	if !strings.Contains(s, `startswith("--api-public-url=")`) {
+		t.Error("the restore must filter the --api-public-url flag out of controller args")
+	}
+	// The URL must be extracted from the tool's markdown link — line 1 is
+	// always the LSP_DEV_PREVIEW_V1 marker, so a whole-payload prefix
+	// assertion can never pass (round-2 review finding).
+	if !strings.Contains(s, "tool_url") {
+		t.Error("script must assert on the extracted tool URL, not the whole payload")
+	}
+	// #1332-C: origin mode must be exercised end-to-end (marker carries
+	// origin=, bootstrap URL on the public origin).
+	if !strings.Contains(s, "dev-preview-bootstrap") || !strings.Contains(s, "origin=") {
+		t.Error("script must include the origin-mode (preview-origins) leg")
 	}
 }
 

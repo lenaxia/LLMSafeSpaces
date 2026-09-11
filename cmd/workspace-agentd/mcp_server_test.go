@@ -598,6 +598,14 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 		// never publicly resolvable (review finding: this shape passed
 		// the suffix checks and would have been relayed).
 		"http://llmsafespaces-api:8080",
+		// RFC 6761 *.localhost — browsers resolve the whole special-use
+		// domain to loopback; as internal as localhost itself (round-2
+		// review finding).
+		"http://api.localhost:8080",
+		// Trailing-DNS-dot forms of internal names — the FQDN terminus
+		// must not bypass the suffix checks.
+		"http://llmsafespaces-api.llmsafespaces.svc.cluster.local.:8080",
+		"http://localhost.:8080",
 		"http://localhost:8080",
 		"http://127.0.0.1:8080",
 		"http://10.69.2.225:8080",
