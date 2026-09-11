@@ -54,3 +54,7 @@ Replace the symlink equality with the copy-contract pins, deliberately NOT byte-
 - `local/us-70-secret-delivery-e2e.sh`
 - `local/us70_harness_script_test.go` — six executed/structural pins (r1–r4): probe trichotomy, grep normalization, copy-contract strings, case-block execution, guard discipline, seed-decision execution
 - `worklogs/NNNN_2026-09-11_ac1b-row-copy-contract.md` (this file)
+
+## AC-1e scope addition (r5 record)
+
+Unmasked by the AC-1b fix (full-build run 34611591753: delivery + registry + turn all healthy; only the llmsafespaces_ grep missed): **AC-1e was born unsatisfiable** — landed in 75a3f802 (2026-09-10 03:46) with the mock LLM always replying the canned MOCK-TURN-OK, so the grep target could never appear; the row never executed in a green run (AC-1b died earlier in every run since). Fix: the mock parses the request's tools array (function.name + flat name shapes) and echoes the names one per line after the marker — the stated contract (definitions travel in the request); the #1313 V2-steer regression yields the bare marker and fails the row, as designed. AC-1d unaffected (substring grep; marker stays first). Pinned by `TestUS70MockLLM_ToolEchoPins`, which EXECUTES the serve.py echo block EXTRACTED from the script (common-prefix dedent, executed verbatim in python3 against the three shapes — r5: the first draft's inline duplicate was the exact anti-pattern this PR's history outlawed, caught in review).
