@@ -204,7 +204,7 @@ func (s *EvidenceStore) MessagePresence(ctx context.Context, sessionID string, m
 
 // InputPresent reports the live pending truth for the answer path.
 // PendingInputs serves the strict lease seam (#1310 slice B) from the
-// same truth SetState writes — the fake never fails the gather.
+// same truth SetState writes; the fake never fails the gather.
 func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
