@@ -39,6 +39,7 @@ var sessionStateMetrics = struct {
 	customValveEvents      prometheus.Counter
 	reconciled             *prometheus.CounterVec
 	reconcileEvidenceFails prometheus.Counter
+	loopLastRun            *prometheus.GaugeVec
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -103,6 +104,10 @@ var sessionStateMetrics = struct {
 		Name: "llmsafespaces_reconcile_evidence_failures_total",
 		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
 	}),
+	loopLastRun: promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_loop_last_run_timestamp_seconds",
+		Help: "Unix timestamp of each periodic loop's last COMPLETED pass (epic-71 / 0c dead-loop detection: a loop whose last-run goes stale has died silently — every periodic loop [ledger sweep/leases/parked-error sweeper] exports this gauge with its own `loop` label; alerting is gated until L3/L4 are green per the wave plan).",
+	}, []string{"loop"}),
 }
 
 // reconcileLast carries the last cumulative reconcile counters so the
@@ -243,6 +248,7 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 			return
 		case <-ticker.C:
 			rec := a.Reconcile(ctx)
+			sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog").Set(float64(time.Now().Unix()))
 			if rec.EvidenceFailures > 0 {
 				log.Warn("agentd: sessionstate reconcile — store evidence read failed (rows untouched, retrying next pass)",
 					zap.Int("evidenceFailures", rec.EvidenceFailures))

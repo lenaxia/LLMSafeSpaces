@@ -129,6 +129,10 @@ func TestSessionStateWatchdog_EndToEnd(t *testing.T) {
 		return testutil.ToFloat64(sessionStateMetrics.stalledEntries) == 1 &&
 			testutil.ToFloat64(sessionStateMetrics.wakeFailures) >= 1
 	}, 3*time.Second, 10*time.Millisecond, "the loop stalls the row, counts the failed wake, refreshes gauges")
+	// epic-71 / 0c: the loop's last-run gauge is set on EVERY pass — a
+	// dead watchdog must be detectable from the scrape surface (staleness
+	// alerting rides this; alerts themselves are gated per the wave plan).
+	assert.Greater(t, testutil.ToFloat64(sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog")), 0.0, "loop liveness stamped")
 	assert.True(t, wakeFailed, "the configured wake fired")
 	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.ledgerDepth.WithLabelValues(wsID, "stalled")),
 		"the funnel gauge carries the stalled state")
@@ -160,6 +164,7 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 		"llmsafespaces_sessionstate_parser_failures",
 		"llmsafespaces_sessionstate_panics_contained",
 		"llmsafespaces_sessionstate_subscribers",
+		"llmsafespaces_loop_last_run_timestamp_seconds",
 	} {
 		assert.Contains(t, string(body), name, "metric scrapes")
 	}
