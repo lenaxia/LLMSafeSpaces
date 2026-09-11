@@ -58,6 +58,10 @@ func (s seedStore) SessionStates(ctx context.Context) (map[string]sessionstate.S
 	return out, nil
 }
 
+func (s seedStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func statusEvent(sid string, st abiv1.SessionStatus) *abiv1.Event {
 	return &abiv1.Event{Type: abiv1.EventType_EVENT_TYPE_SESSION_STATUS, SessionId: sid, Status: st}
 }

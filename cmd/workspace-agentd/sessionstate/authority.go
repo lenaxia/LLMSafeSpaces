@@ -63,10 +63,14 @@ type EventParser interface {
 }
 
 // StoreReader snapshots the harness store's session truth — the reseed
-// source (I3/I4). Implementations must respect ctx deadlines; a hung store
-// must surface as ctx error, never block forever.
+// source (I3/I4) and the reconcile pass's evidence (#1311). Implementations
+// must respect ctx deadlines; a hung store must surface as ctx error, never
+// block forever. MessagePresence answers which of the given message IDs the
+// store currently holds; an error means NO evidence (the caller must treat
+// the session's rows as unverifiable this pass — never as absent).
 type StoreReader interface {
 	SessionStates(ctx context.Context) (map[string]SessionSeed, error)
+	MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error)
 }
 
 // RateLimitConfig bounds per-session mutating-op rates (I8).
@@ -161,6 +165,15 @@ type Authority struct {
 	parserFailures    int64
 	panicsContained   atomic.Int64 // no lock: the reseed flush parses UNDER a.mu; reads go through .Load()
 	customValveEvents int64
+	// Cumulative #1311 reconcile outcomes (Metrics bridge; a.mu-guarded).
+	reconPromoted int64
+	// reconcileTimeoutVal bounds one reconcile pass's evidence I/O
+	// (a.mu-guarded; accessor reconcileTimeout).
+	reconcileTimeoutVal time.Duration
+	reconTurnEnded      int64
+	reconFailed         int64
+	reconBusyCleared    int64
+	reconEvidenceFails  int64
 }
 
 // New constructs the authority and loads the durable seq cursor from
@@ -203,15 +216,16 @@ func New(cfg Config) (*Authority, error) {
 		cfg.ABIVersion = "1"
 	}
 	a := &Authority{
-		cfg:          cfg,
-		logger:       logger,
-		seq:          cursor.last(),
-		sessions:     map[string]*sessionRecord{},
-		subs:         map[*subscriber]struct{}{},
-		cursor:       cursor,
-		limiter:      newSessionLimiter(cfg.RateLimit),
-		ledger:       ledger,
-		sessionLocks: map[string]*sync.Mutex{},
+		cfg:                 cfg,
+		logger:              logger,
+		seq:                 cursor.last(),
+		sessions:            map[string]*sessionRecord{},
+		subs:                map[*subscriber]struct{}{},
+		cursor:              cursor,
+		limiter:             newSessionLimiter(cfg.RateLimit),
+		ledger:              ledger,
+		sessionLocks:        map[string]*sync.Mutex{},
+		reconcileTimeoutVal: defaultReconcileTimeout,
 	}
 	if cfg.Admitter != nil {
 		// The driver joins the authority's per-session single-flight —
@@ -341,6 +355,10 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	if a.cfg.Store == nil {
 		return ErrNoStore
 	}
+	// Freshness clock BEFORE the evidence read (review r2-1 — same rule
+	// as the cadence pass): a busy-fold landing during the store read
+	// must postdate the sweep's stamp.
+	seqAtEvidence := a.currentSeq()
 	seeds, err := a.cfg.Store.SessionStates(ctx)
 	if err != nil {
 		return fmt.Errorf("sessionstate: store read during reseed: %w", err)
@@ -350,6 +368,19 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	a.buffering = true
 	a.mu.Unlock()
 	// quiesce point: everything ingested from here on buffers.
+
+	// #1311: the ledger joins the reseed. Stranded rows are reconciled
+	// against the store evidence BEFORE the projection swap, so the first
+	// post-reseed snapshot serves converged queueDepth/status — deploying
+	// this auto-heals every currently-wedged session with no operator
+	// action. Evidence I/O stays outside a.mu (M3.1) and carries the SAME
+	// pass deadline the cadence path has (r3-2): a hung store must not
+	// wedge the reseed — the sweep gives up, rows retry next pass.
+	if a.ledger != nil {
+		sweepCtx, sweepCancel := context.WithTimeout(ctx, a.reconcileTimeout())
+		a.sweepAgainstEvidence(sweepCtx, seeds, seqAtEvidence)
+		sweepCancel()
+	}
 
 	flush := func() {
 		a.mu.Lock()
@@ -513,6 +544,14 @@ type Metrics struct {
 	// OldestPromotionStallSeconds is the age of the oldest
 	// admitted-unpromoted row (0 when none).
 	OldestPromotionStallSeconds float64
+	// Reconcile counts are the cumulative #1311 sweep outcomes (S7's
+	// observable surface) plus evidence-read failures (rows left
+	// untouched, retried next pass).
+	ReconcilePromoted      int64
+	ReconcileTurnEnded     int64
+	ReconcileFailed        int64
+	ReconcileBusyCleared   int64
+	ReconcileEvidenceFails int64
 }
 
 func (a *Authority) Metrics() Metrics {
@@ -535,6 +574,11 @@ func (a *Authority) Metrics() Metrics {
 		m.StalledEntries = a.ledger.stalledCount()
 		m.OldestPromotionStallSeconds = a.ledger.oldestAdmittedAge(time.Now())
 	}
+	m.ReconcilePromoted = a.reconPromoted
+	m.ReconcileTurnEnded = a.reconTurnEnded
+	m.ReconcileFailed = a.reconFailed
+	m.ReconcileBusyCleared = a.reconBusyCleared
+	m.ReconcileEvidenceFails = a.reconEvidenceFails
 	return m
 }
 
@@ -621,6 +665,17 @@ func (a *Authority) SetStallDeadlineForTest(d time.Duration) {
 	if a.ledger != nil {
 		a.ledger.mu.Lock()
 		a.ledger.deadline = d
+		a.ledger.mu.Unlock()
+	}
+}
+
+// SetAdmissionDeadlineForTest reshapes the LEDGERED admission deadline
+// (#1311's fault-injection harness: a negative value makes rows instantly
+// past-deadline without sleeping the real 1m window).
+func (a *Authority) SetAdmissionDeadlineForTest(d time.Duration) {
+	if a.ledger != nil {
+		a.ledger.mu.Lock()
+		a.ledger.admissionDeadline = d
 		a.ledger.mu.Unlock()
 	}
 }

@@ -26,17 +26,28 @@ type SessionView struct {
 	PendingInputs []*abiv1.InputRequest
 }
 
-// sessionView is the internal mutable projection record.
+// sessionView is the internal mutable projection record. lastBusySeq is
+// the seq of the event that last marked the session busy — the freshness
+// gate for #1311's evidence-driven busy-clear (a busy-mark newer than the
+// evidence read survives the pass).
 type sessionRecord struct {
-	status  abiv1.SessionStatus
-	busy    bool
-	title   string
-	inFly   []*abiv1.Part
-	pending map[string]*abiv1.InputRequest
+	status      abiv1.SessionStatus
+	busy        bool
+	title       string
+	inFly       []*abiv1.Part
+	pending     map[string]*abiv1.InputRequest
+	lastBusySeq uint64
 }
 
 func newSessionRecord(status abiv1.SessionStatus) *sessionRecord {
 	return &sessionRecord{status: status, pending: map[string]*abiv1.InputRequest{}}
+}
+
+// markBusy stamps the busy flag with the marking event's seq (the
+// evidence-freshness gate for the reconcile busy-clear).
+func (r *sessionRecord) markBusy(seq uint64) {
+	r.busy = true
+	r.lastBusySeq = seq
 }
 
 // view returns a PRIVATE copy: views (and the snapshots built from them)
@@ -88,7 +99,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		rec.status = evt.Status
 		switch evt.Status {
 		case abiv1.SessionStatus_SESSION_STATUS_BUSY:
-			rec.busy = true
+			rec.markBusy(a.seq)
 		case abiv1.SessionStatus_SESSION_STATUS_IDLE:
 			rec.busy = false
 			rec.inFly = nil
@@ -112,7 +123,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 			// on the adapter path (I12 stitch by ID).
 		}
 	case abiv1.EventType_EVENT_TYPE_MESSAGE_START:
-		rec.busy = true
+		rec.markBusy(a.seq)
 		if m := evt.GetMessage(); m != nil {
 			for _, p := range m.GetParts() {
 				a.upsertPartLocked(rec, p)
@@ -127,7 +138,7 @@ func (a *Authority) applyContractLocked(evt *abiv1.Event) {
 		// The turn ends when the status says so; MESSAGE_END alone keeps
 		// parts renderable (completed, in place).
 	case abiv1.EventType_EVENT_TYPE_PART_START:
-		rec.busy = true
+		rec.markBusy(a.seq)
 		if p := evt.GetPart(); p != nil {
 			a.upsertPartLocked(rec, p)
 		}

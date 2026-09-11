@@ -102,6 +102,11 @@ message SessionSnapshot {
   string session_id = 1;
   SessionStatus status = 2;
   repeated Part in_flight_parts = 3;
+  // queue_depth is ADMISSION-INTERNAL (#1311 disposition): the authority's
+  // unresolved delivery-admission count (ledgered ∪ admitted ∪ stalled),
+  // converged against store evidence by the reconcile sweep. It is NOT the
+  // user-facing message queue — the outbox owns that (#1312 ownership
+  // table); frontends must not render it as a send queue.
   int32 queue_depth = 4;
   repeated InputRequest pending_inputs = 5;
 }

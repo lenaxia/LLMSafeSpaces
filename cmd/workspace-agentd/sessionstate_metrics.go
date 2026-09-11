@@ -24,19 +24,21 @@ import (
 )
 
 var sessionStateMetrics = struct {
-	seqStall          *prometheus.GaugeVec
-	ledgerDepth       *prometheus.GaugeVec
-	stalledEntries    prometheus.Gauge
-	promotionStall    *prometheus.GaugeVec
-	snapshotSize      prometheus.Histogram
-	snapshotLatency   prometheus.Histogram
-	deliveryLatency   prometheus.Histogram
-	wakeFailures      prometheus.Counter
-	droppedEvents     prometheus.Gauge
-	parserFailures    prometheus.Gauge
-	panicsContained   prometheus.Gauge
-	subscribers       prometheus.Gauge
-	customValveEvents prometheus.Counter
+	seqStall               *prometheus.GaugeVec
+	ledgerDepth            *prometheus.GaugeVec
+	stalledEntries         prometheus.Gauge
+	promotionStall         *prometheus.GaugeVec
+	snapshotSize           prometheus.Histogram
+	snapshotLatency        prometheus.Histogram
+	deliveryLatency        prometheus.Histogram
+	wakeFailures           prometheus.Counter
+	droppedEvents          prometheus.Gauge
+	parserFailures         prometheus.Gauge
+	panicsContained        prometheus.Gauge
+	subscribers            prometheus.Gauge
+	customValveEvents      prometheus.Counter
+	reconciled             *prometheus.CounterVec
+	reconcileEvidenceFails prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -93,6 +95,61 @@ var sessionStateMetrics = struct {
 		Name: "llmsafespaces_custom_valve_events_total",
 		Help: "Custom (PART_TYPE_CUSTOM) part applications folded into the projection — the unknown-taxonomy drift signal's agentd successor (US-69.11): growth means extension kinds the pinned taxonomy does not name are flowing through the valve.",
 	}),
+	reconciled: promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmsafespaces_ledger_reconciled_total",
+		Help: "Delivery-ledger rows converged by the #1311 store-evidence sweep (outcome: promoted | turn_ended | failed | busy_cleared) — S7's observable surface.",
+	}, []string{"outcome"}),
+	reconcileEvidenceFails: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_reconcile_evidence_failures_total",
+		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
+	}),
+}
+
+// reconcileLast carries the last cumulative reconcile counters so the
+// Prometheus counters advance by DELTAS (r2-2): boot/reseed-embedded
+// sweeps record into the cumulative Metrics() counters only — the wiring
+// bridge (recordSessionStateMetrics) is the single export path, so every
+// sweep outcome (cadence pass AND the reseed-embedded boot heal) reaches
+// the scrape surface. A monotonicity break (authority recreated) resets
+// the baseline.
+var reconcileLast = struct {
+	mu sync.Mutex
+	m  map[string]*sessionstate.Metrics
+}{m: map[string]*sessionstate.Metrics{}}
+
+func reconcileDeltas(workspaceID string, m *sessionstate.Metrics) (promoted, turnEnded, failed, busyCleared, evidenceFails float64) {
+	reconcileLast.mu.Lock()
+	defer reconcileLast.mu.Unlock()
+	prev, seen := reconcileLast.m[workspaceID]
+	if !seen || m.ReconcilePromoted < prev.ReconcilePromoted {
+		reconcileLast.m[workspaceID] = &sessionstate.Metrics{
+			ReconcilePromoted:      m.ReconcilePromoted,
+			ReconcileTurnEnded:     m.ReconcileTurnEnded,
+			ReconcileFailed:        m.ReconcileFailed,
+			ReconcileBusyCleared:   m.ReconcileBusyCleared,
+			ReconcileEvidenceFails: m.ReconcileEvidenceFails,
+		}
+		if seen {
+			return 0, 0, 0, 0, 0 // baseline reset after authority recreation
+		}
+		// First scrape carries the full cumulative (customValveDelta's
+		// convention): outcomes that predate the watchdog's first tick —
+		// the boot-heal sweep — still reach the series.
+		return float64(m.ReconcilePromoted), float64(m.ReconcileTurnEnded), float64(m.ReconcileFailed), float64(m.ReconcileBusyCleared), float64(m.ReconcileEvidenceFails)
+	}
+	promoted = float64(m.ReconcilePromoted - prev.ReconcilePromoted)
+	turnEnded = float64(m.ReconcileTurnEnded - prev.ReconcileTurnEnded)
+	failed = float64(m.ReconcileFailed - prev.ReconcileFailed)
+	busyCleared = float64(m.ReconcileBusyCleared - prev.ReconcileBusyCleared)
+	evidenceFails = float64(m.ReconcileEvidenceFails - prev.ReconcileEvidenceFails)
+	reconcileLast.m[workspaceID] = &sessionstate.Metrics{
+		ReconcilePromoted:      m.ReconcilePromoted,
+		ReconcileTurnEnded:     m.ReconcileTurnEnded,
+		ReconcileFailed:        m.ReconcileFailed,
+		ReconcileBusyCleared:   m.ReconcileBusyCleared,
+		ReconcileEvidenceFails: m.ReconcileEvidenceFails,
+	}
+	return promoted, turnEnded, failed, busyCleared, evidenceFails
 }
 
 // customValveLast carries the last cumulative per-workspace snapshot so
@@ -139,6 +196,26 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	if d := customValveDelta(workspaceID, m.CustomValveEvents); d > 0 {
 		sessionStateMetrics.customValveEvents.Add(float64(d))
 	}
+	// r2-2: the single Prometheus export for reconcile outcomes — deltas
+	// of the cumulative counters, so reseed-embedded sweeps (which never
+	// pass through this loop's own Reconcile return) are counted too.
+	if p, te, f, bc, ev := reconcileDeltas(workspaceID, &m); p+te+f+bc+ev > 0 {
+		if p > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("promoted").Add(p)
+		}
+		if te > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("turn_ended").Add(te)
+		}
+		if f > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("failed").Add(f)
+		}
+		if bc > 0 {
+			sessionStateMetrics.reconciled.WithLabelValues("busy_cleared").Add(bc)
+		}
+		if ev > 0 {
+			sessionStateMetrics.reconcileEvidenceFails.Add(ev)
+		}
+	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.
 	for state, n := range m.LedgerDepths {
@@ -146,11 +223,14 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	}
 }
 
-// runSessionStateWatchdog drives the stall detector + gauge refresh: one
-// pass per interval (production: 1m — the promotion deadline is 10m, so
-// the cadence sees a stall within ~1m of crossing it; tests shrink it).
-// Wake failures increment the counter per errored attempt (the
-// escalation signal).
+// runSessionStateWatchdog drives the ledger convergence pass + stall
+// detector + gauge refresh: one pass per interval (production:
+// sessionstate.ReconcileCadence — half the 30s lease-convergence bound, so
+// one missed tick still converges inside L4/L5; tests shrink it). Wake
+// failures increment the counter per errored attempt (the escalation
+// signal). The reconcile pass is store-evidence-driven (#1311): stranded
+// rows sweep, BUSY re-derives from harness truth, evidence failures are
+// visible and never authoritative.
 func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *sessionstate.Authority, every time.Duration) {
 	if a == nil {
 		return
@@ -162,6 +242,20 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			rec := a.Reconcile(ctx)
+			if rec.EvidenceFailures > 0 {
+				log.Warn("agentd: sessionstate reconcile — store evidence read failed (rows untouched, retrying next pass)",
+					zap.Int("evidenceFailures", rec.EvidenceFailures))
+			}
+			if advanced := rec.Promoted + rec.TurnEnded + rec.Failed + rec.BusyCleared; advanced > 0 {
+				log.Info("agentd: sessionstate reconcile — converged stranded state",
+					zap.Int("promoted", rec.Promoted), zap.Int("turnEnded", rec.TurnEnded),
+					zap.Int("failed", rec.Failed), zap.Int("busyCleared", rec.BusyCleared))
+			}
+			// Counter export rides recordSessionStateMetrics' delta
+			// bridge below — the SINGLE export path, so reseed-embedded
+			// sweeps (whose outcomes never appear in this loop's return)
+			// are counted identically (r2-2).
 			stats := a.CheckStalls(ctx)
 			if stats.WakeFailures > 0 {
 				sessionStateMetrics.wakeFailures.Add(float64(stats.WakeFailures))

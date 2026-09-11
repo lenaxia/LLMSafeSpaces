@@ -114,6 +114,8 @@ type deliveryLedger struct {
 	nextSeq  uint64
 	rows     map[ledgerKey]*ledgerRecord
 	deadline time.Duration
+	// admissionDeadline bounds LEDGERED rows (#1311 deadlines-on-every-state).
+	admissionDeadline time.Duration
 }
 
 func openDeliveryLedger(path string) (*deliveryLedger, error) {
@@ -125,6 +127,10 @@ func openDeliveryLedger(path string) (*deliveryLedger, error) {
 		nextSeq:  1,
 		rows:     map[ledgerKey]*ledgerRecord{},
 		deadline: defaultPromotionDeadline,
+		// #1311: every ledger state gets a bound — LEDGERED's is the
+		// admission deadline (retry envelope ~6s + boot replay; the
+		// reconcile sweep fails rows past it, re-armable at attempt+1).
+		admissionDeadline: defaultAdmissionDeadline,
 	}
 	created := false
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -448,6 +454,112 @@ func (l *deliveryLedger) queueDepth(sessionID string) int {
 	return n
 }
 
+// unresolvedSessions snapshots the session IDs holding non-terminal rows
+// (#1311: the sweep's work list — the rows themselves are re-read per
+// session under the session lock). PROMOTED/TURN_ENDED/FAILED are resolved.
+func (l *deliveryLedger) unresolvedSessions() map[string]struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[string]struct{}{}
+	for _, rec := range l.rows {
+		switch rec.State {
+		case LedgerStateLedgered, LedgerStateAdmitted, LedgerStateStalled:
+			out[rec.SessionID] = struct{}{}
+		}
+	}
+	return out
+}
+
+// rowsForSweep copies one session's unresolved rows for evidence matching
+// (the sweep re-reads state under the session lock before advancing).
+func (l *deliveryLedger) rowsForSweep(sessionID string) []ledgerRecord {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []ledgerRecord
+	for _, rec := range l.rows {
+		if rec.SessionID != sessionID {
+			continue
+		}
+		switch rec.State {
+		case LedgerStateLedgered, LedgerStateAdmitted, LedgerStateStalled:
+			out = append(out, *rec)
+		}
+	}
+	return out
+}
+
+// sweepSession applies the #1311 reconciliation matrix to one session's
+// rows in a single ledger critical section (caller holds the session's
+// single-flight lock, so no admission can interleave):
+//
+//	LEDGERED past admissionDeadline + no evidence → FAILED (re-armable)
+//	ADMITTED/STALLED + message present            → PROMOTED
+//	ADMITTED/STALLED + turnEnded                  → TURN_ENDED
+//
+// Evidence discipline (review r1): "no evidence" for a LEDGERED row is the
+// session status — a BUSY store session may be running this row's
+// admission/turn, so the sweep holds; the FAILED transition fires only on
+// the no-evidence arms (idle/ERROR/absent). An ADMITTED/STALLED row whose
+// messageID was NOT queried for this pass's evidence (it appeared after
+// the evidence gather — a live turn landing mid-pass) is never resolved on
+// that evidence; present == nil means "no usable message evidence" and the
+// turn-ended arm still applies. Returns per-outcome advance counts.
+func (l *deliveryLedger) sweepSession(sessionID string, present map[string]bool, queried map[string]bool, turnEnded bool, now time.Time) (promoted, turnEndedN, failed int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, rec := range l.rows {
+		if rec.SessionID != sessionID {
+			continue
+		}
+		switch rec.State {
+		case LedgerStateLedgered:
+			if turnEnded && now.Sub(rec.UpdatedAt) > l.admissionDeadline {
+				rec.State = LedgerStateFailed
+				rec.Failure = "admission deadline exceeded with no admission evidence (store-evidence sweep)"
+				if err := l.advanceSweepLocked(rec); err != nil {
+					l.warnSweepAppend("FAILED", err)
+				} else {
+					failed++
+				}
+			}
+		case LedgerStateAdmitted, LedgerStateStalled:
+			if rec.MessageID != "" && !queried[rec.MessageID] {
+				continue // landed after this pass's evidence gather
+			}
+			if present[rec.MessageID] {
+				rec.State = LedgerStatePromoted
+				if err := l.advanceSweepLocked(rec); err != nil {
+					l.warnSweepAppend("PROMOTED", err)
+				} else {
+					promoted++
+				}
+			} else if turnEnded {
+				rec.State = LedgerStateTurnEnded
+				if err := l.advanceSweepLocked(rec); err != nil {
+					l.warnSweepAppend("TURN_ENDED", err)
+				} else {
+					turnEndedN++
+				}
+			}
+		}
+	}
+	return promoted, turnEndedN, failed
+}
+
+// advanceSweepLocked stamps + persists one sweep transition (mu held).
+func (l *deliveryLedger) advanceSweepLocked(rec *ledgerRecord) error {
+	rec.Seq = l.nextSeq
+	l.nextSeq++
+	rec.UpdatedAt = time.Now().UTC()
+	return l.appendSyncLocked(rec)
+}
+
+func (l *deliveryLedger) warnSweepAppend(outcome string, err error) {
+	if lg := logger(); lg != nil {
+		lg.Warn("sessionstate ledger: sweep "+outcome+" append failed", zap.Error(err))
+	}
+}
+
 // compact rewrites the WAL dropping terminal rows (turn-ended/failed)
 // older than retention. The format header is preserved (uncompactable);
 // in-retention terminal outcomes survive. Outcomes' retention is
@@ -691,7 +803,10 @@ func (d *deliveryDriver) replayUnresolved(ctx context.Context) {
 
 // observeEvent consumes the authority's own contract events for
 // promotion correlation: a message event carrying an admitted row's
-// messageID promotes it (I12 stitch by ID).
+// messageID promotes it (I12 stitch by ID), and a session-idle event
+// turn-ends the session's live rows (#1311: the event path for
+// PROMOTED→TURN_ENDED — previously observeTurnEnded had no production
+// caller, so promoted rows never terminated on the turn boundary).
 func (d *deliveryDriver) observeEvent(evt *abiv1.Event) {
 	if evt == nil {
 		return
@@ -714,6 +829,10 @@ func (d *deliveryDriver) observeEvent(evt *abiv1.Event) {
 		d.ledger.mu.Unlock()
 		for _, key := range keys {
 			_ = d.ledger.markPromoted(key.EntryID, key.Attempt, mid)
+		}
+	case abiv1.EventType_EVENT_TYPE_SESSION_STATUS:
+		if evt.GetStatus() == abiv1.SessionStatus_SESSION_STATUS_IDLE && evt.GetSessionId() != "" {
+			d.observeTurnEnded(evt.GetSessionId())
 		}
 	}
 }

@@ -217,9 +217,11 @@ func main() {
 	proc := startManagedProcess(supervise, sseTracker, stateAuthority)
 	if stateAuthority != nil {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
-		// US-69.12: the stall watchdog + metric refresh (seq stall, ledger
-		// funnel, promotion stall; wake failures escalate via alerts).
-		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority, time.Minute)
+		// US-69.12 + #1311: the convergence watchdog — store-evidence
+		// ledger sweep + stall detection + metric refresh (seq stall,
+		// ledger funnel, promotion stall; wake failures escalate via
+		// alerts). Cadence: half the 30s lease-convergence bound.
+		go runSessionStateWatchdog(bgCtx, os.Getenv("WORKSPACE_ID"), stateAuthority, sessionstate.ReconcileCadence)
 	}
 
 	startedAt := time.Now()

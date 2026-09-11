@@ -17,8 +17,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,6 +102,78 @@ func fetchList[T any](ctx context.Context, client *OpenCodeClient, path string, 
 		}
 	}
 	return out
+}
+
+// Message-evidence paging bounds (#1311): the V1 list is newest-first with
+// X-Next-Cursor pagination. 50/page × 40 pages = 2000 messages — a stranded
+// admitted row's assistant message is recent in practice; a row deeper than
+// the budget yields "no evidence" (error), never a false absence.
+const (
+	messageEvidencePageSize   = 50
+	messageEvidencePageBudget = 40
+)
+
+// MessagePresence answers which of the given message IDs the harness store
+// currently holds for a session — the #1311 reconcile pass's promotion
+// evidence. Absence is only proven when the cursor exhausts (the
+// verifydelivery rule); a page-budget overrun or transport error returns
+// an error, which the sweep treats as NO evidence (rows untouched or
+// status-evidence-only), never as absent.
+func (r opencodeStoreReader) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	present := make(map[string]bool, len(messageIDs))
+	if len(messageIDs) == 0 {
+		return present, nil
+	}
+	want := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		want[id] = struct{}{}
+	}
+	// Pre-seed every queried ID as absent so the returned map is
+	// self-describing (each queried ID present with its verdict).
+	for _, id := range messageIDs {
+		present[id] = false
+	}
+	cursor := ""
+	found := 0
+	for page := 0; page < messageEvidencePageBudget; page++ {
+		path := "/session/" + sessionID + "/message?limit=" + strconv.Itoa(messageEvidencePageSize)
+		if cursor != "" {
+			path += "&before=" + url.QueryEscape(cursor)
+		}
+		resp, err := r.client.doRequest(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: %w", path, err)
+		}
+		if resp.StatusCode >= 400 {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("GET %s: status %d", path, resp.StatusCode)
+		}
+		var msgs []struct {
+			Info struct {
+				ID string `json:"id"`
+			} `json:"info"`
+		}
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&msgs)
+		next := resp.Header.Get("X-Next-Cursor")
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("GET %s: decode: %w", path, decodeErr)
+		}
+		for _, m := range msgs {
+			if _, ok := want[m.Info.ID]; ok && !present[m.Info.ID] {
+				present[m.Info.ID] = true
+				found++
+			}
+		}
+		if found == len(want) {
+			return present, nil
+		}
+		if next == "" {
+			return present, nil // history exhausted — absence proven
+		}
+		cursor = next
+	}
+	return nil, fmt.Errorf("message evidence page budget exhausted for session %s — absence unproven", sessionID)
 }
 
 func questionToABI(q *agent.QuestionRequest) *abiv1.InputRequest {
@@ -193,7 +267,10 @@ func newStateAuthority(client *OpenCodeClient, password, controlPlanePassword st
 
 // startStateAuthorityReseed drives the boot reseed: opencode may not be
 // reachable yet, so retry with backoff until the first success. Generation
-// changes reseed through the same serialized path.
+// changes reseed through the same serialized path. After the first success
+// the crash-window ledger replay runs (#1311: ReplayUnresolvedDeliveries
+// had no production caller — accepted-but-unadmitted rows never re-drove
+// admission after an agentd restart).
 func startStateAuthorityReseed(ctx context.Context, a *sessionstate.Authority, reason sessionstate.ReseedReason) {
 	if a == nil {
 		return
@@ -206,6 +283,7 @@ func startStateAuthorityReseed(ctx context.Context, a *sessionstate.Authority, r
 				return
 			}
 			if err := a.Reseed(ctx, reason); err == nil {
+				a.ReplayUnresolvedDeliveries(ctx)
 				return
 			} else if ctx.Err() == nil {
 				log.Debug("sessionstate: boot reseed retry", zap.Error(err))
