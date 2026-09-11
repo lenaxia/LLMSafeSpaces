@@ -125,11 +125,15 @@ func TestInstantAdmitter_DistinctIDsAndNilOut(t *testing.T) {
 // the round-2 contract change (deleting that branch passes everything
 // else; this is the test that catches it).
 func TestWaitConverges_PostDeadlineSuccessIsBreach(t *testing.T) {
+	// Geometry (review-verified both directions): fn flips exactly AT
+	// the deadline, so the first post-deadline poll observes fn==true
+	// and takes the post-deadline-success branch — deleting that branch
+	// returns ok=true and fails this test.
 	bound := 60 * time.Millisecond
-	flipAt := time.Now().Add(bound + 20*time.Millisecond)
+	deadline := time.Now().Add(bound)
 	elapsed, ok := WaitConverges(context.Background(), bound, 2*time.Millisecond, func() bool {
-		return time.Now().After(flipAt)
+		return !time.Now().Before(deadline)
 	})
 	require.False(t, ok, "a success observed past the deadline is a breach, not a convergence")
-	assert.Greater(t, elapsed, bound, "the elapsed span evidences the breach")
+	assert.GreaterOrEqual(t, elapsed, bound, "the elapsed span evidences the breach")
 }

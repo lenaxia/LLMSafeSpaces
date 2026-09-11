@@ -107,3 +107,15 @@ Counts at this revision: 14 test functions (4 rows + 10 engine/fake contract tes
 
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
 - `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
+
+---
+
+## Review round 4 remediation (2026-09-11, PR #1337)
+
+- **The pin now discriminates, provably:** the reviewer's deadline-edge geometry (fn flips exactly AT the deadline; the first post-deadline poll observes fn==true and takes the branch). Injection-validated both directions in this session: with the post-deadline branch deleted the pin FAILS; restored, the full suite is green. The prior geometry (flip +20ms past a loop that exits at the deadline) took the false-path exit — outcome-equivalent, branch-blind; the reviewer was right.
+
+## Tests Run (round 4)
+
+- `go test -race -count=3 -run TestWaitConverges_PostDeadlineSuccessIsBreach` — ok (stable across repeats)
+- Injection check: branch deleted → pin FAILS; restored → full package `-race` ok
+- `golangci-lint` — 0 issues
