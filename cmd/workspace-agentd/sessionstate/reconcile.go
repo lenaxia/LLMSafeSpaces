@@ -71,6 +71,10 @@ type ReconcileStats struct {
 	// were left untouched (never an authoritative empty) and retry on the
 	// next pass.
 	EvidenceFailures int
+	// LeaseResolved/LeaseAppeared: #1310 slice B pending-lease diff
+	// outcomes (asks resolved by absence; asks appeared from live truth).
+	LeaseResolved int
+	LeaseAppeared int
 }
 
 // Reconcile runs one store-evidence convergence pass over the ledger and
@@ -91,15 +95,24 @@ func (a *Authority) Reconcile(ctx context.Context) ReconcileStats {
 // reconcileLocked is Reconcile's core; reseedMu must be held (Reseed calls
 // it with seeds it already read).
 func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
-	if a.ledger == nil || a.cfg.Store == nil {
+	if a.cfg.Store == nil {
 		return ReconcileStats{}
 	}
-	rows := a.ledger.unresolvedSessions()
+	var rows map[string]struct{}
+	if a.ledger != nil {
+		rows = a.ledger.unresolvedSessions()
+	}
 	busy := a.busySessions()
+	pending := a.pendingSessions()
+	known := a.knownSessionCount()
 
-	// Cheap no-op: nothing unresolved, nothing wedged busy. The pass must
-	// stay pod-local-free when there is nothing to converge.
-	if len(rows) == 0 && len(busy) == 0 {
+	// Cheap no-op gate: no ledger rows, no wedged busy, no projected asks,
+	// and no known sessions at all. Known sessions keep the pass on the
+	// cadence even from a fully idle projection — status-event loss in the
+	// harness→idle→busy direction has no projection-side signal (#1310
+	// slice B's L4 leg); the gather IS the slow cadence the lease model
+	// prescribes, and it stays pod-local.
+	if len(rows) == 0 && len(busy) == 0 && len(pending) == 0 && known == 0 {
 		return ReconcileStats{}
 	}
 
@@ -116,7 +129,37 @@ func (a *Authority) reconcileLocked(ctx context.Context) ReconcileStats {
 		a.recordReconcile(stats)
 		return stats
 	}
-	return a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
+	var stats ReconcileStats
+	if a.ledger != nil {
+		stats = a.sweepAgainstEvidence(ctx, seeds, seqAtEvidence)
+	}
+	a.rederiveStatuses(seeds)
+	if ctx.Err() != nil {
+		// The sweep already returned partial stats; running the lease
+		// diff against a dead context would only classify the
+		// cancellation itself as a gather failure on the scrape (r4).
+		a.recordReconcile(stats)
+		return stats
+	}
+	r, ap, lerr := a.diffPendingLeases(ctx)
+	stats.LeaseResolved, stats.LeaseAppeared = r, ap
+	a.mu.Lock()
+	a.leaseResolvedCum += int64(r)
+	a.leaseAppearedCum += int64(ap)
+	a.mu.Unlock()
+	if lerr != nil {
+		// Same observable-surface discipline as evidence failures: a
+		// failed pending gather bumps the counter and the watchdog log,
+		// never just an inline line (r2 finding: the discarded error).
+		stats.EvidenceFailures++
+	}
+	// Recorded HERE, with the complete stats (ledger sweep + lease diff
+	// + failures): sweepAgainstEvidence no longer records on its own, so
+	// lease outcomes and gather failures reach the exported counters
+	// even on ledger-less authorities (r3 finding 1) — and a canceled
+	// sweep's partial outcomes still record.
+	a.recordReconcile(stats)
+	return stats
 }
 
 // sweepAgainstEvidence applies the reconciliation matrix per session:
@@ -153,9 +196,9 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 
 	for _, sid := range ordered {
 		if ctx.Err() != nil {
-			// A canceled pass still records what DID happen — the
-			// cumulative counters must match the returned stats.
-			a.recordReconcile(stats)
+			// A canceled pass returns partial stats; reconcileLocked
+			// records them with the lease outcomes attached (r3: the
+			// single recording point is the pass end).
 			return stats
 		}
 		seed, inStore := seeds[sid]
@@ -214,9 +257,8 @@ func (a *Authority) sweepAgainstEvidence(ctx context.Context, seeds map[string]S
 			stats.BusyCleared += a.clearBusyFromEvidence(sid, evStatus, seqAtEvidence)
 		}
 	}
-	// Single recording site: every sweep's outcomes (cadence pass AND the
-	// reseed-embedded boot heal) land in the cumulative Metrics counters.
-	a.recordReconcile(stats)
+	// The pass end (reconcileLocked) is the single recording site —
+	// cadence passes AND reseed-embedded sweeps flow through it.
 	return stats
 }
 

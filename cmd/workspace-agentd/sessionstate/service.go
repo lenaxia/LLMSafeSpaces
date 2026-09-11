@@ -87,6 +87,10 @@ func (a *Authority) GetSnapshot(ctx context.Context, req *connect.Request[abiv1.
 	if sid == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errText("session_id is required"))
 	}
+	// #1310 slice B: a serve is a lease refresh (browser refresh is
+	// exactly when humans notice staleness). One gather, pod-local;
+	// failure serves the projection degraded.
+	a.refreshSessionLeaseOnServe(ctx, sid)
 	a.mu.Lock()
 	rec := a.sessions[sid]
 	var snap *abiv1.SessionSnapshot

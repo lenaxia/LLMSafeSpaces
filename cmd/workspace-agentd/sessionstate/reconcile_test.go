@@ -59,6 +59,12 @@ func (s *evidenceStore) MessagePresence(ctx context.Context, sessionID string, m
 	return present, nil
 }
 
+// PendingInputs serves the store's seed pending halves (the lease seam's
+// strict read; this fake never fails it).
+func (s *evidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
 func (s *evidenceStore) setStates(states map[string]abiv1.SessionStatus) {
 	s.mu.Lock()
 	s.states = states
@@ -676,6 +682,10 @@ type hangMessagesStore struct {
 
 func (h *hangMessagesStore) SessionStates(ctx context.Context) (map[string]SessionSeed, error) {
 	return h.inner.SessionStates(ctx)
+}
+
+func (h *hangMessagesStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return h.inner.PendingInputs(ctx)
 }
 
 func (h *hangMessagesStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {

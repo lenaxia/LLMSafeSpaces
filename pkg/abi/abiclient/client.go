@@ -60,10 +60,23 @@ func (s *SessionState) clone() *SessionState {
 	return out
 }
 
-// GetSnapshot fetches one session's authoritative snapshot (I12) — a pure
-// projection read; zero harness calls.
+// GetSnapshot fetches one session's authoritative snapshot (I12) — a
+// projection read plus ONE pod-local lease-refresh gather (#1310: pending
+// asks are leases re-verified on serve; coalesced, TTL-bounded, and
+// degraded-served on failure).
 func (c *Client) GetSnapshot(ctx context.Context, sessionID string) (*abiv1.SessionSnapshot, error) {
 	resp, err := c.svc.GetSnapshot(ctx, connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: sessionID}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// Deliver submits a delivery entry (op 1). Idempotence is "no second
+// row", not "state frozen": a duplicate ack carries the row's CURRENT
+// state (which may have advanced) — the delivery_op_test semantics.
+func (c *Client) Deliver(ctx context.Context, req *abiv1.DeliveryRequest) (*abiv1.DeliveryAck, error) {
+	resp, err := c.svc.Deliver(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

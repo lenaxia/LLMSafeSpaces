@@ -29,6 +29,10 @@ type seedStoreN struct {
 	seeds map[string]SessionSeed
 }
 
+func (s seedStoreN) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
 func (s seedStoreN) SessionStates(ctx context.Context) (map[string]SessionSeed, error) {
 	out := make(map[string]SessionSeed, len(s.seeds))
 	for k, v := range s.seeds {

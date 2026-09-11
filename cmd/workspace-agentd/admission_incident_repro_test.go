@@ -99,6 +99,10 @@ func (h *hungHarness) SessionStates(ctx context.Context) (map[string]sessionstat
 	return nil, nil
 }
 
+func (h *hungHarness) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
 func (h *hungHarness) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
