@@ -157,24 +157,32 @@ secrets_converged "${WS1B}" 120 || die "AC-1b: secretsDelivery not converged"
 POD1B=$(pod_of "${WS1B}")
 [[ -n "${POD1B}" ]] || die "AC-1b: no pod name on CR"
 
-# (3) The XDG registry-layer contract (#1300 fix): the supervisor
-# installs ~/.config/opencode/opencode.json pointing at the config file
-# opencode ACTUALLY reads — verified against the live child's
-# OPENCODE_CONFIG env (topology-dependent: /agentd-config in sidecar
-# mode, /sandbox-runtime single-container; pool run 34066476127 caught
-# a hard-coded sidecar path).
+# (3) The XDG registry-layer contract (#1300 fix, as-built post-#1310:
+#     COPY, not symlink — opencode WRITES to the XDG path (model-selection
+#     persistence), so the 0.27.5 symlink at the read-only /agentd-config
+#     mount broke those writes; the watcher re-copies on sidecar version
+#     changes, commit 1d0e5be1). The pinned relationship is layered, not
+#     byte-equality (opencode's own writes legitimately diverge the
+#     copy): the XDG path is a regular-file copy seeded from the live
+#     config (carries the credential's provider block), the child's
+#     OPENCODE_CONFIG carries it too, and assertion (4) below proves the
+#     registry actually admits the model — the check that caught #1300's
+#     lying view.
 OC_PID=$(kc exec "${POD1B}" -c workspace -- pgrep -f 'opencode serve' | head -1)
 [[ -n "${OC_PID}" ]] || die "AC-1b: opencode process not found"
 OC_CFG=$(kc exec "${POD1B}" -c workspace -- sh -c "tr '\\0' '\\n' < /proc/${OC_PID}/environ | grep '^OPENCODE_CONFIG=' | cut -d= -f2-")
 [[ -n "${OC_CFG}" ]] || die "AC-1b: opencode child has no OPENCODE_CONFIG env"
-XDG_LINK=$(kc exec "${POD1B}" -c workspace -- readlink -f /home/sandbox/.config/opencode/opencode.json 2>/dev/null || true)
-[[ "${XDG_LINK}" == "${OC_CFG}" ]] \
-    || die "AC-1b: XDG registry layer target '${XDG_LINK}' != child OPENCODE_CONFIG '${OC_CFG}'"
-ok "XDG registry-layer symlink matches the child's OPENCODE_CONFIG (→ ${XDG_LINK})"
+XDG_CFG=/home/sandbox/.config/opencode/opencode.json
+XDG_KIND=$(kc exec "${POD1B}" -c workspace -- sh -c "if [ -L '${XDG_CFG}' ]; then echo symlink; elif [ -f '${XDG_CFG}' ]; then echo file; else echo missing; fi")
+[[ "${XDG_KIND}" == "file" ]] \
+    || die "AC-1b: XDG registry layer is '${XDG_KIND}' at ${XDG_CFG} (want a regular-file copy — the copy-not-symlink design of 1d0e5be1/#1310; symlink-era assertions ended there)"
+kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${XDG_CFG}" \
+    || die "AC-1b: XDG copy lacks the ac1b-stub provider block (not seeded from the live config)"
 
 # The rendered config must contain the credential's provider block.
 kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${OC_CFG}" \
     || die "AC-1b: agent-config.json lacks the ac1b-stub provider block"
+ok "XDG registry layer: regular-file copy seeded from the live config (child reads ${OC_CFG})"
 
 # (4) THE REGISTRY: opencode's model.available() via GET /api/model —
 # the endpoint that lied by omission in #1300.
