@@ -101,10 +101,11 @@ export const messagesApi = {
   },
   sendAsync: (workspaceId: string, sessionId: string, req: SendMessageRequest) =>
     api.post<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, req),
-  queueMessage: (workspaceId: string, sessionId: string, text: string, files?: string[]) =>
+  queueMessage: (workspaceId: string, sessionId: string, text: string, files?: string[], clientMessageID?: string) =>
     api.post<{ messageID: string }>(`/workspaces/${workspaceId}/sessions/${sessionId}/queue`, {
       text,
       ...(files && files.length > 0 ? { files } : {}),
+      ...(clientMessageID ? { clientMessageID } : {}),
     }),
   getQueue: async (workspaceId: string, sessionId: string) => {
     const res = await api.get<{ messages: Array<{

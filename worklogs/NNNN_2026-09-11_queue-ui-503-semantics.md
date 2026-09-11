@@ -36,11 +36,17 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 
 ## Tests Run
 
-`npx vitest run src/hooks/useMessageQueue.test.ts` — 20/20 (2 new 503 tests red-first, then green; non-503 behavior pinned unchanged). `src/hooks/useChatStream.test.ts` — 37/37 (new stability pin). `src/pages/ChatPage.queue.test.tsx` — 16/16. `tsc --noEmit` clean.
+`npx vitest run src/hooks/useMessageQueue.test.ts` — 25/25 (r1 additions: pending-pill dismiss-503, network-error reconcile re-add, enqueue-mints-cmid, re-enqueue reuses pill cmid, server-cmid capture; red-first on the two 503 rows). `useChatStream.test.ts` 38/38 (stability pin). Full suite **1795/1795 across 166 files**; `tsc --noEmit` clean. **E2E `queue-resend.spec.ts` (r1): 3/3, repeat-each stable** — retry-503 (pill stays, hint, ZERO re-enqueue POSTs, exactly one retry POST), dismiss-503→204 transition, cmid stability on the wire (real browser, both /prompt bodies carry the same clientMessageID).
+
+## Review r1 deltas
+
+- **Finding 1 (fall-through still minted keyless entries): fixed** — `enqueue(text, files, clientMessageID?)` mints one uuid per composed message and sends it in the /queue body (backend accepts it, proxy_handlers.go:1333); the re-enqueue fall-through reuses the pill's cmid (captured from getQueue for server-known pills, minted at enqueue for local ones) — a re-enqueue whose original actually delivered collapses server-side instead of minting a duplicate turn.
+- **Finding 2 (stale hint outliving delivery with SSE down): accepted trade-off, noted** — with the stream down and refreshQueue retaining error pills, the 503 hint can persist after delivery until a manual dismiss; the queue.update sent-handler clears it on any live connection. Follow-up only if support reports it.
+- Missing cases 1/3/5 + integration/e2e bars: delivered (see Tests Run).
 
 ## Next Steps
 
-- PR → automated review; items 2/4 of #1320 need no change (validated already-correct).
+- PR → r2 review; items 2/4 of #1320 need no change (validated already-correct; r1 reviewer spot-checked and confirmed).
 
 ## Files Modified
 

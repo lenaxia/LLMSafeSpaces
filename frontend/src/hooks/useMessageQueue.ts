@@ -16,6 +16,12 @@ export type QueuedMessage = {
   sessionId: string;
   /** Epic 68: upload paths attached to the queued entry (local re-enqueue only). */
   files?: string[];
+  /** D3/#907 + #1320: one clientMessageID per composed message, stable
+   * across local re-enqueues — the backend's outbox dedupes on it, so a
+   * re-enqueue whose original entry actually delivered collapses instead
+   * of minting a duplicate turn. Captured from the server queue where
+   * present (getQueue returns it), minted at enqueue otherwise. */
+  clientMessageID?: string;
 };
 
 const RESTART_PHASES = ["Creating", "Pending", "Suspending"];
@@ -65,6 +71,9 @@ export function useMessageQueue(
             status: (m.status === "error" ? "error" : "pending") as QueuedMessage["status"],
             error: m.lastError,
             sessionId: m.session_id,
+            // The server's dedupe identity for this entry — a later
+            // local re-enqueue reuses it (#1320).
+            clientMessageID: m.clientMessageID,
           }));
         return [...kept, ...added];
       });
@@ -79,18 +88,22 @@ export function useMessageQueue(
     refreshQueue();
   }, [refreshQueue]);
 
-  const enqueue = useCallback(async (text: string, files?: string[]) => {
+  const enqueue = useCallback(async (text: string, files?: string[], clientMessageID?: string) => {
     if (!workspaceId || !sessionId) return;
+    // D3/#907 + #1320: the cmid is the composed message's dedupe
+    // identity — one per user intent, minted here if absent and REUSED
+    // by every local re-enqueue of the same pill.
+    const cmid = clientMessageID ?? crypto.randomUUID();
     try {
-      const res = await messagesApi.queueMessage(workspaceId, sessionId, text, files);
+      const res = await messagesApi.queueMessage(workspaceId, sessionId, text, files, cmid);
       setQueuedMessages((prev) => [
         ...prev,
-        { id: res.messageID, text, status: "pending", sessionId, files },
+        { id: res.messageID, text, status: "pending", sessionId, files, clientMessageID: cmid },
       ]);
     } catch {
       setQueuedMessages((prev) => [
         ...prev,
-        { id: "err_" + Date.now(), text, status: "error", sessionId, error: "Failed to queue", files },
+        { id: "err_" + Date.now(), text, status: "error", sessionId, error: "Failed to queue", files, clientMessageID: cmid },
       ]);
     }
   }, [workspaceId, sessionId]);
@@ -148,7 +161,10 @@ export function useMessageQueue(
     }
     const msg = queuedMessages.find((m) => m.id === id);
     removeById(id);
-    if (msg) await enqueue(msg.text, msg.files);
+    // Re-enqueue carries the pill's cmid: if the original entry actually
+    // delivered (the lost-outcome case this fall-through exists for),
+    // the backend dedupes instead of minting a second turn (#1320).
+    if (msg) await enqueue(msg.text, msg.files, msg.clientMessageID);
   }, [workspaceId, sessionId, queuedMessages, enqueue, removeById, refreshQueue, markError]);
 
   const dismiss = useCallback(async (id: string) => {
