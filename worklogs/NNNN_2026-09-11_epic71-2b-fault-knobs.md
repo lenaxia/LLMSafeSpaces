@@ -78,9 +78,24 @@ None. Soak row (merge gate) waits on 2a (#1329, in-review).
 - **Dead test block deleted** (probe/`json.Unmarshal` + the `encoding/json` import); the canonical typed-parse-defeat pin remains as its own test.
 - **Comment corrections:** leg-7 doc now states validation/file-part gate precede the record point + the under-`s.mu` invariant; `abiclient.Deliver` doc now carries the delivery_op semantics ("no second row", current state on duplicate — not frozen).
 - **Wall-clock loosen:** the Act-unstalled bound is now relative to the armed delay (150ms) rather than an absolute 100ms.
-- **Counts corrected:** the knob test file now has 12 top-level test functions (15 cases counting subtests).
+- **Counts corrected:** the knob test file has 11 top-level test functions (14 cases counting subtests) at this revision — recount on every edit (r2: the counts had been wrong in every prior revision).
 
 ## Tests Run (r1)
 
 - `go test -race ./pkg/abi/...` — ok (abitest incl. 12 knob tests; abiclient full suite)
+- `golangci-lint run ./pkg/abi/...` — 0 issues
+
+---
+
+## Review r2 remediation (2026-09-11, PR #1331)
+
+- **The leg-8 pin now discriminates at the assertion level:** `TestDelayDeliverAck_PreCanceledCtxBypassesStall` calls the handler IN-PROCESS with a pre-canceled ctx and a 3s armed stall — asserts `ErrorIs(context.Canceled)` and elapsed < 1s. Verified by injecting the reviewer's exact regression (select → `time.Sleep`): the pin FAILS at 3.00s; reverted, green. The HTTP-level cancel test stays (client-abort behavior) with its detection-path honesty corrected in the section comment.
+- **The canceled-ctx contract is now real server behavior**, not just test framing: Deliver checks `ctx.Err()` after the stall — a canceled request returns typed `CodeCanceled` and is never recorded (never reaches the ledger). The in-process pin holds it.
+- **Mode table reshaped to per-mode verifier closures** — every row asserts something falsifiable; the vacuous `Contains(body, "")` is gone (the dedicated zero-bytes test remains).
+- **Worklog truths fixed:** counts above recount at each edit; the earlier "assert.Empty in the mode table" claim was false (the table then used Contains) — corrected here rather than silently.
+
+## Tests Run (r2)
+
+- `go test -race ./pkg/abi/abitest/` — ok (12 top-level tests; 15 executed cases — 11 single + the OneShotModes table's 4 subtests)
+- Regression-injection validation: pin fails under `time.Sleep`, green when reverted
 - `golangci-lint run ./pkg/abi/...` — 0 issues

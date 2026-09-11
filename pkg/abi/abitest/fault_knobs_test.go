@@ -138,19 +138,19 @@ func corruptWire(t *testing.T, srv *Server, procedureSuffix string, mode Corrupt
 // The corruption is ONE-SHOT: the next identical call succeeds.
 func TestCorruptNextResponse_OneShotModes(t *testing.T) {
 	for _, tc := range []struct {
-		mode     CorruptMode
-		contains string
+		mode   CorruptMode
+		verify func(t *testing.T, body string)
 	}{
-		{CorruptInvalidJSON, `"sessionId":"s1"`},
-		{CorruptTrailingGarbage, "trailing-garbage"},
-		{CorruptEmptyBody, ""},
-		{CorruptHTMLErrorPage, "<html>"},
+		{CorruptInvalidJSON, func(t *testing.T, body string) { assert.Contains(t, body, `"sessionId":"s1"`) }},
+		{CorruptTrailingGarbage, func(t *testing.T, body string) { assert.Contains(t, body, "trailing-garbage") }},
+		{CorruptEmptyBody, func(t *testing.T, body string) { assert.Empty(t, body, "exactly zero bytes") }},
+		{CorruptHTMLErrorPage, func(t *testing.T, body string) { assert.Contains(t, body, "<html>") }},
 	} {
 		t.Run(tc.mode.String(), func(t *testing.T) {
 			srv := New()
 			code, body := corruptWire(t, srv, "GetSnapshot", tc.mode)
 			assert.Equal(t, http.StatusOK, code, "the corruption rides a 200 — transport sees success")
-			assert.Contains(t, body, tc.contains)
+			tc.verify(t, body)
 
 			assert.False(t, srv.CorruptNextResponseArmed(), "one-shot consumed")
 
@@ -247,6 +247,32 @@ func TestDelayDeliverAck_CtxCancelReturnsPromptly(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Deliver did not return promptly after ctx cancel — the stall ignores cancellation")
 	}
+}
+
+// TestDelayDeliverAck_PreCanceledCtxBypassesStall: the SERVER-side
+// ctx-cancelability contract, pinned in-process (r2: the HTTP-level
+// test above cannot discriminate — the connect client aborts
+// client-side on ctx cancel regardless of server behavior; THIS test
+// calls the handler directly, so a time.Sleep regression fails here at
+// the assertion level, deterministically, with no httptest teardown
+// wedge and no dependence on the package -timeout).
+func TestDelayDeliverAck_PreCanceledCtxBypassesStall(t *testing.T) {
+	srv := New()
+	srv.DelayDeliverAck(3 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := connect.NewRequest(&abiv1.DeliveryRequest{
+		SessionId: "s1", EntryId: "e-1", Attempt: 1,
+		Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "hi"}}},
+	})
+
+	start := time.Now()
+	_, err := srv.Deliver(ctx, req)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "the canceled ctx unwinds the stall, not the timer")
+	assert.Less(t, elapsed, time.Second, "returns in far less than the armed 3s delay — a time.Sleep regression breaches this deterministically")
 }
 
 // TestKnobs_Composable: leg 8's stall and leg 7's recording arm together

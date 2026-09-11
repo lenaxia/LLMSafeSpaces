@@ -231,6 +231,13 @@ func (s *Server) Deliver(ctx context.Context, req *connect.Request[abiv1.Deliver
 	}
 
 	s.stallDeliverAck(ctx)
+	// A request whose ctx died (in or before the stall) never reaches
+	// the ledger: typed Canceled, unrecorded — the leg-8 contract the
+	// in-process pin holds (a canceled harness row unwinds with its
+	// request; a time.Sleep regression breaches the pin).
+	if err := ctx.Err(); err != nil {
+		return nil, connect.NewError(connect.CodeCanceled, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.knobs.record(DeliveryCall{EntryID: m.GetEntryId(), Attempt: m.GetAttempt()})
