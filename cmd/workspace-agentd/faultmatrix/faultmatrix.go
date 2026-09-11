@@ -15,7 +15,6 @@ package faultmatrix
 
 import (
 	"context"
-	"strconv"
 	"sync"
 	"time"
 
@@ -152,9 +151,10 @@ func (NoopParser) Parse(raw []byte) (*abiv1.Event, bool, error) { return nil, fa
 // fault injection — the coupling IS the point (truth and evidence read
 // the same transcript, as in production).
 type EvidenceStore struct {
-	mu      sync.Mutex
-	states  map[string]sessionstate.SessionSeed
-	present map[string]map[string]bool
+	mu           sync.Mutex
+	states       map[string]sessionstate.SessionSeed
+	present      map[string]map[string]bool
+	pendingCalls int
 }
 
 func NewEvidenceStore() *EvidenceStore {
@@ -192,12 +192,30 @@ func (s *EvidenceStore) SessionStates(ctx context.Context) (map[string]sessionst
 	return out, nil
 }
 
+// PendingInputsCalls returns the count of gather invocations — leg 9's
+// cheapness observable (a serve storm must cost O(TTL windows), not
+// O(serves)).
+func (s *EvidenceStore) PendingInputsCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingCalls
+}
+
+// TranscriptCount reports how many distinct messages the session's
+// transcript holds — S2's observable (≤1 user message per entry).
+func (s *EvidenceStore) TranscriptCount(sessionID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.present[sessionID])
+}
+
 // PendingInputs serves the live ask registries keyed by session — the
 // lease diff's truth source (STRICT semantics: a clean read or an
 // error, never a fabricated empty).
 func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pendingCalls++
 	out := make(map[string][]*abiv1.InputRequest, len(s.states))
 	for sid, seed := range s.states {
 		if len(seed.PendingInputs) > 0 {
@@ -213,22 +231,6 @@ func (s *EvidenceStore) MessagePresence(ctx context.Context, sessionID string, m
 	out := make(map[string]bool, len(messageIDs))
 	for _, id := range messageIDs {
 		out[id] = s.present[sessionID][id]
-	}
-	return out, nil
-}
-
-// PendingInputs serves the strict lease seam (#1310 slice B) from the
-// same truth SetState writes (the fake never fails the gather).
-func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string][]*abiv1.InputRequest, len(s.states))
-	for sid, seed := range s.states {
-		for _, in := range seed.PendingInputs {
-			if in != nil && in.GetId() != "" {
-				out[sid] = append(out[sid], in)
-			}
-		}
 	}
 	return out, nil
 }
@@ -268,24 +270,21 @@ func (a *AnswerActor) Act(ctx context.Context, sessionID string, req *abiv1.Acti
 	}
 }
 
-// InstantAdmitter admits synchronously and records the transcript
-// message (evidence) under the deterministic id "msg-admit-N" — the
-// promotion event's absence is the row's stranded-state lever.
+// InstantAdmitter models the production admission contract incl. 0a's
+// entry-level idempotency: the passed messageID IS the harness-store
+// dedupe key (attempt-independent), and the transcript write is a KEYED
+// upsert — a re-admission of the same key overwrites, never appends
+// (the #1315 sixteen-copies class). Evidence keyed by it is therefore
+// S2's observable.
 type InstantAdmitter struct {
-	mu  sync.Mutex
-	n   int
 	Out *EvidenceStore
 }
 
 func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
-	ad.mu.Lock()
-	ad.n++
-	storeID := "msg-admit-" + strconv.Itoa(ad.n)
-	ad.mu.Unlock()
 	if ad.Out != nil {
-		ad.Out.MarkPresent(sessionID, storeID)
+		ad.Out.MarkPresent(sessionID, messageID)
 	}
-	return storeID, nil
+	return messageID, nil
 }
 
 type errText string
