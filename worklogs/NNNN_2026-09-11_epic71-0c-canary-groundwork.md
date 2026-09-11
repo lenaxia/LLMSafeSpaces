@@ -15,7 +15,7 @@ Claim and begin #1312's canary skeleton (epic-71 / 0c): metrics-only canary + "e
 ## Work Completed
 
 ### Loop-liveness gauge (landed slice)
-- `llmsafespaces_loop_last_run_timestamp_seconds{loop}` GaugeVec on the agentd `:4098` scrape surface; `loop="reconcile_watchdog"` stamped on every watchdog pass (before CheckStalls/gauge refresh — a pass that PANICS between ticks leaves the previous stamp, which is exactly the stale signal).
+- `llmsafespaces_loop_last_run_timestamp_seconds{loop}` GaugeVec on the agentd `:4098` scrape surface; `loop="reconcile_watchdog"` stamped at END of each pass (review r1: initially placed mid-pass, contradicting the "last COMPLETED pass" Help contract — moved). The stale-stamp signal covers HANGS/wedges (a pass that wedges anywhere freezes the stamp at the previous pass); a PANIC kills the process and the whole scrape surface — detection of that is the scrape's own absence, not this gauge (review r1 worklog correction).
 - The gauge's Help text is the CONTRACT for the other loops: 0b's parked-error sweeper and 2a's pending-lease loop export the same family with their own `loop` label (the epic's "every periodic loop" rule, made mechanical).
 - Pinned: scrape-completeness row (the metric must appear on the real promhttp surface) + watchdog e2e assertion (the gauge is set by the LOOP, not a direct call).
 

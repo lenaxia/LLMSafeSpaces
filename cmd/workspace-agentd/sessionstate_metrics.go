@@ -248,7 +248,6 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 			return
 		case <-ticker.C:
 			rec := a.Reconcile(ctx)
-			sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog").Set(float64(time.Now().Unix()))
 			if rec.EvidenceFailures > 0 {
 				log.Warn("agentd: sessionstate reconcile — store evidence read failed (rows untouched, retrying next pass)",
 					zap.Int("evidenceFailures", rec.EvidenceFailures))
@@ -271,6 +270,10 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 					zap.Int("stalled", stats.Stalled), zap.Int("wakeFailures", stats.WakeFailures))
 			}
 			recordSessionStateMetrics(workspaceID, a)
+			// End-of-pass stamp: the Help contract says last COMPLETED
+			// pass — a wedge anywhere in this tick (reconcile, stalls,
+			// metrics) freezes the stamp at the previous pass (review r1).
+			sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog").Set(float64(time.Now().Unix()))
 		}
 	}
 }
