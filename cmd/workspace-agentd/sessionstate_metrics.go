@@ -10,6 +10,8 @@ package main
 // bridge, and this wiring layer owns the registry.
 
 import (
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
+
 	"context"
 	"net/http"
 	"strings"
@@ -105,9 +107,9 @@ var sessionStateMetrics = struct {
 		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
 	}),
 	loopLastRun: promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "llmsafespaces_loop_last_run_timestamp_seconds",
-		Help: "Unix timestamp of each periodic loop's last COMPLETED pass (epic-71 / 0c dead-loop detection: a loop whose last-run goes stale has died silently — every periodic loop [ledger sweep/leases/parked-error sweeper] exports this gauge with its own `loop` label; alerting is gated until L3/L4 are green per the wave plan).",
-	}, []string{"loop"}),
+		Name: obs.LoopLivenessMetric,
+		Help: obs.LoopLivenessHelp,
+	}, []string{obs.LoopLivenessLabel}),
 }
 
 // reconcileLast carries the last cumulative reconcile counters so the
@@ -273,7 +275,7 @@ func runSessionStateWatchdog(ctx context.Context, workspaceID string, a *session
 			// End-of-pass stamp: the Help contract says last COMPLETED
 			// pass — a wedge anywhere in this tick (reconcile, stalls,
 			// metrics) freezes the stamp at the previous pass (review r1).
-			sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog").Set(float64(time.Now().Unix()))
+			sessionStateMetrics.loopLastRun.WithLabelValues(obs.LoopReconcileWatchdog).Set(float64(time.Now().Unix()))
 		}
 	}
 }

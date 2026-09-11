@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
+	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -443,11 +445,12 @@ func TestSweepParkedErrors_Metrics(t *testing.T) {
 	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
 
 	completedBefore := promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))
-	lastRunBefore := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper"))
+	lastRunBefore := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper))
 	_, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))-completedBefore)
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper")), lastRunBefore)
+	assert.Equal(t, lastRunBefore, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)),
+		"direct (on-transition) sweeps are NOT loop liveness — the stamp is loop-owned (r1 finding 1)")
 }
 
 // --- The park-write guard ---------------------------------------------------
@@ -601,7 +604,7 @@ func TestRun_SweepsParkedPeriodically(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, int32(1), delivered.Load(), "parked entry completed by the periodic sweep")
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper")), float64(0))
+	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)), float64(0))
 	// L9 mechanism bound: parked → dispositioned within one sweep
 	// interval's worth of scheduling slop (2x the configured cadence —
 	// the 5-minute L9 budget implies a configured cadence well under it).
@@ -1032,4 +1035,31 @@ func TestDismissContendedIsBusyNotMissing(t *testing.T) {
 	assert.Equal(t, DismissBusy, s.Dismiss(context.Background(), "ws-1", "ses-1", "e1"),
 		"contention is busy, not not-found")
 	require.Len(t, readQueueEntries(t, s, "ws-1", "ses-1"), 1, "nothing silently dropped")
+}
+
+// TestLoopLiveness_NamePinnedOnScrapeSurface (r1 finding 2): the API's
+// registration of the shared family must expose the exact pkg/obs name
+// with the `loop` label — a typo'd Name string would otherwise ship
+// green while silently detaching the exporter (pattern:
+// auth_attempts_metric_test.go).
+func TestLoopLiveness_NamePinnedOnScrapeSurface(t *testing.T) {
+	// Self-sufficient: materialize the child (a vec with no children is
+	// invisible to Gather) instead of relying on an earlier test's stamp.
+	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).Set(0)
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() != obs.LoopLivenessMetric {
+			continue
+		}
+		found = true
+		for _, m := range mf.GetMetric() {
+			labels := m.GetLabel()
+			require.Len(t, labels, 1, "the family carries exactly the loop label")
+			assert.Equal(t, obs.LoopLivenessLabel, labels[0].GetName())
+			assert.Equal(t, obs.LoopOutboxParkedSweeper, labels[0].GetValue())
+		}
+	}
+	assert.True(t, found, "llmsafespaces_loop_last_run_timestamp_seconds is exposed on the API scrape surface")
 }

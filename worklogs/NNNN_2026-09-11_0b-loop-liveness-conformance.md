@@ -34,3 +34,13 @@ My landed-notes commitment from 0b: "reconcile ParkedSweepInterval/probeTimeout 
 - `api/internal/services/outbox/parked_sweeper.go`
 - `api/internal/services/outbox/parked_sweeper_test.go`
 - `worklogs/NNNN_2026-09-11_0b-loop-liveness-conformance.md` (this file)
+
+---
+
+## Review round 1 (PR #1322)
+
+- **Finding 1 (fixed):** the liveness gauge was stamped by BOTH callers (periodic loop + on-transition sweep) — transition churn would keep a dead loop looking fresh. The stamp is now loop-owned: `stampLoopLiveness` fires only in the Run loop's periodic pass; direct/transition sweeps never stamp (pinned by the updated metrics test).
+- **Finding 2 (fixed):** the family Name was pinned by no API-side test. `TestLoopLiveness_NamePinnedOnScrapeSurface` asserts the exact pkg/obs name + loop label on the DefaultGatherer surface (self-sufficient: materializes the child first).
+- **Style 1 (fixed):** Help drift and duplicated literals across binaries — new `pkg/obs` package holds the family constants; both agentd's and the API's registrations consume them.
+- **Pre-existing main failure found and fixed:** `TestMetricsScrape_Completeness` (agentd) failed on pristine main — a *Vec with no children emits no series, so the completeness scrape was order/timing-dependent (loop_last_run depended on the watchdog goroutine having stamped). The test now materializes every vec family first; verified green with `-run` isolation and in the full package (228s).
+- **Robustness note (recorded):** in adapter mode the API's loop gauge series never materializes (inert loop, honestly absent) — absent()-style alerting should account for regime; noted here for when alerting un-gates.

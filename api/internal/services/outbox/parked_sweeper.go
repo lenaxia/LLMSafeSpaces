@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -101,13 +102,15 @@ var (
 		Help: "Parked-error sweeper outcomes (#1316): verified (probed), completed (ledger admitted-or-later), rearmed (failed with budget), stayed (ledgered/terminal), indeterminate (probe failed — next pass).",
 	}, []string{"outcome"})
 	// parkedSweepLastRun joins the epic-71 shared loop-liveness family
-	// (landed by 0c in #1319, agentd-side): every periodic loop exports
-	// the SAME metric with its own `loop` label so dead-loop alerting is
-	// one query. This is the API-binary's registration of that family.
+	// (0c, #1319): constants live in pkg/obs so this registration and
+	// agentd's cannot drift. Stamped ONLY by the Run loop's periodic
+	// pass — the on-transition sweep share is NOT loop liveness, and
+	// stamping there would keep a dead loop looking fresh under
+	// transition churn (false negatives for dead-loop detection).
 	parkedSweepLastRun = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "llmsafespaces_loop_last_run_timestamp_seconds",
-		Help: "Unix timestamp of each periodic loop's last COMPLETED pass (epic-71 dead-loop detection; label `loop` names the exporter — agentd: reconcile_watchdog, api: outbox_parked_sweeper).",
-	}, []string{"loop"})
+		Name: obs.LoopLivenessMetric,
+		Help: obs.LoopLivenessHelp,
+	}, []string{obs.LoopLivenessLabel})
 )
 
 // SetLedgerProbe wires the ledger truth source. Call before Run.
@@ -151,7 +154,6 @@ func (s *Service) sweepParkedErrors(ctx context.Context, workspaceID string) (in
 		s.releaseLockDetached(ctx, ws, ses, token)
 		recovered += n
 	}
-	parkedSweepLastRun.WithLabelValues("outbox_parked_sweeper").SetToCurrentTime()
 	return recovered, nil
 }
 
@@ -331,4 +333,10 @@ func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context,
 	e.Status = StatusDelivering
 	e.NextAttemptAt = now.Add(ownsAdmissionRePollBackoff)
 	s.restoreStaged(ctx, qk, dk, idx, staged, e)
+}
+
+// stampLoopLiveness records the periodic loop's completed pass on the
+// shared epic-71 family (pkg/obs). Call sites: the Run loop only.
+func (s *Service) stampLoopLiveness() {
+	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).SetToCurrentTime()
 }
