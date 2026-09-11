@@ -659,7 +659,7 @@ func TestRetryVsSweepConcurrency(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		s.Retry(context.Background(), "ws-1", "ses-1", "eB")
+		_ = s.Retry(context.Background(), "ws-1", "ses-1", "eB")
 	}()
 	wg.Wait()
 
@@ -776,4 +776,131 @@ func TestTransientFailuresConvergeToParkWithoutLedger(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, StatusError, entries[0].Status, "no-attempt failures converge on their own budget")
 	assert.Equal(t, 0, entries[0].Attempts, "no attempt was ever minted")
+}
+
+// TestDismissVsSweepMidPass (review r3 finding 1): Dismiss arriving
+// INSIDE the sweeper's probe window must defer to the session lock —
+// its lock-free value-LRem used to shift the sweeper's snapshot, whose
+// descending LSet then overwrote an innocent neighbor. The probe window
+// is widened deterministically (blocking probe) so the interleaving is
+// forced; integrity is asserted on the final state.
+func TestDismissVsSweepMidPass(t *testing.T) {
+	s, _ := newTestService(t)
+	probeEntered := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+		if id == "eA" {
+			close(probeEntered)
+			<-releaseProbe
+			return LedgerStateAdmitted, nil
+		}
+		return LedgerStateFailed, nil
+	})
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 5, "context deadline exceeded")
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eB", 5, "context deadline exceeded")
+	seedQueueEntry(t, s, "ws-1", "ses-1", "eC", StatusPending) // the victim
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		_, _ = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	}()
+	<-probeEntered // the sweeper holds the session lock, mid-pass on eA
+
+	dismissDone := make(chan bool, 1)
+	go func() {
+		dismissDone <- s.Dismiss(context.Background(), "ws-1", "ses-1", "eB") // defers to the lock
+	}()
+	close(releaseProbe)
+	<-sweepDone
+	require.True(t, <-dismissDone, "dismiss lands once the sweep releases")
+
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	ids := []string{}
+	for _, e := range entries {
+		ids = append(ids, e.ID)
+	}
+	assert.ElementsMatch(t, []string{"eC"}, ids,
+		"eA completed by the sweep, eB dismissed after deferring, victim intact exactly once (S3)")
+}
+
+// TestSweepParkedErrors_FailedMasksAdmittedPlusOne (review r3 finding
+// 2): a FAILED row at Attempts must not hide an ADMITTED in-flight row
+// at Attempts+1 — for both the ordinary and the unverifiable park
+// class (the forever-stay shape).
+func TestSweepParkedErrors_FailedMasksAdmittedPlusOne(t *testing.T) {
+	tests := []struct {
+		name    string
+		lastErr string
+	}{
+		{"ordinary park", "context deadline exceeded"},
+		{"unverifiable park", lastErrUnverifiable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _ := newTestService(t)
+			probe, _ := probeFunc(t, map[string]string{
+				"e1|2": LedgerStateFailed,
+				"e1|3": LedgerStateAdmitted, // masked admission behind the failure
+			})
+			s.SetLedgerProbe(probe)
+			var delivered atomic.Int32
+			s.SetOnDelivered(func(ws, ses string, e Entry) { delivered.Add(1) })
+			seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 2, tt.lastErr)
+
+			n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+			require.NoError(t, err)
+			assert.Equal(t, 1, n, "the masked admission completes — never a forever-stay")
+			assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+			assert.Equal(t, int32(1), delivered.Load())
+		})
+	}
+}
+
+// TestParkGuard_FailedMasksAdmittedPlusOne: the same masking shape at
+// the park threshold — the guard completes instead of parking.
+func TestParkGuard_FailedMasksAdmittedPlusOne(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, map[string]string{
+		"e1|5": LedgerStateFailed,
+		"e1|6": LedgerStateAdmitted,
+	})
+	s.SetLedgerProbe(probe)
+	var delivered atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { delivered.Add(1) })
+
+	// Seed an ambiguous in-flight row at 6 with the entry at Attempts=5
+	// pre-increment: the failure branch increments to 5... model the
+	// post-increment shape directly: driven row FAILED@5, in-flight row
+	// ADMITTED@6 — the guard probes both.
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusPending, Attempts: MaxAttempts - 1}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	d := func(ctx context.Context, ws, ses string, e Entry) error {
+		return errors.New("context deadline exceeded")
+	}
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1", d))
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"), "masked admission completed at the park write")
+	assert.Equal(t, int32(1), delivered.Load())
+}
+
+// TestRetryContendedIsBusyNotMissing (review r3 finding 4): a contended
+// retry reports busy — never 404-shaped absence.
+func TestRetryContendedIsBusyNotMissing(t *testing.T) {
+	s, _ := newTestService(t)
+	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
+
+	oldEvery, oldBudget := sweepLockRetryEvery, sweepLockRetryBudget
+	sweepLockRetryEvery, sweepLockRetryBudget = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { sweepLockRetryEvery, sweepLockRetryBudget = oldEvery, oldBudget })
+
+	token, ok := s.acquireLock(context.Background(), "ws-1", "ses-1")
+	require.True(t, ok)
+	defer s.releaseLock(context.Background(), "ws-1", "ses-1", token)
+
+	assert.Equal(t, RetryBusy, s.Retry(context.Background(), "ws-1", "ses-1", "e1"),
+		"contention is busy, not not-found")
 }

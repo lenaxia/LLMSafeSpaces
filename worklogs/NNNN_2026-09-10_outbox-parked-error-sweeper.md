@@ -129,3 +129,16 @@ Round-2 findings — all validated real, all fixed with regression tests:
 2. **Attempt-counter drift on no-POST cycles** (resolve failures, cancelled prior-row polls) could park past a live LEDGERED row — unrecoverable, with a Retry re-POST tail. New `TransientDeliveryError` marker + `TransientFails` budget: transient failures never mint numbers, converge to an honest park without ledger rows, and the guard (now probing Attempts AND Attempts+1) holds/completes whenever the ledger holds. Pinned by `TestDeliverOne_TransientDriftNeverParksWhileAdmitted` and `TestTransientFailuresConvergeToParkWithoutLedger`.
 3. The vacuous second half of `TestDeliverOne_PriorPendingNeverMints` was removed; the guard-held recovery composition (hold → admit → re-poll completes) is pinned by `TestDeliverOne_GuardHeldRecoveryComposition`.
 4. `SetLedgerProbe` now wires BEFORE `watcher.Start()` (seed-window Active events find it armed; write happens-before all reader goroutines); `TestSweeperE2E_SeedTransitionArmedBeforeWatcher` pins it with the periodic path disabled.
+
+---
+
+## Review round 3 corrections (PR #1318, commit ab55ecde)
+
+Round-3 findings — all validated real, all fixed:
+
+1. **`Dismiss` was the missed sibling mutator** (reviewer reproduced silent neighbor destruction at head): its lock-free value-`LRem` landing inside the sweeper's probe window shifted the *sweeper's* snapshot — the descending `LSet` then overwrote an innocent neighbor. `Dismiss` now holds the session lock; `TestDismissVsSweepMidPass` forces the interleaving deterministically (blocking probe) and asserts the victim survives. The round-2 "all sibling mutators hold the lock" claim is now actually true.
+2. **The +1 probe was gated on a rowless `Attempts`** — a FAILED row at `Attempts` masked an ADMITTED in-flight row at `Attempts+1`, making the unverifiable class a forever-stay (L9 violation). Both `dispositionParked` and `parkGuard` now probe both rows unconditionally; the adopt rule keys on the +1 row's FAILED state alone. Pinned by `TestSweepParkedErrors_FailedMasksAdmittedPlusOne` (ordinary + unverifiable) and `TestParkGuard_FailedMasksAdmittedPlusOne`. (Duplication risk of the masked-admission re-arm is bounded agentd-side by the #1288 cross-attempt dedupe — reviewer-verified — so this was a stranding bug, not a duplication bug.)
+3. **`verifyOne`'s unverifiable park is now guarded at write time**: an ADMITTED row at either real attempt number completes in place instead of parking (the r1 "sweeper reconciles post-hoc" mitigation no longer needed to cover this class).
+4. **Contended `Retry` no longer surfaces as 404**: `RetryResult` distinguishes updated / not-found / busy; the handler maps busy to 503 "session busy delivering". Pinned by `TestRetryContendedIsBusyNotMissing`.
+
+Reviewer's LOW items (`Recover` boot-time LPush, `Accept`'s duplicate-cleanup `LRem`): pre-existing, µs self-scoped / boot-time windows against the 60s cadence — noted, no change this PR.

@@ -807,6 +807,15 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	default: // inconclusive — agent unreachable or page coverage incomplete
 		e.VerifyAttempts++
 		if e.VerifyAttempts >= MaxVerifyAttempts {
+			// #1316 write-time guard: before parking as unverifiable,
+			// consult the ledger — an ADMITTED row at either real
+			// attempt number completes here (the transcript verifier
+			// failing to confirm does not undo an admission).
+			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
+				s.client.LRem(ctx, qk, 1, vals[idx])
+				s.fireOnDelivered(ws, ses, e)
+				return true
+			}
 			e.Status = StatusError
 			e.LastError = lastErrUnverifiable
 		} else {
@@ -983,8 +992,16 @@ func deliverDetached(parent context.Context, d Deliverer, ws, ses string, e Entr
 	return d(ctx, ws, ses, e)
 }
 
-// Dismiss removes an entry by ID (the queue UI's dismiss action).
+// Dismiss removes an entry by ID (the queue UI's dismiss action). Holds
+// the session delivery lock: a lock-free value-LRem mid-sweep shifts
+// the sweeper's snapshot indices — its subsequent LSet lands on an
+// innocent neighbor (the r3 reproduction of the sibling-mutator class).
 func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) bool {
+	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
+	if !ok {
+		return false // a delivery owns the session; the dismiss lands after it
+	}
+	defer s.releaseLock(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
@@ -1000,20 +1017,31 @@ func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string
 	return false
 }
 
+// RetryResult discriminates the queue UI's retry outcome: contention is
+// NOT absence — surfacing it as 404 told users their entry was gone
+// while a delivery merely held the session lock (r3 review finding 4).
+type RetryResult int
+
+const (
+	RetryUpdated RetryResult = iota
+	RetryNotFound
+	RetryBusy
+)
+
 // Retry clears an error entry back to pending (the queue UI's retry).
 // Holds the session delivery lock: a lock-free snapshot LSet racing a
 // concurrent sweep's LRem shifts indices and overwrites an innocent
 // neighbor (#1316 review round 2 finding 1).
-func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) bool {
+func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) RetryResult {
 	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
 	if !ok {
-		return false // a delivery owns the session; the retry lands after it
+		return RetryBusy // a delivery owns the session; the retry lands after it
 	}
 	defer s.releaseLock(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
-		return false
+		return RetryBusy // transport failure is also transient, not absence
 	}
 	for i, v := range vals {
 		var e Entry
@@ -1025,10 +1053,10 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 			e.LastError = ""
 			e.NextAttemptAt = time.Time{}
 			s.client.LSet(ctx, qk, int64(i), string(mustMarshal(e)))
-			return true
+			return RetryUpdated
 		}
 	}
-	return false
+	return RetryNotFound
 }
 
 func sanitize(s string) string {

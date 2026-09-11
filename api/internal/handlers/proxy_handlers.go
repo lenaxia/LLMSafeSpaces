@@ -1506,9 +1506,14 @@ func (h *ProxyHandler) RetryQueueMessage(c *gin.Context) {
 		c.JSON(http.StatusNotImplemented, gin.H{"error": "queue retry requires the outbox"})
 		return
 	}
-	if h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {
+	switch h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {
+	case outbox.RetryUpdated:
 		c.Status(http.StatusNoContent)
-	} else {
+	case outbox.RetryBusy:
+		// Contention (a delivery holds the session lock) or a transient
+		// store failure — the entry exists; retrying shortly will land.
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "session busy delivering; retry shortly"})
+	default:
 		c.JSON(http.StatusNotFound, gin.H{"error": "error entry not found (retry targets error entries only)"})
 	}
 }

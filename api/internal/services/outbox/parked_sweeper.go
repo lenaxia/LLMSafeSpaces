@@ -216,8 +216,9 @@ func (s *Service) sweepSessionParked(ctx context.Context, ws, ses string, now ti
 // dispositionParked decides one parked entry's fate against the ledger,
 // mutating e for the re-arm case. Probes the last attempt first
 // (attemptOf(e.Attempts) — each recorded failure corresponds to a
-// driven attempt); when no row exists there, probes attempt+1 — the
-// ambiguous in-flight row an API crash or verify-park never recorded.
+// driven attempt), then ALWAYS the ambiguous in-flight attempt+1 row:
+// a FAILED row at Attempts must not mask an ADMITTED row at Attempts+1
+// (the unverifiable class's forever-stay shape from the r3 review).
 func (s *Service) dispositionParked(ctx context.Context, ws, ses string, e *Entry, now time.Time) string {
 	state, err := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts)
 	if err != nil {
@@ -227,31 +228,28 @@ func (s *Service) dispositionParked(ctx context.Context, ws, ses string, e *Entr
 	if ledgerStateCompletes(state) {
 		return "completed"
 	}
-	if state == LedgerStateLedgered {
+	next, nerr := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts+1)
+	if nerr != nil {
+		return "indeterminate"
+	}
+	if ledgerStateCompletes(next) {
+		return "completed"
+	}
+	if state == LedgerStateLedgered || next == LedgerStateLedgered {
 		// agentd owns admission; its state deadlines (#1311) resolve the
 		// row and the next sweep acts on the terminal state.
 		return "stayed"
 	}
 	attempts := e.Attempts
-	if state == "" {
-		next, nerr := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts+1)
-		if nerr != nil {
-			return "indeterminate"
-		}
-		if ledgerStateCompletes(next) {
-			return "completed"
-		}
-		if next == LedgerStateLedgered {
-			return "stayed"
-		}
-		if next == LedgerStateFailed {
-			// Adopt the observed failure as a recorded attempt — the same
-			// bookkeeping the terminus performs when it observes a failure
-			// in-band, keeping the next POST's attempt numbering truthful.
-			attempts = e.Attempts + 1
-		}
+	if next == LedgerStateFailed {
+		// Adopt the in-flight row's observed failure as the recorded
+		// attempt count — the same bookkeeping the terminus performs
+		// when it observes a failure in-band, keeping the next POST's
+		// attempt numbering truthful. (A FAILED row at Attempts with no
+		// row at Attempts+1 already has truthful numbering.)
+		attempts = e.Attempts + 1
 	}
-	// state is FAILED (or no rows at all): definitive-or-absent evidence.
+	// evidence is definitive-or-absent (FAILED rows / no rows at all):
 	if e.LastError == lastErrUnverifiable {
 		// The unverifiable class re-arms to VERIFYING only
 		// (SweepWorkspaceUnverifiable) — a pending re-arm would blind
@@ -288,8 +286,9 @@ func (s *Service) probeLedger(ctx context.Context, ws, ses, entryID string, atte
 // Only consulted at a park threshold (attempt or transient budget);
 // below it the failure branch re-arms to pending exactly as before, and
 // the terminus's prior-attempt resolution already prevents re-POSTing a
-// live row. Probes the entry's real attempt rows both ways (Attempts
-// and Attempts+1) so counter alignment can never hide an admitted row.
+// live row. Probes both real attempt rows (Attempts and Attempts+1 —
+// unconditionally: a FAILED row at Attempts must not mask an ADMITTED
+// row at Attempts+1) so counter alignment can never hide an admission.
 func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (completes, holds bool) {
 	if s.ledgerProbe == nil {
 		return false, false
@@ -304,14 +303,12 @@ func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (compl
 	if state == LedgerStateLedgered {
 		return false, true
 	}
-	if state == "" {
-		next, nerr := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts+1)
-		if nerr == nil {
-			if ledgerStateCompletes(next) {
-				return true, false
-			}
-			return false, next == LedgerStateLedgered
+	next, nerr := s.probeLedger(ctx, ws, ses, e.ID, e.Attempts+1)
+	if nerr == nil {
+		if ledgerStateCompletes(next) {
+			return true, false
 		}
+		return false, next == LedgerStateLedgered
 	}
 	return false, false
 }

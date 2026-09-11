@@ -244,7 +244,7 @@ func TestDismissAndRetry(t *testing.T) {
 	require.Len(t, entries, 1)
 
 	// Retry resets it.
-	assert.True(t, s.Retry(ctx, "ws", "ses", e.ID))
+	assert.Equal(t, RetryUpdated, s.Retry(ctx, "ws", "ses", e.ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	require.Len(t, entries, 1)
 	assert.Equal(t, StatusPending, entries[0].Status)
@@ -529,7 +529,7 @@ func TestVerifying_InconclusiveParksAfterBound(t *testing.T) {
 	assert.NotEmpty(t, entries[0].LastError)
 
 	// Retry (the queue UI action) resets it for a fresh send.
-	assert.True(t, s.Retry(ctx, "ws", "ses", entries[0].ID))
+	assert.Equal(t, RetryUpdated, s.Retry(ctx, "ws", "ses", entries[0].ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	assert.Equal(t, StatusPending, entries[0].Status)
 	assert.Zero(t, entries[0].VerifyAttempts)
