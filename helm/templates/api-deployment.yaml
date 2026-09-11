@@ -142,6 +142,25 @@ spec:
             - name: LLMSAFESPACES_FAULT_INJECTION
               value: {{ .Values.api.e2eFaultInjection | quote }}
             {{- end }}
+            {{/* Epic-71 / 0c (#1312): the metrics-only canary probe runner.
+                    Rendered solely when enabled so the knob stays inert by
+                    default; enabled with an empty class list makes the API
+                    refuse to boot (fail-closed — a canary probing nothing is
+                    false coverage). Alerts are gated until L3/L4 are green. */}}
+            {{- if .Values.api.canary.enabled }}
+            - name: LLMSAFESPACES_CANARY_ENABLED
+              value: "true"
+            {{- if .Values.api.canary.interval }}
+            - name: LLMSAFESPACES_CANARY_INTERVAL
+              value: {{ .Values.api.canary.interval | quote }}
+            {{- end }}
+            {{- if .Values.api.canary.timeout }}
+            - name: LLMSAFESPACES_CANARY_TIMEOUT
+              value: {{ .Values.api.canary.timeout | quote }}
+            {{- end }}
+            - name: LLMSAFESPACES_CANARY_CLASSES
+              value: {{ join "," .Values.api.canary.classes | quote }}
+            {{- end }}
             {{- if .Values.turnstile.enabled }}
             # Turnstile (US-63.x) — enables the /register CAPTCHA middleware
             # in the API. The secret key is loaded via valueFrom.secretKeyRef

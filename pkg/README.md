@@ -16,6 +16,7 @@ Shared Go packages used by both the API service and the controller. All packages
 | `kubernetes` | Kubernetes client with leader election, informers, and typed CRD access |
 | `logger` | Zap-based structured logger implementing LoggerInterface |
 | `mcp` | MCP (Model Context Protocol) server and client |
+| `obs` | Cross-binary observability contracts — the epic-71 loop-liveness family (`llmsafespaces_loop_last_run_timestamp_seconds`), single registration + `StampLoopLastRun` |
 | `redact` | 16-rule regex pipeline for scrubbing secrets from agent stdout |
 | `secrets` | Encrypted secret store — key wrapping, encryption, audit, workspace bindings |
 | `settings` | Declarative settings schema + instance/user settings services with typed accessors |
