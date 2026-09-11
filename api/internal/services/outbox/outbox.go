@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -71,7 +72,8 @@ type Entry struct {
 	Attempts        int             `json:"attempts"`                // definitive failures only
 	LastAttemptAt   time.Time       `json:"lastAttemptAt,omitempty"` // send-window start (verifier anchor)
 	VerifyAttempts  int             `json:"verifyAttempts,omitempty"`
-	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"` // backoff gate (zero = now)
+	TransientFails  int             `json:"transientFails,omitempty"` // no-attempt-driven failures (never mint numbering)
+	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"`  // backoff gate (zero = now)
 	LastError       string          `json:"lastError,omitempty"`
 	Status          string          `json:"status"` // pending | delivering | verifying | error
 
@@ -133,6 +135,11 @@ var (
 	// MaxVerifyAttempts bounds inconclusive passes before the entry
 	// parks as error (agent unreachable for the full backoff span).
 	MaxVerifyAttempts = 40
+	// MaxTransientFailures bounds no-attempt-driven failures (resolve
+	// errors, canceled polls) before the entry parks — transient
+	// failures never mint attempt numbers (#1316 review round 2), so
+	// they need their own convergence bound.
+	MaxTransientFailures = 20
 )
 
 // ErrCapped is returned when the session's outbox is at Cap.
@@ -183,6 +190,45 @@ func Ambiguous(err error) error {
 		return nil
 	}
 	return &AmbiguousError{Err: err}
+}
+
+// PriorAttemptPendingError marks a terminus outcome where the PRIOR
+// attempt's ledger row is still LEDGERED and agentd owns admission: no
+// new attempt was driven, so the outbox must not mint an attempt
+// number (a phantom attempt parks the entry against a row the sweeper
+// can never find — the unrecoverable shape from the #1316 review).
+type PriorAttemptPendingError struct{ Err error }
+
+func (p *PriorAttemptPendingError) Error() string { return "prior attempt pending: " + p.Err.Error() }
+func (p *PriorAttemptPendingError) Unwrap() error { return p.Err }
+
+// PriorAttemptPending wraps err as an agentd-owned prior-attempt timeout.
+func PriorAttemptPending(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &PriorAttemptPendingError{Err: err}
+}
+
+// TransientDeliveryError marks a failure in which NO attempt was driven
+// (endpoint resolve failure, a canceled prior-row poll): minting an
+// attempt number would drift the counter past the real ledger row —
+// parking an entry whose admitted row the sweeper can then never find
+// (#1316 review round 2). Transient failures retry on their own bounded
+// budget (MaxTransientFailures) without touching attempt numbering.
+type TransientDeliveryError struct{ Err error }
+
+func (t *TransientDeliveryError) Error() string {
+	return "transient delivery failure: " + t.Err.Error()
+}
+func (t *TransientDeliveryError) Unwrap() error { return t.Err }
+
+// Transient wraps err as a no-attempt-driven delivery failure.
+func Transient(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TransientDeliveryError{Err: err}
 }
 
 // Verdict is a verifier's decision about an ambiguous delivery attempt.
@@ -237,6 +283,12 @@ type Service struct {
 	// onStaged fires when an entry is staged out for delivery
 	// (nil = no-op). See StagedHook.
 	onStaged StagedHook
+	// ledgerProbe is the agentd ledger truth source for #1316's parked
+	// sweeper and park guard; nil (adapter mode) disables both.
+	ledgerProbe LedgerProbe
+	// parkedSweeping makes the periodic sweep non-reentrant: a slow pass
+	// must not stack on the next interval.
+	parkedSweeping atomic.Bool
 }
 
 // New returns a Service backed by client, or nil if client is nil
@@ -283,12 +335,21 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 		if ws != workspaceID {
 			continue
 		}
+		// Same lock discipline as the parked sweep (#1316 review round 2
+		// finding 1): a lock-free snapshot LSet racing another mutator's
+		// LRem shifts indices and overwrites an innocent neighbor.
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue
+		}
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue // best-effort sweep; the next transition retries
 		}
-		for i, v := range vals {
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := vals[i]
 			var e Entry
 			if json.Unmarshal([]byte(v), &e) != nil {
 				continue
@@ -308,6 +369,7 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 			}
 			swept++
 		}
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	return swept, nil
 }
@@ -559,6 +621,17 @@ func (s *Service) releaseLock(ctx context.Context, ws, ses, token string) {
 	_ = releaseLockScript.Run(ctx, s.client, []string{lockKey(ws, ses)}, token).Err()
 }
 
+// releaseLockDetached releases the lock on a context detached from the
+// caller's cancellation and bounded — the pattern deliverOne established:
+// a shutdown or request cancellation landing between acquire and release
+// must not leave the session locked for the full LockTTL (r5 review
+// finding 2: a canceled Recover leaked the lock for 12 minutes).
+func (s *Service) releaseLockDetached(parent context.Context, ws, ses, token string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
+	defer cancel()
+	s.releaseLock(ctx, ws, ses, token)
+}
+
 // DeliverOnce delivers the first due pending entry for one session
 // (same semantics as the Run loop's per-session step). Exported for the
 // handler-level tests; the Run loop is the production driver.
@@ -660,9 +733,47 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	// Failure: restore main FIRST (LInsert before the current occupant,
 	// preserving order), then LREM staging — the mirrored crash window
 	// duplicates rather than loses.
+	var priorPending *PriorAttemptPendingError
+	if errors.As(derr, &priorPending) {
+		// The terminus only re-POLLED an agentd-owned LEDGERED row — no
+		// attempt was driven, no number may be minted, no park may land
+		// (#1316 review defect 2: a minted attempt parked the entry
+		// against a row the sweeper could never find).
+		e.Status = StatusDelivering
+		e.NextAttemptAt = time.Now().UTC().Add(ownsAdmissionRePollBackoff)
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		return true
+	}
+	var transient *TransientDeliveryError
+	if errors.As(derr, &transient) {
+		// No attempt was driven (resolve failure, canceled poll):
+		// attempt numbering must stay aligned with real ledger rows.
+		// Transient failures converge on their own bounded budget.
+		e.LastError = derr.Error()
+		e.TransientFails++
+		if e.TransientFails >= MaxTransientFailures {
+			if completes, holds := s.parkGuard(bctx, ws, ses, e); completes || holds {
+				s.applyParkGuardDisposition(completes, bctx, ws, ses, qk, dKey(ws, ses), idx, staged, e, now)
+				return true
+			}
+			e.Status = StatusError
+		} else {
+			e.Status = StatusPending
+			e.NextAttemptAt = now.Add(backoffFor(e.TransientFails))
+		}
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
+		return true
+	}
 	e.Attempts++
 	e.LastError = derr.Error()
 	if e.Attempts >= MaxAttempts {
+		// #1316 park guard: never park an entry the ledger still holds.
+		// Admission ownership is agentd's — an error pill here fuels the
+		// retry → re-admission cycle (ses_f73747f8).
+		if completes, holds := s.parkGuard(bctx, ws, ses, e); completes || holds {
+			s.applyParkGuardDisposition(completes, bctx, ws, ses, qk, dKey(ws, ses), idx, staged, e, now)
+			return true
+		}
 		e.Status = StatusError
 	} else {
 		e.Status = StatusPending
@@ -707,6 +818,19 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	default: // inconclusive — agent unreachable or page coverage incomplete
 		e.VerifyAttempts++
 		if e.VerifyAttempts >= MaxVerifyAttempts {
+			// #1316 write-time guard: before parking as unverifiable,
+			// consult the ledger — an ADMITTED row at either real
+			// attempt number completes here (the transcript verifier
+			// failing to confirm does not undo an admission). A LEDGERED
+			// row deliberately still parks: agentd owns admission, its
+			// deadlines (#1311) resolve the row, and the parked sweeper
+			// completes it — holding it delivering here would need a
+			// re-poll driver this path lacks.
+			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
+				s.client.LRem(ctx, qk, 1, vals[idx])
+				s.fireOnDelivered(ws, ses, e)
+				return true
+			}
 			e.Status = StatusError
 			e.LastError = lastErrUnverifiable
 		} else {
@@ -765,6 +889,13 @@ func verifyBackoffFor(passes int) time.Duration {
 // prevents Recover itself from duplicating. Requeued entries enter
 // VERIFYING: the interrupted send's outcome is unknown — blind re-send
 // is the #987 duplicate class.
+//
+// Holds the per-session lock: the head-LPush shifts every snapshot
+// index, and at boot it can overlap the seed transition's parked sweep
+// (same replica — Start wires the probe, the watcher seed fires
+// synchronously, Run's first act is Recover): a sweep LRange before the
+// LPush with its LSet after would overwrite an innocent neighbor (the
+// r4 review's boot-overlap window — seconds of probe I/O, not µs).
 func (s *Service) Recover(ctx context.Context) int {
 	n := 0
 	for _, pair := range s.sessions(ctx) {
@@ -774,29 +905,42 @@ func (s *Service) Recover(ctx context.Context) int {
 		if err != nil || len(staged) == 0 {
 			continue
 		}
-		main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
-		inMain := map[string]bool{}
-		for _, v := range main {
-			var e Entry
-			if json.Unmarshal([]byte(v), &e) == nil {
-				inMain[e.ID] = true
-			}
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue // a delivery or sweep owns the session; requeue next boot
 		}
-		for _, v := range staged {
-			var e Entry
-			if json.Unmarshal([]byte(v), &e) != nil {
-				continue
-			}
-			if inMain[e.ID] {
-				continue // crash window left it in both — main wins
-			}
-			e.Status = StatusVerifying
-			e.NextAttemptAt = time.Time{}
-			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
-			n++
-		}
-		s.client.Del(ctx, dk)
+		n += s.recoverSessionLocked(ctx, ws, ses, dk, staged)
+		// Detached + deferred-equivalent: a shutdown cancellation during
+		// the pass must not leak the lock for LockTTL (r5 finding 2).
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
+	return n
+}
+
+func (s *Service) recoverSessionLocked(ctx context.Context, ws, ses, dk string, staged []string) int {
+	main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
+	inMain := map[string]bool{}
+	for _, v := range main {
+		var e Entry
+		if json.Unmarshal([]byte(v), &e) == nil {
+			inMain[e.ID] = true
+		}
+	}
+	n := 0
+	for _, v := range staged {
+		var e Entry
+		if json.Unmarshal([]byte(v), &e) != nil {
+			continue
+		}
+		if inMain[e.ID] {
+			continue // crash window left it in both — main wins
+		}
+		e.Status = StatusVerifying
+		e.NextAttemptAt = time.Time{}
+		s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
+		n++
+	}
+	s.client.Del(ctx, dk)
 	return n
 }
 
@@ -824,6 +968,10 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 	var workers sync.WaitGroup
 	defer workers.Wait()
 	tickN := 0
+	// Captured before the loop: tests tune ParkedSweepInterval per-Run,
+	// and the ticker goroutine must not race those writes.
+	sweepEvery := ParkedSweepInterval
+	lastParkedSweep := time.Time{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -833,6 +981,22 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 			pairs := s.sessions(ctx)
 			if tickN%metricsEveryNTicks == 0 {
 				s.updateMetrics(ctx, pairs)
+			}
+			// #1316: the parked-error sweep runs detached from the tick
+			// (its probes are network I/O — an inline sweep would stall
+			// delivery behind a hung pod) and never stacks on itself.
+			// Joined via the workers WaitGroup so "Run returned" means
+			// no sweep is still mutating lists (bounded by sweepEvery).
+			if time.Since(lastParkedSweep) >= sweepEvery && s.parkedSweeping.CompareAndSwap(false, true) {
+				lastParkedSweep = time.Now()
+				workers.Add(1)
+				go func() {
+					defer workers.Done()
+					defer s.parkedSweeping.Store(false)
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sweepEvery)
+					defer cancel()
+					_, _ = s.sweepParkedErrors(sctx, "")
+				}()
 			}
 			for _, pair := range pairs {
 				select {
@@ -863,29 +1027,66 @@ func deliverDetached(parent context.Context, d Deliverer, ws, ses string, e Entr
 	return d(ctx, ws, ses, e)
 }
 
-// Dismiss removes an entry by ID (the queue UI's dismiss action).
-func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) bool {
+// DismissResult discriminates the queue UI's dismiss outcome — the same
+// contention-is-not-absence principle as RetryResult (r4 review).
+type DismissResult int
+
+const (
+	DismissRemoved DismissResult = iota
+	DismissNotFound
+	DismissBusy
+)
+
+// Dismiss removes an entry by ID (the queue UI's dismiss action). Holds
+// the session delivery lock: a lock-free value-LRem mid-sweep shifts
+// the sweeper's snapshot indices — its subsequent LSet lands on an
+// innocent neighbor (the r3 reproduction of the sibling-mutator class).
+func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) DismissResult {
+	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
+	if !ok {
+		return DismissBusy // a delivery or sweep owns the session; the caller may retry
+	}
+	defer s.releaseLockDetached(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
-		return false
+		return DismissBusy // transport failure is also transient, not absence
 	}
 	for _, v := range vals {
 		var e Entry
 		if json.Unmarshal([]byte(v), &e) == nil && e.ID == id {
 			s.client.LRem(ctx, qk, 1, v)
-			return true
+			return DismissRemoved
 		}
 	}
-	return false
+	return DismissNotFound
 }
 
+// RetryResult discriminates the queue UI's retry outcome: contention is
+// NOT absence — surfacing it as 404 told users their entry was gone
+// while a delivery merely held the session lock (r3 review finding 4).
+type RetryResult int
+
+const (
+	RetryUpdated RetryResult = iota
+	RetryNotFound
+	RetryBusy
+)
+
 // Retry clears an error entry back to pending (the queue UI's retry).
-func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) bool {
+// Holds the session delivery lock: a lock-free snapshot LSet racing a
+// concurrent sweep's LRem shifts indices and overwrites an innocent
+// neighbor (#1316 review round 2 finding 1).
+func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) RetryResult {
+	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
+	if !ok {
+		return RetryBusy // a delivery owns the session; the retry lands after it
+	}
+	defer s.releaseLockDetached(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
-		return false
+		return RetryBusy // transport failure is also transient, not absence
 	}
 	for i, v := range vals {
 		var e Entry
@@ -893,13 +1094,14 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 			e.Status = StatusPending
 			e.Attempts = 0
 			e.VerifyAttempts = 0
+			e.TransientFails = 0
 			e.LastError = ""
 			e.NextAttemptAt = time.Time{}
 			s.client.LSet(ctx, qk, int64(i), string(mustMarshal(e)))
-			return true
+			return RetryUpdated
 		}
 	}
-	return false
+	return RetryNotFound
 }
 
 func sanitize(s string) string {

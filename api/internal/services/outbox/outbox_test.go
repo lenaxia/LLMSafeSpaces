@@ -244,18 +244,18 @@ func TestDismissAndRetry(t *testing.T) {
 	require.Len(t, entries, 1)
 
 	// Retry resets it.
-	assert.True(t, s.Retry(ctx, "ws", "ses", e.ID))
+	assert.Equal(t, RetryUpdated, s.Retry(ctx, "ws", "ses", e.ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	require.Len(t, entries, 1)
 	assert.Equal(t, StatusPending, entries[0].Status)
 	assert.Zero(t, entries[0].Attempts)
 
 	// Dismiss removes it.
-	assert.True(t, s.Dismiss(ctx, "ws", "ses", e.ID))
+	assert.Equal(t, DismissRemoved, s.Dismiss(ctx, "ws", "ses", e.ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	assert.Empty(t, entries)
 
-	assert.False(t, s.Dismiss(ctx, "ws", "ses", "ob_missing"), "unknown id is a no-op")
+	assert.Equal(t, DismissNotFound, s.Dismiss(ctx, "ws", "ses", "ob_missing"), "unknown id is not-found")
 }
 
 func TestRun_EndToEnd(t *testing.T) {
@@ -324,7 +324,7 @@ func TestAccept_CappedWritesNoDedupeMarker(t *testing.T) {
 	require.ErrorIs(t, err, ErrCapped)
 
 	// No marker for the capped accept: after draining, the retry succeeds.
-	ok := s.Dismiss(ctx, "ws", "ses", mustFirstID(t, s))
+	ok := s.Dismiss(ctx, "ws", "ses", mustFirstID(t, s)) == DismissRemoved
 	require.True(t, ok)
 	e, err := s.Accept(ctx, "ws", "ses", "u-1", "cm-2", "second", nil)
 	require.NoError(t, err, "retry after cap-drain must accept, not false-duplicate")
@@ -529,7 +529,7 @@ func TestVerifying_InconclusiveParksAfterBound(t *testing.T) {
 	assert.NotEmpty(t, entries[0].LastError)
 
 	// Retry (the queue UI action) resets it for a fresh send.
-	assert.True(t, s.Retry(ctx, "ws", "ses", entries[0].ID))
+	assert.Equal(t, RetryUpdated, s.Retry(ctx, "ws", "ses", entries[0].ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	assert.Equal(t, StatusPending, entries[0].Status)
 	assert.Zero(t, entries[0].VerifyAttempts)

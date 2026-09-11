@@ -41,12 +41,18 @@ func (s *Service) UnparkWorkspace(ctx context.Context, workspaceID string) (int,
 		if ws != workspaceID {
 			continue
 		}
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue
+		}
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue
 		}
-		for i, v := range vals {
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := vals[i]
 			var e Entry
 			if json.Unmarshal([]byte(v), &e) != nil {
 				continue
@@ -65,6 +71,7 @@ func (s *Service) UnparkWorkspace(ctx context.Context, workspaceID string) (int,
 			}
 			unparked++
 		}
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	return unparked, nil
 }
@@ -77,12 +84,18 @@ func (s *Service) parkSweep(ctx context.Context, workspaceID, reason string, inF
 		if ws != workspaceID {
 			continue
 		}
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue
+		}
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue
 		}
-		for i, v := range vals {
+		for i := len(vals) - 1; i >= 0; i-- {
+			v := vals[i]
 			var e Entry
 			if json.Unmarshal([]byte(v), &e) != nil {
 				continue
@@ -102,6 +115,7 @@ func (s *Service) parkSweep(ctx context.Context, workspaceID, reason string, inF
 			}
 			parked++
 		}
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	_ = inFlightOnly // parkable() already scopes to in-flight statuses
 	return parked, nil

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
@@ -91,7 +92,9 @@ func (d *agentdDeliverer) endpoint(ctx context.Context, workspaceID, sessionID s
 func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	base, pw, err := d.endpoint(ctx, workspaceID, sessionID)
 	if err != nil {
-		return fmt.Errorf("agentd terminus: resolve: %w", err)
+		// Resolve drove no attempt — transient: the outbox must not
+		// mint an attempt number for it (#1316 review round 2).
+		return outbox.Transient(fmt.Errorf("agentd terminus: resolve: %w", err))
 	}
 
 	// I10/I6: resolve the prior attempt first — a retry must never
@@ -104,7 +107,10 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 			}
 			if prior == ledgerStateLedgered {
 				// Admission still owned by agentd's retry loop — poll the
-				// PRIOR attempt's window, never re-POST.
+				// PRIOR attempt's window, never re-POST. A timeout here
+				// drove NO attempt: PriorAttemptPending keeps the outbox
+				// from minting a phantom attempt number (the #1316
+				// review's unrecoverable-park defect).
 				st, timedOut, perr := pollToCompletion(ctx, d.httpClient(), base, pw, e.ID, attemptOf(e.Attempts), d.window(), d.every())
 				if perr == nil {
 					if done, _ := completionFor(st); done {
@@ -112,9 +118,11 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 					}
 				}
 				if timedOut {
-					return &retryableError{fmt.Errorf("agentd terminus: attempt %d still %s (agentd owns admission)", e.Attempts, prior)}
+					return outbox.PriorAttemptPending(&retryableError{fmt.Errorf("agentd terminus: attempt %d still %s (agentd owns admission)", e.Attempts, prior)})
 				}
-				return perr
+				// A canceled/errored prior-row poll drove no attempt —
+				// transient, never mints a number.
+				return outbox.Transient(perr)
 			}
 			// failed (or unknown non-completing terminal): fall through
 			// to a fresh POST at attempt+1 — the re-arm path.
@@ -144,6 +152,30 @@ func (d *agentdDeliverer) deliver(ctx context.Context, workspaceID, sessionID st
 // hung agentd connection can never pin an outbox worker indefinitely
 // (request contexts carry their own deadlines on top of this cap).
 var agentdHTTPClient = &http.Client{Timeout: agentdDeliverInlineWindow}
+
+// ledgerProbeHTTPClient bounds the sweeper/park-guard probes: a status
+// lookup is one cheap pod-local round trip — a hung pod must fail fast
+// so a sweep pass never stalls behind it (indeterminate, next pass).
+var ledgerProbeHTTPClient = &http.Client{Timeout: 5 * time.Second}
+
+// outboxLedgerProbe adapts the outbox's LedgerProbe seam (#1316) to the
+// pod's ABI status surface with the proxy's resume-safe resolution. A
+// not_found row maps to ("", nil) — no row — so the outbox's decision
+// table can distinguish absence from unreachability.
+func (h *ProxyHandler) outboxLedgerProbe(ctx context.Context, workspaceID, sessionID, entryID string, attempt uint32) (string, error) {
+	base, pw, err := h.agentdEndpoint(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	state, err := ledgerLookup(ctx, ledgerProbeHTTPClient, base, pw, entryID, attempt)
+	if err != nil {
+		if strings.Contains(err.Error(), "not_found") {
+			return "", nil
+		}
+		return "", err
+	}
+	return state, nil
+}
 
 func (d *agentdDeliverer) httpClient() *http.Client {
 	if d.client != nil {
