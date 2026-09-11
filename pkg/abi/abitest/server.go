@@ -35,6 +35,7 @@ type Server struct {
 	// resolveNotFound arms one-shot leg-2 stale clicks: the next answer
 	// for the input ID 404s, then answering works normally.
 	resolveNotFound map[string]bool
+	knobs           faultKnobs
 	handler         http.Handler
 }
 
@@ -48,7 +49,7 @@ func New() *Server {
 	path, handler := abiconnect.NewHarnessABIServiceHandler(s)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
-	s.handler = mux
+	s.handler = faultMiddleware(s, mux)
 	return s
 }
 
@@ -229,8 +230,10 @@ func (s *Server) Deliver(ctx context.Context, req *connect.Request[abiv1.Deliver
 		}
 	}
 
+	s.stallDeliverAck(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.knobs.record(DeliveryCall{EntryID: m.GetEntryId(), Attempt: m.GetAttempt()})
 	key := m.GetEntryId() + "/" + itoa(m.GetAttempt())
 	if prev, ok := s.deliveries[key]; ok {
 		return connect.NewResponse(&abiv1.DeliveryAck{EntryId: prev.GetEntryId(), Attempt: prev.GetAttempt(), State: prev.GetState()}), nil
