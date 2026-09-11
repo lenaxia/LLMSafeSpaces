@@ -12,6 +12,7 @@ package abitest
 import (
 	"context"
 	"net/http"
+	"sort"
 	"sync"
 
 	"connectrpc.com/connect"
@@ -27,13 +28,22 @@ type Server struct {
 	mu         sync.Mutex
 	deliveries map[string]*abiv1.DeliveryStatus
 	suppressed map[abiv1.EventType]bool
-	handler    http.Handler
+	// pending is the live pending-input registry (epic-71 fault knobs,
+	// #1310 slice A): the harness truth the snapshot surface serves and
+	// the Act answer path consumes — asks are leases, this is the list.
+	pending map[string]map[string]*abiv1.InputRequest
+	// resolveNotFound arms one-shot leg-2 stale clicks: the next answer
+	// for the input ID 404s, then answering works normally.
+	resolveNotFound map[string]bool
+	handler         http.Handler
 }
 
 func New() *Server {
 	s := &Server{
-		deliveries: map[string]*abiv1.DeliveryStatus{},
-		suppressed: map[abiv1.EventType]bool{},
+		deliveries:      map[string]*abiv1.DeliveryStatus{},
+		suppressed:      map[abiv1.EventType]bool{},
+		pending:         map[string]map[string]*abiv1.InputRequest{},
+		resolveNotFound: map[string]bool{},
 	}
 	path, handler := abiconnect.NewHarnessABIServiceHandler(s)
 	mux := http.NewServeMux()
@@ -70,6 +80,53 @@ func (s *Server) SuppressedEventTypes() []abiv1.EventType {
 		out = append(out, t)
 	}
 	return out
+}
+
+// SeedPendingInput seeds the live pending-input registry (the harness's
+// ephemeral ask set) — the truth both snapshot surfaces serve. Epic-71
+// fault-matrix groundwork: legs 1-2 stage the stale-ask shapes through
+// this registry.
+func (s *Server) SeedPendingInput(sessionID string, in *abiv1.InputRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if in == nil || in.GetId() == "" {
+		return
+	}
+	if s.pending[sessionID] == nil {
+		s.pending[sessionID] = map[string]*abiv1.InputRequest{}
+	}
+	s.pending[sessionID][in.GetId()] = in
+}
+
+// PendingInputs returns the session's live pending set, sorted by ID
+// (knob-state inspection for assertions).
+func (s *Server) PendingInputs(sessionID string) []*abiv1.InputRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*abiv1.InputRequest, 0, len(s.pending[sessionID]))
+	for _, in := range s.pending[sessionID] {
+		out = append(out, in)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetId() < out[j].GetId() })
+	return out
+}
+
+// DropAskSilently arms fault leg 1: the harness drops the ask with NO
+// lifecycle event (turn abort mid-tool-call) — the registry simply no
+// longer lists it, and nothing is emitted.
+func (s *Server) DropAskSilently(sessionID, inputID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.pending[sessionID], inputID)
+}
+
+// SetResolveNotFound arms fault leg 2 (one-shot): the NEXT answer for
+// the input ID returns not-found — the stale-click shape resolve-by-
+// absence must treat as resolution. Subsequent answers behave normally.
+func (s *Server) SetResolveNotFound(inputID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolveNotFound[inputID] = true
 }
 
 func (s *Server) eventTypeSuppressed(t abiv1.EventType) bool {
@@ -135,7 +192,17 @@ func (s *Server) GetSnapshot(ctx context.Context, req *connect.Request[abiv1.Get
 	if req.Msg.GetSessionId() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errString("session_id is required"))
 	}
-	return connect.NewResponse(referenceSessionSnapshot(req.Msg.GetSessionId())), nil
+	sid := req.Msg.GetSessionId()
+	if seeded := s.PendingInputs(sid); len(seeded) > 0 {
+		return connect.NewResponse(&abiv1.SessionSnapshot{
+			SessionId:     sid,
+			Status:        abiv1.SessionStatus_SESSION_STATUS_BUSY,
+			PendingInputs: seeded,
+			QueueDepth:    1,
+			InFlightParts: referenceSessionSnapshot(sid).GetInFlightParts(),
+		}), nil
+	}
+	return connect.NewResponse(referenceSessionSnapshot(sid)), nil
 }
 
 func (s *Server) Deliver(ctx context.Context, req *connect.Request[abiv1.DeliveryRequest]) (*connect.Response[abiv1.DeliveryAck], error) {
@@ -221,13 +288,29 @@ func (s *Server) Act(ctx context.Context, req *connect.Request[abiv1.ActionReque
 			}},
 		}), nil
 	case *abiv1.ActionRequest_AnswerQuestion:
-		if a.AnswerQuestion.GetInputId() == "" {
+		ans := a.AnswerQuestion
+		if ans.GetInputId() == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errString("answer_question requires input_id"))
+		}
+		s.mu.Lock()
+		if s.resolveNotFound[ans.GetInputId()] {
+			delete(s.resolveNotFound, ans.GetInputId()) // one-shot
+			s.mu.Unlock()
+			return nil, connect.NewError(connect.CodeNotFound, errString("input not found"))
+		}
+		_, inRegistry := s.pending[req.Msg.GetSessionId()][ans.GetInputId()]
+		delete(s.pending[req.Msg.GetSessionId()], ans.GetInputId())
+		s.mu.Unlock()
+		if !inRegistry {
+			// Absent from the live registry: the stale-click shape — the
+			// harness dropped this ask with no event. Not-found is the
+			// trigger resolve-by-absence treats as resolution (S6).
+			return nil, connect.NewError(connect.CodeNotFound, errString("input not found"))
 		}
 		return connect.NewResponse(&abiv1.ActionResult{
 			SessionId: req.Msg.GetSessionId(),
 			Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{
-				InputId: a.AnswerQuestion.GetInputId(),
+				InputId: ans.GetInputId(),
 			}},
 		}), nil
 	case *abiv1.ActionRequest_Compact:

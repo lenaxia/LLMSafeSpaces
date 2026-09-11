@@ -41,11 +41,15 @@ message SwitchAgentAction {
 
 // AnswerInputAction answers a pending InputRequest (questions and
 // permissions unified, design 0049 §4.5): selected option labels and/or a
-// custom free-text answer.
+// custom free-text answer for questions; the permission vocabulary
+// ("once"|"always"|"reject") for permissions. The two forms are disjoint —
+// reply routes to the permission reply endpoint without the question-first
+// probe (#1302 / #1310 slice A).
 message AnswerInputAction {
   string input_id = 1;
   repeated string option_ids = 2;
   optional string custom_text = 3;
+  optional string reply = 4;
 }
 
 message CompactAction {}
