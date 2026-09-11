@@ -109,16 +109,60 @@ dev preview URL should always be the true fqdn that is publicly facing"):
 
 - `go test ./cmd/workspace-agentd/ -count=1` — 260s, full suite green.
 - `go test ./controller/... -count=1` — green.
-- `go test ./api/internal/handlers/ -count=1` — 113s, green (108s
-  package baseline + new tests).
-- `go test ./helm/... -count=1` — green (chart renders with/without
-  `controller.apiPublicURL`).
-- `go build ./...`, `go vet`, `golangci-lint run` (0 issues),
-  `make fmt-check` — clean.
-- NOT run here (no kind browser harness in this session): the issues'
-  Playwright e2e legs (real browser through the tunnel, slashless URL →
-  CSS applied; sidecar-mode tool call → `https://api.`-prefixed output).
-  Tracked in #1332/#1333 test plans as the post-deploy verification.
+- `go test ./api/internal/handlers/ -count=1` — green.
+- `go test ./helm/... -count=1` and `go test ./local/ -run TestDevPreviewScript` — green.
+- `go build ./...`, `go vet`, `golangci-lint run` (0 issues), `make fmt-check` — clean.
+- Kind e2e: `local/dev-preview-tunnel-e2e.sh` (wired into `e2e-nightly.yml`
+  after the us-70 revisions rows) covers both issues' acceptance legs:
+  308+query preservation, redirect-follow HTML, relative CSS through the
+  tunnel, 400-outranks-redirect, tool fail-loud, and the full
+  flag→controller→pod-env→tool wiring chain (controller patched with
+  `--api-public-url`, pod recreated). Not executed against a live kind
+  cluster in this session — first nightly run post-merge is the proof.
+
+## Review iteration 2 (PR #1334, review bot findings)
+
+1. **Resolution order (#1332 spec compliance)** — implemented
+   `PUBLIC_URL → API_URL → derived` with fail-fast; the distinguishing
+   topology (PUBLIC unset × internal API_URL × base domain set) errored
+   where the spec derives. Fixed: an internal/unparseable `API_URL` is
+   now SKIPPED (fall-through to the derivation) — the legitimate sidecar
+   topology yields a working URL. An explicitly-set-but-internal
+   `PUBLIC_URL` still hard-errors (a misconfigured dedicated knob must
+   fail loud; pinned by test). New tests: internal-API_URL fall-through,
+   unparseable-API_URL fall-through.
+2. **Error text named a nonexistent Helm value** (`api.publicUrl`) —
+   three literals had already drifted from the chart's
+   `controller.apiPublicURL`. Fixed via one shared constant
+   (`apiPublicOriginHint`) + a test asserting the correct value appears
+   and the old one is gone.
+3. **Dotless in-cluster hostnames** (`http://api-name:8080` — the
+   same-namespace K8s DNS form) passed the suffix/IP checks.
+   Fixed: a dotless non-IP host is refused (never publicly resolvable).
+   Refusal table extended: dotless host, IPv6 loopback `[::1]`, IPv6
+   link-local `[fe80::1]`.
+4. **E2E legs (hard gate)** — added `local/dev-preview-tunnel-e2e.sh`
+   (kind, us-70 harness conventions) + nightly wiring + structure pin
+   tests (`local/dev_preview_script_test.go`: bash syntax, per-leg
+   assertion fragments, UUID workspace contract, restore-the-controller
+   patch, workflow wiring).
+5. **Helm render test gap** — `helm/controller_api_public_url_test.go`
+   pins `--api-public-url` absent by default, exact-value render when
+   `controller.apiPublicURL` is set.
+6. **Docs contract** — `docs/reference/cli.md` + `docs/reference/helm-values.md`
+   gained the `--api-public-url` ↔ `controller.apiPublicURL` pair.
+7. **Worklog numbering** — renamed `0913_` → `NNNN_` sentinel (the
+   post-merge bot assigns the real number; pre-commit hook enforces).
+8. **Claimed pre-existing failure not reproduced** — the review cited
+   `TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes`
+   (`api/internal/handlers/proxy_outbox_verify_test.go:547`) failing
+   deterministically 5/5. Could not reproduce on this head:
+   standalone `-count=5` green, `-race -count=3` green, full
+   `./api/internal/handlers/` suite green twice (~113–116s), and the
+   branch's CI "Test (full suite, race detector)" job is green.
+   Documented here rather than "fixed" — there is no failure to fix in
+   this environment; if the reviewer sandbox has a reproducible seed,
+   that's a separate issue with the steps to trigger it.
 
 ## Deployment verification (post-merge)
 

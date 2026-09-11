@@ -343,6 +343,25 @@ jobs:
           PORTFWD_PORT: 18084
         run: bash local/us-70-revisions-e2e.sh
 
+      - name: Run dev-preview tunnel e2e (#1332/#1333)
+        # The 2026-09-10/11 "tunnel not passing CSS" incident legs:
+        #   #1333: bare /dev-preview/:port 308s to the slash form (query
+        #          preserved); follow → HTML + relative CSS resolve under
+        #          the port prefix; mis-resolved asset path and denied
+        #          port stay 400 (validation outranks normalization).
+        #   #1332: default install → dev_preview_url tool fails loud
+        #          naming LLMSAFESPACE_API_PUBLIC_URL (never emits .svc);
+        #          patched --api-public-url → recreated pod → tool emits
+        #          the configured public FQDN end-to-end. Patches and
+        #          restores the controller deployment args around the leg.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18085
+          TOOL_PF_PORT: 18097
+        run: bash local/dev-preview-tunnel-e2e.sh
+
       - name: Run V2 session-queue behavioral e2e (US-63.3/63.4/63.9)
         # Hard-assert behavioral properties that unit tests cannot cover:
         #   US-63.3: enqueue while busy → runs after current turn

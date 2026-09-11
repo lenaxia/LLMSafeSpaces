@@ -306,60 +306,73 @@ func mcpDevPreviewURL(port int, path string) (string, error) {
 //  1. LLMSAFESPACE_API_PUBLIC_URL — the dedicated public origin, wired to
 //     every container that runs agentd tooling. Required in sidecar mode,
 //     where LLMSAFESPACE_API_URL is deliberately the in-cluster svc
-//     coordinate (the sidecar's boot phase bootstraps against it).
-//  2. LLMSAFESPACE_API_URL — deployments where the in-cluster coordinate
-//     IS externally reachable.
+//     coordinate (the sidecar's boot phase bootstraps against it). When
+//     explicitly set it MUST be public: a cluster-internal value here is
+//     a misconfigured knob and fails loud rather than silently falling
+//     through (the operator named the wrong origin; guessing on their
+//     behalf hides it).
+//  2. LLMSAFESPACE_API_URL — used when it is externally reachable; a
+//     cluster-internal value (the legitimate sidecar topology) is
+//     SKIPPED, not an error — the derivation below still applies.
 //  3. https://api.<PREVIEW_ORIGIN_BASE_DOMAIN> — public by construction;
 //     the fallback for pods that carry only the base domain.
 //
-// Whichever source wins, a cluster-internal origin is REFUSED, not
-// relayed: this tool's contract is a URL a browser can reach. Relaying an
-// .svc URL hands the user a dead link they must hand-rewrite — the
-// 2026-09-10 incident's exact failure chain (hand-rewrite dropped the
-// trailing slash; relative assets resolved off the port segment).
+// The tool's contract is a URL a browser can reach. When NO candidate
+// yields a public origin the call errors naming the fix — relaying an
+// .svc URL hands the user a dead link they must hand-rewrite (the
+// 2026-09-10 incident's exact failure chain: the hand-rewrite dropped
+// the trailing slash and relative assets resolved off the port segment).
 func mcpPublicAPIOrigin() (string, error) {
-	candidates := []string{
-		os.Getenv("LLMSAFESPACE_API_PUBLIC_URL"),
-		os.Getenv("LLMSAFESPACE_API_URL"),
-	}
-	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
-		candidates = append(candidates, "https://api."+base)
-	}
-
-	for _, raw := range candidates {
-		origin := strings.TrimSuffix(strings.TrimSpace(raw), "/")
-		if origin == "" {
-			continue
-		}
-		if err := assertPublicAPIOrigin(origin); err != nil {
+	if pub := normalizeOrigin(os.Getenv("LLMSAFESPACE_API_PUBLIC_URL")); pub != "" {
+		if err := assertPublicAPIOrigin(pub); err != nil {
 			return "", err
 		}
-		return origin, nil
+		return pub, nil
 	}
-	return "", fmt.Errorf(
-		"dev preview URL unavailable: no publicly reachable API origin configured — set LLMSAFESPACE_API_PUBLIC_URL on the workspace (controller flag --api-public-url / Helm value api.publicUrl)")
+	if api := normalizeOrigin(os.Getenv("LLMSAFESPACE_API_URL")); api != "" {
+		if err := assertPublicAPIOrigin(api); err == nil {
+			return api, nil
+		}
+		// Internal or unparseable — fall through to the derivation.
+	}
+	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
+		return "https://api." + base, nil
+	}
+	return "", fmt.Errorf("dev preview URL unavailable: no publicly reachable API origin configured — %s", apiPublicOriginHint)
+}
+
+// apiPublicOriginHint is the single remediation string for every
+// public-origin failure (one constant so the flag and Helm value names
+// cannot drift apart across literals — review finding on the first
+// iteration, where three copies had already diverged from the chart).
+const apiPublicOriginHint = "set LLMSAFESPACE_API_PUBLIC_URL to the public API origin (controller flag --api-public-url / Helm value controller.apiPublicURL)"
+
+func normalizeOrigin(raw string) string {
+	return strings.TrimSuffix(strings.TrimSpace(raw), "/")
 }
 
 // assertPublicAPIOrigin rejects cluster-internal origins: Kubernetes
-// service suffixes (.svc, .svc.cluster.local, .cluster.local), localhost
-// names, and loopback/RFC1918/link-local/unspecified IPs.
+// service suffixes (.svc, .svc.cluster.local, .cluster.local) and the
+// dotless same-namespace service form (http://api-name:8080 — a single
+// DNS label is never a publicly resolvable name), localhost names, and
+// loopback/RFC1918/link-local/unspecified IPs (v4 and v6).
 func assertPublicAPIOrigin(origin string) error {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || u.Scheme == "" {
-		return fmt.Errorf(
-			"dev preview URL unavailable: configured API origin %q is not a usable absolute URL — set LLMSAFESPACE_API_PUBLIC_URL to the public API origin (controller flag --api-public-url / Helm value api.publicUrl)", origin)
+		return fmt.Errorf("dev preview URL unavailable: configured API origin %q is not a usable absolute URL — %s", origin, apiPublicOriginHint)
 	}
 	host := u.Hostname()
+	ip := net.ParseIP(host)
 	internal := host == "localhost" ||
 		strings.HasSuffix(host, ".svc") ||
 		strings.HasSuffix(host, ".svc.cluster.local") ||
-		strings.HasSuffix(host, ".cluster.local")
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+		strings.HasSuffix(host, ".cluster.local") ||
+		(ip == nil && !strings.Contains(host, "."))
+	if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
 		internal = true
 	}
 	if internal {
-		return fmt.Errorf(
-			"dev preview URL unavailable: the API origin %q is cluster-internal and unreachable from the user's browser — set LLMSAFESPACE_API_PUBLIC_URL to the public API origin (controller flag --api-public-url / Helm value api.publicUrl)", origin)
+		return fmt.Errorf("dev preview URL unavailable: the API origin %q is cluster-internal and unreachable from the user's browser — %s", origin, apiPublicOriginHint)
 	}
 	return nil
 }

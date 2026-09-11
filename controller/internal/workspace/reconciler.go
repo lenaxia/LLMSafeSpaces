@@ -81,7 +81,7 @@ type WorkspaceReconciler struct {
 	// controller derives https://api.<baseDomain>; when both are unset
 	// the env is omitted and the tool validates LLMSAFESPACE_API_URL,
 	// refusing cluster-internal values. Same value as --api-public-url
-	// (Helm value api.publicUrl).
+	// (Helm value controller.apiPublicURL).
 	APIPublicURL string
 	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
 	// digest-addressed image volume into every workspace pod and the

@@ -535,6 +535,40 @@ func TestCallMCPTool_DevPreviewURL_PublicURLOverride(t *testing.T) {
 	assert.NotContains(t, result, ".svc", "the in-cluster svc origin must never reach a user-facing link")
 }
 
+// The order-distinguishing topology (review finding 1): PUBLIC unset ×
+// INTERNAL API_URL × base domain set — the legitimate sidecar shape
+// under controller/agentd version skew. The internal API_URL is skipped
+// and the derivation wins instead of erroring.
+func TestCallMCPTool_DevPreviewURL_InternalAPIURLFallsThroughToDerivation(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "1f4e68af-8558-48e6-acb6-8781dfc1224c")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/1f4e68af-8558-48e6-acb6-8781dfc1224c/dev-preview-bootstrap/3000)",
+		"origin mode must engage: the base domain is set")
+	assert.NotContains(t, result, ".svc")
+}
+
+// An unparseable API_URL is skipped like an internal one — never a hard
+// error when the derivation can still produce a public origin.
+func TestCallMCPTool_DevPreviewURL_UnparseableAPIURLFallsThroughToDerivation(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://[::1:bad")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "https://api.safespaces.dev/")
+}
+
 func TestCallMCPTool_DevPreviewURL_PublicURLOverrideWinsInOriginMode(t *testing.T) {
 	t.Setenv("WORKSPACE_ID", "1f4e68af-8558-48e6-acb6-8781dfc1224c")
 	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
@@ -560,11 +594,19 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 		"http://llmsafespaces-api.llmsafespaces.svc:8080",
 		"http://llmsafespaces-api.llmsafespaces.svc.cluster.local:8080",
 		"http://llmsafespaces-api.cluster.local:8080",
+		// Dotless same-namespace service form — a single DNS label is
+		// never publicly resolvable (review finding: this shape passed
+		// the suffix checks and would have been relayed).
+		"http://llmsafespaces-api:8080",
 		"http://localhost:8080",
 		"http://127.0.0.1:8080",
 		"http://10.69.2.225:8080",
 		"http://192.168.1.10:8080",
 		"http://172.16.0.5:8080",
+		// IPv6 shapes: loopback, link-local (bracketed hosts —
+		// url.Hostname strips the brackets for net.ParseIP).
+		"http://[::1]:8080",
+		"http://[fe80::1]:8080",
 	}
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
@@ -580,7 +622,8 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 	}
 
 	// The override itself is validated the same way — a misconfigured
-	// public var cannot smuggle an internal origin back in.
+	// public var cannot smuggle an internal origin back in (an explicitly
+	// set-but-wrong dedicated knob fails loud; no silent fall-through).
 	t.Setenv("LLMSAFESPACE_API_URL", "https://real.example.com")
 	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
 	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
@@ -588,6 +631,23 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_PUBLIC_URL")
+}
+
+// The remediation hint names the REAL Helm value (controller.apiPublicURL
+// — review finding 2: the first iteration's error text said api.publicUrl,
+// a key that matches nothing in the chart).
+func TestCallMCPTool_DevPreviewURL_ErrorNamesCorrectHelmValue(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
+
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "controller.apiPublicURL")
+	assert.NotContains(t, err.Error(), "api.publicUrl", "the old nonexistent value must be gone")
 }
 
 func TestCallMCPTool_DevPreviewURL_NoOriginConfigured(t *testing.T) {
