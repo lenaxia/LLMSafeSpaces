@@ -217,6 +217,15 @@ func NewProxyHandler(
 	}, nil
 }
 
+// adapterUnavailable is the guard for #828-migrated handlers: their
+// legacy dialect fallback is deleted, so a nil adapter is a wiring
+// failure surfaced as a typed 503 — never a silent passthrough.
+func (h *ProxyHandler) adapterUnavailable(c *gin.Context) {
+	h.logger.Error("Migrated proxy handler called without adapter", nil,
+		"path", c.Request.URL.Path)
+	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent adapter not configured"})
+}
+
 // SetAdapter wires the US-65.3 Agent Adapter. Once set, handlers that
 // have been migrated check `h.adapter != nil` and take the Adapter path;
 // unmigrated handlers continue through the legacy dialect path. Set
@@ -445,17 +454,11 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 		}
 	}
 
-	// Disk-pressure injection: when the workspace disk is >=90% full,
-	// prepend a notice part to LLM-bound requests (POST /message)
-	// so the agent nudges the user to free up space; >=95% escalates to
-	// safe-cleanup guidance (build artifacts + caches only, logs last).
-	// The ratio comes from the Workspace CRD status (controller-mirrored
-	// from agentd statusz, ~60s freshness — the same data the frontend
-	// shows as a %). Fail-open: no injection on unknown disk state.
-	if len(bodyBytes) > 0 && isLLMPromptPath(targetPath) {
-		bodyBytes = injectDiskPressureNotice(bodyBytes,
-			diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes))
-	}
+	// Disk-pressure injection lives in the noticingAdapter decorator
+	// (pkg/agent/systemnotices.Wrap, #944) — the single injection point
+	// covering every entrypoint. The body-rewrite that used to live here
+	// served the legacy raw-proxy message path and was deleted with it
+	// (#828 batch 1).
 
 	podIP := workspace.Status.PodIP
 

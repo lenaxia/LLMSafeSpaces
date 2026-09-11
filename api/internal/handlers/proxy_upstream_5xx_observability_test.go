@@ -228,7 +228,7 @@ func TestDoProxy_Upstream5xx_LogsWarnAndRecordsMetric(t *testing.T) {
 	upstream5xxTotalReset(t)
 
 	w := env.doRequestWithT(t, "POST",
-		"/api/v1/workspaces/ws-write-5xx/sessions", strings.NewReader(`{}`))
+		"/api/v1/workspaces/ws-write-5xx/legacy-message/ses_1", strings.NewReader(`{}`))
 
 	// Client sees the upstream status (either passed through or wrapped
 	// as a 5xx; both are >= 500 and both should have observability).
@@ -239,7 +239,7 @@ func TestDoProxy_Upstream5xx_LogsWarnAndRecordsMetric(t *testing.T) {
 	assert.Equal(t, "ws-write-5xx", line.fields["workspaceID"])
 	assert.Equal(t, 502, line.fields["upstreamStatus"])
 
-	got := counterValue(t, metrics.Upstream5xxCounter(), "ws-write-5xx", "/session", "502")
+	got := counterValue(t, metrics.Upstream5xxCounter(), "ws-write-5xx", "/session/:id/message", "502")
 	assert.Equal(t, 1.0, got,
 		"upstream_5xx counter must fire for the streaming proxy path too, "+
 			"not just the history path")
