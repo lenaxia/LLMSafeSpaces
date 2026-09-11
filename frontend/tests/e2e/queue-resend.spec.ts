@@ -40,15 +40,19 @@ async function stubAuth(page: Page) {
 // errors and retry forever — the r9 churn source that still swallowed
 // clicks after /events was stubbed (46 /runs/active + 24 each of the
 // others per run in the reviewer's logs). Targeted, NOT a global 404:
-// a global fallback breaks load-bearing endpoints.
+// a global fallback breaks load-bearing endpoints. r10: patterns match
+// the REAL consumer URLs — /runs/active is workspace-scoped
+// (workflows.ts:176) and the sidebar polls image-factory CONFIGS, not
+// catalog (imageFactory.ts:86); the r9 draft's two dead entries are
+// corrected here.
 async function pollerStub(page: Page) {
   const empty = (body: unknown) => async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   };
-  await page.route(`${API}/runs/active`, empty({ runs: [] }));
+  await page.route(`${API}/workspaces/${WS}/runs/active`, empty({ runs: [] }));
   await page.route(`${API}/workspaces/${WS}/agent-role`, empty({ role: null }));
   await page.route(`${API}/orgs`, empty([]));
-  await page.route(`${API}/image-factory/catalog`, empty({ images: [] }));
+  await page.route(`${API}/image-factory/configs`, empty({ configs: [] }));
   await page.route(`${API}/admin/agent-roles`, empty([]));
 }
 
@@ -134,15 +138,8 @@ async function stubWorkspace(page: Page, opts: { eventsStub?: boolean } = {}) {
 function stubQueue(page: Page, entries: QueueEntry[]) {
   const live = [...entries];
   const calls = { retry: 0, enqueue: 0, delete: 0, deleteStatus: 503 as number, retryStatus: 503 as number };
-  const bodies: string[] = [];
-  page.on("request", (req) => {
-    if (req.url().includes(`/queue`) && req.method() === "POST" && !req.url().includes("/retry")) {
-      bodies.push(req.postData() ?? "");
-    }
-  });
   return {
     calls,
-    bodies,
     async install() {
       await page.route(`${API}/workspaces/${WS}/sessions/${SES}/queue`, async (route: Route) => {
         const method = route.request().method();
