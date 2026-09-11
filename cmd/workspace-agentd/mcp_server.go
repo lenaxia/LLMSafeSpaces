@@ -367,6 +367,11 @@ func assertPublicAPIOrigin(origin string) error {
 		return fmt.Errorf("dev preview URL unavailable: configured API origin %q is not a usable absolute URL — %s", origin, apiPublicOriginHint)
 	}
 	host := strings.TrimSuffix(u.Hostname(), ".")
+	// DNS names are case-insensitive (RFC 4343) — K8s DNS constructs
+	// lowercase, but the env vars this reads are operator-written:
+	// LLMSAFESPACES-API.LLMSAFESPACES.SVC is the svc coordinate and must
+	// refuse exactly like its lowercase form.
+	host = strings.ToLower(host)
 	ip := net.ParseIP(host)
 	internal := host == "localhost" ||
 		strings.HasSuffix(host, ".localhost") ||

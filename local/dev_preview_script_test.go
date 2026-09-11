@@ -60,11 +60,11 @@ func TestDevPreviewScript_AssertionRows(t *testing.T) {
 		}
 	}
 
-	// The controller patch is restored ATOMICALLY (trap on EXIT) so later
-	// nightly suites — and a mid-leg die — never see a controller carrying
-	// the e2e flags.
-	if !strings.Contains(s, "trap restore_controller EXIT") {
-		t.Error("script must guarantee controller restoration via an EXIT trap")
+	// The controller patch is restored ATOMICALLY (trap on EXIT, chained
+	// with the lib's port-forward cleanup) so later nightly suites — and
+	// a mid-leg die — never see a controller carrying the e2e flags.
+	if !strings.Contains(s, "trap 'restore_controller; cleanup' EXIT") {
+		t.Error("script must guarantee controller restoration via an EXIT trap chained with cleanup")
 	}
 	if !strings.Contains(s, `startswith("--api-public-url=")`) {
 		t.Error("the restore must filter the --api-public-url flag out of controller args")

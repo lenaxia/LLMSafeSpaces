@@ -607,6 +607,12 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 		"http://llmsafespaces-api.llmsafespaces.svc.cluster.local.:8080",
 		"http://localhost.:8080",
 		"http://localhost:8080",
+		// Uppercase forms: DNS is case-insensitive (RFC 4343) — the
+		// env vars are operator-written and an uppercase internal origin
+		// is as browser-unreachable as its lowercase form (round-3
+		// review finding).
+		"https://LLMSAFESPACES-API.LLMSAFESPACES.SVC:8080",
+		"https://API.LOCALHOST:8080",
 		"http://127.0.0.1:8080",
 		"http://10.69.2.225:8080",
 		"http://192.168.1.10:8080",

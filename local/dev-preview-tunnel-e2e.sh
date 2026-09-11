@@ -185,7 +185,9 @@ restore_controller() {
     fi
     kc delete workspace "${WS}" --ignore-not-found >/dev/null 2>&1 || true
 }
-trap restore_controller EXIT
+# Chain the lib's port-forward cleanup (replacing its trap wholesale would
+# leave the API port-forward alive on manual runs).
+trap 'restore_controller; cleanup' EXIT
 
 log "#1332-A: no public origin configured → tool fails loud (never an .svc link)"
 out="$(mcp_call "${WS_DEVPORT}")" || true
