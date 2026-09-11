@@ -538,7 +538,8 @@ it("retry on an err_ pill skips the server retry and reuses its cmid", async () 
   await act(async () => { await result.current.retry(errPill.id); });
 
   expect(messagesApi.retryQueueMessage).not.toHaveBeenCalled();
-  const call = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+  const allCalls = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls;
+  const call = allCalls[allCalls.length - 1]!;
   expect(call![4]).toBe(originalCmid);
   expect(result.current.queuedMessages[0]!.id).toBe("srv_new");
 });

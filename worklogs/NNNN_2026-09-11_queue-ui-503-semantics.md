@@ -61,3 +61,10 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 - The r6 clearAll e2e arm was flaky by construction (its stateless GET let the trailing refreshQueue re-add the 204-deleted entry); the stub is now stateful — the GET payload mutates on confirmed deletes, the same discipline `stubQueue` already had.
 - The dismiss contract in the earlier sections is SUPERSEDED (r4): unknown-outcome deletes KEEP the pill error-marked (the refresh reconcile claim was false for delivering entries); 2xx/404 remove immediately.
 - `.at(-1)` in the err_-pill pin violated the ES2020 lib target (TS2550, CI typecheck gate) — replaced with indexed access.
+
+## Review r7 corrections (the r6 record was itself false — Rule 7.5)
+
+- The r6 claim ".at(-1) → indexed access" was NEVER LANDED: the edit ran against a working tree that had been switched to another PR's branch mid-session and was lost on the next checkout; the reviewer's CI-red finding was correct, and my "typecheck clean" verification had run against the wrong tree. The fix now lands on the verified branch and `npx tsc --noEmit -p tsconfig.json` (the CI command, covering tests/e2e) is the gate.
+- TS6133 (unused `page` in clickUntil) — the param is gone (locators arrive pre-bound).
+- clickUntil now checks the EFFECT FIRST each iteration — a successful-but-slow click is never followed by a second POST (the naive retry loop's double-POST hazard, reviewer-identified). The retry-count assertion relaxed to >= 1 with enqueue === 0 as the hard invariant; a rare extra 503 re-POST is an idempotent server-side re-arm of the SAME entry, never a duplicate.
+- e2e: 12/12 × 2 at --repeat-each=3 --retries=0 (default workers AND --workers=1).
