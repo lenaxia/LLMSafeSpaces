@@ -140,6 +140,14 @@ activate_ws() { # ws — API activate + wait Active
 total_start=$(date +%s%3N)
 harness_start
 
+# The arm step rolled the API deployment to inject the fault seam — the
+# port-forward established before that rollout is pinned to the REPLACED
+# pod (run 34618847909: rollout at 16:34:39, F1's probe at 16:34:40 hit
+# the dead forward and skipped the row). Re-establish the forward against
+# the armed process before any seam probing; idempotent (F2/F6 reuse the
+# same dance).
+reconnect_api
+
 # -----------------------------------------------------------------------------
 # F1 — API 500s at boot (AC-8): never-block-boot + autopush heal
 # -----------------------------------------------------------------------------

@@ -947,3 +947,26 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 		}
 	}
 }
+
+// TestUS70FaultsScript_ReconnectsAfterArm pins the r6 fix: the arm step
+// rolls the API deployment, so any port-forward established BEFORE the
+// rollout is pinned to the replaced pod — the faults script must
+// reconnect before its first seam probe (run 34618847909: F1 skipped on
+// a dead forward one second after rollout).
+func TestUS70FaultsScript_ReconnectsAfterArm(t *testing.T) {
+	src := mustRead(t, us70FaultsScript)
+	if !strings.Contains(src, "harness_start\n\n# The arm step rolled the API deployment") {
+		t.Fatalf("faults script must document WHY it reconnects after harness_start (the arm-step rollout replaces the forwarded pod)")
+	}
+	idxHarness := strings.Index(src, "harness_start")
+	idxReconnect := strings.Index(src[idxHarness:], "reconnect_api\n")
+	if idxHarness < 0 || idxReconnect < 0 {
+		t.Fatalf("reconnect_api must run after harness_start and before the F1 seam probe")
+	}
+	idxReconnect += idxHarness
+	// It must run before the F1 probe loop (the first seam consumer).
+	idxProbe := strings.Index(src, "FAULT_SEEN=0")
+	if idxProbe < 0 || idxReconnect > idxProbe {
+		t.Fatalf("reconnect_api must precede the F1 seam probe")
+	}
+}
