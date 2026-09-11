@@ -70,6 +70,17 @@ func (c *Client) GetSnapshot(ctx context.Context, sessionID string) (*abiv1.Sess
 	return resp.Msg, nil
 }
 
+// Deliver submits a delivery entry (op 1). Idempotence is "no second
+// row", not "state frozen": a duplicate ack carries the row's CURRENT
+// state (which may have advanced) — the delivery_op_test semantics.
+func (c *Client) Deliver(ctx context.Context, req *abiv1.DeliveryRequest) (*abiv1.DeliveryAck, error) {
+	resp, err := c.svc.Deliver(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // syncIdleWindow is how long Sync waits for further frames before
 // declaring the fold current (frames arrive promptly; live pods emit
 // continuously during turns — the window only needs to outlast a burst).
