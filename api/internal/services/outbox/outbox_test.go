@@ -251,11 +251,11 @@ func TestDismissAndRetry(t *testing.T) {
 	assert.Zero(t, entries[0].Attempts)
 
 	// Dismiss removes it.
-	assert.True(t, s.Dismiss(ctx, "ws", "ses", e.ID))
+	assert.Equal(t, DismissRemoved, s.Dismiss(ctx, "ws", "ses", e.ID))
 	entries, _ = s.List(ctx, "ws", "ses")
 	assert.Empty(t, entries)
 
-	assert.False(t, s.Dismiss(ctx, "ws", "ses", "ob_missing"), "unknown id is a no-op")
+	assert.Equal(t, DismissNotFound, s.Dismiss(ctx, "ws", "ses", "ob_missing"), "unknown id is not-found")
 }
 
 func TestRun_EndToEnd(t *testing.T) {
@@ -324,7 +324,7 @@ func TestAccept_CappedWritesNoDedupeMarker(t *testing.T) {
 	require.ErrorIs(t, err, ErrCapped)
 
 	// No marker for the capped accept: after draining, the retry succeeds.
-	ok := s.Dismiss(ctx, "ws", "ses", mustFirstID(t, s))
+	ok := s.Dismiss(ctx, "ws", "ses", mustFirstID(t, s)) == DismissRemoved
 	require.True(t, ok)
 	e, err := s.Accept(ctx, "ws", "ses", "u-1", "cm-2", "second", nil)
 	require.NoError(t, err, "retry after cap-drain must accept, not false-duplicate")

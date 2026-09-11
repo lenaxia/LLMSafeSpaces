@@ -41,8 +41,13 @@ func newOutboxTestEnv(t *testing.T) *e2eEnv {
 	env := newE2EEnv(t, backend)
 	mr := miniredis.RunT(t)
 	env.handler.SetOutboxForTest(outbox.New(redis.NewClient(&redis.Options{Addr: mr.Addr()})))
+	env.miniredis = mr
 	return env
 }
+
+// outboxMiniredis returns the env's outbox store for direct key
+// manipulation (e.g. simulating a held session lock).
+func (e *e2eEnv) outboxMiniredis() *miniredis.Miniredis { return e.miniredis }
 
 func postPrompt(t *testing.T, env *e2eEnv, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -330,4 +335,42 @@ func TestOutbox_RetryQueueMessage_NoOutbox(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/ob_x/retry", nil))
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// TestOutbox_DismissEndpoint_ContendedIs503Not404 (#1316 r4 finding
+// 1, handler level): while a delivery or sweep holds the session lock,
+// DELETE /queue/:id reports 503 busy — never a false 404 — and the
+// entry survives for the retry.
+func TestOutbox_DismissEndpoint_ContendedIs503Not404(t *testing.T) {
+	env := newOutboxTestEnv(t)
+	env.router.DELETE("/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId", env.handler.DeleteQueueMessage)
+	env.router.GET("/api/v1/workspaces/:id/sessions/:sessionId/queue", env.handler.ListQueue)
+
+	origBackoff, origMax := outbox.RetryBackoff, outbox.MaxBackoff
+	outbox.RetryBackoff, outbox.MaxBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { outbox.RetryBackoff, outbox.MaxBackoff = origBackoff, origMax })
+
+	w := postPrompt(t, env, `{"clientMessageID":"cm-busy","parts":[{"type":"text","text":"busy dismiss"}]}`)
+	require.Equal(t, http.StatusAccepted, w.Code)
+
+	ob := env.handler.GetOutboxForTest()
+	// Park the entry terminal so dismiss is the targeted action.
+	for i := 0; i < outbox.MaxAttempts; i++ {
+		_ = ob.DeliverOnce(context.Background(), "ws-1", "ses_1",
+			func(context.Context, string, string, outbox.Entry) error { return errors.New("down") })
+		time.Sleep(2 * time.Millisecond)
+	}
+	entries, _ := ob.List(context.Background(), "ws-1", "ses_1")
+	require.Len(t, entries, 1)
+	require.Equal(t, outbox.StatusError, entries[0].Status)
+
+	// Simulate a held session lock (delivery/sweep): Dismiss's bounded
+	// retry expires and reports busy — the handler must not claim 404.
+	require.NoError(t, env.outboxMiniredis().Set("outboxlock:ws-1:ses_1", "lk_someone_else"))
+	w2 := env.do(http.MethodDelete, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/"+entries[0].ID, nil)
+	require.Equal(t, http.StatusServiceUnavailable, w2.Code)
+	assert.Contains(t, w2.Body.String(), "busy")
+
+	after, _ := ob.List(context.Background(), "ws-1", "ses_1")
+	require.Len(t, after, 1, "the dismissal was not silently applied")
 }

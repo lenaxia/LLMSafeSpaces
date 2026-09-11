@@ -1476,9 +1476,15 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 	// — the entry is removed and will not deliver. The V2 shadow below is
 	// the legacy path.
 	if h.outbox != nil {
-		if h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
+		switch h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
+		case outbox.DismissRemoved:
 			c.Status(http.StatusNoContent)
-		} else {
+		case outbox.DismissBusy:
+			// Contention (a delivery or sweep holds the session lock) or
+			// a transient store failure — the entry exists; retrying
+			// shortly will land. Contention is not absence (r4 review).
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "session busy delivering; retry shortly"})
+		default:
 			c.JSON(http.StatusNotFound, gin.H{"error": "queue message not found"})
 		}
 		return

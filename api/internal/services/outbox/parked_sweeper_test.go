@@ -807,13 +807,13 @@ func TestDismissVsSweepMidPass(t *testing.T) {
 	}()
 	<-probeEntered // the sweeper holds the session lock, mid-pass on eA
 
-	dismissDone := make(chan bool, 1)
+	dismissDone := make(chan DismissResult, 1)
 	go func() {
 		dismissDone <- s.Dismiss(context.Background(), "ws-1", "ses-1", "eB") // defers to the lock
 	}()
 	close(releaseProbe)
 	<-sweepDone
-	require.True(t, <-dismissDone, "dismiss lands once the sweep releases")
+	require.Equal(t, DismissRemoved, <-dismissDone, "dismiss lands once the sweep releases")
 
 	entries := readQueueEntries(t, s, "ws-1", "ses-1")
 	ids := []string{}
@@ -903,4 +903,81 @@ func TestRetryContendedIsBusyNotMissing(t *testing.T) {
 
 	assert.Equal(t, RetryBusy, s.Retry(context.Background(), "ws-1", "ses-1", "e1"),
 		"contention is busy, not not-found")
+}
+
+// TestRecoverVsSweepBootOverlap (review r4 finding 2): at boot, Run's
+// Recover (head-LPush, shifts indices) can overlap the seed
+// transition's parked sweep on the same replica. Recover must defer to
+// the session lock — the requeue and the sweep serialize, and the
+// innocent neighbor survives.
+func TestRecoverVsSweepBootOverlap(t *testing.T) {
+	s, _ := newTestService(t)
+	probeEntered := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+		if id == "eA" {
+			close(probeEntered)
+			<-releaseProbe
+			return LedgerStateAdmitted, nil
+		}
+		return LedgerStateFailed, nil
+	})
+
+	// Crash leftovers: sX staged (Recover will requeue it verifying),
+	// eA parked error (sweep completes it), eC pending (the victim).
+	staged := Entry{ID: "sX", ClientMessageID: "cmid-sX", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusDelivering}
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), string(mustMarshal(staged))).Err())
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 5, "context deadline exceeded")
+	seedQueueEntry(t, s, "ws-1", "ses-1", "eC", StatusPending)
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		_, _ = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	}()
+	<-probeEntered // the sweep holds the session lock, mid-pass
+
+	recoverDone := make(chan int, 1)
+	go func() { recoverDone <- s.Recover(context.Background()) }() // defers to the lock
+	close(releaseProbe)
+	<-sweepDone
+	n := <-recoverDone
+	require.Equal(t, 1, n, "the staged leftover requeued after the sweep released")
+
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	ids := []string{}
+	for _, e := range entries {
+		ids = append(ids, e.ID)
+	}
+	assert.ElementsMatch(t, []string{"sX", "eC"}, ids,
+		"eA completed, sX requeued verifying exactly once, victim intact (S3)")
+	sx := entries[0]
+	if sx.ID != "sX" {
+		sx = entries[1]
+	}
+	assert.Equal(t, StatusVerifying, sx.Status)
+	stagedVals, err := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	require.NoError(t, err)
+	assert.Empty(t, stagedVals, "staging drained")
+}
+
+// TestDismissContendedIsBusyNotMissing (review r4 finding 1): a
+// contended dismiss reports busy — never a 404-shaped absence, and the
+// entry survives.
+func TestDismissContendedIsBusyNotMissing(t *testing.T) {
+	s, _ := newTestService(t)
+	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
+
+	oldEvery, oldBudget := sweepLockRetryEvery, sweepLockRetryBudget
+	sweepLockRetryEvery, sweepLockRetryBudget = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { sweepLockRetryEvery, sweepLockRetryBudget = oldEvery, oldBudget })
+
+	token, ok := s.acquireLock(context.Background(), "ws-1", "ses-1")
+	require.True(t, ok)
+	defer s.releaseLock(context.Background(), "ws-1", "ses-1", token)
+
+	assert.Equal(t, DismissBusy, s.Dismiss(context.Background(), "ws-1", "ses-1", "e1"),
+		"contention is busy, not not-found")
+	require.Len(t, readQueueEntries(t, s, "ws-1", "ses-1"), 1, "nothing silently dropped")
 }

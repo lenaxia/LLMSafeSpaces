@@ -810,7 +810,11 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 			// #1316 write-time guard: before parking as unverifiable,
 			// consult the ledger — an ADMITTED row at either real
 			// attempt number completes here (the transcript verifier
-			// failing to confirm does not undo an admission).
+			// failing to confirm does not undo an admission). A LEDGERED
+			// row deliberately still parks: agentd owns admission, its
+			// deadlines (#1311) resolve the row, and the parked sweeper
+			// completes it — holding it delivering here would need a
+			// re-poll driver this path lacks.
 			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
 				s.client.LRem(ctx, qk, 1, vals[idx])
 				s.fireOnDelivered(ws, ses, e)
@@ -874,6 +878,13 @@ func verifyBackoffFor(passes int) time.Duration {
 // prevents Recover itself from duplicating. Requeued entries enter
 // VERIFYING: the interrupted send's outcome is unknown — blind re-send
 // is the #987 duplicate class.
+//
+// Holds the per-session lock: the head-LPush shifts every snapshot
+// index, and at boot it can overlap the seed transition's parked sweep
+// (same replica — Start wires the probe, the watcher seed fires
+// synchronously, Run's first act is Recover): a sweep LRange before the
+// LPush with its LSet after would overwrite an innocent neighbor (the
+// r4 review's boot-overlap window — seconds of probe I/O, not µs).
 func (s *Service) Recover(ctx context.Context) int {
 	n := 0
 	for _, pair := range s.sessions(ctx) {
@@ -882,6 +893,10 @@ func (s *Service) Recover(ctx context.Context) int {
 		staged, err := s.client.LRange(ctx, dk, 0, -1).Result()
 		if err != nil || len(staged) == 0 {
 			continue
+		}
+		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
+		if !ok {
+			continue // a delivery or sweep owns the session; requeue next boot
 		}
 		main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
 		inMain := map[string]bool{}
@@ -905,6 +920,7 @@ func (s *Service) Recover(ctx context.Context) int {
 			n++
 		}
 		s.client.Del(ctx, dk)
+		s.releaseLock(ctx, ws, ses, token)
 	}
 	return n
 }
@@ -992,29 +1008,39 @@ func deliverDetached(parent context.Context, d Deliverer, ws, ses string, e Entr
 	return d(ctx, ws, ses, e)
 }
 
+// DismissResult discriminates the queue UI's dismiss outcome — the same
+// contention-is-not-absence principle as RetryResult (r4 review).
+type DismissResult int
+
+const (
+	DismissRemoved DismissResult = iota
+	DismissNotFound
+	DismissBusy
+)
+
 // Dismiss removes an entry by ID (the queue UI's dismiss action). Holds
 // the session delivery lock: a lock-free value-LRem mid-sweep shifts
 // the sweeper's snapshot indices — its subsequent LSet lands on an
 // innocent neighbor (the r3 reproduction of the sibling-mutator class).
-func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) bool {
+func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) DismissResult {
 	token, ok := s.acquireLockWithRetry(ctx, workspaceID, sessionID)
 	if !ok {
-		return false // a delivery owns the session; the dismiss lands after it
+		return DismissBusy // a delivery or sweep owns the session; the caller may retry
 	}
 	defer s.releaseLock(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
-		return false
+		return DismissBusy // transport failure is also transient, not absence
 	}
 	for _, v := range vals {
 		var e Entry
 		if json.Unmarshal([]byte(v), &e) == nil && e.ID == id {
 			s.client.LRem(ctx, qk, 1, v)
-			return true
+			return DismissRemoved
 		}
 	}
-	return false
+	return DismissNotFound
 }
 
 // RetryResult discriminates the queue UI's retry outcome: contention is

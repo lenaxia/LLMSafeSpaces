@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -415,6 +416,9 @@ func TestE2E_Adapter_AbortSession_UsesV1AbortNotV2Interrupt(t *testing.T) {
 type e2eEnv struct {
 	handler *ProxyHandler
 	router  *gin.Engine
+	// miniredis is the outbox store when newOutboxTestEnv wired one
+	// (nil otherwise) — exposed for direct key manipulation in tests.
+	miniredis *miniredis.Miniredis
 }
 
 func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {

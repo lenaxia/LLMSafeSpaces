@@ -142,3 +142,15 @@ Round-3 findings — all validated real, all fixed:
 4. **Contended `Retry` no longer surfaces as 404**: `RetryResult` distinguishes updated / not-found / busy; the handler maps busy to 503 "session busy delivering". Pinned by `TestRetryContendedIsBusyNotMissing`.
 
 Reviewer's LOW items (`Recover` boot-time LPush, `Accept`'s duplicate-cleanup `LRem`): pre-existing, µs self-scoped / boot-time windows against the 60s cadence — noted, no change this PR.
+
+---
+
+## Review round 4 corrections (PR #1318, commit e1f2059d)
+
+Round-4 findings — validated real, fixed:
+
+1. **Contended `Dismiss` regressed to a false 404** (the exact class the r3 `RetryResult` fix named): `DismissResult{Removed,NotFound,Busy}` now mirrors Retry; the handler maps busy to 503 "session busy delivering". The false "lands after it" comment is gone — nothing auto-retried. Pinned at service level (`TestDismissContendedIsBusyNotMissing`) and handler level (`TestOutbox_DismissEndpoint_ContendedIs503Not404`, held-lock key seeded directly in the outbox store).
+2. **`Recover` was the last lock-free index-shifting mutator**, with a NEW same-replica overlap this PR created (Start wires the probe → watcher seed fires the transition sweep synchronously → Run's first act is Recover; the window is the sweep's seconds-long probe pass, not µs as the round-3 note claimed — corrected). Recover now takes the per-session lock; `TestRecoverVsSweepBootOverlap` forces the boot interleaving with a blocking probe and pins the neighbor's survival.
+3. `verifyOne`'s guard comment now documents why `holds` deliberately parks (LEDGERED resolves via #1311 deadlines; the parked sweeper completes it — no re-poll driver exists on this path).
+
+The PR title was also moved to the conventional `feat(outbox):` form for the squash merge.
