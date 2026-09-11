@@ -68,3 +68,13 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 - TS6133 (unused `page` in clickUntil) — the param is gone (locators arrive pre-bound).
 - clickUntil now checks the EFFECT FIRST each iteration — a successful-but-slow click is never followed by a second POST (the naive retry loop's double-POST hazard, reviewer-identified). The retry-count assertion relaxed to >= 1 with enqueue === 0 as the hard invariant; a rare extra 503 re-POST is an idempotent server-side re-arm of the SAME entry, never a duplicate.
 - e2e: 12/12 × 2 at --repeat-each=3 --retries=0 (default workers AND --workers=1).
+
+## Review r8 status — honest close-out of the e2e stability hunt
+
+Root causes fixed this round (each verified to change behavior):
+1. **Unstubbed `/api/v1/events` reconnect churn** (reviewer-identified): now stubbed in every arm — hold-style, two empty streams for StrictMode's double-connect, then hold.
+2. **Busy-state delivery sequencing**: the clearAll arm's busy event must arrive AFTER setup (busy-from-load suppresses session auto-creation) and must ride the SAME connection the page already holds — a single gated route (hold quietly, release with the event).
+3. **Queue-section collapsed state**: the toggle's open state races the first pill render; the setup now expand-guards before any pill-button interaction.
+4. clickUntil's effect windows widened to 6s.
+
+**Truthful stability record at this head**: `--repeat-each=3 --retries=0` → **12/12 once; 11/12 twice** (one residual failure: the dismiss arm's first-phase hint not rendering within the window under cold start, buttons present in the snapshot). The same contract is deterministically pinned at the unit level (dismiss-503, pending-pill dismiss-503, unknown-outcome, 503→204 transition — all red-first). The e2e arm stays; the claim is exactly what the record shows — NOT "reproducibly green cold". Further hunting is diminishing returns without the reviewer's cold-environment protocol.

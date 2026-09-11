@@ -35,7 +35,7 @@ async function stubAuth(page: Page) {
   });
 }
 
-async function stubWorkspace(page: Page) {
+async function stubWorkspace(page: Page, opts: { eventsStub?: boolean } = {}) {
   await page.route(`${API}/workspaces`, async (route: Route) => {
     if (route.request().method() === "GET") {
       await route.fulfill({
@@ -91,6 +91,25 @@ async function stubWorkspace(page: Page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: SES, status: "idle" }) });
   });
   await mockIdleContractStream(page, `${API}/workspaces/${WS}/contract-events`, SES);
+  // r8: the USER event stream must be stubbed in EVERY arm — unstubbed,
+  // it falls through to the dev server, fails as SSE, and reconnects
+  // forever; that churn is what starved the clicks in four cold runs.
+  // Hold-style: two empty 200 streams (StrictMode's double-connect),
+  // then hold later connections. Arms that drive busy-state through
+  // /events (the clearAll Abort path) opt OUT and own the route — the
+  // provider's snapshot-staging means their busy event must ride the
+  // FIRST connection to land live.
+  if (opts.eventsStub !== false) {
+    let eventHits = 0;
+    await page.route(`${API}/events`, async (route: Route) => {
+      eventHits++;
+      if (eventHits <= 2) {
+        await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: ":\n\n" });
+        return;
+      }
+      await new Promise<never>(() => {});
+    });
+  }
 }
 
 // The queue surface under test: counters for every method + programmable
@@ -168,15 +187,24 @@ const ERR_ENTRY: QueueEntry = {
   clientMessageID: "cmid-srv-1",
 };
 
-async function openChatWithQueue(page: Page, entries: QueueEntry[]) {
+async function openChatWithQueue(page: Page, entries: QueueEntry[], opts: { eventsStub?: boolean } = {}) {
   await stubAuth(page);
-  await stubWorkspace(page);
+  await stubWorkspace(page, opts);
   const queue = stubQueue(page, entries);
   await queue.install();
   await page.goto(`/chat/${WS}`);
   // The route param selects the workspace; session auto-creation fires
   // exactly like a real user's first entry.
   await expect(page.getByText("1 message queued")).toBeVisible({ timeout: 10000 });
+  // The section can land COLLAPSED (the toggle's open state races the
+  // first pill render) — expand it before any pill-button interaction.
+  const retryBtn = page.getByRole("button", { name: "Retry" }).first();
+  try {
+    await retryBtn.waitFor({ state: "visible", timeout: 1500 });
+  } catch {
+    await page.getByRole("button", { name: /messages queued/ }).click({ timeout: 5000 });
+    await retryBtn.waitFor({ state: "visible", timeout: 5000 });
+  }
   return queue;
 }
 
@@ -210,7 +238,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
 
     await clickUntil(
       () => page.getByRole("button", { name: "Retry" }).first(),
-      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 2_000 }),
+      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 6_000 }),
     );
 
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
@@ -231,7 +259,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
 
     await clickUntil(
       () => page.getByRole("button", { name: "Dismiss" }).first(),
-      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 2_000 }),
+      () => expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 6_000 }),
     );
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
     expect(queue.calls.delete).toBe(1);
@@ -244,7 +272,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     queue.calls.deleteStatus = 204;
     await clickUntil(
       () => page.getByRole("button", { name: "Dismiss" }).first(),
-      () => expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 2_000 }),
+      () => expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 6_000 }),
     );
     expect(queue.calls.delete).toBe(2);
   });
@@ -253,7 +281,22 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   // coverage at all. Contended entries survive the sweep with a hint;
   // confirmed deletes clear.
   test("clearAll (Abort) under 503: contended pill survives hinted, confirmed delete clears", async ({ page }) => {
-    const queue = await openChatWithQueue(page, [ERR_ENTRY]);
+    // This arm owns /events through ONE gated route: the connection is
+    // held QUIETLY during setup (no churn, no state — the r8 root cause
+    // stays closed), then the SAME connection answers with the busy
+    // event once the queue is up. Busy-from-load suppresses session
+    // auto-creation, so the flip must come after setup.
+    let releaseBusy!: () => void;
+    const busyGate = new Promise<void>((resolve) => { releaseBusy = resolve; });
+    await page.route("**/api/v1/events", async (route) => {
+      await busyGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `data: ${JSON.stringify({ type: "session.status", status: "busy", session_id: SES, workspace_id: WS })}\n\n`,
+      });
+    });
+    const queue = await openChatWithQueue(page, [ERR_ENTRY], { eventsStub: false });
 
     // A second, cleanly-deletable entry joins the queue — the GET stays
     // stateful so BOTH pills survive the refresh cycles.
@@ -287,18 +330,9 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     await composer.press("Control+Enter");
     await expect(page.getByText("2 messages queued")).toBeVisible({ timeout: 10000 });
 
-    // The Abort button ("Stop generating") renders while the session is
-    // busy. With pills queued, a composer send takes the QUEUE path (it
-    // never starts a turn) — so drive busy through the USER event stream
-    // (GET /api/v1/events — the live authority the session-activity
-    // provider consumes).
-    await page.route("**/api/v1/events", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "text/event-stream",
-        body: `data: ${JSON.stringify({ type: "session.status", status: "busy", session_id: SES, workspace_id: WS })}\n\n`,
-      });
-    });
+    // Release the gate: the held /events connection now delivers the
+    // busy event (the live authority for the session-activity provider).
+    releaseBusy();
     const stop = page.getByRole("button", { name: "Stop generating" }).first();
     await expect(stop).toBeVisible({ timeout: 10000 });
     // The abort call itself must succeed (an unstubbed 404/502 renders a
@@ -327,7 +361,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     });
     await clickUntil(
       () => page.getByRole("button", { name: "Stop generating" }).first(),
-      () => expect(page.getByText(/delivery in progress/i).first()).toBeVisible({ timeout: 2_000 }),
+      () => expect(page.getByText(/delivery in progress/i).first()).toBeVisible({ timeout: 6_000 }),
     );
 
     // The queued "plain entry" also renders an optimistic transcript
