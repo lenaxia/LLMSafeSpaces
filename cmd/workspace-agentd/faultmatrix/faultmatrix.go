@@ -15,6 +15,7 @@ package faultmatrix
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -118,6 +119,12 @@ func WaitConverges(ctx context.Context, bound time.Duration, poll time.Duration,
 	deadline := start.Add(bound)
 	for {
 		if fn() {
+			// A success observed past the deadline is a breach, not a
+			// convergence — ok=true with elapsed>bound would make the
+			// two row gates disagree (review finding).
+			if time.Now().After(deadline) {
+				return time.Since(start), false
+			}
 			return time.Since(start), true
 		}
 		if time.Now().After(deadline) {
@@ -242,7 +249,7 @@ type InstantAdmitter struct {
 func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	ad.mu.Lock()
 	ad.n++
-	storeID := "msg-admit-" + itoa(ad.n)
+	storeID := "msg-admit-" + strconv.Itoa(ad.n)
 	ad.mu.Unlock()
 	if ad.Out != nil {
 		ad.Out.MarkPresent(sessionID, storeID)
@@ -253,17 +260,3 @@ func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text
 type errText string
 
 func (e errText) Error() string { return string(e) }
-
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [12]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
-}

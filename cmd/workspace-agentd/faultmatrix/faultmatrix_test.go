@@ -165,7 +165,7 @@ func TestRow_Leg4_CrashRestart_S7_S8_L5(t *testing.T) {
 		a.Reconcile(context.Background())
 		reconciled = true
 		m := a.Metrics()
-		return m.LedgerDepths == nil || m.LedgerDepths["admitted"] == 0
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 0
 	})
 	log.Record("L5", elapsed)
 	if !ok {
@@ -221,7 +221,7 @@ func TestRow_Leg4_EvidenceAbsent_TurnEndedArm(t *testing.T) {
 	_, ok := WaitConverges(context.Background(), 30*time.Second, 5*time.Millisecond, func() bool {
 		a.Reconcile(context.Background())
 		m := a.Metrics()
-		return m.LedgerDepths == nil || m.LedgerDepths["admitted"] == 0
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 0
 	})
 	require.True(t, ok, "the stranded row converges from status evidence alone")
 

@@ -77,3 +77,18 @@ Counts at this revision: 13 test functions across the package's two test files (
 
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
 - `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
+
+---
+
+## Review round 2 remediation (2026-09-11, PR #1337; the posted review's commit header was stale but its minor findings referenced the remediated code — all three fixed)
+
+1. `WaitConverges` post-deadline successes now return `(elapsed, false)` — a success observed past the deadline is a breach; the two row gates can no longer disagree.
+2. The hand-rolled `itoa` replaced with `strconv.Itoa`.
+3. Both leg-4 convergence predicates tightened: a nil `LedgerDepths` map is NOT converged (the soak-reuse footgun).
+
+Counts at this revision: 13 test functions (4 rows + 9 engine/fake contract tests).
+
+## Tests Run (round 2)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok
+- `golangci-lint run ./cmd/workspace-agentd/faultmatrix/...` — 0 issues
