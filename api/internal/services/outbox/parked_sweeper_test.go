@@ -1166,16 +1166,57 @@ func TestCompleteSites_LoserSuppression(t *testing.T) {
 	})
 	t.Run("sweeper completed", func(t *testing.T) {
 		s, _ := newTestService(t)
-		probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateAdmitted})
-		s.SetLedgerProbe(probe)
 		var fired atomic.Int32
 		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
 		seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
-		preRemove(t, s)
+		// The peer removes the entry INSIDE the probe window: the
+		// sweeper's snapshot holds it, its completion LRem removes 0
+		// (the r3 shape — pre-removal emptied the queue and the SCAN
+		// found no session, making the row vacuous).
+		s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+			vals, err := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
+			if err == nil {
+				for _, v := range vals {
+					s.client.LRem(ctx, qKey(ws, ses), 1, v)
+				}
+			}
+			return LedgerStateAdmitted, nil
+		})
 		n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
 		require.NoError(t, err)
 		assert.Equal(t, 0, n)
-		assert.Equal(t, int32(0), fired.Load())
+		assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+		assert.Equal(t, int32(0), fired.Load(), "the peer's removal owns the hook")
+	})
+	t.Run("guard disposition completes arm", func(t *testing.T) {
+		s, _ := newTestService(t)
+		var fired atomic.Int32
+		s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+		// Park-threshold entry: the failure branch's guard probes, the
+		// probe plays the peer draining the STAGED copy, returns
+		// ADMITTED → the completes arm's staging LRem removes 0.
+		e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+			AcceptedAt: time.Now().UTC(), Status: StatusPending, Attempts: MaxAttempts - 1}
+		raw, err := json.Marshal(e)
+		require.NoError(t, err)
+		require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+		s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+			vals, derr := s.client.LRange(ctx, dKey(ws, ses), 0, -1).Result()
+			if derr == nil {
+				for _, v := range vals {
+					s.client.LRem(ctx, dKey(ws, ses), 1, v)
+				}
+			}
+			return LedgerStateAdmitted, nil
+		})
+		require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+			func(ctx context.Context, ws, ses string, e Entry) error {
+				return errors.New("context deadline exceeded")
+			}))
+		assert.Equal(t, int32(0), fired.Load(), "loser's staging LRem fires nothing")
+		staged, err := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+		require.NoError(t, err)
+		assert.Empty(t, staged, "staging drained (by the peer)")
 	})
 	t.Run("verifyOne delivered arm", func(t *testing.T) {
 		s, _ := newTestService(t)

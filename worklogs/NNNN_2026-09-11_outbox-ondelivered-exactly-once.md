@@ -45,3 +45,13 @@ Land hot-fix; main CI re-run green; release checklist unaffected (the double-fir
 
 - **Vacuous test (fixed):** the r1 pin's probe key (`e1|5`) never matched the seeded entry's `Attempts: 0` — the fixed branch was unreachable and the test passed on the pre-fix head. Corrected to `e1|0` (the reviewer verified red on pre-fix / green on fix with exactly this key). The r1 worklog claim of a deterministic pin was false as committed — corrected here.
 - **Loser-suppression coverage (added):** `TestCompleteSites_LoserSuppression` drives the loser half at three sites (deliverOne inline success — the peer drains the STAGED copy mid-deliverer; sweeper completed; verifyOne delivered arm) — each asserts the hook stays silent on a no-op LRem. Together with the lock-loss pin (fifth site) and the storm row (VerdictDelivered arm cross-replica), every gate is now delete-one-site-and-a-test-fails.
+
+---
+
+## Review round 3 (PR #1339)
+
+- **Vacuous sweeper row (fixed):** the r2 "sweeper completed" subtest pre-removed the queue, the SCAN found no session, and the site was never reached (proven passing on main). The peer removal now runs INSIDE the probe window — the sweeper's snapshot holds the entry, its LRem removes 0, the hook stays silent. Mutation-verified locally: unconditional-fire at site 4 → this row fails; restored → green.
+- **Site 5 loser coverage (added):** the guard-disposition completes arm gets its loser row — the probe plays the peer draining the STAGED copy; the completes arm's staging LRem removes 0 and fires nothing. Mutation-verified: unconditional-fire at site 5 → this row fails.
+- **r2 claim corrected:** "every gate is delete-one-site-and-a-test-fails" was false as committed (sites 4/5 unpinned, mutation-proven by the reviewer); with this round it is true — all five sites mutation-verified locally, red under unconditional-fire, green gated.
+- **Finding 3 (tracked, not solved here):** lost-reply LRem (`err != nil` after server-side application) drops the delivered signal with no re-drive at the qk sites — filed for follow-up rather than entrenched silently; the hotfix scope is the double-fire class.
+- **Doc correction:** the DeliveredHook contract comment now says exactly-once per entry COPY (the crash window permits one fire per copy) — landing in this round's diff.

@@ -251,9 +251,12 @@ const (
 // per-session lock with a timeout-bounded context.
 type Verifier func(ctx context.Context, workspaceID, sessionID string, e Entry) Verdict
 
-// DeliveredHook fires exactly once per entry on confirmed delivery —
-// both the synchronous 2xx path and the verified path. SSE
-// queue.update/sent, metering, and session-index recording ride it.
+// DeliveredHook fires exactly once per entry COPY on confirmed delivery
+// — the synchronous 2xx path and the verified path. The documented
+// crash window (an entry in both the main list and staging) permits one
+// fire per copy; the LRem-count claim token enforces the same bound
+// cross-replica. SSE queue.update/sent, metering, and session-index
+// recording ride it.
 type DeliveredHook func(workspaceID, sessionID string, e Entry)
 
 // StagedHook fires when a pending entry is staged out for delivery —
