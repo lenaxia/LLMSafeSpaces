@@ -28,7 +28,7 @@ Close the live regression window opened by #1318's merge: the queue UI's catch-a
 
 1. 503 from Retry/Dismiss means mid-delivery contention — validated against #1318's diff (both endpoints map `Busy` → 503 "session busy delivering").
 2. The 503 body has no `retryAfterMs` — validated in #1318's diff (hence hint-text, not timed retry; cross-stream ask posted on #1320/#1314 earlier).
-3. refreshQueue re-adds server-side entries missing locally — validated in `refreshQueue`'s merge logic (displayed entries are re-added when absent).
+3. (r4 correction — the ORIGINAL claim "refreshQueue re-adds server-side entries missing locally" was FALSE for delivering/verifying entries, which the #987 display contract excludes from the re-add set; caught in review as a Rule-7.5 failed validation) Unknown-outcome deletes now KEEP the pill error-marked — the only representation that survives refresh for a mid-delivery entry; the sent-event or a manual dismiss clears it.
 
 ## Blockers
 

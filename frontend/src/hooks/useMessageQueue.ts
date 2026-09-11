@@ -173,17 +173,21 @@ export function useMessageQueue(
     // confirms would silently un-dismiss an entry that still delivers.
     try {
       await messagesApi.deleteQueueMessage(workspaceId, sessionId, id);
-      removeById(id);
+      removeById(id); // 2xx: confirmed gone
     } catch (err) {
       if (err instanceof ApiClientError && err.status === 503) {
         // The entry is busy delivering — it WILL send; keep the pill
         // with a hint so the user can re-dismiss after the turn.
         markError(id, err.body?.error || "delivery in progress — dismiss applies after the current delivery");
+      } else if (err instanceof ApiClientError && err.status === 404) {
+        removeById(id); // already gone server-side
       } else {
-        // Network/other: the delete outcome is unknown; remove locally
-        // and let refreshQueue reconcile from the server (re-adds the
-        // entry if the delete never landed).
-        removeById(id);
+        // Unknown outcome (network/5xx): keep the pill as an ERROR pill
+        // — error pills survive refreshQueue (the display contract
+        // excludes delivering entries from the re-add set, so a pending
+        // pill would be silently dropped while the entry still sends).
+        // The sent-event or a manual dismiss clears it; SAFE beats tidy.
+        markError(id, "dismiss outcome unknown (network) — dismiss again if this message should not send");
       }
     }
     void refreshQueue();
@@ -191,31 +195,44 @@ export function useMessageQueue(
 
   const clearAll = useCallback(async () => {
     if (!workspaceId || !sessionId) return;
-    const targets = queuedMessages.filter((m) => m.sessionId === sessionId && m.status === "pending");
-    // Delete-first per entry (#1318/#1320, r2): a contended 503 means the
-    // entry is mid-delivery and WILL send — wiping its pill pre-emptively
-    // silently un-dismisses it. Sweep with per-outcome handling: only
-    // confirmed deletes (and unknown-outcome network errors, left to the
-    // refresh reconcile) clear pills; contended entries survive with a
-    // hint so the user can clear after the turn.
+    // Every server-known session pill joins the sweep (r4: error pills —
+    // including dismiss-503 hinted ones — were skipped by a pending-only
+    // filter and then wiped by the final filter: dismiss under
+    // contention, hit Abort, and the hinted entry delivered silently).
+    // Local-only pills (err_ prefix) have no server entry — they drop
+    // with the sweep unconditionally.
+    const targets = queuedMessages.filter((m) => m.sessionId === sessionId && !m.id.startsWith("err_"));
     const contended = new Set<string>();
+    const confirmed = new Set<string>();
     await Promise.allSettled(targets.map(async (m) => {
       try {
         await messagesApi.deleteQueueMessage(workspaceId, sessionId, m.id);
+        confirmed.add(m.id);
       } catch (err) {
         if (err instanceof ApiClientError && err.status === 503) {
-          contended.add(m.id);
+          contended.add(m.id); // busy delivering — will send
+        } else if (err instanceof ApiClientError && err.status === 404) {
+          confirmed.add(m.id); // already gone server-side
         }
+        // Unknown outcome (network/5xx): neither set — the pill stays
+        // and refreshQueue resolves it (same contract as dismiss).
       }
     }));
     setQueuedMessages((prev) =>
       prev
-        .filter((m) => m.sessionId !== sessionId || contended.has(m.id))
-        .map((m) =>
-          contended.has(m.id)
-            ? { ...m, status: "error" as const, error: "delivery in progress — clear applies after the current delivery" }
-            : m,
-        ),
+        .filter((m) => m.sessionId !== sessionId || contended.has(m.id) || (!confirmed.has(m.id) && !m.id.startsWith("err_")))
+        .map((m) => {
+          if (contended.has(m.id)) {
+            return { ...m, status: "error" as const, error: "delivery in progress — clear applies after the current delivery" };
+          }
+          // Unknown-outcome pills (in neither set, server-known): error
+          // status so they survive refreshQueue (same contract as
+          // dismiss); the sent-event or a manual dismiss clears them.
+          if (m.sessionId === sessionId && !m.id.startsWith("err_") && !confirmed.has(m.id)) {
+            return { ...m, status: "error" as const, error: "clear outcome unknown (network) — dismiss again if this message should not send" };
+          }
+          return m;
+        }),
     );
     void refreshQueue();
   }, [workspaceId, sessionId, queuedMessages, refreshQueue]);

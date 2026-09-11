@@ -188,7 +188,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
   // comment relies on — a delete whose outcome is unknown AND a server
   // still holding the entry must RE-ADD the pill (a broken re-add merge
   // would silently drop messages with the suite green).
-  it("dismiss on network error re-adds the pill when the server still holds it", async () => {
+  it("dismiss on network error keeps the pill through a refresh whose entry is delivering (display contract)", async () => {
     const { result } = render();
     await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
 
@@ -196,15 +196,20 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages).toHaveLength(1);
 
     (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    // r4 missing-case 2: the delete's outcome is unknown AND the entry
+    // is mid-delivery — the one case the old reconcile claim was blind
+    // to (refresh excludes delivering from the re-add set). The pill
+    // must survive the refresh (error-status is what carries it).
     (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
-        { id: "msg_test_1", text: "maybe-gone", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0 },
+        { id: "msg_test_1", text: "maybe-gone", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "delivering" },
       ],
     });
     await act(async () => { await result.current.dismiss("msg_test_1"); });
 
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0]!.id).toBe("msg_test_1");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
   });
 
   // #1320 r1 finding 1: the local re-enqueue fall-through must carry a
@@ -257,7 +262,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(call![4]).toBe("cmid-srv");
   });
 
-  it("dismiss on non-503 error still removes the pill (refresh reconciles)", async () => {
+  it("dismiss on non-503 error keeps the pill as error-status (unknown outcome; safe beats tidy)", async () => {
     const { result } = render();
     await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
 
@@ -267,7 +272,13 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
     await act(async () => { await result.current.dismiss("msg_test_1"); });
 
-    expect(result.current.queuedMessages).toHaveLength(0);
+    // r4: the old claim — remove locally, refresh reconciles — is FALSE
+    // for delivering/verifying entries (the display contract excludes
+    // them from the re-add set): the pill must stay, error-marked so it
+    // survives refreshQueue, until the sent-event or a manual dismiss.
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("outcome unknown");
   });
 
   it("retry re-enqueues message text", async () => {
@@ -340,6 +351,47 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages[0]!.id).toBe("msg_a");
     expect(result.current.queuedMessages[0]!.status).toBe("error");
     expect(result.current.queuedMessages[0]!.error).toContain("delivery in progress");
+  });
+
+  // r4 finding 1: error pills (e.g. a dismiss-503 hinted pill) were
+  // skipped by the pending-only sweep and then wiped by the final filter
+  // — dismiss under contention, hit Abort, and the hinted entry
+  // delivered silently. They now join the sweep with the same
+  // per-outcome discipline.
+  it("clearAll sweeps error-status pills too: 503 keeps them hinted, 204 clears them", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_hint" });
+    await act(async () => { await result.current.enqueue("hinted"); });
+    act(() => { result.current.markError("msg_hint", "delivery in progress — dismiss applies after the current delivery"); });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_ok" });
+    await act(async () => { await result.current.enqueue("plain"); });
+    expect(result.current.queuedMessages).toHaveLength(2);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(err503())
+      .mockResolvedValueOnce(undefined);
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_hint");
+    expect(result.current.queuedMessages[0]!.error).toContain("delivery in progress");
+  });
+
+  it("clearAll on unknown-outcome deletes keeps the pills error-marked (safe beats tidy)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_u" });
+    await act(async () => { await result.current.enqueue("unknown"); });
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("outcome unknown");
   });
 
   it("removeById removes a message by id regardless of status", async () => {
