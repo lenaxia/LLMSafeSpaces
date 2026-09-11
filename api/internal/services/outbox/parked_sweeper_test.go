@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -905,30 +906,35 @@ func TestRetryContendedIsBusyNotMissing(t *testing.T) {
 		"contention is busy, not not-found")
 }
 
-// TestRecoverVsSweepBootOverlap (review r4 finding 2): at boot, Run's
-// Recover (head-LPush, shifts indices) can overlap the seed
-// transition's parked sweep on the same replica. Recover must defer to
-// the session lock — the requeue and the sweep serialize, and the
-// innocent neighbor survives.
+// TestRecoverVsSweepBootOverlap (review r5 finding 1, the REAL
+// reproducer): at boot, Run's Recover (head-LPush, shifts indices) can
+// overlap the seed transition's parked sweep on the same replica. The
+// corrupting mutation is the sweep's REARM branch — its snapshot-index
+// LSet after Recover's LPush lands on the wrong entry (the r4 test
+// pinned only the index-immune completed-LRem shape). eA re-arms
+// (FAILED row, budget remaining); Recover runs concurrently and must
+// defer to the session lock; every entry survives exactly once.
 func TestRecoverVsSweepBootOverlap(t *testing.T) {
 	s, _ := newTestService(t)
 	probeEntered := make(chan struct{})
 	releaseProbe := make(chan struct{})
+	var enteredOnce sync.Once
 	s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
-		if id == "eA" {
-			close(probeEntered)
+		if id == "eA" && attempt == 2 {
+			enteredOnce.Do(func() { close(probeEntered) })
 			<-releaseProbe
-			return LedgerStateAdmitted, nil
+			return LedgerStateFailed, nil // budget remains -> REARM (snapshot-index LSet)
 		}
 		return LedgerStateFailed, nil
 	})
 
 	// Crash leftovers: sX staged (Recover will requeue it verifying),
-	// eA parked error (sweep completes it), eC pending (the victim).
+	// eA parked error at attempts=2 (sweep re-arms it in place), eC
+	// pending (the victim between the LSet and the LPush).
 	staged := Entry{ID: "sX", ClientMessageID: "cmid-sX", UserID: "u1", Text: "hi",
 		AcceptedAt: time.Now().UTC(), Status: StatusDelivering}
 	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), string(mustMarshal(staged))).Err())
-	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 5, "context deadline exceeded")
+	seedParkedEntry(t, s, "ws-1", "ses-1", "eA", 2, "context deadline exceeded")
 	seedQueueEntry(t, s, "ws-1", "ses-1", "eC", StatusPending)
 
 	sweepDone := make(chan struct{})
@@ -936,30 +942,76 @@ func TestRecoverVsSweepBootOverlap(t *testing.T) {
 		defer close(sweepDone)
 		_, _ = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
 	}()
-	<-probeEntered // the sweep holds the session lock, mid-pass
+	<-probeEntered // the sweep holds the session lock, mid-pass on eA
 
 	recoverDone := make(chan int, 1)
 	go func() { recoverDone <- s.Recover(context.Background()) }() // defers to the lock
+
+	// Deterministic interleaving: at a lock-free Recover (the pre-fix
+	// head) the requeue push lands HERE — while the sweep's snapshot is
+	// taken and its rearm LSet is still pending — so wait until the
+	// staged ID is observable at the list head before releasing the
+	// probe. At a locked Recover the push never comes mid-pass; the
+	// bounded deadline expires and the release proceeds (serialized).
+	pushedMidPass := false
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		head, err := s.client.LIndex(context.Background(), qKey("ws-1", "ses-1"), 0).Result()
+		require.NoError(t, err)
+		if strings.Contains(head, "\"sX\"") {
+			pushedMidPass = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	close(releaseProbe)
 	<-sweepDone
 	n := <-recoverDone
-	require.Equal(t, 1, n, "the staged leftover requeued after the sweep released")
+	require.Equal(t, 1, n, "the staged leftover requeued")
+	require.False(t, pushedMidPass, "locked Recover never mutates mid-pass (red at any head that pushes here)")
 
 	entries := readQueueEntries(t, s, "ws-1", "ses-1")
 	ids := []string{}
 	for _, e := range entries {
 		ids = append(ids, e.ID)
 	}
-	assert.ElementsMatch(t, []string{"sX", "eC"}, ids,
-		"eA completed, sX requeued verifying exactly once, victim intact (S3)")
-	sx := entries[0]
-	if sx.ID != "sX" {
-		sx = entries[1]
+	assert.ElementsMatch(t, []string{"eA", "sX", "eC"}, ids,
+		"re-armed eA, requeued sX, and the victim each survive exactly once (S3)")
+	byID := map[string]Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
 	}
-	assert.Equal(t, StatusVerifying, sx.Status)
+	assert.Equal(t, StatusPending, byID["eA"].Status, "eA re-armed")
+	assert.Equal(t, StatusVerifying, byID["sX"].Status, "sX requeued verifying")
 	stagedVals, err := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
 	require.NoError(t, err)
 	assert.Empty(t, stagedVals, "staging drained")
+}
+
+// TestRecoverDefersWhenLockHeldPastBudget (r5 finding 3): the deferral
+// branch's documented behavior — a lock held past the retry budget
+// skips the session (staging stays, visible as delivering; the next
+// boot requeues), never corrupts.
+func TestRecoverDefersWhenLockHeldPastBudget(t *testing.T) {
+	s, _ := newTestService(t)
+	staged := Entry{ID: "sX", ClientMessageID: "cmid-sX", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusDelivering}
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), string(mustMarshal(staged))).Err())
+
+	oldEvery, oldBudget := sweepLockRetryEvery, sweepLockRetryBudget
+	sweepLockRetryEvery, sweepLockRetryBudget = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() { sweepLockRetryEvery, sweepLockRetryBudget = oldEvery, oldBudget })
+
+	token, ok := s.acquireLock(context.Background(), "ws-1", "ses-1")
+	require.True(t, ok)
+	n := s.Recover(context.Background())
+	assert.Equal(t, 0, n, "lock held past budget: session deferred")
+	s.releaseLock(context.Background(), "ws-1", "ses-1", token)
+
+	stagedVals, err := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	require.NoError(t, err)
+	assert.Len(t, stagedVals, 1, "staging intact for the next boot's requeue")
+	assert.Equal(t, 1, s.Recover(context.Background()), "next pass (lock free) requeues")
 }
 
 // TestDismissContendedIsBusyNotMissing (review r4 finding 1): a

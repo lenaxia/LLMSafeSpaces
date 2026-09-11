@@ -328,3 +328,23 @@ func TestSweeperE2E_SeedTransitionArmedBeforeWatcher(t *testing.T) {
 		"the seed-window transition found the probe armed (wire-before-watch)")
 	assert.Equal(t, int64(0), stub.deliverHits.Load())
 }
+
+// TestSweeperE2E_TransitionProbeFailureIsIndeterminate (r5 missing
+// test 3, handler level): the Active transition with an unreachable
+// probe recovers nothing and completes nothing — no false completion,
+// entry stays parked for the periodic pass / next transition.
+func TestSweeperE2E_TransitionProbeFailureIsIndeterminate(t *testing.T) {
+	handler, svc, rdb := newSweeperEnv(t, "ws-swp70dead", "http://127.0.0.1:1") // unreachable pod
+	handler.SetAgentdTerminus(true)
+	svc.SetLedgerProbe(handler.outboxLedgerProbe)
+
+	seedParked(t, svc, "ws-swp70dead", "ses-1", "ob-dead", 5, "context deadline exceeded")
+	handler.SetPriorPhaseForTest("ws-swp70dead", "Suspended")
+	handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-swp70dead", "127.0.0.1",
+		string(v1.WorkspacePhaseActive), "ws-swp70dead"))
+
+	time.Sleep(300 * time.Millisecond) // the sweep is async — give a false completion room to fire
+	entries := queueOf(t, rdb, "ws-swp70dead", "ses-1")
+	require.Len(t, entries, 1, "indeterminate: nothing recovered, nothing lost")
+	assert.Equal(t, outbox.StatusError, entries[0].Status)
+}

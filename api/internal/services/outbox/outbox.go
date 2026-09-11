@@ -345,7 +345,7 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
-			s.releaseLock(ctx, ws, ses, token)
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue // best-effort sweep; the next transition retries
 		}
 		for i := len(vals) - 1; i >= 0; i-- {
@@ -369,7 +369,7 @@ func (s *Service) SweepWorkspaceUnverifiable(ctx context.Context, workspaceID st
 			}
 			swept++
 		}
-		s.releaseLock(ctx, ws, ses, token)
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	return swept, nil
 }
@@ -619,6 +619,17 @@ func (s *Service) releaseLock(ctx context.Context, ws, ses, token string) {
 		return
 	}
 	_ = releaseLockScript.Run(ctx, s.client, []string{lockKey(ws, ses)}, token).Err()
+}
+
+// releaseLockDetached releases the lock on a context detached from the
+// caller's cancellation and bounded — the pattern deliverOne established:
+// a shutdown or request cancellation landing between acquire and release
+// must not leave the session locked for the full LockTTL (r5 review
+// finding 2: a canceled Recover leaked the lock for 12 minutes).
+func (s *Service) releaseLockDetached(parent context.Context, ws, ses, token string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)
+	defer cancel()
+	s.releaseLock(ctx, ws, ses, token)
 }
 
 // DeliverOnce delivers the first due pending entry for one session
@@ -898,30 +909,38 @@ func (s *Service) Recover(ctx context.Context) int {
 		if !ok {
 			continue // a delivery or sweep owns the session; requeue next boot
 		}
-		main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
-		inMain := map[string]bool{}
-		for _, v := range main {
-			var e Entry
-			if json.Unmarshal([]byte(v), &e) == nil {
-				inMain[e.ID] = true
-			}
-		}
-		for _, v := range staged {
-			var e Entry
-			if json.Unmarshal([]byte(v), &e) != nil {
-				continue
-			}
-			if inMain[e.ID] {
-				continue // crash window left it in both — main wins
-			}
-			e.Status = StatusVerifying
-			e.NextAttemptAt = time.Time{}
-			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
-			n++
-		}
-		s.client.Del(ctx, dk)
-		s.releaseLock(ctx, ws, ses, token)
+		n += s.recoverSessionLocked(ctx, ws, ses, dk, staged)
+		// Detached + deferred-equivalent: a shutdown cancellation during
+		// the pass must not leak the lock for LockTTL (r5 finding 2).
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
+	return n
+}
+
+func (s *Service) recoverSessionLocked(ctx context.Context, ws, ses, dk string, staged []string) int {
+	main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
+	inMain := map[string]bool{}
+	for _, v := range main {
+		var e Entry
+		if json.Unmarshal([]byte(v), &e) == nil {
+			inMain[e.ID] = true
+		}
+	}
+	n := 0
+	for _, v := range staged {
+		var e Entry
+		if json.Unmarshal([]byte(v), &e) != nil {
+			continue
+		}
+		if inMain[e.ID] {
+			continue // crash window left it in both — main wins
+		}
+		e.Status = StatusVerifying
+		e.NextAttemptAt = time.Time{}
+		s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
+		n++
+	}
+	s.client.Del(ctx, dk)
 	return n
 }
 
@@ -1027,7 +1046,7 @@ func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string
 	if !ok {
 		return DismissBusy // a delivery or sweep owns the session; the caller may retry
 	}
-	defer s.releaseLock(ctx, workspaceID, sessionID, token)
+	defer s.releaseLockDetached(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {
@@ -1063,7 +1082,7 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 	if !ok {
 		return RetryBusy // a delivery owns the session; the retry lands after it
 	}
-	defer s.releaseLock(ctx, workspaceID, sessionID, token)
+	defer s.releaseLockDetached(ctx, workspaceID, sessionID, token)
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil {

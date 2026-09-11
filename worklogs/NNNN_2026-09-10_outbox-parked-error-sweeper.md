@@ -154,3 +154,15 @@ Round-4 findings — validated real, fixed:
 3. `verifyOne`'s guard comment now documents why `holds` deliberately parks (LEDGERED resolves via #1311 deadlines; the parked sweeper completes it — no re-poll driver exists on this path).
 
 The PR title was also moved to the conventional `feat(outbox):` form for the squash merge.
+
+---
+
+## Review round 5 (PR #1318, commit dee6942f)
+
+Findings — validated real, fixed:
+
+1. **The r4 Recover regression test was vacuous** (it pinned the completed branch's index-immune value-LRem, not the rearm branch's snapshot-index LSet where the corruption lives). Replaced with a genuine reproducer: re-arm outcome + an observe-or-deadline wait that proves the pre-fix head pushes the staged entry mid-pass (`pushedMidPass` assertion) — verified RED 3/3 at the pre-fix head (e1f2059d worktree) and GREEN 3/3 at this head. Also added `TestRecoverDefersWhenLockHeldPastBudget` pinning the documented deferral branch (staging intact, next boot requeues).
+2. **Recover released the session lock on the cancellable Run context, not deferred** — a shutdown landing mid-pass leaked the lock for LockTTL (12min): delivery, both sweeps, Retry/Dismiss all blocked for the session. New `releaseLockDetached` (bounded, `WithoutCancel`) now used by Recover, Retry, Dismiss, the unverifiable sweep, park/unpark, and the parked sweep — the package-wide pattern deliverOne established.
+3. Handler-level transition probe-failure case added (`TestSweeperE2E_TransitionProbeFailureIsIndeterminate`): unreachable pod → indeterminate, nothing falsely completed.
+
+Worklog/commit claims about the r4 test pinning the corruption are corrected by this section; the r5 commit message states the red/green verification explicitly.

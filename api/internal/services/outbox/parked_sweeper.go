@@ -140,9 +140,7 @@ func (s *Service) sweepParkedErrors(ctx context.Context, workspaceID string) (in
 			continue
 		}
 		n := s.sweepSessionParked(ctx, ws, ses, now)
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
-		s.releaseLock(cleanupCtx, ws, ses, token)
-		cancel()
+		s.releaseLockDetached(ctx, ws, ses, token)
 		recovered += n
 	}
 	parkedSweepLastRun.SetToCurrentTime()

@@ -48,7 +48,7 @@ func (s *Service) UnparkWorkspace(ctx context.Context, workspaceID string) (int,
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
-			s.releaseLock(ctx, ws, ses, token)
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue
 		}
 		for i := len(vals) - 1; i >= 0; i-- {
@@ -71,7 +71,7 @@ func (s *Service) UnparkWorkspace(ctx context.Context, workspaceID string) (int,
 			}
 			unparked++
 		}
-		s.releaseLock(ctx, ws, ses, token)
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	return unparked, nil
 }
@@ -91,7 +91,7 @@ func (s *Service) parkSweep(ctx context.Context, workspaceID, reason string, inF
 		qk := qKey(ws, ses)
 		vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 		if err != nil {
-			s.releaseLock(ctx, ws, ses, token)
+			s.releaseLockDetached(ctx, ws, ses, token)
 			continue
 		}
 		for i := len(vals) - 1; i >= 0; i-- {
@@ -115,7 +115,7 @@ func (s *Service) parkSweep(ctx context.Context, workspaceID, reason string, inF
 			}
 			parked++
 		}
-		s.releaseLock(ctx, ws, ses, token)
+		s.releaseLockDetached(ctx, ws, ses, token)
 	}
 	_ = inFlightOnly // parkable() already scopes to in-flight statuses
 	return parked, nil
