@@ -283,15 +283,35 @@ data:
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
             print(f"MOCK-HIT {datetime.datetime.utcnow().isoformat()} {self.path} bytes={n}", flush=True)
+            # AC-1e's contract is "MCP tools visible in the model's
+            # function definitions" — the definitions travel in the
+            # REQUEST's tools array. Echo their names in the reply (one
+            # per line) so the row discriminates V1 (tools present ⇒
+            # llmsafespaces_* lines) from the #1313 V2-steer regression
+            # (no tools ⇒ marker only). The MOCK-TURN-OK marker stays
+            # first — AC-1d greps for it as a substring.
+            marker = "MOCK-TURN-OK"
+            try:
+                parsed = json.loads(body)
+                names = []
+                for t in parsed.get("tools") or []:
+                    fn = t.get("function") or {}
+                    nm = fn.get("name") or t.get("name") or ""
+                    if nm:
+                        names.append(nm)
+                if names:
+                    marker = marker + "\n" + "\n".join(sorted(set(names)))
+            except Exception:
+                pass
             if b'"stream":true' in body or b'"stream": true' in body:
                 # SSE: the AI SDK defaults to streaming — reply with
                 # chat.completion.chunk frames.
-                # Each SSE event MUST be terminated by a blank line
+                # Each SSE event MUST be terminated with a blank line
                 # (data: <json>\n\n) — a single \n concatenates frames
                 # into one malformed multi-line event.
                 frames = "".join([
                     "data: " + chunk({"role": "assistant", "content": ""}) + "\n\n",
-                    "data: " + chunk({"content": "MOCK-TURN-OK"}) + "\n\n",
+                    "data: " + chunk({"content": marker}) + "\n\n",
                     "data: " + chunk({}, finish="stop") + "\n\n",
                     "data: [DONE]\n\n",
                 ])
@@ -301,7 +321,7 @@ data:
                 resp = json.dumps({
                     "id": "chatcmpl-mock", "object": "chat.completion",
                     "created": 0, "model": "mock-model-1",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "MOCK-TURN-OK"}, "finish_reason": "stop"}],
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": marker}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
                 }).encode()
                 ctype = "application/json"

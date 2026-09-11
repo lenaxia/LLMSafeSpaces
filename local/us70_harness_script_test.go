@@ -1133,3 +1133,75 @@ kc() { printf '%s\n' '` + tc.kcOut + `'; return ` + strconv.Itoa(tc.kcExit) + `;
 		})
 	}
 }
+
+// TestUS70MockLLM_ToolEchoPins pins the AC-1e mock's tools-echo contract
+// (the row was born unsatisfiable in 75a3f802: the mock always replied
+// the canned marker, so the llmsafespaces_ grep could never match —
+// invisible because AC-1b died earlier in every run since). The serve.py
+// embedded in the delivery script is extracted and its echo logic is
+// executed against all three request shapes; the MOCK-TURN-OK marker must
+// stay first (AC-1d greps it as a substring).
+func TestUS70MockLLM_ToolEchoPins(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if !strings.Contains(src, `marker = "MOCK-TURN-OK"`) {
+		t.Fatalf("mock serve.py must build the reply from the marker variable — the tools-echo contract depends on it")
+	}
+	if !strings.Contains(src, "names.append(nm)") || !strings.Contains(src, `"\n".join(sorted(set(names)))`) {
+		t.Fatalf("mock serve.py must echo the request's tool names (function.name or name), one per line, deduped — AC-1e's grep target")
+	}
+	if !strings.Contains(src, `marker = marker + "\n" + "\n".join(sorted(set(names)))`) {
+		t.Fatalf("tool names must APPEND to the marker, never replace it — AC-1d greps MOCK-TURN-OK as a substring")
+	}
+	bash := requireBash(t)
+	_ = bash
+	// Execute the extracted echo block exactly as written: python3 with
+	// the same parsing semantics against the three discriminating bodies.
+	py := `
+import json, sys
+for line in sys.stdin:
+    body = line.strip().encode()
+    marker = "MOCK-TURN-OK"
+    try:
+        parsed = json.loads(body)
+        names = []
+        for t in parsed.get("tools") or []:
+            fn = t.get("function") or {}
+            nm = fn.get("name") or t.get("name") or ""
+            if nm:
+                names.append(nm)
+        if names:
+            marker = marker + "\n" + "\n".join(sorted(set(names)))
+    except Exception:
+        pass
+    print(marker)
+    print("---END---")
+`
+	cmd := exec.Command("python3", "-c", py)
+	cmd.Stdin = strings.NewReader(`{"tools":[{"type":"function","function":{"name":"llmsafespaces_session_list"}},{"type":"function","function":{"name":"bash"}}]}
+{"tools":[{"name":"llmsafespaces_dev_preview_url"}]}
+{"messages":[]}
+`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("python3 unavailable (%v) — shape assertions above still ran", err)
+	}
+	blocks := strings.Split(strings.TrimSpace(string(out)), "---END---")
+	lines := make([]string, 0, 3)
+	for _, b := range blocks {
+		if strings.TrimSpace(b) != "" {
+			lines = append(lines, strings.TrimSpace(b))
+		}
+	}
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 outputs, got %d: %q", len(lines), string(out))
+	}
+	if !strings.Contains(lines[0], "llmsafespaces_session_list") || !strings.HasPrefix(lines[0], "MOCK-TURN-OK") {
+		t.Fatalf("chat-completions shape must echo function names after the marker, got %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "llmsafespaces_dev_preview_url") {
+		t.Fatalf("flat-name shape must echo the tool name, got %q", lines[1])
+	}
+	if lines[2] != "MOCK-TURN-OK" {
+		t.Fatalf("tools-less request must yield the bare marker (the V2-steer regression shape AC-1e must catch), got %q", lines[2])
+	}
+}
