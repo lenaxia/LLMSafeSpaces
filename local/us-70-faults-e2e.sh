@@ -39,9 +39,13 @@
 #          converge; (b) pod-delete mid-bind → recreate + converge.
 #
 # Environment (beyond lib/us70-common.sh):
-#   FAULT_COUNT    - expected fault-rule count (default 24); the workflow's
-#                    arming step sets LLMSAFESPACES_FAULT_INJECTION from the
-#                    SAME number (workflow env FAULT_COUNT) — one source.
+#   FAULT_COUNT    - expected fault-rule count (default 8, F1-sized: probe 1
+#                    + boot retries 3 + divergent-pod slack 2 + heal burns 2 —
+#                    at 16/24 the heal could not exhaust the budget and
+#                    converge inside F1's 300s window, run 34549292454); the
+#                    workflow's arming step sets LLMSAFESPACES_FAULT_INJECTION
+#                    from the SAME number (workflow env FAULT_COUNT) — one
+#                    source.
 #   WS_BASE        - distinct UUID workspace base (default e2e5f000-…; the
 #                    names are 36-char UUIDs == workspaces.id, exactly
 #                    fitting secret_audit_log.workspace_id varchar(36)
@@ -50,7 +54,7 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$SCRIPT_DIR/lib/us70-common.sh"
 
-export FAULT_COUNT="${FAULT_COUNT:-24}"
+export FAULT_COUNT="${FAULT_COUNT:-8}"
 WS_BASE="${WS_BASE:-e2e5f000-0000-4000-8000-000000000000}"
 
 PASS=0
@@ -208,8 +212,8 @@ fi
 # goes green as soon as the file lands, registry or not.
 #
 # Budget note: the bootstrap retry burns up to 3 faults per faulted
-# first boot (3× the pre-#1300 rate) — FAULT_COUNT is sized so F1 +
-# F6 both fit (see the lockstep pin).
+# first boot (3× the pre-#1300 rate) — F1's FAULT_COUNT (8) is sized to
+# F1's own burn alone; F6 re-arms its own seam below.
 # -----------------------------------------------------------------------------
 log "F6 — faulted bootstrap → heal → model REGISTRY converges (#1300 path)"
 

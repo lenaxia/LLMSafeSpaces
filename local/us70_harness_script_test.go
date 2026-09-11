@@ -369,6 +369,27 @@ func TestUS70FaultsScript_FaultSeamNamesInLockstep(t *testing.T) {
 	}
 }
 
+// f1BudgetCeiling bounds FAULT_COUNT: F1's autopush heal burns one fault
+// per eligible secretsreconcile re-notify (backoff base 5s doubling, run
+// 34549292454), so the budget must exhaust AND the heal must land inside
+// the row's 300s converge window. Five eligible pulls already cost
+// 5+10+20+40+80 = 155s; 8 = probe 1 + boot retries 3 (#1300 Fix B) +
+// divergent-pod slack 2 + heal burns 2 (F6's sizing shape). Anything
+// larger is unsatisfiable-by-construction at a bounded cadence.
+const f1BudgetCeiling = 8
+
+// TestUS70FaultsScript_F1BudgetSizedToConvergeWindow pins the F1 sizing
+// arithmetic (pool-red since the #1300 merge window; decisive failure run
+// 34549292454 at FAULT_COUNT=24: last fault burned 41s past the 300s
+// deadline, heal never got a clean pull in-window).
+func TestUS70FaultsScript_F1BudgetSizedToConvergeWindow(t *testing.T) {
+	wfCount := extractSingle(t, mustRead(t, us70PoolWorkflow),
+		regexp.MustCompile(`(?m)^\s*FAULT_COUNT:\s*"?(\d+)"?\s*$`), "workflow FAULT_COUNT env literal")
+	if n, _ := strconv.Atoi(wfCount); n > f1BudgetCeiling {
+		t.Fatalf("FAULT_COUNT=%d exceeds the F1 ceiling %d: at one fault per eligible re-notify (secretsreconcile backoff 5s doubling), the budget cannot exhaust and heal inside F1's 300s converge window — right-size the arm (cf. F6's fresh-arm precedent, runs 34276744182/34284549387)", n, f1BudgetCeiling)
+	}
+}
+
 // extractUS70Count is shared count-literal extraction for the lockstep test.
 func extractSingle(t *testing.T, src string, re *regexp.Regexp, what string) string {
 	t.Helper()
