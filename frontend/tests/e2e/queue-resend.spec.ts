@@ -188,7 +188,11 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   test("retry under persistent 503: pill stays with the busy hint, ZERO re-enqueue POSTs", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    await page.getByRole("button", { name: "Retry" }).first().click();
+    // Cold-start actionability (r5): the pill re-renders on every
+    // refresh cycle — clicking mid-churn starves the actionability check
+    // on a detaching node (same class the dismiss test settles around).
+    await page.waitForTimeout(600);
+    await page.getByRole("button", { name: "Retry" }).first().click({ force: true });
 
     await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 5000 });
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
@@ -202,7 +206,7 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
   test("dismiss under 503: pill stays; after contention clears, dismiss removes it", async ({ page }) => {
     const queue = await openChatWithQueue(page, [ERR_ENTRY]);
 
-    await page.getByRole("button", { name: "Dismiss" }).first().click({ timeout: 15_000 });
+    await page.getByRole("button", { name: "Dismiss" }).first().click({ force: true });
     await expect(page.getByText(/busy delivering/i).first()).toBeVisible({ timeout: 5000 });
     await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
     expect(queue.calls.delete).toBe(1);
@@ -213,8 +217,89 @@ test.describe("queue re-send (#1320: contended-delivery 503s + dedupe identity)"
     await page.waitForTimeout(600);
     // Contention clears (delivery finished) — the dismiss now applies.
     queue.calls.deleteStatus = 204;
-    await page.getByRole("button", { name: "Dismiss" }).first().click({ timeout: 15_000 });
+    await page.getByRole("button", { name: "Dismiss" }).first().click({ force: true });
     await expect(page.getByText(ERR_ENTRY.text)).toHaveCount(0, { timeout: 5000 });
+    expect(queue.calls.delete).toBe(2);
+  });
+
+  // r5 missing-case 2: the Abort → clearAll path had no browser-level
+  // coverage at all. Contended entries survive the sweep with a hint;
+  // confirmed deletes clear.
+  test("clearAll (Abort) under 503: contended pill survives hinted, confirmed delete clears", async ({ page }) => {
+    const queue = await openChatWithQueue(page, [ERR_ENTRY]);
+
+    // A second, cleanly-deletable entry joins the queue — the GET stays
+    // stateful so BOTH pills survive the refresh cycles.
+    const PLAIN: typeof ERR_ENTRY = {
+      ...ERR_ENTRY,
+      id: "srv_2",
+      text: "plain entry",
+      status: undefined,
+      lastError: undefined,
+      clientMessageID: "cmid-srv-2",
+    };
+    await page.route("**/api/v1/workspaces/ws-queue-e2e/sessions/sess-queue-e2e/queue", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ messages: [ERR_ENTRY, PLAIN] }),
+        });
+      } else {
+        queue.calls.enqueue++;
+        await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ messageID: "srv_2" }) });
+      }
+    });
+    const composer = page.getByPlaceholder("Type a message...");
+    await composer.fill("plain entry");
+    await composer.press("Control+Enter");
+    await expect(page.getByText("2 messages queued")).toBeVisible({ timeout: 10000 });
+
+    // The Abort button ("Stop generating") renders while the session is
+    // busy. With pills queued, a composer send takes the QUEUE path (it
+    // never starts a turn) — so drive busy through the USER event stream
+    // (GET /api/v1/events — the live authority the session-activity
+    // provider consumes).
+    await page.route("**/api/v1/events", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: `data: ${JSON.stringify({ type: "session.status", status: "busy", session_id: SES, workspace_id: WS })}\n\n`,
+      });
+    });
+    const stop = page.getByRole("button", { name: "Stop generating" }).first();
+    await expect(stop).toBeVisible({ timeout: 10000 });
+    // The abort call itself must succeed (an unstubbed 404/502 renders a
+    // global error banner unrelated to the queue contract under test).
+    await page.route("**/api/v1/workspaces/ws-queue-e2e/sessions/sess-queue-e2e/abort", async (route) => {
+      await route.fulfill({ status: 200, body: "" });
+    });
+
+    // The contended entry (srv_1) 503s; the fresh one (srv_2) confirms —
+    // keyed by URL id, not call order (the sweep's pill order races with
+    // the optimistic add + refresh re-sync).
+    await page.route("**/api/v1/workspaces/ws-queue-e2e/sessions/sess-queue-e2e/queue/*", async (route) => {
+      const url = route.request().url();
+      if (route.request().method() === "DELETE") {
+        queue.calls.delete++;
+        if (url.endsWith("/srv_1")) {
+          await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "session busy delivering; retry shortly" }) });
+        } else {
+          await route.fulfill({ status: 204, body: "" });
+        }
+      } else {
+        await route.fulfill({ status: 404, body: "" });
+      }
+    });
+    await stop.click({ force: true });
+
+    // The queued "plain entry" also renders an optimistic transcript
+    // bubble — pill removal is asserted via the QUEUE SECTION, not the
+    // global text count: exactly one pill remains (the contended
+    // survivor, hinted), the confirmed entry's pill is gone.
+    await expect(page.getByText("1 message queued")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(ERR_ENTRY.text).first()).toBeVisible();
+    await expect(page.getByText(/delivery in progress/i).first()).toBeVisible();
     expect(queue.calls.delete).toBe(2);
   });
 

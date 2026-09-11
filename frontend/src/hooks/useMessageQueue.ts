@@ -202,6 +202,7 @@ export function useMessageQueue(
     // Local-only pills (err_ prefix) have no server entry — they drop
     // with the sweep unconditionally.
     const targets = queuedMessages.filter((m) => m.sessionId === sessionId && !m.id.startsWith("err_"));
+    const swept = new Set(targets.map((m) => m.id));
     const contended = new Set<string>();
     const confirmed = new Set<string>();
     await Promise.allSettled(targets.map(async (m) => {
@@ -225,10 +226,13 @@ export function useMessageQueue(
           if (contended.has(m.id)) {
             return { ...m, status: "error" as const, error: "delivery in progress — clear applies after the current delivery" };
           }
-          // Unknown-outcome pills (in neither set, server-known): error
-          // status so they survive refreshQueue (same contract as
-          // dismiss); the sent-event or a manual dismiss clears them.
-          if (m.sessionId === sessionId && !m.id.startsWith("err_") && !confirmed.has(m.id)) {
+          // Unknown-outcome pills (swept server-known pills in neither
+          // set): error status so they survive refreshQueue (same
+          // contract as dismiss); the sent-event or a manual dismiss
+          // clears them. Pills enqueued DURING the sweep (not in
+          // targets, absent from both sets) pass through untouched —
+          // their entries are healthy.
+          if (m.sessionId === sessionId && !m.id.startsWith("err_") && !confirmed.has(m.id) && swept.has(m.id)) {
             return { ...m, status: "error" as const, error: "clear outcome unknown (network) — dismiss again if this message should not send" };
           }
           return m;
