@@ -54,3 +54,15 @@ None. The in-process fault matrix (legs 1,2,3,4,5 + S5/S6/S7/S8 + L2-L5) is now 
 
 - cmd/workspace-agentd/faultmatrix/faultmatrix.go (PendingInputs on the fake)
 - cmd/workspace-agentd/faultmatrix/faultmatrix_test.go (two rows)
+
+---
+
+## Review r1 remediation (2026-09-11, PR #1341)
+
+- **Both rows now pin the CADENCE arm, not just the outcome:** after convergence, `Metrics().LeaseResolved ≥ 1` (S5 row) / `Metrics().LeaseAppeared ≥ 1` (leg-3 row) asserted as violation entries (`S5.arm` / `L1.arm`) — mirroring leg-4's arm-pin convention. The reviewer mutation-verified the gap (rows passed with `diffPendingLeases` disabled — the serve-path gather satisfied the predicates); this session re-verified the fix with the SAME injection: cadence diff disabled → BOTH rows FAIL (0.71s/0.55s, the arm pins firing); restored → full package `-race` green.
+- L3 bounds now reference `sessionstate.LeaseConvergenceBound` (the "tune before freezing" constant) instead of hardcoded 30s — a retune can no longer desync the rows.
+
+## Tests Run (r1)
+
+- Injection check: `diffPendingLeases` no-op → both rows FAIL; restored → green
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok; `golangci-lint` — 0 issues

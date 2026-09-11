@@ -250,7 +250,8 @@ func TestRow_S5_Leg1_SilentDrop_ConvergesWithinL3(t *testing.T) {
 
 	v := NewViolations()
 	log := NewConvergenceLog()
-	elapsed, ok := WaitConverges(context.Background(), 30*time.Second, 5*time.Millisecond, func() bool {
+	bound := sessionstate.LeaseConvergenceBound
+	elapsed, ok := WaitConverges(context.Background(), bound, 5*time.Millisecond, func() bool {
 		a.Reconcile(context.Background())
 		return len(snapshotOf(t, a, "ses-row").GetPendingInputs()) == 0
 	})
@@ -259,9 +260,15 @@ func TestRow_S5_Leg1_SilentDrop_ConvergesWithinL3(t *testing.T) {
 		v.Add("S5") // projected ⊄ truth past the lease window
 		v.Add("L3")
 	}
+	// Pin the RESOLUTION ARM: the cadence's lease diff resolved the
+	// straggler — NOT the serve-path gather (snapshotOf triggers its own
+	// diff; without this pin a dead cadence diff ships green, r1).
+	if a.Metrics().LeaseResolved < 1 {
+		v.Add("S5.arm")
+	}
 
 	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
-	assert.True(t, log.Within("L3", 30*time.Second))
+	assert.True(t, log.Within("L3", bound))
 }
 
 // Row leg 3 (frame loss, harness→agentd direction): the harness ASKED,
@@ -282,7 +289,8 @@ func TestRow_Leg3_LostAskEvent_AppearsWithinL3(t *testing.T) {
 
 	v := NewViolations()
 	log := NewConvergenceLog()
-	elapsed, ok := WaitConverges(context.Background(), 30*time.Second, 5*time.Millisecond, func() bool {
+	bound := sessionstate.LeaseConvergenceBound
+	elapsed, ok := WaitConverges(context.Background(), bound, 5*time.Millisecond, func() bool {
 		a.Reconcile(context.Background())
 		return len(snapshotOf(t, a, "ses-row").GetPendingInputs()) == 1
 	})
@@ -291,6 +299,11 @@ func TestRow_Leg3_LostAskEvent_AppearsWithinL3(t *testing.T) {
 		v.Add("L1") // a live ask the projection never surfaced
 		v.Add("L3")
 	}
+	// Pin the RESOLUTION ARM: the cadence's live−projected diff surfaced
+	// the ask — not the serve-path gather (r1).
+	if a.Metrics().LeaseAppeared < 1 {
+		v.Add("L1.arm")
+	}
 
 	snap := snapshotOf(t, a, "ses-row")
 	if len(snap.GetPendingInputs()) == 1 && snap.GetPendingInputs()[0].GetId() != "in-unseen" {
@@ -298,5 +311,5 @@ func TestRow_Leg3_LostAskEvent_AppearsWithinL3(t *testing.T) {
 	}
 
 	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
-	assert.True(t, log.Within("L3", 30*time.Second))
+	assert.True(t, log.Within("L3", bound))
 }
