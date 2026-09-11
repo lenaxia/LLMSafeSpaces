@@ -445,11 +445,11 @@ func TestSweepParkedErrors_Metrics(t *testing.T) {
 	seedParkedEntry(t, s, "ws-1", "ses-1", "e1", 5, "context deadline exceeded")
 
 	completedBefore := promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))
-	lastRunBefore := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper))
+	lastRunBefore := promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper))
 	_, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), promtestutil.ToFloat64(parkedSweepOutcomes.WithLabelValues("completed"))-completedBefore)
-	assert.Equal(t, lastRunBefore, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)),
+	assert.Equal(t, lastRunBefore, promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)),
 		"direct (on-transition) sweeps are NOT loop liveness — the stamp is loop-owned (r1 finding 1)")
 }
 
@@ -604,7 +604,7 @@ func TestRun_SweepsParkedPeriodically(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, int32(1), delivered.Load(), "parked entry completed by the periodic sweep")
 	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)), float64(0))
+	assert.Greater(t, promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)), float64(0))
 	// L9 mechanism bound: parked → dispositioned within one sweep
 	// interval's worth of scheduling slop (2x the configured cadence —
 	// the 5-minute L9 budget implies a configured cadence well under it).
@@ -1045,7 +1045,7 @@ func TestDismissContendedIsBusyNotMissing(t *testing.T) {
 func TestLoopLiveness_NamePinnedOnScrapeSurface(t *testing.T) {
 	// Self-sufficient: materialize the child (a vec with no children is
 	// invisible to Gather) instead of relying on an earlier test's stamp.
-	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).Set(0)
+	obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper).Set(0)
 	mfs, err := prometheus.DefaultGatherer.Gather()
 	require.NoError(t, err)
 	found := false
@@ -1072,9 +1072,9 @@ func TestLoopLiveness_NamePinnedOnScrapeSurface(t *testing.T) {
 func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 	s, _ := newTestService(t) // no probe wired — adapter mode
 	require.Nil(t, s.ledgerProbeForTest())
-	before := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper))
+	before := promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper))
 	if before == 0 {
-		parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).Set(1) // materialize; baseline 1
+		obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper).Set(1) // materialize; baseline 1
 		before = 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1086,13 +1086,13 @@ func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)) > before {
+		if promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)) > before {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	wg.Wait()
-	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)), before,
+	assert.Greater(t, promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)), before,
 		"adapter mode stamps too — loop liveness is regime-independent")
 }

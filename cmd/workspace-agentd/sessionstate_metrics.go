@@ -10,8 +10,6 @@ package main
 // bridge, and this wiring layer owns the registry.
 
 import (
-	"github.com/lenaxia/llmsafespaces/pkg/obs"
-
 	"context"
 	"net/http"
 	"strings"

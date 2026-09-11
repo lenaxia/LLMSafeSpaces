@@ -101,16 +101,6 @@ var (
 		Name: "llmsafespaces_outbox_parked_sweeper_outcomes_total",
 		Help: "Parked-error sweeper outcomes (#1316): verified (probed), completed (ledger admitted-or-later), rearmed (failed with budget), stayed (ledgered/terminal), indeterminate (probe failed — next pass).",
 	}, []string{"outcome"})
-	// parkedSweepLastRun joins the epic-71 shared loop-liveness family
-	// (0c, #1319): constants live in pkg/obs so this registration and
-	// agentd's cannot drift. Stamped ONLY by the Run loop's periodic
-	// pass — the on-transition sweep share is NOT loop liveness, and
-	// stamping there would keep a dead loop looking fresh under
-	// transition churn (false negatives for dead-loop detection).
-	parkedSweepLastRun = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: obs.LoopLivenessMetric,
-		Help: obs.LoopLivenessHelp,
-	}, []string{obs.LoopLivenessLabel})
 )
 
 // SetLedgerProbe wires the ledger truth source. Call before Run.
@@ -336,9 +326,13 @@ func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context,
 }
 
 // stampLoopLiveness records the periodic loop's completed pass on the
-// shared epic-71 family (pkg/obs). Call sites: the Run loop only.
+// shared epic-71 family. pkg/obs owns the family's ONLY registration
+// (0c part 2: two per-package promauto registrations of the same name
+// panic at init). Call sites: the Run loop only — the on-transition
+// sweep share is NOT loop liveness (stamping there would keep a dead
+// loop looking fresh under transition churn).
 func (s *Service) stampLoopLiveness() {
-	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).SetToCurrentTime()
+	obs.StampLoopLastRun(obs.LoopOutboxParkedSweeper)
 }
 
 // ledgerProbeForTest reports whether a probe is wired (regime assertions).

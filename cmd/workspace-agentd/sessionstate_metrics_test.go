@@ -14,7 +14,6 @@ import (
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/obs"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -159,7 +158,7 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 	sessionStateMetrics.ledgerDepth.WithLabelValues("seed", "stalled")
 	sessionStateMetrics.promotionStall.WithLabelValues("seed")
 	sessionStateMetrics.reconciled.WithLabelValues("failed")
-	sessionStateMetrics.loopLastRun.WithLabelValues(obs.LoopReconcileWatchdog).SetToCurrentTime()
+	obs.StampLoopLastRun(obs.LoopReconcileWatchdog)
 
 	ts := httptest.NewServer(promhttp.Handler())
 	t.Cleanup(ts.Close)
