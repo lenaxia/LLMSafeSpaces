@@ -71,7 +71,7 @@ None for this unit. S5/L3 rows + the full matrix completion wait on a landed 2a.
 - **Leg-4 resolution arm pinned both ways:** the evidence-present row now asserts `LedgerDepths["promoted"] ≥ 1 || ReconcilePromoted ≥ 1` (the promoted-from-evidence arm, not the turn-ended fallback); a new evidence-absent variant (`InstantAdmitter{Out:nil}` — the harness-OOM shape) asserts `ReconcileTurnEnded ≥ 1` and `ReconcilePromoted == 0`.
 - Also fixed en route: the CI-exposed leg-4 race — convergence is the cadence contract (tick Reconcile inside L5), not first-pass instant promotion (the sweep's TryLock skip of a live admission ladder is correct behavior, now relied upon rather than raced).
 
-Counts at this revision: 17 test functions across the package's two test files (3 rows + 1 companion row + 13 engine/fake contract tests); all `-race` green; lint 0.
+Counts at this revision: 13 test functions across the package's two test files (4 rows incl. the leg-4 evidence-absent companion + 9 engine/fake contract tests); all `-race` green; lint 0.
 
 ## Tests Run (r1)
 
