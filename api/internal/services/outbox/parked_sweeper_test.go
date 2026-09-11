@@ -1096,3 +1096,35 @@ func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
 	assert.Greater(t, promtestutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopOutboxParkedSweeper)), before,
 		"adapter mode stamps too — loop liveness is regime-independent")
 }
+
+// TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss (r1): the
+// verifyOne park-guard site must not double-fire when a peer completes
+// the entry during our verifier/probe window (the lock-loss two-replica
+// interleaving) — only the LRem winner fires.
+func TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss(t *testing.T) {
+	s, _ := newTestService(t)
+	probe, _ := probeFunc(t, map[string]string{"e1|5": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying, VerifyAttempts: MaxVerifyAttempts - 1}
+	raw, err := json.Marshal(e)
+	require.NoError(t, err)
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), string(raw)).Err())
+
+	// The inconclusive verifier is where the interleaving lives: on each
+	// call (the probe window), a "peer" removes the entry — the shape of
+	// replica B completing while replica A's verifyOne sits between its
+	// snapshot and its completion write.
+	s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict {
+		s.client.LRem(ctx, qKey("ws-1", "ses-1"), 1, mustMarshal(e))
+		return VerdictInconclusive
+	})
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+		func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+	assert.Empty(t, readQueueEntries(t, s, "ws-1", "ses-1"))
+	assert.Equal(t, int32(0), fired.Load(),
+		"the peer's completion owns the hook — our no-op LRem must not fire it")
+}

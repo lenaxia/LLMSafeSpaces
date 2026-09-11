@@ -32,3 +32,9 @@ Land hot-fix; main CI re-run green; release checklist unaffected (the double-fir
 - `api/internal/services/outbox/parked_sweeper.go`
 - `api/internal/services/outbox/outbox.go`
 - `worklogs/NNNN_2026-09-11_outbox-ondelivered-exactly-once.md` (this file)
+
+---
+
+## Review round 1 (PR #1339)
+
+- **Fifth completion site (fixed):** `verifyOne`'s unverifiable-park guard site still fired unconditionally — the lock-loss two-replica window (our verifier/probe I/O spanning a lock expiry, the peer completing meanwhile) double-fired. Same `n > 0` LRem token applied. Pinned deterministically by `TestVerifyOne_CompleteFiresExactlyOnceUnderLockLoss`: the verifier itself plays the peer (removes the entry mid-window); the completion must not fire our hook.

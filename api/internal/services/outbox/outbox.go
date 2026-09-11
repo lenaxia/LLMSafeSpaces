@@ -831,8 +831,12 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 			// completes it — holding it delivering here would need a
 			// re-poll driver this path lacks.
 			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
-				s.client.LRem(ctx, qk, 1, vals[idx])
-				s.fireOnDelivered(ws, ses, e)
+				// Exactly-once token (the fifth site — r1: verifyOne's
+				// lock-loss window means a peer may complete while our
+				// probes ran; only the LRem winner fires).
+				if n, lerr := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); lerr == nil && n > 0 {
+					s.fireOnDelivered(ws, ses, e)
+				}
 				return true
 			}
 			e.Status = StatusError
