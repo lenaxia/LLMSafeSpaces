@@ -216,10 +216,14 @@ func TestCorruptNextResponse_EmptySuffixMatchesNothing(t *testing.T) {
 	assert.True(t, srv.CorruptNextResponseArmed(), "the empty-suffix arming is never consumed")
 }
 
-// TestDelayDeliverAck_CtxCancelReturnsPromptly: the stall's
-// ctx-cancelability is a contract (a stalled harness row must unwind
-// with its request, never wedge past the admission window). A
-// regression replacing the timer/ctx select with time.Sleep fails here.
+// TestDelayDeliverAck_CtxCancelReturnsPromptly: the CLIENT-side face of
+// cancellation — the connect client aborts on ctx cancel regardless of
+// server behavior, so this test's assertions pass even under a
+// time.Sleep regression in the stall; its detection of that regression
+// is indirect (t.Cleanup's ts.Close wedges on the sleeping handler
+// until the package -timeout — caught in CI's 120s, missed by longer
+// default runs). The SERVER-side contract is discriminated by the
+// in-process pin below.
 func TestDelayDeliverAck_CtxCancelReturnsPromptly(t *testing.T) {
 	srv := New()
 	srv.DelayDeliverAck(5 * time.Minute) // far beyond the test budget
@@ -259,6 +263,7 @@ func TestDelayDeliverAck_CtxCancelReturnsPromptly(t *testing.T) {
 func TestDelayDeliverAck_PreCanceledCtxBypassesStall(t *testing.T) {
 	srv := New()
 	srv.DelayDeliverAck(3 * time.Second)
+	srv.RecordDeliverCalls() // the canceled request must ALSO be unrecorded
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -273,6 +278,7 @@ func TestDelayDeliverAck_PreCanceledCtxBypassesStall(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled, "the canceled ctx unwinds the stall, not the timer")
 	assert.Less(t, elapsed, time.Second, "returns in far less than the armed 3s delay — a time.Sleep regression breaches this deterministically")
+	assert.Empty(t, srv.DeliverCalls(), "a canceled request never reaches the ledger — unrecorded")
 }
 
 // TestKnobs_Composable: leg 8's stall and leg 7's recording arm together

@@ -99,3 +99,23 @@ None. Soak row (merge gate) waits on 2a (#1329, in-review).
 - `go test -race ./pkg/abi/abitest/` — ok (12 top-level tests; 15 executed cases — 11 single + the OneShotModes table's 4 subtests)
 - Regression-injection validation: pin fails under `time.Sleep`, green when reverted
 - `golangci-lint run ./pkg/abi/...` — 0 issues
+
+---
+
+## Review r3 remediation (2026-09-11, PR #1331)
+
+Corrections to this record first (append, never rewrite):
+- The r2 section's claim "with its detection-path honesty corrected in the section comment" was **false** — that comment edit was not in the r2 diff. It is made now: the HTTP-level test's comment describes its real detection path (client-side abort passes its assertions; the CI package -timeout catches the cleanup wedge).
+- "Tests Run (r1)" said "12 knob tests"; the count at that revision was 11 top-level.
+
+Code changes this round:
+- **The unrecorded half is now pinned, not just claimed:** `TestDelayDeliverAck_PreCanceledCtxBypassesStall` arms `RecordDeliverCalls` and asserts `DeliverCalls()` stays empty — the `server.go` ctx-gate comment now states exactly what that test holds (prompt typed unwind + empty recording), no more.
+- No behavior changes; the r2 pin, mode table, and all prior fixes are untouched.
+
+Counts at this revision: 12 top-level test functions; 15 executed cases (11 single + OneShotModes' 4 subtests).
+
+(Process note: a hook/rename mishap briefly truncated this file; body restored from 9aabcbf6 with this section re-appended — content identical to the intended r3 state.)
+
+## Tests Run (r3)
+
+- `go test -race ./pkg/abi/abitest/` — ok
