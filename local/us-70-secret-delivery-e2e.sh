@@ -192,13 +192,15 @@ case "${XDG_KIND}" in
     *)
         die "AC-1b: XDG layer probe returned unexpected '${XDG_KIND}' at ${XDG_CFG}";;
 esac
-# Distinguish exec failure from content mismatch (r13): the grep runs
-# under the same guard discipline.
-if ! XDG_SEED=$(kc exec "${POD1B}" -c workspace -- grep -c 'ac1b-stub' "${XDG_CFG}" 2>&1); then
+# Distinguish exec failure from content mismatch (r13): grep exits 1 on
+# ZERO matches, so the remote command appends `; true` to normalize its
+# exit — a transport/exec failure is the only nonzero path, and the
+# count itself decides seeded-vs-not.
+if ! XDG_SEED=$(kc exec "${POD1B}" -c workspace -- sh -c "grep -c 'ac1b-stub' '${XDG_CFG}'; true" 2>&1); then
     die "AC-1b: kc exec failed grepping the XDG copy at ${XDG_CFG}: ${XDG_SEED}"
 fi
-[[ "${XDG_SEED}" -ge 1 ]] \
-    || die "AC-1b: XDG copy lacks the ac1b-stub provider block (not seeded from the live config)"
+[[ "${XDG_SEED}" =~ ^[0-9]+$ && "${XDG_SEED}" -ge 1 ]] \
+    || die "AC-1b: XDG copy lacks the ac1b-stub provider block (not seeded from the live config; grep said '${XDG_SEED}')"
 
 # The rendered config must contain the credential's provider block.
 kc exec "${POD1B}" -c workspace -- grep -q 'ac1b-stub' "${OC_CFG}" \

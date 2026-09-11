@@ -913,14 +913,23 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 	}
 }
 
-// TestUS70AC1BRow_XDGLayerTrichotomy executes the AC-1b XDG-layer probe's
-// classification logic against a temp dir (the #1326 fix): the row must
-// classify a writable regular file as `file`, a read-only file as
-// `readonly` (the EACCES class 1d0e5be1 exists to close), a symlink as
-// `symlink` (the 0.27.5-era mechanism), and an absent path as `missing`.
-// Mirrors the executed-bash pattern of TestUS70NotifyHelpers_SpawnedSeq.
+// TestUS70AC1BRow_XDGLayerTrichotomy executes the AC-1b row's ACTUAL
+// probe text (extracted from the script — r2: an inline re-implementation
+// stays green while the script drifts) against a temp dir: a writable
+// regular file must classify `file`, a read-only file `readonly` (the
+// EACCES class 1d0e5be1 exists to close), a symlink `symlink` (the
+// 0.27.5-era mechanism), an absent path `missing`.
 func TestUS70AC1BRow_XDGLayerTrichotomy(t *testing.T) {
 	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	// The remote probe is the double-quoted sh -c payload of the XDG_KIND
+	// capture line; its own quoting is single-quoted, so [^"]+ is exact.
+	m := regexp.MustCompile(`XDG_KIND=\$\(kc exec[^\n]* -- sh -c "([^"]+)"`).
+		FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("AC-1b XDG_KIND probe not found in %s in the expected capture form", us70DeliveryScript)
+	}
+	probe := m[1]
 	dir := t.TempDir()
 	writable := filepath.Join(dir, "writable.json")
 	readOnly := filepath.Join(dir, "readonly.json")
@@ -937,19 +946,69 @@ func TestUS70AC1BRow_XDGLayerTrichotomy(t *testing.T) {
 	if err := os.Symlink(writable, link); err != nil {
 		t.Fatal(err)
 	}
-	script := `probe() {
-  XDG_CFG="$1"
-  if [ -L "${XDG_CFG}" ]; then echo symlink; elif [ -f "${XDG_CFG}" ] && [ -w "${XDG_CFG}" ]; then echo file; elif [ -f "${XDG_CFG}" ]; then echo readonly; else echo missing; fi
-}
-printf '%s %s %s %s\n' "$(probe "$1")" "$(probe "$2")" "$(probe "$3")" "$(probe "$4")"
-`
-	out, err := exec.Command(bash, "-c", script, "probe", writable, readOnly, link, absent).CombinedOutput()
-	if err != nil {
-		t.Fatalf("execute trichotomy probe: %v\n%s", err, out)
+	// The row expands ${XDG_CFG} in the OUTER shell before the remote
+	// sh -c sees it (single quotes preserve the literal) — replicate
+	// that substitution per fixture, exactly as kc exec would deliver.
+	var got []string
+	for _, p := range []string{writable, readOnly, link, absent} {
+		out, err := exec.Command(bash, "-c", strings.ReplaceAll(probe, "${XDG_CFG}", p)).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute extracted probe (%q) on %s: %v\n%s", probe, p, err, out)
+		}
+		got = append(got, strings.TrimSpace(string(out)))
 	}
-	got := strings.TrimSpace(string(out))
-	if got != "file readonly symlink missing" {
-		t.Fatalf("trichotomy must classify writable/readonly/symlink/absent in order, got %q", got)
+	joined := strings.Join(got, " ")
+	if joined != "file readonly symlink missing" {
+		t.Fatalf("extracted probe must classify writable/readonly/symlink/absent in order, got %q (probe=%q)", joined, probe)
+	}
+}
+
+// TestUS70AC1BRow_SeedGrepSemantics executes the AC-1b seeded-copy grep
+// semantics as the script runs them (r2 finding: `grep -c` exits 1 on
+// zero matches, so the guard must distinguish transport failure from a
+// legitimate zero count — the `; true` normalization). Pins BOTH arms:
+// count 0 → the content die's condition fires; count ≥1 → passes; any
+// nonzero command exit WITHOUT normalization would invert the arms.
+func TestUS70AC1BRow_SeedGrepSemantics(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	m := regexp.MustCompile(`XDG_SEED=\$\(kc exec[^\n]* -- sh -c "(grep -c [^"]+)"`).
+		FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("AC-1b XDG_SEED grep not found in %s in the expected capture form", us70DeliveryScript)
+	}
+	cmd := m[1]
+	if !strings.Contains(cmd, "; true") {
+		t.Fatalf("the seeded-copy grep must normalize the remote exit (`; true`) — grep -c exits 1 on zero matches and would fire the exec-failure die on the CONTENT path: %q", cmd)
+	}
+	dir := t.TempDir()
+	seeded := filepath.Join(dir, "seeded.json")
+	bare := filepath.Join(dir, "bare.json")
+	if err := os.WriteFile(seeded, []byte(`{"providers":{"ac1b-stub":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bare, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{seeded, true},
+		{bare, false},
+	} {
+		out, err := exec.Command(bash, "-c", fmt.Sprintf("%s; echo exit=$?", strings.ReplaceAll(cmd, "${XDG_CFG}", tc.path))).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute seeded-grep: %v\n%s", err, out)
+		}
+		text := strings.TrimSpace(string(out))
+		n, perr := strconv.Atoi(strings.Split(text, "\nexit=")[0])
+		if perr != nil {
+			t.Fatalf("seeded-grep output not a count: %q", text)
+		}
+		if (n >= 1) != tc.want {
+			t.Fatalf("seeded-grep on %s: count=%d, want seeded=%v (output %q)", tc.path, n, tc.want, text)
+		}
 	}
 }
 

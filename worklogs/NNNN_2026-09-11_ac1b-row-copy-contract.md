@@ -10,6 +10,10 @@
 
 Explain and fix the AC-1b cluster row ("XDG registry layer target != child OPENCODE_CONFIG") that has kept the delivery pool red on main alongside F1 (F1 fixed by #1321; pool run 34566214570 confirms F1+F6 green at budget 8 — this row is the only remaining red).
 
+## Review r2 correction (record hygiene)
+
+The r1 grep-guard INVERTED the misattribution it claimed to fix: `grep -c` exits 1 on zero matches, so a copy lacking the provider block fired the EXEC-failure die and the content die was dead code. Fixed by normalizing the remote exit (`; true` inside the sh -c — transport failure remains the only nonzero path) plus a numeric-validated count check; the pins now EXECUTE THE SCRIPT'S EXTRACTED TEXT (regex-extracted probe + grep command with the outer-expansion `${XDG_CFG}` substitution replicated) instead of re-implementing the logic inline — an inline copy stays green while the script drifts. New pin `TestUS70AC1BRow_SeedGrepSemantics` fails if the `; true` normalization is ever dropped.
+
 ## Root cause
 
 - The row's assertion (3) pinned the **symlink-era** mechanism (#1301, 1f8b1663): `readlink -f ~/.config/opencode/opencode.json` == child `OPENCODE_CONFIG`.
