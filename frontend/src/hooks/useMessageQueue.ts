@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { messagesApi } from "../api/messages";
+import { ApiClientError } from "../api/client";
 
 export type QueuedMessage = {
   id: string;
@@ -130,26 +131,47 @@ export function useMessageQueue(
         await messagesApi.retryQueueMessage(workspaceId, sessionId, id);
         void refreshQueue();
         return;
-      } catch {
-        // Server retry unavailable (404 already-delivered, network) —
-        // fall through to local re-enqueue.
+      } catch (err) {
+        // #1318 + #1320: contended delivery is NOT "retry unavailable".
+        // A 503 means the session is busy delivering — the entry is
+        // mid-flight server-side and resolves on its own. Re-enqueueing
+        // here mints a duplicate entry (new clientMessageID) while the
+        // original stays deliverable: the ses_f73747f8 duplicate-send
+        // shape, manufactured by the client. Keep the pill + hint.
+        if (err instanceof ApiClientError && err.status === 503) {
+          markError(id, err.body?.error || "session busy delivering — the entry is mid-flight and resolves on its own");
+          return;
+        }
+        // 404 already-delivered / network — fall through to local
+        // re-enqueue.
       }
     }
     const msg = queuedMessages.find((m) => m.id === id);
     removeById(id);
     if (msg) await enqueue(msg.text, msg.files);
-  }, [workspaceId, sessionId, queuedMessages, enqueue, removeById, refreshQueue]);
+  }, [workspaceId, sessionId, queuedMessages, enqueue, removeById, refreshQueue, markError]);
 
   const dismiss = useCallback(async (id: string) => {
     if (!workspaceId || !sessionId) return;
-    removeById(id);
+    // Delete-first (#1318 + #1320): removing the pill before the server
+    // confirms would silently un-dismiss an entry that still delivers.
     try {
       await messagesApi.deleteQueueMessage(workspaceId, sessionId, id);
-    } catch {
-      // Local removal already happened; server-side cleanup is best-effort.
+      removeById(id);
+    } catch (err) {
+      if (err instanceof ApiClientError && err.status === 503) {
+        // The entry is busy delivering — it WILL send; keep the pill
+        // with a hint so the user can re-dismiss after the turn.
+        markError(id, err.body?.error || "delivery in progress — dismiss applies after the current delivery");
+      } else {
+        // Network/other: the delete outcome is unknown; remove locally
+        // and let refreshQueue reconcile from the server (re-adds the
+        // entry if the delete never landed).
+        removeById(id);
+      }
     }
     void refreshQueue();
-  }, [workspaceId, sessionId, refreshQueue, removeById]);
+  }, [workspaceId, sessionId, refreshQueue, removeById, markError]);
 
   const clearAll = useCallback(async () => {
     if (!workspaceId || !sessionId) return;

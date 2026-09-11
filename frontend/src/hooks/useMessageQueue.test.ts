@@ -13,7 +13,12 @@ vi.mock("../api/messages", () => ({
 }));
 
 import { messagesApi } from "../api/messages";
+import { ApiClientError } from "../api/client";
 import { useMessageQueue } from "./useMessageQueue";
+
+function err503() {
+  return new ApiClientError(503, { error: "session busy delivering; retry shortly" });
+}
 
 function render(workspaceId = "ws-1", sessionId = "ses-1") {
   return renderHook(() => useMessageQueue(workspaceId, sessionId));
@@ -122,6 +127,56 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     await act(async () => { await result.current.dismiss("msg_test_1"); });
 
     expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_test_1");
+    expect(result.current.queuedMessages).toHaveLength(0);
+  });
+
+  // #1318 + #1320: contended delivery is not "unavailable". The 503 from
+  // Retry/Dismiss means the entry is mid-delivery server-side — a local
+  // re-enqueue mints a duplicate entry (new clientMessageID) while the
+  // original stays deliverable: the ses_f73747f8 duplicate-send shape,
+  // manufactured by the client.
+  it("retry on 503 keeps the pill and never re-enqueues", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_1" });
+    await act(async () => { await result.current.enqueue("contended"); });
+    act(() => { result.current.markError("msg_1", "failed"); });
+
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(err503());
+    await act(async () => { await result.current.retry("msg_1"); });
+
+    expect(messagesApi.queueMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_1");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("delivering");
+  });
+
+  it("dismiss on 503 keeps the pill (the entry will still deliver)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("contended"); });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(err503());
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.error).toContain("delivering");
+  });
+
+  it("dismiss on non-503 error still removes the pill (refresh reconciles)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("gone"); });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
