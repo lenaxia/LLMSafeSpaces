@@ -439,7 +439,6 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     rerender({ sid: "ses-A" });
     await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
   });
-});
 
   it("hides server verifying/delivering entries; unknown statuses degrade to pending (#987 display contract)", async () => {
     // In-flight entries are server-side durability plumbing, not queue
@@ -483,6 +482,69 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     expect(result.current.queuedMessages).toHaveLength(0);
   });
+
+// r5 finding 2 pin: a pill enqueued DURING a clearAll sweep is not in
+// targets — it must pass through untouched (not error-marked): its
+// entry is healthy and its own delivery lifecycle owns the pill.
+it("concurrent enqueue during a clearAll sweep passes through untouched", async () => {
+  const { result } = render();
+  await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_a" });
+  await act(async () => { await result.current.enqueue("swept"); });
+
+  // A delete that resolves on OUR schedule — the sweep is mid-flight.
+  let resolveA!: (v: undefined) => void;
+  (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockImplementation(
+    () => new Promise<void>((res) => { resolveA = res; }),
+  );
+  let clearPromise!: Promise<void>;
+  act(() => { clearPromise = result.current.clearAll(); });
+
+  // The concurrent pill lands while the sweep's DELETE is pending. Its
+  // POST succeeds, so the server holds it — the GET the trailing
+  // refreshQueue fires must say so (an empty response would drop the
+  // pending pill by design, lying about the accepted entry).
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_late" });
+  (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    messages: [
+      { id: "msg_late", text: "late arrival", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0 },
+    ],
+  });
+  await act(async () => { await result.current.enqueue("late arrival"); });
+
+  await act(async () => { resolveA(undefined); await clearPromise; });
+
+  const late = result.current.queuedMessages.find((m) => m.id === "msg_late");
+  expect(late).toBeDefined();
+  expect(late!.status).toBe("pending");
+  expect(late!.error).toBeUndefined();
+  expect(result.current.queuedMessages.find((m) => m.id === "msg_a")).toBeUndefined();
+});
+
+// r5 missing-case 4: the err_-prefixed (client-only) pill skips the
+// server retry entirely and re-enqueues with its original cmid.
+it("retry on an err_ pill skips the server retry and reuses its cmid", async () => {
+  const { result } = render();
+  await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network"));
+  await act(async () => { await result.current.enqueue("local only"); });
+  const errPill = result.current.queuedMessages[0]!;
+  expect(errPill.id.startsWith("err_")).toBe(true);
+  const originalCmid = errPill.clientMessageID;
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "srv_new" });
+  await act(async () => { await result.current.retry(errPill.id); });
+
+  expect(messagesApi.retryQueueMessage).not.toHaveBeenCalled();
+  const call = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+  expect(call![4]).toBe(originalCmid);
+  expect(result.current.queuedMessages[0]!.id).toBe("srv_new");
+});
+
+
+});
 
 describe("useMessageQueue files (Epic 68 U1.6.8)", () => {
   beforeEach(() => {
