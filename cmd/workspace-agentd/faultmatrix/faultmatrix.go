@@ -1,0 +1,255 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// Package faultmatrix is the epic-71 / 2b assertion harness (#1312
+// change item 2): fault-leg rows driven through the REAL sessionstate
+// authority with harness fakes, asserting the S-invariants via
+// violation counters and the L-bounds via convergence samples. This is
+// the in-memory shape the soak row reuses at N workspaces × M sessions
+// × fault rate λ — the same gates (violations empty, convergence within
+// bound) scale from CI rows to the soak.
+//
+// Test scaffolding only: production code must not import it (the
+// abitest boundary discipline).
+package faultmatrix
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"connectrpc.com/connect"
+
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+)
+
+// --- the engine ---------------------------------------------------------------
+
+// Violations counts S/L breaches; a row ends with it empty or fails.
+// The invariant naming (S1-S11, L1-L9 per #1312) stays at the call site
+// where the semantics live — the counter is bookkeeping, not judgment.
+type Violations struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func NewViolations() *Violations {
+	return &Violations{counts: map[string]int{}}
+}
+
+func (v *Violations) Add(name string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.counts[name]++
+}
+
+// Counts returns a copy (assertion surface).
+func (v *Violations) Counts() map[string]int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	out := make(map[string]int, len(v.counts))
+	for k, n := range v.counts {
+		out[k] = n
+	}
+	return out
+}
+
+func (v *Violations) Empty() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return len(v.counts) == 0
+}
+
+// ConvergenceLog holds per-bound samples — the in-memory ancestor of
+// the soak's convergence histograms (L1-L5).
+type ConvergenceLog struct {
+	mu      sync.Mutex
+	samples map[string][]time.Duration
+}
+
+func NewConvergenceLog() *ConvergenceLog {
+	return &ConvergenceLog{samples: map[string][]time.Duration{}}
+}
+
+func (l *ConvergenceLog) Record(bound string, d time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.samples[bound] = append(l.samples[bound], d)
+}
+
+// Max returns the worst sample under a bound (0 when none).
+func (l *ConvergenceLog) Max(bound string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var max time.Duration
+	for _, d := range l.samples[bound] {
+		if d > max {
+			max = d
+		}
+	}
+	return max
+}
+
+func (l *ConvergenceLog) Within(bound string, budget time.Duration) bool {
+	return l.Max(bound) <= budget
+}
+
+// WaitConverges polls fn until it holds or the bound breaches; the
+// elapsed span is the CALLER's to record (rows decide which span a
+// bound governs). Returns (elapsed, ok) — a false return is the row's
+// cue to add the L-violation.
+func WaitConverges(ctx context.Context, bound time.Duration, poll time.Duration, fn func() bool) (time.Duration, bool) {
+	start := time.Now()
+	deadline := start.Add(bound)
+	for {
+		if fn() {
+			return time.Since(start), true
+		}
+		if time.Now().After(deadline) {
+			return time.Since(start), false
+		}
+		select {
+		case <-ctx.Done():
+			return time.Since(start), false
+		case <-time.After(poll):
+		}
+	}
+}
+
+// --- the harness fakes ----------------------------------------------------------
+
+// NoopParser satisfies the required Parser seam; rows ingest typed
+// events directly (IngestForTest) — nothing to parse.
+type NoopParser struct{}
+
+func (NoopParser) Parse(raw []byte) (*abiv1.Event, bool, error) { return nil, false, nil }
+
+// EvidenceStore is the harness-store fake: session truth (status +
+// pending set — the S5 diff's "live" side) and message presence (the
+// S7 evidence). One store backs the StoreReader seam AND the row's
+// fault injection — the coupling IS the point (truth and evidence read
+// the same transcript, as in production).
+type EvidenceStore struct {
+	mu      sync.Mutex
+	states  map[string]sessionstate.SessionSeed
+	present map[string]map[string]bool
+}
+
+func NewEvidenceStore() *EvidenceStore {
+	return &EvidenceStore{
+		states:  map[string]sessionstate.SessionSeed{},
+		present: map[string]map[string]bool{},
+	}
+}
+
+// SetState overwrites a session's truth (status + pending set) — the
+// row's fault lever for silent drops and status loss.
+func (s *EvidenceStore) SetState(sessionID string, status abiv1.SessionStatus, pending ...*abiv1.InputRequest) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[sessionID] = sessionstate.SessionSeed{Status: status, PendingInputs: pending}
+}
+
+// MarkPresent records a transcript message (turn evidence).
+func (s *EvidenceStore) MarkPresent(sessionID, messageID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.present[sessionID] == nil {
+		s.present[sessionID] = map[string]bool{}
+	}
+	s.present[sessionID][messageID] = true
+}
+
+func (s *EvidenceStore) SessionStates(ctx context.Context) (map[string]sessionstate.SessionSeed, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]sessionstate.SessionSeed, len(s.states))
+	for k, v := range s.states {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *EvidenceStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		out[id] = s.present[sessionID][id]
+	}
+	return out, nil
+}
+
+// InputPresent reports the live pending truth for the answer path.
+func (s *EvidenceStore) InputPresent(sessionID, inputID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, in := range s.states[sessionID].PendingInputs {
+		if in.GetId() == inputID {
+			return true
+		}
+	}
+	return false
+}
+
+// AnswerActor implements the harness answer seam: a live ask answers
+// successfully; an ask ABSENT from the store's truth 404s — the leg-2
+// stale-click shape resolve-by-absence must convert (S6).
+type AnswerActor struct {
+	Store *EvidenceStore
+}
+
+func (a *AnswerActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	switch act := req.GetAction().(type) {
+	case *abiv1.ActionRequest_AnswerQuestion:
+		if !a.Store.InputPresent(sessionID, act.AnswerQuestion.GetInputId()) {
+			return nil, connect.NewError(connect.CodeNotFound, errText("input not found"))
+		}
+		return &abiv1.ActionResult{
+			Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{
+				InputId: act.AnswerQuestion.GetInputId(),
+			}},
+		}, nil
+	default:
+		return nil, connect.NewError(connect.CodeUnimplemented, errText("faultmatrix actor: answers only"))
+	}
+}
+
+// InstantAdmitter admits synchronously and records the transcript
+// message (evidence) under the deterministic id "msg-admit-N" — the
+// promotion event's absence is the row's stranded-state lever.
+type InstantAdmitter struct {
+	mu  sync.Mutex
+	n   int
+	Out *EvidenceStore
+}
+
+func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	ad.mu.Lock()
+	ad.n++
+	storeID := "msg-admit-" + itoa(ad.n)
+	ad.mu.Unlock()
+	if ad.Out != nil {
+		ad.Out.MarkPresent(sessionID, storeID)
+	}
+	return storeID, nil
+}
+
+type errText string
+
+func (e errText) Error() string { return string(e) }
+
+func itoa(v int) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [12]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
+}
