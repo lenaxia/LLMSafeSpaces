@@ -52,6 +52,24 @@ api:
   # "5:POST:/internal/v1/pod-bootstrap". Empty (default) = feature absent;
   # a malformed value makes the API fail to start.
   e2eFaultInjection: ""
+  # Epic-71 / 0c (#1312): the metrics-only canary probe runner. When
+  # enabled, the API probes every configured workspace class (v1: a class
+  # IS a runtime-environment name, e.g. "python:3.11") once per interval:
+  # a GetSnapshot round-trip (liveness) and an Act(answer_question) on a
+  # synthetic input (S6 resolve-by-absence) — zero model spend by
+  # construction. Enabled with an empty class list makes the API refuse
+  # to boot (fail-closed). Metrics-only: alerting stays gated until the
+  # epic's L3/L4 bounds are green; enable for the prod baseline once the
+  # fleet has one Active workspace per listed class.
+  canary:
+    enabled: false
+    # Probe pass period (Go duration; default 60s when empty).
+    interval: ""
+    # Per-leg probe budget (Go duration; default 2s when empty).
+    timeout: ""
+    # Workspace classes to probe — runtime-environment names. At least
+    # one is REQUIRED when enabled.
+    classes: []
   # #1019 C: pod termination grace. Must cover a worst-case in-flight
   # outbox delivery (10m delivery + verify margin) so rolling deploys
   # never SIGKILL a delivering worker — that leaves the session's

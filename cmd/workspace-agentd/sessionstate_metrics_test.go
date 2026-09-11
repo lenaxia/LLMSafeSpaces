@@ -14,13 +14,13 @@ import (
 	"time"
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/obs"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
+	"github.com/lenaxia/llmsafespaces/pkg/obs"
 )
 
 // --- US-69.12: the metrics wiring (gauge refresh + ABI-surface
@@ -134,9 +134,9 @@ func TestSessionStateWatchdog_EndToEnd(t *testing.T) {
 	// pass — a boot-once stamp (or a dead loop) cannot satisfy this, and
 	// staleness alerting consumes exactly this property (alerts themselves
 	// are gated per the wave plan).
-	first := testutil.ToFloat64(sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog"))
+	first := testutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopReconcileWatchdog))
 	require.Eventually(t, func() bool {
-		return testutil.ToFloat64(sessionStateMetrics.loopLastRun.WithLabelValues("reconcile_watchdog")) > first
+		return testutil.ToFloat64(obs.LoopLastRun().WithLabelValues(obs.LoopReconcileWatchdog)) > first
 	}, 3*time.Second, 5*time.Millisecond, "the gauge advances with the loop (per-pass refresh)")
 	assert.True(t, wakeFailed, "the configured wake fired")
 	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.ledgerDepth.WithLabelValues(wsID, "stalled")),
@@ -158,7 +158,7 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 	sessionStateMetrics.ledgerDepth.WithLabelValues("seed", "stalled")
 	sessionStateMetrics.promotionStall.WithLabelValues("seed")
 	sessionStateMetrics.reconciled.WithLabelValues("failed")
-	sessionStateMetrics.loopLastRun.WithLabelValues(obs.LoopReconcileWatchdog).SetToCurrentTime()
+	obs.StampLoopLastRun(obs.LoopReconcileWatchdog)
 
 	ts := httptest.NewServer(promhttp.Handler())
 	t.Cleanup(ts.Close)

@@ -5,6 +5,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -530,5 +531,82 @@ func TestConfig_PreviewOrigin_FrameAncestorsEnv(t *testing.T) {
 	want := []string{"https://chat.safespaces.dev", "https://app.other.org"}
 	if len(cfg.PreviewOrigin.FrameAncestors) != 2 || cfg.PreviewOrigin.FrameAncestors[0] != want[0] || cfg.PreviewOrigin.FrameAncestors[1] != want[1] {
 		t.Errorf("FrameAncestors = %v, want %v", cfg.PreviewOrigin.FrameAncestors, want)
+	}
+}
+
+// --- Canary (epic-71 / 0c) -------------------------------------------------
+
+// TestConfig_Canary_DisabledIsDefault: the knob ships off — no env, no
+// config, no canary.
+func TestConfig_Canary_DisabledIsDefault(t *testing.T) {
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Canary.Enabled {
+		t.Fatal("expected Canary.Enabled=false by default")
+	}
+	if len(cfg.Canary.Classes) != 0 {
+		t.Fatalf("expected no default classes, got %v", cfg.Canary.Classes)
+	}
+}
+
+// TestConfig_Canary_FullEnvPlumbing: the ops path (chart → env) wires
+// every field.
+func TestConfig_Canary_FullEnvPlumbing(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_CANARY_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_CANARY_INTERVAL", "90s")
+	t.Setenv("LLMSAFESPACES_CANARY_TIMEOUT", "1500ms")
+	t.Setenv("LLMSAFESPACES_CANARY_CLASSES", "python:3.11, node:22 , ,base ")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Canary.Enabled {
+		t.Error("expected Canary.Enabled=true from env")
+	}
+	if cfg.Canary.Interval != 90*time.Second {
+		t.Errorf("expected Interval=90s, got %v", cfg.Canary.Interval)
+	}
+	if cfg.Canary.Timeout != 1500*time.Millisecond {
+		t.Errorf("expected Timeout=1500ms, got %v", cfg.Canary.Timeout)
+	}
+	want := []string{"python:3.11", "node:22", "base"}
+	if !reflect.DeepEqual(cfg.Canary.Classes, want) {
+		t.Errorf("expected trimmed classes %v, got %v", want, cfg.Canary.Classes)
+	}
+}
+
+// TestConfig_Canary_MalformedDurationsFallBack: bad durations degrade
+// to the service defaults (IntervalFromEnv convention) — never a boot
+// failure over a tunable.
+func TestConfig_Canary_MalformedDurationsFallBack(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_CANARY_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_CANARY_CLASSES", "base")
+	t.Setenv("LLMSAFESPACES_CANARY_INTERVAL", "not-a-duration")
+	t.Setenv("LLMSAFESPACES_CANARY_TIMEOUT", "-5s")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Canary.Interval != 0 || cfg.Canary.Timeout != 0 {
+		t.Errorf("malformed durations must leave the zero value (service defaults apply); got interval=%v timeout=%v", cfg.Canary.Interval, cfg.Canary.Timeout)
+	}
+}
+
+// TestConfig_Canary_EnabledWithoutClassesFailsClosed: a canary probing
+// nothing while looking enabled is false coverage — refuse to boot.
+func TestConfig_Canary_EnabledWithoutClassesFailsClosed(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_CANARY_ENABLED", "1")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected Load to fail-closed with enabled+empty-classes; got cfg=%+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "canary.classes") {
+		t.Errorf("error message should mention canary.classes; got: %v", err)
 	}
 }
