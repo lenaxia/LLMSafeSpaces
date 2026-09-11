@@ -93,3 +93,12 @@ All findings validated real, fixed:
 6. **Stale Help:** `llmsafespaces_ledger_reconciled_total` Help now enumerates all six outcome labels and their owning issues.
 
 New tests: failing-gather export + concurrent-Metrics race pin, outcomes export, prune/close-safety (internal-package test for the unexported cache). Correction (r4): the canceled-pass recording coverage is #1317's pre-existing `TestReconcile_ContextCancelRecordsOutcomes`, unchanged by this PR — this round's work re-homed its recording site and kept that test green, and r4 adds a canceled-pass-does-not-count-as-gather-failure pin below.
+
+---
+
+## Review round 4 (PR #1329, commit 16b25726 reviewed)
+
+- **Canceled-pass tail counted cancellation as a source failure (fixed):** `reconcileLocked` guards the lease diff on `ctx.Err()` — a canceled pass records its partial ledger outcomes (the single pass-end site) but never classifies the cancellation itself as a gather failure. Pinned by `TestLeasePass_CanceledPassIsNotASourceFailure`.
+- **Prune test never executed the prune branch (fixed):** `serveGatherMapLimit` is a var; the test overfills past a shrunk limit so the serve EXECUTES the prune and asserts eviction; the close-race half stays.
+- **Delta bridge zero coverage (fixed):** first-scrape-cumulative semantics pinned via `TestLeaseDeltas_FirstScrapeCarriesCumulative` (Metrics deltas through a real authority).
+- **Worklog accuracy (corrected):** the r3 note's "canceled-pass recording regression" claim was wrong — that coverage is #1317's pre-existing `TestReconcile_ContextCancelRecordsOutcomes` (kept green by the recording-site re-home, not added here). Corrected in-entry per the record's own standard.
