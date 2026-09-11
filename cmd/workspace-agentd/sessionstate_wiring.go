@@ -568,6 +568,15 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 
 	case *abiv1.ActionRequest_AnswerQuestion:
 		ans := a.AnswerQuestion
+		// The reply form (#1302 contract delta) carries the permission
+		// vocabulary directly — route straight to the permission
+		// endpoint, no question-first probe, no lossy option encoding.
+		if ans.GetReply() != "" {
+			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": ans.GetReply()}, nil); err != nil {
+				return nil, err
+			}
+			return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+		}
 		// opencode's unified reply contract (worklog 0069 live capture +
 		// the frontend's input client): questions take {"answers": [[..]]}
 		// (one array per question: selected labels and/or free text);

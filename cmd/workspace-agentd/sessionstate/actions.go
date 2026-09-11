@@ -82,6 +82,17 @@ func (a *Authority) act(ctx context.Context, m *abiv1.ActionRequest) (*abiv1.Act
 	if err != nil {
 		var cerr *connect.Error
 		if errors.As(err, &cerr) {
+			// Resolve-by-absence (#1310 slice A, S6): a harness 404 on an
+			// ANSWER is the resolution — the ask was a lease, the harness
+			// already dropped it, and erroring here is what stranded the
+			// ses_f73747f8 prompt. Drop the projected entry (browsers
+			// clear on the resolved event) and succeed. Answer-only:
+			// every other verb's NotFound stays a typed error.
+			if cerr.Code() == connect.CodeNotFound {
+				if ans := m.GetAnswerQuestion(); ans != nil {
+					return a.resolveByAbsence(m.GetSessionId(), ans.GetInputId())
+				}
+			}
 			return nil, cerr // harness seams may return typed errors; pass through
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -94,6 +105,38 @@ func (a *Authority) act(ctx context.Context, m *abiv1.ActionRequest) (*abiv1.Act
 	// the harness call returns (the design-0055 open item — causal
 	// linkage is the consumer's seq observe, not a synchronous promise).
 	return res, nil
+}
+
+// resolveByAbsence executes S6's "absence is authoritative" half for an
+// answer whose harness forward returned not-found: the projected entry
+// (if any) is dropped through the standard fold — a seq-assigned
+// InputResolved fans out to every browser — and the Act caller gets
+// SUCCESS. An ask the projection never held resolves to SUCCESS without
+// consuming a seq or minting a phantom session record (nothing was
+// stranded, nothing needs clearing).
+//
+// Lock order: the caller holds the session single-flight lock; this path
+// then takes a.mu — the reverse edge (a.mu → sessionLock) exists nowhere
+// (applyLocked/observe take only promotionMu/ledger.mu under a.mu), so
+// the ordering is acyclic.
+func (a *Authority) resolveByAbsence(sessionID, inputID string) (*abiv1.ActionResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if rec := a.sessions[sessionID]; rec != nil {
+		if _, projected := rec.pending[inputID]; projected {
+			a.applyLocked(&abiv1.Event{
+				SessionId: sessionID,
+				Type:      abiv1.EventType_EVENT_TYPE_INPUT_RESOLVED,
+				Input:     &abiv1.InputRequest{Id: inputID},
+			})
+		}
+	}
+	return &abiv1.ActionResult{
+		SessionId: sessionID,
+		Result: &abiv1.ActionResult_AnswerQuestion{
+			AnswerQuestion: &abiv1.AnswerInputResult{InputId: inputID},
+		},
+	}, nil
 }
 
 func validateAction(m *abiv1.ActionRequest) error {
@@ -111,8 +154,14 @@ func validateAction(m *abiv1.ActionRequest) error {
 		if ans.GetInputId() == "" {
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires input_id"))
 		}
-		if len(ans.GetOptionIds()) == 0 && ans.GetCustomText() == "" {
-			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires option_ids and/or custom_text"))
+		// Disjoint answer forms (#1302): reply carries the permission
+		// vocabulary; option_ids/custom_text carry question answers.
+		hasLegacy := len(ans.GetOptionIds()) > 0 || ans.GetCustomText() != ""
+		switch {
+		case ans.GetReply() != "" && hasLegacy:
+			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question reply is disjoint from option_ids/custom_text"))
+		case ans.GetReply() == "" && !hasLegacy:
+			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires option_ids and/or custom_text, or reply"))
 		}
 	}
 	return nil

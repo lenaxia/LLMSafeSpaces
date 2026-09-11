@@ -180,3 +180,41 @@ func TestOpencodeActionSurface_Declaration(t *testing.T) {
 	_, actions = opencodeActionSurface(probeClient(), "pw")
 	require.Len(t, actions, 3, "only the regression-pinned trio when the V2 routes are absent")
 }
+
+// TestOpencodeActor_ReplyRoutesDirectlyToPermission (#1310 slice A /
+// #1302 contract delta): a set `reply` (permission vocabulary) goes
+// straight to /permission/{id}/reply — no question-first probe, no
+// lossy option_ids encoding.
+func TestOpencodeActor_ReplyRoutesDirectlyToPermission(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "p1", Reply: strPtr("always")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1, "no question-first probe on the reply form")
+	assert.Equal(t, "/permission/p1/reply", reqs[0].Path)
+	assert.JSONEq(t, `{"reply":"always"}`, reqs[0].Body)
+}
+
+// TestOpencodeActor_LegacyFormsUnchanged: option_ids/custom_text keep
+// the question-first contract (regression pin for the delta).
+func TestOpencodeActor_LegacyFormsUnchanged(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1", OptionIds: []string{"Go"}, CustomText: strPtr("notes")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "/question/q1/reply", reqs[0].Path)
+	assert.JSONEq(t, `{"answers":[["Go","notes"]]}`, reqs[0].Body)
+}
+
+func strPtr(s string) *string { return &s }
