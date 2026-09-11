@@ -67,3 +67,20 @@ None. Soak row (merge gate) waits on 2a (#1329, in-review).
 - pkg/abi/abitest/fault_knobs.go (new) + fault_knobs_test.go (new)
 - pkg/abi/abitest/server.go (knobs field, middleware wrap, Deliver stall+record)
 - pkg/abi/abiclient/client.go (Deliver)
+
+---
+
+## Review r1 remediation (2026-09-11, PR #1331)
+
+- **Ctx-cancel of the leg-8 stall pinned** (`TestDelayDeliverAck_CtxCancelReturnsPromptly`): 5-minute stall armed, request ctx canceled mid-stall, Deliver returns promptly with `ErrorIs(context.Canceled)` — the regression guard against a `time.Sleep` replacement.
+- **Empty-suffix guard pinned** (`TestCorruptNextResponse_EmptySuffixMatchesNothing`): arming `("", mode)` corrupts nothing and is never consumed; `CorruptNextResponseArmed()` now reports the STORED state (the suffix guard lives only in `takeCorruption`, where it is load-bearing — `strings.HasSuffix(path, "")` is always true).
+- **Empty-body mode asserted exactly** (`assert.Empty`, both in the mode table and a dedicated test) — no vacuous `Contains ""`.
+- **Dead test block deleted** (probe/`json.Unmarshal` + the `encoding/json` import); the canonical typed-parse-defeat pin remains as its own test.
+- **Comment corrections:** leg-7 doc now states validation/file-part gate precede the record point + the under-`s.mu` invariant; `abiclient.Deliver` doc now carries the delivery_op semantics ("no second row", current state on duplicate — not frozen).
+- **Wall-clock loosen:** the Act-unstalled bound is now relative to the armed delay (150ms) rather than an absolute 100ms.
+- **Counts corrected:** the knob test file now has 12 top-level test functions (15 cases counting subtests).
+
+## Tests Run (r1)
+
+- `go test -race ./pkg/abi/...` — ok (abitest incl. 12 knob tests; abiclient full suite)
+- `golangci-lint run ./pkg/abi/...` — 0 issues

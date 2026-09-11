@@ -79,8 +79,11 @@ func (f *faultKnobs) record(call DeliveryCall) {
 }
 
 // RecordDeliverCalls arms leg-7 call recording: every Deliver invocation
-// is appended (verbatim — duplicates and out-of-order attempts are the
-// signal) until the server is discarded. DeliverCalls reads the sequence.
+// that PASSES validation (and the file-part gate) is appended verbatim —
+// duplicates and out-of-order attempts are the signal; rejected
+// invocations never reach the record point. DeliverCalls reads the
+// sequence. Recording relies on the caller holding s.mu (single call
+// site: the Deliver handler).
 func (s *Server) RecordDeliverCalls() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,11 +125,15 @@ func (s *Server) CorruptNextResponse(procedureSuffix string, mode CorruptMode) {
 	s.knobs.nextCorruption = corruption{procedureSuffix: procedureSuffix, mode: mode}
 }
 
-// CorruptNextResponseArmed reports whether a corruption is pending.
+// CorruptNextResponseArmed reports whether a corruption is stored. An
+// empty-suffix arming reports armed while matching nothing — the guard
+// in takeCorruption is the load-bearing check that keeps it inert (its
+// removal would hijack every procedure; pinned by
+// TestCorruptNextResponse_EmptySuffixMatchesNothing).
 func (s *Server) CorruptNextResponseArmed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.knobs.nextCorruption.mode != CorruptModeUnset && s.knobs.nextCorruption.procedureSuffix != ""
+	return s.knobs.nextCorruption.mode != CorruptModeUnset
 }
 
 // takeCorruption consumes the armed corruption if the path matches.

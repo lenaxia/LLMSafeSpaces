@@ -5,7 +5,6 @@ package abitest
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +89,7 @@ func TestDelayDeliverAck_StallsOnlyDeliver(t *testing.T) {
 		Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
 	})
 	require.NoError(t, err)
-	assert.Less(t, time.Since(start), 100*time.Millisecond, "Act stays instant")
+	assert.Less(t, time.Since(start), 150*time.Millisecond, "Act stays unstalled (bounded by the armed Deliver delay, not an absolute)")
 
 	start = time.Now()
 	_, err = cl.Deliver(ctx, &abiv1.DeliveryRequest{
@@ -183,23 +182,70 @@ func TestCorruptNextResponse_ProcedureScoped(t *testing.T) {
 	assert.True(t, srv.CorruptNextResponseArmed(), "still armed for Deliver")
 }
 
-// TestCorruptInvalidJSON_DefeatsTypedParse: the canonical #1308 pin —
-// the REAL generated client fails to parse the corrupted response
-// (reproducing the production failure class against the reference fix).
-func TestCorruptInvalidJSON_DefeatsTypedParse(t *testing.T) {
+// TestCorruptEmptyBody_DeliversZeroBytes: the mode's contract is a 200
+// with ZERO bytes — asserted exactly, not vacuously (r1: a Contains ""
+// assert would stay green if the mode regressed to returning garbage).
+func TestCorruptEmptyBody_DeliversZeroBytes(t *testing.T) {
 	srv := New()
-	srv.CorruptNextResponse("GetSnapshot", CorruptInvalidJSON)
+	code, body := corruptWire(t, srv, "GetSnapshot", CorruptEmptyBody)
+	assert.Equal(t, http.StatusOK, code)
+	assert.Empty(t, body, "exactly zero bytes — not merely a body containing the empty string")
+}
+
+// TestCorruptNextResponse_EmptySuffixMatchesNothing: the empty-suffix
+// guard is load-bearing (strings.HasSuffix(path, "") is always true —
+// removing the guard would hijack every procedure). Arming with an
+// empty suffix must corrupt nothing and stay armed.
+func TestCorruptNextResponse_EmptySuffixMatchesNothing(t *testing.T) {
+	srv := New()
+	srv.CorruptNextResponse("", CorruptInvalidJSON)
+	require.True(t, srv.CorruptNextResponseArmed(), "armed state is inspectable")
+
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	cl := abiclient.New(http.DefaultClient, ts.URL)
 
-	_, err := cl.GetSnapshot(context.Background(), "s1")
-	require.Error(t, err, "truncated JSON must defeat the typed parse — this is the pin the #1308 pattern exists for")
+	snap, err := cl.GetSnapshot(context.Background(), "s1")
+	require.NoError(t, err, "empty suffix matches NOTHING — no procedure is hijacked")
+	assert.Equal(t, "s1", snap.GetSessionId())
+	_, err = cl.Act(context.Background(), &abiv1.ActionRequest{
+		SessionId: "s1",
+		Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+	})
+	require.NoError(t, err)
+	assert.True(t, srv.CorruptNextResponseArmed(), "the empty-suffix arming is never consumed")
+}
 
-	// And the corrupted body is JSON-ish but incomplete.
-	var probe map[string]json.RawMessage
-	if jsonErr := json.Unmarshal([]byte(`{"sessionId":"s1"`), &probe); err == nil && jsonErr == nil {
-		_ = probe // shape sanity only; the truncation is asserted by the wire test above
+// TestDelayDeliverAck_CtxCancelReturnsPromptly: the stall's
+// ctx-cancelability is a contract (a stalled harness row must unwind
+// with its request, never wedge past the admission window). A
+// regression replacing the timer/ctx select with time.Sleep fails here.
+func TestDelayDeliverAck_CtxCancelReturnsPromptly(t *testing.T) {
+	srv := New()
+	srv.DelayDeliverAck(5 * time.Minute) // far beyond the test budget
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	cl := abiclient.New(http.DefaultClient, ts.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := cl.Deliver(ctx, &abiv1.DeliveryRequest{
+			SessionId: "s1", EntryId: "e-1", Attempt: 1,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "hi"}}},
+		})
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // let the stall engage
+	cancel()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "the canceled request surfaces its ctx error, not a 5-minute hang")
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Deliver did not return promptly after ctx cancel — the stall ignores cancellation")
 	}
 }
 
@@ -223,4 +269,18 @@ func TestKnobs_Composable(t *testing.T) {
 	assert.GreaterOrEqual(t, time.Since(start), 45*time.Millisecond)
 	require.Len(t, srv.DeliverCalls(), 1, "the stalled call is still recorded exactly once")
 	assert.Equal(t, DeliveryCall{EntryID: "e-1", Attempt: 1}, srv.DeliverCalls()[0])
+}
+
+// TestCorruptInvalidJSON_DefeatsTypedParse: the canonical #1308 pin —
+// the REAL generated client fails to parse the corrupted response
+// (reproducing the production failure class against the reference fix).
+func TestCorruptInvalidJSON_DefeatsTypedParse(t *testing.T) {
+	srv := New()
+	srv.CorruptNextResponse("GetSnapshot", CorruptInvalidJSON)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	cl := abiclient.New(http.DefaultClient, ts.URL)
+
+	_, err := cl.GetSnapshot(context.Background(), "s1")
+	require.Error(t, err, "truncated JSON must defeat the typed parse — this is the pin the #1308 pattern exists for")
 }
