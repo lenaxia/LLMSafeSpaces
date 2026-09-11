@@ -75,4 +75,4 @@ None. Open coordination: 1b to sanity-check the FAILED+evidence precedence (comm
 - `cmd/workspace-agentd/sessionstate/ledger_test.go` — 4 new tests + fake arity
 - `cmd/workspace-agentd/sessionstate_wiring_test.go` — body-field pin + arity
 - `cmd/workspace-agentd/{admitter_mcp_e2e,admitter_v1_mcp,sessionstate_metrics_test,sessionstate/actions_test,sessionstate/reconcile_test,sessionstate/delivery_op_test}.go` — Admit arity updates
-- `worklogs/NNNN_2026-09-11_entry-level-admission-idempotency.md` (this file)
+- `worklogs/0910_2026-09-11_entry-level-admission-idempotency.md` (this file)
