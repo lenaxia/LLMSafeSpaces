@@ -214,7 +214,7 @@ func TestProxy_G34_CallerAuthorizationNotForwarded(t *testing.T) {
 	env.setupWorkspaceWithT(t, "ws-leak", 5)
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-leak/sessions/ses-1/message",
+		"/api/v1/workspaces/ws-leak/legacy-message/ses-1",
 		nil)
 	req.Header.Set("Authorization", "Bearer callers-jwt-abc")
 	req.Header.Set("Cookie", "lsp_session=caller-session")

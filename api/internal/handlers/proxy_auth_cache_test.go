@@ -83,7 +83,7 @@ func TestProxy_Upstream401_Returns502(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-auth-fail", "10.0.0.1", "Active", "")
 	env.setupPasswordWithT(t, "ws-auth-fail", "stale-password")
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-auth-fail/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-auth-fail/sessions/s1", nil)
 
 	assert.Equal(t, http.StatusBadGateway, w.Code,
 		"upstream 401 must be converted to 502")
@@ -108,7 +108,7 @@ func TestProxy_Upstream401_InvalidatesPasswordCache(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-cache-inv", "test-password")
 
 	// First request: 401 → cache invalidated
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-cache-inv/sessions", nil)
+	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-cache-inv/sessions/s1", nil)
 	assert.Equal(t, http.StatusBadGateway, w1.Code)
 
 	// Verify cache was invalidated
@@ -211,7 +211,7 @@ func TestProxy_Upstream401_DoesNotPanic_WithoutWorkspaceIDInContext(t *testing.T
 	env.setupPasswordWithT(t, "ws-edge", "pw")
 
 	require.NotPanics(t, func() {
-		env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-edge/sessions", nil)
+		env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-edge/sessions/s1", nil)
 	})
 }
 
@@ -250,7 +250,7 @@ func TestProxy_Upstream401_InvalidatesRedisPasswordCache(t *testing.T) {
 	// First request: triggers getPassword (cache miss → K8s fetch →
 	// SetCachedPassword → Redis SET with TTL) then 401 from upstream
 	// → invalidateCaches → InvalidatePassword (Redis DEL).
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-redis-inv/sessions", nil)
+	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-redis-inv/sessions/s1", nil)
 	assert.Equal(t, http.StatusBadGateway, w1.Code)
 
 	// Verify the Redis key for the cached password is gone — the 401

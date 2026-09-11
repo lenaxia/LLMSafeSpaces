@@ -185,8 +185,12 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		desc           string
 		reachesBackend bool // false = route short-circuits before proxying in this test setup
 	}{
-		// These 4 routes reach the backend with the minimal test fixture:
-		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", true},
+		// These 3 routes reach the backend with the minimal test fixture:
+		// #828 batch 1: SendMessage is adapter-only — with no adapter set
+		// it short-circuits at the nil-adapter guard (503), like the
+		// queue/question rows below. Its upstream BasicAuth is the
+		// adapter's contract, pinned by e2e_adapter_test.go.
+		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", true},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", true},
 		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", true},

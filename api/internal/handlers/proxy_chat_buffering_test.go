@@ -59,10 +59,11 @@ func TestSendMessage_4xxWithErrorBuffering_PendingCredentials_EnrichesResponseBo
 	since := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	env.handler.SetAgentStateChecker(stubAgentStateChecker{changedAt: since})
 
-	// env.router already has POST /sessions/:sessionId/message from newTestEnvWithBackend.
+	// env.router has the legacy-message transport route registered by the
+	// shared harness (proxy_test_helpers_test.go).
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-1/sessions/ses-1/message",
+		"/api/v1/workspaces/ws-1/legacy-message/ses-1",
 		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(rec, req)
@@ -101,7 +102,7 @@ func TestSendMessage_4xxWithErrorBuffering_NoPendingCredentials_PassesBodyThroug
 	// No agentStateChecker wired — no enrichment.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-1/sessions/ses-1/message",
+		"/api/v1/workspaces/ws-1/legacy-message/ses-1",
 		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(rec, req)
@@ -147,7 +148,7 @@ func TestSendMessage_2xxResponse_StreamsNormally_Unbuffered(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-1/sessions/ses-1/message",
+		"/api/v1/workspaces/ws-1/legacy-message/ses-1",
 		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(rec, req)
@@ -212,7 +213,7 @@ func TestSendMessage_4xxWithErrorBuffering_LargeBodyTruncated(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-1/sessions/ses-1/message",
+		"/api/v1/workspaces/ws-1/legacy-message/ses-1",
 		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
 	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(rec, req)

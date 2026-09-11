@@ -31,6 +31,7 @@ import (
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
@@ -162,6 +163,7 @@ func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFun
 		proxy.GET("/events", handler.StreamEvents)
 		proxy.GET("/alerts", handler.GetWorkspaceAlerts)
 	}
+	registerLegacyMessageTransport(router, handler)
 
 	return &testEnv{
 		handler:   handler,
@@ -216,13 +218,13 @@ func TestProxy_ProxiesGETRequest(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "GET", resp["method"])
-	assert.Equal(t, "/session", resp["path"])
+	assert.Equal(t, "/session/s1", resp["path"])
 }
 
 func TestProxy_ProxiesPOSTRequest(t *testing.T) {
@@ -232,13 +234,13 @@ func TestProxy_ProxiesPOSTRequest(t *testing.T) {
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
 	body := strings.NewReader(`{"message":"hello"}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions", body)
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", body)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, "POST", resp["method"])
-	assert.Equal(t, "/session", resp["path"])
+	assert.Equal(t, "/session/s1/message", resp["path"])
 }
 
 func TestProxy_SendsBasicAuth(t *testing.T) {
@@ -251,7 +253,7 @@ func TestProxy_SendsBasicAuth(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "my-secret-pw")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "opencode", capturedUser)
 	assert.Equal(t, "my-secret-pw", capturedPass)
@@ -263,7 +265,7 @@ func TestProxy_ForwardsQueryParameters(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions?limit=10&offset=0", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1?limit=10&offset=0", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
@@ -346,10 +348,10 @@ func TestProxy_RetriesOnStaleIP(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions", handler.ListSessions)
+	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -389,10 +391,10 @@ func TestProxy_ConnectionFailureReturns503(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions", handler.ListSessions)
+	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -426,7 +428,7 @@ func TestProxy_WorkspaceNotRunning(t *testing.T) {
 			sb := makeWorkspaceCRDWithStatus("ws-1", tt.podIP, tt.phase, "ws-1")
 			env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(sb, nil).Once()
 
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 			assert.Equal(t, "10", w.Header().Get("Retry-After"))
 		})
@@ -437,7 +439,7 @@ func TestProxy_WorkspaceNotFound(t *testing.T) {
 	env := newTestEnv(t)
 	env.wsMock.On("Get", mock.Anything, "sb-missing", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/sb-missing/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/sb-missing/sessions/s1", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -454,12 +456,12 @@ func TestProxy_PasswordCachedAfterFirstRead(t *testing.T) {
 		return false, nil, nil // fall through to default handler
 	})
 
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should be read exactly once on first request")
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should NOT be re-read on second request (served from cache)")
 }
@@ -468,7 +470,7 @@ func TestProxy_SecretNotFound(t *testing.T) {
 	env := newTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "failed to retrieve workspace credentials")
 }
@@ -484,7 +486,7 @@ func TestProxy_EmptyPasswordKey(t *testing.T) {
 	_, err := env.clientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
@@ -496,12 +498,12 @@ func TestProxy_ActiveSessionLimit(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 		sid := fmt.Sprintf("session-%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/sessions/%s/message", sid), strings.NewReader(`{"msg":"hi"}`))
+		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{"msg":"hi"}`))
 		assert.Equal(t, http.StatusOK, w.Code, "session %s should succeed", sid)
 	}
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/session-2/message", strings.NewReader(`{"msg":"hi"}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/session-2", strings.NewReader(`{"msg":"hi"}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 	assert.Equal(t, "10", w.Header().Get("Retry-After"))
 
@@ -518,11 +520,11 @@ func TestProxy_AlreadyActiveSessionSucceeds(t *testing.T) {
 	env.setupWorkspaceWithT(t, "ws-1", 1)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"msg":"hi"}`))
+	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi"}`))
 	assert.Equal(t, http.StatusOK, w1.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"msg":"hi2"}`))
+	w2 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi2"}`))
 	assert.Equal(t, http.StatusOK, w2.Code, "same session should not be double-counted")
 }
 
@@ -532,7 +534,7 @@ func TestProxy_ReadOnlyBypassesSessionLimit(t *testing.T) {
 	env.setupWorkspaceWithT(t, "ws-1", 1)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"msg":"hi"}`))
+	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi"}`))
 	assert.Equal(t, http.StatusOK, w1.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
@@ -540,15 +542,10 @@ func TestProxy_ReadOnlyBypassesSessionLimit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w2.Code, "read-only GET history should bypass limit")
 }
 
-func TestProxy_CreateSessionBypassesLimit(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 0)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusOK, w.Code, "create session should bypass limit")
-}
+// TestProxy_CreateSessionBypassesLimit was ported to the adapter path
+// (TestCreateSession_AdapterPath_BypassesActiveSessionLimit in
+// proxy_batch1_migration_test.go) when CreateSession became adapter-only
+// (#828 batch 1); the transport-level row died with the legacy branch.
 
 func TestProxy_ConnectionCeiling(t *testing.T) {
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
@@ -585,7 +582,7 @@ func TestProxy_ConnectionCeiling_Returns429(t *testing.T) {
 	env.handler.connCount["ws-1"] = 10
 	env.handler.connMu.Unlock()
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 	assert.Contains(t, w.Body.String(), "connection limit reached")
 }
@@ -597,9 +594,9 @@ func TestProxy_EndpointMapping(t *testing.T) {
 		path           string
 		expectedTarget string
 	}{
-		{"create session", "POST", "/api/v1/workspaces/ws-1/sessions", "/session"},
-		{"list sessions", "GET", "/api/v1/workspaces/ws-1/sessions", "/session"},
-		{"send message", "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", "/session/s1/message"},
+		// #828 batch 1: create/list/message rows were deleted with the
+		// handlers' legacy branches (adapter-only now — their upstream
+		// mapping is the adapter's contract, pinned in e2e_adapter_test.go).
 		{"get history", "GET", "/api/v1/workspaces/ws-1/sessions/s1/message", "/session/s1/message"},
 		{"get session", "GET", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
 		{"delete session", "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
@@ -642,14 +639,6 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/session":
-			if r.Method == "POST" {
-				w.WriteHeader(http.StatusCreated)
-				json.NewEncoder(w).Encode(map[string]string{"id": "sess-1"})
-			} else {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{"sessions": []string{"sess-1"}})
-			}
 		case "/session/sess-1/message":
 			if r.Method == "POST" {
 				w.WriteHeader(http.StatusOK)
@@ -660,6 +649,10 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 				_, _ = w.Write([]byte(`[]`))
 			}
 		case "/session/sess-1":
+			if r.Method == "GET" {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]string{"id": "sess-1"})
+			}
 			if r.Method == "DELETE" {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
@@ -673,16 +666,12 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
+	// #828 batch 1: the create/list legs died with the handlers' legacy
+	// branches (adapter-only — covered by e2e_adapter_test.go); the flow
+	// now covers the surviving legacy surfaces: sync send (via the
+	// legacy-message transport seam), history read, get, and delete.
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions", strings.NewReader(`{"runtime":"python"}`))
-	assert.Equal(t, http.StatusCreated, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/sess-1/message", strings.NewReader(`{"content":"hello"}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/sess-1", strings.NewReader(`{"content":"hello"}`))
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	env.handler.removeActiveSession(context.Background(), "ws-1", "sess-1")
@@ -692,14 +681,17 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/sess-1", nil)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/sess-1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	expected := []string{
-		"POST /session",
-		"GET /session",
 		"POST /session/sess-1/message",
 		"GET /session/sess-1/message",
+		"GET /session/sess-1",
 		"DELETE /session/sess-1",
 	}
 	assert.Equal(t, expected, requests)
@@ -716,15 +708,15 @@ func TestProxy_E2E_MultipleWorkspaceIsolation(t *testing.T) {
 	env.setupWorkspaceWithT(t, "sb-2", 1)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	env.setupWorkspacePodWithT(t, "sb-2", "10.0.0.2", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/sb-2/sessions/s2/message", strings.NewReader(`{}`))
+	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/sb-2/legacy-message/s2", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusOK, w.Code, "different workspace should have independent session tracking")
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s3/message", strings.NewReader(`{}`))
+	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s3", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code, "ws-1 should be at limit")
 }
 
@@ -739,12 +731,12 @@ func TestProxy_WorkspaceNotFound_UsesDefaults(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-missing")
 		sid := fmt.Sprintf("s%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/sessions/%s/message", sid), strings.NewReader(`{}`))
+		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{}`))
 		assert.Equal(t, http.StatusOK, w.Code, "session %s with default limit 5 should succeed", sid)
 	}
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-missing")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s6/message", strings.NewReader(`{}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s6", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code, "6th session with default limit 5 should be rejected")
 }
 
@@ -757,7 +749,7 @@ func TestProxy_BackendErrorPassthrough(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "internal opencode error")
 }
@@ -839,7 +831,7 @@ func TestProxy_ConcurrentRequests(t *testing.T) {
 	results := make(chan int, 5)
 	for i := 0; i < 5; i++ {
 		go func() {
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions", nil)
+			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 			results <- w.Code
 		}()
 	}
@@ -862,12 +854,12 @@ func TestProxy_E2E_MaxActiveSessionsCustom(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 		sid := fmt.Sprintf("s%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/sessions/%s/message", sid), strings.NewReader(`{}`))
+		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{}`))
 		assert.Equal(t, http.StatusOK, w.Code)
 	}
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s3/message", strings.NewReader(`{}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s3", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 }
 
@@ -987,7 +979,7 @@ func TestProxy_SessionLeak_NotOnConnectionCeilingReject(t *testing.T) {
 	env.handler.connCount["ws-1"] = 10
 	env.handler.connMu.Unlock()
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 
 	assert.Equal(t, 0, env.handler.activeSessionCount(context.Background(), "ws-1"),
@@ -1023,10 +1015,10 @@ func TestProxy_SessionLeak_CleanedUpOn503(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/message", handler.SendMessage)
+	registerLegacyMessageTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{}`))
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -1180,10 +1172,10 @@ func TestProxy_ActivityNotRecordedOnProxyFailure(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions", handler.ListSessions)
+	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -1229,10 +1221,10 @@ func TestProxy_ActivityRecordedOnSuccess(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions", handler.ListSessions)
+	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -1294,10 +1286,10 @@ func TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/message", handler.SendMessage)
+	registerLegacyMessageTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"content":"hi"}`))
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"content":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -1349,10 +1341,10 @@ func TestProxy_B2_CleanStreamEnd_NoSSEError(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/message", handler.SendMessage)
+	registerLegacyMessageTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"content":"hi"}`))
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"content":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 
@@ -2013,6 +2005,10 @@ func TestProxy_IsSessionActive_ReturnsTrueForActiveSession(t *testing.T) {
 	assert.False(t, handler.isSessionActive(context.Background(), "ws-1", "s3"), "s3 should not be active")
 }
 
+// Ported to the adapter path (#828 batch 1): the synchronous /message
+// route takes no busy/409 guard — its only admission control is the
+// active-session ceiling (429). A session already active and within
+// limits must send successfully, never 409.
 func TestProxy_SendPromptAsync_409DoesNotAffectSendMessage(t *testing.T) {
 	env := newTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
@@ -2020,12 +2016,18 @@ func TestProxy_SendPromptAsync_409DoesNotAffectSendMessage(t *testing.T) {
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
 	env.handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _ string, _ string, _ session.SendOpts) (*session.Message, error) {
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
 
 	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
 	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", body)
 
 	assert.NotEqual(t, http.StatusConflict, w.Code,
 		"SendMessage (synchronous) should NOT get 409 guard")
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestProxy_ProxyToWorkspace_NoDoubleReleaseOnMaxSessions(t *testing.T) {
@@ -2043,7 +2045,7 @@ func TestProxy_ProxyToWorkspace_NoDoubleReleaseOnMaxSessions(t *testing.T) {
 	env.handler.connCount["ws-1"] = 5
 	env.handler.connMu.Unlock()
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s2/message", strings.NewReader(`{"msg":"hi"}`))
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s2", strings.NewReader(`{"msg":"hi"}`))
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 
 	env.handler.connMu.Lock()
