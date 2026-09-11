@@ -340,3 +340,6 @@ func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context,
 func (s *Service) stampLoopLiveness() {
 	parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).SetToCurrentTime()
 }
+
+// ledgerProbeForTest reports whether a probe is wired (regime assertions).
+func (s *Service) ledgerProbeForTest() LedgerProbe { return s.ledgerProbe }

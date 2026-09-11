@@ -44,3 +44,9 @@ My landed-notes commitment from 0b: "reconcile ParkedSweepInterval/probeTimeout 
 - **Style 1 (fixed):** Help drift and duplicated literals across binaries — new `pkg/obs` package holds the family constants; both agentd's and the API's registrations consume them.
 - **Pre-existing main failure found and fixed:** `TestMetricsScrape_Completeness` (agentd) failed on pristine main — a *Vec with no children emits no series, so the completeness scrape was order/timing-dependent (loop_last_run depended on the watchdog goroutine having stamped). The test now materializes every vec family first; verified green with `-run` isolation and in the full package (228s).
 - **Robustness note (recorded):** in adapter mode the API's loop gauge series never materializes (inert loop, honestly absent) — absent()-style alerting should account for regime; noted here for when alerting un-gates.
+
+---
+
+## Review round 2 corrections (PR #1322, commit f0188a61)
+
+The round-1 "robustness note" below was **inverted for the shipped code** and is corrected here: after the loop-owned-stamp fix, the stamp is UNCONDITIONAL (outbox.go stamps on every completed periodic pass, and `Run` starts whenever the outbox exists — only `SetVerifier` is adapter-gated). So in adapter mode the series MATERIALIZES on the first tick: the gauge measures Run-loop goroutine liveness uniformly, and dead-loop detection works in both regimes. That is the chosen semantics (a stamp measuring loop liveness should not depend on which delivery regime the loop serves); pinned by `TestRun_LoopLivenessStampsInAdapterMode`. Operators building absent()-style alerting should treat a never-materialized `outbox_parked_sweeper` series as "outbox unwired", not "loop dead".

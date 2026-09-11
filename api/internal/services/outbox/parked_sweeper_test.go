@@ -1063,3 +1063,36 @@ func TestLoopLiveness_NamePinnedOnScrapeSurface(t *testing.T) {
 	}
 	assert.True(t, found, "llmsafespaces_loop_last_run_timestamp_seconds is exposed on the API scrape surface")
 }
+
+// TestRun_LoopLivenessStampsInAdapterMode (r2 finding): the stamp is
+// UNCONDITIONAL — the gauge measures Run-loop goroutine liveness in both
+// regimes, so dead-loop detection works in adapter mode too (the series
+// materializes on the first pass; an absent()-style alert may treat a
+// never-materialized series as "outbox not wired").
+func TestRun_LoopLivenessStampsInAdapterMode(t *testing.T) {
+	s, _ := newTestService(t) // no probe wired — adapter mode
+	assert.Nil(t, s.ledgerProbeForTest())
+	before := promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper))
+	if before == 0 {
+		parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper).Set(1) // materialize; baseline 1
+		before = 1
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		s.Run(ctx, func(ctx context.Context, ws, ses string, e Entry) error { return nil }, 10*time.Millisecond)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)) > before {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	wg.Wait()
+	assert.Greater(t, promtestutil.ToFloat64(parkedSweepLastRun.WithLabelValues(obs.LoopOutboxParkedSweeper)), before,
+		"adapter mode stamps too — loop liveness is regime-independent")
+}
