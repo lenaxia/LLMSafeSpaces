@@ -415,8 +415,14 @@ func (l *deliveryLedger) status(entryID string, attempt uint32) (*ledgerRecord, 
 // posted-but-never-completed message — the restart-destroyed window;
 // re-POSTing it is exactly the duplication this function exists to
 // prevent) — makes a new attempt return that outcome instead of
-// re-POSTing. FAILED and LEDGERED never reached opencode and correctly
-// fall through to a fresh admission.
+// re-POSTing. LEDGERED never reached opencode and falls through to the
+// evidence check. FAILED means the ladder exhausted without a returning
+// admission — but the #1315 incident proved a POST can land in the
+// transcript while the synchronous turn hangs past the client ctx
+// (FAILED-compatible-with-write), so FAILED too falls through to the
+// evidence check, which resolves ADMITTED-by-evidence when the store
+// holds the entry's keyed message and only otherwise proceeds to a
+// fresh keyed admission.
 func (l *deliveryLedger) admittedAnywhere(entryID string) (*ledgerRecord, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -647,11 +653,29 @@ func logger() *zap.Logger { return ledgerLogger }
 // Admitter is the dialect seam for admission: POST the harness's prompt
 // endpoint. The wiring layer injects the opencode implementation
 // (localhost :4096, Basic §D1 credential — same seam class as
-// EventParser/StoreReader). Returns the harness's message ID for
-// promotion correlation.
+// EventParser/StoreReader). messageID is the entry-derived dedupe key
+// ("msg_" + entryID, S2/#1315): the pinned harness validates it
+// (msg-prefix), uses it verbatim as the user message's store ID, and
+// UPSERTS on collision — the same-ID re-POST returns the existing
+// exchange instead of appending (G1-verified on opencode 1.18.15).
+// Returns the harness's response message ID for promotion correlation.
 type Admitter interface {
-	Admit(ctx context.Context, sessionID, text, model string) (string, error)
+	Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error)
 }
+
+// harnessMessageID derives the entry-level dedupe key: attempt-independent
+// by design, so every write path — the driver ladder, the outbox's
+// attempt+1 re-arm, replayUnresolved after wake — converges on ONE
+// harness message identity per outbox entry (S2: at most one transcript
+// user message per entry for the entry's lifetime).
+func harnessMessageID(entryID string) string {
+	return "msg_" + entryID
+}
+
+// storeEvidenceTimeout bounds the pre-POST evidence check: a hung store
+// must surface as a failed check (fail-open to the keyed POST), never
+// block admission.
+const storeEvidenceTimeout = 10 * time.Second
 
 // deliveryDriver owns Deliver + admission + promotion correlation.
 // Per-session single-flight: at most one admission in flight per session
@@ -758,6 +782,27 @@ func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uin
 		}
 		return true
 	}
+	// S2 (#1315, the 16-copy incident): the ledger only knows a write
+	// happened when Admit RETURNS — a synchronous turn that hangs past the
+	// client ctx aborts leaves the row LEDGERED while the message is
+	// already in the transcript, and every re-drive re-POSTed another
+	// copy. Store evidence (the entry's harness message present) resolves
+	// the row admitted-by-evidence with NO harness write. Errors are NOT
+	// absence (the StoreReader contract: error ⇒ unverifiable) — an
+	// unverifiable check fails open to the keyed POST, whose upsert-by-ID
+	// is the duplicate guard in that window.
+	if d.cfg.Store != nil {
+		key := harnessMessageID(entryID)
+		ectx, ecancel := context.WithTimeout(context.Background(), storeEvidenceTimeout)
+		presence, perr := d.cfg.Store.MessagePresence(ectx, sessionID, []string{key})
+		ecancel()
+		if perr == nil && presence[key] {
+			if err := d.ledger.markAdmitted(entryID, attempt, key); err != nil && logger() != nil {
+				logger().Warn("sessionstate: evidence admission append failed", zap.Error(err))
+			}
+			return true
+		}
+	}
 	// #1313 follow-up: V1 is SYNCHRONOUS — the response IS the assistant
 	// message, which takes 30-120s for an LLM turn. The 10s timeout was
 	// designed for V2 steer's fast admission (admit-and-return). With V1,
@@ -765,9 +810,14 @@ func (d *deliveryDriver) attemptAdmission(sessionID, entryID string, attempt uin
 	// messages (the #1296 triplication class reborn through a different
 	// mechanism). The admitter runs in a goroutine (driveAdmission), so
 	// this timeout doesn't block anything else — it just needs to be
-	// long enough for the model to finish.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute) //nolint:contextcheck // queue-scoped by design
-	msgID, err := d.admit.Admit(ctx, sessionID, text, model)
+	// long enough for the model to finish. AdmitterTimeout (0 ⇒ default)
+	// lets the #1315 incident repro drive the hung-turn window fast.
+	timeout := d.cfg.AdmitterTimeout
+	if timeout <= 0 {
+		timeout = 3 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout) //nolint:contextcheck // queue-scoped by design
+	msgID, err := d.admit.Admit(ctx, sessionID, harnessMessageID(entryID), text, model)
 	cancel()
 	if err == nil {
 		if err := d.ledger.markAdmitted(entryID, attempt, msgID); err != nil && logger() != nil {

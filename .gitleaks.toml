@@ -41,6 +41,13 @@ paths = [
   # 2026-06-22 (worklog 0508): the lsp_ value is 16 'a' chars, the JWT
   # uses {alg:none} and a single-char signature.
   '''api/internal/middleware/auth_method_test\.go''',
+  # #1315 incident-repro test: `wantKey := "msg_ob_1789066979866284129_d691d25d"`
+  # is the synthetic outbox-entry ID from the ses_f73747f8 forensics —
+  # a dedupe-key fixture for the entry-level admission-idempotency repro,
+  # never a credential (an entry ID names a queued user message; the
+  # ob_ prefix is the platform's own namespace). Verified 2026-09-11
+  # (PR #1323 review): the generic-api-key rule fires on its shape alone.
+  '''cmd/workspace-agentd/admission_incident_repro_test\.go''',
   # Worklog 0030 documents a real e2e test run; the JWT shown is a
   # short-lived test token bound to localhost. Worklog 0089 is the
   # epic-17 phase-4 audit narrative — it cites secret patterns the

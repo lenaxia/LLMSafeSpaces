@@ -206,6 +206,7 @@ func TestLedger_InterruptPurity(t *testing.T) {
 type fakeAdmitter struct {
 	mu       sync.Mutex
 	calls    []string
+	ids      []string
 	err      error
 	latency  time.Duration
 	inFlight int
@@ -222,7 +223,7 @@ func (f *fakeAdmitter) setErr(err error) {
 	f.mu.Unlock()
 }
 
-func (f *fakeAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (f *fakeAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	f.mu.Lock()
 	f.inFlight++
 	if f.inFlight > f.maxInFl {
@@ -247,6 +248,7 @@ func (f *fakeAdmitter) Admit(ctx context.Context, sessionID, text, model string)
 		return "", f.err
 	}
 	f.calls = append(f.calls, sessionID+"/"+text)
+	f.ids = append(f.ids, messageID)
 	return fmt.Sprintf("msg-%d", len(f.calls)), nil
 }
 
@@ -338,6 +340,105 @@ func TestDeliver_AdmittedNeverReadmitted(t *testing.T) {
 	d.replayUnresolved(context.Background())
 
 	assert.Empty(t, admitter.calls, "no re-admission path exists for admitted entries")
+}
+
+// TestDeliver_AdmitCarriesEntryDedupeKey (S2, #1315): every admission POST
+// carries the entry-derived harness messageID — "msg_" + entryID,
+// attempt-independent — so the harness's upsert-by-messageID bounds
+// transcript cardinality at ONE user message per outbox entry for the
+// entry's lifetime (G1-verified on the pinned opencode 1.18.15).
+func TestDeliver_AdmitCarriesEntryDedupeKey(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	admitter := &fakeAdmitter{}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}}, nil)
+
+	_, _, err := d.deliver(context.Background(), "s1", "ob_e1", 1, []string{"p"}, "")
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		st, ok := l.status("ob_e1", 1)
+		return ok && st.State == LedgerStateAdmitted
+	}, "admission completes")
+
+	admitter.mu.Lock()
+	defer admitter.mu.Unlock()
+	require.Equal(t, []string{"msg_ob_e1"}, admitter.ids,
+		"admission must carry the entry-derived harness dedupe key")
+}
+
+// TestDeliver_EvidenceShortCircuitsReAdmission (#1315, the 16-copy
+// incident): the first POST landed in the harness transcript but the
+// synchronous turn hung, the client ctx aborted, and every ladder re-POST
+// appended another copy — the ledger never learned the write happened.
+// Store evidence (the entry's harness message present) must resolve any
+// re-drive to ADMITTED-by-evidence with NO harness write.
+func TestDeliver_EvidenceShortCircuitsReAdmission(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	key := "msg_ob_e1"
+	store := &evidenceStore{msgs: map[string]map[string]bool{"s1": {key: true}}}
+	admitter := &fakeAdmitter{err: fmt.Errorf("turn hung — a POST here is a duplicate write")}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}, Store: store}, nil)
+
+	// The incident's row state: LEDGERED, ack survived, admission
+	// unresolved after the aborted POST.
+	_, _, err := l.ledger("s1", "ob_e1", 1, []string{"proceed"}, "")
+	require.NoError(t, err)
+
+	d.driveAdmission("s1", "ob_e1", 1, "proceed", "")
+
+	waitFor(t, func() bool {
+		st, ok := l.status("ob_e1", 1)
+		return ok && st.State == LedgerStateAdmitted
+	}, "evidence resolves the row admitted without any POST")
+
+	admitter.mu.Lock()
+	defer admitter.mu.Unlock()
+	assert.Empty(t, admitter.calls, "evidence present: the harness write must be skipped")
+	st, ok := l.status("ob_e1", 1)
+	require.True(t, ok)
+	assert.Equal(t, key, st.MessageID, "admitted-by-evidence carries the entry's harness key")
+}
+
+// TestDeliver_EvidenceAbsentStillPosts: absence (verified 404-shape) is
+// the only state that falls through to the POST — the normal first
+// admission.
+func TestDeliver_EvidenceAbsentStillPosts(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	store := &evidenceStore{msgs: map[string]map[string]bool{"s1": {}}} // key absent
+	admitter := &fakeAdmitter{}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}, Store: store}, nil)
+
+	_, _, err := d.deliver(context.Background(), "s1", "ob_e1", 1, []string{"p"}, "")
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		st, ok := l.status("ob_e1", 1)
+		return ok && st.State == LedgerStateAdmitted
+	}, "absent evidence admits via the normal POST")
+
+	admitter.mu.Lock()
+	defer admitter.mu.Unlock()
+	assert.Len(t, admitter.calls, 1, "absence falls through to exactly one POST")
+}
+
+// TestDeliver_EvidenceErrorStillPosts: an evidence-check error is NOT
+// absence (the StoreReader contract: error ⇒ unverifiable, never absent)
+// — the write path fails open to the POST, whose upsert-by-ID key is the
+// actual duplicate guard in that window.
+func TestDeliver_EvidenceErrorStillPosts(t *testing.T) {
+	l := openLedgerForTest(t, ledgerPath(t))
+	store := &evidenceStore{msgsErr: fmt.Errorf("store unreachable")}
+	admitter := &fakeAdmitter{}
+	d := newDeliveryDriver(l, admitter, Config{Passwords: []string{"pw"}, Store: store}, nil)
+
+	_, _, err := d.deliver(context.Background(), "s1", "ob_e1", 1, []string{"p"}, "")
+	require.NoError(t, err)
+	waitFor(t, func() bool {
+		st, ok := l.status("ob_e1", 1)
+		return ok && st.State == LedgerStateAdmitted
+	}, "unverifiable evidence still admits via the keyed POST")
+
+	admitter.mu.Lock()
+	defer admitter.mu.Unlock()
+	assert.Len(t, admitter.calls, 1, "evidence error fails open to the keyed POST")
 }
 
 // TestDeliver_CrashAgentdAfterAckPreAdmission: the crash matrix's first
@@ -642,7 +743,7 @@ type modelCapturingAdmitter struct {
 	calls []struct{ sessionID, text, model string }
 }
 
-func (m *modelCapturingAdmitter) Admit(_ context.Context, sessionID, text, model string) (string, error) {
+func (m *modelCapturingAdmitter) Admit(_ context.Context, sessionID, messageID, text, model string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, struct{ sessionID, text, model string }{sessionID, text, model})

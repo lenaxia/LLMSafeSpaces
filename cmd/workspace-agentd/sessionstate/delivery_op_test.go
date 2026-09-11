@@ -23,7 +23,7 @@ type recordingAdmitter struct {
 	calls atomic.Int64
 }
 
-func (r *recordingAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (r *recordingAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	r.calls.Add(1)
 	return "wire-msg", nil
 }
@@ -155,7 +155,7 @@ type modelRecordingAdmitter struct {
 	model atomic.Value // string; every access synchronized (r4: the Eventually read raced the guarded write under -race)
 }
 
-func (m *modelRecordingAdmitter) Admit(_ context.Context, _, _, model string) (string, error) {
+func (m *modelRecordingAdmitter) Admit(_ context.Context, _, _, _, model string) (string, error) {
 	m.model.Store(model)
 	return "wire-msg", nil
 }

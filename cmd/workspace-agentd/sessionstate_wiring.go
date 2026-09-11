@@ -381,7 +381,7 @@ func (o opencodeAdmitter) post(ctx context.Context, path string, payload any, ou
 	return nil
 }
 
-func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model string) (string, error) {
+func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	if text == "" {
 		return "", fmt.Errorf("admit: empty text")
 	}
@@ -414,8 +414,14 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, text, model stri
 	// also strips model overrides (#1292b above). The ledger, admission
 	// retry, dedup, and promotion correlation all stay — only the final
 	// POST to opencode changes.
+	// S2 (#1315): messageID is the entry-derived dedupe key — the pinned
+	// harness validates the msg-prefix, uses it verbatim as the user
+	// message's store ID, and upserts on collision (G1-verified live on
+	// 1.18.15: same-ID re-POST returns the existing exchange, no second
+	// user message). Idempotency belongs at the write.
 	body := map[string]any{
-		"parts": []map[string]any{{"type": "text", "text": text}},
+		"messageID": messageID,
+		"parts":     []map[string]any{{"type": "text", "text": text}},
 	}
 	b, err := json.Marshal(body)
 	if err != nil {

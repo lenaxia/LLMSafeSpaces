@@ -105,6 +105,11 @@ type Config struct {
 	// the ledger (Deliver returns NotSupported) — the authority owns
 	// nothing dialect-specific.
 	Admitter Admitter
+	// AdmitterTimeout bounds one synchronous V1 admission (#1313: the
+	// response IS the LLM turn, 30-120s). Zero ⇒ the 3-minute default.
+	// Injectable so the #1315 incident repro can drive the hung-turn
+	// window without wall-clock waits.
+	AdmitterTimeout time.Duration
 	// Actor (US-69.9) is the typed-actions seam; nil DISABLES the Act op
 	// (NotSupported) — the wiring layer injects the opencode executor.
 	Actor Actor
