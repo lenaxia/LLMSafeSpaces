@@ -714,8 +714,9 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer bcancel()
 	if derr == nil {
-		s.client.LRem(bctx, dKey(ws, ses), 1, staged)
-		s.fireOnDelivered(ws, ses, e)
+		if n, err := s.client.LRem(bctx, dKey(ws, ses), 1, staged).Result(); err == nil && n > 0 {
+			s.fireOnDelivered(ws, ses, e)
+		}
 		return true
 	}
 	var amb *AmbiguousError
@@ -799,8 +800,11 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	}
 	switch s.verifier(ctx, ws, ses, e) {
 	case VerdictDelivered:
-		s.client.LRem(ctx, qk, 1, vals[idx])
-		s.fireOnDelivered(ws, ses, e)
+		// Exactly-once token: only the removal's winner fires the hook
+		// (a peer replica's sweeper may complete the same entry).
+		if n, err := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); err == nil && n > 0 {
+			s.fireOnDelivered(ws, ses, e)
+		}
 		return true
 	case VerdictAbsent:
 		e.Status = StatusPending
