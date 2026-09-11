@@ -1448,6 +1448,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Epic-71 / 0c: the canary service. A construction error fails boot
+	// (validateCanary owns the operator-reachable partial states; an
+	// error here is a wiring defect — never silently disable an
+	// explicitly-enabled canary).
+	canarySvc, err := newCanaryService(cfg, k8sClient, log)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("canary service: %w", err)
+	}
+
 	return &App{
 		config:             cfg,
 		logger:             log,
@@ -1471,7 +1481,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		keyRewrapSvc:       keyRewrapSvc,
 		wfReconciler:       wfReconciler,
 		wfScheduler:        wfScheduler,
-		canarySvc:          newCanaryService(cfg, k8sClient, log),
+		canarySvc:          canarySvc,
 		invitationsHandler: invitationsHandler,
 		emailService:       emailService,
 		emailHandler:       emailHandler,

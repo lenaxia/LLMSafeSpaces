@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/config"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/canary"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
@@ -187,4 +189,53 @@ func TestCanaryResolver_SecretFailuresSurface(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "empty password")
 	})
+}
+
+// --- the enable-knob wiring (review r1: the app-layer contract) ---------------
+
+func okPick(ctx context.Context, class string) (string, error)         { return "ws", nil }
+func okResolve(ctx context.Context, ws string) (string, string, error) { return "http://x", "pw", nil }
+func okClient(baseURL, password string) canary.Client                  { return nil }
+
+// TestNewCanaryService_DisabledIsNil: the knob off (or nil config) →
+// nil service, no error — Run() starts nothing.
+func TestNewCanaryService_DisabledIsNil(t *testing.T) {
+	empty := &config.Config{}
+	empty.Canary.Classes = []string{"base"} // classes without the knob still means OFF
+	for _, cfg := range []*config.Config{nil, empty} {
+		svc, err := newCanaryServiceWith(cfg, okPick, okResolve, okClient, nil)
+		require.NoError(t, err)
+		assert.Nil(t, svc)
+	}
+}
+
+// TestNewCanaryService_ProductionWiring: enabled config → non-nil
+// service, nil error, through the REAL production seam set (nil k8s
+// client is fine — the adapters hold it unkeferenced until probe time).
+func TestNewCanaryService_ProductionWiring(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Canary.Enabled = true
+	cfg.Canary.Classes = []string{"python:3.11"}
+	cfg.Kubernetes.Namespace = "llmsafespaces"
+
+	svc, err := newCanaryService(cfg, nil, nil)
+	require.NoError(t, err, "enabled + validated classes + statically-wired seams cannot fail construction")
+	require.NotNil(t, svc, "an explicitly-enabled canary must start — silent non-start is false coverage")
+}
+
+// TestNewCanaryService_DefectiveSeamsFailBoot: the fail-closed contract.
+// Production wiring cannot produce a defective seam set (pinned above),
+// but if one ever lands, boot must fail rather than degrade to
+// no-canary — validateCanary's discipline, extended to wiring defects.
+func TestNewCanaryService_DefectiveSeamsFailBoot(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Canary.Enabled = true
+	cfg.Canary.Classes = []string{"base"}
+
+	_, err := newCanaryServiceWith(cfg, nil, okResolve, okClient, nil)
+	require.Error(t, err, "a nil Pick seam must fail construction, not silently disable the canary")
+	_, err = newCanaryServiceWith(cfg, okPick, nil, okClient, nil)
+	require.Error(t, err)
+	_, err = newCanaryServiceWith(cfg, okPick, okResolve, nil, nil)
+	require.Error(t, err)
 }

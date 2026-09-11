@@ -113,34 +113,40 @@ func (r *k8sCanaryPodResolver) Resolve(ctx context.Context, workspaceID string) 
 	return fmt.Sprintf("http://%s:%d", ws.Status.PodIP, agentd.AgentdPort), pw, nil
 }
 
-// newCanaryService builds the canary from config; nil (idle) unless the
-// knob is on. The nil-gating is the established enable pattern: a nil
-// service starts nothing in Run(). Accepts the canary.Logger interface
-// (both the app's and pkg's loggers satisfy it).
-func newCanaryService(cfg *config.Config, k8sClient *k8s.Client, log canary.Logger) *canary.Service {
-	if cfg == nil || !cfg.Canary.Enabled {
-		return nil
-	}
-	svc, err := canary.New(canary.Config{
-		Interval: cfg.Canary.Interval,
-		Timeout:  cfg.Canary.Timeout,
-		Classes:  cfg.Canary.Classes,
-		Pick: (&k8sCanaryTargetPicker{
+// newCanaryService builds the canary from config with the production
+// seams; nil (idle) unless the knob is on. A construction error fails
+// boot — validateCanary already refuses the one operator-reachable
+// partial state, so an error here is a wiring defect, and silently
+// disabling an explicitly-enabled canary is the false coverage that
+// gate exists to prevent (review r1: no fail-open degrade).
+func newCanaryService(cfg *config.Config, k8sClient *k8s.Client, log canary.Logger) (*canary.Service, error) {
+	return newCanaryServiceWith(cfg,
+		(&k8sCanaryTargetPicker{
 			list: &k8sWorkspaceListerAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 		}).Pick,
-		Resolve: (&k8sCanaryPodResolver{
+		(&k8sCanaryPodResolver{
 			ws:      &k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 			secrets: &k8sSecretGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 		}).Resolve,
-		NewClient: canary.NewAbiClient,
+		canary.NewAbiClient,
+		log,
+	)
+}
+
+// newCanaryServiceWith is newCanaryService's test seam: identical
+// contract, injectable seams (the boot-fail path is only reachable
+// through a defective seam set, which production wiring cannot produce).
+func newCanaryServiceWith(cfg *config.Config, pick canary.PickTarget, resolve canary.Resolve, newClient canary.NewClient, log canary.Logger) (*canary.Service, error) {
+	if cfg == nil || !cfg.Canary.Enabled {
+		return nil, nil
+	}
+	return canary.New(canary.Config{
+		Interval:  cfg.Canary.Interval,
+		Timeout:   cfg.Canary.Timeout,
+		Classes:   cfg.Canary.Classes,
+		Pick:      pick,
+		Resolve:   resolve,
+		NewClient: newClient,
 		Logger:    log,
 	})
-	if err != nil {
-		// validateCanary fails boot on the one partial-config state;
-		// reaching here means a wiring defect, not operator input —
-		// degrade to no canary rather than crash the API.
-		log.Warn("canary: invalid service config — not starting", "error", err.Error())
-		return nil
-	}
-	return svc
 }

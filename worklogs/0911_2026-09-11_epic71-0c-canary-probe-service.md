@@ -42,9 +42,17 @@ Land the probe-service unit designed in part 1: an API-side background canary th
 3. **Snapshot leg accepts typed not_found as liveness-ok**: the synthetic session never exists; the pod ANSWERING within budget is the signal. A 2xx with the wrong session id classifies error (drift, not health).
 4. **Deterministic oldest-Active pick**: stable target → stable signal; oldest biases to longest-lived pod (least resume churn). Random spread rejected for v1 (signal flapping).
 5. **Sequential per-class probing**: worst-case pass = classes × 2 × Timeout (2-3 classes ≈ ≤12s « 60s interval); a slow pass shows honestly as a late loop stamp. Parallelism deferred until class count demands it.
-6. **Rule 7 assumptions** (all validated, evidence in the PR description): A1 agentd ABI = PodIP:4097 + Basic "opencode" + workspace-pw Secret (proxy_actions.go:146, proxy_connections.go:94); A2 GetSnapshot unknown session → typed NotFound (sessionstate/service.go:99); A3 answer_question absent input → typed NotFound pre-1a (sessionstate_wiring.go:569-592: question-404 → permission-404 → typed error); A4 answer_question unconditionally declared (sessionstate_wiring.go:466-470); A5 synthetic-id prefix cannot collide (harness ids are generated msg_/ses_ tokens); A6 multi-replica probing safe (read-only + absence-resolve on synthetic ids through the sanctioned Act seam); A7 spec.Runtime is the class selector field (workspace_types.go:116).
+6. **Rule 7 assumptions** (all validated, evidence refreshed post-rebase onto 1a #1324): A1 agentd ABI = PodIP:4097 + Basic "opencode" + workspace-pw Secret (proxy_actions.go:146, proxy_connections.go:94); A2 GetSnapshot unknown session → typed NotFound (sessionstate/service.go:99); A3 answer_question absent input → typed NotFound pre-1a (sessionstate_wiring.go:575-607: question-404 → permission-404 → typed error via `o.post`'s 404 mapping at :645-650); post-1a the authority converts that NotFound to SUCCESS (resolve-by-absence, actions.go:91-94); A4 answer_question unconditionally declared (sessionstate_wiring.go:472-477); A5 synthetic-id prefix cannot collide (harness ids are generated ses_/msg_/que_/per_ tokens); A6 multi-replica probing safe (read-only + absence-resolve on synthetic ids through the sanctioned Act seam; resolve-by-absence on an unprojected session consumes no seq — pinned by resolve_absence_test.go:114); A7 spec.Runtime is the class selector field (workspace_types.go:116).
 
 ---
+
+## Review r1 remediation (2026-09-11, PR #1328)
+
+- **`newCanaryService` untested → covered**: split `newCanaryServiceWith` (injectable seams) from the production wiring; three wiring tests (disabled→nil incl. classes-without-knob; enabled→non-nil through the REAL production seam set; defective seams→error). 
+- **Fail-open degrade removed**: a construction error now FAILS BOOT (`app.go` calls `cancel()` then returns the error — matching every other early-return in `New`), extending validateCanary's fail-closed discipline to wiring defects. The Warn-and-nil branch is gone.
+- Rule 7 citations A3/A4 refreshed for the post-1a tree (above); `pkg/README.md` index row added for `pkg/obs`.
+- Worklog numbering note: the repo's post-rewrite hook renamed `NNNN_` → `0911_` during the rebase onto main; left as tooling-assigned (non-colliding, warn-only per reviewer).
+- govet `lostcancel` on the new early return fixed (`cancel()` before return — the established pattern).
 
 ## Blockers
 
