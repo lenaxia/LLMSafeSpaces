@@ -24,15 +24,15 @@ The r1 grep-guard INVERTED the misattribution it claimed to fix: `grep -c` exits
 ## Fix (row follows the as-built design)
 
 Replace the symlink equality with the copy-contract pins, deliberately NOT byte-equality (opencode's own writes legitimately diverge the copy):
-1. XDG path is a **regular file** (`file`/`symlink`/`missing` trichotomy; fails loudly on either stale mechanism).
-2. The copy **carries the credential's provider block** (seeded from the live config).
+1. XDG path is a **writable regular file** (the `file`/`readonly`/`symlink`/`missing` quadrotomy, r2; fails loudly on the read-only class 1d0e5be1 exists to close and on either stale mechanism). The probe capture runs under an `if !` guard (r13/r30) so a transient kc exec failure dies with context instead of killing the leg.
+2. The copy **carries the credential's provider block** (seeded from the live config) — grep with `; true` remote-exit normalization (r2: `grep -c` exits 1 on zero matches; without it the content path fires the exec-failure die) and a numeric count check.
 3. The child's `OPENCODE_CONFIG` carries it too (existing grep, kept).
 4. Assertion (4) — the registry admits the model — unchanged (the check that caught #1300's lying view).
 
 ## Key Decisions
 
 - Content-equality (`cmp` XDG vs sidecar config) was rejected: opencode writes to the XDG copy by design (1d0e5be1's rationale) — byte-equality would flake on any user model-selection write.
-- No pin-test change needed (no AC-1b/XDG pins exist in `us70_harness_script_test.go`).
+- Pins EXECUTE the script's extracted text — the probe payload, the grep command (with the normalization asserted), and (r3) the `case` decision block — so script drift fails the pins (an earlier inline Go re-implementation stayed green under mutation; caught in r2 review).
 
 ## Assumptions stated and validated (Rule 7)
 

@@ -1034,3 +1034,58 @@ func TestUS70AC1BRow_CopyContractPins(t *testing.T) {
 		}
 	}
 }
+
+// TestUS70AC1BRow_CaseBlockExecutes pins the row's central decision
+// expression by EXECUTION (r3: the structural string pins don't run the
+// logic — a mutated case arm could keep the strings elsewhere): the
+// script's actual `case "${XDG_KIND}" in … esac` block is extracted and
+// run against every classification input with a stubbed die, asserting
+// each arm's message. `file` must fall through clean.
+func TestUS70AC1BRow_CaseBlockExecutes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	caseBlock := regexp.MustCompile("(?s)case \"\\$\\{XDG_KIND\\}\" in\n.*?\nesac\n").FindString(src)
+	if caseBlock == "" {
+		t.Fatalf("AC-1b XDG_KIND case block not found in %s", us70DeliveryScript)
+	}
+	wants := []struct{ kind, msg string }{
+		{"file", ""}, // clean fall-through
+		{"readonly", "READ-ONLY regular file"},
+		{"symlink", "the 0.27.5-era mechanism"},
+		{"missing", "never installed the copy"},
+		{"weird", "unexpected"},
+	}
+	for _, w := range wants {
+		script := `die() { echo "DIE:$*"; exit 1; }
+XDG_CFG=/probe/path
+XDG_KIND='` + w.kind + `'
+` + caseBlock + "\n" + `echo OK
+`
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		got := strings.TrimSpace(string(out))
+		if w.msg == "" {
+			if err != nil || got != "OK" {
+				t.Fatalf("classification %q must fall through clean, got err=%v out=%q", w.kind, err, got)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(got, w.msg) {
+			t.Fatalf("classification %q must die with %q, got err=%v out=%q", w.kind, w.msg, err, got)
+		}
+	}
+}
+
+// TestUS70AC1BRow_GuardDiscipline pins the r13/r30 capture guards
+// structurally (r3: reverting both `if !` guards left the suite green —
+// nothing else would catch the silent leg-killer regression).
+func TestUS70AC1BRow_GuardDiscipline(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	for _, pin := range []string{
+		`if ! XDG_KIND=$(kc exec`,
+		`if ! XDG_SEED=$(kc exec`,
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("AC-1b capture guard missing from %s: %q — an unguarded kc exec under set -Eeuo pipefail kills the whole pool leg on a transient failure (r13/r30)", us70DeliveryScript, pin)
+		}
+	}
+}
