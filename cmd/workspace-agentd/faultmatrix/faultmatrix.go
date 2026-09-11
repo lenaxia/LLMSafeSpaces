@@ -192,6 +192,21 @@ func (s *EvidenceStore) SessionStates(ctx context.Context) (map[string]sessionst
 	return out, nil
 }
 
+// PendingInputs serves the live ask registries keyed by session — the
+// lease diff's truth source (STRICT semantics: a clean read or an
+// error, never a fabricated empty).
+func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string][]*abiv1.InputRequest, len(s.states))
+	for sid, seed := range s.states {
+		if len(seed.PendingInputs) > 0 {
+			out[sid] = seed.PendingInputs
+		}
+	}
+	return out, nil
+}
+
 func (s *EvidenceStore) MessagePresence(ctx context.Context, sessionID string, messageIDs []string) (map[string]bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

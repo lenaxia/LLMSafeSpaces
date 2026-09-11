@@ -231,3 +231,85 @@ func TestRow_Leg4_EvidenceAbsent_TurnEndedArm(t *testing.T) {
 	assert.Equal(t, int64(0), m.ReconcilePromoted, "nothing was promoted — the TURN_ENDED arm carried this row")
 	assert.GreaterOrEqual(t, m.ReconcileTurnEnded, int64(1), "the turn-ended arm is the asserted resolution")
 }
+
+// Row S5/L3 (leg-1 convergence — the 2a lease story): the harness drops
+// the ask silently (truth no longer lists it); the reconcile cadence's
+// pending-lease diff resolves the projected straggler; the projection
+// converges to truth within the L3 bound.
+func TestRow_S5_Leg1_SilentDrop_ConvergesWithinL3(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-gone", Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "Proceed?",
+	})
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+	require.Len(t, snapshotOf(t, a, "ses-row").GetPendingInputs(), 1, "projected from harness truth at boot")
+
+	// The fault: silent drop — truth forgets the ask, no event fires.
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_BUSY)
+
+	v := NewViolations()
+	log := NewConvergenceLog()
+	bound := sessionstate.LeaseConvergenceBound
+	elapsed, ok := WaitConverges(context.Background(), bound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		return len(snapshotOf(t, a, "ses-row").GetPendingInputs()) == 0
+	})
+	log.Record("L3", elapsed)
+	if !ok {
+		v.Add("S5") // projected ⊄ truth past the lease window
+		v.Add("L3")
+	}
+	// Pin the RESOLUTION ARM: the cadence's lease diff resolved the
+	// straggler — NOT the serve-path gather (snapshotOf triggers its own
+	// diff; without this pin a dead cadence diff ships green, r1).
+	if a.Metrics().LeaseResolved < 1 {
+		v.Add("S5.arm")
+	}
+
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+	assert.True(t, log.Within("L3", bound))
+}
+
+// Row leg 3 (frame loss, harness→agentd direction): the harness ASKED,
+// the INPUT_REQUEST event was lost — the projection misses what truth
+// holds. The lease diff's live−projected arm makes it appear within L3
+// (the L1-direction convergence).
+func TestRow_Leg3_LostAskEvent_AppearsWithinL3(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+	require.Empty(t, snapshotOf(t, a, "ses-row").GetPendingInputs(), "nothing projected at boot")
+
+	// The fault: the ask exists in truth; its event never arrived.
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-unseen", Kind: abiv1.InputKind_INPUT_KIND_QUESTION, Question: "Proceed?",
+	})
+
+	v := NewViolations()
+	log := NewConvergenceLog()
+	bound := sessionstate.LeaseConvergenceBound
+	elapsed, ok := WaitConverges(context.Background(), bound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		return len(snapshotOf(t, a, "ses-row").GetPendingInputs()) == 1
+	})
+	log.Record("L3", elapsed)
+	if !ok {
+		v.Add("L1") // a live ask the projection never surfaced
+		v.Add("L3")
+	}
+	// Pin the RESOLUTION ARM: the cadence's live−projected diff surfaced
+	// the ask — not the serve-path gather (r1).
+	if a.Metrics().LeaseAppeared < 1 {
+		v.Add("L1.arm")
+	}
+
+	snap := snapshotOf(t, a, "ses-row")
+	if len(snap.GetPendingInputs()) == 1 && snap.GetPendingInputs()[0].GetId() != "in-unseen" {
+		v.Add("L1.identity")
+	}
+
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+	assert.True(t, log.Within("L3", bound))
+}
