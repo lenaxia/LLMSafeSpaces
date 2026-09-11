@@ -150,7 +150,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0]!.id).toBe("msg_1");
     expect(result.current.queuedMessages[0]!.status).toBe("error");
-    expect(result.current.queuedMessages[0]!.error).toContain("delivering");
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
   });
 
   it("dismiss on 503 keeps the pill (the entry will still deliver)", async () => {
@@ -165,7 +165,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_test_1");
     expect(result.current.queuedMessages).toHaveLength(1);
-    expect(result.current.queuedMessages[0]!.error).toContain("delivering");
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
   });
 
   // The pre-emptive-removal bug's most common trigger: dismissing a
@@ -181,7 +181,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0]!.status).toBe("error");
-    expect(result.current.queuedMessages[0]!.error).toContain("delivering");
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
   });
 
   // #1320 r1 missing-case 3: the reconcile safety net the network-error
@@ -231,6 +231,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     await act(async () => { await result.current.enqueue("retry me"); });
     act(() => { result.current.markError("msg_1", "failed"); });
     const firstCmid = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls[0]![4] as string;
+    expect(firstCmid).toBeTruthy();
 
     (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("404"));
     (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_2" });
@@ -315,6 +316,30 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
     expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_a");
     expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_b");
+  });
+
+  // r2 finding: the Abort button's queue sweep had the pre-#1318 swallow
+  // shape — a contended 503 entry was wiped locally while it went on to
+  // deliver (silent un-dismissal).
+  it("clearAll on 503 keeps the contended pill with a hint; confirmed deletes clear", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_a" });
+    await act(async () => { await result.current.enqueue("busy"); });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_b" });
+    await act(async () => { await result.current.enqueue("free"); });
+    expect(result.current.queuedMessages).toHaveLength(2);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(err503())
+      .mockResolvedValueOnce(undefined);
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_a");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("delivery in progress");
   });
 
   it("removeById removes a message by id regardless of status", async () => {

@@ -191,12 +191,34 @@ export function useMessageQueue(
 
   const clearAll = useCallback(async () => {
     if (!workspaceId || !sessionId) return;
-    const toDelete = queuedMessages.filter((m) => m.sessionId === sessionId && m.status === "pending");
-    setQueuedMessages((prev) => prev.filter((m) => m.sessionId !== sessionId));
-    await Promise.allSettled(
-      toDelete.map((m) => messagesApi.deleteQueueMessage(workspaceId, sessionId, m.id)),
+    const targets = queuedMessages.filter((m) => m.sessionId === sessionId && m.status === "pending");
+    // Delete-first per entry (#1318/#1320, r2): a contended 503 means the
+    // entry is mid-delivery and WILL send — wiping its pill pre-emptively
+    // silently un-dismisses it. Sweep with per-outcome handling: only
+    // confirmed deletes (and unknown-outcome network errors, left to the
+    // refresh reconcile) clear pills; contended entries survive with a
+    // hint so the user can clear after the turn.
+    const contended = new Set<string>();
+    await Promise.allSettled(targets.map(async (m) => {
+      try {
+        await messagesApi.deleteQueueMessage(workspaceId, sessionId, m.id);
+      } catch (err) {
+        if (err instanceof ApiClientError && err.status === 503) {
+          contended.add(m.id);
+        }
+      }
+    }));
+    setQueuedMessages((prev) =>
+      prev
+        .filter((m) => m.sessionId !== sessionId || contended.has(m.id))
+        .map((m) =>
+          contended.has(m.id)
+            ? { ...m, status: "error" as const, error: "delivery in progress — clear applies after the current delivery" }
+            : m,
+        ),
     );
-  }, [workspaceId, sessionId, queuedMessages]);
+    void refreshQueue();
+  }, [workspaceId, sessionId, queuedMessages, refreshQueue]);
 
   const onPhaseChange = useCallback((phase: string) => {
     if (RESTART_PHASES.includes(phase)) {
