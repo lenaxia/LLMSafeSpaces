@@ -47,3 +47,9 @@ Leg 1 (ask silently dropped): covered red-green on cadence + serve. Leg 2 (stale
 - `cmd/workspace-agentd/sessionstate/reconcile.go` (gate + stats + lease-diff call)
 - `cmd/workspace-agentd/sessionstate/service.go` (serve refresh)
 - `worklogs/NNNN_2026-09-11_pending-input-leases.md` (this file)
+
+---
+
+## CI round 1: the US-69.4 zero-call pins moved with the design
+
+Three CI legs failed on two `abiclient` tests pinning the OLD snapshot contract (`TestGetSnapshot_ZeroOpencodeCalls`, `TestSnapshotLatencyLocal`'s zero-store assertion). #1310 slice B explicitly orders serve-time lease refresh ("pod-local call, O(pending) — cheap"), superseding US-69.4's zero-harness-call read for the pending set: the ask set is a lease, not a cached fact, and the serve is the human-visible staleness moment. The pins are updated to the new contract, which is STRONGER where it matters: `TestGetSnapshot_LeaseRefreshBudget` — exactly ONE gather per serve (no per-part/message stampede) + a divergent ask CONVERGES on the serve (the stranding cure, asserted end-to-end through the real client); `TestSnapshotLatencyLocal` — the 250ms p99 budget unchanged (the gather is localhost and must stay cheap) + 300 serves ⇒ exactly 300 gathers (leg 9's bound). All `pkg/abi/...` green with `-race`; lint 0 issues.
