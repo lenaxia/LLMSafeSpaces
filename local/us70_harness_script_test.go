@@ -913,13 +913,13 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 	}
 }
 
-// TestUS70AC1BRow_XDGLayerTrichotomy executes the AC-1b row's ACTUAL
+// TestUS70AC1BRow_XDGLayerClassification executes the AC-1b row's ACTUAL
 // probe text (extracted from the script — r2: an inline re-implementation
 // stays green while the script drifts) against a temp dir: a writable
 // regular file must classify `file`, a read-only file `readonly` (the
 // EACCES class 1d0e5be1 exists to close), a symlink `symlink` (the
 // 0.27.5-era mechanism), an absent path `missing`.
-func TestUS70AC1BRow_XDGLayerTrichotomy(t *testing.T) {
+func TestUS70AC1BRow_XDGLayerClassification(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us70DeliveryScript)
 	// The remote probe is the double-quoted sh -c payload of the XDG_KIND
@@ -1098,7 +1098,7 @@ func TestUS70AC1BRow_GuardDiscipline(t *testing.T) {
 func TestUS70AC1BRow_SeedDecisionExecutes(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us70DeliveryScript)
-	block := regexp.MustCompile("(?s)if ! XDG_SEED=\\$\\(kc exec.*?\\nfi\\n\\[\\[.*?\\n.*?\\n").
+	block := regexp.MustCompile(`(?s)if ! XDG_SEED=\$\(kc exec.*?\nfi\n\[\[.*?\n.*?\n`).
 		FindString(src)
 	if block == "" {
 		t.Fatalf("AC-1b seed guard+decision block not found in %s", us70DeliveryScript)
@@ -1155,20 +1155,20 @@ func TestUS70MockLLM_ToolEchoPins(t *testing.T) {
 	// Dedent by the COMMON leading-whitespace prefix only (the block's
 	// internal try/for nesting must survive).
 	lines := strings.Split(strings.TrimPrefix(block, "\n"), "\n")
-	min := -1
+	minIndent := -1
 	for _, l := range lines {
 		if strings.TrimSpace(l) == "" {
 			continue
 		}
 		n := len(l) - len(strings.TrimLeft(l, " "))
-		if min < 0 || n < min {
-			min = n
+		if minIndent < 0 || n < minIndent {
+			minIndent = n
 		}
 	}
 	var dedentB strings.Builder
 	for _, l := range lines {
-		if len(l) >= min {
-			l = l[min:]
+		if len(l) >= minIndent {
+			l = l[minIndent:]
 		}
 		dedentB.WriteString(l + "\n")
 	}
@@ -1182,6 +1182,9 @@ func TestUS70MockLLM_ToolEchoPins(t *testing.T) {
 		"for line in sys.stdin:\n" +
 		"    print(render(line.strip().encode()))\n" +
 		"    print(\"---END---\")\n"
+	if _, lookErr := exec.LookPath("python3"); lookErr != nil {
+		t.Skipf("python3 unavailable — structural extraction was still enforced above")
+	}
 	cmd := exec.Command("python3", "-c", wrapper)
 	cmd.Stdin = strings.NewReader(`{"tools":[{"type":"function","function":{"name":"llmsafespaces_session_list"}},{"type":"function","function":{"name":"bash"}}]}
 {"tools":[{"name":"llmsafespaces_dev_preview_url"}]}
@@ -1189,7 +1192,7 @@ func TestUS70MockLLM_ToolEchoPins(t *testing.T) {
 `)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Skipf("python3 unavailable (%v) — structural extraction was still enforced above", err)
+		t.Fatalf("the EXTRACTED echo block failed to execute (%v) — this pin exists to catch exactly that regression: %s", err, out)
 	}
 	blocks := strings.Split(strings.TrimSpace(string(out)), "---END---")
 	results := make([]string, 0, 3)

@@ -42,12 +42,12 @@ Replace the symlink equality with the copy-contract pins, deliberately NOT byte-
 
 ## Tests Run
 
-`bash -n` clean; `go test ./local/` green (all harness pins). Row verification rides the pool dispatch on this branch.
+`bash -n` clean; `go test ./local/` green (all harness pins). Row verification rides the pool dispatch — [r6 correction: never on THIS branch; the evidence rides the sibling `pool-green-combined` head 31632400, whose delivery-script and worklog blobs are identical to this PR and whose test-file delta is purely #1321's additions].
 
 ## Next Steps
 
 - Pool dispatch on this branch (with #1321's budget or after it merges — either order works; the rows are independent) to confirm AC-1b green.
-- Then the pool is fully green: F1 (#1321) + AC-1b (this PR) — the "get the pool green" mandate closes.
+- Then the pool is fully green: F1 (#1321) + AC-1b and AC-1e (both this PR) — the "get the pool green" mandate closes. [r6 correction: the original line omitted this PR's own AC-1e row.]
 
 ## Files Modified
 
