@@ -68,14 +68,18 @@ func applyFault(store *EvidenceStore, rng *rand.Rand, sessions []string, i int) 
 func (s *EvidenceStore) livePendingIDs(sessionID string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	seen := make(map[string]bool, len(s.states[sessionID].PendingInputs))
 	ids := make([]string, 0, len(s.states[sessionID].PendingInputs))
 	for _, in := range s.states[sessionID].PendingInputs {
-		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty; mirror it
-			ids = append(ids, in.GetId())
+		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty AND map-dedups; mirror both
+			if !seen[in.GetId()] {
+				seen[in.GetId()] = true
+				ids = append(ids, in.GetId())
+			}
 		}
 	}
 	sort.Strings(ids)
-	return strings.Join(ids, ",")
+	return strings.Join(ids, "\x00") // \x00 separator: injective (a comma can appear IN an id)
 }
 
 func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, sessionID string) string {
@@ -86,14 +90,18 @@ func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, session
 		}
 		return "\x00error:" + err.Error()
 	}
+	seen := make(map[string]bool, len(res.Msg.GetPendingInputs()))
 	ids := make([]string, 0, len(res.Msg.GetPendingInputs()))
 	for _, in := range res.Msg.GetPendingInputs() {
-		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty; mirror it
-			ids = append(ids, in.GetId())
+		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty AND map-dedups; mirror both
+			if !seen[in.GetId()] {
+				seen[in.GetId()] = true
+				ids = append(ids, in.GetId())
+			}
 		}
 	}
 	sort.Strings(ids)
-	return strings.Join(ids, ",")
+	return strings.Join(ids, "\x00") // \x00 separator: injective (a comma can appear IN an id)
 }
 
 // ErrSoakConfig reports a misshapen SoakConfig (the exported seam the

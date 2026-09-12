@@ -93,3 +93,21 @@ Counts at this revision: 27 test functions (10 engine/fake + 12 rows + 5 soak/pr
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
 - `go test -race -count=2 -run "TestPendingShapesMatch|TestSoak"` — stable
 - `golangci-lint` — 0 issues
+
+---
+
+## Review r3 remediation (2026-09-11, PR #1344)
+
+- **D3 (injectivity):** both ID-set joins use a `\x00` separator — `{"a,b","c"}` vs `{"a","b,c"}` can no longer collide; the kind row's real harness IDs are safe.
+- **D2 (dedup mirror):** `livePendingIDs`/`projectedPendingIDs` map-dedup like the lease diff (lease.go's collapse) — duplicate-ID seeds read converged, matching production semantics.
+- **D1 (TTL-coupled pin):** `TestPendingShapesMatch_IdentityNotCount` uses a FRESH authority per phase — the False probe cannot be repaired by a serve-gather TTL expiry mid-pin.
+- **Leg-8 timeout cell (r3 finding 1):** `TestRow_Leg8_TimeoutThenRearm_S2` — admitter stalls past the window → FAILED → re-arm's fast admission is keyed-upsert-absorbed → transcript exactly ONE user message (the incident shape; the "turn ≈ window" wording is now fully earned).
+- Scope note (r3 finding 2): leg 6's S3 (no silent loss) / S4 (per-session FIFO) are KIND-row cells — they assert cross-process outbox behavior against a live stack; the in-process rows carry S2/S9 only.
+- The carried stale `TestInstantAdmitter_DistinctIDsAndNilOut` name/comment refreshed to the keyed contract (distinct ids across DIFFERENT keys; Out=nil still no-panic).
+
+Counts at this revision: 28 test functions (10 engine/fake + 13 rows + 5 soak/predicate).
+
+## Tests Run (r3)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
+- `golangci-lint` — 0 issues

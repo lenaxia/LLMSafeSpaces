@@ -353,30 +353,119 @@ func (ad *slowAdmitter) Admit(ctx context.Context, sessionID, messageID, text, m
 // must not. No reconcile runs between the swap and the probe — the pin
 // isolates the predicate, not the repair.
 func TestPendingShapesMatch_IdentityNotCount(t *testing.T) {
-	store := NewEvidenceStore()
-	a := newAuthority(t, store, &AnswerActor{Store: store})
-
-	store.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+	// Phase A (fresh authority — the probe must be TTL-independent: a
+	// serve-path gather whose TTL expires mid-pin would repair the
+	// projection and false-red the assert against a CORRECT predicate).
+	storeA := NewEvidenceStore()
+	aA := newAuthority(t, storeA, &AnswerActor{Store: storeA})
+	storeA.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
 		Id: "in-original", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
 	})
-	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
-	require.Len(t, snapshotOf(t, a, "ses-pin").GetPendingInputs(), 1)
+	require.NoError(t, aA.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+	require.Len(t, snapshotOf(t, aA, "ses-pin").GetPendingInputs(), 1)
 
 	// The swap: equal count, different identity.
-	store.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+	storeA.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
 		Id: "in-replacement", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
 	})
 
-	assert.False(t, PendingShapesMatch(context.Background(), a, store, "ses-pin"),
+	assert.False(t, PendingShapesMatch(context.Background(), aA, storeA, "ses-pin"),
 		"stale-ask-projected + live-ask-missing at equal count is NOT a match — the count-based predicate's false-green")
 
-	// And the honest convergent state matches (the reseed clears the
-	// pending set; the lease diff re-appears truth's ask — one repair
-	// tick, then the predicate holds).
+	// Phase B (its own authority): the honest convergent state matches
+	// (the reseed clears; the lease diff re-appears truth's ask).
+	storeB := NewEvidenceStore()
+	aB := newAuthority(t, storeB, &AnswerActor{Store: storeB})
+	storeB.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-replacement", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+	})
+	require.NoError(t, aB.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
 	_, ok := WaitConverges(context.Background(), 5*time.Second, 5*time.Millisecond, func() bool {
-		a.Reconcile(context.Background())
-		return PendingShapesMatch(context.Background(), a, store, "ses-pin")
+		aB.Reconcile(context.Background())
+		return PendingShapesMatch(context.Background(), aB, storeB, "ses-pin")
 	})
 	require.True(t, ok, "the repaired state must match")
-	assert.True(t, PendingShapesMatch(context.Background(), a, store, "ses-pin"))
+	assert.True(t, PendingShapesMatch(context.Background(), aB, storeB, "ses-pin"))
+}
+
+// The leg-8 timeout cell (r3 finding 1): the admitter stalls PAST the
+// admission window — timeout → FAILED → the re-arm's fast admission is
+// dedupe-absorbed at the harness write (one transcript user message,
+// the incident shape). twoPhaseAdmitter: first admission stalls, later
+// admissions are instant.
+func TestRow_Leg8_TimeoutThenRearm_S2(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      NoopParser{},
+		Store:       store,
+		Passwords:   []string{"row-pw"},
+		Admitter: &twoPhaseAdmitter{
+			stall: 2 * time.Second, // > the window below — the timeout leg
+			out:   store,
+		},
+		AdmitterTimeout: 100 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	deliver := func(attempt uint32) {
+		t.Helper()
+		_, err := a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "ses-row", EntryId: "entry-to", Attempt: attempt,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "timeout turn"}}},
+		}))
+		require.NoError(t, err)
+	}
+
+	v := NewViolations()
+	deliver(1) // stalls past the window → FAILED (re-armable)
+
+	_, ok := WaitConverges(context.Background(), sessionstate.LeaseConvergenceBound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["admitted"] == 0
+	})
+	if !ok {
+		v.Add("L5")
+	}
+	deliver(2) // the re-arm: instant admission, keyed upsert
+	_, ok = WaitConverges(context.Background(), sessionstate.LeaseConvergenceBound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["admitted"] == 0
+	})
+	if !ok {
+		v.Add("S9") // the timeout's re-arm stranded
+		v.Add("L5")
+	}
+	if n := store.TranscriptCount("ses-row"); n != 1 {
+		v.Add("S2") // the keyed upsert absorbed the re-POST
+	}
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+}
+
+// twoPhaseAdmitter stalls its FIRST admission past the caller's window;
+// every later admission is instant (both write evidence under the
+// entry-keyed id — the keyed upsert).
+type twoPhaseAdmitter struct {
+	stall time.Duration
+	once  sync.Once
+	out   *EvidenceStore
+}
+
+func (ad *twoPhaseAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	ad.once.Do(func() {
+		select {
+		case <-ctx.Done():
+		case <-time.After(ad.stall):
+		}
+	})
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if ad.out != nil {
+		ad.out.MarkPresent(sessionID, messageID)
+	}
+	return messageID, nil
 }
