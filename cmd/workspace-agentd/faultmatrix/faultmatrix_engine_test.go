@@ -106,14 +106,17 @@ func TestAnswerActor_NonAnswerIsUnimplemented(t *testing.T) {
 	assert.Equal(t, connect.CodeUnimplemented, connect.CodeOf(err))
 }
 
-func TestInstantAdmitter_DistinctIDsAndNilOut(t *testing.T) {
+func TestInstantAdmitter_KeyEchoAndNilOut(t *testing.T) {
+	// The KEYED contract (r4/F3, actually applied this time): the
+	// admitter echoes the caller's dedupe key as the store id —
+	// distinct keys give distinct ids, and Out==nil still no-panics.
 	ad := &InstantAdmitter{}
 	first, err := ad.Admit(context.Background(), "s1", "m-1", "text", "model")
 	require.NoError(t, err)
 	second, err := ad.Admit(context.Background(), "s1", "m-2", "text", "model")
 	require.NoError(t, err)
-	assert.NotEqual(t, first, second, "distinct store ids — the promotion correlation leans on uniqueness")
-	assert.NotEmpty(t, first)
+	assert.Equal(t, "m-1", first, "the store id IS the caller's dedupe key")
+	assert.Equal(t, "m-2", second, "distinct keys stay distinct")
 
 	nilOut := &InstantAdmitter{Out: nil}
 	_, err = nilOut.Admit(context.Background(), "s1", "m-3", "text", "model")
