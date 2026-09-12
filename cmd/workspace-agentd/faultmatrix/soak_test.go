@@ -433,9 +433,10 @@ func TestRow_Leg8_TimeoutLadderRePOST_S2(t *testing.T) {
 	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
 }
 
-// twoPhaseAdmitter stalls its FIRST admission past the caller's window;
-// every later admission is instant (both write evidence under the
-// entry-keyed id — the keyed upsert).
+// twoPhaseAdmitter stalls its FIRST admission past the caller's window
+// (the stalled call writes nothing — ctx dies before any evidence);
+// every later admission is instant and writes evidence under the
+// entry-keyed id (the keyed upsert).
 type twoPhaseAdmitter struct {
 	stall time.Duration
 	once  sync.Once
