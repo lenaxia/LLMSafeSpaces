@@ -20,13 +20,20 @@ import (
 
 // #828 batch 2: SendPromptAsync, EnqueueMessage, GetHistory, GetSession,
 // AbortSession, DeleteSession, and RenameSessionInAgent are adapter-only.
-// The env-harness rows wire a WORKING proxy backend, so a regression to
-// the deleted fallback surfaces as a 2xx legacy response. Of the
-// V2-harness rows (bare gin.New(), no Recovery middleware), the three
-// nil-adapter guard rows regress to a nil-adapter deref panic
-// propagating out of ServeHTTP — no response at all; the other four
-// regress to status mismatches (503/409/2xx). All unmistakably red; the
-// rows were captured red-first against the real V2 tails pre-deletion.
+// Red-state derivation (empirically verified per row): the env-harness
+// HTTP rows (history/get/rename-503 rows) regress to a 2xx legacy
+// response under fallback restoration — their backends serve 2xx; the
+// rename row is a direct method call, so its red state is an
+// error-message mismatch from a legacy PATCH that no longer exists. Of
+// the V2-harness rows (bare gin.New(), no Recovery middleware): the
+// three guard rows and the sync-send row were captured red-first
+// against the real tails (guards: nil-adapter deref panic under bare
+// guard deletion, or a 2xx/500 legacy mismatch under fallback
+// restoration; sync-send: enqueueV2's nil-factory 500 vs the asserted
+// 200). The two validation-precedes-guard rows and the no-409 row are
+// ordering/semantic pins — green against the pre-deletion code by
+// design, red only under their named reintroductions (guard hoisted
+// above validation; a re-added busy guard).
 
 func TestSendPromptAsync_NilAdapter_Returns503TypedError(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
