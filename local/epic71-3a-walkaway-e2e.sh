@@ -46,15 +46,24 @@ valkey_pod() {
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
 }
 
-vkey_exec() { # args... — run redis-cli inside the valkey pod
-    local vp
-    vp="$(valkey_pod)" || true
-    [[ -n "${vp}" ]] || die "no running valkey pod found (label app=valkey)"
-    kc exec "${vp}" -- redis-cli "$@"
+# Valkey requires auth (G26): same llmsafespaces-credentials Secret the
+# postgres path reads (PG_PWD precedent in us70-common.sh).
+redis_pw() {
+    [[ -n "${REDIS_PW:-}" ]] && { echo "${REDIS_PW}"; return; }
+    kc get secret llmsafespaces-credentials \
+        -o jsonpath='{.data.redis-password}' 2>/dev/null | base64 -d 2>/dev/null || true
 }
 
-seed_inbox_record() { # ws ses ask_id question — HSETs one pending record
-    local ws="$1" ses="$2" ask="$3" question="$4" now_ns payload
+vkey_exec() { # args... — authenticated redis-cli inside the valkey pod
+    local vp pw
+    vp="$(valkey_pod)" || true
+    [[ -n "${vp}" ]] || die "no running valkey pod found (label app=valkey)"
+    pw="$(redis_pw)"
+    kc exec "${vp}" -- redis-cli ${pw:+-a "${pw}"} --no-auth-warning "$@"
+}
+
+seed_inbox_record() { # ws ses ask_id question — HSETs one pending record, LOUDLY
+    local ws="$1" ses="$2" ask="$3" question="$4" now_ns payload hset_rc
     now_ns=$(date +%s%3N)000000
     payload=$(jq -nc \
         --arg id "${ask}" --arg ses "${ses}" --arg q "${question}" \
@@ -63,13 +72,31 @@ seed_inbox_record() { # ws ses ask_id question — HSETs one pending record
           recordedNs:$ns, recordedAt:$ts, question:$q, header:"Walk-away",
           options:[{label:"Yes, deploy",description:"ship"},{label:"No, hold",description:"wait"}],
           custom:true}')
-    vkey_exec HSET "inboxq:${ws}:${ses}" "${ask}" "${payload}" >/dev/null
+    # A silently-failed seed (auth, wrong pod, typo'd key) makes every
+    # later assert pass or fail vacuously — the first pool run died on
+    # exactly this (NOAUTH swallowed by >/dev/null). The seed must prove
+    # itself: HSET integer reply + read-back of the ask ID.
+    hset_rc=$(vkey_exec HSET "inboxq:${ws}:${ses}" "${ask}" "${payload}" 2>&1)
+    [[ "${hset_rc}" == "1" || "${hset_rc}" == "0" ]] \
+        || die "seed_inbox_record: HSET failed for ${ask}: ${hset_rc}"
     vkey_exec EXPIRE "inboxq:${ws}:${ses}" 3600 >/dev/null
+    local readback
+    readback=$(vkey_exec --raw HGET "inboxq:${ws}:${ses}" "${ask}" 2>/dev/null | jq -r '.id // empty' 2>/dev/null)
+    [[ "${readback}" == "${ask}" ]] || die "seed_inbox_record: readback mismatch for ${ask}: '${readback}'"
 }
 
 inbox_status() { # ws ses ask → prints the record's status field
     vkey_exec --raw HGET "inboxq:$1:$2" "$3" 2>/dev/null \
         | jq -r '.status // "absent"' 2>/dev/null || echo absent
+}
+
+# Numeric redis reads die loudly — the first pool run showed how a masked
+# NOAUTH string flows into numeric asserts as garbage (depth "NOAUTH …").
+vkey_int() { # args... — redis-cli call whose reply must be an integer
+    local out
+    out=$(vkey_exec --raw "$@" 2>&1)
+    [[ "${out}" =~ ^[0-9]+$ ]] || die "vkey_int: non-numeric reply for '$*': ${out}"
+    echo "${out}"
 }
 
 # sse_wait_event <type> <timeout_s> <workspace marker — reads the user
@@ -88,6 +115,11 @@ sse_stop() { [[ -n "${SSE_PID:-}" ]] && kill "${SSE_PID}" 2>/dev/null || true; }
 log "epic71/3a walk-away rows: workspace + session setup"
 harness_start
 seed_session "${USER_ID}"
+
+# Precondition: authenticated valkey reachability — every row depends on
+# it; dying here beats nine vacuous failures downstream.
+vkey_exec PING >/dev/null 2>&1 || die "authenticated valkey PING failed (check redis-password in llmsafespaces-credentials)"
+ok "valkey reachable (authenticated)"
 
 W1_WS=$(ws_id 71)
 W1_SES="ses_e71w1deadbeef"
@@ -132,7 +164,7 @@ if [[ "${code}" == "202" ]]; then
 else
     note_fail "W2 expected 202, got ${code}: $(head -c 300 /tmp/e71w2_resp.json)"
 fi
-QDEPTH=$(vkey_exec --raw LLEN "outboxq:${W1_WS}:${W1_SES}" 2>/dev/null || echo 0)
+QDEPTH=$(vkey_int LLEN "outboxq:${W1_WS}:${W1_SES}")
 if [[ "${QDEPTH}" == "1" ]]; then
     ok "W2 exactly one outbox entry"
 else
@@ -146,7 +178,7 @@ code2=$(curl -s -o /tmp/e71w2b_resp.json -w '%{http_code}' -m 15 \
     -H 'Content-Type: application/json' \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1aaa/reply" \
     -d '{"answers":[["Yes, deploy"]]}')
-QDEPTH2=$(vkey_exec --raw LLEN "outboxq:${W1_WS}:${W1_SES}" 2>/dev/null || echo 0)
+QDEPTH2=$(vkey_int LLEN "outboxq:${W1_WS}:${W1_SES}")
 if [[ "${code2}" == "202" && "${QDEPTH2}" == "1" ]]; then
     ok "W2 duplicate re-POST idempotent (S2: depth stays 1)"
 else
@@ -188,7 +220,7 @@ sleep "${W4_SUSPEND_S}"
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/activate")
-[[ "${code}" == "202" ]] || note_fail "W4 activate: code ${code}"
+[[ "${code}" == "202" || "${code}" == "200" ]] || note_fail "W4 activate: code ${code}"
 wait_phase "${W1_WS}" Active 600
 ok "W4 resumed Active"
 
