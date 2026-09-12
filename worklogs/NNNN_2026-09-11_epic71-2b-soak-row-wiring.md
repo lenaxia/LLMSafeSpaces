@@ -58,3 +58,19 @@ None. After merge: dispatch the ≥2h soak (the 2b gate) + a US-70 pool regressi
 - .github/workflows/epic71-soak.yml (new)
 - api/internal/handlers/proxy_actions_test.go (drift pin)
 - api/internal/handlers/outbox_terminus_test.go (drift pin)
+
+---
+
+## Review r1 remediation (2026-09-11, PR #1352)
+
+- **The terminus pin now discriminates** (r1 finding 1, probe-confirmed by the reviewer against my blanket claim): per-mode `require.ErrorAs(*json.SyntaxError)` (the failure IS the parse) + `NotContains("agentd owns admission")` (never the ledgered-window timeout a lenient parser degrades into). Injection-validated in-session: the swallowed-Unmarshal mutation on `post` FAILS the pin; restored, green. The earlier "(the terminus pin shares the mechanism)" worklog line was an unvalidated assumption — wrong, corrected here.
+- **The third hand-adjacent procedure pinned** (r1 finding 2): `TestTerminus_StatusWireDrift_FailsOpenToKeyedRePOST` — GetDeliveryStatus corrupted on the retry path's prior-attempt lookup degrades to the KEYED re-POST at attempt+2 (fail-open, safe only because the harness write is keyed), observable via the leg-7 call recorder — never a phantom completion. All four modes.
+- **The workflow cannot go green on a no-op** (r1 finding 3): input validation step (empty/unparsable duration fails) + the run step tees and greps for `--- SKIP: TestSoak_Dispatch` and fails on it.
+- Wording fixed: corrupted bytes ride the faultMiddleware and bypass the generated handler (route/transport real; the handler is not).
+
+## Tests Run (r1)
+
+- `go test -race -run "WireDrift" ./api/internal/handlers/` — ok (both seams + the status procedure, 4 modes each)
+- Mutation: lenient terminus parser → pin FAILS; restored → green
+- Workflow guard tokens verified present
+
