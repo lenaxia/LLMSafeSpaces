@@ -242,16 +242,20 @@ func TestAbortSession_2xx_RecordsActivity(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+
+	// Fresh tracker per phase: each assertion is exactly its phase's
+	// count (the tracker exposes only a global PendingCount).
+	okTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = okTracker
 	env.handler.adapter = &mockAdapter{
 		abortFn: func(_ context.Context, _, _, _ string) error { return nil },
 	}
-	tracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
-	env.handler.activityTracker = tracker
-
 	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
 	require.Equal(t, http.StatusNoContent, w.Code)
-	assert.Equal(t, 1, tracker.PendingCount(), "successful abort records activity")
+	assert.Equal(t, 1, okTracker.PendingCount(), "successful abort records activity")
 
+	errTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = errTracker
 	env.handler.adapter = &mockAdapter{
 		abortFn: func(_ context.Context, _, _, _ string) error {
 			return assert.AnError
@@ -259,7 +263,7 @@ func TestAbortSession_2xx_RecordsActivity(t *testing.T) {
 	}
 	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s2/abort", nil)
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	assert.Equal(t, 1, tracker.PendingCount(), "failed abort records nothing")
+	assert.Zero(t, errTracker.PendingCount(), "failed abort records nothing")
 }
 
 // DeleteSession's 2xx records workspace activity; the guard and
@@ -269,15 +273,16 @@ func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
-	tracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
-	env.handler.activityTracker = tracker
 
-	// Nil-adapter guard: no activity.
+	// Fresh tracker per phase (global PendingCount only).
+	guardTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = guardTracker
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Zero(t, tracker.PendingCount(), "the guard records nothing")
+	assert.Zero(t, guardTracker.PendingCount(), "the guard records nothing")
 
-	// Adapter error: no activity.
+	errTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = errTracker
 	env.handler.adapter = &mockAdapter{
 		deleteSessionFn: func(_ context.Context, _, _, _ string) error {
 			return assert.AnError
@@ -285,13 +290,14 @@ func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
 	}
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s2", nil)
 	require.Equal(t, http.StatusBadGateway, w.Code)
-	assert.Zero(t, tracker.PendingCount(), "a failed delete records nothing")
+	assert.Zero(t, errTracker.PendingCount(), "a failed delete records nothing")
 
-	// Success: activity recorded.
+	okTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = okTracker
 	env.handler.adapter = &mockAdapter{
 		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
 	}
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s3", nil)
 	require.Equal(t, http.StatusNoContent, w.Code)
-	assert.Equal(t, 1, tracker.PendingCount(), "successful delete records activity")
+	assert.Equal(t, 1, okTracker.PendingCount(), "successful delete records activity")
 }
