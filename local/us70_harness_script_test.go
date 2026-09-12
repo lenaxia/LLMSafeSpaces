@@ -1289,19 +1289,39 @@ func indentLines(s string, n int) string {
 	return b.String()
 }
 
-// TestUS70FaultsScript_ProbeSettlePins pins the r10 fix: F1's seam probe
-// must space its attempts across the arm-rollout reap window (main run
-// 34711974833: rollout completed 0.02s before the script started; the
-// svc still routed to the terminating env-less pod — its readiness, and
-// /livez, outlive the fault env — and every immediate probe missed).
+// TestUS70FaultsScript_ProbeSettlePins pins the r10/r11 fix: the seam
+// probe must (a) space attempts across the arm-rollout reap window AND
+// (b) re-establish the forward between failed rounds — a settle alone
+// cannot reach the armed pod when the forward is pinned to the
+// terminating pre-arm one (main run 34711974833: readiness and /livez
+// outlive the rollout marker; the 660s termination grace means probes
+// through THAT forward see 401-while-alive → 000-on-reap, never 500).
+// Loop membership is enforced by slicing probe_seam's body.
 func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
 	src := mustRead(t, us70FaultsScript)
-	if !strings.Contains(src, `(( _i > 1 )) && sleep 2`) {
-		t.Fatalf("F1's probe loop must sleep between attempts — 8 immediate probes all land inside the old-pod reap window (run 34711974833)")
+	start := strings.Index(src, "probe_seam() {")
+	if start < 0 {
+		t.Fatalf("probe_seam must exist — the F1/F6 seam detection with forward re-establishment")
 	}
-	idxSleep := strings.Index(src, `(( _i > 1 )) && sleep 2`)
-	idxProbe := strings.Index(src, `FAULT_SEEN=0`)
-	if idxProbe < 0 || idxSleep < idxProbe {
-		t.Fatalf("the settle must live inside the F1 probe loop")
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("probe_seam body not found")
+	}
+	body := src[start : start+end]
+	for _, pin := range []string{
+		`(( _i > 1 || _round > 1 )) && sleep 2`, // settle inside the try loop
+		"reconnect_api",                         // forward re-resolution between failed rounds
+		`_round in 1 2 3 4 5`,                   // bounded rounds
+	} {
+		if !strings.Contains(body, pin) {
+			t.Fatalf("probe_seam must contain %q (sliced body membership enforced)", pin)
+		}
+	}
+	// Both consumers route through probe_seam — F6's identical race is
+	// covered, not just F1's.
+	f1 := strings.Index(src, `if probe_seam "${FAULT_COUNT}"`)
+	f6 := strings.Index(src, "if probe_seam 6")
+	if f1 < 0 || f6 < 0 {
+		t.Fatalf("F1 and F6 must both detect the seam through probe_seam")
 	}
 }

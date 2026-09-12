@@ -14,17 +14,17 @@ F1 must run (not skip) on the post-merge main pool dispatch — the reproducibil
 
 The arm rollout completed at 19:20:38.47 and the faults script started at 19:20:38.49 — 0.02s later. `reconnect_api` re-established the forward and `/livez` passed, but the **service still routed to the TERMINATING old pod**: its readiness (and `/livez`) outlive the fault-env rollout's completion marker through the reap window. All eight immediate probes hit the env-less pod, saw no 500, and F1 skipped. F6 — which performs its own fresh arm (another rollout) nine seconds later — passed cleanly, confirming the seam mechanism and isolating the race to the probe timing.
 
-## Fix
+## Fix (r11 — the r10 settle-only draft was insufficient, caught in review)
 
-The F1 probe loop sleeps 2s between attempts (`(( _i > 1 )) && sleep 2`), spacing the eight probes across the reap window; the success `break` still burns at most one fault. Pinned by `TestUS70FaultsScript_ProbeSettlePins` (settle present + inside the probe loop).
+The settle alone cannot work: `kubectl port-forward svc/…` pins ONE pod at establishment, and if it resolved to the terminating pre-arm pod, no probe through that forward can ever observe a 500 (401-while-alive → 000-on-reap; the 660s termination grace per helm/values.yaml:78 dwarfs any settle — the r10 comment's "covers the grace in practice" clause was false and is corrected here). The fix is `probe_seam`: alternating probe rounds (2s settle between tries) and **forward re-establishment** (`reconnect_api` — fresh svc resolution) between failed rounds, bounded at 5 rounds. Both F1 and F6 route through it — F6's identical race (its own arm rollout precedes its probe) is covered, not just F1's. Pinned by `TestUS70FaultsScript_ProbeSettlePins` with **loop-membership enforcement** (the pin slices probe_seam's body; the r10 pin's placement claim was mutation-bypassable).
 
 ## Tests Run
 
-`bash -n` clean (after catching a clipped bracket my own edit introduced — verified before push); `go test ./local/` green including the new pin.
+`bash -n` clean; `go test ./local/` green including the rewritten pin. Behavioral evidence: pool dispatch on this branch (see PR thread).
 
 ## Next Steps
 
-- PR → review; a fresh main dispatch post-merge shows F1 PASS deterministically.
+- PR → review with the branch dispatch as the merge-time behavioral evidence.
 
 ## Files Modified
 
