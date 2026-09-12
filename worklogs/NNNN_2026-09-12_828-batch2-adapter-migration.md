@@ -117,4 +117,4 @@ None.
 - **r3 (comment-only):** metrics counter-emission "both" claim, DeleteSession legacy-path refs, observability doProxy route list, worklog count qualifier — all fixed.
 - **r4 (comment-only):** contract_auth analogy scoped to the enqueue row; "outbox unconditionally" → "on the production cache-service path"; outbox comment's async clause deleted (deliverDetached is synchronous context-detachment).
 - **Outbox deflake (in-PR, test-only):** `TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes` pass-3 raced the shrunk backoff window (instant `DeliverOutboxOnceForTest` returned false ~1/5 under load) — now polls for due-ness + `assert.Eventually` the re-admit counter; 20x green with `-race`. Flagged on #1314 for the 0b owner.
-- Reviewer's live-check note: repolint `TestLive_Worklogs_NoDuplicates` fails identically on origin/main (an unnumbered #1334 sentinel there) — pre-existing, out of scope here.
+- Reviewer's r4 live-check note (repolint `TestLive_Worklogs_NoDuplicates` red on then-main via an unnumbered #1334 sentinel) no longer applies: the sentinel was numbered when #1334 merged; the live check is green on current main.

@@ -190,8 +190,10 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		// DeleteSession are adapter-only — with no adapter set they
 		// short-circuit at the nil-adapter guard (503), as does the
 		// enqueue row below. Their upstream BasicAuth is the adapter's
-		// contract, pinned by e2e_adapter_test.go (the stub pods there
-		// enforce Basic auth end-to-end).
+		// contract, pinned by pkg/agent/opencode/adapter_test.go (the
+		// fake opencode server rejects wrong credentials on every
+		// request) and asserted present on the handler path by
+		// e2e_adapter_test.go's stub.
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},

@@ -253,9 +253,10 @@ func (s *EvidenceStore) InputPresent(sessionID, inputID string) bool {
 	return false
 }
 
-// (A second, older PendingInputs copy — #1343's — was deleted here again
-// after #1344 re-introduced it on top of #1346's dedupe: main-red
-// recurrence, PR #1349.)
+// (A plain duplicate of PendingInputs was deleted here (PR #1349):
+// #1334 re-introduced the old #1343 body on top of #1344's instrumented
+// copy. The kept copy above is #1344's — the leg-9 rows consume its
+// counters. Main-red recurrence class; see epic-71 #1314.)
 
 // AnswerActor implements the harness answer seam: a live ask answers
 // successfully; an ask ABSENT from the store's truth 404s — the leg-2
