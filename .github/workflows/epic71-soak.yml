@@ -100,4 +100,15 @@ jobs:
           fi
       - name: Soak summary
         if: always()
-        run: echo "soak dispatch complete (duration=${{ inputs.duration }} sessions=${{ inputs.sessions }} rate=${{ inputs.fault_rate }} seed=${{ inputs.seed }}) — see the Run the soak row step for the gate line"
+        env:
+          SOAK_DURATION_INPUT: ${{ inputs.duration }}
+          SOAK_SESSIONS_INPUT: ${{ inputs.sessions }}
+          SOAK_RATE_INPUT: ${{ inputs.fault_rate }}
+          SOAK_SEED_INPUT: ${{ inputs.seed }}
+        # env-indirection, never raw ${{ }} interpolation in run: (the
+        # r3 hardening — the same discipline as the validation step).
+        # On failure this points at the failing step's gate line; it
+        # does NOT claim completion.
+        run: |
+          echo "soak dispatch (duration=$SOAK_DURATION_INPUT sessions=$SOAK_SESSIONS_INPUT rate=$SOAK_RATE_INPUT seed=$SOAK_SEED_INPUT)"
+          echo "outcome details: see the Run the soak row step's gate lines above"

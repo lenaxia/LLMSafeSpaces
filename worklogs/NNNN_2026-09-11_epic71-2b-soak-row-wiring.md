@@ -95,3 +95,11 @@ None. After merge: dispatch the ≥2h soak (the 2b gate) + a US-70 pool regressi
 - Step-body simulation: ALL-SIM-PASS (7 cases)
 - No Go changes; r1/r2 gates stand
 
+
+## Review r4 remediation (2026-09-11, PR #1352)
+
+- The summary step joins the validation step's env-indirection discipline (4 raw `${{ inputs.* }}` sites removed; zero raw interpolations remain in any `run:` block — grep-verified), and its prose no longer claims "complete" on failure paths.
+
+## Tests Run (r4)
+
+- Workflow grep: no raw interpolation in run: blocks; no Go changes (r1-r3 gates stand)
