@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
