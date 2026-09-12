@@ -148,4 +148,4 @@ None.
 
 - **r10:** field doc's nil-check enumeration completed (lifecycle Start() hooks + events sweep gate); guard-row panic claim scoped to the three guard rows and attributed to the nil adapter; "typed error" -> "its own error" for the rename helper.
 
-- **r11:** third "typed error" site fixed (SetAdapter doc); test-header red-state paragraph rewritten to the empirically derived per-group states (guards/sync-send red-first vs the tails; validation/no-409 rows are ordering pins green against old code by design); env-harness sentence scoped to the HTTP rows (rename is a direct call).
+- **r11 (correction, r12):** the r11 commit CLAIMED the third "typed error" fix but its replace silently no-op'd on a wrapped line — actually shipped in r12 with an asserted replacement; test-header red-state paragraph rewritten to the empirically derived per-group states (guards/sync-send red-first vs the tails; validation/no-409 rows are ordering pins green against old code by design); env-harness enumeration corrected to history/get/delete with the rename row documented as a direct call with an error-presence mismatch.

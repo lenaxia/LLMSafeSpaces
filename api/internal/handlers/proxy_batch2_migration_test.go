@@ -21,11 +21,12 @@ import (
 // #828 batch 2: SendPromptAsync, EnqueueMessage, GetHistory, GetSession,
 // AbortSession, DeleteSession, and RenameSessionInAgent are adapter-only.
 // Red-state derivation (empirically verified per row): the env-harness
-// HTTP rows (history/get/rename-503 rows) regress to a 2xx legacy
-// response under fallback restoration — their backends serve 2xx; the
-// rename row is a direct method call, so its red state is an
-// error-message mismatch from a legacy PATCH that no longer exists. Of
-// the V2-harness rows (bare gin.New(), no Recovery middleware): the
+// HTTP rows (history/get/delete) regress to a 2xx legacy response under
+// fallback restoration — their backends serve 2xx; the rename row is a
+// direct method call (no HTTP), and against the pre-PR code its legacy
+// PATCH hits the fake backend's 200 and returns nil — an
+// error-presence mismatch at require.Error. Of the V2-harness rows
+// (bare gin.New(), as is the env-harness router too): the
 // three guard rows and the sync-send row were captured red-first
 // against the real tails (guards: nil-adapter deref panic under bare
 // guard deletion, or a 2xx/500 legacy mismatch under fallback

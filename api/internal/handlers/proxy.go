@@ -226,7 +226,7 @@ func (h *ProxyHandler) adapterUnavailable(c *gin.Context) {
 // (typed 503). Exceptions in proxy_handlers.go: the outbox-backed queue
 // view routes (ListQueue/DeleteQueueMessage/RetryQueueMessage) never
 // consult the adapter, and RenameSessionInAgent fails with its own
-// typed error. Set before Start(). Panics if called after Start() —
+// error. Set before Start(). Panics if called after Start() —
 // same invariant as SetStateStore, preventing a data race on the
 // interface field once handler goroutines begin reading h.adapter.
 func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
