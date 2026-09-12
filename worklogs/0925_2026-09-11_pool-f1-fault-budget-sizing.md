@@ -68,4 +68,4 @@ None. (Product finding handed to #1312 owner — see above.)
 - `.github/workflows/us-70-delivery-pool.yml`
 - `local/us-70-faults-e2e.sh`
 - `local/us70_harness_script_test.go`
-- `worklogs/NNNN_2026-09-11_pool-f1-fault-budget-sizing.md` (this file)
+- `worklogs/0925_2026-09-11_pool-f1-fault-budget-sizing.md` (this file)
