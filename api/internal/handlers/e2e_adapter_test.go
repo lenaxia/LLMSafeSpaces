@@ -353,7 +353,6 @@ func TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502(t *testing.T) {
 // proxy_history_pagination_test.go) rides the same newE2EEnv adapter
 // harness since #828 batch 2 — both rows pin the same wire contract;
 // this one additionally asserts the raw "[]" body shape.
-// null-guard in the adapter code path.
 func TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

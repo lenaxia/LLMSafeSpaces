@@ -32,9 +32,9 @@ var ErrNoRunningPod = &pkgerrors.StatusError{
 	Message: "workspace pod not running",
 }
 
-// V2Delivery selects how the agent's V2 session runner admits a prompt.
-// Generic equivalent of opencode.V2Delivery; allows proxy_v2.go to use
-// V2 types without importing the opencode package.
+// V2Delivery selects how the agent's V2 session runner admits a prompt
+// (consumed by the adapter's PromptV2WithModel; the proxy-side V2
+// client surface was deleted in #828 batch 2).
 type V2Delivery string
 
 const (

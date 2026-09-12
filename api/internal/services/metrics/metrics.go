@@ -606,9 +606,8 @@ func RecordRequestBufferGlobalFull(workspaceID string) {
 
 // RecordUpstream5xx (LLMSafeSpaces#488) increments the counter for every
 // upstream (opencode) 5xx response the proxy layer observes. Called by
-// the raw-proxy transport's streaming arm (doProxy; the non-streaming
-// history arm died with doHistoryRequest in #828 batch 2
-// history fetch). See the counter definition for full rationale.
+// the raw-proxy transport's streaming arm (doProxy). See the counter
+// definition for full rationale.
 //
 // path SHOULD carry the opencode-side path with the session-ID and any
 // other high-cardinality segments replaced by placeholders (e.g. `:id`)

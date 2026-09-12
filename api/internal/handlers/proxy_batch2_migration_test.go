@@ -195,7 +195,7 @@ func TestEnqueueMessage_AdapterPath_OutboxUnset_SyncSends(t *testing.T) {
 	h.adapter = &mockAdapter{
 		sendFn: func(_ context.Context, _, _, sid, text string, _ session.SendOpts) (*session.Message, error) {
 			assert.Equal(t, "ses-1", sid)
-			assert.Equal(t, helloText(), text)
+			assert.Equal(t, "hello", text)
 			return &session.Message{ID: "msg_sync_1", Type: session.MessageAssistant}, nil
 		},
 	}
@@ -210,8 +210,6 @@ func TestEnqueueMessage_AdapterPath_OutboxUnset_SyncSends(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), "msg_sync_1")
 }
-
-func helloText() string { return "hello" }
 
 // Port of the deleted TestEnqueueV2_EmptyText: shared validation precedes
 // the guard — an empty text is a 400 regardless of adapter wiring.

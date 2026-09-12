@@ -208,11 +208,13 @@ func TestGetHistory_BeforeCursor_NotFound_ReturnsEmpty(t *testing.T) {
 	assert.Empty(t, w.Header().Get("X-Next-Cursor"))
 }
 
-// TestGetHistory_FiltersNonDisplayableBeforePaginating asserts that
-// the server's page size accounts for displayable messages only —
-// system-role messages and messages with no text/tool/thinking parts
-// must be filtered BEFORE counting against the limit. Otherwise users
-// see jumpy page sizes.
+// TestGetHistory_PageIsRawSlice_TranslateAfterwards pins the ADAPTER
+// contract (#828 batch 2; supersedes the legacy filter-then-slice row):
+// the page is the newest N RAW messages as the agent returns them; the
+// translator then drops step-start/step-finish parts — a marker-only
+// message surfaces with empty parts — and system roles are contract
+// data. The legacy displayable-first filtering died with the tail.
+
 func TestGetHistory_PageIsRawSlice_TranslateAfterwards(t *testing.T) {
 	// 5 displayable + 5 non-displayable, interleaved.
 	// Non-displayable: role=system, or parts contain only step-start/step-finish.
@@ -293,14 +295,14 @@ func TestGetHistory_EmptySession_ReturnsEmptyArrayNotNull(t *testing.T) {
 	assert.Empty(t, ids)
 }
 
-// TestGetHistory_ExactLimitBoundary_NoCursor guards the off-by-one at the
-// page edge: when the total number of displayable messages equals the
-// requested limit, all messages must be returned in one page and no
-// X-Next-Cursor must be emitted (there is no older page to fetch).
-//
-// Regression target: if the cursor-suppression condition is ever changed
-// from `start > 0` to `start >= 0` (or vice versa), this test catches the
-// off-by-one immediately.
+// TestGetHistory_ExactLimitBoundary_EmitsOptimisticCursor pins the #971
+// optimistic-cursor contract (supersedes the legacy start==0 boundary
+// rule): a FULL native first page may hide older messages, so the
+// handler emits the page's oldest id even when — as in this fixture,
+// whose fake upstream ignores ?limit — no older messages exist. The
+// spurious cursor costs one back-page fetch that returns empty and no
+// further cursor.
+
 func TestGetHistory_ExactLimitBoundary_EmitsOptimisticCursor(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -660,9 +660,9 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 			}
 			// NOTE: /event is intentionally omitted — StreamEvents no longer proxies to the pod.
-			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are intentionally
-			// omitted — these are served by the V2 path (adapter/V2SessionClient) and
-			// do not proxy to opencode in this test fixture.
+			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are
+			// intentionally omitted — both are adapter-served (#828 batch 2)
+			// and never hit the raw proxy transport.
 		}
 	})
 	env.setupPasswordWithT(t, "ws-1", "test-password")

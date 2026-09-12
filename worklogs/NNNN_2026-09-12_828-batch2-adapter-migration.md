@@ -35,7 +35,7 @@ The legacy transport recorded workspace activity on every 2xx proxy; the adapter
 - DeleteSession rows (13) ported to `mockAdapter`; the 404-passthrough row became the adapter-error-502 row (typed error contract; no tombstone on failure).
 - GetHistory contract rows (8) ported to the `newE2EEnv` adapter harness; `extractIDs` reads the contract shape (top-level id).
 - **Contract deltas surfaced and pinned** (not silently absorbed):
-  1. *Slice-then-translate vs filter-then-slice* — the adapter page is the newest N RAW messages; step-marker-only messages surface as empty-parts contract messages; system roles are contract data. Production behavior since #971; pinned with rationale in `TestGetHistory_FiltersNonDisplayableBeforePaginating`.
+  1. *Slice-then-translate vs filter-then-slice* — the adapter page is the newest N RAW messages; step-marker-only messages surface as empty-parts contract messages; system roles are contract data. Production behavior since #971; pinned with rationale in `TestGetHistory_PageIsRawSlice_TranslateAfterwards (renamed r2)`.
   2. *Optimistic cursor* (#971) — a full native page emits a cursor even when no older messages exist; the exact-boundary row now pins this documented contract.
   3. *History upstream-5xx Prometheus counter dies* with `doHistoryRequest` — adapter path has structured error logs, no counter. **Flagged for reviewer** (inventing a synthetic status label would corrupt the metric); the counter survives for the still-legacy transport routes until the final batch.
 - Deleted with rationale: history query-forwarding row (upstream query is now the adapter's; `before` never forwarded — asserted in the FullWalk port), history fetch-error row (adapter 502 equivalent exists), transport-retry row (generic retry pinned on seam), history 5xx observability ×2, `TestGetHistory_4xx_NoEnrichment` (bespoke-path enrichment passthrough).
@@ -91,7 +91,21 @@ None.
 - api/internal/app/app.go (V2 wiring deleted)
 - pkg/agent/agent.go (V2SessionClient/V2ClientFactory deleted)
 - api/internal/handlers/proxy_adapter_crosscutting.go (recordActivityIfTracked)
-- api/internal/handlers/proxy_batch2_migration_test.go (new — 10 rows)
+- api/internal/handlers/proxy_batch2_migration_test.go (new — 12 rows after r1)
 - api/internal/handlers/proxy_test_helpers_test.go (read seam; V2 harness retained)
 - api/internal/handlers/proxy_reconcile_state_test.go (new — moved rows)
 - api/internal/handlers/proxy_test.go, proxy_history_pagination_test.go, proxy_history_e2e_test.go, proxy_chat_buffering_test.go, proxy_upstream_5xx_observability_test.go, proxy_request_buffer_test.go, proxy_auth_cache_test.go, proxy_terminal_events_test.go, proxy_send_logging_test.go, contract_auth_test.go (re-points/ports/deletions with rationale)
+
+---
+
+## Review r1 + r2 remediation (PR #1349)
+
+- **r1:** EnqueueMessage→syncSend coverage added (sync-send happy path + empty-text 400-precedes-guard); DeleteSession failure row's negative assertions restored (live SSE subscriber + index-not-called + no-tombstone); `agent.IsSessionNotFound` deleted; always-true outbox guard dropped; history rows renamed to match their pins; comment sweep (partial — completed in r2).
+- **r2:** GetHistory doc tail rewritten to the adapter contract; renamed tests' doc comments rewritten; dangling refs swept (FullFlow NOTE, paginateContractHistory doc, V2Delivery doc, metrics tail, e2e fragment); `helloText` inlined.
+- Reviewer verified the r1 coverage fixes fail-without-fix (the `msg_sync_1` assertion is only producible via adapter.Send). Delta-3 (5xx counter) call: accepted — no synthetic label.
+- `TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes`: load-sensitive flake (failed once in one full-suite run; green x3 isolated on branch AND main) — timing-robustness follow-up noted for the outbox owner.
+- CI: Build Frontend (arm64) failed once with buildx `error writing layer blob: not_found` (registry infra); green on rerun.
+
+## Tests Run (r2)
+
+- `go test ./api/internal/handlers/ ./pkg/agent/` — green; vet/gofmt clean

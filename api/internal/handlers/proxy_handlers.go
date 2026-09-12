@@ -494,17 +494,15 @@ const historyPageMaxLimit = 200
 //     back-page).
 //
 // Response:
-//   - body: JSON array of opencode message objects, oldest-first within
-//     the page. Schema preserved as-is so the frontend's transformHistory
-//     keeps working.
-//   - X-Next-Cursor header: present iff more (older) messages exist; its
-//     value is the id of the OLDEST message in the returned page. Absent
-//     means there are no more messages to fetch.
-//
-// The handler fetches the FULL upstream array from opencode (which does
-// not paginate), filters to displayable messages server-side, then
-// slices. Filtering server-side prevents jumpy page sizes that would
-// otherwise happen if the frontend filtered after receiving the page.
+//   - body: JSON array of contract session.Message values, oldest-first
+//     within the page (the adapter translator's output — see the
+//     slice-then-translate note under `limit` above).
+//   - X-Next-Cursor header: the id of the OLDEST message in the returned
+//     page. On the first-page native fetch a FULL page emits the cursor
+//     optimistically (#971 — older messages may exist beyond what the
+//     agent's page can see); a spurious cursor costs one back-page fetch
+//     that returns empty and no further cursor. Absent means no more
+//     messages to fetch.
 func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	sid := c.Param("sessionId")
 	if err := validateSessionID(sid); err != nil {
@@ -596,9 +594,9 @@ func parseHistoryLimit(raw string) (int, error) {
 	return n, nil
 }
 
-// paginateContractHistory applies the same cursor-based pagination as
-// paginateOpencodeHistory but on typed session.Message values from the
-// Adapter. Simpler because the Adapter translator already dropped
+// paginateContractHistory applies cursor-based pagination on typed
+// session.Message values from the Adapter. Simpler than the deleted raw
+// path because the Adapter translator already dropped
 // non-displayable messages (step-start/step-finish) and filtered parts.
 // Returns the page + next cursor (empty if no older messages remain).
 func paginateContractHistory(msgs []session.Message, limit int, before string) ([]session.Message, string) {
