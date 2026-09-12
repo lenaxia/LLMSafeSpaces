@@ -128,3 +128,12 @@ None.
 - **Ops:** workflow-event drop recurred on ref `f365db08`→`c709a9f8` (zero runs on the pushed head); re-armed with this append. Outbox no-promotion row deflaked in-PR (poll due-pass + Eventually counter; 20x -race green).
 
 - Event-pipeline recovery note: PR #1354 opened during the repo-wide pull_request-event outage; re-armed via this commit once issue_comment events confirmed the pipeline alive.
+
+---
+
+## Review r6 remediation (PR #1354)
+
+- **Activity parity completed for write routes:** AbortSession and DeleteSession now `recordActivityIfTracked` on their 2xx paths (the deleted transport recorded every 2xx; the r1 parity fix had covered reads only).
+- **Guard-row harness header corrected:** the three V2-harness rows' red state is a 500 (no V2 client post-deletion), distinct from the typed 503 by body; rows were captured red-first against the real tails pre-deletion.
+- **Sweep:** ListQueue/DeleteQueueMessage V2-shadow comments rewritten (no queue without the outbox); `proxy.go` adapter field doc updated to the post-batch-2 reality (fail-closed guards; remaining nil-checks are batch-3/4 files).
+- Reviewer accepted both surfaced contract deltas (outbox-less queue 200-sync; counter delta-3) and confirmed zero missing test cases.

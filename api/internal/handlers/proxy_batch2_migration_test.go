@@ -19,9 +19,11 @@ import (
 
 // #828 batch 2: SendPromptAsync, EnqueueMessage, GetHistory, GetSession,
 // AbortSession, DeleteSession, and RenameSessionInAgent are adapter-only.
-// Every guard row wires a WORKING legacy tail (V2 test server or proxy
-// backend) so a regression to the deleted fallback surfaces as a
-// 2xx/legacy response, not an incidental 5xx that passes the assertion.
+// The env-harness rows wire a WORKING proxy backend, so a regression to
+// the deleted fallback surfaces as a 2xx legacy response. The V2-harness
+// rows wire no V2 client (the factory died with proxy_v2.go), so their
+// red state is a 500 — distinct from the asserted typed 503 by body, and
+// the rows were captured red-first against the real V2 tails pre-deletion.
 
 func TestSendPromptAsync_NilAdapter_Returns503TypedError(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")

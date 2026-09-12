@@ -139,13 +139,13 @@ type ProxyHandler struct {
 	// and a detached worker delivers via the adapter.
 	outbox *outbox.Service
 
-	// adapter is the US-65.3 Agent Adapter seam. nil means the handler
-	// uses the legacy dialect + proxyToWorkspace path (every handler
-	// today). US-65.4 migrates handlers one-by-one to call adapter
-	// methods instead; each migration checks `if h.adapter != nil` and
-	// takes the new path, falling back to the legacy path when nil.
-	// Set via SetAdapter before Start(). Once all handlers migrate,
-	// the dialect field retires and this becomes required.
+	// adapter is the US-65.3 Agent Adapter seam. Since #828 batches 1+2
+	// every proxy_handlers.go route is adapter-only: with the adapter
+	// nil they fail closed at the adapterUnavailable guard (typed 503).
+	// The remaining nil-checks live in the batch-3/4 files (input,
+	// permissions, session index, parents) and their background helpers.
+	// Set via SetAdapter before Start(); the final #828 batch makes it
+	// a required constructor parameter and retires the dialect field.
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on

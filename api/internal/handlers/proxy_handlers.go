@@ -680,6 +680,7 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 		return
 	}
+	h.recordActivityIfTracked(wid)
 	c.Status(http.StatusNoContent)
 }
 
@@ -705,6 +706,7 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+	h.recordActivityIfTracked(workspaceID)
 
 	// Post-delete side effects run after a successful adapter delete.
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // tombstone must survive client disconnect
@@ -974,10 +976,9 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	wid := c.Param("id")
 
 	// D3 (#907): the outbox is the real queue — entries listed here ARE
-	// pending delivery (or parked error with retry context). The V2
-	// shadow below is the legacy fallback: a view of the V2 queue that
-	// opencode 1.18.10 never drains (#755) — entries there will never
-	// deliver, which is exactly why it is no longer the primary source.
+	// pending delivery (or parked error with retry context). Without an
+	// outbox there is no queue to list (the V2 queue view died with
+	// enqueueV2, #828 batch 2); an empty list is the honest answer.
 	if h.outbox != nil {
 		entries, err := h.outbox.List(c.Request.Context(), wid, sid)
 		if err != nil {
@@ -1021,8 +1022,8 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 	}
 
 	// D3 (#907): with the outbox wired, dismissal targets the REAL queue
-	// — the entry is removed and will not deliver. The V2 shadow below is
-	// the legacy path.
+	// — the entry is removed and will not deliver. Without an outbox
+	// there is nothing to dismiss (204).
 	if h.outbox != nil {
 		switch h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
 		case outbox.DismissRemoved:
