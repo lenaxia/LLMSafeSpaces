@@ -25,13 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Epic 71 — harness completion
 
+- **Fault-matrix assertion harness (#1337)**: the harness engine itself —
+  violation counters, convergence samples, and legs 2/4/5 rows over the
+  landed wave code.
 - **Fault-matrix S5/L3 + leg-3 rows (#1341)**, **delivery-replay S2/S9,
   serve-storm cheapness, the soak driver with negative control
   (#1344)**: the assertion harness is complete; violation counters must
   read zero under injected faults at CI scale (the in-memory shape the
   at-scale soak reuses).
 - **#828 batch 1 (#1347)**: adapter-only session cluster methods
-  (epic-826 prerequisite work, no behavior change).
+  (epic-826 prerequisite work; no behavior change with the adapter
+  configured — nil-adapter requests now return a typed 503 instead of
+  the raw legacy-proxy fallback).
 
 ## [0.29.0] - 2026-09-11
 
