@@ -137,3 +137,11 @@ None.
 - **Guard-row harness header corrected:** the three V2-harness rows' red state is a 500 (no V2 client post-deletion), distinct from the typed 503 by body; rows were captured red-first against the real tails pre-deletion.
 - **Sweep:** ListQueue/DeleteQueueMessage V2-shadow comments rewritten (no queue without the outbox); `proxy.go` adapter field doc updated to the post-batch-2 reality (fail-closed guards; remaining nil-checks are batch-3/4 files).
 - Reviewer accepted both surfaced contract deltas (outbox-less queue 200-sync; counter delta-3) and confirmed zero missing test cases.
+
+---
+
+## Review r7-r9 remediation (PR #1354)
+
+- **r7:** write-route activity parity lines pinned (AbortSession/DeleteSession tracker rows, mutation-verified by both reviewer and me); helper/SetAdapter/AbortSession docs corrected.
+- **r8:** SetAdapter doc re-scoped to the migrated cluster (queue-view + rename exceptions); per-phase tracker isolation in the pins.
+- **r9:** the adapter FIELD doc re-scoped identically (r8 fixed the sibling 75 lines below and missed this one); guard-row header's red-state mechanism corrected (nil-deref panic under bare gin.New(), not a 500 — mutation-verified by the reviewer); helpers "red-state witness" wording aligned; stale admin_session.go DeleteSession cite fixed (non-blocking, pre-existing); worklog rounds completed (this section).

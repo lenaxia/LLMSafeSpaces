@@ -124,8 +124,8 @@ func startV2TestServer(t *testing.T, password string) *httptest.Server {
 // correctly; calling handler methods directly with gin.CreateTestContext
 // skips the flush, causing bare c.Status(204) to never reach the
 // recorder). The V2 client factory injection is gone with proxy_v2.go
-// (#828 batch 2); the server remains as the guard rows' red-state
-// witness.
+// (#828 batch 2); the server is unreachable in the guard rows' current
+// red state (pre-deletion it served the working tails).
 func newV2TestHandler(t *testing.T, srv *httptest.Server) (*gin.Engine, *ProxyHandler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

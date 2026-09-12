@@ -22,9 +22,11 @@ import (
 // AbortSession, DeleteSession, and RenameSessionInAgent are adapter-only.
 // The env-harness rows wire a WORKING proxy backend, so a regression to
 // the deleted fallback surfaces as a 2xx legacy response. The V2-harness
-// rows wire no V2 client (the factory died with proxy_v2.go), so their
-// red state is a 500 — distinct from the asserted typed 503 by body, and
-// the rows were captured red-first against the real V2 tails pre-deletion.
+// rows build their router with bare gin.New() (no Recovery middleware)
+// and wire no V2 client post-deletion, so their red state is a nil-deref
+// panic propagating out of ServeHTTP — no response at all — still
+// unmistakably red; the rows were captured red-first against the real
+// V2 tails pre-deletion.
 
 func TestSendPromptAsync_NilAdapter_Returns503TypedError(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")

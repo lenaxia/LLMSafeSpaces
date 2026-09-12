@@ -139,13 +139,15 @@ type ProxyHandler struct {
 	// and a detached worker delivers via the adapter.
 	outbox *outbox.Service
 
-	// adapter is the US-65.3 Agent Adapter seam. Since #828 batches 1+2
-	// every proxy_handlers.go route is adapter-only: with the adapter
-	// nil they fail closed at the adapterUnavailable guard (typed 503).
-	// The remaining nil-checks live in the batch-3/4 files (input,
-	// permissions, session index, parents) and their background helpers.
-	// Set via SetAdapter before Start(); the final #828 batch makes it
-	// a required constructor parameter and retires the dialect field.
+	// adapter is the US-65.3 Agent Adapter seam. The migrated
+	// session/message cluster is adapter-only since #828 batches 1+2
+	// (nil adapter -> adapterUnavailable guard, typed 503); the
+	// outbox-backed queue view routes never consult it, and
+	// RenameSessionInAgent fails with its own typed error. Remaining
+	// nil-checks live in the batch-3/4 files (input, permissions,
+	// session index, parents) and their background helpers. Set via
+	// SetAdapter before Start(); the final #828 batch makes it a
+	// required constructor parameter and retires the dialect field.
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on
