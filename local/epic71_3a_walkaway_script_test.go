@@ -46,9 +46,15 @@ func TestEpic71WalkawayScript_RowPins(t *testing.T) {
 	if !strings.Contains(src, "L7_BUDGET_S") || !strings.Contains(src, "whileAway") {
 		t.Fatalf("walk-away script must assert the L7 budget against a whileAway-tagged event")
 	}
-	// S2: the duplicate re-POST row must keep the outbox depth at one.
-	if strings.Count(src, "LLEN") < 2 {
-		t.Fatalf("walk-away script must assert outbox depth after the late answer AND after the duplicate re-POST (S2), found %d LLEN uses", strings.Count(src, "LLEN"))
+	// S2: the exactly-once evidence is the dedupe marker (set AFTER a
+	// successful push) plus the duplicate re-POST's duplicate=true body —
+	// NOT the queue depth, which the delivery worker drains
+	// concurrently (queue→staging) by design.
+	if !strings.Contains(src, "outboxdedupe") {
+		t.Fatalf("walk-away script must assert the outbox dedupe marker (stable S2 evidence)")
+	}
+	if !strings.Contains(src, `// .duplicate // empty`) && !strings.Contains(src, ".duplicate // empty") {
+		t.Fatalf("walk-away script must assert duplicate=true on the re-POST body")
 	}
 	// S11: dismiss must assert the terminal status and non-re-presentation.
 	if !strings.Contains(src, `"dismissed"`) || !strings.Contains(src, `== "204"`) {

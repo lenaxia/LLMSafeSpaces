@@ -90,15 +90,6 @@ inbox_status() { # ws ses ask → prints the record's status field
         | jq -r '.status // "absent"' 2>/dev/null || echo absent
 }
 
-# Numeric redis reads die loudly — the first pool run showed how a masked
-# NOAUTH string flows into numeric asserts as garbage (depth "NOAUTH …").
-vkey_int() { # args... — redis-cli call whose reply must be an integer
-    local out
-    out=$(vkey_exec --raw "$@" 2>&1)
-    [[ "${out}" =~ ^[0-9]+$ ]] || die "vkey_int: non-numeric reply for '$*': ${out}"
-    echo "${out}"
-}
-
 # sse_wait_event <type> <timeout_s> <workspace marker — reads the user
 # SSE stream in the background and greps for the first matching frame.
 sse_capture() { # out_file — start a detached user-events capture
@@ -164,11 +155,18 @@ if [[ "${code}" == "202" ]]; then
 else
     note_fail "W2 expected 202, got ${code}: $(head -c 300 /tmp/e71w2_resp.json)"
 fi
-QDEPTH=$(vkey_int LLEN "outboxq:${W1_WS}:${W1_SES}")
-if [[ "${QDEPTH}" == "1" ]]; then
-    ok "W2 exactly one outbox entry"
+MSG1=$(jq -r '.messageID // empty' /tmp/e71w2_resp.json 2>/dev/null)
+[[ "${MSG1}" == ob_* ]] && ok "W2 outbox entry minted (${MSG1})" \
+    || note_fail "W2 response carries no outbox messageID: $(head -c 200 /tmp/e71w2_resp.json)"
+# S2 evidence is the ACCEPT, not the queue depth: the delivery worker
+# moves entries queue→staging concurrently with this assert, so LLEN is
+# timing-dependent by design. The dedupe marker (set AFTER a successful
+# push, value = entry ID) is the stable exactly-once proof.
+MARKER=$(vkey_exec --raw GET "outboxdedupe:${W1_WS}:${W1_SES}:inbox-que_e71w1aaa-answer" 2>/dev/null)
+if [[ -n "${MARKER}" && "${MARKER}" == ob_* ]]; then
+    ok "W2 dedupe marker anchored (${MARKER})"
 else
-    note_fail "W2 outbox depth ${QDEPTH}, want 1"
+    note_fail "W2 dedupe marker missing/invalid: '${MARKER}'"
 fi
 ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1aaa)
 [[ "${ST}" == "answered" ]] && ok "W2 record terminal answered" || note_fail "W2 status '${ST}', want answered"
@@ -178,11 +176,12 @@ code2=$(curl -s -o /tmp/e71w2b_resp.json -w '%{http_code}' -m 15 \
     -H 'Content-Type: application/json' \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1aaa/reply" \
     -d '{"answers":[["Yes, deploy"]]}')
-QDEPTH2=$(vkey_int LLEN "outboxq:${W1_WS}:${W1_SES}")
-if [[ "${code2}" == "202" && "${QDEPTH2}" == "1" ]]; then
-    ok "W2 duplicate re-POST idempotent (S2: depth stays 1)"
+DUP=$(jq -r '.duplicate // empty' /tmp/e71w2b_resp.json 2>/dev/null)
+MSG2=$(jq -r '.messageID // empty' /tmp/e71w2b_resp.json 2>/dev/null)
+if [[ "${code2}" == "202" && "${DUP}" == "true" && "${MSG2}" == "${MSG1}" ]]; then
+    ok "W2 duplicate re-POST idempotent (S2: duplicate=true, same entry)"
 else
-    note_fail "W2 duplicate: code=${code2} depth=${QDEPTH2} (want 202/1)"
+    note_fail "W2 duplicate: code=${code2} duplicate=${DUP} msg=${MSG2} (want 202/true/${MSG1})"
 fi
 
 # --- W3: dismiss exit (S11) -------------------------------------------------
