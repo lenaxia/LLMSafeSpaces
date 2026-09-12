@@ -187,7 +187,8 @@ func TestSendPromptAsync_AdapterPath_No409Guard(t *testing.T) {
 // wired and the outbox unset, EnqueueMessage performs the full
 // synchronous send (session-limit/quota/policy pairing + contract
 // response). Dev/test-only in production wiring (app.go sets the outbox
-// unconditionally) — this row pins the changed line directly.
+// on the production cache-service path) — this row pins the changed
+// line directly.
 func TestEnqueueMessage_AdapterPath_OutboxUnset_SyncSends(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
 	defer srv.Close()

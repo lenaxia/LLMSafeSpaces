@@ -188,10 +188,10 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	}{
 		// #828 batches 1+2: SendMessage, GetHistory, GetSession, and
 		// DeleteSession are adapter-only — with no adapter set they
-		// short-circuit at the nil-adapter guard (503), like the
-		// queue/question rows below. Their upstream BasicAuth is the
-		// adapter's contract, pinned by e2e_adapter_test.go (the stub
-		// pods there enforce Basic auth end-to-end).
+		// short-circuit at the nil-adapter guard (503), as does the
+		// enqueue row below. Their upstream BasicAuth is the adapter's
+		// contract, pinned by e2e_adapter_test.go (the stub pods there
+		// enforce Basic auth end-to-end).
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},

@@ -546,10 +546,9 @@ func TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes(t *testing.T) {
 
 	// Pass 3 executes the nudge. Pass 2 left the entry
 	// pending-with-backoff; the nudge pass only processes the entry once
-	// the (shrunk) backoff has elapsed, and the re-admission POST is
-	// issued asynchronously from the deliver pass — poll both effects
-	// instead of assuming instant scheduling (flaked ~1/5 under -count
-	// load, PR #1349 CI).
+	// the (shrunk) backoff has elapsed — poll for due-ness instead of
+	// assuming the instant pass (flaked ~1/5 under -count load,
+	// PR #1349 CI).
 	passed := false
 	assert.Eventually(t, func() bool {
 		if !passed {
