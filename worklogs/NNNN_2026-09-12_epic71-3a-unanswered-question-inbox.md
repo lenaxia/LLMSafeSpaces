@@ -85,3 +85,18 @@ The walk-away incident class: an ask raised mid-turn dies (turn abort, pod recyc
 - `npx vitest run` (provider + both prompt suites) — 101/101 + the earlier 29
 - `npx playwright test tests/e2e/walk-away.spec.ts` — 2/2
 - `golangci-lint run` — 0 issues; `npx tsc --noEmit` — clean; `bash -n` + pin tests — ok
+
+## Review r2 remediation (round 2 — the stale-head rerun reviewed the fixed head)
+
+r2 verified all nine r1 findings FIXED (with file:line evidence) and raised one new validated finding plus two test-plan rows:
+
+**F8 (late answers never publish the resolved event):** FIXED — `lateAnswerInboxAsk` publishes `agent.question.resolved`/`agent.permission.resolved` (shared `publishInboxResolved` helper; dismiss deduped onto it) on BOTH the fresh and duplicate paths. Surfaced and fixed a second bug the new test caught: `Lookup` (any-status) was filtered to pending by a refactor slip, so a second tab's click on an answered record fell through to the dead live proxy (500) instead of the dedupe'd 202 — `listWorkspaceAll` no longer filters; `ListWorkspace`/`LookupPending` filter at their own boundaries. Pinned by `TestInbox_LateAnswer_PublishesResolvedEvent` (event on both paths, single entry, idempotent) and `TestInbox_LateAnswer_PermissionResolvedEventKind`.
+
+**vitest stack row:** delivered — provider-level describe: whileAway content stored from user-stream events, three prompts stack, live untagged events store no content, resolved clears.
+
+**model-continuation:** remains the recorded staging deferral (design doc §G2 + test plan); #1313 does not close until it executes.
+
+## Tests run (r2)
+
+- `go test -race -count=1 ./api/internal/services/inbox/ ./api/internal/handlers/` — ok (18 + 23 inbox tests)
+- vitest provider + prompt suites — 105/105; `tsc --noEmit` clean; `golangci-lint` 0 issues

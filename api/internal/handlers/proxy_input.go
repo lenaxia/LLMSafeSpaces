@@ -108,14 +108,18 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 // harness — e.g. the workspace is suspended) ALSO takes this path: an
 // answer is safe against a possibly-live ask by construction (the Q&A
 // message lands in history regardless; a still-live ask dies with its
-// turn). Buffers the reply body, composes the Q&A message, routes it
-// through the outbox (S1/S2: one delivery regime, ask-scoped dedupe),
-// and reports handled=true.
+// turn). A TERMINAL record for the ask takes it too (r2 f8): an
+// answered record's re-click must map to the original outbox entry via
+// the dedupe marker (202 duplicate:true), not fall through to the dead
+// live proxy — other tabs clear on the resolved event, which can lag.
+// Buffers the reply body, composes the Q&A message, routes it through
+// the outbox (S1/S2: one delivery regime, ask-scoped dedupe), and
+// reports handled=true.
 func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID string, extract func([]byte) string) bool {
 	if h.inbox == nil || h.outbox == nil || h.adapter == nil || workspaceID == "" {
 		return false
 	}
-	rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, requestID)
+	rec, ok, err := h.inbox.Lookup(c.Request.Context(), workspaceID, requestID)
 	if err != nil || !ok {
 		return false
 	}

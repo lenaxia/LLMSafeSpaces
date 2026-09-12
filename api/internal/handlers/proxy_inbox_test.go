@@ -799,3 +799,77 @@ func TestInbox_WhileAwayStack_MultipleRecordsAllRePresent(t *testing.T) {
 	}
 	assert.Equal(t, ids, order, "stack re-presents oldest-first")
 }
+
+func TestInbox_LateAnswer_PublishesResolvedEvent(t *testing.T) {
+	// r2 finding 8: the answered exit must publish the resolved event —
+	// other tabs clear on exactly that event; without it a whileAway
+	// prompt stays clickable after another tab answered (a click then
+	// 404s at the pod instead of the dedupe'd 202).
+	h, in, ob, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_tab", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Tabs?", Options: []inbox.Option{{Label: "Yes", Description: ""}}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "que_tab"}}
+	c.Request = jsonRequest(t, http.MethodPost, "/x", `{"answers":[["Yes"]]}`)
+	h.QuestionReply(c)
+	require.Equal(t, http.StatusAccepted, c.Writer.Status())
+
+	evt := recvWithTimeout(t, userSub, "agent.question.resolved")
+	assert.Equal(t, "que_tab", evt.RequestID)
+	reason, _ := evt.Data.(map[string]string)
+	assert.Equal(t, "answered", reason["reason"])
+
+	// The duplicate path publishes the SAME event shape (idempotent
+	// clear for tabs that missed the first).
+	c2, _ := gin.CreateTestContext(recorderFor(t))
+	c2.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "que_tab"}}
+	c2.Request = jsonRequest(t, http.MethodPost, "/x", `{"answers":[["Yes"]]}`)
+	h.QuestionReply(c2)
+	require.Equal(t, http.StatusAccepted, c2.Writer.Status())
+	evt2 := recvWithTimeout(t, userSub, "agent.question.resolved")
+	assert.Equal(t, "que_tab", evt2.RequestID)
+
+	entries, err := ob.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "duplicate path must not mint a second entry")
+}
+
+func TestInbox_LateAnswer_PermissionResolvedEventKind(t *testing.T) {
+	h, in, _, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
+	rec := inbox.Record{
+		ID: "per_tab", SessionID: "ses_1", Kind: inbox.KindPermission, Status: inbox.StatusPending,
+		Permission: "bash", Patterns: []string{"ls"}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "per_tab"}}
+	c.Request = jsonRequest(t, http.MethodPost, "/x", `{"reply":"reject"}`)
+	h.PermissionReply(c)
+	require.Equal(t, http.StatusAccepted, c.Writer.Status())
+
+	evt := recvWithTimeout(t, userSub, "agent.permission.resolved")
+	assert.Equal(t, "per_tab", evt.RequestID)
+}

@@ -276,6 +276,21 @@ func (s *Service) List(ctx context.Context, workspaceID, sessionID string) ([]Re
 // and the reply routes carry no session ID — both need the cross-session
 // view. SCAN-based over inboxq:{ws}:*.
 func (s *Service) ListWorkspace(ctx context.Context, workspaceID string) ([]Record, error) {
+	out, err := s.listWorkspaceAll(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	pending := make([]Record, 0, len(out))
+	for _, rec := range out {
+		if rec.Status == StatusPending {
+			pending = append(pending, rec)
+		}
+	}
+	return pending, nil
+}
+
+// listWorkspaceAll is ListWorkspace without the pending filter.
+func (s *Service) listWorkspaceAll(ctx context.Context, workspaceID string) ([]Record, error) {
 	if workspaceID == "" {
 		return nil, fmt.Errorf("%w: empty workspace ID", ErrInvalid)
 	}
@@ -297,9 +312,7 @@ func (s *Service) ListWorkspace(ctx context.Context, workspaceID string) ([]Reco
 				if err := json.Unmarshal([]byte(payload), &rec); err != nil {
 					continue
 				}
-				if rec.Status == StatusPending {
-					out = append(out, rec)
-				}
+				out = append(out, rec)
 			}
 		}
 		if next == 0 {
@@ -319,10 +332,22 @@ func (s *Service) ListWorkspace(ctx context.Context, workspaceID string) ([]Reco
 // LookupPending finds one pending record by ask ID across the
 // workspace's sessions. Terminal and absent records return ok=false.
 func (s *Service) LookupPending(ctx context.Context, workspaceID, askID string) (Record, bool, error) {
+	rec, ok, err := s.Lookup(ctx, workspaceID, askID)
+	if err != nil || !ok || rec.Status != StatusPending {
+		return Record{}, false, err
+	}
+	return rec, true, nil
+}
+
+// Lookup finds one record by ask ID regardless of status. The reply
+// routes need it: a terminal-answered record still maps its late answer
+// to the original outbox entry (the dedupe marker), and a terminal
+// record for a dead ask must not fall through to the live proxy.
+func (s *Service) Lookup(ctx context.Context, workspaceID, askID string) (Record, bool, error) {
 	if askID == "" {
 		return Record{}, false, fmt.Errorf("%w: empty ask ID", ErrInvalid)
 	}
-	records, err := s.ListWorkspace(ctx, workspaceID)
+	records, err := s.listWorkspaceAll(ctx, workspaceID)
 	if err != nil {
 		return Record{}, false, err
 	}

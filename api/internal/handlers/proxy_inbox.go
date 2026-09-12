@@ -251,9 +251,12 @@ func composeQA(rec inbox.Record, answer string) string {
 
 // lateAnswerInboxAsk routes a reply on a non-live ask through the
 // standard outbox path: compose the Q&A user message, accept it with the
-// ask-scoped dedupe key (S2 via the outbox's cmid marker), and
-// terminalize the record as answered. Exactly-once per ask: a second
-// click hits the dedupe marker and maps to the original entry.
+// ask-scoped dedupe key (S2 via the outbox's cmid marker), terminalize
+// the record as answered, and publish the resolved event so OTHER tabs
+// clear the prompt (the client lifecycle rides that event — issue change
+// sketch item 5; dismiss publishes the same shape). Exactly-once per
+// ask: a second click hits the dedupe marker and maps to the original
+// entry; the resolve and the publish are idempotent.
 func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, rec inbox.Record, answer string) {
 	cmid := "inbox-" + rec.ID + "-answer"
 	entry, err := h.outbox.Accept(c.Request.Context(), workspaceID, rec.SessionID, "", cmid, composeQA(rec, answer), nil)
@@ -261,6 +264,7 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 		var dup *outbox.Duplicate
 		if errors.As(err, &dup) {
 			h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusAnswered)
+			h.publishInboxResolved(workspaceID, rec, "answered")
 			c.JSON(http.StatusAccepted, gin.H{
 				"status":          "queued",
 				"clientMessageID": cmid,
@@ -273,10 +277,38 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 		return
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusAnswered)
+	h.publishInboxResolved(workspaceID, rec, "answered")
 	c.JSON(http.StatusAccepted, gin.H{
 		"status":          "queued",
 		"clientMessageID": cmid,
 		"messageID":       entry.ID,
+	})
+}
+
+// publishInboxResolved clears the prompt in every connected tab — the
+// answered and dismissed exits share this event shape.
+func (h *ProxyHandler) publishInboxResolved(workspaceID string, rec inbox.Record, reason string) {
+	if h.userBroker == nil {
+		return
+	}
+	userID := h.userBroker.WorkspaceOwner(workspaceID)
+	if userID == "" {
+		return
+	}
+	resolvedType := "agent.question.resolved"
+	if rec.Kind == inbox.KindPermission {
+		resolvedType = "agent.permission.resolved"
+	}
+	h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+		Type:        resolvedType,
+		WorkspaceID: workspaceID,
+		SessionID:   rec.SessionID,
+		RequestID:   rec.ID,
+		Data: map[string]string{
+			"request_id": rec.ID,
+			"session_id": rec.SessionID,
+			"reason":     reason,
+		},
 	})
 }
 
@@ -330,25 +362,7 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 	case askDead:
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusDismissed)
-	if h.userBroker != nil {
-		if userID := h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
-			resolvedType := "agent.question.resolved"
-			if rec.Kind == inbox.KindPermission {
-				resolvedType = "agent.permission.resolved"
-			}
-			h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
-				Type:        resolvedType,
-				WorkspaceID: workspaceID,
-				SessionID:   sessionID,
-				RequestID:   askID,
-				Data: map[string]string{
-					"request_id": askID,
-					"session_id": sessionID,
-					"reason":     "dismissed",
-				},
-			})
-		}
-	}
+	h.publishInboxResolved(workspaceID, rec, "dismissed")
 	c.Status(http.StatusNoContent)
 }
 

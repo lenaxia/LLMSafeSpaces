@@ -2296,3 +2296,85 @@ describe("agent_died handler", () => {
     debugSpy.mockRestore();
   });
 });
+
+// --- #1313 whileAway inbox rows ---
+
+describe("whileAway inbox prompts (#1313)", () => {
+  function QuestionListView() {
+    const pending = usePendingQuestionsForSession("ses-1");
+    return (
+      <ul>
+        {pending.map((q) => (
+          <li key={q.id} data-testid={`q-${q.id}`}>
+            {q.whileAway ? "AWAY: " : ""}
+            {q.questions[0]?.question ?? q.id}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  const awayEvent = (id: string, question: string) => ({
+    type: "agent.question",
+    workspace_id: "ws-1",
+    session_id: "ses-1",
+    request_id: id,
+    data: {
+      id,
+      session_id: "ses-1",
+      root_session_id: "ses-1",
+      questions: [{ question, header: "H", options: [{ label: "A", description: "" }] }],
+      whileAway: true,
+    },
+  });
+
+  it("stores whileAway content from the user stream (the API-owned surface)", () => {
+    renderProvider(<QuestionListView />);
+    act(() => {
+      capturedOnEvent!(awayEvent("que_w1", "Ship it?"));
+    });
+    expect(screen.getByTestId("q-que_w1").textContent).toContain("AWAY: Ship it?");
+  });
+
+  it("stack: multiple whileAway prompts render together", () => {
+    renderProvider(<QuestionListView />);
+    act(() => {
+      capturedOnEvent!(awayEvent("que_w1", "First?"));
+      capturedOnEvent!(awayEvent("que_w2", "Second?"));
+      capturedOnEvent!(awayEvent("que_w3", "Third?"));
+    });
+    expect(screen.getByTestId("q-que_w1")).toBeInTheDocument();
+    expect(screen.getByTestId("q-que_w2")).toBeInTheDocument();
+    expect(screen.getByTestId("q-que_w3")).toBeInTheDocument();
+  });
+
+  it("live (untagged) question events do NOT store content", () => {
+    renderProvider(<QuestionListView />);
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live1",
+      });
+    });
+    expect(screen.queryByTestId("q-que_live1")).not.toBeInTheDocument();
+  });
+
+  it("resolved clears a whileAway prompt", () => {
+    renderProvider(<QuestionListView />);
+    act(() => {
+      capturedOnEvent!(awayEvent("que_w1", "Ship it?"));
+    });
+    expect(screen.getByTestId("q-que_w1")).toBeInTheDocument();
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question.resolved",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_w1",
+      });
+    });
+    expect(screen.queryByTestId("q-que_w1")).not.toBeInTheDocument();
+  });
+});
