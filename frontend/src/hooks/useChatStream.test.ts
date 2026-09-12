@@ -219,6 +219,31 @@ describe("useChatStream", () => {
       expect(result.current.streaming).toBe(false);
     });
 
+    // #1320 item 1 (D3/#907 hard pin): the clientMessageID must be STABLE
+    // across 503 retries — presence-only assertions (expect.any(String))
+    // would not catch a uuid regenerated per attempt, which silently
+    // defeats the backend's outbox dedupe and reopens duplicate sends.
+    it("reuses the SAME clientMessageID across 503 retries", async () => {
+      const err503 = new ApiClientError(503, { error: "workspace_restarting", retryAfter: 1 });
+      (messagesApi.sendAsync as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(err503)
+        .mockResolvedValueOnce(undefined);
+      (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+      const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+      let sendPromise!: Promise<void>;
+      act(() => { sendPromise = result.current.send("dedupe me", vi.fn()); });
+      await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalledTimes(2), { timeout: 3000 });
+      act(() => { result.current.notifySessionIdle("sess-1"); });
+      await act(async () => { await sendPromise; });
+
+      const calls = (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mock.calls;
+      const first = calls[0]![2] as { clientMessageID?: string };
+      const second = calls[1]![2] as { clientMessageID?: string };
+      expect(first.clientMessageID).toBeTruthy();
+      expect(second.clientMessageID).toBe(first.clientMessageID);
+    });
+
     it("gives up after SEND_MAX_503_RETRIES and surfaces the 503 as an error", async () => {
       // After the bounded retry count the message is dropped with a visible
       // error so the loop cannot spin forever on a wedged workspace.

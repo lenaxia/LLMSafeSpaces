@@ -13,7 +13,12 @@ vi.mock("../api/messages", () => ({
 }));
 
 import { messagesApi } from "../api/messages";
+import { ApiClientError } from "../api/client";
 import { useMessageQueue } from "./useMessageQueue";
+
+function err503() {
+  return new ApiClientError(503, { error: "session busy delivering; retry shortly" });
+}
 
 function render(workspaceId = "ws-1", sessionId = "ses-1") {
   return renderHook(() => useMessageQueue(workspaceId, sessionId));
@@ -49,7 +54,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     await act(async () => { await result.current.enqueue("hello"); });
 
-    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "hello", undefined);
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "hello", undefined, expect.any(String));
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0]!.text).toBe("hello");
     expect(result.current.queuedMessages[0]!.status).toBe("pending");
@@ -125,6 +130,157 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+  // #1318 + #1320: contended delivery is not "unavailable". The 503 from
+  // Retry/Dismiss means the entry is mid-delivery server-side — a local
+  // re-enqueue mints a duplicate entry (new clientMessageID) while the
+  // original stays deliverable: the ses_f73747f8 duplicate-send shape,
+  // manufactured by the client.
+  it("retry on 503 keeps the pill and never re-enqueues", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_1" });
+    await act(async () => { await result.current.enqueue("contended"); });
+    act(() => { result.current.markError("msg_1", "failed"); });
+
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(err503());
+    await act(async () => { await result.current.retry("msg_1"); });
+
+    expect(messagesApi.queueMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_1");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
+  });
+
+  it("dismiss on 503 keeps the pill (the entry will still deliver)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("contended"); });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(err503());
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
+    expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_test_1");
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
+  });
+
+  // The pre-emptive-removal bug's most common trigger: dismissing a
+  // PENDING pill while its delivery is contended.
+  it("dismiss on 503 of a pending pill keeps it (markError surfaces the hint)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("pending-contended"); });
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(err503());
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("busy delivering");
+  });
+
+  // #1320 r1 missing-case 3: the reconcile safety net the network-error
+  // comment relies on — a delete whose outcome is unknown AND a server
+  // still holding the entry must RE-ADD the pill (a broken re-add merge
+  // would silently drop messages with the suite green).
+  it("dismiss on network error keeps the pill through a refresh whose entry is delivering (display contract)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("maybe-gone"); });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    // r4 missing-case 2: the delete's outcome is unknown AND the entry
+    // is mid-delivery — the one case the old reconcile claim was blind
+    // to (refresh excludes delivering from the re-add set). The pill
+    // must survive the refresh (error-status is what carries it).
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [
+        { id: "msg_test_1", text: "maybe-gone", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "delivering" },
+      ],
+    });
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_test_1");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+  });
+
+  // #1320 r1 finding 1: the local re-enqueue fall-through must carry a
+  // dedupe identity — one cmid per composed message, reused across
+  // re-enqueues (the backend outbox dedupes on it; a keyless re-enqueue
+  // reopens the duplicate-send window on the lost-outcome path).
+  it("enqueue mints a clientMessageID and sends it to the backend", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("identity"); });
+
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith(
+      "ws-1", "ses-1", "identity", undefined,
+      expect.any(String),
+    );
+  });
+
+  it("re-enqueue (retry fall-through) REUSES the pill's clientMessageID", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_1" });
+    await act(async () => { await result.current.enqueue("retry me"); });
+    act(() => { result.current.markError("msg_1", "failed"); });
+    const firstCmid = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls[0]![4] as string;
+    expect(firstCmid).toBeTruthy();
+
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("404"));
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_2" });
+    await act(async () => { await result.current.retry("msg_1"); });
+
+    const secondCall = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls[1]!;
+    expect(secondCall![4]).toBe(firstCmid);
+  });
+
+  it("re-enqueue of a server-known pill reuses the cmid captured from getQueue", async () => {
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [
+        { id: "srv_1", text: "from server", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "error", clientMessageID: "cmid-srv" },
+      ],
+    });
+    const { result } = render();
+    await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
+
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("404"));
+    await act(async () => { await result.current.retry("srv_1"); });
+
+    const call = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(call![4]).toBe("cmid-srv");
+  });
+
+  it("dismiss on non-503 error keeps the pill as error-status (unknown outcome; safe beats tidy)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    await act(async () => { await result.current.enqueue("gone"); });
+    expect(result.current.queuedMessages).toHaveLength(1);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    await act(async () => { await result.current.dismiss("msg_test_1"); });
+
+    // r4: the old claim — remove locally, refresh reconciles — is FALSE
+    // for delivering/verifying entries (the display contract excludes
+    // them from the re-add set): the pill must stay, error-marked so it
+    // survives refreshQueue, until the sent-event or a manual dismiss.
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("outcome unknown");
+  });
+
   it("retry re-enqueues message text", async () => {
     const { result } = render();
     await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
@@ -173,6 +329,71 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(messagesApi.deleteQueueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "msg_b");
   });
 
+  // r2 finding: the Abort button's queue sweep had the pre-#1318 swallow
+  // shape — a contended 503 entry was wiped locally while it went on to
+  // deliver (silent un-dismissal).
+  it("clearAll on 503 keeps the contended pill with a hint; confirmed deletes clear", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_a" });
+    await act(async () => { await result.current.enqueue("busy"); });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_b" });
+    await act(async () => { await result.current.enqueue("free"); });
+    expect(result.current.queuedMessages).toHaveLength(2);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(err503())
+      .mockResolvedValueOnce(undefined);
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_a");
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("delivery in progress");
+  });
+
+  // r4 finding 1: error pills (e.g. a dismiss-503 hinted pill) were
+  // skipped by the pending-only sweep and then wiped by the final filter
+  // — dismiss under contention, hit Abort, and the hinted entry
+  // delivered silently. They now join the sweep with the same
+  // per-outcome discipline.
+  it("clearAll sweeps error-status pills too: 503 keeps them hinted, 204 clears them", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_hint" });
+    await act(async () => { await result.current.enqueue("hinted"); });
+    act(() => { result.current.markError("msg_hint", "delivery in progress — dismiss applies after the current delivery"); });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_ok" });
+    await act(async () => { await result.current.enqueue("plain"); });
+    expect(result.current.queuedMessages).toHaveLength(2);
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(err503())
+      .mockResolvedValueOnce(undefined);
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.id).toBe("msg_hint");
+    expect(result.current.queuedMessages[0]!.error).toContain("delivery in progress");
+  });
+
+  it("clearAll on unknown-outcome deletes keeps the pills error-marked (safe beats tidy)", async () => {
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_u" });
+    await act(async () => { await result.current.enqueue("unknown"); });
+
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("network"));
+    await act(async () => { await result.current.clearAll(); });
+
+    expect(result.current.queuedMessages).toHaveLength(1);
+    expect(result.current.queuedMessages[0]!.status).toBe("error");
+    expect(result.current.queuedMessages[0]!.error).toContain("outcome unknown");
+  });
+
   it("removeById removes a message by id regardless of status", async () => {
     const { result } = render();
     await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
@@ -218,7 +439,6 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     rerender({ sid: "ses-A" });
     await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
   });
-});
 
   it("hides server verifying/delivering entries; unknown statuses degrade to pending (#987 display contract)", async () => {
     // In-flight entries are server-side durability plumbing, not queue
@@ -263,6 +483,70 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages).toHaveLength(0);
   });
 
+// r5 finding 2 pin: a pill enqueued DURING a clearAll sweep is not in
+// targets — it must pass through untouched (not error-marked): its
+// entry is healthy and its own delivery lifecycle owns the pill.
+it("concurrent enqueue during a clearAll sweep passes through untouched", async () => {
+  const { result } = render();
+  await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_a" });
+  await act(async () => { await result.current.enqueue("swept"); });
+
+  // A delete that resolves on OUR schedule — the sweep is mid-flight.
+  let resolveA!: (v: undefined) => void;
+  (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockImplementation(
+    () => new Promise<void>((res) => { resolveA = res; }),
+  );
+  let clearPromise!: Promise<void>;
+  act(() => { clearPromise = result.current.clearAll(); });
+
+  // The concurrent pill lands while the sweep's DELETE is pending. Its
+  // POST succeeds, so the server holds it — the GET the trailing
+  // refreshQueue fires must say so (an empty response would drop the
+  // pending pill by design, lying about the accepted entry).
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "msg_late" });
+  (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+    messages: [
+      { id: "msg_late", text: "late arrival", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0 },
+    ],
+  });
+  await act(async () => { await result.current.enqueue("late arrival"); });
+
+  await act(async () => { resolveA(undefined); await clearPromise; });
+
+  const late = result.current.queuedMessages.find((m) => m.id === "msg_late");
+  expect(late).toBeDefined();
+  expect(late!.status).toBe("pending");
+  expect(late!.error).toBeUndefined();
+  expect(result.current.queuedMessages.find((m) => m.id === "msg_a")).toBeUndefined();
+});
+
+// r5 missing-case 4: the err_-prefixed (client-only) pill skips the
+// server retry entirely and re-enqueues with its original cmid.
+it("retry on an err_ pill skips the server retry and reuses its cmid", async () => {
+  const { result } = render();
+  await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network"));
+  await act(async () => { await result.current.enqueue("local only"); });
+  const errPill = result.current.queuedMessages[0]!;
+  expect(errPill.id.startsWith("err_")).toBe(true);
+  const originalCmid = errPill.clientMessageID;
+
+  (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ messageID: "srv_new" });
+  await act(async () => { await result.current.retry(errPill.id); });
+
+  expect(messagesApi.retryQueueMessage).not.toHaveBeenCalled();
+  const allCalls = (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mock.calls;
+  const call = allCalls[allCalls.length - 1]!;
+  expect(call![4]).toBe(originalCmid);
+  expect(result.current.queuedMessages[0]!.id).toBe("srv_new");
+});
+
+
+});
+
 describe("useMessageQueue files (Epic 68 U1.6.8)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -279,7 +563,7 @@ describe("useMessageQueue files (Epic 68 U1.6.8)", () => {
     const files = ["/workspace/uploads/11111111-2222-3333-4444-555555555555-q.txt"];
     await act(async () => { await result.current.enqueue("queued with file", files); });
 
-    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "queued with file", files);
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "queued with file", files, expect.any(String));
     expect(result.current.queuedMessages[0]).toMatchObject({ text: "queued with file", files });
   });
 
@@ -295,6 +579,6 @@ describe("useMessageQueue files (Epic 68 U1.6.8)", () => {
 
     await act(async () => { await result.current.retry("msg_r1"); });
 
-    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "retry me", files);
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "retry me", files, expect.any(String));
   });
 });
