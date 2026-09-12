@@ -6,6 +6,9 @@ package faultmatrix
 import (
 	"context"
 	"math"
+	"math/rand"
+	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -555,4 +558,62 @@ func (ad *pureTimeoutAdmitter) Admit(ctx context.Context, sessionID, messageID, 
 	case <-time.After(500 * time.Millisecond): // far past every window
 		return messageID, nil
 	}
+}
+
+// TestSoak_Dispatch is the hours-scale soak row (#1312's soak gate):
+// env-driven (LLMSAFESPACES_SOAK_DURATION / _SESSIONS / _FAULT_RATE /
+// _SEED), skipped unless the duration is set — the epic71-soak workflow
+// dispatches it; the self-test above stays the CI-seconds gate.
+func TestSoak_Dispatch(t *testing.T) {
+	raw := os.Getenv("LLMSAFESPACES_SOAK_DURATION")
+	if raw == "" || testing.Short() {
+		t.Skip("dispatch-only soak row: set LLMSAFESPACES_SOAK_DURATION to run")
+	}
+	duration, err := time.ParseDuration(raw)
+	require.NoError(t, err, "LLMSAFESPACES_SOAK_DURATION must be a Go duration")
+	sessions := envInt(t, "LLMSAFESPACES_SOAK_SESSIONS", 8)
+	faultRate := envFloat(t, "LLMSAFESPACES_SOAK_FAULT_RATE", 0.5)
+	seed := int64(envInt(t, "LLMSAFESPACES_SOAK_SEED", 1))
+
+	store := NewEvidenceStore()
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+
+	start := time.Now()
+	v, log, err := RunSoak(context.Background(), a, store, SoakConfig{
+		Sessions:      sessions,
+		FaultsPerTick: faultRate,
+		Tick:          50 * time.Millisecond,
+		Duration:      duration,
+		Rand:          rand.New(rand.NewSource(seed)),
+	})
+	require.NoError(t, err)
+
+	t.Logf("soak complete: duration=%s sessions=%d rate=%.2f seed=%d maxL3=%s",
+		time.Since(start).Round(time.Second), sessions, faultRate, seed,
+		log.Max("L3"))
+	require.True(t, v.Empty(), "SOAK GATE: zero violations required, got %v", v.Counts())
+	require.NotEmpty(t, log.Max("L3"), "SOAK GATE: convergence samples must exist")
+	assert.LessOrEqual(t, log.Max("L3"), soakConvergenceBound+100*time.Millisecond,
+		"SOAK GATE: worst convergence within the lease bound (+timer-drift epsilon)")
+}
+
+func envInt(t *testing.T, key string, def int) int {
+	t.Helper()
+	if raw := os.Getenv(key); raw != "" {
+		n, err := strconv.Atoi(raw)
+		require.NoError(t, err, "%s must be an integer", key)
+		return n
+	}
+	return def
+}
+
+func envFloat(t *testing.T, key string, def float64) float64 {
+	t.Helper()
+	if raw := os.Getenv(key); raw != "" {
+		f, err := strconv.ParseFloat(raw, 64)
+		require.NoError(t, err, "%s must be a float", key)
+		return f
+	}
+	return def
 }

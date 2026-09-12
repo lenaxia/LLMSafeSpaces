@@ -497,3 +497,98 @@ func TestLedgerLookup_RealConnectHandlerNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not_found")
 	assert.NotContains(t, err.Error(), "empty message envelope")
 }
+
+// TestAgentdDeliver_WireDriftCorruption (epic-71 / 2b, #1312 change
+// item 4 — leg 10 at the terminus parse site): corrupted 200s (the four
+// abitest modes) must surface as delivery ERRORS the ladder can retry —
+// never a silent success and never a misparse into a phantom state.
+// The #1308 class, pinned per mode via the leg-10 knob.
+func TestAgentdDeliver_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []abitest.CorruptMode{
+		abitest.CorruptInvalidJSON,
+		abitest.CorruptTrailingGarbage,
+		abitest.CorruptEmptyBody,
+		abitest.CorruptHTMLErrorPage,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			abi := newRealABIStub(t)
+			abi.CorruptNextResponse("Deliver", mode)
+			srv := httptest.NewServer(abi.Handler())
+			t.Cleanup(srv.Close)
+
+			d := &agentdDeliverer{
+				baseURL: srv.URL,
+				client:  &http.Client{},
+				resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+					return srv.URL, "pw", nil
+				},
+				inlineWindow: 50 * time.Millisecond,
+				pollEvery:    10 * time.Millisecond,
+			}
+			err := d.deliver(context.Background(), "ws1", "sess-ref", outbox.Entry{ID: "e-drift-1", Text: "hello"})
+			require.Error(t, err, "a corrupted Deliver ack must fail the delivery, not complete it")
+			// DISCRIMINATION (review r1): the failure must be the POST
+			// parse, not the ledgered-window timeout a lenient parser
+			// degrades into — positive: a json syntax failure; negative:
+			// never the "agentd owns admission" sentinel. Under the
+			// swallowed-Unmarshal mutation the error IS the window
+			// sentinel and this pin fires.
+			var se *json.SyntaxError
+			require.ErrorAs(t, err, &se, "the corrupted 200 must fail AT THE PARSE (json.SyntaxError)")
+			assert.NotContains(t, err.Error(), "agentd owns admission", "not the ledgered-window timeout shape")
+		})
+	}
+}
+
+// TestTerminus_StatusWireDrift_FailsOpenToKeyedRePOST (leg 10 at the
+// third hand-adjacent procedure — GetDeliveryStatus, r1 finding 2): a
+// corrupted status-200 on the retry path's prior-attempt lookup must
+// degrade to a FRESH POST at attempt+1 (the fail-open direction, safe
+// only because the harness write is keyed) — never a phantom completion
+// and never a swallowed state. The re-POST is observable via the leg-7
+// call recorder.
+func TestTerminus_StatusWireDrift_FailsOpenToKeyedRePOST(t *testing.T) {
+	for _, mode := range []abitest.CorruptMode{
+		abitest.CorruptInvalidJSON,
+		abitest.CorruptTrailingGarbage,
+		abitest.CorruptEmptyBody,
+		abitest.CorruptHTMLErrorPage,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			abi := newRealABIStub(t)
+			abi.RecordDeliverCalls()
+			abi.SetDeliveryState("e-drift-2", 1, abiv1.LedgerState_LEDGER_STATE_LEDGERED) // the prior attempt
+			abi.CorruptNextResponse("GetDeliveryStatus", mode)                            // the retry path's lookup
+			srv := httptest.NewServer(abi.Handler())
+			t.Cleanup(srv.Close)
+
+			d := &agentdDeliverer{
+				baseURL: srv.URL,
+				client:  &http.Client{},
+				resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+					return srv.URL, "pw", nil
+				},
+				inlineWindow: 150 * time.Millisecond,
+				pollEvery:    10 * time.Millisecond,
+			}
+			// Advance the re-POSTed attempt 2 to ADMITTED shortly after
+			// it lands (the one-shot corruption is consumed by the
+			// lookup; the fresh POST's poll path reads clean status).
+			go func() {
+				time.Sleep(30 * time.Millisecond)
+				abi.SetDeliveryState("e-drift-2", 2, abiv1.LedgerState_LEDGER_STATE_ADMITTED)
+			}()
+			err := d.deliver(context.Background(), "ws1", "sess-ref", outbox.Entry{ID: "e-drift-2", Text: "hello", Attempts: 1})
+			require.NoError(t, err, "the fail-open re-POST completes the delivery")
+
+			calls := abi.DeliverCalls()
+			reposted := false
+			for _, c := range calls {
+				if c.EntryID == "e-drift-2" && c.Attempt == 2 {
+					reposted = true
+				}
+			}
+			assert.True(t, reposted, "the corrupted prior-attempt lookup degraded to a KEYED re-POST at attempt 2 (observable, not assumed)")
+		})
+	}
+}

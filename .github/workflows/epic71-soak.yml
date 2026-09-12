@@ -1,0 +1,114 @@
+name: Epic-71 soak (faultmatrix, #1312)
+
+# The 2b merge gate ("soak green at the wave's head", #1312's soak row):
+# the faultmatrix soak driver at dispatch scale — N sessions × fault
+# rate λ for the requested duration, zero violations + convergence
+# within the lease bound or the run fails. In-process by design (the
+# real sessionstate authority + the fault stream; the kind-native
+# live-stack variant is the pool upgrade, owner-scheduled) — so this
+# runs on a standard runner and never occupies the privileged dind pool.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Soak duration (Go duration; the >=2h gate is 2h0m0s)"
+        default: "2h0m0s"
+        type: string
+      sessions:
+        description: "Session count N"
+        default: "8"
+        type: string
+      fault_rate:
+        description: "Fault probability per tick (0-1)"
+        default: "0.5"
+        type: string
+      seed:
+        description: "Deterministic fault-stream seed"
+        default: "1"
+        type: string
+
+jobs:
+  soak:
+    name: faultmatrix soak (N x lambda, zero violations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Validate soak inputs (no green no-op)
+        env:
+          SOAK_DURATION_INPUT: ${{ inputs.duration }}
+        run: |
+          test -n "$SOAK_DURATION_INPUT" || { echo "::error::duration input is empty — the soak would skip"; exit 1; }
+          # Quoted heredoc: python sees its own syntax, the shell never
+          # rewrites it (the r2 quoting bug made EVERY input a
+          # SyntaxError). Parses real Go durations (ms/us/ns, decimals).
+          python3 - <<'PY'
+          import os, re, sys
+          raw = os.environ['SOAK_DURATION_INPUT']
+          body = raw.removesuffix('-iter')
+          units = {'ns': 1e-9, 'us': 1e-6, 'ms': 1e-3, 's': 1, 'm': 60, 'h': 3600}
+          token = re.compile(r'(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)')
+          leftovers = token.sub('', body).strip()
+          parts = token.findall(body)
+          if not body or leftovers or not parts:
+              print('::error::duration does not parse as a Go duration: ' + raw)
+              sys.exit(1)
+          secs = sum(float(n) * units[u] for n, u in parts)
+          if secs <= 0:
+              print('::error::duration must be > 0')
+              sys.exit(1)
+          # The 2b merge gate is >=2h (the #1312 soak row). Shorter
+          # dispatches are iteration cycles: only with the explicit
+          # -iter opt-out suffix.
+          if secs < 7200 and not raw.endswith('-iter'):
+              print('::error::duration %s is below the 2h soak gate — append -iter explicitly for an iteration cycle' % raw)
+              sys.exit(1)
+          PY
+      - name: Run the soak row
+        env:
+          LLMSAFESPACES_SOAK_DURATION: ${{ inputs.duration }}
+          LLMSAFESPACES_SOAK_SESSIONS: ${{ inputs.sessions }}
+          LLMSAFESPACES_SOAK_FAULT_RATE: ${{ inputs.fault_rate }}
+          LLMSAFESPACES_SOAK_SEED: ${{ inputs.seed }}
+        # go test -timeout derives from the (suffix-stripped) soak
+        # duration + 30m of build/gate headroom (job cap 360m). A SKIP
+        # or a zero-match -run is a green no-op — both fail the guard.
+        run: |
+          export LLMSAFESPACES_SOAK_DURATION="${LLMSAFESPACES_SOAK_DURATION%-iter}"
+          TIMEOUT=$(SOAK_D="$LLMSAFESPACES_SOAK_DURATION" python3 - <<'PY'
+          import os, re
+          units = {'ns': 1e-9, 'us': 1e-6, 'ms': 1e-3, 's': 1, 'm': 60, 'h': 3600}
+          token = re.compile(r'(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)')
+          secs = sum(float(n) * units[u] for n, u in token.findall(os.environ['SOAK_D']))
+          print('%dm' % (int(secs) // 60 + 30))
+          PY
+          )
+          echo "soak timeout: $TIMEOUT (duration: $LLMSAFESPACES_SOAK_DURATION)"
+          set -o pipefail
+          go test -race -count=1 -timeout "$TIMEOUT" -run TestSoak_Dispatch -v ./cmd/workspace-agentd/faultmatrix/ 2>&1 | tee /tmp/soak.log
+          if grep -q -- "--- SKIP: TestSoak_Dispatch" /tmp/soak.log; then
+            echo "::error::TestSoak_Dispatch SKIPPED — the soak did not run"
+            exit 1
+          fi
+          if ! grep -q -- "--- PASS: TestSoak_Dispatch" /tmp/soak.log; then
+            echo "::error::no PASS token for TestSoak_Dispatch — zero tests ran (rename/move?) or it failed"
+            exit 1
+          fi
+      - name: Soak summary
+        if: always()
+        env:
+          SOAK_DURATION_INPUT: ${{ inputs.duration }}
+          SOAK_SESSIONS_INPUT: ${{ inputs.sessions }}
+          SOAK_RATE_INPUT: ${{ inputs.fault_rate }}
+          SOAK_SEED_INPUT: ${{ inputs.seed }}
+        # env-indirection, never raw ${{ }} interpolation in run: (the
+        # r3 hardening — the same discipline as the validation step).
+        # On failure this points at the failing step's gate line; it
+        # does NOT claim completion.
+        run: |
+          echo "soak dispatch (duration=$SOAK_DURATION_INPUT sessions=$SOAK_SESSIONS_INPUT rate=$SOAK_RATE_INPUT seed=$SOAK_SEED_INPUT)"
+          echo "outcome details: see the Run the soak row step's gate lines above"
