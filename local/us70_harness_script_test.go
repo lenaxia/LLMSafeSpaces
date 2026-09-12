@@ -1326,10 +1326,25 @@ func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
 			t.Fatalf("probe_seam must contain %q as CODE, not a comment literal (comment lines stripped before matching)", pin)
 		}
 	}
+	// Ordering enforced (r13): the early return must PRECEDE the final
+	// reconnect — presence alone let the r11 defect (reconnect-then-return)
+	// pass this pin under mutation.
+	if strings.Index(codeOnly, "return 1") > strings.Index(codeOnly, "reconnect_api") {
+		t.Fatalf("probe_seam's skip-path early return must precede reconnect_api — otherwise the skip converts into a die via the /livez gate")
+	}
 	// Both consumers route through probe_seam — F6's identical race is
-	// covered, not just F1's.
-	f1 := strings.Index(src, `if probe_seam "${FAULT_COUNT}"`)
-	f6 := strings.Index(src, "if probe_seam 6")
+	// covered, not just F1's. Comment-stripped (r13): a commented literal
+	// satisfied the raw-src pins under mutation.
+	var codeAll strings.Builder
+	for _, l := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		codeAll.WriteString(l + "\n")
+	}
+	srcCode := codeAll.String()
+	f1 := strings.Index(srcCode, `if probe_seam "${FAULT_COUNT}"`)
+	f6 := strings.Index(srcCode, "if probe_seam 6")
 	if f1 < 0 || f6 < 0 {
 		t.Fatalf("F1 and F6 must both detect the seam through probe_seam")
 	}
