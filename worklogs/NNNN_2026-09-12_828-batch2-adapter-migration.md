@@ -118,3 +118,11 @@ None.
 - **r4 (comment-only):** contract_auth analogy scoped to the enqueue row; "outbox unconditionally" → "on the production cache-service path"; outbox comment's async clause deleted (deliverDetached is synchronous context-detachment).
 - **Outbox deflake (in-PR, test-only):** `TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes` pass-3 raced the shrunk backoff window (instant `DeliverOutboxOnceForTest` returned false ~1/5 under load) — now polls for due-ness + `assert.Eventually` the re-admit counter; 20x green with `-race`. Flagged on #1314 for the 0b owner.
 - Reviewer's r4 live-check note (repolint `TestLive_Worklogs_NoDuplicates` red on then-main via an unnumbered #1334 sentinel) no longer applies: the sentinel was numbered when #1334 merged; the live check is green on current main.
+
+---
+
+## Review r5 remediation + ops (PR #1349)
+
+- **r5 (comment-only):** faultmatrix dedupe provenance corrected (#1334 re-introduced the old body; #1346's dedupe never merged — the kept copy is #1344's instrumented one); contract_auth BasicAuth pin repointed to `pkg/agent/opencode/adapter_test.go` (rejecting fake) + e2e presence check; stale repolint live-check note updated (the #1334 sentinel was numbered at merge).
+- **Main-red #2 this cycle:** the faultmatrix duplicate returned via #1334-on-#1344 stacking; deduped again on this branch (kept #1344's copy — the soak rows consume its counters) + flagged the recurrence class on #1314.
+- **Ops:** workflow-event drop recurred on ref `f365db08`→`c709a9f8` (zero runs on the pushed head); re-armed with this append. Outbox no-promotion row deflaked in-PR (poll due-pass + Eventually counter; 20x -race green).
