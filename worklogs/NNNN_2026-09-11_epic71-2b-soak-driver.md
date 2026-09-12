@@ -144,3 +144,13 @@ Counts at this revision: 28 test functions (10 engine/fake + 6 faultmatrix rows 
 
 - Injection check: FAILED-in-exclusion → row fails via S9.arm; restored → full package `-race` ok (~41s)
 - `golangci-lint` — 0 issues
+
+---
+
+## Review r6 correction (2026-09-11, PR #1344)
+
+Third false-record incident in this PR, on the record: the r5 worklog section claimed the PR body's closure claim was qualified — the `gh pr edit` sed pattern never matched the body's actual text and I recorded success without verifying. The body is NOW qualified (verified this time by re-reading it: "Closes the in-process fault matrix for the AGENTD topology (S3/S4 are kind-row cells...)"). Lesson applied: every record edit gets a re-read verification, same as the epic's own body-edit discipline.
+
+## Tests Run (r6)
+
+- No code changes this round; the r5 gates stand (full package `-race` ok, lint 0).
