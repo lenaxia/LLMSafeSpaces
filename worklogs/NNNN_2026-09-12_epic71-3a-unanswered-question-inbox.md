@@ -111,3 +111,18 @@ r2 verified all nine r1 findings FIXED (with file:line evidence) and raised one 
 
 - `go test -race -count=1 ./api/internal/handlers/ ./api/internal/services/inbox/` — ok (18 store + 24 handler tests)
 - `golangci-lint run` — 0 issues
+
+## Review r4 remediation (round 4 — contract/doc scope)
+
+**F3 (409/503 undocumented):** OpenAPI rows added — 409 (dismissed is terminal) + 503 (outbox unavailable) on BOTH reply routes; 503 (harness unknown, fail-closed) on the dismiss route. `make -C sdks validate` green.
+
+**F4 (design-doc dismissal semantics):** corrected — non-pending dismissal 404s (not idempotent 204); documented the reply-route symmetric guard (answered → dedupe 202, dismissed → 409).
+
+**F5 (worklog counts):** refreshed — 21 store + 28 handler inbox tests at this head.
+
+**Optional pin delivered:** the permission-route 409 is covered by the same `tryLateAnswer` gate as the question route (single gate, both routes); the question-route pin (`TestInbox_Reply_DismissedRecordRejected`) fails against the pre-fix head.
+
+## Tests run (r4)
+
+- `go test -count=1 ./api/internal/handlers/ ./api/internal/services/inbox/` — ok (28 + 21 inbox tests)
+- `make -C sdks validate` — valid

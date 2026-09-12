@@ -1366,6 +1366,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The ask's inbox record was dismissed — dismissal is terminal; the reply is rejected without re-opening the conversation.
+        "503":
+          description: Late-answer delivery unavailable (outbox unreachable).
   /workspaces/{id}/question/{requestID}/reject:
     post:
       tags: [sessions]
@@ -1455,6 +1459,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The ask's inbox record was dismissed — dismissal is terminal; the reply is rejected without re-opening the conversation.
+        "503":
+          description: Late-answer delivery unavailable (outbox unreachable).
   /workspaces/{id}/sessions/{sessionId}/inbox/{requestID}:
     delete:
       tags: [sessions]
@@ -1490,6 +1498,8 @@ paths:
           description: No pending inbox record for this ask
         "502":
           description: The live ask reject failed — the record stays pending
+        "503":
+          description: Harness pending set unknown — dismiss fails closed; retry.
    # --- Terminal ---
   /workspaces/{id}/terminal/ticket:
     post:
