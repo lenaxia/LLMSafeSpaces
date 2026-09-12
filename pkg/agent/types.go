@@ -32,6 +32,10 @@ type QuestionRequest struct {
 	RootSessionID string         `json:"root_session_id,omitempty"`
 	Questions     []QuestionInfo `json:"questions"`
 	Tool          *ToolRef       `json:"tool,omitempty"`
+	// WhileAway marks an inbox-only re-presentation (#1313): the live ask
+	// is gone; this prompt re-presents the recorded ask with its choices
+	// still active. Absent on live asks.
+	WhileAway bool `json:"whileAway,omitempty"`
 }
 
 // PermissionRequest is the normalized, agent-agnostic representation of a pending permission.
@@ -46,6 +50,8 @@ type PermissionRequest struct {
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
 	Always        []string               `json:"always,omitempty"`
 	Tool          *ToolRef               `json:"tool,omitempty"`
+	// WhileAway — see [QuestionRequest].
+	WhileAway bool `json:"whileAway,omitempty"`
 }
 
 // ToolRef identifies the tool call that triggered the input request.

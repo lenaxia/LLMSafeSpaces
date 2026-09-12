@@ -476,6 +476,19 @@ jobs:
           PORTFWD_PORT: 18089
         run: bash local/us-69-evidence-leg.sh
 
+      - name: Run epic71/3a walk-away rows (unanswered-question inbox)
+        if: ${{ always() }}
+        # #1313 (epic-71 / 3a) merge-gate row: L7 re-presentation, the
+        # late-answer outbox route with S2 idempotency, the S11 dismiss
+        # exit, and the suspension-survival variant. SEAM-INERT — runs
+        # before the fault seam arms (pin: epic71_3a_walkaway_script_test).
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18090
+        run: bash local/epic71-3a-walkaway-e2e.sh
+
       - name: Arm fault seam (fresh API process, after the delivery suite)
         # if: always() — r21: without it, any delivery/revisions-leg
         # failure SKIPS the fault leg, structurally starving F6 (zero

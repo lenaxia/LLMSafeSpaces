@@ -150,6 +150,12 @@ type Adapter interface {
 	// adapter translates to the agent's accept/reject endpoints).
 	Resolve(ctx context.Context, userID, workspaceID, requestID, reply string) error
 
+	// RejectInput dismisses a pending InputRequest without an answer
+	// (#1313): questions go to the agent's reject endpoint, permissions
+	// reply "reject". The harness terminates the tool call with its
+	// dismissal result — the model sees the ask was dismissed.
+	RejectInput(ctx context.Context, userID, workspaceID, requestID string) error
+
 	// --- Models (design 0049 §4.6) ---
 
 	// ListAvailableModels returns the catalog of models the agent can

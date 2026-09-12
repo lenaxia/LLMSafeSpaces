@@ -36,20 +36,29 @@ func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 }
 
 // QuestionReply proxies POST /question/:requestID/reply to the workspace pod.
+// A reply to a NON-live ask whose inbox record is pending (the walk-away
+// case, #1313) composes the Q&A user message through the outbox instead.
 func (h *ProxyHandler) QuestionReply(c *gin.Context) {
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
-		return
-	}
 	requestID := c.Param("requestID")
 	if !questionIDPattern.MatchString(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question request ID format"})
 		return
 	}
+	if h.tryLateAnswer(c, c.Param("id"), requestID, extractQuestionAnswerBody) {
+		return
+	}
+	if h.dialect == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+		return
+	}
 	h.proxyToWorkspace(c, h.dialect.QuestionReplyPath(requestID), false, "")
+	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "answered")
 }
 
-// QuestionReject proxies POST /question/:requestID/reject to the workspace pod.
+// QuestionReject proxies POST /question/:requestID/reject to the workspace
+// pod. Rejecting a live ask is the dismiss exit for its inbox record
+// (#1313 S11): the user saw it and dismissed it — no whileAway
+// re-presentation.
 func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	if h.dialect == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
@@ -61,6 +70,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		return
 	}
 	h.proxyToWorkspace(c, h.dialect.QuestionRejectPath(requestID), false, "")
+	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "dismissed")
 }
 
 // ListPermissions proxies GET /permission to the workspace pod.
@@ -72,18 +82,67 @@ func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 	h.proxyToWorkspace(c, h.dialect.PermissionListPath(), false, "")
 }
 
-// PermissionReply proxies POST /permission/:requestID/reply to the workspace pod.
+// PermissionReply proxies POST /permission/:requestID/reply to the
+// workspace pod. A reply to a non-live ask with a pending inbox record
+// lands as guidance-in-history (#1313): the original permission already
+// terminated not-granted; the late decision informs future turns.
 func (h *ProxyHandler) PermissionReply(c *gin.Context) {
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
-		return
-	}
 	requestID := c.Param("requestID")
 	if !permissionIDPattern.MatchString(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission request ID format"})
 		return
 	}
+	if h.tryLateAnswer(c, c.Param("id"), requestID, extractPermissionReplyBody) {
+		return
+	}
+	if h.dialect == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+		return
+	}
 	h.proxyToWorkspace(c, h.dialect.PermissionReplyPath(requestID), false, "")
+	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "answered")
+}
+
+// tryLateAnswer serves the walk-away flow: the ask is dead in the
+// harness but its inbox record is pending. Buffers the reply body,
+// composes the Q&A message, routes it through the outbox (S1/S2: one
+// delivery regime, ask-scoped dedupe), and reports handled=true.
+func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID string, extract func([]byte) string) bool {
+	if h.inbox == nil || h.outbox == nil || h.adapter == nil || workspaceID == "" {
+		return false
+	}
+	rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, requestID)
+	if err != nil || !ok {
+		return false
+	}
+	if h.askIsLive(c.Request.Context(), workspaceID, rec.SessionID, requestID) {
+		return false
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
+		return true
+	}
+	answer := extract(body)
+	if answer == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reply carries no answer"})
+		return true
+	}
+	h.lateAnswerInboxAsk(c, workspaceID, rec, answer)
+	return true
+}
+
+// resolveInboxOnProxySuccess terminalizes the ask's inbox record when the
+// proxied live reply/reject succeeded (2xx from the pod).
+func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, requestID, status string) {
+	if h.inbox == nil || workspaceID == "" || c.Writer.Status() >= 400 {
+		return
+	}
+	rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, requestID)
+	if err != nil || !ok {
+		return
+	}
+	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, status)
 }
 
 // emitPendingInputRequests fetches pending questions and permissions from the pod
@@ -245,10 +304,16 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 	}
 	autoApprove := h.shouldAutoApprovePermissions(ctx, workspaceID)
 
+	liveIDs := make(map[string]bool, len(pending))
 	for _, ir := range pending {
 		if ir.Kind == session.InputPermission && autoApprove {
 			continue
 		}
+		liveIDs[ir.ID] = true
+		// #1313 decision 3: the snapshot path re-records every live ask —
+		// events are droppable (busy-gated stream, broker replay bounds);
+		// this is the recovering write.
+		h.recordInboxAskFromSession(ctx, workspaceID, ir)
 		rootSession := ir.SessionID
 		if h.sessionParents != nil {
 			rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
@@ -306,6 +371,9 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 			})
 		}
 	}
+	// #1313 S5 extension: pending UI = live asks ∪ inbox. Inbox-only
+	// records re-present as whileAway prompts with choices still active.
+	h.emitInboxOnlyRecords(ctx, workspaceID, liveIDs)
 	return true
 }
 

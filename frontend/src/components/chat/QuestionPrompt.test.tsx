@@ -8,12 +8,14 @@ vi.mock("../../api/input", () => ({
   inputApi: {
     questionReply: vi.fn().mockResolvedValue(true),
     questionReject: vi.fn().mockResolvedValue(true),
+    dismissInboxRecord: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
 import { inputApi } from "../../api/input";
 const mockReply = vi.mocked(inputApi.questionReply);
 const mockReject = vi.mocked(inputApi.questionReject);
+const mockDismissInbox = vi.mocked(inputApi.dismissInboxRecord);
 
 const singleQuestion: QuestionRequest = {
   id: "que_1",
@@ -142,5 +144,46 @@ describe("QuestionPrompt", () => {
     fireEvent.click(screen.getByRole("button", { name: "Go" }));
     // Second question unanswered → submit disabled
     expect(screen.getByText("Submit answers")).toBeDisabled();
+  });
+
+  describe("whileAway variant (#1313)", () => {
+    const awayQuestion: QuestionRequest = { ...singleQuestion, whileAway: true };
+
+    it("renders the while-you-were-away title and hint", () => {
+      render(<QuestionPrompt workspaceId="ws-1" request={awayQuestion} onResolved={onResolved} />);
+      expect(screen.getByText(/while you were away/i)).toBeInTheDocument();
+      expect(screen.getByText(/waited unanswered/i)).toBeInTheDocument();
+    });
+
+    it("dismiss routes to the inbox dismiss endpoint with the session", async () => {
+      render(<QuestionPrompt workspaceId="ws-1" request={awayQuestion} onResolved={onResolved} />);
+      fireEvent.click(screen.getByText("Dismiss"));
+      await waitFor(() => expect(mockDismissInbox).toHaveBeenCalledWith("ws-1", "ses_1", "que_1"));
+      await waitFor(() => expect(onResolved).toHaveBeenCalled());
+      expect(mockReject).not.toHaveBeenCalled();
+    });
+
+    it("submit still uses the reply route (late answer is server-side)", async () => {
+      render(<QuestionPrompt workspaceId="ws-1" request={awayQuestion} onResolved={onResolved} />);
+      fireEvent.click(screen.getByRole("button", { name: "Go" }));
+      fireEvent.click(screen.getByText("Submit answers"));
+      await waitFor(() => expect(mockReply).toHaveBeenCalledWith("ws-1", "que_1", [["Go"]]));
+      await waitFor(() => expect(onResolved).toHaveBeenCalled());
+    });
+
+    it("live prompt (no whileAway) still rejects via the live route", async () => {
+      render(<QuestionPrompt workspaceId="ws-1" request={singleQuestion} onResolved={onResolved} />);
+      fireEvent.click(screen.getByText("Dismiss"));
+      await waitFor(() => expect(mockReject).toHaveBeenCalledWith("ws-1", "que_1"));
+      expect(mockDismissInbox).not.toHaveBeenCalled();
+    });
+
+    it("dismiss error keeps the prompt visible with the error inline", async () => {
+      mockDismissInbox.mockRejectedValueOnce(new Error("dismiss failed"));
+      render(<QuestionPrompt workspaceId="ws-1" request={awayQuestion} onResolved={onResolved} />);
+      fireEvent.click(screen.getByText("Dismiss"));
+      await waitFor(() => expect(screen.getByText("dismiss failed")).toBeInTheDocument());
+      expect(onResolved).not.toHaveBeenCalled();
+    });
   });
 });

@@ -44,7 +44,15 @@ export function PermissionPrompt({ workspaceId, request, onResolved }: Permissio
   };
 
   return (
-    <AgentPrompt variant="permission">
+    <AgentPrompt
+      variant="permission"
+      title={request.whileAway ? "While you were away, the agent asked" : undefined}
+    >
+      {request.whileAway && (
+        <div className="text-xs text-muted-foreground mb-2">
+          This request already ended without permission. Your decision lands in the conversation as guidance for future turns.
+        </div>
+      )}
       <div className="text-sm mb-1">
         The agent wants to: <strong>{formatPermission(request.permission)}</strong>
       </div>
