@@ -216,3 +216,33 @@ func gjson(t *testing.T, raw json.RawMessage, key string) string {
 	s, _ := m[key].(string)
 	return s
 }
+
+// TestAbiAct_WireDriftCorruption (epic-71 / 2b, #1312 change item 4 —
+// leg 10 at this hand-adjacent parse site): the four corruption modes
+// riding HTTP 200 (truncated JSON, trailing garbage, empty body, HTML
+// error page) must FAIL the parse loudly — never a silent success or a
+// misparsed empty result. The #1308 class, pinned per mode via the
+// abitest leg-10 knob.
+func TestAbiAct_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []abitest.CorruptMode{
+		abitest.CorruptInvalidJSON,
+		abitest.CorruptTrailingGarbage,
+		abitest.CorruptEmptyBody,
+		abitest.CorruptHTMLErrorPage,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			abi := abitest.New()
+			abi.CorruptNextResponse("Act", mode)
+			srv := httptest.NewServer(abi.Handler())
+			t.Cleanup(srv.Close)
+
+			var out json.RawMessage
+			err := abiAct(context.Background(), srv.URL, "pw", map[string]any{
+				"sessionId": "sess-ref",
+				"interrupt": map[string]any{},
+			}, &out)
+			require.Error(t, err, "a corrupted 200 must never parse as success")
+			assert.Empty(t, out, "no misparsed payload escapes the seam")
+		})
+	}
+}

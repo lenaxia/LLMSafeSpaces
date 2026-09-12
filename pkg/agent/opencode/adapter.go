@@ -948,7 +948,37 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 	return nil
 }
 
-// --- Models ---
+// RejectInput dismisses a pending ask without an answer (#1313). The
+// question reject endpoint is distinct from the reply endpoint on this
+// harness (the reply schema is additionalProperties:false), so the
+// question path rejects outright and a 404 falls through to the
+// permission reject reply.
+func (a *Adapter) RejectInput(ctx context.Context, userID, workspaceID, requestID string) error {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	d := &Dialect{}
+	qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
+	if qErr == nil {
+		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
+		if qResp.StatusCode < 400 {
+			return nil
+		}
+		if qResp.StatusCode != http.StatusNotFound {
+			return a.httpError("POST "+d.QuestionRejectPath(requestID), qResp)
+		}
+	}
+	pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": "reject"})
+	if pErr != nil {
+		return pErr
+	}
+	defer pResp.Body.Close() //nolint:errcheck // best-effort drain
+	if pResp.StatusCode >= 400 {
+		return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
+	}
+	return nil
+}
 
 func (a *Adapter) ListAvailableModels(ctx context.Context, userID, workspaceID string) ([]session.ModelInfo, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)

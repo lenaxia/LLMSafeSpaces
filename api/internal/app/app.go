@@ -36,6 +36,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	emailsvc "github.com/lenaxia/llmsafespaces/api/internal/services/email"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/keyrewrap"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
@@ -303,6 +304,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Valkey instance (AOF-persisted); accepts survive client
 		// disconnects and API restarts.
 		proxyHandler.SetOutbox(outbox.New(cacheSvc.GetClient()))
+
+		// #1313 (epic-71 / 3a): the unanswered-question inbox — the
+		// outbox's sibling for inbound asks; Redis-side so records
+		// survive workspace suspension.
+		proxyHandler.SetInboxStore(inbox.New(cacheSvc.GetClient()))
 		if v2Delivery {
 			// Design 0052: admission-scale delivery windows. The V1
 			// sync send blocks turn-to-completion (hence 10-minute

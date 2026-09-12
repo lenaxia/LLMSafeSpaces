@@ -1326,7 +1326,14 @@ paths:
     post:
       tags: [sessions]
       summary: Reply to a pending question
-      description: Proxies the reply body to the workspace pod. Request ID must match `^que_[a-zA-Z0-9]+$`.
+      description: >-
+        Proxies the reply body to the workspace pod. Request ID must match
+        `^que_[a-zA-Z0-9]+$`. When the ask is no longer live but its
+        unanswered-question inbox record is pending (#1313), the reply
+        composes a Q&A user message through the standard delivery path
+        instead: 202 with `{status: "queued", clientMessageID, messageID}`.
+        The ask-scoped clientMessageID (`inbox-{requestID}-answer`) makes
+        duplicate clicks idempotent.
       operationId: replyQuestion
       x-opencode-proxy: true
       parameters:
@@ -1347,12 +1354,22 @@ paths:
       responses:
         "200":
           description: Reply accepted
+        "202":
+          description: Late answer accepted into the delivery outbox (ask not live)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxLateAnswerAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          description: The ask's inbox record was dismissed — dismissal is terminal; the reply is rejected without re-opening the conversation.
+        "503":
+          description: Late-answer delivery unavailable (outbox unreachable).
   /workspaces/{id}/question/{requestID}/reject:
     post:
       tags: [sessions]
@@ -1402,6 +1419,14 @@ paths:
     post:
       tags: [sessions]
       summary: Reply to a pending permission request
+      description: >-
+        Proxies the reply body to the workspace pod. When the ask is no
+        longer live but its inbox record is pending (#1313), the late
+        decision lands as guidance-in-history through the standard
+        delivery path: 202 with
+        `{status: "queued", clientMessageID, messageID}`. The original
+        permission already terminated not-granted; the message informs
+        future turns.
       operationId: replyPermission
       x-opencode-proxy: true
       parameters:
@@ -1422,13 +1447,60 @@ paths:
       responses:
         "200":
           description: Reply accepted
+        "202":
+          description: Late decision accepted into the delivery outbox (ask not live)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxLateAnswerAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-  # --- Terminal ---
+        "409":
+          description: The ask's inbox record was dismissed — dismissal is terminal; the reply is rejected without re-opening the conversation.
+        "503":
+          description: Late-answer delivery unavailable (outbox unreachable).
+  /workspaces/{id}/sessions/{sessionId}/inbox/{requestID}:
+    delete:
+      tags: [sessions]
+      summary: Dismiss an unanswered-question inbox record
+      description: >-
+        The dismiss exit of the unanswered-question inbox (#1313, S11):
+        terminalizes the pending record as dismissed. If the ask is still
+        live in the harness it is rejected first (the record can never
+        leave a ringing doorbell behind). A resolved SSE event
+        (agent.question.resolved / agent.permission.resolved with
+        data.reason="dismissed") clears other tabs.
+      operationId: dismissInboxRecord
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: requestID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Record dismissed
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No pending inbox record for this ask
+        "502":
+          description: The live ask reject failed — the record stays pending
+        "503":
+          description: Harness pending set unknown — dismiss fails closed; retry.
+   # --- Terminal ---
   /workspaces/{id}/terminal/ticket:
     post:
       tags: [workspaces]
@@ -7882,6 +7954,25 @@ components:
         size:
           type: integer
           format: int64
+    InboxLateAnswerAccepted:
+      type: object
+      description: |
+        202 body for a reply that landed as a late answer through the
+        delivery outbox (#1313): the ask was no longer live, so the
+        answer rides a Q&A user message instead of the live ask.
+      properties:
+        status:
+          type: string
+          enum: [queued]
+        clientMessageID:
+          type: string
+          description: Ask-scoped dedupe key (`inbox-{requestID}-answer`); duplicate clicks return the original.
+        messageID:
+          type: string
+          description: The outbox entry ID (202) or the original accepted entry (duplicate).
+        duplicate:
+          type: boolean
+          description: Present and true when the ask-scoped key was already accepted.
     ModelSelector:
       type: object
       description: |

@@ -1,0 +1,83 @@
+{
+  "_provenance": "Captured 2026-09-12 against a local opencode serve 1.18.15 (pinned binary) + scripted OpenAI-compatible mock provider; basic auth; OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true. Procedure: testdata/REFRESH.md. epic-71 / 3a (#1313) Rule-7 gates G1/G2 evidence. Redactions: session/message/part IDs shortened to synthetic sequences; timestamps zeroed.",
+  "question_tool_schema": {
+    "route": "GET /experimental/tool?provider=mock&model=mock-1 → id=question",
+    "parameters": {
+      "questions": {
+        "items": {
+          "properties": {
+            "question": { "type": "string" },
+            "header": { "type": "string" },
+            "options": {
+              "items": {
+                "properties": {
+                  "label": { "type": "string" },
+                  "description": { "type": "string" }
+                },
+                "required": ["label", "description"]
+              }
+            },
+            "multiple": { "type": "boolean" }
+          },
+          "required": ["question", "header", "options"]
+        }
+      }
+    },
+    "note": "NO timeout parameter on the tool; no config-level question timeout exists in opencode-config.schema.json (the only 'question' key is a permission action rule)."
+  },
+  "pending_question_never_expires": {
+    "observation": "An unanswered question ask stayed in GET /question with the tool part state.status='running' for the full 26-minute observation window. No expiry event on /event; the turn hangs on the ask.",
+    "implication": "The 'ask times out' incident class is platform-side (turn abort, pod recycle, #1310 lease resolve-by-absence) — never a harness timer. Walk-away E2E must kill asks via platform mechanisms."
+  },
+  "question_rejected_tool_state": {
+    "trigger": "POST /question/{id}/reject {}",
+    "tool_part_state": {
+      "status": "error",
+      "input": {
+        "questions": [
+          {
+            "question": "Should we deploy the blue widget to production now?",
+            "header": "Deploy widget?",
+            "options": [
+              { "label": "Yes, deploy", "description": "Ship it immediately" },
+              { "label": "No, hold", "description": "Wait for tomorrow" }
+            ]
+          }
+        ]
+      },
+      "error": "The user dismissed this question"
+    },
+    "provider_calls_after": 0,
+    "note": "The turn ENDS on reject — no second provider call; the tool error is the model-visible terminal state."
+  },
+  "question_replied_tool_result": {
+    "trigger": "POST /question/{id}/reply {\"answers\":[[\"Yes, deploy\"]]}",
+    "tool_result_message_to_provider": "User has answered your questions: \"Should we deploy the blue widget to production now?\"=\"Yes, deploy\". You can now continue with the user's answers in mind.",
+    "note": "The harness's own answer framing is plain text — the Q&A late-answer message rides the same register."
+  },
+  "permission_ask_shape": {
+    "trigger": "bash tool under permission config {\"permission\":{\"bash\":\"ask\"}}",
+    "get_permission_entry": {
+      "id": "per_0…l2Y",
+      "sessionID": "ses_0…Pm",
+      "permission": "bash",
+      "patterns": ["echo g1-permission-probe"],
+      "metadata": { "command": "echo g1-permission-probe" },
+      "always": ["echo *"],
+      "tool": { "messageID": "msg_0…yZ", "callID": "call_b1" }
+    }
+  },
+  "pending_permission_never_expires": {
+    "observation": "An unanswered permission ask stayed in GET /permission for the full 24-minute observation window; no auto-grant, no auto-deny, no expiry event.",
+    "implication": "Permissions default safe by structure: an abandoned ask grants nothing. The turn (and pod lifetime) is the only bound."
+  },
+  "permission_rejected_tool_state": {
+    "trigger": "POST /permission/{id}/reply {\"reply\":\"reject\"}",
+    "tool_part_state": {
+      "status": "error",
+      "input": { "command": "echo g1-permission-probe" },
+      "error": "The user rejected permission to use this specific tool call."
+    },
+    "provider_calls_after": 0
+  }
+}

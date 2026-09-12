@@ -45,7 +45,14 @@ env:
   CLUSTER_NAME: llmsafespaces-ci
   IMAGE_TAG: ci
   NS: llmsafespaces
-  FAULT_COUNT: "24"
+  # F1 sizing (run 34549292454, pool-red since the #1300 window): F1's
+  # autopush heal burns one fault per eligible secretsreconcile re-notify
+  # (backoff 5s doubling), so the budget must exhaust AND the heal must
+  # converge inside F1's 300s window — 24 cannot (last fault burned 41s
+  # past the deadline). 8 = probe 1 + boot retries 3 (#1300 Fix B) +
+  # divergent-pod slack 2 + heal burns 2. Pinned to the [6,8] band by
+  # TestUS70FaultsScript_F1BudgetSizedToConvergeWindow; F6 self-arms 6.
+  FAULT_COUNT: "8"
 
 jobs:
   us70-delivery-pool:
@@ -476,6 +483,19 @@ jobs:
           PORTFWD_PORT: 18089
         run: bash local/us-69-evidence-leg.sh
 
+      - name: Run epic71/3a walk-away rows (unanswered-question inbox)
+        if: ${{ always() }}
+        # #1313 (epic-71 / 3a) merge-gate row: L7 re-presentation, the
+        # late-answer outbox route with S2 idempotency, the S11 dismiss
+        # exit, and the suspension-survival variant. SEAM-INERT — runs
+        # before the fault seam arms (pin: epic71_3a_walkaway_script_test).
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18090
+        run: bash local/epic71-3a-walkaway-e2e.sh
+
       - name: Arm fault seam (fresh API process, after the delivery suite)
         # if: always() — r21: without it, any delivery/revisions-leg
         # failure SKIPS the fault leg, structurally starving F6 (zero
@@ -500,8 +520,9 @@ jobs:
         # key-row corruption with the #1114 loud-degrade audit (F3),
         # SA-token tamper/expiry via kubectl-minted tokens (F4 — the JWT's
         # own .exp bounds the time-travel sleep to ≤~3700s), and chaos
-        # kills (F5). FAULT_COUNT defaults to 24 in the script; override
-        # here only in lockstep with the arming step's env.
+        # kills (F5). FAULT_COUNT defaults to 8 in the script (F1-sized,
+        # see the env block); override here only in lockstep with the
+        # arming step's env.
         env:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}

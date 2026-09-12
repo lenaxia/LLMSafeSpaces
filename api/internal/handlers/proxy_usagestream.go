@@ -209,6 +209,9 @@ func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest
 		go b.h.autoApprovePermission(workspaceID, req.GetId())
 		return
 	}
+	// #1313: every surfaced ask is recorded in the inbox — the live ask
+	// stays just the doorbell; the record survives its death.
+	b.h.recordInboxAsk(context.Background(), workspaceID, req)
 	root := req.GetRootSessionId()
 	if root == "" {
 		root = b.h.resolveRootSessionID(workspaceID, req.GetSessionId())

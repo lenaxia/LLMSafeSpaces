@@ -30,6 +30,7 @@ type mockAdapter struct {
 	abortFn             func(ctx context.Context, userID, workspaceID, sessionID string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
+	rejectInputFn       func(ctx context.Context, userID, workspaceID, requestID string) error
 	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
 	formatProviderCfgFn func(providers []agent.LLMProviderData) ([]byte, error)
 	validateCredsFn     func(rawConfig []byte) (*agent.CredentialCheckResult, error)
@@ -119,6 +120,12 @@ func (m *mockAdapter) Resolve(ctx context.Context, uid, wid, rid, reply string) 
 		return m.resolveFn(ctx, uid, wid, rid, reply)
 	}
 	panic("mockAdapter.Resolve not configured")
+}
+func (m *mockAdapter) RejectInput(ctx context.Context, uid, wid, rid string) error {
+	if m.rejectInputFn != nil {
+		return m.rejectInputFn(ctx, uid, wid, rid)
+	}
+	panic("mockAdapter.RejectInput not configured")
 }
 func (m *mockAdapter) ListAvailableModels(_ context.Context, _, _ string) ([]session.ModelInfo, error) {
 	panic("mockAdapter.ListAvailableModels not configured")

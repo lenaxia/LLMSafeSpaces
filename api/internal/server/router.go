@@ -1578,6 +1578,10 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	idGroup.GET("/permission", proxyHandler.ListPermissions)
 	idGroup.POST("/permission/:requestID/reply", proxyHandler.PermissionReply)
 
+	// #1313 (epic-71 / 3a): the inbox dismiss exit — a live ask is
+	// rejected first, the record terminalizes as dismissed (S11).
+	idGroup.DELETE("/sessions/:sessionId/inbox/:requestID", proxyHandler.DismissInboxRecord)
+
 	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
 	// in-workspace session switches where no SSE reconnect fires).
 	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)

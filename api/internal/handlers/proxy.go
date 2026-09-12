@@ -21,6 +21,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
@@ -139,6 +140,12 @@ type ProxyHandler struct {
 	// and a detached worker delivers via the adapter.
 	outbox *outbox.Service
 
+	// inbox is the unanswered-question inbox (#1313, epic-71 / 3a) — the
+	// outbox's sibling for inbound asks. nil means the inbox is disabled
+	// and asks revert to fire-and-forget (pre-inbox behavior). Set via
+	// SetInboxStore before Start.
+	inbox *inbox.Service
+
 	// adapter is the US-65.3 Agent Adapter seam. The migrated
 	// session/message cluster is adapter-only since #828 batches 1+2
 	// (nil adapter -> adapterUnavailable guard, typed 503); the
@@ -148,8 +155,7 @@ type ProxyHandler struct {
 	// session index, parents), their background helpers, and the
 	// lifecycle wiring (Start()'s outbox verifier hooks,
 	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go).
-	// Set via
-	// SetAdapter before Start(); the final #828 batch makes it a
+	// Set via SetAdapter before Start(); the final #828 batch makes it a
 	// required constructor parameter and retires the dialect field.
 	adapter agent.Adapter
 
@@ -237,6 +243,25 @@ func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 		panic("SetAdapter called after Start — request goroutines may already be reading h.adapter")
 	}
 	h.adapter = a
+}
+
+// SetInboxStore wires the unanswered-question inbox (#1313). nil (or a
+// nil service) leaves the inbox disabled — asks revert to
+// fire-and-forget.
+func (h *ProxyHandler) SetInboxStore(s *inbox.Service) {
+	if s == nil {
+		return
+	}
+	if h.started {
+		panic("SetInboxStore called after Start — request goroutines may already be reading h.inbox")
+	}
+	h.inbox = s
+}
+
+// SetInboxStoreForTest wires the inbox after Start (tests only;
+// production wires via SetInboxStore before Start).
+func (h *ProxyHandler) SetInboxStoreForTest(s *inbox.Service) {
+	h.inbox = s
 }
 
 // SetOutbox wires the D3 durable-prompt outbox (design 0050 §D3, #907).

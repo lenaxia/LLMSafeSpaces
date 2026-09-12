@@ -95,6 +95,10 @@ func (f *fakeAdapter) Resolve(ctx context.Context, userID, workspaceID, requestI
 	f.otherCalled["Resolve"]++
 	return nil
 }
+func (f *fakeAdapter) RejectInput(ctx context.Context, userID, workspaceID, requestID string) error {
+	f.otherCalled["RejectInput"]++
+	return nil
+}
 func (f *fakeAdapter) Capabilities() []session.Capability {
 	f.otherCalled["Capabilities"]++
 	return nil

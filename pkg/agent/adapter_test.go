@@ -59,6 +59,9 @@ func (f *fakeAdapter) ListPending(_ context.Context, _, _, _ string) ([]session.
 	return nil, nil
 }
 func (f *fakeAdapter) Resolve(_ context.Context, _, _, _, _ string) error { return nil }
+func (f *fakeAdapter) RejectInput(_ context.Context, _, _, _ string) error {
+	return nil
+}
 func (f *fakeAdapter) ListAvailableModels(_ context.Context, _, _ string) ([]session.ModelInfo, error) {
 	return nil, nil
 }
