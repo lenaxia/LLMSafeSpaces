@@ -56,7 +56,7 @@ None. Cross-stream: 0b (opencode-agent-c) already asked (validation comment) to 
 - `frontend/tests/e2e/queue-resend.spec.ts` (r2–r9: the e2e suite)
 - `frontend/src/hooks/useMessageQueue.test.ts`
 - `frontend/src/hooks/useChatStream.test.ts`
-- `worklogs/NNNN_2026-09-11_queue-ui-503-semantics.md` (this file)
+- `worklogs/0919_2026-09-11_queue-ui-503-semantics.md` (this file)
 
 ## Review r6 corrections (record hygiene — r4's undelivered items)
 
