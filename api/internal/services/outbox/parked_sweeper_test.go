@@ -1232,3 +1232,138 @@ func TestCompleteSites_LoserSuppression(t *testing.T) {
 		assert.Equal(t, int32(0), fired.Load())
 	})
 }
+
+// TestCompleteSites_BothCopiesWindow (the storm's rare interleaving,
+// main-red 2026-09-12 00:00Z): the entry legitimately sits in BOTH lists
+// (the stage-out crash window) — two completers each winning their own
+// single-list LRem must still produce exactly ONE hook fire. The claim
+// is atomic across both lists, so the second completer removes nothing.
+func TestCompleteSites_BothCopiesWindow(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+	// The crash window: the copy ALSO sits in staging.
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+
+	// Completer A (verify path) claims atomically across both lists.
+	s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict { return VerdictDelivered })
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+		func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+	assert.Equal(t, int32(1), fired.Load(), "the winner fires once — both copies claimed atomically")
+
+	// Completer B (sweeper shape) finds nothing to claim.
+	probe, _ := probeFunc(t, map[string]string{"e1|0": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, int32(1), fired.Load(), "no second fire — both lists are empty")
+
+	main, _ := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	staged, _ := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	assert.Empty(t, main)
+	assert.Empty(t, staged)
+}
+
+// TestClaimDelivered_ErrorArmNoFireEntryRetained (r1): a claim-time
+// Redis failure produces NO fire and leaves the entry claimable — the
+// at-least-once direction.
+func TestClaimDelivered_ErrorArmNoFireEntryRetained(t *testing.T) {
+	s, mr := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+
+	mr.SetError("claim-time outage")
+	got := s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.EqualValues(t, 0, got, "failed claim returns 0 — no fire")
+	assert.EqualValues(t, 0, fired.Load())
+	mr.SetError("")
+
+	vals, err := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, vals, 1, "the entry is retained — claimable again")
+	got = s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.Equal(t, int64(1), got, "the recovered claim wins and reports the copy")
+}
+
+// TestClaimDelivered_DrainsDuplicateCopies (r1 finding 1): the dual-stage
+// race leaves TWO byte-identical staging copies — the count-0 LRem drains
+// them all, so next boot's Recover finds no residual to re-fire.
+func TestClaimDelivered_DrainsDuplicateCopies(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	// main holds one copy (the crash window), staging holds TWO (the
+	// dual-stage race re-staged it).
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+
+	got := s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.EqualValues(t, 3, got, "every byte-identical copy claimed atomically")
+	assert.EqualValues(t, 0, fired.Load(), "the claim itself never fires — the winning CALLER does")
+
+	main, _ := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	staged, _ := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	assert.Empty(t, main, "no residual for the next boot's Recover to re-fire")
+	assert.Empty(t, staged)
+}
+
+// TestCompleteSites_SecondCompleterStaleSnapshot (r2): the REAL stale-
+// snapshot window is inside the sweep itself (LRange snapshot → probes
+// → claim). Completer B's sweep snapshots e1 (ADMITTED truth), blocks in
+// its probe; completer A claims e1 meanwhile; B resumes and its claim on
+// the snapshot value removes nothing — no second fire. Probe activity is
+// asserted (non-vacuous).
+func TestCompleteSites_SecondCompleterStaleSnapshot(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e1 := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusError, Attempts: 5, LastError: "context deadline exceeded"}
+	raw := string(mustMarshal(e1))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+
+	probeEntered := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var probeCalls atomic.Int32
+	var enteredOnce sync.Once
+	s.SetLedgerProbe(func(ctx context.Context, ws, ses, id string, attempt uint32) (string, error) {
+		probeCalls.Add(1)
+		if id == "e1" {
+			enteredOnce.Do(func() { close(probeEntered) })
+			<-releaseProbe
+			return LedgerStateAdmitted, nil
+		}
+		return LedgerStateFailed, nil
+	})
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		_, _ = s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	}()
+	<-probeEntered // B holds e1 in its snapshot, mid-probe
+
+	// A claims e1 (drains every copy) while B is parked in the probe.
+	require.EqualValues(t, 1, s.claimDelivered(context.Background(), "ws-1", "ses-1", raw))
+	close(releaseProbe)
+	<-sweepDone
+
+	assert.Greater(t, probeCalls.Load(), int32(0), "the sweep genuinely probed (non-vacuous)")
+	assert.Equal(t, int32(0), fired.Load(),
+		"B's claim on its stale snapshot value removed NOTHING — only A (the claimer) would fire, and direct claims don't; no site double-fired")
+	entries := readQueueEntries(t, s, "ws-1", "ses-1")
+	assert.Empty(t, entries, "e1 gone: A's claim drained it; B's stale LSet-free path re-added nothing")
+}

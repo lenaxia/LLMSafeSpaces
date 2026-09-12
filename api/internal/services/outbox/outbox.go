@@ -251,12 +251,13 @@ const (
 // per-session lock with a timeout-bounded context.
 type Verifier func(ctx context.Context, workspaceID, sessionID string, e Entry) Verdict
 
-// DeliveredHook fires exactly once per entry COPY on confirmed delivery
-// — the synchronous 2xx path and the verified path. The documented
-// crash window (an entry in both the main list and staging) permits one
-// fire per copy; the LRem-count claim token enforces the same bound
-// cross-replica. SSE queue.update/sent, metering, and session-index
-// recording ride it.
+// DeliveredHook fires exactly once per entry on confirmed delivery —
+// the synchronous 2xx path and the verified path. Concurrent completers
+// (this replica's loops or a peer's) are serialized by the atomic
+// cross-list claim: only the completer whose claim removed at least one
+// copy fires. Failure direction is at-least-once (a failed claim retains
+// the entry for the next completer). SSE queue.update/sent, metering,
+// and session-index recording ride it.
 type DeliveredHook func(workspaceID, sessionID string, e Entry)
 
 // StagedHook fires when a pending entry is staged out for delivery —
@@ -607,6 +608,34 @@ func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool
 	return token, true
 }
 
+// claimDeliveredScript atomically drains every byte-identical copy of
+// the entry from BOTH the main queue and staging (lrem count 0) and
+// returns the total removed — the winner-takes-the-hook token:
+// concurrent completers are exactly-once per entry even when the crash
+// window holds copies in both lists (the stage-out window two
+// single-list LRems double-fired through).
+var claimDeliveredScript = redis.NewScript(`
+local n = 0
+n = n + redis.call("lrem", KEYS[1], 0, ARGV[1])
+n = n + redis.call("lrem", KEYS[2], 0, ARGV[1])
+return n
+`)
+
+// claimDelivered is the cross-list exactly-once claim: it removes every
+// byte-identical copy of the entry from BOTH the session's main queue
+// and staging in one atomic step (Lua; single-instance Redis only — the
+// two keys carry no hash tags, so cluster mode would CROSSSLOT). Returns
+// the number of copies removed; ONLY a non-zero winner may fire the
+// delivered hook. Concurrent completers are exactly-once per entry; the
+// error direction is at-least-once (no claim, no fire, entry retained).
+func (s *Service) claimDelivered(ctx context.Context, ws, ses string, val string) int64 {
+	n, err := claimDeliveredScript.Run(ctx, s.client, []string{qKey(ws, ses), dKey(ws, ses)}, val).Int64()
+	if err != nil {
+		return 0 // script/transport failure: no claim, no fire (entry stays claimable)
+	}
+	return n
+}
+
 // releaseLock deletes the lock ONLY if we still own it (compare-and-del).
 // A bare DEL could remove a lock a slower worker's TTL-expiry let another
 // worker legitimately acquire.
@@ -717,7 +746,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer bcancel()
 	if derr == nil {
-		if n, err := s.client.LRem(bctx, dKey(ws, ses), 1, staged).Result(); err == nil && n > 0 {
+		if s.claimDelivered(bctx, ws, ses, string(staged)) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return true
@@ -803,9 +832,8 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	}
 	switch s.verifier(ctx, ws, ses, e) {
 	case VerdictDelivered:
-		// Exactly-once token: only the removal's winner fires the hook
-		// (a peer replica's sweeper may complete the same entry).
-		if n, err := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); err == nil && n > 0 {
+		// Cross-list exactly-once claim: only the winner fires.
+		if s.claimDelivered(ctx, ws, ses, vals[idx]) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return true
@@ -834,10 +862,8 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 			// completes it — holding it delivering here would need a
 			// re-poll driver this path lacks.
 			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
-				// Exactly-once token (the fifth site — r1: verifyOne's
-				// lock-loss window means a peer may complete while our
-				// probes ran; only the LRem winner fires).
-				if n, lerr := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); lerr == nil && n > 0 {
+				// Cross-list exactly-once claim (r1's fifth site).
+				if s.claimDelivered(ctx, ws, ses, vals[idx]) > 0 {
 					s.fireOnDelivered(ws, ses, e)
 				}
 				return true
