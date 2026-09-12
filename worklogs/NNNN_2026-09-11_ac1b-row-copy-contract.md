@@ -42,7 +42,7 @@ Replace the symlink equality with the copy-contract pins, deliberately NOT byte-
 
 ## Tests Run
 
-`bash -n` clean; `go test ./local/` green (all harness pins). Row verification rides the pool dispatch — [r6 correction: never on THIS branch; the evidence rides the sibling `pool-green-combined` head 31632400, whose delivery-script and worklog blobs are identical to this PR and whose test-file delta is purely #1321's additions].
+`bash -n` clean; `go test ./local/` green (all harness pins). Row verification rides the pool dispatch — [r6 correction: never on THIS branch; the evidence rides the sibling `pool-green-combined` head 31632400. At dispatch time (2026-09-11), that head's delivery-script and worklog blobs were identical to this PR's and its test-file delta was purely #1321's additions — the provenance held as verified in #1326's r6 review; r7's later edits to this PR's worklog and test file changed those blobs AFTER the run, so the identity claim is historical, scoped to the dispatched head, not a statement about the current tree].
 
 ## Next Steps
 
