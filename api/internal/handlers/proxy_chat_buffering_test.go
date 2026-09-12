@@ -160,37 +160,12 @@ func TestSendMessage_2xxResponse_StreamsNormally_Unbuffered(t *testing.T) {
 	assert.False(t, called, "checker must not be invoked on 2xx (no buffering)")
 }
 
-// TestGetHistory_4xx_NoEnrichment proves the buffering is scoped to chat
-// (SendMessage) only — GetHistory 4xx responses must pass through unchanged.
-func TestGetHistory_4xx_NoEnrichment(t *testing.T) {
-	podResp := `{"_tag":"NotFoundError","message":"session gone"}`
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, podResp)
-	}))
-	defer backend.Close()
-
-	env := newTestEnvWithBackend(t, backend.Config.Handler.(http.HandlerFunc))
-	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.handler.SetAgentStateChecker(stubAgentStateChecker{changedAt: time.Now()})
-
-	// GetHistory is NOT in the default proxy group's write routes but IS
-	// registered for /sessions/:sessionId/message GET in the default harness.
-	// Re-use the existing route.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/workspaces/ws-1/sessions/ses-1/message", nil)
-	env.router.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusNotFound, rec.Code)
-	// Body passed through verbatim — no enrichment fields.
-	assert.Contains(t, rec.Body.String(), "NotFoundError")
-	assert.NotContains(t, rec.Body.String(), "agentNeedsRefresh")
-	assert.NotContains(t, rec.Body.String(), "hint")
-}
+// TestGetHistory_4xx_NoEnrichment was deleted with GetHistory's legacy
+// tail (#828 batch 2): the 4xx body-passthrough belonged to the bespoke
+// fetchUpstreamHistory path. The adapter path surfaces upstream failures
+// as a typed 502 (TestGetHistory_AdapterPath_Error_Returns502) and the
+// enrichment contract is owned by EnrichChatErrorBody's unit tests plus
+// TestE2E_Adapter_SendMessage_Error_IncludesCredentialHint.
 
 // TestSendMessage_4xxWithErrorBuffering_LargeBodyTruncated proves the buffer
 // has an upper bound (chat errors are small structured payloads; a runaway

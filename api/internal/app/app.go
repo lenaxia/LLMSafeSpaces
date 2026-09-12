@@ -51,7 +51,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
-	pkgagent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -260,12 +259,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		k8s:       k8sClient,
 		namespace: cfg.Kubernetes.Namespace,
 	}))
-
-	// Wire the V2 client concrete factory (US-65.6: removes opencode import
-	// from proxy_v2.go; the factory is the only allowed opencode import site).
-	proxyHandler.SetV2ClientConcreteFactory(func(baseURL, password string) (pkgagent.V2SessionClient, error) {
-		return agentoc.NewClient(baseURL, password, log.ZapLogger()), nil
-	})
 
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up

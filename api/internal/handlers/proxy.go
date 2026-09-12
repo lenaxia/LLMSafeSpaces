@@ -88,18 +88,6 @@ type ProxyHandler struct {
 	// Active. Set via SetVersionSyncCallback before Start().
 	versionSyncCb workspace.VersionSyncCallback
 
-	// v2ClientFactory overrides V2 client construction. nil in production
-	// (v2Client resolves pod IP + password and builds the default client).
-	// Tests inject a factory pointing at a dynamic-port httptest.Server,
-	// eliminating the port 4096 dependency that caused non-deterministic
-	// CI failures.
-	v2ClientFactory V2ClientFactory
-
-	// v2ClientConcreteFactory builds a V2SessionClient from a baseURL +
-	// password. Set during wiring (app.go) with opencode.NewClient; this
-	// file does not import pkg/agent/opencode.
-	v2ClientConcreteFactory func(baseURL, password string) (agent.V2SessionClient, error)
-
 	// v2Delivery routes outbox delivery through the V2 admit-and-return
 	// prompt endpoint (design 0052, OPENCODE_V2_DELIVERY). When on, the
 	// adapter MUST also read the V2 store (WithV2Store) — delivery

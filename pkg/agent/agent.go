@@ -4,7 +4,6 @@
 package agent
 
 import (
-	"context"
 	stderrors "errors"
 	"fmt"
 	"net/http"
@@ -49,17 +48,6 @@ type V2PromptResponse struct {
 	ID          string `json:"id"`
 	SessionID   string `json:"sessionID"`
 }
-
-// V2SessionClient is the subset of agent client methods the proxy's V2
-// session-queue paths use. Defined in pkg/agent so proxy_v2.go doesn't
-// need to import pkg/agent/opencode.
-type V2SessionClient interface {
-	PromptV2(ctx context.Context, sessionID, text string, delivery V2Delivery) (*V2PromptResponse, error)
-	InterruptV2(ctx context.Context, sessionID string) error
-}
-
-// V2ClientFactory builds a V2SessionClient for the given workspace.
-type V2ClientFactory func(ctx context.Context, workspaceID string) (V2SessionClient, error)
 
 // V2 error sentinels. Re-exported from pkg/agent/opencode; canonical
 // location is here so callers don't import the opencode package.

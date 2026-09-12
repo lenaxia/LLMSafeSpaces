@@ -4,7 +4,6 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -118,90 +117,9 @@ func counterValue(t *testing.T, cv *prometheus.CounterVec, labels ...string) flo
 	return *out.Counter.Value
 }
 
-// TestGetHistory_Upstream5xx_LogsWarnAndRecordsMetric asserts the fix for
-// #488 for the history code path (fetchUpstreamHistory / doHistoryRequest).
-// When opencode returns 500, the handler MUST emit a Warn log line with
-// diagnostic fields AND increment the api_upstream_5xx_total counter.
-func TestGetHistory_Upstream5xx_LogsWarnAndRecordsMetric(t *testing.T) {
-	upstreamCalled := 0
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		upstreamCalled++
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte(`{"name":"UnknownError","data":{"message":"boom","ref":"err_abcdef12"}}`))
-	})
-	env.setupWorkspacePodWithT(t, "ws-5xx", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-5xx")
-	env.setupPasswordWithT(t, "ws-5xx", "test-password")
-	env.setupWorkspaceWithT(t, "ws-5xx", 5)
+// TestGetHistory_Upstream5xx_LogsWarnAndRecordsMetric was deleted: the history arm of the api_upstream_5xx_total counter died with doHistoryRequest (#828 batch 2). Flagged delta: the adapter path logs structured errors but records no Prometheus counter; the counter survives for the still-legacy transport routes (question/permission, and the seam) until #828 final batch. Follow-up filed in the PR body.
 
-	// Swap in a capturing logger so we can assert on the log line.
-	cap := &proxyCaptureLogger{}
-	env.handler.logger = cap
-
-	// Zero the counter before the request so we can assert delta.
-	upstream5xxTotalReset(t)
-
-	w := env.doRequestWithT(t, "GET",
-		"/api/v1/workspaces/ws-5xx/sessions/ses_1/message", nil)
-
-	// Client-facing behavior — unchanged and pinned by pre-existing test
-	// TestGetHistory_UpstreamError_DoesNotMaskAsEmptyPage.
-	require.GreaterOrEqual(t, w.Code, 500)
-	require.Equal(t, 1, upstreamCalled)
-
-	// (1) Warn log line fired with diagnostic fields. The log line carries
-	// the RAW path (with session ID) so operators can grep for a specific
-	// user's failing session.
-	line := cap.findWarn("Upstream 5xx")
-	require.NotNil(t, line, "expected a Warn log line about upstream 5xx; got warns=%+v", cap.warns)
-	assert.Equal(t, "ws-5xx", line.fields["workspaceID"],
-		"log line must carry workspaceID label")
-	assert.Equal(t, 500, line.fields["upstreamStatus"],
-		"log line must carry the actual upstream status code")
-	assert.Contains(t, fmt.Sprint(line.fields["path"]), "/session/ses_1/message",
-		"log line must carry the opencode path so operators can grep it out of prod logs")
-	assert.Contains(t, fmt.Sprint(line.fields["bodyPreview"]), "err_abcdef12",
-		"log line must carry a preview of the upstream body so the opencode ref "+
-			"is discoverable without kubectl exec (LLMSafeSpaces#488)")
-
-	// (2) Prometheus counter incremented with labeled dimensions. The
-	// counter uses SANITIZED paths (session ID replaced by :id) to bound
-	// label cardinality — otherwise every session would spawn a new time
-	// series and Prometheus memory usage would grow without bound.
-	got := counterValue(t, metrics.Upstream5xxCounter(), "ws-5xx", "/session/:id/message", "500")
-	assert.Equal(t, 1.0, got,
-		"api_upstream_5xx_total{workspace_id=ws-5xx, path=/session/:id/message, upstream_status=500} must equal 1")
-}
-
-// TestGetHistory_Upstream2xx_DoesNotLogWarnOrRecordMetric asserts the
-// symmetric negative case: 2xx responses do NOT touch the observability
-// surface for upstream 5xx. Prevents future regressions where someone
-// broadens the counter to all responses.
-func TestGetHistory_Upstream2xx_DoesNotLogWarnOrRecordMetric(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`[]`))
-	})
-	env.setupWorkspacePodWithT(t, "ws-2xx", "10.0.0.2", string(v1.WorkspacePhaseActive), "ws-2xx")
-	env.setupPasswordWithT(t, "ws-2xx", "test-password")
-	env.setupWorkspaceWithT(t, "ws-2xx", 5)
-
-	cap := &proxyCaptureLogger{}
-	env.handler.logger = cap
-
-	upstream5xxTotalReset(t)
-
-	w := env.doRequestWithT(t, "GET",
-		"/api/v1/workspaces/ws-2xx/sessions/ses_ok/message", nil)
-	require.Equal(t, http.StatusOK, w.Code)
-
-	assert.Nil(t, cap.findWarn("Upstream 5xx"),
-		"no upstream-5xx Warn line should be emitted on 2xx responses")
-	assert.Equal(t, 0.0,
-		counterValue(t, metrics.Upstream5xxCounter(), "ws-2xx", "/session/:id/message", "200"),
-		"counter must not fire for 2xx responses")
-}
+// TestGetHistory_Upstream2xx_DoesNotLogWarnOrRecordMetric was deleted: negative row for the deleted doHistoryRequest instrumentation arm.
 
 // TestDoProxy_Upstream5xx_LogsWarnAndRecordsMetric asserts the fix for
 // #488 for the streaming proxy code path (doProxy) — used by
