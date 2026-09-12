@@ -5,6 +5,7 @@ package faultmatrix
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -296,6 +297,7 @@ func TestSoak_ConfigValidation(t *testing.T) {
 		{Sessions: 1, FaultsPerTick: 2, Tick: time.Millisecond, Duration: time.Millisecond},
 		{Sessions: 1, FaultsPerTick: 1, Tick: 0, Duration: time.Millisecond},
 		{Sessions: 1, FaultsPerTick: 1, Tick: time.Millisecond, Duration: 0},
+		{Sessions: 1, FaultsPerTick: math.NaN(), Tick: time.Millisecond, Duration: time.Millisecond},
 	} {
 		_, _, err := RunSoak(context.Background(), a, store, cfg)
 		require.Error(t, err, "misconfig must return ErrSoakConfig, not panic or no-op")
@@ -343,4 +345,38 @@ func (ad *slowAdmitter) Admit(ctx context.Context, sessionID, messageID, text, m
 		ad.out.MarkPresent(sessionID, messageID)
 	}
 	return messageID, nil
+}
+
+// The identity predicate's regression pin (r2 F2): same pending COUNT,
+// different ID — truth swapped its ask; the projection holds the stale
+// one. The count-based form this replaces reads MATCHED; the set form
+// must not. No reconcile runs between the swap and the probe — the pin
+// isolates the predicate, not the repair.
+func TestPendingShapesMatch_IdentityNotCount(t *testing.T) {
+	store := NewEvidenceStore()
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+
+	store.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-original", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+	})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+	require.Len(t, snapshotOf(t, a, "ses-pin").GetPendingInputs(), 1)
+
+	// The swap: equal count, different identity.
+	store.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-replacement", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+	})
+
+	assert.False(t, PendingShapesMatch(context.Background(), a, store, "ses-pin"),
+		"stale-ask-projected + live-ask-missing at equal count is NOT a match — the count-based predicate's false-green")
+
+	// And the honest convergent state matches (the reseed clears the
+	// pending set; the lease diff re-appears truth's ask — one repair
+	// tick, then the predicate holds).
+	_, ok := WaitConverges(context.Background(), 5*time.Second, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		return PendingShapesMatch(context.Background(), a, store, "ses-pin")
+	})
+	require.True(t, ok, "the repaired state must match")
+	assert.True(t, PendingShapesMatch(context.Background(), a, store, "ses-pin"))
 }

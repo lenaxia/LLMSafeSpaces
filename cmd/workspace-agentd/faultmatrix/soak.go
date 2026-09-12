@@ -70,7 +70,9 @@ func (s *EvidenceStore) livePendingIDs(sessionID string) string {
 	defer s.mu.Unlock()
 	ids := make([]string, 0, len(s.states[sessionID].PendingInputs))
 	for _, in := range s.states[sessionID].PendingInputs {
-		ids = append(ids, in.GetId())
+		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty; mirror it
+			ids = append(ids, in.GetId())
+		}
 	}
 	sort.Strings(ids)
 	return strings.Join(ids, ",")
@@ -86,7 +88,9 @@ func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, session
 	}
 	ids := make([]string, 0, len(res.Msg.GetPendingInputs()))
 	for _, in := range res.Msg.GetPendingInputs() {
-		ids = append(ids, in.GetId())
+		if in != nil && in.GetId() != "" { // the lease diff filters nil/empty; mirror it
+			ids = append(ids, in.GetId())
+		}
 	}
 	sort.Strings(ids)
 	return strings.Join(ids, ",")
@@ -102,7 +106,10 @@ func validateSoakConfig(cfg SoakConfig) error {
 	switch {
 	case cfg.Sessions < 1:
 		return ErrSoakConfig("Sessions must be >= 1")
-	case cfg.FaultsPerTick < 0 || cfg.FaultsPerTick > 1:
+	case !(cfg.FaultsPerTick >= 0 && cfg.FaultsPerTick <= 1):
+		// The negated conjunction is load-bearing: NaN fails BOTH raw
+		// comparisons and would validate — then `rng.Float64() < NaN`
+		// never fires, a vacuously green soak (r2 F1).
 		return ErrSoakConfig("FaultsPerTick is a probability in [0,1]")
 	case cfg.Tick <= 0:
 		return ErrSoakConfig("Tick must be > 0")
@@ -131,6 +138,10 @@ func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStor
 		//nolint:gosec // a DETERMINISTIC fault stream is the requirement (CI reproducibility); this is not cryptographic
 		rng = rand.New(rand.NewSource(1))
 	}
+	// OWNERSHIP: RunSoak takes the store — it resets every ses-soak-*
+	// session to IDLE at start (its fault stream owns these sessions'
+	// truth from here on; pre-seeded pending for soak sessions is
+	// clobbered by design).
 	sessions := make([]string, cfg.Sessions)
 	for i := range sessions {
 		sessions[i] = soakSessionID(i)
@@ -149,12 +160,17 @@ func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStor
 			// exact S5 false-green the soak exists to catch).
 			elapsed, ok := WaitConverges(ctx, soakConvergenceBound, soakPoll, func() bool {
 				a.Reconcile(ctx)
-				return projectedPendingIDs(ctx, a, sid) == store.livePendingIDs(sid)
+				return PendingShapesMatch(ctx, a, store, sid)
 			})
 			log.Record("L3", elapsed)
 			if !ok && ctx.Err() == nil {
 				v.Add("L3") // a real breach; ctx teardown aborts clean
 			}
+			// Disclosed teardown blind window (r2): a wait in flight at
+			// cancel is suppressed AND its aborted span still lands in
+			// the histogram — a wall-clock-canceled hours run carries
+			// ~one bounded unverifiable window and teardown noise in
+			// the samples. Direction-safe (no phantom positives).
 		}
 		select {
 		case <-ctx.Done():
@@ -163,4 +179,13 @@ func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStor
 		}
 	}
 	return v, log, nil
+}
+
+// PendingShapesMatch is the soak gate's core predicate: the projection's
+// pending ID set equals truth's (both filtered like the lease diff,
+// sorted, compared as sets). Exported for its regression pin — the
+// count-based form this replaced reads converged while the projection
+// holds a stale ask and misses a live one at equal count (r2 F2).
+func PendingShapesMatch(ctx context.Context, a *sessionstate.Authority, store *EvidenceStore, sessionID string) bool {
+	return projectedPendingIDs(ctx, a, sessionID) == store.livePendingIDs(sessionID)
 }

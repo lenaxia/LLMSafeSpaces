@@ -77,3 +77,19 @@ Counts at this revision: 25 test functions (10 engine/fake + 11 rows incl. out-o
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
 - `go test -race -count=3 -run TestSoak` — stable
 - `golangci-lint` — 0 issues
+
+---
+
+## Review r2 remediation (2026-09-11, PR #1344)
+
+- **F1 (NaN vacuous-green):** validation uses the negated conjunction (`!(x >= 0 && x <= 1)`) — NaN now REJECTED; pinned in the config table with `math.NaN()`.
+- **F2 (identity predicate unpinned):** the comparison is now the exported `PendingShapesMatch` with its own regression pin — `TestPendingShapesMatch_IdentityNotCount`: equal count, different ID → NOT a match (red under the count-based form), and the repaired state matches (reseed clears, the lease diff re-appears truth's ask — one repair tick; the pin probes the predicate, not the repair).
+- r2 notes: nil/empty-ID filtering mirrored from the lease diff in both ID helpers; the teardown blind window disclosed at the suppression site; RunSoak's store-ownership contract documented (it clobbers ses-soak-* truth at start).
+
+Counts at this revision: 27 test functions (10 engine/fake + 12 rows + 5 soak/predicate).
+
+## Tests Run (r2)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
+- `go test -race -count=2 -run "TestPendingShapesMatch|TestSoak"` — stable
+- `golangci-lint` — 0 issues
