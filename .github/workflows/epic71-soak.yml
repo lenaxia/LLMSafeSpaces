@@ -1,0 +1,57 @@
+name: Epic-71 soak (faultmatrix, #1312)
+
+# The 2b merge gate ("soak green at the wave's head", #1312's soak row):
+# the faultmatrix soak driver at dispatch scale — N sessions × fault
+# rate λ for the requested duration, zero violations + convergence
+# within the lease bound or the run fails. In-process by design (the
+# real sessionstate authority + the fault stream; the kind-native
+# live-stack variant is the pool upgrade, owner-scheduled) — so this
+# runs on a standard runner and never occupies the privileged dind pool.
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Soak duration (Go duration; the >=2h gate is 2h0m0s)"
+        default: "2h0m0s"
+        type: string
+      sessions:
+        description: "Session count N"
+        default: "8"
+        type: string
+      fault_rate:
+        description: "Fault probability per tick (0-1)"
+        default: "0.5"
+        type: string
+      seed:
+        description: "Deterministic fault-stream seed"
+        default: "1"
+        type: string
+
+jobs:
+  soak:
+    name: faultmatrix soak (N x lambda, zero violations)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run the soak row
+        env:
+          LLMSAFESPACES_SOAK_DURATION: ${{ inputs.duration }}
+          LLMSAFESPACES_SOAK_SESSIONS: ${{ inputs.sessions }}
+          LLMSAFESPACES_SOAK_FAULT_RATE: ${{ inputs.fault_rate }}
+          LLMSAFESPACES_SOAK_SEED: ${{ inputs.seed }}
+        # go test -timeout derives from the soak duration + 30m of
+        # build/gate headroom (the job-level 360m is the hard cap).
+        run: |
+          TIMEOUT=$(python3 -c "import re
+          d = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in re.findall(r'(\d+)(h|m|s)', '${{ inputs.duration }}'))
+          print(f'{d//60 + 30}m')")
+          echo "soak timeout: $TIMEOUT"
+          go test -race -count=1 -timeout "$TIMEOUT" -run TestSoak_Dispatch -v ./cmd/workspace-agentd/faultmatrix/
+      - name: Soak summary
+        if: always()
+        run: echo "soak dispatch complete (duration=${{ inputs.duration }} sessions=${{ inputs.sessions }} rate=${{ inputs.fault_rate }} seed=${{ inputs.seed }}) — see the Run the soak row step for the gate line"

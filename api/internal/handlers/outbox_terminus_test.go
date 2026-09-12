@@ -497,3 +497,36 @@ func TestLedgerLookup_RealConnectHandlerNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "not_found")
 	assert.NotContains(t, err.Error(), "empty message envelope")
 }
+
+// TestAgentdDeliver_WireDriftCorruption (epic-71 / 2b, #1312 change
+// item 4 — leg 10 at the terminus parse site): corrupted 200s (the four
+// abitest modes) must surface as delivery ERRORS the ladder can retry —
+// never a silent success and never a misparse into a phantom state.
+// The #1308 class, pinned per mode via the leg-10 knob.
+func TestAgentdDeliver_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []abitest.CorruptMode{
+		abitest.CorruptInvalidJSON,
+		abitest.CorruptTrailingGarbage,
+		abitest.CorruptEmptyBody,
+		abitest.CorruptHTMLErrorPage,
+	} {
+		t.Run(mode.String(), func(t *testing.T) {
+			abi := newRealABIStub(t)
+			abi.CorruptNextResponse("Deliver", mode)
+			srv := httptest.NewServer(abi.Handler())
+			t.Cleanup(srv.Close)
+
+			d := &agentdDeliverer{
+				baseURL: srv.URL,
+				client:  &http.Client{},
+				resolve: func(ctx context.Context, workspaceID, sessionID string) (string, string, error) {
+					return srv.URL, "pw", nil
+				},
+				inlineWindow: 50 * time.Millisecond,
+				pollEvery:    10 * time.Millisecond,
+			}
+			err := d.deliver(context.Background(), "ws1", "sess-ref", outbox.Entry{ID: "e-drift-1", Text: "hello"})
+			require.Error(t, err, "a corrupted Deliver ack must fail the delivery, not complete it")
+		})
+	}
+}
