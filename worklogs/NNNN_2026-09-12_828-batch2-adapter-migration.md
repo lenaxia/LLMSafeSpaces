@@ -14,7 +14,7 @@ Migrate the remaining 7 `proxy_handlers.go` dual-path sites to adapter-only, del
 
 ## Work Completed
 
-### Handlers migrated (11 → 0 dual-path sites in proxy_handlers.go)
+### Handlers migrated (8 → 0 dual-path gates in proxy_handlers.go; 11 by batch-1 site count)
 
 - **SendPromptAsync / EnqueueMessage**: nil-adapter guard after shared validation; outbox arm now keys on `h.outbox != nil` alone; both sync fallbacks unified into a new `syncSend` seam (session-limit → quota → model-policy → `adapter.Send` → enrichment → postAdapterSuccess). The #944 disk-full 507 classification is preserved inside `syncSend`'s error path.
 - **GetHistory**: guard + adapter arm un-indented; bespoke legacy tail deleted (`fetchUpstreamHistory`, `doHistoryRequest`, `paginateOpencodeHistory`, `stripPaginationQuery`).

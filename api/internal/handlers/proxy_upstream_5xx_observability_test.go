@@ -122,9 +122,10 @@ func counterValue(t *testing.T, cv *prometheus.CounterVec, labels ...string) flo
 // TestGetHistory_Upstream2xx_DoesNotLogWarnOrRecordMetric was deleted: negative row for the deleted doHistoryRequest instrumentation arm.
 
 // TestDoProxy_Upstream5xx_LogsWarnAndRecordsMetric asserts the fix for
-// #488 for the streaming proxy code path (doProxy) — used by
-// POST /session/*/message, /session, /session/*/prompt_async, and every
-// other opencode endpoint not routed through fetchUpstreamHistory.
+// #488 for the streaming proxy code path (doProxy) — used by the
+// still-legacy raw-proxy routes (question/permission, and the test
+// seams); the send/session/history routes are adapter-served (#828
+// batches 1+2) and never hit doProxy.
 //
 // Uses the /session POST endpoint (a write proxy route) with a mock
 // upstream returning 500. The doProxy code path streams the response, so

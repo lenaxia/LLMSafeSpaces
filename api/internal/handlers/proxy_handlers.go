@@ -691,9 +691,8 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	}
 	workspaceID := c.Param("id")
 
-	// Adapter path (US-65.4): delegate to adapter, then run the same
-	// post-delete side effects (tombstone, session index cleanup, SSE
-	// tombstone publish) that the legacy path runs.
+	// Delegate to the adapter, then run the post-delete side effects
+	// (tombstone, session index cleanup, SSE tombstone publish).
 	if h.adapter == nil {
 		h.adapterUnavailable(c)
 		return
@@ -707,7 +706,7 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	}
 	c.Status(http.StatusNoContent)
 
-	// Post-delete side effects run in both adapter and legacy paths.
+	// Post-delete side effects run after a successful adapter delete.
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // tombstone must survive client disconnect
 
 	if h.sessionIndex != nil {
