@@ -196,12 +196,9 @@ func (s *Service) sweepSessionParked(ctx context.Context, ws, ses string, now ti
 		parkedSweepOutcomes.WithLabelValues(outcome).Inc()
 		switch outcome {
 		case "completed":
-			// LRem's count is the exactly-once token: only the caller
-			// that actually removed the entry fires the hook — a peer
-			// replica (verify path or sweeper) may have completed it
-			// between our read and this write (the multi-replica storm
-			// double-fire, main-red 2026-09-11 19:58Z).
-			if n, err := s.client.LRem(ctx, qk, 1, v).Result(); err == nil && n > 0 {
+			// Cross-list exactly-once claim: only the winner fires
+			// (the multi-replica storm double-fire, main-red twice).
+			if s.claimDelivered(ctx, ws, ses, v, true) > 0 {
 				s.fireOnDelivered(ws, ses, e)
 				recovered++
 			}
@@ -321,10 +318,8 @@ func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (compl
 // confirmed-delivery seam); holds → stay delivering on a bounded re-poll.
 func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context, ws, ses, qk, dk string, idx int, staged []byte, e Entry, now time.Time) {
 	if completes {
-		// Same exactly-once token as the sweeper: only the caller whose
-		// LRem actually removed the staged copy fires the hook — a peer
-		// replica (verify or sweeper) may have completed it first.
-		if n, err := s.client.LRem(ctx, dk, 1, staged).Result(); err == nil && n > 0 {
+		// Cross-list exactly-once claim, same as the sweeper.
+		if s.claimDelivered(ctx, ws, ses, string(staged), true) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return

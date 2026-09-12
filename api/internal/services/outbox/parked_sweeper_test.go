@@ -1232,3 +1232,39 @@ func TestCompleteSites_LoserSuppression(t *testing.T) {
 		assert.Equal(t, int32(0), fired.Load())
 	})
 }
+
+// TestCompleteSites_BothCopiesWindow (the storm's rare interleaving,
+// main-red 2026-09-12 00:00Z): the entry legitimately sits in BOTH lists
+// (the stage-out crash window) — two completers each winning their own
+// single-list LRem must still produce exactly ONE hook fire. The claim
+// is atomic across both lists, so the second completer removes nothing.
+func TestCompleteSites_BothCopiesWindow(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+	// The crash window: the copy ALSO sits in staging.
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+
+	// Completer A (verify path) claims atomically across both lists.
+	s.SetVerifier(func(ctx context.Context, ws, ses string, e Entry) Verdict { return VerdictDelivered })
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+		func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+	assert.Equal(t, int32(1), fired.Load(), "the winner fires once — both copies claimed atomically")
+
+	// Completer B (sweeper shape) finds nothing to claim.
+	probe, _ := probeFunc(t, map[string]string{"e1|0": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, int32(1), fired.Load(), "no second fire — both lists are empty")
+
+	main, _ := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	staged, _ := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	assert.Empty(t, main)
+	assert.Empty(t, staged)
+}

@@ -610,6 +610,37 @@ func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool
 // releaseLock deletes the lock ONLY if we still own it (compare-and-del).
 // A bare DEL could remove a lock a slower worker's TTL-expiry let another
 // worker legitimately acquire.
+// claimDeliveredScript atomically removes ONE copy of the entry from
+// BOTH lists (main and staging) and reports how many were removed. The
+// delivered hook fires only when the count is non-zero — the
+// winner-takes-the-hook token across ALL copies, closing the both-copies
+// crash window (stage-out leaves the entry in main and staging; two
+// completers each winning their own single-list LRem double-fired).
+var claimDeliveredScript = redis.NewScript(`
+local n = 0
+n = n + redis.call("lrem", KEYS[1], 1, ARGV[1])
+if #KEYS > 1 then
+	n = n + redis.call("lrem", KEYS[2], 1, ARGV[1])
+end
+return n
+`)
+
+// claimDelivered is the cross-list exactly-once claim: it removes the
+// entry from the session's main queue (and staging, when given) in one
+// atomic step. Returns the number of copies removed; ONLY a non-zero
+// winner may fire the delivered hook.
+func (s *Service) claimDelivered(ctx context.Context, ws, ses string, val string, withStaging bool) int64 {
+	keys := []string{qKey(ws, ses)}
+	if withStaging {
+		keys = append(keys, dKey(ws, ses))
+	}
+	n, err := claimDeliveredScript.Run(ctx, s.client, keys, val).Int64()
+	if err != nil && err != redis.Nil {
+		return 0 // transport failure: no claim, no fire
+	}
+	return n
+}
+
 var releaseLockScript = redis.NewScript(`
 if redis.call("get", KEYS[1]) == ARGV[1] then
 	return redis.call("del", KEYS[1])
@@ -717,7 +748,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
 	defer bcancel()
 	if derr == nil {
-		if n, err := s.client.LRem(bctx, dKey(ws, ses), 1, staged).Result(); err == nil && n > 0 {
+		if s.claimDelivered(bctx, ws, ses, string(staged), true) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return true
@@ -803,9 +834,8 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 	}
 	switch s.verifier(ctx, ws, ses, e) {
 	case VerdictDelivered:
-		// Exactly-once token: only the removal's winner fires the hook
-		// (a peer replica's sweeper may complete the same entry).
-		if n, err := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); err == nil && n > 0 {
+		// Cross-list exactly-once claim: only the winner fires.
+		if s.claimDelivered(ctx, ws, ses, vals[idx], true) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return true
@@ -834,10 +864,8 @@ func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []stri
 			// completes it — holding it delivering here would need a
 			// re-poll driver this path lacks.
 			if completes, _ := s.parkGuard(ctx, ws, ses, e); completes {
-				// Exactly-once token (the fifth site — r1: verifyOne's
-				// lock-loss window means a peer may complete while our
-				// probes ran; only the LRem winner fires).
-				if n, lerr := s.client.LRem(ctx, qk, 1, vals[idx]).Result(); lerr == nil && n > 0 {
+				// Cross-list exactly-once claim (r1's fifth site).
+				if s.claimDelivered(ctx, ws, ses, vals[idx], true) > 0 {
 					s.fireOnDelivered(ws, ses, e)
 				}
 				return true
