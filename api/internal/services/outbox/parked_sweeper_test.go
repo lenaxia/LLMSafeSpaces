@@ -1324,8 +1324,8 @@ func TestClaimDelivered_DrainsDuplicateCopies(t *testing.T) {
 // snapshot window is inside the sweep itself (LRange snapshot → probes
 // → claim). Completer B's sweep snapshots e1 (ADMITTED truth), blocks in
 // its probe; completer A claims e1 meanwhile; B resumes and its claim on
-// the snapshot value removes nothing — no second fire. A live e2 keeps
-// discovery non-vacuous; probe + claim activity is asserted.
+// the snapshot value removes nothing — no second fire. Probe activity is
+// asserted (non-vacuous).
 func TestCompleteSites_SecondCompleterStaleSnapshot(t *testing.T) {
 	s, _ := newTestService(t)
 	var fired atomic.Int32

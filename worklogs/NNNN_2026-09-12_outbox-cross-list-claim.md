@@ -42,4 +42,10 @@ Lua over check-then-two-LRems: the claim must be atomic across the two keys or t
 ## Review round 2 (PR #1348)
 
 - **Vacuous second-completer row (fixed, honestly this time):** the r1 row never reached the completed site — after A's drain the session was undiscoverable, and even the r2 first attempt's fresh LRange no longer held e1 (mutation-verified passing before I shipped it). The faithful construction: the REAL stale-snapshot window is inside the sweep itself (snapshot → probes → claim) — B's sweep snapshots e1, blocks mid-probe; A claims e1 during the block; B resumes and its claim on the snapshot value removes nothing. Mutation-verified: unconditional-fire at the sweeper site FAILS this row; gated passes. Probe activity asserted (non-vacuous).
-- **Comment block repaired:** releaseLockScript's orphaned doc restored to its declaration; claimDeliveredScript's doc rewritten to the count-0 truth (drains every copy, not "one copy"); the dead `#KEYS > 1` branch removed (the script is two unconditional LRems).
+- **Comment block repaired (completed in r3 — the r2 commit moved the claim doc but left releaseLockScript's three lines orphaned above it while the worklog claimed the repair done):** releaseLockScript's doc now sits on its declaration; claimDeliveredScript's doc states the count-0 truth; the dead `#KEYS > 1` branch was removed in r2.
+
+---
+
+## Review round 3 (PR #1348)
+
+Three mechanical completions the r3 review caught: (1) the orphaned releaseLock doc lines physically moved above `var releaseLockScript` (the r2 edit had only rewritten the claim doc, leaving the three lines stranded — and the worklog overclaimed the repair as done; corrected in-entry above); (2) the second-completer test comment's stale "A live e2 keeps discovery non-vacuous" clause removed (e2 was dropped from the construction; the probe-activity assertion is the non-vacuity proof); (3) this worklog entry itself.

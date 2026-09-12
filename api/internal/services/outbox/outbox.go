@@ -608,9 +608,6 @@ func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool
 	return token, true
 }
 
-// releaseLock deletes the lock ONLY if we still own it (compare-and-del).
-// A bare DEL could remove a lock a slower worker's TTL-expiry let another
-// worker legitimately acquire.
 // claimDeliveredScript atomically drains every byte-identical copy of
 // the entry from BOTH the main queue and staging (lrem count 0) and
 // returns the total removed — the winner-takes-the-hook token:
@@ -639,6 +636,9 @@ func (s *Service) claimDelivered(ctx context.Context, ws, ses string, val string
 	return n
 }
 
+// releaseLock deletes the lock ONLY if we still own it (compare-and-del).
+// A bare DEL could remove a lock a slower worker's TTL-expiry let another
+// worker legitimately acquire.
 var releaseLockScript = redis.NewScript(`
 if redis.call("get", KEYS[1]) == ARGV[1] then
 	return redis.call("del", KEYS[1])
