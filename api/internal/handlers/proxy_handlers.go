@@ -627,7 +627,6 @@ func paginateContractHistory(msgs []session.Message, limit int, before string) (
 	return page, nextCursor
 }
 
-
 func (h *ProxyHandler) GetSession(c *gin.Context) {
 	sid := c.Param("sessionId")
 	if err := validateSessionID(sid); err != nil {
@@ -772,7 +771,6 @@ func validateSessionID(s string) error {
 	}
 	return nil
 }
-
 
 type enqueueRequest struct {
 	ClientMessageID string   `json:"clientMessageID,omitempty"`
