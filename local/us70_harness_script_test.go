@@ -949,10 +949,12 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 }
 
 // TestUS70FaultsScript_ReconnectsAfterArm pins the r6 fix: the arm step
-// rolls the API deployment, so any port-forward established BEFORE the
-// rollout is pinned to the replaced pod — the faults script must
-// reconnect before its first seam probe (run 34618847909: F1 skipped on
-// a dead forward one second after rollout).
+// rolls the API deployment BEFORE this script starts (sequential
+// workflow steps); harness_start then establishes the svc forward inside
+// the rollout-complete → old-pod-reap overlap window, where it resolves
+// to and pins on the DYING pod — the faults script must re-establish
+// the forward before its first seam probe (run 34618847909: F1 skipped
+// on a dead forward one second after rollout completion).
 func TestUS70FaultsScript_ReconnectsAfterArm(t *testing.T) {
 	src := mustRead(t, us70FaultsScript)
 	if !strings.Contains(src, "harness_start\n\n# The arm step rolls the API deployment") {
