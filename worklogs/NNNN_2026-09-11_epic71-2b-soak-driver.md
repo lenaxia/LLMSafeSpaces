@@ -131,3 +131,16 @@ Counts at this revision: 28 test functions (10 engine/fake + 6 faultmatrix rows 
 
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~41s)
 - `golangci-lint` — 0 issues
+
+---
+
+## Review r5 remediation (2026-09-11, PR #1344)
+
+- **The absorption arm pinned (the S9.arm pattern):** after the re-arm converges, `LedgerDepths["promoted"] >= 1` must hold — pristine (FAILED excluded → evidence admission → sweep PROMOTED) vs the guarded regression (FAILED folded into admittedAnywhere → ledger-absorbed with empty MessageID → turn-ended arm, promoted stays 0). Mutation-validated in-session: injecting `LedgerStateFailed` into admittedAnywhere's switch makes the row FAIL with `map[S9.arm:1]`; restored, green.
+- The stale inline comment in the relabeled timeout row corrected to its probe-verified behavior (iteration 2 re-POSTs and succeeds; never FAILED).
+- PR body counts and the closure claim corrected in the body itself (28 = 10+6+12; "closes the in-process fault matrix" qualified to the agentd topology with S3/S4 as kind-row cells).
+
+## Tests Run (r5)
+
+- Injection check: FAILED-in-exclusion → row fails via S9.arm; restored → full package `-race` ok (~41s)
+- `golangci-lint` — 0 issues

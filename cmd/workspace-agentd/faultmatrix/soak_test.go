@@ -407,7 +407,7 @@ func TestRow_Leg8_TimeoutLadderRePOST_S2(t *testing.T) {
 	}
 
 	v := NewViolations()
-	deliver(1) // stalls past the window → FAILED (re-armable)
+	deliver(1) // stalls iteration 1 past the window; iteration 2 re-POSTs and succeeds
 
 	_, ok := WaitConverges(context.Background(), sessionstate.LeaseConvergenceBound, 5*time.Millisecond, func() bool {
 		a.Reconcile(context.Background())
@@ -521,6 +521,15 @@ func TestRow_Leg8_LadderExhaustion_EvidenceAbsorption_S2_S9(t *testing.T) {
 	}
 	if ad.calls != callsAtFailed {
 		v.Add("S9.absorb") // the evidence short-circuit must not re-POST
+	}
+	// Pin the ABSORPTION ARM (r5, the S7.arm pattern): with the FAILED
+	// exclusion intact, the re-arm admits BY EVIDENCE (MessageID set)
+	// and the sweep promotes it — `promoted >= 1`. Under the regression
+	// this cell guards (FAILED folded into admittedAnywhere), the row
+	// absorbs at the LEDGER with an EMPTY MessageID and resolves via the
+	// turn-ended arm — promoted stays 0 and this pin fires.
+	if a.Metrics().LedgerDepths["promoted"] < 1 {
+		v.Add("S9.arm")
 	}
 	if n := store.TranscriptCount("ses-row"); n != 1 {
 		v.Add("S2") // one out-of-band write, zero ladder writes — one transcript message
