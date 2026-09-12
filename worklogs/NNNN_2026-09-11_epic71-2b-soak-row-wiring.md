@@ -74,3 +74,13 @@ None. After merge: dispatch the ≥2h soak (the 2b gate) + a US-70 pool regressi
 - Mutation: lenient terminus parser → pin FAILS; restored → green
 - Workflow guard tokens verified present
 
+
+## Review r2 remediation (2026-09-11, PR #1352)
+
+- **"Ran and passed", not just "not skipped"** (r2 finding 1): the run step now also requires `--- PASS: TestSoak_Dispatch` in the teed log — a zero-match `-run` (rename/move/build-tag) exits 0 with no tokens and now fails the guard.
+- **The ≥2h gate is a check, not a default** (r2 finding 2): the validation step rejects durations below 7200s unless explicitly suffixed `-iter` (an iteration cycle); the run step strips the suffix before the Go test sees it.
+
+## Tests Run (r2)
+
+- Workflow guard tokens verified; no Go changes this round (r1 gates stand).
+

@@ -42,8 +42,16 @@ jobs:
         run: |
           test -n "${{ inputs.duration }}" || { echo "::error::duration input is empty — the soak would skip"; exit 1; }
           python3 -c "import re
-          ds = re.findall(r'(\d+)(h|m|s)', '${{ inputs.duration }}')
-          assert ds and sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in ds) > 0, 'duration must parse to > 0'" \
+          raw0 = '${{ inputs.duration }}'.removesuffix('-iter')
+          ds = re.findall(r'(\d+)(h|m|s)', raw0)
+          secs = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in ds) if ds else 0
+          assert secs > 0, 'duration must parse to > 0'
+          # The 2b merge gate is >=2h (the #1312 soak row). Shorter
+          # dispatches are iteration cycles: allowed only with the
+          # explicit opt-out suffix (e.g. 10s-iter).
+          if secs < 7200 and not '${{ inputs.duration }}'.endswith('-iter'):
+              print(f"::error::duration ${{ inputs.duration }} is below the 2h soak gate — append -iter explicitly for an iteration cycle")
+              raise SystemExit(1)" \
             || { echo "::error::duration does not parse as a Go duration"; exit 1; }
       - name: Run the soak row
         env:
@@ -55,14 +63,23 @@ jobs:
         # build/gate headroom (the job-level 360m is the hard cap). A
         # SKIP is a green no-op — the dispatch exists to RUN the soak.
         run: |
-          TIMEOUT=$(python3 -c "import re
-          d = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in re.findall(r'(\d+)(h|m|s)', '${{ inputs.duration }}'))
+          DUR="${LLMSAFESPACES_SOAK_DURATION%-iter}" # strip the iteration-cycle opt-out suffix
+          LLMSAFESPACES_SOAK_DURATION="$DUR" TIMEOUT=$(python3 -c "import re,os
+          d = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in re.findall(r'(\d+)(h|m|s)', os.environ['LLMSAFESPACES_SOAK_DURATION']))
           print(f'{d//60 + 30}m')")
+          export LLMSAFESPACES_SOAK_DURATION="$DUR"
           echo "soak timeout: $TIMEOUT"
           set -o pipefail
           go test -race -count=1 -timeout "$TIMEOUT" -run TestSoak_Dispatch -v ./cmd/workspace-agentd/faultmatrix/ 2>&1 | tee /tmp/soak.log
+          # The soak must have RUN and PASSED: a SKIP is a green
+          # no-op, and a zero-match -run (rename, package move, build
+          # tag) exits 0 with no tokens at all — require the PASS token.
           if grep -q -- "--- SKIP: TestSoak_Dispatch" /tmp/soak.log; then
             echo "::error::TestSoak_Dispatch SKIPPED — the soak did not run"
+            exit 1
+          fi
+          if ! grep -q -- "--- PASS: TestSoak_Dispatch" /tmp/soak.log; then
+            echo "::error::no PASS token for TestSoak_Dispatch — zero tests ran (rename/move?) or it failed"
             exit 1
           fi
       - name: Soak summary
