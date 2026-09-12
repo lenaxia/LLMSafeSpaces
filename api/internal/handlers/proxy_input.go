@@ -104,9 +104,13 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 }
 
 // tryLateAnswer serves the walk-away flow: the ask is dead in the
-// harness but its inbox record is pending. Buffers the reply body,
-// composes the Q&A message, routes it through the outbox (S1/S2: one
-// delivery regime, ask-scoped dedupe), and reports handled=true.
+// harness but its inbox record is pending. Unknown liveness (unreachable
+// harness — e.g. the workspace is suspended) ALSO takes this path: an
+// answer is safe against a possibly-live ask by construction (the Q&A
+// message lands in history regardless; a still-live ask dies with its
+// turn). Buffers the reply body, composes the Q&A message, routes it
+// through the outbox (S1/S2: one delivery regime, ask-scoped dedupe),
+// and reports handled=true.
 func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID string, extract func([]byte) string) bool {
 	if h.inbox == nil || h.outbox == nil || h.adapter == nil || workspaceID == "" {
 		return false
@@ -115,7 +119,7 @@ func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID stri
 	if err != nil || !ok {
 		return false
 	}
-	if h.askIsLive(c.Request.Context(), workspaceID, rec.SessionID, requestID) {
+	if h.askLivenessOf(c.Request.Context(), workspaceID, rec.SessionID, requestID) == askLive {
 		return false
 	}
 	body, err := io.ReadAll(c.Request.Body)
@@ -297,9 +301,18 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 // Converts session.InputRequest to the legacy agent.QuestionRequest /
 // agent.PermissionRequest shapes the SSE consumers expect.
 // Returns true when the ListPending call succeeded.
+//
+// #1313: a ListPending failure still emits the inbox-only half of the
+// union (liveIDs empty — the live set is unknown, not empty) before
+// returning false. The ok=false marker keeps the flight
+// non-authoritative (clients never wipe live prompts they already hold),
+// and clients apply ADDITIVE staged prompts only — the whileAway
+// re-presentation therefore survives the suspension window, the exact
+// scenario the inbox exists for.
 func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID string) bool {
 	pending, err := h.adapter.ListPending(ctx, "", workspaceID, "")
 	if err != nil {
+		h.emitInboxOnlyRecords(ctx, workspaceID, nil)
 		return false
 	}
 	autoApprove := h.shouldAutoApprovePermissions(ctx, workspaceID)

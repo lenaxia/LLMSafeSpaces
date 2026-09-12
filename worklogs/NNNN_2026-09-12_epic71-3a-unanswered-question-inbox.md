@@ -60,3 +60,28 @@ The walk-away incident class: an ask raised mid-turn dies (turn abort, pod recyc
 - PR review cycle; pool dispatch (walk-away row + delivery rows) on the branch.
 - 4a (#1302): route reply dispositions through `Act` centrally (closes the SessionAction note).
 - G2 live-model confirmation on staging during the release window.
+
+## Review r1 remediation (CHANGES_REQUESTED → fixed)
+
+**F1+F2 (liveness semantics, major):** replaced the boolean `askIsLive` with the tri-state `askLivenessOf` (live/dead/unknown) and recorded the per-path decisions: REPLY degrades unknown→late-answer (safe by construction — an answer lands in history regardless; a still-live ask dies with its turn); DISMISS fails closed on unknown (503, record stays pending) — terminalizing a possibly-ringing ask reopens the two-exits hole irreversibly. Comments, PR text, and the design doc now state the actual behavior. Pinned by `TestInbox_Reply_HarnessUnknownStillLateAnswers`, `TestInbox_Dismiss_HarnessUnknownFailsClosed`, `TestInbox_Dismiss_NoAdapterFailsClosed`.
+
+**F3 (union starved during suspension, major):** `emitPendingViaAdapter` now emits the inbox half even when `ListPending` fails (ok=false marker preserved — non-authoritative, clients never wipe live prompts). Verified the client side already applies ask events optimistically at arrival, so the whileAway prompts render on ok=false flights without further frontend changes. Pinned by `TestInbox_EmitPending_ListPendingErrorStillEmitsInbox`.
+
+**Integration gap found beyond r1 while landing the Playwright leg:** ChatPage takes prompt CONTENT from the pod-side contract fold (I12/US-69.11), whose pendingInputs never carry inbox records — and the fold-sync would DELETE whileAway prompts as "resolved outside this view". Fixed at the ownership boundary: the provider stores whileAway-tagged content from user-stream events (the API-owned surface), and ChatPage's fold-removal exempts whileAway prompts (absent from the pod fold BY DESIGN). The lifecycle stays the resolved-event path.
+
+**F4 (dead code):** removed `inbox.Service.PendingIDs` and `ProxyHandler.GetInboxStore`.
+
+**F5 (eviction-clock reset):** the Lua upsert carries over the ORIGINAL recordedNs/recordedAt on pending refresh — snapshot flights re-record live asks without making them eviction-immune. Pinned by `TestRecord_RefreshPreservesOriginalTimestamp`.
+
+**F6+F7 (nits):** removed the unreachable `adapter == nil` branch inside the dismiss live-path; 5xx bodies no longer echo raw error strings (logged server-side instead).
+
+**Missing tests delivered:** router-level dismiss binding (param names + session-scoping 404); `emitInboxOnlyRecords` under `ListWorkspace` failure (live-only snapshot, no panic); the vitest "stack" row (server-side: three pending records re-present oldest-first, all tagged); the Playwright walk-away-walk-back legs (2 specs, route-mock strategy: render + late-answer POST body; dismiss → DELETE inbox route, live-reject route NOT fired); cluster W2 now asserts the delivery payload carries the Q&A pair; new W5 stages the API-rollover-mid-answer state (marker present, record pending) and asserts convergence to the original entry (S11 never-lost) + dismiss-of-unknown 404.
+
+**Design doc:** corrected the stale "InputResolved terminal update" line (resolution is liveness, not disposition), documented the tri-state and the union-under-failure behavior, and scoped the model-continuation half of the e2e row as the recorded staging deferral.
+
+## Tests run (r1)
+
+- `go test -race -count=1 ./api/internal/services/inbox/ ./api/internal/handlers/ ./pkg/agent/...` — ok (18 store + 21 handler inbox tests)
+- `npx vitest run` (provider + both prompt suites) — 101/101 + the earlier 29
+- `npx playwright test tests/e2e/walk-away.spec.ts` — 2/2
+- `golangci-lint run` — 0 issues; `npx tsc --noEmit` — clean; `bash -n` + pin tests — ok

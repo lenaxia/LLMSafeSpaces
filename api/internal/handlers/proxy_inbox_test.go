@@ -538,17 +538,6 @@ func TestInbox_Dismiss_UnknownRecord404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, c.Writer.Status())
 }
 
-func TestInbox_QAComposition_Question(t *testing.T) {
-	rec := inbox.Record{
-		Kind:     inbox.KindQuestion,
-		Question: "Deploy now?",
-		Header:   "Deploy",
-	}
-	text := composeQA(rec, `"Yes, deploy"`)
-	assert.Contains(t, text, "Deploy now?")
-	assert.Contains(t, text, `"Yes, deploy"`)
-}
-
 func TestInbox_QAComposition_Permission(t *testing.T) {
 	rec := inbox.Record{
 		Kind:       inbox.KindPermission,
@@ -575,4 +564,238 @@ func jsonRequest(t *testing.T, method, target string, body string) *http.Request
 	req := httptest.NewRequest(method, target, rdr)
 	req.Header.Set("Content-Type", "application/json")
 	return req
+}
+
+func TestInbox_QAComposition_Question(t *testing.T) {
+	rec := inbox.Record{
+		Kind:     inbox.KindQuestion,
+		Question: "Deploy now?",
+		Header:   "Deploy",
+	}
+	text := composeQA(rec, `"Yes, deploy"`)
+	assert.Contains(t, text, "Deploy now?")
+	assert.Contains(t, text, `"Yes, deploy"`)
+}
+
+// --- r1 findings 1-3: liveness-error semantics ---
+
+func TestInbox_Reply_HarnessUnknownStillLateAnswers(t *testing.T) {
+	// r1 finding 1: ListPending error (unreachable harness — e.g. the
+	// suspended window) must degrade the REPLY to the late-answer flow:
+	// an answer is safe against a possibly-live ask by construction.
+	h, in, ob, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_gone", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Deploy?", Options: []inbox.Option{{Label: "Yes", Description: ""}}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "que_gone"}}
+	c.Request = jsonRequest(t, http.MethodPost, "/x", `{"answers":[["Yes"]]}`)
+
+	h.QuestionReply(c)
+
+	assert.Equal(t, http.StatusAccepted, c.Writer.Status(), "unknown liveness degrades to the late answer (r1 f1)")
+	entries, err := ob.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+	left, _ := in.List(context.Background(), "ws-1", "ses_1")
+	assert.Empty(t, left)
+}
+
+func TestInbox_Dismiss_HarnessUnknownFailsClosed(t *testing.T) {
+	// r1 finding 2: dismiss under unknown liveness must NOT terminalize —
+	// a possibly-ringing doorbell plus an immutable dismissed record
+	// reopens the two-exits hole. 503, record stays pending.
+	h, in, _, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_maybe", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Still ringing?", RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}, {Key: "requestID", Value: "que_maybe"}}
+	c.Request = jsonRequest(t, http.MethodDelete, "/x", "")
+
+	h.DismissInboxRecord(c)
+
+	assert.Equal(t, http.StatusServiceUnavailable, c.Writer.Status(), "dismiss fails closed on unknown liveness (r1 f2)")
+	left, err := in.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Len(t, left, 1, "record must stay pending")
+}
+
+func TestInbox_Dismiss_NoAdapterFailsClosed(t *testing.T) {
+	h, in, _, _ := newInboxBackend(t)
+	h.adapter = nil
+	rec := inbox.Record{
+		ID: "que_x", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Q?", RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}, {Key: "requestID", Value: "que_x"}}
+	c.Request = jsonRequest(t, http.MethodDelete, "/x", "")
+
+	h.DismissInboxRecord(c)
+	assert.Equal(t, http.StatusServiceUnavailable, c.Writer.Status())
+}
+
+func TestInbox_EmitPending_ListPendingErrorStillEmitsInbox(t *testing.T) {
+	// r1 finding 3: the union must survive the live leg failing — the
+	// suspension window is the exact scenario the inbox exists for. The
+	// marker stays ok=false (non-authoritative; clients never wipe live
+	// prompts), and the inbox half still emits.
+	h, in, _, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
+	stale := inbox.Record{
+		ID: "que_away", SessionID: "ses_2", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Away?", RecordedAt: time.Now().UTC().Add(-time.Minute),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", stale))
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	h.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	found := false
+	for i := 0; i < 3 && !found; i++ {
+		evt := recvWithTimeout(t, userSub, "agent.question")
+		if evt.RequestID == "que_away" {
+			found = true
+		}
+	}
+	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, marker.SnapshotOK)
+	assert.False(t, *marker.SnapshotOK, "failed live fetch must stay non-authoritative")
+	assert.True(t, found, "inbox-only record must still emit on the failed-live flight (r1 f3)")
+}
+
+func TestInbox_EmitPending_InboxStoreErrorNoPanicLiveOnly(t *testing.T) {
+	// r1 missing-case 5: ListWorkspace error must degrade to a live-only
+	// snapshot with a warn — never panic, never fail the flight.
+	h, _, _, mr := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "que_live", SessionID: "ses_1", Kind: session.InputQuestion,
+				Question: "Live?", Options: []session.InputOption{{Label: "A", Description: "a"}},
+			}}, nil
+		},
+	}
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	mr.Close() // the inbox store now errors on every read
+
+	assert.NotPanics(t, func() {
+		h.emitPendingInputRequests(context.Background(), "ws-1")
+	})
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	evt := recvWithTimeout(t, userSub, "agent.question")
+	assert.Equal(t, "que_live", evt.RequestID, "live half unaffected by an inbox store failure")
+	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, marker.SnapshotOK)
+	assert.True(t, *marker.SnapshotOK)
+}
+
+func TestInbox_Dismiss_RouterLevelBinding(t *testing.T) {
+	// r1 missing-case 2: drive dismiss through a real gin router (param
+	// names, method, middleware) instead of hand-set c.Params. The
+	// route's OpenAPI↔router registration is pinned by the server
+	// package's contract test; this pins the handler-side binding.
+	env := newInputTestEnv(t)
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	in := inbox.New(client)
+	env.handler.SetInboxStoreForTest(in)
+	env.handler.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil // dead ask — dismiss proceeds without a live reject
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_router", SessionID: "ses_router", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Bound?", RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+
+	env.router.DELETE("/api/v1/workspaces/:id/sessions/:sessionId/inbox/:requestID", env.handler.DismissInboxRecord)
+
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/ses_router/inbox/que_router", nil)
+	assert.Equal(t, http.StatusNoContent, w.Code, "router-level binding must reach the handler with all three params")
+
+	// Wrong session in the path: same ask ID, different session scoping
+	// → 404 (the record belongs to another session).
+	rec2 := inbox.Record{
+		ID: "que_scoped", SessionID: "ses_owner", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Scoped?", RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec2))
+	w2 := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/ses_other/inbox/que_scoped", nil)
+	assert.Equal(t, http.StatusNotFound, w2.Code, "session mismatch must 404, not dismiss another session's record")
+}
+
+func TestInbox_WhileAwayStack_MultipleRecordsAllRePresent(t *testing.T) {
+	// The #1313 vitest "stack" row, server side: several pending records
+	// re-present together, oldest first, all whileAway-tagged.
+	h, in, _, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	ids := []string{"que_s1", "que_s2", "que_s3"}
+	for i, id := range ids {
+		rec := inbox.Record{
+			ID: id, SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+			Question: "Q" + id, RecordedAt: base.Add(time.Duration(i) * time.Minute),
+		}
+		require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+	}
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	h.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	var order []string
+	for i := 0; i < 3; i++ {
+		evt := recvWithTimeout(t, userSub, "agent.question")
+		b, _ := json.Marshal(evt.Data)
+		var qr agent.QuestionRequest
+		require.NoError(t, json.Unmarshal(b, &qr))
+		assert.True(t, qr.WhileAway)
+		order = append(order, qr.ID)
+	}
+	assert.Equal(t, ids, order, "stack re-presents oldest-first")
 }

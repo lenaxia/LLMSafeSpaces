@@ -269,11 +269,6 @@ func (h *ProxyHandler) SetInboxStoreForTest(s *inbox.Service) {
 	h.inbox = s
 }
 
-// GetInboxStore exposes the inbox service (admin/diagnostics).
-func (h *ProxyHandler) GetInboxStore() *inbox.Service {
-	return h.inbox
-}
-
 // SetOutbox wires the D3 durable-prompt outbox (design 0050 §D3, #907).
 // The worker launches in Start() when the outbox is set (nil = legacy
 // synchronous send path, dev/test).

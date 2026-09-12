@@ -168,6 +168,22 @@ if [[ -n "${MARKER}" && "${MARKER}" == ob_* ]]; then
 else
     note_fail "W2 dedupe marker missing/invalid: '${MARKER}'"
 fi
+# The delivery payload carries the Q&A pair (question + answer) — the
+# in-history half of L8; the model-continuation half needs a real model
+# (staging leg, recorded deferral). The entry sits in the queue or the
+# delivery staging list — read whichever holds it.
+ENTRY_JSON=""
+for K in "outboxq:${W1_WS}:${W1_SES}" "outboxd:${W1_WS}:${W1_SES}"; do
+    HIT=$(vkey_exec --raw LRANGE "${K}" 0 -1 2>/dev/null | grep -F "${MSG1}" | head -1 || true)
+    [[ -n "${HIT}" ]] && { ENTRY_JSON="${HIT}"; break; }
+done
+if [[ -n "${ENTRY_JSON}" ]] \
+    && grep -q 'Deploy the blue widget?' <<<"${ENTRY_JSON}" \
+    && grep -q 'Yes, deploy' <<<"${ENTRY_JSON}"; then
+    ok "W2 delivery payload carries the Q&A pair (question + answer)"
+else
+    note_fail "W2 delivery payload missing the Q&A pair: $(head -c 200 <<<"${ENTRY_JSON}")"
+fi
 ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1aaa)
 [[ "${ST}" == "answered" ]] && ok "W2 record terminal answered" || note_fail "W2 status '${ST}', want answered"
 
@@ -236,6 +252,36 @@ if grep -q '"id":"que_e71w1ccc"' "${CAP4}" 2>/dev/null && grep -q '"whileAway":t
 else
     note_fail "W4: no whileAway re-presentation after resume (see ${CAP4})"
 fi
+
+# --- W5: API-rollover-mid-answer state (S11 never-lost) ---------------------
+log "W5: the rollover-mid-answer state converges (marker present, record still pending)"
+# Stage the exact state an API crash between outbox.Accept and Resolve
+# leaves: the dedupe marker EXISTS, the record is STILL pending. The
+# user re-answers; S11 requires answered-exactly-once, never lost.
+vkey_exec HSET "inboxq:${W1_WS}:${W1_SES}" que_e71w1aaa \
+    "$(vkey_exec --raw HGET "inboxq:${W1_WS}:${W1_SES}" que_e71w1aaa | jq -c '.status = "pending"')" >/dev/null 2>&1
+ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1aaa)
+[[ "${ST}" == "pending" ]] || note_fail "W5 staging: status '${ST}', want pending"
+code5=$(curl -s -o /tmp/e71w5_resp.json -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1aaa/reply" \
+    -d '{"answers":[["Yes, deploy"]]}')
+DUP5=$(jq -r '.duplicate // empty' /tmp/e71w5_resp.json 2>/dev/null)
+MSG5=$(jq -r '.messageID // empty' /tmp/e71w5_resp.json 2>/dev/null)
+if [[ "${code5}" == "202" && "${DUP5}" == "true" && "${MSG5}" == "${MSG1}" ]]; then
+    ok "W5 re-answer after rollover maps to the original entry (S11: exactly once)"
+else
+    note_fail "W5 re-answer: code=${code5} duplicate=${DUP5} msg=${MSG5} (want 202/true/${MSG1})"
+fi
+ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1aaa)
+[[ "${ST}" == "answered" ]] && ok "W5 record converged answered" || note_fail "W5 status '${ST}', want answered"
+
+# Dismiss-of-unknown: 404, no state change (the review's unhappy row).
+code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -X DELETE "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/${W1_SES}/inbox/que_does_not_exist")
+[[ "${code5b}" == "404" ]] && ok "W5 dismiss-of-unknown 404s" || note_fail "W5 dismiss-of-unknown: ${code5b}, want 404"
 
 # Cleanup: leave the workspace suspended to free capacity.
 curl -s -o /dev/null -m 30 -H "Authorization: Bearer ${AUTH_TOKEN}" \

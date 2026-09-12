@@ -109,12 +109,24 @@ func key(workspaceID, sessionID string) string {
 // upsertScript atomically records one ask. KEYS[1] = inbox key.
 // ARGV: 1 = ask ID, 2 = payload, 3 = cap, 4 = TTL seconds.
 // Returns 1 when written, 0 when the existing record is terminal
-// (immutable no-op).
+// (immutable no-op). A pending refresh carries over the ORIGINAL
+// recordedNs/recordedAt: snapshot flights re-record every live ask, and
+// a refresh must not reset the eviction clock (long-lived live asks
+// would become eviction-immune otherwise).
 var upsertScript = redis.NewScript(`
 local existing = redis.call('HGET', KEYS[1], ARGV[1])
 if existing then
   if string.find(existing, '"status":"pending"', 1, true) then
-    redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+    local payload = ARGV[2]
+    local oldNs = string.match(existing, '"recordedNs":(%d+)')
+    local oldAt = string.match(existing, '"recordedAt":"([^"]+)"')
+    if oldNs then
+      payload = string.gsub(payload, '"recordedNs":%d+', '"recordedNs":' .. oldNs, 1)
+    end
+    if oldAt then
+      payload = string.gsub(payload, '"recordedAt":"[^"]+"', '"recordedAt":"' .. oldAt .. '"', 1)
+    end
+    redis.call('HSET', KEYS[1], ARGV[1], payload)
     redis.call('EXPIRE', KEYS[1], tonumber(ARGV[4]))
     return 1
   end
@@ -257,20 +269,6 @@ func (s *Service) List(ctx context.Context, workspaceID, sessionID string) ([]Re
 		return pending[i].RecordedAt.Before(pending[j].RecordedAt)
 	})
 	return pending, nil
-}
-
-// PendingIDs returns the IDs of the session's pending records — the
-// snapshot union's dedupe set (live asks ∪ inbox, live wins).
-func (s *Service) PendingIDs(ctx context.Context, workspaceID, sessionID string) (map[string]bool, error) {
-	pending, err := s.List(ctx, workspaceID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	ids := make(map[string]bool, len(pending))
-	for _, rec := range pending {
-		ids[rec.ID] = true
-	}
-	return ids, nil
 }
 
 // ListWorkspace returns the pending records of EVERY session under the

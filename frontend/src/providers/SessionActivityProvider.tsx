@@ -295,6 +295,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const requestId = evt.request_id;
           // Always apply optimistically for responsiveness.
           addPendingAction(wsId, sessionId, requestId);
+          // #1313: a whileAway-tagged payload is an INBOX re-presentation —
+          // API-owned content that the pod-side contract fold never
+          // carries (the live ask is gone; that is the point). Store its
+          // content here so the prompt renders; lifecycle rides the
+          // resolved-event path exactly like a live prompt's.
+          const payload = (evt as { data?: { whileAway?: boolean } }).data;
+          if (payload?.whileAway === true) {
+            if (evt.type === "agent.question") {
+              addPendingQuestion(wsId, (evt as unknown as { data: QuestionRequest }).data);
+            } else {
+              addPendingPermission(wsId, (evt as unknown as { data: PermissionRequest }).data);
+            }
+          }
           // Stage if an anti-entropy window is open: into EVERY open flight
           // for the workspace (the event may belong to any of them, and a
           // flight's commit must include it), or — when no flight is open —

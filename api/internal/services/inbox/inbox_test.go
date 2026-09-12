@@ -101,6 +101,37 @@ func TestRecord_UpsertPendingRefreshes(t *testing.T) {
 	}
 }
 
+func TestRecord_RefreshPreservesOriginalTimestamp(t *testing.T) {
+	// Snapshot flights re-record every live ask; a refresh must not
+	// reset the eviction clock (r1 finding 5: long-lived live asks would
+	// become eviction-immune, degrading FIFO to
+	// least-recently-snapshotted). The FIRST-recorded stamp wins.
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Millisecond).Add(-time.Hour)
+
+	a := questionRecord("que_a")
+	a.RecordedAt = base
+	_ = svc.Record(ctx, "ws1", a)
+	b := questionRecord("que_b")
+	b.RecordedAt = base.Add(time.Minute)
+	_ = svc.Record(ctx, "ws1", b)
+
+	// Refresh A much later — its ORIGINAL stamp must survive.
+	aLate := questionRecord("que_a")
+	aLate.RecordedAt = base.Add(2 * time.Hour)
+	if err := svc.Record(ctx, "ws1", aLate); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	got, _ := svc.List(ctx, "ws1", "ses_a")
+	if len(got) != 2 {
+		t.Fatalf("want 2 records, got %d", len(got))
+	}
+	if got[0].ID != "que_a" || got[0].RecordedAt.After(base.Add(time.Second)) {
+		t.Fatalf("refresh reset the stamp: %+v", got[0])
+	}
+}
+
 func TestRecord_TerminalImmutable(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()

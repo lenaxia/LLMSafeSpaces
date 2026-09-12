@@ -186,23 +186,41 @@ func permissionRequestFromRecord(rec inbox.Record, root string) *agent.Permissio
 	return req
 }
 
-// askIsLive consults the harness pending set. An unreachable harness is
-// NOT proof of death: returns false only with positive evidence that the
-// ask is absent from a successful listing.
-func (h *ProxyHandler) askIsLive(ctx context.Context, workspaceID, sessionID, askID string) bool {
+// askLiveness is the tri-state result of consulting the harness pending
+// set. The adapter's contract is explicit (`ListPending` error ⇒ pending
+// set UNKNOWN, never authoritative-empty), so the callers' decisions are
+// recorded per-path:
+//
+//   - REPLY path: unknown liveness degrades to the late-answer flow —
+//     an answer against a possibly-live ask is safe by construction (the
+//     Q&A message lands in history regardless; a still-live ask dies
+//     with its turn and the model reads the answer from the transcript).
+//   - DISMISS path: unknown liveness FAILS CLOSED (503) — terminalizing
+//     a record whose ask may still be ringing reopens the two-exits hole
+//     decision 2 closes, and the immutability of terminal records makes
+//     it unrepairable. Dismiss requires positive death evidence.
+type askLiveness int
+
+const (
+	askLive askLiveness = iota
+	askDead
+	askLivenessUnknown
+)
+
+func (h *ProxyHandler) askLivenessOf(ctx context.Context, workspaceID, sessionID, askID string) askLiveness {
 	if h.adapter == nil {
-		return false
+		return askLivenessUnknown
 	}
 	pending, err := h.adapter.ListPending(ctx, "", workspaceID, sessionID)
 	if err != nil {
-		return false
+		return askLivenessUnknown
 	}
 	for _, ir := range pending {
 		if ir.ID == askID {
-			return true
+			return askLive
 		}
 	}
-	return false
+	return askDead
 }
 
 // composeQA renders the late-answer user message. Framed from G1
@@ -251,7 +269,7 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 			})
 			return
 		}
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "inbox late answer unavailable: " + err.Error()})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "inbox late answer unavailable"})
 		return
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusAnswered)
@@ -289,23 +307,27 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 	}
 	rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, askID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		h.logger.Warn("inbox dismiss: lookup failed", "error", err, "workspace", workspaceID, "ask", askID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "inbox lookup failed"})
 		return
 	}
 	if !ok || rec.SessionID != sessionID {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no pending inbox record"})
 		return
 	}
-	if h.askIsLive(c.Request.Context(), workspaceID, sessionID, askID) {
-		if h.adapter == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input adapter not configured"})
-			return
-		}
+	switch h.askLivenessOf(c.Request.Context(), workspaceID, sessionID, askID) {
+	case askLivenessUnknown:
+		// Fail closed: terminalizing a possibly-live ask reopens the
+		// two-exits hole (the record is immutable once terminal).
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "harness pending set unknown — retry dismiss"})
+		return
+	case askLive:
 		if err := h.adapter.RejectInput(c.Request.Context(), "", workspaceID, askID); err != nil {
 			h.logger.Warn("inbox dismiss: live reject failed", "error", err, "workspace", workspaceID, "ask", askID)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "live ask reject failed: " + err.Error()})
+			c.JSON(http.StatusBadGateway, gin.H{"error": "live ask reject failed"})
 			return
 		}
+	case askDead:
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusDismissed)
 	if h.userBroker != nil {
