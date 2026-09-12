@@ -26,3 +26,13 @@ Lua over check-then-two-LRems: the claim must be atomic across the two keys or t
 - `api/internal/services/outbox/parked_sweeper.go` (sites 4-5)
 - `api/internal/services/outbox/parked_sweeper_test.go` (both-copies window pin)
 - `worklogs/NNNN_2026-09-12_outbox-cross-list-claim.md` (this file)
+
+---
+
+## Review round 1 (PR #1348)
+
+- **Residual-copy path closed:** `lrem` count 1 → **0** per key — the claim drains EVERY byte-identical copy from both lists, so the dual-stage race (two identical staging copies) leaves nothing for next boot's Recover to re-fire. Pinned by `TestClaimDelivered_DrainsDuplicateCopies` (main+2 staging copies → one atomic claim of 3, no residual).
+- **Error arm covered:** `TestClaimDelivered_ErrorArmNoFireEntryRetained` — miniredis `SetError` at claim time → 0 return, no fire, entry retained, recovered claim wins (the at-least-once direction). The dead `redis.Nil` comparison removed.
+- **Dead parameter removed:** `withStaging` (all five sites claim both lists; the `#KEYS > 1` branch was unreachable).
+- **Contract comments corrected:** `DeliveredHook` states exactly-once per entry for concurrent completers with at-least-once failure direction; the script/helper docs scope the invariant honestly and note the single-instance Redis constraint (no hash tags — cluster mode would CROSSSLOT; today's deployment is standalone Valkey).
+- **Faithful second-completer row:** `TestCompleteSites_SecondCompleterStaleSnapshot` — B's claim runs against its stale snapshot after A drained; removes nothing, fires nothing.

@@ -198,7 +198,7 @@ func (s *Service) sweepSessionParked(ctx context.Context, ws, ses string, now ti
 		case "completed":
 			// Cross-list exactly-once claim: only the winner fires
 			// (the multi-replica storm double-fire, main-red twice).
-			if s.claimDelivered(ctx, ws, ses, v, true) > 0 {
+			if s.claimDelivered(ctx, ws, ses, v) > 0 {
 				s.fireOnDelivered(ws, ses, e)
 				recovered++
 			}
@@ -319,7 +319,7 @@ func (s *Service) parkGuard(ctx context.Context, ws, ses string, e Entry) (compl
 func (s *Service) applyParkGuardDisposition(completes bool, ctx context.Context, ws, ses, qk, dk string, idx int, staged []byte, e Entry, now time.Time) {
 	if completes {
 		// Cross-list exactly-once claim, same as the sweeper.
-		if s.claimDelivered(ctx, ws, ses, string(staged), true) > 0 {
+		if s.claimDelivered(ctx, ws, ses, string(staged)) > 0 {
 			s.fireOnDelivered(ws, ses, e)
 		}
 		return

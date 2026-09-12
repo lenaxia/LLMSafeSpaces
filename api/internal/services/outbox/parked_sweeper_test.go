@@ -1268,3 +1268,82 @@ func TestCompleteSites_BothCopiesWindow(t *testing.T) {
 	assert.Empty(t, main)
 	assert.Empty(t, staged)
 }
+
+// TestClaimDelivered_ErrorArmNoFireEntryRetained (r1): a claim-time
+// Redis failure produces NO fire and leaves the entry claimable — the
+// at-least-once direction.
+func TestClaimDelivered_ErrorArmNoFireEntryRetained(t *testing.T) {
+	s, mr := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+
+	mr.SetError("claim-time outage")
+	got := s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.EqualValues(t, 0, got, "failed claim returns 0 — no fire")
+	assert.EqualValues(t, 0, fired.Load())
+	mr.SetError("")
+
+	vals, err := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	require.NoError(t, err)
+	require.Len(t, vals, 1, "the entry is retained — claimable again")
+	got = s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.Equal(t, int64(1), got, "the recovered claim wins and reports the copy")
+}
+
+// TestClaimDelivered_DrainsDuplicateCopies (r1 finding 1): the dual-stage
+// race leaves TWO byte-identical staging copies — the count-0 LRem drains
+// them all, so next boot's Recover finds no residual to re-fire.
+func TestClaimDelivered_DrainsDuplicateCopies(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusVerifying}
+	raw := string(mustMarshal(e))
+	// main holds one copy (the crash window), staging holds TWO (the
+	// dual-stage race re-staged it).
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+	require.NoError(t, s.client.RPush(context.Background(), dKey("ws-1", "ses-1"), raw).Err())
+
+	got := s.claimDelivered(context.Background(), "ws-1", "ses-1", raw)
+	assert.EqualValues(t, 3, got, "every byte-identical copy claimed atomically")
+	assert.EqualValues(t, 0, fired.Load(), "the claim itself never fires — the winning CALLER does")
+
+	main, _ := s.client.LRange(context.Background(), qKey("ws-1", "ses-1"), 0, -1).Result()
+	staged, _ := s.client.LRange(context.Background(), dKey("ws-1", "ses-1"), 0, -1).Result()
+	assert.Empty(t, main, "no residual for the next boot's Recover to re-fire")
+	assert.Empty(t, staged)
+}
+
+// TestCompleteSites_SecondCompleterStaleSnapshot (r1 missing test 2):
+// completer B's claim runs against the value its STALE snapshot holds —
+// but A's count-0 claim already drained every copy, so B removes
+// nothing and fires nothing.
+func TestCompleteSites_SecondCompleterStaleSnapshot(t *testing.T) {
+	s, _ := newTestService(t)
+	var fired atomic.Int32
+	s.SetOnDelivered(func(ws, ses string, e Entry) { fired.Add(1) })
+	e := Entry{ID: "e1", ClientMessageID: "cmid-e1", UserID: "u1", Text: "hi",
+		AcceptedAt: time.Now().UTC(), Status: StatusPending}
+	raw := string(mustMarshal(e))
+	require.NoError(t, s.client.RPush(context.Background(), qKey("ws-1", "ses-1"), raw).Err())
+
+	// A wins the inline-success claim (drains main + staging copies).
+	require.True(t, s.DeliverOnce(context.Background(), "ws-1", "ses-1",
+		func(ctx context.Context, ws, ses string, e Entry) error { return nil }))
+	require.Equal(t, int32(1), fired.Load())
+
+	// B (sweeper shape) still holds the stale snapshot value and probes
+	// ADMITTED — its claim finds nothing; no second fire.
+	probe, _ := probeFunc(t, map[string]string{"e1|0": LedgerStateAdmitted})
+	s.SetLedgerProbe(probe)
+	n, err := s.SweepWorkspaceParkedErrors(context.Background(), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, int32(1), fired.Load(), "stale-snapshot completer claims nothing")
+}
