@@ -97,10 +97,11 @@ reconnect_api() {
 # resolves to the terminating pre-arm pod, /livez passes (livez ignores
 # the fault env) but every probe returns 401-while-alive → 000-on-reap —
 # no probe can ever see a 500 through it. Only a fresh forward can reach
-# the armed pod). Rounds: probe loop (2s settle between tries — the svc
-# re-resolves per connection only once the old endpoint is de-registered)
-# → on miss, reconnect_api (fresh pod resolution) → repeat. Bounded by
-# rounds × tries; the first 500 breaks out burning exactly one fault.
+# the armed pod). Rounds: probe loop (2s settle between tries — spacing
+# probes in time; a pinned tunnel re-resolves nothing per connection,
+# the ROUND BOUNDARY's reconnect does the re-resolution) → on miss,
+# reconnect_api (fresh pod resolution) → repeat. Bounded by rounds ×
+# tries; the first 500 breaks out burning exactly one fault.
 probe_seam() {
     local arm="$1" _round _i _code
     for _round in 1 2 3 4 5; do
