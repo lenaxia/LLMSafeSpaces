@@ -25,7 +25,7 @@ Lua over check-then-two-LRems: the claim must be atomic across the two keys or t
 - `api/internal/services/outbox/outbox.go` (script + claim helper + sites 1-3)
 - `api/internal/services/outbox/parked_sweeper.go` (sites 4-5)
 - `api/internal/services/outbox/parked_sweeper_test.go` (both-copies window pin)
-- `worklogs/NNNN_2026-09-12_outbox-cross-list-claim.md` (this file)
+- `worklogs/0920_2026-09-12_outbox-cross-list-claim.md` (this file)
 
 ---
 
