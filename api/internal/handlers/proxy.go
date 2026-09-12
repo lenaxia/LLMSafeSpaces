@@ -214,13 +214,12 @@ func (h *ProxyHandler) adapterUnavailable(c *gin.Context) {
 	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent adapter not configured"})
 }
 
-// SetAdapter wires the US-65.3 Agent Adapter. Once set, handlers that
-// have been migrated check `h.adapter != nil` and take the Adapter path;
-// unmigrated handlers continue through the legacy dialect path. Set
-// before Start(); nil leaves the handler in legacy mode (today's
-// behavior). Panics if called after Start() — same invariant as
-// SetStateStore, preventing a data race on the interface field once
-// handler goroutines begin reading h.adapter.
+// SetAdapter wires the US-65.3 Agent Adapter. Every
+// proxy_handlers.go route is adapter-only since #828 batches 1+2: a nil
+// adapter there fails closed at the adapterUnavailable guard (typed
+// 503). Set before Start(). Panics if called after Start() — same
+// invariant as SetStateStore, preventing a data race on the interface
+// field once handler goroutines begin reading h.adapter.
 func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 	if a == nil {
 		return

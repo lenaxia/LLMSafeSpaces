@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
@@ -230,4 +231,67 @@ func TestEnqueueMessage_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "text must not be empty")
+}
+
+// --- Write-route activity parity pins (review r7) ---
+
+// AbortSession's 2xx records workspace activity; the adapter-error path
+// does not. Pins the r6 parity line — deleting it turns this row red.
+func TestAbortSession_2xx_RecordsActivity(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+	tracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = tracker
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, 1, tracker.PendingCount(), "successful abort records activity")
+
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			return assert.AnError
+		},
+	}
+	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s2/abort", nil)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Equal(t, 1, tracker.PendingCount(), "failed abort records nothing")
+}
+
+// DeleteSession's 2xx records workspace activity; the guard and
+// adapter-error paths do not. Pins the r6 parity line.
+func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	tracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = tracker
+
+	// Nil-adapter guard: no activity.
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Zero(t, tracker.PendingCount(), "the guard records nothing")
+
+	// Adapter error: no activity.
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error {
+			return assert.AnError
+		},
+	}
+	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s2", nil)
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	assert.Zero(t, tracker.PendingCount(), "a failed delete records nothing")
+
+	// Success: activity recorded.
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s3", nil)
+	require.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, 1, tracker.PendingCount(), "successful delete records activity")
 }

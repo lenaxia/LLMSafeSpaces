@@ -665,12 +665,12 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// Adapter path (US-65.4): abort via adapter.Abort. The V1
-	// POST /session/:id/abort (the only interrupt endpoint on opencode
-	// 1.18.10+) destructively stops the in-flight turn — queued input
-	// is not preserved, unlike the old V2 interrupt which was removed
-	// in 1.18.10. We clear pending tracking so US-63.9 stranded-input
-	// recovery doesn't re-wake a session the user explicitly aborted.
+	// adapter.Abort: the V1 POST /session/:id/abort (the only interrupt
+	// endpoint on opencode 1.18.10+) destructively stops the in-flight
+	// turn — queued input is not preserved, unlike the old V2 interrupt
+	// which was removed in 1.18.10. (A former "clear pending tracking"
+	// step died with the V2 path; stranded-input recovery is the
+	// outbox ledger's concern.)
 	if h.adapter == nil {
 		h.adapterUnavailable(c)
 		return
