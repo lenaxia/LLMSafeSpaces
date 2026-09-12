@@ -744,7 +744,7 @@ When a workspace's `/workspace` PVC crosses **90% usage**, the API proxy prepend
 
 **Implementation (single source since #944, enforced by #828 batch 1):** the injection point is the adapter decorator `systemnotices.Wrap` (`pkg/agent/systemnotices/systemnotices.go`, wired at `app.go` before `Start()`), which covers every adapter entrypoint (HTTP chat via `/sessions/:id/message`, MCP, SDK) and reads the ratio from the Workspace CRD via the `crdDiskUsage` provider. The notice is prepended to the prompt text before `adapter.Send`. A transport-level body rewriter (`injectDiskPressureNotice` in `proxy_disk_pressure.go`) served the legacy raw-proxy message path until #828 batch 1 deleted that path with its duplicate injector; `api/internal/handlers/proxy_disk_pressure.go` now keeps only the level/ratio/notice aliases delegating to `systemnotices`, plus a handler-side pin (`TestSendMessage_DiskPressure_HandlerNeverInjects`) that the handler never re-learns injection (the decorator would double-notice).
 
-> **Note:** the V2 prompt path (`POST /sessions/:id/prompt`, routed via `enqueueV2` → `client.PromptV2` when the outbox is unset) bypasses the adapter Send seam and therefore does **not** receive disk-pressure injection. This gap exists since the V2 session queue was introduced (US-63.3) and is tracked as a follow-up. The outbox-arm prompt path delivers through the adapter worker and is covered.
+> **Note:** every prompt path is now covered by the decorator (#828 batch 2 deleted the `enqueueV2` fallback): the outbox arm delivers through the adapter worker, and the outbox-less `syncSend` fallback goes through the same `systemnotices.Wrap`-decorated adapter — both receive disk-pressure injection.
 
 **Behavior contract:**
 

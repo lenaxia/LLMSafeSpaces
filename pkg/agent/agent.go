@@ -56,12 +56,6 @@ var (
 	ErrV2SessionNotFound = stderrors.New("agent V2: session not found")
 )
 
-// IsSessionNotFound returns true if err is or wraps ErrV2SessionNotFound.
-// Convenience for handlers that need to map to HTTP 404.
-func IsSessionNotFound(err error) bool {
-	return stderrors.Is(err, ErrV2SessionNotFound)
-}
-
 type CredentialState string
 
 const (

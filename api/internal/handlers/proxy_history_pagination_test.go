@@ -213,7 +213,7 @@ func TestGetHistory_BeforeCursor_NotFound_ReturnsEmpty(t *testing.T) {
 // system-role messages and messages with no text/tool/thinking parts
 // must be filtered BEFORE counting against the limit. Otherwise users
 // see jumpy page sizes.
-func TestGetHistory_FiltersNonDisplayableBeforePaginating(t *testing.T) {
+func TestGetHistory_PageIsRawSlice_TranslateAfterwards(t *testing.T) {
 	// 5 displayable + 5 non-displayable, interleaved.
 	// Non-displayable: role=system, or parts contain only step-start/step-finish.
 	upstream := []map[string]any{
@@ -301,7 +301,7 @@ func TestGetHistory_EmptySession_ReturnsEmptyArrayNotNull(t *testing.T) {
 // Regression target: if the cursor-suppression condition is ever changed
 // from `start > 0` to `start >= 0` (or vice versa), this test catches the
 // off-by-one immediately.
-func TestGetHistory_ExactLimitBoundary_NoCursor(t *testing.T) {
+func TestGetHistory_ExactLimitBoundary_EmitsOptimisticCursor(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

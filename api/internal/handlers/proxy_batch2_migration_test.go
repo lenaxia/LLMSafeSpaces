@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -143,10 +142,6 @@ func TestDeleteSession_AdapterPath_StillTombstones(t *testing.T) {
 		"successful adapter delete must still tombstone")
 }
 
-// Compile-time route surface used by these rows (the V2 harness registers
-// prompt_async/queue/abort; the env harness registers the rest).
-var _ = gin.SetMode
-
 // Ports of the two semantic rows from the deleted proxy_v2_test.go:
 // shared validation precedes the guard (400 beats 503), and the prompt
 // route takes no busy/409 guard.
@@ -184,4 +179,54 @@ func TestSendPromptAsync_AdapterPath_No409Guard(t *testing.T) {
 
 	assert.NotEqual(t, http.StatusConflict, w.Code, "prompt must never take a 409 busy guard")
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// --- EnqueueMessage -> syncSend wiring rows (review r1 N-1/N-2) ---
+
+// The queue route's non-outbox contract (#828 batch 2): with the adapter
+// wired and the outbox unset, EnqueueMessage performs the full
+// synchronous send (session-limit/quota/policy pairing + contract
+// response). Dev/test-only in production wiring (app.go sets the outbox
+// unconditionally) — this row pins the changed line directly.
+func TestEnqueueMessage_AdapterPath_OutboxUnset_SyncSends(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	router, h := newV2TestHandler(t, srv)
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, sid, text string, _ session.SendOpts) (*session.Message, error) {
+			assert.Equal(t, "ses-1", sid)
+			assert.Equal(t, helloText(), text)
+			return &session.Message{ID: "msg_sync_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.outbox = nil
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
+		strings.NewReader(`{"text":"hello"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "msg_sync_1")
+}
+
+func helloText() string { return "hello" }
+
+// Port of the deleted TestEnqueueV2_EmptyText: shared validation precedes
+// the guard — an empty text is a 400 regardless of adapter wiring.
+func TestEnqueueMessage_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	router, h := newV2TestHandler(t, srv)
+	require.Nil(t, h.adapter, "precondition: no adapter")
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
+		strings.NewReader(`{"text":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "text must not be empty")
 }

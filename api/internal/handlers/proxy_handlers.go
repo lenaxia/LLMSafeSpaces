@@ -184,8 +184,9 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// V2 path (Epic 63): extract text from the V1 parts body and send via
-	// PromptV2 with delivery:"queue". opencode admits atomically.
+	// Extract text from the V1 parts body (files compose into the text
+	// before this point). The body cap bounds allocation before the
+	// 100KB text check below rejects oversized prompts.
 	const maxPromptBodyBytes = 100_000 + 1024
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -294,13 +295,13 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		return
 	}
 
-	// Synchronous fallback when the outbox is unset (dev/test). The
-	// per-prompt model selector (contract type session.ModelRef) is
-	// forwarded — what keeps a workspace usable when its persisted
-	// default model is unresolvable (incident 2026-08-16).
-	if h.outbox == nil {
-		h.syncSend(c, wid, sid, text, extractPromptModel(bodyBytes))
-	}
+	// Synchronous fallback when the outbox is unset (dev/test): the
+	// outbox arm above returns unconditionally, so reaching here means
+	// no outbox. The per-prompt model selector (contract type
+	// session.ModelRef) is forwarded — what keeps a workspace usable
+	// when its persisted default model is unresolvable (incident
+	// 2026-08-16).
+	h.syncSend(c, wid, sid, text, extractPromptModel(bodyBytes))
 }
 
 // extractMessageText reads the request body and extracts the
@@ -474,18 +475,23 @@ const historyPageDefaultLimit = 50
 // the API to materialize an unbounded message slice in memory.
 const historyPageMaxLimit = 200
 
-// GetHistory returns a chronological page of displayable messages for a
-// session.
+// GetHistory returns a chronological page of contract messages for a
+// session, served by the agent Adapter (the raw-proxy tail was deleted
+// in #828 batch 2).
 //
 // Query parameters:
-//   - limit: page size (default 50, max 200). Counts displayable messages
-//     only — system-role messages and messages whose parts collapse to
-//     nothing visible (e.g. only step-start/step-finish) do not count
-//     against the limit. Rejecting invalid limits (<=0 or non-numeric)
-//     surfaces client bugs early.
+//   - limit: page size (default 50, max 200). Counts RAW messages as the
+//     agent returns them — the adapter translates afterwards
+//     (slice-then-translate): step-start/step-finish parts are dropped,
+//     so a marker-only message can surface with empty parts, and system
+//     roles are contract data. Rejecting invalid limits (<=0 or
+//     non-numeric) surfaces client bugs early.
 //   - before: opaque cursor — the message id of the OLDEST message in the
 //     previously-rendered page. Returns messages strictly older than
-//     this cursor. Absent => return the newest `limit` messages.
+//     this cursor. Absent => return the newest `limit` messages via the
+//     agent's native pagination (#971); a full page optimistically emits
+//     a cursor even when no older messages exist (one bounded spurious
+//     back-page).
 //
 // Response:
 //   - body: JSON array of opencode message objects, oldest-first within
@@ -569,8 +575,6 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	h.recordActivityIfTracked(wid)
 	c.JSON(http.StatusOK, page)
 }
-
-// parseHistoryLimit normalises the ?limit query parameter. An empty
 
 // parseHistoryLimit normalises the ?limit query parameter. An empty
 // string falls back to the default; any other value must parse to a

@@ -604,9 +604,9 @@ func TestProxy_EndpointMapping(t *testing.T) {
 		{"delete session (seam)", "DELETE", "/api/v1/workspaces/ws-1/legacy-read/s1", "/session/s1"},
 		// NOTE: "events" is intentionally omitted — StreamEvents is broker-based
 		// and does not proxy to the pod; it is covered by stream_events_test.go.
-		// NOTE: "prompt async" and "abort" are intentionally omitted — these are
-		// served by the V2 path (adapter/V2SessionClient) and do not proxy to
-		// opencode's /session/<id>/prompt_async or /session/<id>/abort.
+		// NOTE: "prompt async", "queue", and "abort" are intentionally
+		// omitted — they are adapter/outbox-served (#828 batch 2) and never
+		// hit the raw proxy transport.
 	}
 
 	for _, tt := range tests {
@@ -1763,7 +1763,9 @@ func TestProxy_DeleteSession_PublishesSSEEvent(t *testing.T) {
 }
 
 func TestProxy_DeleteSession_NoSSEWhenAdapterFails(t *testing.T) {
+	si := &recordingDeleteSessionIndex{}
 	env := newTestEnv(t)
+	env.handler.SetSessionIndex(si)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -1774,8 +1776,22 @@ func TestProxy_DeleteSession_NoSSEWhenAdapterFails(t *testing.T) {
 		},
 	}
 
+	// Subscribe BEFORE the request (same pattern as the success row) so a
+	// wrongly-published event would surface on the live stream.
+	sub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	select {
+	case evt := <-sub.Ch:
+		t.Fatalf("failed delete must not publish SSE, got %+v", evt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	assert.False(t, si.called, "failed delete must not clean the session index")
+	assert.False(t, env.handler.isSessionDeleted("ws-1", "s1"), "failed delete must not tombstone")
 }
 
 func TestProxy_DeleteSession_ConcurrentDeletesIdempotent(t *testing.T) {

@@ -118,12 +118,14 @@ func startV2TestServer(t *testing.T, password string) *httptest.Server {
 	}))
 }
 
-// newV2TestHandler creates a ProxyHandler with V2 flag on, backed by the
-// given test server. The v2ClientFactory is injected so V2 methods talk to
-// the test server's dynamic port, not port 4096. Routes are registered on a
-// real gin router so gin's response lifecycle (WriteHeaderNow flush) runs
-// correctly — calling handler methods directly with gin.CreateTestContext
-// skips the flush, causing bare c.Status(204) to never reach the recorder.
+// newV2TestHandler builds the V2-era harness: a ProxyHandler plus a real
+// gin router for the prompt/queue/abort routes (registered on a real
+// engine so gin's response lifecycle — WriteHeaderNow flush — runs
+// correctly; calling handler methods directly with gin.CreateTestContext
+// skips the flush, causing bare c.Status(204) to never reach the
+// recorder). The V2 client factory injection is gone with proxy_v2.go
+// (#828 batch 2); the server remains as the guard rows' red-state
+// witness.
 func newV2TestHandler(t *testing.T, srv *httptest.Server) (*gin.Engine, *ProxyHandler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

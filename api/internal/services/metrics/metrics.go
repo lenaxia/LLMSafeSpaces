@@ -523,7 +523,10 @@ var (
 	// upstream5xxTotal counts 5xx responses returned by the upstream
 	// opencode process for proxied requests. Emitted by both the streaming
 	// proxy path (doProxy) and the non-streaming history path
-	// (doHistoryRequest). Complements the api middleware's
+	// (the still-legacy raw-proxy routes; the history arm died with
+	// doHistoryRequest in #828 batch 2 — adapter-path upstream failures
+	// surface via structured error logs, not this counter).
+	// Complements the api middleware's
 	// api_requests_total{status} counter — that one records the API's
 	// OUTBOUND status; this one records the UPSTREAM status. They differ
 	// when the API wraps upstream errors (e.g. upstream 500 -> API 502)
@@ -603,7 +606,8 @@ func RecordRequestBufferGlobalFull(workspaceID string) {
 
 // RecordUpstream5xx (LLMSafeSpaces#488) increments the counter for every
 // upstream (opencode) 5xx response the proxy layer observes. Called by
-// both doProxy (streaming proxy) and doHistoryRequest (non-streaming
+// the raw-proxy transport's streaming arm (doProxy; the non-streaming
+// history arm died with doHistoryRequest in #828 batch 2
 // history fetch). See the counter definition for full rationale.
 //
 // path SHOULD carry the opencode-side path with the session-ID and any
