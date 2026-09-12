@@ -111,3 +111,23 @@ Counts at this revision: 28 test functions (10 engine/fake + 13 rows + 5 soak/pr
 
 - `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
 - `golangci-lint` — 0 issues
+
+---
+
+## Review r4 remediation (2026-09-11, PR #1344 — including two round-3 claims of mine that were FALSE, corrected here)
+
+Record corrections first:
+- The r3 claim "TestInstantAdmitter_DistinctIDsAndNilOut refreshed to the keyed contract" was false — the edit was never made. It is NOW: the test is `TestInstantAdmitter_KeyEchoAndNilOut` (key echo, distinct keys distinct, Out=nil no-panic).
+- The r3 claim "the False probe cannot be repaired by a serve-gather TTL expiry mid-pin" was false — the fresh-authority reshuffle moved phase B only; phase A's >500ms window remained (reviewer probe-confirmed). The pin now drives the PURE comparison (`idsMatch`) directly — wall-clock-free — plus helper-contract pins (nil/empty filtered, duplicates collapsed, NUL-join collision cases both directions). `PendingShapesMatch` delegates to it.
+
+Code:
+- **The leg-8 FAILED-evidence-absorption cell (the #1315-compatible-with-write shape), made reachable:** `pureTimeoutAdmitter` (never writes, always stalls) → the whole ladder exhausts → `markFailed` with exactly 5 attempts (the incident signature pinned) → the transcript message appears OUT-OF-BAND under the entry-derived `msg_<entryID>` key → the attempt-2 re-arm falls through the FAILED exclusion and the PRE-POST evidence check resolves ADMITTED with NO further POST (call count frozen; transcript exactly one).
+- The earlier timeout row relabeled to what it provably exercises (`TimeoutLadderRePOST_S2`: timeout → ladder re-POST → keyed transcript 1 → the LEDGER's cross-attempt dedup absorbs deliver(2)).
+- "Injective" wording qualified (NUL-free ids); leg-6 S3/S4 explicitly noted as kind-row cells (cross-process outbox behavior).
+
+Counts at this revision: 28 test functions (10 engine/fake + 6 faultmatrix rows + 12 soak-file rows/pins), verified by grep per file (10/6/12).
+
+## Tests Run (r4)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~41s)
+- `golangci-lint` — 0 issues

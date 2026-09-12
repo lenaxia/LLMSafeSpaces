@@ -347,53 +347,41 @@ func (ad *slowAdmitter) Admit(ctx context.Context, sessionID, messageID, text, m
 	return messageID, nil
 }
 
-// The identity predicate's regression pin (r2 F2): same pending COUNT,
-// different ID — truth swapped its ask; the projection holds the stale
-// one. The count-based form this replaces reads MATCHED; the set form
-// must not. No reconcile runs between the swap and the probe — the pin
-// isolates the predicate, not the repair.
-func TestPendingShapesMatch_IdentityNotCount(t *testing.T) {
-	// Phase A (fresh authority — the probe must be TTL-independent: a
-	// serve-path gather whose TTL expires mid-pin would repair the
-	// projection and false-red the assert against a CORRECT predicate).
-	storeA := NewEvidenceStore()
-	aA := newAuthority(t, storeA, &AnswerActor{Store: storeA})
-	storeA.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
-		Id: "in-original", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
-	})
-	require.NoError(t, aA.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
-	require.Len(t, snapshotOf(t, aA, "ses-pin").GetPendingInputs(), 1)
-
-	// The swap: equal count, different identity.
-	storeA.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
-		Id: "in-replacement", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
-	})
-
-	assert.False(t, PendingShapesMatch(context.Background(), aA, storeA, "ses-pin"),
+// The identity predicate's regression pin (r2 F2 / r4 D1): the pure
+// set-matcher, driven DIRECTLY — wall-clock-free (a pin through
+// GetSnapshot carries the serve-gather TTL as a hidden 500ms bound; the
+// r3 "fresh authority" reshuffle did not close that window and was
+// correctly rejected). Equal count, different identity must NOT match.
+func TestIDsMatch_IdentityNotCount(t *testing.T) {
+	assert.True(t, idsMatch("in-a\x00in-b", "in-a\x00in-b"), "identical sets match")
+	assert.False(t, idsMatch("in-original", "in-replacement"),
 		"stale-ask-projected + live-ask-missing at equal count is NOT a match — the count-based predicate's false-green")
-
-	// Phase B (its own authority): the honest convergent state matches
-	// (the reseed clears; the lease diff re-appears truth's ask).
-	storeB := NewEvidenceStore()
-	aB := newAuthority(t, storeB, &AnswerActor{Store: storeB})
-	storeB.SetState("ses-pin", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
-		Id: "in-replacement", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
-	})
-	require.NoError(t, aB.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
-	_, ok := WaitConverges(context.Background(), 5*time.Second, 5*time.Millisecond, func() bool {
-		aB.Reconcile(context.Background())
-		return PendingShapesMatch(context.Background(), aB, storeB, "ses-pin")
-	})
-	require.True(t, ok, "the repaired state must match")
-	assert.True(t, PendingShapesMatch(context.Background(), aB, storeB, "ses-pin"))
+	assert.False(t, idsMatch("in-a", "in-a\x00in-b"), "different sizes never match")
+	assert.True(t, idsMatch("a,b\x00c", "a,b\x00c"), "comma-bearing ids are safe under the NUL join")
+	assert.False(t, idsMatch("a,b\x00c", "a\x00b,c"), "the NUL join cannot collide sets a comma join would")
+	assert.Equal(t, "in-x", liveOfNilFiltered(), "nil/empty filtered, duplicates collapsed")
 }
 
-// The leg-8 timeout cell (r3 finding 1): the admitter stalls PAST the
-// admission window — timeout → FAILED → the re-arm's fast admission is
-// dedupe-absorbed at the harness write (one transcript user message,
-// the incident shape). twoPhaseAdmitter: first admission stalls, later
-// admissions are instant.
-func TestRow_Leg8_TimeoutThenRearm_S2(t *testing.T) {
+// liveOfNilFiltered pins the helper-side filter contract: nil/empty ids
+// never reach the join, duplicates collapse.
+func liveOfNilFiltered() string {
+	s := NewEvidenceStore()
+	s.SetState("ses-f", 0, nil,
+		&abiv1.InputRequest{Id: "in-x"},
+		&abiv1.InputRequest{Id: "in-x"}, // duplicate collapses
+		&abiv1.InputRequest{Id: ""},     // filtered
+	)
+	return s.livePendingIDs("ses-f")
+}
+
+// The leg-8 timeout→ladder-re-POST cell (r4: relabeled to what it
+// provably exercises): the admitter stalls past the window on the
+// ladder's FIRST try; iteration 2 re-POSTs and succeeds — the keyed id
+// keeps the transcript at ONE user message, and the later deliver(2) is
+// absorbed by the LEDGER's cross-attempt admittedAnywhere dedup (not by
+// a harness write). The FAILED-evidence-absorption cell has its own row
+// below.
+func TestRow_Leg8_TimeoutLadderRePOST_S2(t *testing.T) {
 	store := NewEvidenceStore()
 	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
 	a, err := sessionstate.New(sessionstate.Config{
@@ -440,7 +428,7 @@ func TestRow_Leg8_TimeoutThenRearm_S2(t *testing.T) {
 		v.Add("L5")
 	}
 	if n := store.TranscriptCount("ses-row"); n != 1 {
-		v.Add("S2") // the keyed upsert absorbed the re-POST
+		v.Add("S2") // the ladder's re-POST and the original share the keyed id
 	}
 	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
 }
@@ -468,4 +456,93 @@ func (ad *twoPhaseAdmitter) Admit(ctx context.Context, sessionID, messageID, tex
 		ad.out.MarkPresent(sessionID, messageID)
 	}
 	return messageID, nil
+}
+
+// The leg-8 FAILED-evidence-absorption cell (r4 finding 1 — the
+// #1315-compatible-with-write incident shape, made reachable): the
+// admitter NEVER writes and always stalls — the whole first ladder
+// times out → markFailed (FAILED, re-armable); THEN the transcript
+// message appears out-of-band (the incident's leftover write, keyed
+// `msg_<entryID>`); the attempt-2 re-arm falls through the FAILED
+// exclusion in admittedAnywhere and the PRE-POST evidence check
+// resolves ADMITTED with NO further POST (call count frozen at the
+// first ladder's; transcript exactly one).
+func TestRow_Leg8_LadderExhaustion_EvidenceAbsorption_S2_S9(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	ad := &pureTimeoutAdmitter{}
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir:     t.TempDir(),
+		Parser:          NoopParser{},
+		Store:           store,
+		Passwords:       []string{"row-pw"},
+		Admitter:        ad,
+		AdmitterTimeout: 50 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	deliver := func(attempt uint32) {
+		t.Helper()
+		_, err := a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "ses-row", EntryId: "entry-f", Attempt: attempt,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "time out, never write"}}},
+		}))
+		require.NoError(t, err)
+	}
+
+	deliver(1)
+
+	v := NewViolations()
+	// The ladder exhausts (every attempt: evidence absent → POST →
+	// stall) and the row lands FAILED.
+	require.Eventually(t, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["failed"] >= 1
+	}, 30*time.Second, 5*time.Millisecond, "the exhausted ladder marks the row FAILED")
+	callsAtFailed := ad.calls
+	require.Equal(t, 5, callsAtFailed, "the ladder is five attempts (the #1315 signature: attempts NEVER exceeded five)")
+
+	// The out-of-band transcript write — the incident's leftover
+	// message, under the entry-derived dedupe key.
+	store.MarkPresent("ses-row", "msg_entry-f")
+
+	// The re-arm: through the FAILED exclusion, absorbed by the pre-POST
+	// evidence check — ADMITTED with no POST.
+	deliver(2)
+	_, ok := WaitConverges(context.Background(), sessionstate.LeaseConvergenceBound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["admitted"] == 0
+	})
+	if !ok {
+		v.Add("S9") // the FAILED re-arm stranded
+		v.Add("L5")
+	}
+	if ad.calls != callsAtFailed {
+		v.Add("S9.absorb") // the evidence short-circuit must not re-POST
+	}
+	if n := store.TranscriptCount("ses-row"); n != 1 {
+		v.Add("S2") // one out-of-band write, zero ladder writes — one transcript message
+	}
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+}
+
+// pureTimeoutAdmitter never writes and always outlives the caller's
+// window — the writeless failure ladder.
+type pureTimeoutAdmitter struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (ad *pureTimeoutAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	ad.mu.Lock()
+	ad.calls++
+	ad.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(500 * time.Millisecond): // far past every window
+		return messageID, nil
+	}
 }

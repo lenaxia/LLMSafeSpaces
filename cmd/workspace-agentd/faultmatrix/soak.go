@@ -79,7 +79,7 @@ func (s *EvidenceStore) livePendingIDs(sessionID string) string {
 		}
 	}
 	sort.Strings(ids)
-	return strings.Join(ids, "\x00") // \x00 separator: injective (a comma can appear IN an id)
+	return strings.Join(ids, "\x00") // NUL-separated: injective up to NUL-free ids
 }
 
 func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, sessionID string) string {
@@ -101,7 +101,7 @@ func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, session
 		}
 	}
 	sort.Strings(ids)
-	return strings.Join(ids, "\x00") // \x00 separator: injective (a comma can appear IN an id)
+	return strings.Join(ids, "\x00") // NUL-separated: injective up to NUL-free ids
 }
 
 // ErrSoakConfig reports a misshapen SoakConfig (the exported seam the
@@ -190,10 +190,16 @@ func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStor
 }
 
 // PendingShapesMatch is the soak gate's core predicate: the projection's
-// pending ID set equals truth's (both filtered like the lease diff,
-// sorted, compared as sets). Exported for its regression pin — the
-// count-based form this replaced reads converged while the projection
-// holds a stale ask and misses a live one at equal count (r2 F2).
+// pending ID set equals truth's. Delegates to idsMatch — the pure,
+// wall-clock-free comparison the regression pin drives directly (a pin
+// through GetSnapshot carries the serve-gather TTL as a hidden bound).
 func PendingShapesMatch(ctx context.Context, a *sessionstate.Authority, store *EvidenceStore, sessionID string) bool {
-	return projectedPendingIDs(ctx, a, sessionID) == store.livePendingIDs(sessionID)
+	return idsMatch(projectedPendingIDs(ctx, a, sessionID), store.livePendingIDs(sessionID))
+}
+
+// idsMatch compares two already-joined ID-set encodings. The join uses
+// a NUL separator, making it injective up to NUL-free IDs (harness ids
+// are; a NUL inside one would still be safer than any comma join).
+func idsMatch(projected, live string) bool {
+	return projected == live
 }
