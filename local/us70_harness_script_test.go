@@ -1288,3 +1288,20 @@ func indentLines(s string, n int) string {
 	}
 	return b.String()
 }
+
+// TestUS70FaultsScript_ProbeSettlePins pins the r10 fix: F1's seam probe
+// must space its attempts across the arm-rollout reap window (main run
+// 34711974833: rollout completed 0.02s before the script started; the
+// svc still routed to the terminating env-less pod — its readiness, and
+// /livez, outlive the fault env — and every immediate probe missed).
+func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
+	src := mustRead(t, us70FaultsScript)
+	if !strings.Contains(src, `(( _i > 1 )) && sleep 2`) {
+		t.Fatalf("F1's probe loop must sleep between attempts — 8 immediate probes all land inside the old-pod reap window (run 34711974833)")
+	}
+	idxSleep := strings.Index(src, `(( _i > 1 )) && sleep 2`)
+	idxProbe := strings.Index(src, `FAULT_SEEN=0`)
+	if idxProbe < 0 || idxSleep < idxProbe {
+		t.Fatalf("the settle must live inside the F1 probe loop")
+	}
+}

@@ -162,7 +162,15 @@ log "F1 — fault-injected pod-bootstrap 500s → boot never blocked, autopush h
 # exercise the seam, so it skips loudly (exit-tracked like the gVisor
 # gate), never silently passes.
 FAULT_SEEN=0
+# r10 (main run 34711974833): the arm rollout completed 0.02s before this
+# script started and the svc still routed to the TERMINATING env-less pod
+# (its readiness lingers through the reap window — /livez passes without
+# the fault env) — all probes hit it and F1 skipped. Space the probes
+# across the reap window: a 2s gap per try covers the pod's termination
+# grace in practice, and the loop still burns at most one fault on
+# success (the break).
 for _i in $(seq 1 "${FAULT_COUNT}"); do
+    (( _i > 1 )) && sleep 2
     CODE=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
         -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe"}' \
         "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
