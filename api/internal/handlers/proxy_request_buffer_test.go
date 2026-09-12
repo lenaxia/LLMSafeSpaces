@@ -349,9 +349,9 @@ func newBufferTestEnv(t *testing.T, httpClient *http.Client, workspaceID, podIP 
 	router := gin.New()
 	proxy := router.Group("/api/v1/workspaces/:id")
 	{
-		proxy.POST("/sessions/:sessionId/message", handler.SendMessage)
 		proxy.GET("/sessions/:sessionId/message", handler.GetHistory)
 	}
+	registerLegacyMessageTransport(router, handler)
 
 	return &bufferTestEnv{router: router, handler: handler}
 }
@@ -386,7 +386,7 @@ func TestProxyBuffer_BufferedMessageSucceedsAfterFlap(t *testing.T) {
 
 	env := newBufferTestEnv(t, httpClient, "ws-buf-ok", "10.0.0.1")
 	env.handler.requestBuffer = newRequestBuffer(10, 2*time.Second, 5*time.Millisecond, env.handler.logger)
-	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-ok/sessions/s1/message", `{"message":"hi"}`)
+	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-ok/legacy-message/s1", `{"message":"hi"}`)
 
 	assert.Equal(t, http.StatusOK, w.Code, "buffered request must succeed after upstream recovers; body=%s", w.Body.String())
 	assert.GreaterOrEqual(t, atomic.LoadInt32(&backendHits), int32(1))
@@ -404,7 +404,7 @@ func TestProxyBuffer_TimesOutWithRestartingMessage(t *testing.T) {
 	env.handler.requestBuffer = newRequestBuffer(10, 150*time.Millisecond, 10*time.Millisecond, env.handler.logger)
 
 	before := metricValue(t, "workspace_request_buffer_timeout_total", "ws-buf-to")
-	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-to/sessions/s1/message", `{"message":"hi"}`)
+	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-to/legacy-message/s1", `{"message":"hi"}`)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), "Workspace is restarting, please try again in a moment")
@@ -423,7 +423,7 @@ func TestProxyBuffer_BufferFullRejectsWith429(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-full/sessions/s1/message", `{"message":"hi"}`)
+			w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-full/legacy-message/s1", `{"message":"hi"}`)
 			results <- w.Code
 		}()
 	}
@@ -466,7 +466,7 @@ func TestProxyBuffer_DisabledFallsBackTo503(t *testing.T) {
 	env := newBufferTestEnv(t, httpClient, "ws-buf-off", "10.0.0.1")
 	env.handler.requestBuffer = newRequestBuffer(0, 2*time.Second, 5*time.Millisecond, env.handler.logger)
 
-	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-off/sessions/s1/message", `{"message":"hi"}`)
+	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-off/legacy-message/s1", `{"message":"hi"}`)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Contains(t, w.Body.String(), "workspace connection failed")
@@ -478,7 +478,7 @@ func TestProxyBuffer_ClientDisconnectDuringBufferingNoDeadlock(t *testing.T) {
 	env.handler.requestBuffer = newRequestBuffer(5, 5*time.Second, 20*time.Millisecond, env.handler.logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-buf-disc/sessions/s1/message",
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-buf-disc/legacy-message/s1",
 		strings.NewReader(`{"message":"hi"}`)).WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -725,7 +725,7 @@ func TestProxyBuffer_BufferedSuccessRecordsMessageAndKeepsSession(t *testing.T) 
 	spy := &sessionIndexSpy{}
 	env.handler.sessionIndex = spy
 
-	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-succ/sessions/s1/message", `{"message":"hi"}`)
+	w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-succ/legacy-message/s1", `{"message":"hi"}`)
 
 	assert.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
 	assert.Equal(t, int32(1), atomic.LoadInt32(&spy.messages), "buffered success must run the success block (RecordMessage)")
@@ -804,7 +804,7 @@ func TestProxyBuffer_ParkedRequestsReleaseConnectionSlotGETAdmitted(t *testing.T
 
 	for i := 0; i < 5; i++ {
 		go func() {
-			env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-slot/sessions/s1/message", `{"message":"hi"}`)
+			env.doRequest(t, "POST", "/api/v1/workspaces/ws-buf-slot/legacy-message/s1", `{"message":"hi"}`)
 		}()
 	}
 
@@ -832,7 +832,7 @@ func TestProxyBuffer_ParkedRequestDoesNotDoubleReleaseConnectionSlot(t *testing.
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			env.doRequest(t, "POST", "/api/v1/workspaces/ws-dblrel/sessions/s1/message", `{"message":"hi"}`)
+			env.doRequest(t, "POST", "/api/v1/workspaces/ws-dblrel/legacy-message/s1", `{"message":"hi"}`)
 		}()
 	}
 	wg.Wait()
@@ -893,7 +893,7 @@ func TestProxyBuffer_DefaultConfigBufferFullReachable(t *testing.T) {
 			defer wg.Done()
 			allInFlight.Done()
 			startAll.Wait()
-			w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-dflt-full/sessions/s1/message", `{"message":"hi"}`)
+			w := env.doRequest(t, "POST", "/api/v1/workspaces/ws-dflt-full/legacy-message/s1", `{"message":"hi"}`)
 			if w.Code == http.StatusTooManyRequests {
 				atomic.AddInt32(&tooManyCount, 1)
 				tooManyBodiesMu.Lock()

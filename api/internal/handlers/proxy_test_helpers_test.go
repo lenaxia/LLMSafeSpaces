@@ -6,13 +6,41 @@ package handlers
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/mock"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
+
+// registerLegacyMessageTransport registers the exact transport call the
+// pre-#828-batch-1 SendMessage made (write-op, session-scoped,
+// bufferable, chat-error enrichment closure). After batch 1 the raw-proxy
+// transport's write-op, connection-ceiling, request-buffer, SSE-streaming,
+// and error-body arms have no production caller — the transport ships
+// until #828's final batch deletes it — so the suites pinning those arms
+// exercise them through this seam.
+func registerLegacyMessageTransport(r gin.IRouter, h *ProxyHandler) {
+	r.POST("/api/v1/workspaces/:id/legacy-message/:sessionId", func(c *gin.Context) {
+		var errBodyTransform func(statusCode int, body []byte) []byte
+		if h.agentStateChecker != nil {
+			wid := c.Param("id")
+			errBodyTransform = func(_ int, body []byte) []byte {
+				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+				if checkerErr != nil || changedAt.IsZero() {
+					return EnrichChatErrorBody(body, false, time.Time{}, wid)
+				}
+				return EnrichChatErrorBody(body, true, changedAt, wid)
+			}
+		}
+		h.proxyToWorkspaceWithErrBody(c,
+			"/session/"+c.Param("sessionId")+"/message",
+			true, c.Param("sessionId"), errBodyTransform, true)
+	})
+}
 
 // newMockK8sWithWorkspace creates a mock K8s client whose workspace CRD
 // lookup returns an Active workspace at the given pod IP. Extracted from

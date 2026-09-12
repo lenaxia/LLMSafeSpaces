@@ -308,7 +308,10 @@ func TestMessage_Files_RejectedOnAdapterPath(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "files not supported on this route; use /prompt")
 }
 
-func TestMessage_Files_RejectedOnLegacyPath(t *testing.T) {
+// The files rejection is shared validation: it fires before the adapter
+// guard (#828 batch 1), so an adapter-less handler still rejects files
+// with 400 and never reaches any transport.
+func TestMessage_Files_RejectedWithoutAdapter(t *testing.T) {
 	backendHits := 0
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		backendHits++
@@ -326,18 +329,11 @@ func TestMessage_Files_RejectedOnLegacyPath(t *testing.T) {
 	assert.Zero(t, backendHits, "rejected body must never be proxied")
 }
 
-func TestMessage_NoFiles_BodyProxiedVerbatim(t *testing.T) {
-	var captured []byte
-	env := newTestEnvWithBackend(t, captureBackend(&captured))
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	body := `{"parts":[{"type":"text","text":"hi"}],"messageID":"custom-1"}`
-	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message", strings.NewReader(body))
-
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, body, string(captured), "the files probe must leave the proxied body byte-identical")
-}
+// TestMessage_NoFiles_BodyProxiedVerbatim was deleted with the legacy
+// message proxy (#828 batch 1): the verbatim-body contract existed only
+// on the raw-proxy path. /message now parses the body into typed text
+// (extractMessageText) — covered by TestMessage_EmptyFilesArray_Allowed
+// and the batch-1 guard rows in proxy_batch1_migration_test.go.
 
 func TestMessage_EmptyFilesArray_Allowed(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)

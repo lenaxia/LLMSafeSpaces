@@ -191,7 +191,7 @@ func newTerminalEventTestEnv(t *testing.T, transport http.RoundTripper) *testEnv
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/message", handler.SendMessage)
+	registerLegacyMessageTransport(router, handler)
 
 	return &testEnv{
 		handler: handler,
@@ -207,7 +207,7 @@ func postMessage(t *testing.T, env *testEnv) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST",
-		"/api/v1/workspaces/ws-1/sessions/s1/message",
+		"/api/v1/workspaces/ws-1/legacy-message/s1",
 		strings.NewReader(`{"content":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(w, req)
@@ -343,7 +343,7 @@ func TestProxy_US44_1_NonSSEJSONResponse_NoAgentDiedEvent(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"method":"GET","path":"/session"}`))
+		_, _ = w.Write([]byte(`{"method":"GET","path":"/session/s1"}`))
 	}))
 	defer backend.Close()
 
@@ -369,15 +369,15 @@ func TestProxy_US44_1_NonSSEJSONResponse_NoAgentDiedEvent(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions", handler.ListSessions)
+	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 	router.ServeHTTP(w, req)
 
 	body := w.Body.String()
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, `{"method":"GET","path":"/session"}`, body,
+	assert.Equal(t, `{"method":"GET","path":"/session/s1"}`, body,
 		"non-SSE JSON response must be passed through byte-for-byte without appended agent_died event")
 	assert.NotContains(t, body, "agent_died",
 		"non-SSE responses must not be tagged as agent_died — JSON/REST legitimately completes via EOF")
@@ -423,10 +423,10 @@ func TestProxy_US44_1_SSECleanClose_AcceptableFalsePositive(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/message", handler.SendMessage)
+	registerLegacyMessageTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/sessions/s1/message", strings.NewReader(`{"content":"hi"}`))
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"content":"hi"}`))
 	req.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(w, req)
 

@@ -30,55 +30,55 @@ import (
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
-	if h.adapter != nil {
-		wid := c.Param("id")
-		_, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-
-		s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
-		if err != nil {
-			h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
-			return
-		}
-		// Index at creation (design 0054 R5): the session index is
-		// otherwise event-fed, and V2-mode sessions don't emit the V1
-		// session lifecycle events the indexer consumes — new sessions
-		// never reached the sidebar (2026-08-29: agent listed 3, API
-		// served 2). The platform OWNS session CRUD; index where it
-		// happens instead of hoping an event follows.
-		if s != nil && h.sessionIndex != nil {
-			h.persistSessionMeta(context.Background(), wid, s.ID, s.Title, s.ParentID)
-		}
-		c.JSON(http.StatusOK, s)
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, "/session", false, "")
+	wid := c.Param("id")
+	_, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+
+	s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
+	if err != nil {
+		h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
+		return
+	}
+	// Index at creation (design 0054 R5): the session index is
+	// otherwise event-fed, and V2-mode sessions don't emit the V1
+	// session lifecycle events the indexer consumes — new sessions
+	// never reached the sidebar (2026-08-29: agent listed 3, API
+	// served 2). The platform OWNS session CRUD; index where it
+	// happens instead of hoping an event follows.
+	if s != nil && h.sessionIndex != nil {
+		h.persistSessionMeta(context.Background(), wid, s.ID, s.Title, s.ParentID)
+	}
+	c.JSON(http.StatusOK, s)
 }
 
 func (h *ProxyHandler) ListSessions(c *gin.Context) {
-	if h.adapter != nil {
-		wid := c.Param("id")
-		_, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-		h.adapterEnsureSSEWatch(wid)
-
-		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
-		if err != nil {
-			h.logger.Error("ListSessions: adapter failed", err, "workspaceID", wid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
-			return
-		}
-		c.JSON(http.StatusOK, sessions)
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, "/session", false, "")
+	wid := c.Param("id")
+	_, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	h.adapterEnsureSSEWatch(wid)
+
+	sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
+	if err != nil {
+		h.logger.Error("ListSessions: adapter failed", err, "workspaceID", wid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
+		return
+	}
+	c.JSON(http.StatusOK, sessions)
 }
 
 func (h *ProxyHandler) SendMessage(c *gin.Context) {
@@ -93,114 +93,86 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	// Adapter path (US-65.4): adapter.Send returns a typed
-	// session.Message with contract-shaped parts. The response is
-	// contract JSON, not raw opencode bytes.
-	if h.adapter != nil {
-		text, bodyBytes, err := extractMessageText(c)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if len(text) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
-			return
-		}
-		if len(text) > 100_000 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
-			return
-		}
-
-		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-
-		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
-			return
-		}
-		if !h.checkAdapterQuota(c, workspace) {
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-			return
-		}
-		h.adapterEnsureSSEWatch(wid)
-
-		// Per-prompt model selector: symmetric with SendPromptAsync
-		// (PR #909 review round — /message is the SDK-documented
-		// synchronous send path and must honor the same override).
-		modelOverride := extractPromptModel(bodyBytes)
-		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
-			// Release the slot checkAdapterSessionLimit reserved — the
-			// quota and adapter-error paths do the same (#913 review
-			// round 3, finding 4: a leaked slot would count against the
-			// session limit without an active send).
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
-			return
-		}
-
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-			Model: modelOverride,
-		})
-		if err != nil {
-			// #817: log the underlying adapter error — without this the
-			// 502 body says only "failed to send message" and the root
-			// cause (context deadline, connection reset, decode failure)
-			// is invisible in production.
-			h.logger.Error("SendMessage: adapter failed", err,
-				"workspaceID", wid, "sessionID", sid)
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-			errBody := []byte(`{"error":"failed to send message"}`)
-			if h.agentStateChecker != nil {
-				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
-				if checkerErr == nil && !changedAt.IsZero() {
-					errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
-				}
-			}
-			c.Data(http.StatusBadGateway, "application/json", errBody)
-			return
-		}
-		h.postAdapterSuccess(c, workspace, wid, sid, true)
-		c.JSON(http.StatusOK, msg)
-		if h.sessionIndex != nil {
-			go h.fetchAndPersistTitle(wid, sid)
-		}
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
 
-	// Legacy path: proxy raw bytes to opencode with error enrichment.
-
-	// US-27b.5: wire chat-error enrichment. The closure captures wid + the
-	// agent-state checker so doProxy can rewrite the response body on 4xx
-	// with agentNeedsRefresh / hint fields. On 2xx the closure is never
-	// invoked (doProxy only buffers on status >= 400).
-	var errBodyTransform func(statusCode int, body []byte) []byte
-	if h.agentStateChecker != nil {
-		errBodyTransform = func(_ int, body []byte) []byte {
-			changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
-			if checkerErr != nil || changedAt.IsZero() {
-				// No pending credentials — pass body through the allowlist
-				// (EnrichChatErrorBody with needsRefresh=false just filters
-				// unknown fields; no hint added).
-				return EnrichChatErrorBody(body, false, time.Time{}, wid)
-			}
-			h.logger.Info("Chat error enriched with pending-credential hint",
-				"workspaceID", wid, "credentialsPendingSince", changedAt.Format("2006-01-02T15:04:05Z"))
-			return EnrichChatErrorBody(body, true, changedAt, wid)
-		}
+	// adapter.Send returns a typed session.Message with contract-shaped
+	// parts. The response is contract JSON, not raw opencode bytes.
+	text, bodyBytes, err := extractMessageText(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(text) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+		return
+	}
+	if len(text) > 100_000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
 	}
 
-	h.proxyToWorkspaceWithErrBody(c, "/session/"+sid+"/message", true, sid, errBodyTransform, true)
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 
-	status := c.Writer.Status()
-	if status < 300 && h.sessionIndex != nil {
+	if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+		return
+	}
+	if !h.checkAdapterQuota(c, workspace) {
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		return
+	}
+	h.adapterEnsureSSEWatch(wid)
+
+	// Per-prompt model selector: symmetric with SendPromptAsync
+	// (PR #909 review round — /message is the SDK-documented
+	// synchronous send path and must honor the same override).
+	modelOverride := extractPromptModel(bodyBytes)
+	if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+		// Release the slot checkAdapterSessionLimit reserved — the
+		// quota and adapter-error paths do the same (#913 review
+		// round 3, finding 4: a leaked slot would count against the
+		// session limit without an active send).
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+		return
+	}
+
+	msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+		Model: modelOverride,
+	})
+	if err != nil {
+		// #817: log the underlying adapter error — without this the
+		// 502 body says only "failed to send message" and the root
+		// cause (context deadline, connection reset, decode failure)
+		// is invisible in production.
+		h.logger.Error("SendMessage: adapter failed", err,
+			"workspaceID", wid, "sessionID", sid)
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		errBody := []byte(`{"error":"failed to send message"}`)
+		if h.agentStateChecker != nil {
+			changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+			if checkerErr == nil && !changedAt.IsZero() {
+				errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
+			}
+		}
+		c.Data(http.StatusBadGateway, "application/json", errBody)
+		return
+	}
+	h.postAdapterSuccess(c, workspace, wid, sid, true)
+	c.JSON(http.StatusOK, msg)
+	if h.sessionIndex != nil {
 		go h.fetchAndPersistTitle(wid, sid)
 	}
 }
