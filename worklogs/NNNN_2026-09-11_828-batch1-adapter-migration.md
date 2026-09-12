@@ -81,6 +81,19 @@ None.
 
 ---
 
+## Review r1 remediation (PR #1345 → #1347)
+
+- **Findings 1+2 (both doc-only, both fixed):** README-LLM.md's disk-pressure section still documented the deleted `injectDiskPressureNotice` + its `proxyToWorkspaceWithErrBody` wiring — rewritten to the decorator-as-single-source (`systemnotices.Wrap`, wired at app boot) with the V2/`enqueueV2` gap note corrected (the outbox arm IS covered; only the enqueueV2 fallback bypasses). `systemnotices.go`'s threshold comment dropped the deleted consumer from its drift rationale (`Thresholds()` still serves the uploads disk gate).
+- Reviewer independently verified: adapter arms statement-identical (mechanical diff), guard production-unreachable + correctly typed, no reachable path loses disk-pressure injection, faultmatrix dedupe red/green witnessed by the build itself (a duplicate declaration cannot have a test-row reproduction — the compiler IS the gate), behavioral equivalence covered by #1341's runtime-exercised rows.
+- **Ops incidents during the cycle, for the record:** (a) the outbox `TestStress_AmbiguityStormMultiReplica` flaked once in CI (green on 25 local replays incl. `-race`, and on rerun — flagged class for the 0b owner, same row #1339 fixed); (b) pushes to the branch SHA stopped firing workflow runs (the #1329→#1335 event-drop class) — remedied with a worklog-append commit for a fresh SHA; PR re-armed as #1347.
+
+## Tests Run (r1)
+
+- `go test ./api/...` — green; `go vet`/`gofmt` — clean
+- `go test -count=20 -race -run TestStress_AmbiguityStormMultiReplica ./api/internal/services/outbox/` — green (flake chase)
+
+---
+
 ## Files Modified
 
 - api/internal/handlers/proxy.go (adapterUnavailable guard; disk-pressure transport hook deleted)
