@@ -113,11 +113,13 @@ probe_seam() {
                 return 0
             fi
         done
-        # Seam not visible through this forward: re-resolve before the
-        # next round (the pinned pod may be the terminating pre-arm one).
-        reconnect_api
+    (( _round == 5 )) && return 1
+    # Seam not visible through this forward: re-resolve before the next
+    # round (the pinned pod may be the terminating pre-arm one). Skipped
+    # on the final round's way out — the skip path must not convert into
+    # a die via reconnect_api's /livez gate.
+    reconnect_api
     done
-    return 1
 }
 
 # wait_env_absent ws VAR timeout_s — poll until the child environ is
@@ -203,7 +205,7 @@ fi
 if (( FAULT_SEEN == 0 )); then
     skip_row "F1" "deploy lacks the fault seam (LLMSAFESPACES_FAULT_INJECTION unset on the API process — probe never saw a 500); AC-8 needs the pool's armed deploy"
 else
-    ok "fault seam active: 500 on try ${FAULT_SEEN} of ${FAULT_COUNT} (≈$((FAULT_COUNT - FAULT_SEEN)) remaining for the pod's bootstraps)"
+    ok "fault seam active (probe_seam; ≈$((FAULT_COUNT - 1)) remaining for the pod's bootstraps — stale-forward probes never burn the armed pod's budget)"
 
     WS1=$(ws_id 1)
     log "F1: seed workspace ${WS1} + bind env-secret before boot"
@@ -294,7 +296,7 @@ if (( FAULT_SEEN6 == 0 )); then
     # the fault-path guarantee is only claimed when the seam fired.
     skip_row "F6" "seam inert even after the dedicated re-arm — the boot consumed all 6 faults without F6's probe seeing one (timing); end-state convergence covered by AC-1c"
 else
-    ok "F6: seam still active (500 on try ${FAULT_SEEN6}) — this boot is faulted"
+    ok "F6: seam still active (probe_seam) — this boot is faulted"
 
     wait_phase "${WS6}" Active 300 || die "F6: workspace never Active (never-block-boot violated with retries armed)"
 

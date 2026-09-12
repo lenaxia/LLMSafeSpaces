@@ -1308,13 +1308,22 @@ func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
 		t.Fatalf("probe_seam body not found")
 	}
 	body := src[start : start+end]
+	var codeB strings.Builder
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		codeB.WriteString(l + "\n")
+	}
+	codeOnly := codeB.String()
 	for _, pin := range []string{
 		`(( _i > 1 || _round > 1 )) && sleep 2`, // settle inside the try loop
 		"reconnect_api",                         // forward re-resolution between failed rounds
 		`_round in 1 2 3 4 5`,                   // bounded rounds
+		`(( _round == 5 )) && return 1`,         // skip path never runs the final reconnect
 	} {
-		if !strings.Contains(body, pin) {
-			t.Fatalf("probe_seam must contain %q (sliced body membership enforced)", pin)
+		if !strings.Contains(codeOnly, pin) {
+			t.Fatalf("probe_seam must contain %q as CODE, not a comment literal (comment lines stripped before matching)", pin)
 		}
 	}
 	// Both consumers route through probe_seam — F6's identical race is
