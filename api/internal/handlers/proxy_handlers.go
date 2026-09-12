@@ -475,12 +475,6 @@ const historyPageDefaultLimit = 50
 // the API to materialize an unbounded message slice in memory.
 const historyPageMaxLimit = 200
 
-// upstreamHistoryBodyCap bounds how much we'll read from opencode's
-// /session/{id}/message endpoint. opencode returns the entire history
-// array in one shot; 16 MiB covers ~10k typical text-only messages and
-// leaves headroom before we'd OOM the API pod.
-const upstreamHistoryBodyCap = 16 * 1024 * 1024
-
 // GetHistory returns a chronological page of displayable messages for a
 // session.
 //
@@ -634,62 +628,6 @@ func paginateContractHistory(msgs []session.Message, limit int, before string) (
 	return page, nextCursor
 }
 
-// messageIsDisplayable returns the message id and true iff the message
-// is one a user would see in the chat transcript:
-//   - role must be "user" or "assistant" (system messages are hidden)
-//   - parts must contain at least one part whose type is text, thinking,
-//     reasoning, or tool. Pure step-start/step-finish/patch messages do
-//     not count as displayable.
-//
-// Returns ("", false) for anything not displayable. The id is sourced
-// from info.id with a fallback to top-level id (mirrors the frontend's
-// transformHistory).
-func messageIsDisplayable(raw json.RawMessage) (string, bool) {
-	var probe struct {
-		Info struct {
-			Role string `json:"role"`
-			ID   string `json:"id"`
-		} `json:"info"`
-		ID    string `json:"id"`
-		Role  string `json:"role"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
-	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return "", false
-	}
-	role := probe.Info.Role
-	if role == "" {
-		role = probe.Role
-	}
-	if role != "user" && role != "assistant" {
-		return "", false
-	}
-	hasDisplayable := false
-	for _, p := range probe.Parts {
-		switch p.Type {
-		case "text", "thinking", "reasoning":
-			if p.Text != "" {
-				hasDisplayable = true
-			}
-		case "tool":
-			hasDisplayable = true
-		}
-		if hasDisplayable {
-			break
-		}
-	}
-	if !hasDisplayable {
-		return "", false
-	}
-	id := probe.Info.ID
-	if id == "" {
-		id = probe.ID
-	}
-	return id, true
-}
 
 func (h *ProxyHandler) GetSession(c *gin.Context) {
 	sid := c.Param("sessionId")
@@ -836,26 +774,6 @@ func validateSessionID(s string) error {
 	return nil
 }
 
-// getPodIPAndPassword returns the pod IP and opencode password for the given
-// workspace. It is a convenience helper shared by several background goroutines.
-func (h *ProxyHandler) getPodIPAndPassword(ctx context.Context, workspaceID string) (podIP, password string, err error) {
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return "", "", fmt.Errorf("getting v1 client: %w", err)
-	}
-	ws, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return "", "", fmt.Errorf("getting workspace: %w", err)
-	}
-	if ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
-		return "", "", fmt.Errorf("workspace not active")
-	}
-	pw, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return "", "", fmt.Errorf("getting password: %w", err)
-	}
-	return ws.Status.PodIP, pw, nil
-}
 
 type enqueueRequest struct {
 	ClientMessageID string   `json:"clientMessageID,omitempty"`
