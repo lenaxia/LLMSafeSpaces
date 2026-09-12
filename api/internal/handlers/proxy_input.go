@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -108,10 +109,12 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 // harness — e.g. the workspace is suspended) ALSO takes this path: an
 // answer is safe against a possibly-live ask by construction (the Q&A
 // message lands in history regardless; a still-live ask dies with its
-// turn). A TERMINAL record for the ask takes it too (r2 f8): an
-// answered record's re-click must map to the original outbox entry via
-// the dedupe marker (202 duplicate:true), not fall through to the dead
-// live proxy — other tabs clear on the resolved event, which can lag.
+// turn). A TERMINAL-ANSWERED record takes it too (r2 f8): the re-click
+// maps to the original outbox entry via the dedupe marker (202
+// duplicate:true) — other tabs clear on the resolved event, which can
+// lag. A DISMISSED record is rejected (r3 f3): the user's explicit
+// dismissal is terminal (two exits, no third state) — a stale tab's
+// click must not re-open the conversation or mint a post-mortem turn.
 // Buffers the reply body, composes the Q&A message, routes it through
 // the outbox (S1/S2: one delivery regime, ask-scoped dedupe), and
 // reports handled=true.
@@ -122,6 +125,10 @@ func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID stri
 	rec, ok, err := h.inbox.Lookup(c.Request.Context(), workspaceID, requestID)
 	if err != nil || !ok {
 		return false
+	}
+	if rec.Status == inbox.StatusDismissed {
+		c.JSON(http.StatusConflict, gin.H{"error": "this prompt was dismissed"})
+		return true
 	}
 	if h.askLivenessOf(c.Request.Context(), workspaceID, rec.SessionID, requestID) == askLive {
 		return false

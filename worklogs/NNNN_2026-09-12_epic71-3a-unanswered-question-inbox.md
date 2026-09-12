@@ -100,3 +100,14 @@ r2 verified all nine r1 findings FIXED (with file:line evidence) and raised one 
 
 - `go test -race -count=1 ./api/internal/services/inbox/ ./api/internal/handlers/` — ok (18 + 23 inbox tests)
 - vitest provider + prompt suites — 105/105; `tsc --noEmit` clean; `golangci-lint` 0 issues
+
+## Review r3 remediation (round 3)
+
+**F3 (dismissed re-click mints a Q&A — the r2 Lookup overcorrection):** FIXED — `tryLateAnswer` rejects `StatusDismissed` records with 409 (no outbox entry, no resolved event, record stays terminal). Dismissal is terminal: a stale tab's click must not override the user's explicit dismissal or mint a post-mortem model turn. Pinned by `TestInbox_Reply_DismissedRecordRejected`.
+
+**F4 (debug probe shipped as a test):** deleted `zz_probe2_test.go` (scratch verification of the resolveScript gsub; the suite's real assertions live in `inbox_test.go`).
+
+## Tests run (r3)
+
+- `go test -race -count=1 ./api/internal/handlers/ ./api/internal/services/inbox/` — ok (18 store + 24 handler tests)
+- `golangci-lint run` — 0 issues

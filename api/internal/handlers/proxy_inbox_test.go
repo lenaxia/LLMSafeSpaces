@@ -873,3 +873,44 @@ func TestInbox_LateAnswer_PermissionResolvedEventKind(t *testing.T) {
 	evt := recvWithTimeout(t, userSub, "agent.permission.resolved")
 	assert.Equal(t, "per_tab", evt.RequestID)
 }
+
+func TestInbox_Reply_DismissedRecordRejected(t *testing.T) {
+	// r3 finding 3: a stale tab's click on a DISMISSED prompt must not
+	// re-open the conversation — dismissal is terminal (two exits, no
+	// third state). 409, no outbox entry, record stays dismissed, no
+	// resolved event.
+	h, in, ob, _ := newInboxBackend(t)
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
+	rec := inbox.Record{
+		ID: "que_gone", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Dismissed?", Options: []inbox.Option{{Label: "Yes", Description: ""}}, RecordedAt: time.Now().UTC(),
+	}
+	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
+	require.NoError(t, in.Resolve(context.Background(), "ws-1", "ses_1", "que_gone", inbox.StatusDismissed))
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	c, _ := gin.CreateTestContext(recorderFor(t))
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "requestID", Value: "que_gone"}}
+	c.Request = jsonRequest(t, http.MethodPost, "/x", `{"answers":[["Yes"]]}`)
+	h.QuestionReply(c)
+
+	assert.Equal(t, http.StatusConflict, c.Writer.Status(), "dismissed record re-click must be rejected, not re-opened")
+	entries, err := ob.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Empty(t, entries, "no post-mortem Q&A entry may be minted for a dismissed ask")
+	left, err := in.List(context.Background(), "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Empty(t, left, "pending list stays empty (record remains terminal dismissed)")
+	select {
+	case evt := <-userSub.Ch:
+		t.Fatalf("no resolved event may fire for a rejected dismissed re-click, got %+v", evt)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
