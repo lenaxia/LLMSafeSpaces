@@ -87,5 +87,34 @@ describe("PermissionPrompt", () => {
       expect(screen.getByText("Allow once")).toBeDisabled();
       expect(screen.getByText("Allow always")).toBeDisabled();
     });
+    // vi.clearAllMocks does not drop implementations — restore the
+    // resolving default so later tests are not poisoned by the
+    // never-resolving stub.
+    mockReply.mockReset().mockResolvedValue(true);
+  });
+
+  describe("whileAway variant (#1313)", () => {
+    const awayPermission: PermissionRequest = { ...shellPermission, whileAway: true };
+
+    it("renders the while-you-were-away title and the guidance hint", () => {
+      render(<PermissionPrompt workspaceId="ws-1" request={awayPermission} onResolved={onResolved} />);
+      expect(screen.getByText(/while you were away/i)).toBeInTheDocument();
+      expect(screen.getByText(/already ended without permission/i)).toBeInTheDocument();
+    });
+
+    it("deny still routes through permissionReply (late decision is server-side)", async () => {
+      render(<PermissionPrompt workspaceId="ws-1" request={awayPermission} onResolved={onResolved} />);
+      fireEvent.click(screen.getByText("Deny"));
+      await waitFor(() => expect(screen.getByText("Confirm deny")).toBeInTheDocument());
+      fireEvent.click(screen.getByText("Confirm deny"));
+      await waitFor(() => expect(mockReply).toHaveBeenCalledWith("ws-1", "per_1", "reject", undefined));
+      await waitFor(() => expect(onResolved).toHaveBeenCalled());
+    });
+
+    it("live prompt shows no whileAway chrome", () => {
+      render(<PermissionPrompt workspaceId="ws-1" request={shellPermission} onResolved={onResolved} />);
+      expect(screen.queryByText(/while you were away/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/already ended without permission/i)).not.toBeInTheDocument();
+    });
   });
 });

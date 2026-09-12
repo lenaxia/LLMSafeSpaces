@@ -283,6 +283,12 @@ export interface QuestionRequest {
   root_session_id?: string;
   questions: QuestionInfo[];
   tool?: { message_id: string; call_id: string };
+  /**
+   * Inbox-only re-presentation (#1313): the live ask is gone; this prompt
+   * re-presents the recorded ask with its choices still active. Submitting
+   * lands the answer in history as a Q&A message; dismissing clears it.
+   */
+  whileAway?: boolean;
 }
 
 export interface PermissionRequest {
@@ -295,6 +301,8 @@ export interface PermissionRequest {
   metadata?: Record<string, unknown>;
   always?: string[];
   tool?: { message_id: string; call_id: string };
+  /** See {@link QuestionRequest.whileAway}. */
+  whileAway?: boolean;
 }
 
 export interface AgentQuestionEvent {

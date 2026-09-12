@@ -54,7 +54,11 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
     setSubmitting(true);
     setError(null);
     try {
-      await inputApi.questionReject(workspaceId, request.id);
+      if (request.whileAway) {
+        await inputApi.dismissInboxRecord(workspaceId, request.session_id, request.id);
+      } else {
+        await inputApi.questionReject(workspaceId, request.id);
+      }
       onResolved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to dismiss");
@@ -63,9 +67,19 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
   };
 
   return (
-    <AgentPrompt variant="question" onDismiss={handleDismiss} dismissDisabled={submitting}>
+    <AgentPrompt
+      variant="question"
+      title={request.whileAway ? "While you were away, the agent asked" : undefined}
+      onDismiss={handleDismiss}
+      dismissDisabled={submitting}
+    >
       {request.questions.map((q, qIdx) => (
         <div key={qIdx} className="border border-blue-200 dark:border-blue-800 rounded p-3 mb-3">
+          {qIdx === 0 && request.whileAway && (
+            <div className="text-xs text-muted-foreground mb-2">
+              This question waited unanswered. Submitting sends your answer to the chat and continues the work.
+            </div>
+          )}
           <div className="font-medium text-sm mb-1">{q.header}</div>
           <div className="text-sm mb-2">{q.question}</div>
           <div className="flex flex-wrap gap-2 mb-2">
