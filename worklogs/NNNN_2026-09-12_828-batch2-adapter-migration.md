@@ -19,7 +19,7 @@ Migrate the remaining 7 `proxy_handlers.go` dual-path sites to adapter-only, del
 - **SendPromptAsync / EnqueueMessage**: nil-adapter guard after shared validation; outbox arm now keys on `h.outbox != nil` alone; both sync fallbacks unified into a new `syncSend` seam (session-limit → quota → model-policy → `adapter.Send` → enrichment → postAdapterSuccess). The #944 disk-full 507 classification is preserved inside `syncSend`'s error path.
 - **GetHistory**: guard + adapter arm un-indented; bespoke legacy tail deleted (`fetchUpstreamHistory`, `doHistoryRequest`, `paginateOpencodeHistory`, `stripPaginationQuery`).
 - **GetSession / AbortSession / DeleteSession**: guards; `proxyToWorkspace`/`abortV2` tails deleted. DeleteSession side effects (tombstone, index cleanup, SSE, active-session removal) still run only after a successful adapter delete — pinned by `TestDeleteSession_NilAdapter_Returns503_AndWritesNoTombstone` + `TestDeleteSession_AdapterPath_StillTombstones`.
-- **RenameSessionInAgent**: guard returns a typed error; bespoke raw-PATCH tail deleted.
+- **RenameSessionInAgent**: guard returns its own error; bespoke raw-PATCH tail deleted.
 
 ### V2 surface deleted whole
 
@@ -32,7 +32,7 @@ The legacy transport recorded workspace activity on every 2xx proxy; the adapter
 ### Test migration (53 failing rows → green)
 
 - Transport generics re-pointed from GetSession/GetHistory to a new **`registerLegacyReadTransport` seam** (Any-method, the exact pre-batch-2 GetSession transport call) — batch-1's `legacy-message` seam gains a read sibling.
-- DeleteSession rows (13) ported to `mockAdapter`; the 404-passthrough row became the adapter-error-502 row (typed error contract; no tombstone on failure).
+- DeleteSession rows (13) ported to `mockAdapter`; the 404-passthrough row became the adapter-error-502 row (error contract; no tombstone on failure).
 - GetHistory contract rows (8) ported to the `newE2EEnv` adapter harness; `extractIDs` reads the contract shape (top-level id).
 - **Contract deltas surfaced and pinned** (not silently absorbed):
   1. *Slice-then-translate vs filter-then-slice* — the adapter page is the newest N RAW messages; step-marker-only messages surface as empty-parts contract messages; system roles are contract data. Production behavior since #971; pinned with rationale in `TestGetHistory_PageIsRawSlice_TranslateAfterwards (renamed r2)`.
@@ -149,3 +149,5 @@ None.
 - **r10:** field doc's nil-check enumeration completed (lifecycle Start() hooks + events sweep gate); guard-row panic claim scoped to the three guard rows and attributed to the nil adapter; "typed error" -> "its own error" for the rename helper.
 
 - **r11 (correction, r12):** the r11 commit CLAIMED the third "typed error" fix but its replace silently no-op'd on a wrapped line — actually shipped in r12 with an asserted replacement; test-header red-state paragraph rewritten to the empirically derived per-group states (guards/sync-send red-first vs the tails; validation/no-409 rows are ordering pins green against old code by design); env-harness enumeration corrected to history/get/delete with the rename row documented as a direct call with an error-presence mismatch.
+
+- **r14:** restored per-group red-state attribution (guards' typed 503 vs the sync-send row's 200 + contract body); panic parenthetical re-scoped to guards only (the sync-send row wires a mock adapter); worklog's residual "typed error" wording purged (rename helper + the 502 row).

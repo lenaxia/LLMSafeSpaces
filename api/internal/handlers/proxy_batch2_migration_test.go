@@ -30,8 +30,10 @@ import (
 // rows and the sync-send row were captured red-first against the real
 // tails — with the pre-deletion factory wiring the tails answered 2xx,
 // and restoring them without the (deleted) factory yields 500; either
-// way the asserted 503 fails (and bare guard deletion yields a
-// nil-adapter deref panic instead of any response). The two
+// way each row's asserted response fails (the guards' typed 503; the
+// sync-send row's 200 + contract body), and bare guard deletion —
+// guards only; the sync-send row wires a mock adapter — yields a
+// nil-adapter deref panic instead of any response. The two
 // validation-precedes-guard rows and the no-409 row are
 // ordering/semantic pins — green against the pre-deletion code by
 // design, red only under their named reintroductions (guard hoisted
