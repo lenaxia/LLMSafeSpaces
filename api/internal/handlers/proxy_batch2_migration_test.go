@@ -26,12 +26,13 @@ import (
 // direct method call (no HTTP), and against the pre-PR code its legacy
 // PATCH hits the fake backend's 200 and returns nil — an
 // error-presence mismatch at require.Error. Of the V2-harness rows
-// (bare gin.New(), as is the env-harness router too): the
-// three guard rows and the sync-send row were captured red-first
-// against the real tails (guards: nil-adapter deref panic under bare
-// guard deletion, or a 2xx/500 legacy mismatch under fallback
-// restoration; sync-send: enqueueV2's nil-factory 500 vs the asserted
-// 200). The two validation-precedes-guard rows and the no-409 row are
+// (bare gin.New(), as is the env-harness router too): the three guard
+// rows and the sync-send row were captured red-first against the real
+// tails — with the pre-deletion factory wiring the tails answered 2xx,
+// and restoring them without the (deleted) factory yields 500; either
+// way the asserted 503 fails (and bare guard deletion yields a
+// nil-adapter deref panic instead of any response). The two
+// validation-precedes-guard rows and the no-409 row are
 // ordering/semantic pins — green against the pre-deletion code by
 // design, red only under their named reintroductions (guard hoisted
 // above validation; a re-added busy guard).
