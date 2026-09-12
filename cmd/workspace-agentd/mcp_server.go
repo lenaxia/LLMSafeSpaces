@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -223,7 +225,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 			}
 			path = p
 		}
-		return mcpDevPreviewURL(port, path), nil
+		return mcpDevPreviewURL(port, path)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -269,9 +271,12 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 	return string(body), nil
 }
 
-func mcpDevPreviewURL(port int, path string) string {
+func mcpDevPreviewURL(port int, path string) (string, error) {
 	workspaceID := os.Getenv("WORKSPACE_ID")
-	apiURL := os.Getenv("LLMSAFESPACE_API_URL")
+	apiURL, err := mcpPublicAPIOrigin()
+	if err != nil {
+		return "", err
+	}
 
 	// First line is a machine-readable marker the chat UI keys on to
 	// render an open-preview button; everything after is for humans.
@@ -280,29 +285,107 @@ func mcpDevPreviewURL(port int, path string) string {
 	// merely mentions "dev preview". If the button does not render
 	// (older UI), the markdown link on line 2 still carries the URL.
 	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
-		// Workspace pods do not always carry LLMSAFESPACE_API_URL (it is
-		// wired for the bootstrap init container; agentd's env may lack it),
-		// which yielded RELATIVE bootstrap links — the chat button's parser
-		// requires absolute URLs. In origin mode the API origin is
-		// derivable: https://api.<baseDomain> (the same derivation the
-		// preview handler uses server-side).
-		if apiURL == "" {
-			apiURL = "https://api." + base
-		}
-		apiURL = strings.TrimSuffix(apiURL, "/")
 		// Epic 68: Use port-in-subdomain format (<port>-<uuid>-preview.<baseDomain>)
 		// instead of legacy format (<uuid>-preview.<baseDomain>/<port>/).
 		// This fixes root-absolute URL breakage (the primary Epic 68 motivation).
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
 		return fmt.Sprintf(
 			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
-			port, base, port, url, workspaceID, port, port)
+			port, base, port, url, workspaceID, port, port), nil
 	}
 
 	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
 	return fmt.Sprintf(
 		"LSP_DEV_PREVIEW_V1 port=%d mode=path\n[Open dev preview :%d](%s)\nOpens the dev preview tunnel (workspace %s, port %d). Requires dev preview enabled (Workspace Settings → Dev Preview → Enable); otherwise the URL returns 503. The app must be listening on localhost:%d in the workspace.",
-		port, port, url, workspaceID, port, port)
+		port, port, url, workspaceID, port, port), nil
+}
+
+// mcpPublicAPIOrigin resolves the PUBLICLY REACHABLE API origin for
+// user-facing dev-preview links (#1332). Resolution order:
+//
+//  1. LLMSAFESPACE_API_PUBLIC_URL — the dedicated public origin, wired to
+//     every container that runs agentd tooling. Required in sidecar mode,
+//     where LLMSAFESPACE_API_URL is deliberately the in-cluster svc
+//     coordinate (the sidecar's boot phase bootstraps against it). When
+//     explicitly set it MUST be public: a cluster-internal value here is
+//     a misconfigured knob and fails loud rather than silently falling
+//     through (the operator named the wrong origin; guessing on their
+//     behalf hides it).
+//  2. LLMSAFESPACE_API_URL — used when it is externally reachable; a
+//     cluster-internal value (the legitimate sidecar topology) is
+//     SKIPPED, not an error — the derivation below still applies.
+//  3. https://api.<PREVIEW_ORIGIN_BASE_DOMAIN> — public by construction;
+//     the fallback for pods that carry only the base domain.
+//
+// The tool's contract is a URL a browser can reach. When NO candidate
+// yields a public origin the call errors naming the fix — relaying an
+// .svc URL hands the user a dead link they must hand-rewrite (the
+// 2026-09-10 incident's exact failure chain: the hand-rewrite dropped
+// the trailing slash and relative assets resolved off the port segment).
+func mcpPublicAPIOrigin() (string, error) {
+	if pub := normalizeOrigin(os.Getenv("LLMSAFESPACE_API_PUBLIC_URL")); pub != "" {
+		if err := assertPublicAPIOrigin(pub); err != nil {
+			return "", err
+		}
+		return pub, nil
+	}
+	if api := normalizeOrigin(os.Getenv("LLMSAFESPACE_API_URL")); api != "" {
+		if err := assertPublicAPIOrigin(api); err == nil {
+			return api, nil
+		}
+		// Internal or unparseable — fall through to the derivation.
+	}
+	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
+		return "https://api." + base, nil
+	}
+	return "", fmt.Errorf("dev preview URL unavailable: no publicly reachable API origin configured — %s", apiPublicOriginHint)
+}
+
+// apiPublicOriginHint is the single remediation string for every
+// public-origin failure (one constant so the flag and Helm value names
+// cannot drift apart across literals — review finding on the first
+// iteration, where three copies had already diverged from the chart).
+const apiPublicOriginHint = "set LLMSAFESPACE_API_PUBLIC_URL to the public API origin (controller flag --api-public-url / Helm value controller.apiPublicURL)"
+
+func normalizeOrigin(raw string) string {
+	return strings.TrimSuffix(strings.TrimSpace(raw), "/")
+}
+
+// assertPublicAPIOrigin rejects cluster-internal origins: Kubernetes
+// service suffixes (.svc, .svc.cluster.local, .cluster.local) and the
+// dotless same-namespace service form (http://api-name:8080 — a single
+// DNS label is never a publicly resolvable name), localhost names
+// INCLUDING RFC 6761 subdomains (foo.localhost — browsers resolve the
+// whole special-use domain to loopback, so it is as internal as
+// localhost itself), and loopback/RFC1918/link-local/unspecified IPs
+// (v4 and v6). Hosts are compared with ONE trailing DNS dot stripped
+// (the FQDN-terminus form): svc.cluster.local. is the same internal
+// name, while a public example.com. stays allowed.
+func assertPublicAPIOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return fmt.Errorf("dev preview URL unavailable: configured API origin %q is not a usable absolute URL — %s", origin, apiPublicOriginHint)
+	}
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	// DNS names are case-insensitive (RFC 4343) — K8s DNS constructs
+	// lowercase, but the env vars this reads are operator-written:
+	// LLMSAFESPACES-API.LLMSAFESPACES.SVC is the svc coordinate and must
+	// refuse exactly like its lowercase form.
+	host = strings.ToLower(host)
+	ip := net.ParseIP(host)
+	internal := host == "localhost" ||
+		strings.HasSuffix(host, ".localhost") ||
+		strings.HasSuffix(host, ".svc") ||
+		strings.HasSuffix(host, ".svc.cluster.local") ||
+		strings.HasSuffix(host, ".cluster.local") ||
+		(ip == nil && !strings.Contains(host, "."))
+	if ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified()) {
+		internal = true
+	}
+	if internal {
+		return fmt.Errorf("dev preview URL unavailable: the API origin %q is cluster-internal and unreachable from the user's browser — %s", origin, apiPublicOriginHint)
+	}
+	return nil
 }
 
 func toInt(v any) (int, bool) {

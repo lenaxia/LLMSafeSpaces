@@ -75,6 +75,7 @@ go run ./controller
 | `--relay-artifact-sha256-arm64` / `-amd64` | `...artifact.sha256*` | SHA-256 for cloud-init verification. |
 | `--default-runtime-class` | `gvisor.defaultRuntimeClass` (when `gvisor.enabled`) | Default RuntimeClass for workspace pods (typically `gvisor`). |
 | `--api-service-url` | `controller.apiServiceURL` | In-cluster API URL for org-status polling (D20) and pod bootstrap (Epic 35). |
+| `--api-public-url` | `controller.apiPublicURL` | Publicly reachable API origin wired into workspace pods as `LLMSAFESPACE_API_PUBLIC_URL` — the origin agentd's `dev_preview_url` MCP tool bakes into user-facing URLs (#1332). Empty derives `https://api.<previewOrigin.baseDomain>` when preview origins are enabled. |
 
 !!! note "Webhook port not configurable"
     The webhook server port is hardcoded to `9443` (`controller/main.go:174` — `webhook.NewServer(webhook.Options{Port: 9443})`). There is no `--webhook-port` flag. If you need to change it, edit `controller/main.go` and rebuild.

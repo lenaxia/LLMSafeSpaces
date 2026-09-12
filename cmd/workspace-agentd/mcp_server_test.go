@@ -421,6 +421,10 @@ func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
 
 func TestCallMCPTool_DevPreviewURL_RefusesPrivilegedAndReservedPorts(t *testing.T) {
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
+	// #1332: a public origin is pinned so URL resolution cannot mask the
+	// port-policy assertions below (absent origins now error by design).
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	// Tool-layer port policy (THREAT-MODEL T3): refused BEFORE any URL is
 	// minted; generic message — no service names leaked at this boundary.
 	for _, port := range []float64{80, 443, 1023, 4096, 4097, 4098} {
@@ -511,6 +515,166 @@ func TestCallMCPTool_DevPreviewURL_OriginModeDerivesAPIOrigin(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/5173)")
 	assert.NotContains(t, result, "(/api/v1/", "link must be absolute")
+}
+
+// #1332: LLMSAFESPACE_API_PUBLIC_URL is the dedicated public-origin env —
+// the sidecar's LLMSAFESPACE_API_URL stays the in-cluster svc coordinate
+// (load-bearing for its boot phase), so the tool must resolve the public
+// FQDN from the override, never from the in-cluster value.
+func TestCallMCPTool_DevPreviewURL_PublicURLOverride(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "1f4e68af-8558-48e6-acb6-8781dfc1224c")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "https://api.safespaces.dev")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/1f4e68af-8558-48e6-acb6-8781dfc1224c/dev-preview/3000/)")
+	assert.NotContains(t, result, ".svc", "the in-cluster svc origin must never reach a user-facing link")
+}
+
+// The order-distinguishing topology (review finding 1): PUBLIC unset ×
+// INTERNAL API_URL × base domain set — the legitimate sidecar shape
+// under controller/agentd version skew. The internal API_URL is skipped
+// and the derivation wins instead of erroring.
+func TestCallMCPTool_DevPreviewURL_InternalAPIURLFallsThroughToDerivation(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "1f4e68af-8558-48e6-acb6-8781dfc1224c")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/1f4e68af-8558-48e6-acb6-8781dfc1224c/dev-preview-bootstrap/3000)",
+		"origin mode must engage: the base domain is set")
+	assert.NotContains(t, result, ".svc")
+}
+
+// An unparseable API_URL is skipped like an internal one — never a hard
+// error when the derivation can still produce a public origin.
+func TestCallMCPTool_DevPreviewURL_UnparseableAPIURLFallsThroughToDerivation(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://[::1:bad")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "https://api.safespaces.dev/")
+}
+
+func TestCallMCPTool_DevPreviewURL_PublicURLOverrideWinsInOriginMode(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "1f4e68af-8558-48e6-acb6-8781dfc1224c")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "https://api.example.org")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "example.org")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "(https://api.example.org/api/v1/workspaces/1f4e68af-8558-48e6-acb6-8781dfc1224c/dev-preview-bootstrap/3000)")
+	assert.NotContains(t, result, ".svc")
+}
+
+// #1332: the tool's contract is a browser-usable URL. A cluster-internal
+// origin is a misconfiguration to REFUSE, not to relay — the 2026-09-10
+// incident had the tool hand the user an .svc URL the browser could never
+// reach, which the user then hand-rewrote (losing the trailing slash and
+// breaking relative assets). Every cluster-internal shape is covered: svc
+// suffixes, localhost names, and RFC1918/loopback IPs.
+func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
+	internal := []string{
+		"http://llmsafespaces-api.llmsafespaces.svc:8080",
+		"http://llmsafespaces-api.llmsafespaces.svc.cluster.local:8080",
+		"http://llmsafespaces-api.cluster.local:8080",
+		// Dotless same-namespace service form — a single DNS label is
+		// never publicly resolvable (review finding: this shape passed
+		// the suffix checks and would have been relayed).
+		"http://llmsafespaces-api:8080",
+		// RFC 6761 *.localhost — browsers resolve the whole special-use
+		// domain to loopback; as internal as localhost itself (round-2
+		// review finding).
+		"http://api.localhost:8080",
+		// Trailing-DNS-dot forms of internal names — the FQDN terminus
+		// must not bypass the suffix checks.
+		"http://llmsafespaces-api.llmsafespaces.svc.cluster.local.:8080",
+		"http://localhost.:8080",
+		"http://localhost:8080",
+		// Uppercase forms: DNS is case-insensitive (RFC 4343) — the
+		// env vars are operator-written and an uppercase internal origin
+		// is as browser-unreachable as its lowercase form (round-3
+		// review finding).
+		"https://LLMSAFESPACES-API.LLMSAFESPACES.SVC:8080",
+		"https://API.LOCALHOST:8080",
+		"http://127.0.0.1:8080",
+		"http://10.69.2.225:8080",
+		"http://192.168.1.10:8080",
+		"http://172.16.0.5:8080",
+		// IPv6 shapes: loopback, link-local (bracketed hosts —
+		// url.Hostname strips the brackets for net.ParseIP).
+		"http://[::1]:8080",
+		"http://[fe80::1]:8080",
+	}
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	for _, apiURL := range internal {
+		t.Setenv("LLMSAFESPACE_API_URL", apiURL)
+		result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+			"port": float64(3000),
+		})
+		require.Error(t, err, "origin %s must be refused", apiURL)
+		assert.Empty(t, result)
+		assert.Contains(t, err.Error(), "LLMSAFESPACE_API_PUBLIC_URL", "error must name the fix, got: %s", err.Error())
+	}
+
+	// The override itself is validated the same way — a misconfigured
+	// public var cannot smuggle an internal origin back in (an explicitly
+	// set-but-wrong dedicated knob fails loud; no silent fall-through).
+	t.Setenv("LLMSAFESPACE_API_URL", "https://real.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_PUBLIC_URL")
+}
+
+// The remediation hint names the REAL Helm value (controller.apiPublicURL
+// — review finding 2: the first iteration's error text said api.publicUrl,
+// a key that matches nothing in the chart).
+func TestCallMCPTool_DevPreviewURL_ErrorNamesCorrectHelmValue(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "http://llmsafespaces-api.llmsafespaces.svc:8080")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
+
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "controller.apiPublicURL")
+	assert.NotContains(t, err.Error(), "api.publicUrl", "the old nonexistent value must be gone")
+}
+
+func TestCallMCPTool_DevPreviewURL_NoOriginConfigured(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
+
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.Error(t, err, "no origin at all must be an error, never a relative link")
+	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_PUBLIC_URL")
 }
 
 // TestMCPHandler_ToolDescriptionGuidance pins the guidance contract of the

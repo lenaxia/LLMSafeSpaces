@@ -156,6 +156,82 @@ func TestDevPreviewHandler_DeniedPort(t *testing.T) {
 	}
 }
 
+// #1333: the bare /dev-preview/:port form (no trailing slash) must 308 to
+// the slash-terminated form. Relative subresources (style.css, src/main.js)
+// resolve one directory up without the slash, silently stripping the port
+// segment — the incident's white-unstyled-page failure mode. Normalization
+// is a pure URL rewrite: it must run before any workspace lookup.
+func TestDevPreviewHandler_BarePortRedirectsToTrailingSlash(t *testing.T) {
+	wsGetter := &devPreviewMockWorkspaceGetter{
+		workspaces: map[string]*v1.Workspace{
+			"ws-1": activeWorkspaceWithDevPreview("ws-1", "10.0.0.1", true),
+		},
+	}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	r := setupDevPreviewRouter(h)
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/dev-preview/5173", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusPermanentRedirect, w.Code)
+	assert.Equal(t, "/api/v1/workspaces/ws-1/dev-preview/5173/", w.Header().Get("Location"))
+	assert.Zero(t, wsGetter.gets, "redirect must precede any workspace lookup")
+}
+
+func TestDevPreviewHandler_BarePortRedirectPreservesQuery(t *testing.T) {
+	wsGetter := &devPreviewMockWorkspaceGetter{workspaces: map[string]*v1.Workspace{}}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	r := setupDevPreviewRouter(h)
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/dev-preview/3000?v=3&x=1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusPermanentRedirect, w.Code)
+	assert.Equal(t, "/api/v1/workspaces/ws-1/dev-preview/3000/?v=3&x=1", w.Header().Get("Location"))
+}
+
+// Port validation outranks the redirect: an invalid or denied port in
+// bare form is a client error, never a normalized redirect that would
+// mask it.
+func TestDevPreviewHandler_BarePortInvalidOrDeniedStill400(t *testing.T) {
+	wsGetter := &devPreviewMockWorkspaceGetter{
+		workspaces: map[string]*v1.Workspace{
+			"ws-1": activeWorkspaceWithDevPreview("ws-1", "10.0.0.1", true),
+		},
+	}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	r := setupDevPreviewRouter(h)
+
+	for _, portPath := range []string{"style.css", "4096", "80", "0", "65536", "abc"} {
+		req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/dev-preview/"+portPath, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "port path %q should be rejected, not redirected", portPath)
+	}
+}
+
+// A real subpath (slash present, deeper than the bare port) must not
+// redirect — the redirect exists solely to fix relative-asset resolution
+// for the document URL.
+func TestDevPreviewHandler_SubpathDoesNotRedirect(t *testing.T) {
+	wsGetter := &devPreviewMockWorkspaceGetter{workspaces: map[string]*v1.Workspace{}}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	r := setupDevPreviewRouter(h)
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/dev-preview/5173/index.html", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.NotEqual(t, http.StatusPermanentRedirect, w.Code)
+	assert.Zero(t, w.Header().Get("Location"))
+}
+
 func TestDevPreviewHandler_NonNumericPort(t *testing.T) {
 	wsGetter := &devPreviewMockWorkspaceGetter{
 		workspaces: map[string]*v1.Workspace{

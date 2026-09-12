@@ -285,6 +285,18 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		)
 	}
 
+	// #1332: the dedicated public API origin for user-facing dev-preview
+	// URLs, on whichever container runs agentd tooling. Wired for every
+	// mode (path or origin) so the tool never has to fall back to the
+	// possibly in-cluster LLMSAFESPACE_API_URL. Single-container mode
+	// runs the tool in this container; sidecar mode wires the same env
+	// in agentd_sidecar.go.
+	if public := r.publicAPIURL(); public != "" {
+		mainContainer.Env = append(mainContainer.Env,
+			corev1.EnvVar{Name: "LLMSAFESPACE_API_PUBLIC_URL", Value: public},
+		)
+	}
+
 	// Workspace setup init (packages + initScript).
 	if len(workspace.Spec.Packages) > 0 || workspace.Spec.InitScript != "" {
 		initContainers = append(initContainers, buildWorkspaceSetupInit(workspace, runtimeImage))

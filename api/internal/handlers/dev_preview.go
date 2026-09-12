@@ -146,6 +146,31 @@ func (h *DevPreviewHandler) HandleDevPreview(c *gin.Context) {
 		return
 	}
 
+	// #1333: normalize the bare /dev-preview/:port form (no trailing
+	// slash) to the slash-terminated form. Without the slash, a document
+	// served at this URL resolves its RELATIVE subresources one directory
+	// up — stripping the port segment — and the resulting
+	// /dev-preview/style.css request fails port parsing instead of
+	// serving the asset. Gin's RedirectTrailingSlash cannot do this: the
+	// /*portPath catch-all matches the slashless form, so no redirect
+	// ever fires. Only the BARE port is normalized: deeper paths
+	// (/…:port/app.js) are real asset paths whose slashless form is
+	// legitimate — redirecting those would break file requests. Port
+	// validation runs first so an invalid or denied port stays a 400
+	// rather than a redirect masking it; the rewrite itself is pure URL
+	// normalization, placed before any workspace lookup (no side
+	// effects, nothing to authorize beyond the middleware chain
+	// already run).
+	if portPath == "/"+portStr {
+		location := c.Request.URL.Path + "/"
+		if c.Request.URL.RawQuery != "" {
+			location += "?" + c.Request.URL.RawQuery
+		}
+		c.Header("Location", location)
+		c.Status(http.StatusPermanentRedirect)
+		return
+	}
+
 	if h.wsGetter == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dev preview not available"})
 		return

@@ -465,3 +465,96 @@ func TestAgentdSidecar_BootstrapSecretsOutEnv(t *testing.T) {
 	require.NotNil(t, env, "the sidecar needs the relocated batch coordinate")
 	require.Equal(t, "/sandbox-runtime/rt/secrets.json", env.Value)
 }
+
+// --- #1332: public API origin wiring --------------------------------------
+//
+// The dev_preview_url MCP tool runs in the agentd process — in sidecar
+// mode that is the SIDECAR, whose LLMSAFESPACE_API_URL is deliberately
+// the in-cluster svc coordinate (the sidecar's boot phase bootstraps
+// against it). The tool needs a SEPARATE public-origin env so the URLs it
+// hands to users are browser-reachable, plus the preview-origin base
+// domain so origin mode works from any container topology.
+
+// TestAgentdSidecar_PublicAPIURLEnv: sidecar gets LLMSAFESPACE_API_PUBLIC_URL
+// and PREVIEW_ORIGIN_BASE_DOMAIN while LLMSAFESPACE_API_URL keeps its
+// in-cluster value (the boot-phase invariant must not regress).
+func TestAgentdSidecar_PublicAPIURLEnv(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+	r.APIServiceURL = "http://llmsafespaces-api.llmsafespaces.svc:8080"
+	r.APIPublicURL = "https://api.safespaces.dev"
+	r.PreviewOriginBaseDomain = "safespaces.dev"
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+
+	pub := sidecarEnvVar(sc, "LLMSAFESPACE_API_PUBLIC_URL")
+	require.NotNil(t, pub, "sidecar tooling needs the public API origin (#1332)")
+	require.Equal(t, "https://api.safespaces.dev", pub.Value)
+
+	base := sidecarEnvVar(sc, "PREVIEW_ORIGIN_BASE_DOMAIN")
+	require.NotNil(t, base, "origin mode must work from the sidecar too")
+	require.Equal(t, "safespaces.dev", base.Value)
+
+	internal := sidecarEnvVar(sc, "LLMSAFESPACE_API_URL")
+	require.NotNil(t, internal, "sidecar boot phase still needs the in-cluster coordinate")
+	require.Equal(t, "http://llmsafespaces-api.llmsafespaces.svc:8080", internal.Value,
+		"the public env must REPLACE the tool's origin, not the boot coordinate")
+}
+
+// TestAgentdSidecar_PublicAPIURLDerivedFromBaseDomain: with only the
+// preview-origin base domain configured, the public origin derives as
+// https://api.<baseDomain> (same convention as the preview handler).
+func TestAgentdSidecar_PublicAPIURLDerivedFromBaseDomain(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+	r.APIServiceURL = "http://llmsafespaces-api.llmsafespaces.svc:8080"
+	r.PreviewOriginBaseDomain = "safespaces.dev"
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	pub := sidecarEnvVar(sc, "LLMSAFESPACE_API_PUBLIC_URL")
+	require.NotNil(t, pub)
+	require.Equal(t, "https://api.safespaces.dev", pub.Value)
+}
+
+// TestAgentdSidecar_PublicAPIURLUnsetWhenUnconfigured: neither flag set →
+// env absent; the tool falls back to validating LLMSAFESPACE_API_URL and
+// errors loudly on cluster-internal values rather than emitting them.
+func TestAgentdSidecar_PublicAPIURLUnsetWhenUnconfigured(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	require.Nil(t, sidecarEnvVar(sc, "LLMSAFESPACE_API_PUBLIC_URL"))
+	require.Nil(t, sidecarEnvVar(sc, "PREVIEW_ORIGIN_BASE_DOMAIN"))
+}
+
+// TestMainContainer_PublicAPIURLEnv: single-container mode runs the tool
+// in the main container — same public-origin env, and the existing
+// Epic-68 LLMSAFESPACE_API_URL entries are untouched.
+func TestMainContainer_PublicAPIURLEnv(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentd(t)
+	r.APIServiceURL = "http://llmsafespaces-api.llmsafespaces.svc:8080"
+	r.APIPublicURL = "https://api.safespaces.dev"
+	r.PreviewOriginBaseDomain = "safespaces.dev"
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	main := &pod.Spec.Containers[0]
+	pub := sidecarEnvVar(main, "LLMSAFESPACE_API_PUBLIC_URL")
+	require.NotNil(t, pub, "main-container tooling needs the public origin in single-container mode")
+	require.Equal(t, "https://api.safespaces.dev", pub.Value)
+}

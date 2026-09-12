@@ -126,6 +126,7 @@ The controller-runtime operator. Single leader-elected replica by default.
 | `controller.watchNamespaces` | string | `""` | Comma-separated namespaces to watch. `""` or `"*"` = cluster-wide. Combine with namespace-scoped RBAC for defense-in-depth. |
 | `controller.leaderElection.enabled` | bool | `true` | |
 | `controller.apiServiceURL` | string | `""` | In-cluster API URL the controller polls (30s, cached) for org-level suspension (D20). Empty derives from release name + namespace. |
+| `controller.apiPublicURL` | string | `""` | Publicly reachable API origin for user-facing dev-preview URLs (`LLMSAFESPACE_API_PUBLIC_URL` on workspace pods, #1332). Not the in-cluster service URL. Empty derives `https://api.<previewOrigin.baseDomain>` when preview origins are enabled; agentd refuses cluster-internal origins either way. |
 | `controller.metricsAddr` | string | `"127.0.0.1:8080"` | Metrics bind address. Loopback by default (F1.4.3) — run a `kube-rbac-proxy` sidecar for Prometheus. Override to `0.0.0.0:8080` only if you accept the unauthenticated-metrics trade-off. |
 | `controller.probeAddr` | string | `":8081"` | Health probe port. |
 | `controller.webhookPort` | int | `9443` | Webhook server port. |
