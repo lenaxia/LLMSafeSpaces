@@ -53,7 +53,7 @@ Replace the symlink equality with the copy-contract pins, deliberately NOT byte-
 
 - `local/us-70-secret-delivery-e2e.sh`
 - `local/us70_harness_script_test.go` — six executed/structural pins (r1–r4): probe trichotomy, grep normalization, copy-contract strings, case-block execution, guard discipline, seed-decision execution
-- `worklogs/NNNN_2026-09-11_ac1b-row-copy-contract.md` (this file)
+- `worklogs/0924_2026-09-11_ac1b-row-copy-contract.md` (this file)
 
 ## AC-1e scope addition (r5 record)
 
