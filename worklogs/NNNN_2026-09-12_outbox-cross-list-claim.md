@@ -36,3 +36,10 @@ Lua over check-then-two-LRems: the claim must be atomic across the two keys or t
 - **Dead parameter removed:** `withStaging` (all five sites claim both lists; the `#KEYS > 1` branch was unreachable).
 - **Contract comments corrected:** `DeliveredHook` states exactly-once per entry for concurrent completers with at-least-once failure direction; the script/helper docs scope the invariant honestly and note the single-instance Redis constraint (no hash tags — cluster mode would CROSSSLOT; today's deployment is standalone Valkey).
 - **Faithful second-completer row:** `TestCompleteSites_SecondCompleterStaleSnapshot` — B's claim runs against its stale snapshot after A drained; removes nothing, fires nothing.
+
+---
+
+## Review round 2 (PR #1348)
+
+- **Vacuous second-completer row (fixed, honestly this time):** the r1 row never reached the completed site — after A's drain the session was undiscoverable, and even the r2 first attempt's fresh LRange no longer held e1 (mutation-verified passing before I shipped it). The faithful construction: the REAL stale-snapshot window is inside the sweep itself (snapshot → probes → claim) — B's sweep snapshots e1, blocks mid-probe; A claims e1 during the block; B resumes and its claim on the snapshot value removes nothing. Mutation-verified: unconditional-fire at the sweeper site FAILS this row; gated passes. Probe activity asserted (non-vacuous).
+- **Comment block repaired:** releaseLockScript's orphaned doc restored to its declaration; claimDeliveredScript's doc rewritten to the count-0 truth (drains every copy, not "one copy"); the dead `#KEYS > 1` branch removed (the script is two unconditional LRems).

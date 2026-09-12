@@ -611,21 +611,16 @@ func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool
 // releaseLock deletes the lock ONLY if we still own it (compare-and-del).
 // A bare DEL could remove a lock a slower worker's TTL-expiry let another
 // worker legitimately acquire.
-// claimDeliveredScript atomically removes ONE copy of the entry from
-// BOTH lists (main and staging) and reports how many were removed. The
-// delivered hook fires only when the count is non-zero — the
-// winner-takes-the-hook token: concurrent completers are exactly-once
-// per entry even when the crash window holds copies in both lists (the
-// stage-out window two single-list LRems double-fired through).
-// lrem count 0 drains EVERY byte-identical copy from each list — the
-// dual-stage race (two identical staging copies) leaves no residual to
-// re-fire at next boot's Recover.
+// claimDeliveredScript atomically drains every byte-identical copy of
+// the entry from BOTH the main queue and staging (lrem count 0) and
+// returns the total removed — the winner-takes-the-hook token:
+// concurrent completers are exactly-once per entry even when the crash
+// window holds copies in both lists (the stage-out window two
+// single-list LRems double-fired through).
 var claimDeliveredScript = redis.NewScript(`
 local n = 0
 n = n + redis.call("lrem", KEYS[1], 0, ARGV[1])
-if #KEYS > 1 then
-	n = n + redis.call("lrem", KEYS[2], 0, ARGV[1])
-end
+n = n + redis.call("lrem", KEYS[2], 0, ARGV[1])
 return n
 `)
 
@@ -637,8 +632,7 @@ return n
 // delivered hook. Concurrent completers are exactly-once per entry; the
 // error direction is at-least-once (no claim, no fire, entry retained).
 func (s *Service) claimDelivered(ctx context.Context, ws, ses string, val string) int64 {
-	keys := []string{qKey(ws, ses), dKey(ws, ses)}
-	n, err := claimDeliveredScript.Run(ctx, s.client, keys, val).Int64()
+	n, err := claimDeliveredScript.Run(ctx, s.client, []string{qKey(ws, ses), dKey(ws, ses)}, val).Int64()
 	if err != nil {
 		return 0 // script/transport failure: no claim, no fire (entry stays claimable)
 	}
