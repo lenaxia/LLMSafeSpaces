@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.1] - 2026-09-12
+
+### Fixes — post-0.29.0 correctness hotfixes
+
+- **Delivered-signal exactly-once (#1339, #1348)**: two completers racing
+  on the same message (multi-replica outbox) could each fire the
+  delivered hook — duplicate "sent" browser events and duplicate usage
+  metering for one message. The completion claim is now an atomic
+  cross-list removal in one Lua step; only the winner fires, and every
+  byte-identical copy of the entry is drained so no residual re-fires at
+  boot. Pinned per-site by mutation-verified regression rows.
+- **Frontend queue 503 handling (#1325, #1320)**: contended retry/dismiss
+  (session busy delivering) no longer mints duplicate queue entries.
+- **faultmatrix compile + dedup fixes (#1343, #1346)**: cross-stream
+  StoreReader integration repairs after 2a landed.
+
+### Epic 71 — harness completion
+
+- **Fault-matrix assertion harness (#1337)**: the harness engine itself —
+  violation counters, convergence samples, and legs 2/4/5 rows over the
+  landed wave code.
+- **Fault-matrix S5/L3 + leg-3 rows (#1341)**, **delivery-replay S2/S9,
+  serve-storm cheapness, the soak driver with negative control
+  (#1344)**: the assertion harness is complete; violation counters must
+  read zero under injected faults at CI scale (the in-memory shape the
+  at-scale soak reuses).
+- **#828 batch 1 (#1347)**: adapter-only session cluster methods
+  (epic-826 prerequisite work; no behavior change with the adapter
+  configured — nil-adapter requests now return a typed 503 instead of
+  the raw legacy-proxy fallback).
+
 ## [0.29.0] - 2026-09-11
 
 ### Epic 71 — input & delivery robustness, waves 0-2 (issues #1310/#1311/#1312/#1315/#1316)
