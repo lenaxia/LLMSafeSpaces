@@ -21,12 +21,12 @@ import (
 // #828 batch 2: SendPromptAsync, EnqueueMessage, GetHistory, GetSession,
 // AbortSession, DeleteSession, and RenameSessionInAgent are adapter-only.
 // The env-harness rows wire a WORKING proxy backend, so a regression to
-// the deleted fallback surfaces as a 2xx legacy response. The V2-harness
-// rows build their router with bare gin.New() (no Recovery middleware)
-// and wire no V2 client post-deletion, so their red state is a nil-deref
-// panic propagating out of ServeHTTP — no response at all — still
-// unmistakably red; the rows were captured red-first against the real
-// V2 tails pre-deletion.
+// the deleted fallback surfaces as a 2xx legacy response. Of the
+// V2-harness rows (bare gin.New(), no Recovery middleware), the three
+// nil-adapter guard rows regress to a nil-adapter deref panic
+// propagating out of ServeHTTP — no response at all; the other four
+// regress to status mismatches (503/409/2xx). All unmistakably red; the
+// rows were captured red-first against the real V2 tails pre-deletion.
 
 func TestSendPromptAsync_NilAdapter_Returns503TypedError(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
@@ -115,7 +115,7 @@ func TestDeleteSession_NilAdapter_Returns503_AndWritesNoTombstone(t *testing.T) 
 }
 
 // RenameSessionInAgent is a service-layer helper (no gin context): with no
-// adapter it must return a typed error naming the wiring failure instead of
+// adapter it must return its own error naming the wiring failure instead of
 // silently PATCHing the pod over raw HTTP.
 func TestRenameSessionInAgent_NilAdapter_ReturnsTypedError(t *testing.T) {
 	env := newTestEnv(t)

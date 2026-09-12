@@ -145,3 +145,5 @@ None.
 - **r7:** write-route activity parity lines pinned (AbortSession/DeleteSession tracker rows, mutation-verified by both reviewer and me); helper/SetAdapter/AbortSession docs corrected.
 - **r8:** SetAdapter doc re-scoped to the migrated cluster (queue-view + rename exceptions); per-phase tracker isolation in the pins.
 - **r9:** the adapter FIELD doc re-scoped identically (r8 fixed the sibling 75 lines below and missed this one); guard-row header's red-state mechanism corrected (nil-deref panic under bare gin.New(), not a 500 — mutation-verified by the reviewer); helpers "red-state witness" wording aligned; stale admin_session.go DeleteSession cite fixed (non-blocking, pre-existing); worklog rounds completed (this section).
+
+- **r10:** field doc's nil-check enumeration completed (lifecycle Start() hooks + events sweep gate); guard-row panic claim scoped to the three guard rows and attributed to the nil adapter; "typed error" -> "its own error" for the rename helper.

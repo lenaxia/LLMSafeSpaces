@@ -143,9 +143,12 @@ type ProxyHandler struct {
 	// session/message cluster is adapter-only since #828 batches 1+2
 	// (nil adapter -> adapterUnavailable guard, typed 503); the
 	// outbox-backed queue view routes never consult it, and
-	// RenameSessionInAgent fails with its own typed error. Remaining
+	// RenameSessionInAgent fails with its own error. Remaining
 	// nil-checks live in the batch-3/4 files (input, permissions,
-	// session index, parents) and their background helpers. Set via
+	// session index, parents), their background helpers, and the
+	// lifecycle wiring (Start()'s outbox verifier hooks,
+	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go).
+	// Set via
 	// SetAdapter before Start(); the final #828 batch makes it a
 	// required constructor parameter and retires the dialect field.
 	adapter agent.Adapter
