@@ -253,24 +253,6 @@ func (s *EvidenceStore) InputPresent(sessionID, inputID string) bool {
 	return false
 }
 
-// PendingInputs completes the StoreReader seam (#1310 slice B: the lease
-// diff's truth source). #1337 landed the harness without it, leaving
-// main's vet red (*EvidenceStore missing method) — this is the obvious
-// projection of the same states the other readers serve: the fake's
-// truth is in-memory, so the read is always clean and error stays nil
-// (the STRICT-failure contract concerns real store fetches).
-func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.InputRequest, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string][]*abiv1.InputRequest, len(s.states))
-	for sid, seed := range s.states {
-		if len(seed.PendingInputs) > 0 {
-			out[sid] = seed.PendingInputs
-		}
-	}
-	return out, nil
-}
-
 // AnswerActor implements the harness answer seam: a live ask answers
 // successfully; an ask ABSENT from the store's truth 404s — the leg-2
 // stale-click shape resolve-by-absence must convert (S6).
