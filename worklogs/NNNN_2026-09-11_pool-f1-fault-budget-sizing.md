@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-11
 **Session:** Root-cause and fix the pre-existing `F1 autopush heal timeout` delivery-pool failure on main (epic-71 #1314, flagged unowned in comment 5628098598; agent: opencode-vesper). Scope: the F1 ROW — the pool's other red row (AC-1b XDG) is a separate root cause, fixed in PR #1326 (r2 correction: an earlier draft of this worklog said "AC-1b already fixed by #1317"; that claim was WRONG — #1317 fixed the unit-test env-leak manifestation only. The AC-1b cluster row failed byte-identically on main pre-#1317 (34549292454), on #1317's own head (34552707878), and on this branch (34566214570) — it is deterministically red wherever it runs and owed its own fix, now #1326: the row pinned the #1301 symlink mechanism that 1d0e5be1 legitimately replaced with a copy.)
-**Status:** In Review (PR #1321; merge gate = green F1 pool dispatch on the branch)
+**Status:** In Review (PR #1321; merge gate = [r9: superseded the r1-era "green F1 dispatch on the branch" wording] the combined-head full-green record — landed: run 34631603837 = SUCCESS on 31632400 with F1 PASS in the log; see Tests Run)
 
 ---
 
@@ -16,7 +16,7 @@ Get the US-70 delivery pool green on main by root-causing the F1 row ("autopush 
 
 ### Root-cause analysis (run 34549292454 log forensics)
 
-- F1 arms `LLMSAFESPACES_FAULT_INJECTION=${FAULT_COUNT}:POST:/internal/v1/pod-bootstrap` (FAULT_COUNT=24), probe burns 1, boot retries burn ~4-6, and the heal path must burn the REST one fault per pull before any pull can succeed.
+- F1 arms `LLMSAFESPACES_FAULT_INJECTION=${FAULT_COUNT}:POST:/internal/v1/pod-bootstrap` (FAULT_COUNT=24), probe burns 1, the boot phase burns its retries (bootstrapFetchAttempts=3 — [r9: reconciled with the sizing arithmetic's "boot retries 3"; the early-forensics "~4-6" figure included incidental divergent-pod pulls now counted in the slack term]), and the heal path must burn the REST one fault per pull before any pull can succeed.
 - The heal driver is `api/internal/services/secretsreconcile` (60s level-triggered pass; per-workspace exponential backoff 5s doubling toward a 10-min cap, +25% jitter). Every eligible re-notify → agentpush POST /v1/resync-secrets → pod's in-process conditional pull → one faulted pod-bootstrap → burn 1.
 - Arithmetic: burns at 5+10+20+40+80… cannot exhaust a 24-budget inside F1's 300s converge window. Observed: last fault burned 01:27:45, deadline ~01:27:04 — 41s past — then the heal still needed a clean pull + apply + session-aware restart + statusz mirror (≤60s). **Unsatisfiable by construction at 24** with any bounded cadence. This matches F6's own history: at 16 AND 24 the seam was budget-lottery (runs 34276744182, 34284549387), which is why F6 self-arms 6.
 - Pod-side rate limit is NOT a factor: `resyncDefaultMinInterval = 2s`.
