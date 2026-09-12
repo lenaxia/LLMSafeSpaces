@@ -155,6 +155,9 @@ type EvidenceStore struct {
 	states       map[string]sessionstate.SessionSeed
 	present      map[string]map[string]bool
 	pendingCalls int
+	// FailPendingInputs makes the gather error (the negative control:
+	// an indeterminate truth source the diff must skip, never trust).
+	FailPendingInputs bool
 }
 
 func NewEvidenceStore() *EvidenceStore {
@@ -216,6 +219,9 @@ func (s *EvidenceStore) PendingInputs(ctx context.Context) (map[string][]*abiv1.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pendingCalls++
+	if s.FailPendingInputs {
+		return nil, errText("evidence store: pending gather failed (negative control)")
+	}
 	out := make(map[string][]*abiv1.InputRequest, len(s.states))
 	for sid, seed := range s.states {
 		if len(seed.PendingInputs) > 0 {

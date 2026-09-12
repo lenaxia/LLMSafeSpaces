@@ -123,11 +123,9 @@ func TestRow_Leg9_ServeStorm_Cheapness(t *testing.T) {
 	gathers := store.PendingInputsCalls()
 	assert.LessOrEqual(t, gathers, 3, "50 concurrent serves cost a handful of gathers, not 50 (singleflight + TTL cache)")
 
-	v := NewViolations()
-	log := NewConvergenceLog()
-	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
-	assert.True(t, log.Within("L3", soakConvergenceBound) == false || true) // no L3 samples recorded by this row — see worklog
-	_ = log
+	// No Violations/ConvergenceLog gates here: this row's contract is
+	// the cheapness bound and serve correctness (asserted above); the
+	// L-gates belong to the convergence rows.
 }
 
 // The soak self-test: the driver at high fault rate over a short
@@ -138,16 +136,211 @@ func TestSoak_SelfTest_HighRateZeroViolations(t *testing.T) {
 	a := newAuthority(t, store, &AnswerActor{Store: store})
 	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
 
-	v, log := RunSoak(context.Background(), a, store, SoakConfig{
+	v, log, err := RunSoak(context.Background(), a, store, SoakConfig{
 		Sessions:      4,
 		FaultsPerTick: 0.9,
 		Tick:          5 * time.Millisecond,
 		Duration:      2 * time.Second,
 	})
+	require.NoError(t, err)
 	assert.True(t, v.Empty(), "soak self-test must end with zero violations: %v", v.Counts())
 	assert.NotEmpty(t, log.Max("L3"), "the soak recorded convergence samples")
 	// Epsilon for the boundary drift between WaitConverges' deadline
 	// check and its Since read under -race load (observed 78µs); the
 	// soak gate is the bound, not the timer's reading of it.
 	assert.LessOrEqual(t, log.Max("L3"), soakConvergenceBound+100*time.Millisecond)
+}
+
+// The admitter's keyed-upsert contract, pinned directly (r1 finding 2:
+// the replay row resolves via the ledger's admittedAnywhere dedup
+// BEFORE Admit re-fires — this unit pin is the change's own coverage).
+func TestInstantAdmitter_KeyedUpsert_S2(t *testing.T) {
+	store := NewEvidenceStore()
+	ad := &InstantAdmitter{Out: store}
+
+	first, err := ad.Admit(context.Background(), "s1", "entry-key-1", "text", "model")
+	require.NoError(t, err)
+	second, err := ad.Admit(context.Background(), "s1", "entry-key-1", "text", "model")
+	require.NoError(t, err)
+
+	assert.Equal(t, "entry-key-1", first, "the harness store id IS the dedupe key")
+	assert.Equal(t, first, second, "a re-admission returns the SAME id")
+	assert.Equal(t, 1, store.TranscriptCount("s1"), "the keyed upsert overwrites — never appends (the #1315 class)")
+}
+
+// Leg 7's out-of-order half: attempt 2 lands BEFORE attempt 1 (the
+// replay ladder's reorder shape). Both rows resolve; the transcript
+// holds ONE user message; the ledger never grows on replay.
+func TestRow_Leg7_OutOfOrderDelivery_S2_S9(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+
+	deliver := func(entry string, attempt uint32) {
+		t.Helper()
+		_, err := a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "ses-row", EntryId: entry, Attempt: attempt,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "do the thing"}}},
+		}))
+		require.NoError(t, err)
+	}
+
+	// Out of order: the HIGHER attempt arrives first.
+	deliver("entry-oo", 2)
+	deliver("entry-oo", 1)
+
+	v := NewViolations()
+	require.Eventually(t, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["admitted"] == 0
+	}, 30*time.Second, 5*time.Millisecond, "both out-of-order rows resolve from shared evidence")
+
+	if n := store.TranscriptCount("ses-row"); n != 1 {
+		v.Add("S2") // one entry, one user message — order cannot matter
+	}
+	depthsSum := func() int {
+		n := 0
+		for _, c := range a.Metrics().LedgerDepths {
+			n += int(c)
+		}
+		return n
+	}
+	before := depthsSum()
+	deliver("entry-oo", 2) // the duplicate replay
+	if depthsSum() != before {
+		v.Add("S9")
+	}
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+}
+
+// Row leg 8 → S9/L5: the boundary-slow turn (a test-scale stand-in for
+// the 3-min admitter window) admits late but inside the window; the
+// row resolves from evidence within L5 and the transcript stays at one.
+func TestRow_Leg8_SlowBoundary_S9_L5(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir: t.TempDir(),
+		Parser:      NoopParser{},
+		Store:       store,
+		Passwords:   []string{"row-pw"},
+		// The slow boundary: admission stalls 150ms (test-scale for the
+		// 30-120s production turn) — DelayDeliverAck's admitter-side
+		// twin. The admission window is widened so the stall stays
+		// INSIDE it (leg 8's "turn ≈ window" shape).
+		Admitter:        &slowAdmitter{delay: 150 * time.Millisecond, out: store},
+		AdmitterTimeout: 5 * time.Second,
+	})
+	require.NoError(t, err)
+
+	_, err = a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+		SessionId: "ses-row", EntryId: "entry-slow", Attempt: 1,
+		Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "slow turn"}}},
+	}))
+	require.NoError(t, err)
+
+	v := NewViolations()
+	log := NewConvergenceLog()
+	elapsed, ok := WaitConverges(context.Background(), sessionstate.LeaseConvergenceBound, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["admitted"] == 0
+	})
+	log.Record("L5", elapsed)
+	if !ok {
+		v.Add("S9") // the slow boundary stranded the entry
+		v.Add("L5")
+	}
+	if n := store.TranscriptCount("ses-row"); n != 1 {
+		v.Add("S2")
+	}
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+	assert.True(t, log.Within("L5", sessionstate.LeaseConvergenceBound))
+}
+
+// The soak's negative control: a truth source whose gather always
+// errors (indeterminate) means the diff can NEVER converge the pending
+// set — the soak MUST detect it (zero-violations is a gate, not a
+// given). Runs one fault then tears down; the violation is real, not
+// ctx-phantom (the ctx is alive throughout).
+func TestSoak_NegativeControl_FailingGatherYieldsViolations(t *testing.T) {
+	store := NewEvidenceStore()
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+
+	// Seed one projected pending so the gather's convergence matters.
+	store.SetState("ses-soak-0", abiv1.SessionStatus_SESSION_STATUS_BUSY, &abiv1.InputRequest{
+		Id: "in-seed", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
+	})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+	store.FailPendingInputs = true
+
+	v, _, err := RunSoak(context.Background(), a, store, SoakConfig{
+		Sessions:      2,
+		FaultsPerTick: 1.0, // every tick faults; the gather stays broken
+		Tick:          5 * time.Millisecond,
+		Duration:      300 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	assert.False(t, v.Empty(), "a permanently indeterminate truth source must yield violations — the gate detects")
+	assert.NotEmpty(t, v.Counts()["L3"])
+}
+
+// Config validation: the exported seam fails loudly, not panically.
+func TestSoak_ConfigValidation(t *testing.T) {
+	store := NewEvidenceStore()
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	for _, cfg := range []SoakConfig{
+		{Sessions: 0, FaultsPerTick: 1, Tick: time.Millisecond, Duration: time.Millisecond},
+		{Sessions: 1, FaultsPerTick: 2, Tick: time.Millisecond, Duration: time.Millisecond},
+		{Sessions: 1, FaultsPerTick: 1, Tick: 0, Duration: time.Millisecond},
+		{Sessions: 1, FaultsPerTick: 1, Tick: time.Millisecond, Duration: 0},
+	} {
+		_, _, err := RunSoak(context.Background(), a, store, cfg)
+		require.Error(t, err, "misconfig must return ErrSoakConfig, not panic or no-op")
+	}
+}
+
+// Ctx teardown mid-soak records NO phantom violations (the hours-scale
+// kind run is wall-clock canceled; teardown must not poison the gate).
+func TestSoak_CtxTeardownNoPhantomViolations(t *testing.T) {
+	store := NewEvidenceStore()
+	a := newAuthority(t, store, &AnswerActor{Store: store})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonBoot))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+	v, log, err := RunSoak(ctx, a, store, SoakConfig{
+		Sessions:      4,
+		FaultsPerTick: 0.9,
+		Tick:          5 * time.Millisecond,
+		Duration:      10 * time.Second, // torn down well before
+	})
+	require.NoError(t, err)
+	assert.True(t, v.Empty(), "ctx teardown is not a breach: %v", v.Counts())
+	assert.NotNil(t, log)
+}
+
+// slowAdmitter is leg 8's boundary: admission takes delay (ctx-aware),
+// then writes evidence under the entry-keyed id — the test-scale twin
+// of the 30-120s production turn.
+type slowAdmitter struct {
+	delay time.Duration
+	out   *EvidenceStore
+}
+
+func (ad *slowAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(ad.delay):
+	}
+	if ad.out != nil {
+		ad.out.MarkPresent(sessionID, messageID)
+	}
+	return messageID, nil
 }

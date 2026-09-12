@@ -6,7 +6,9 @@ package faultmatrix
 import (
 	"context"
 	"math/rand"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -63,32 +65,65 @@ func applyFault(store *EvidenceStore, rng *rand.Rand, sessions []string, i int) 
 	return sid
 }
 
-func (s *EvidenceStore) livePendingCount(sessionID string) int {
+func (s *EvidenceStore) livePendingIDs(sessionID string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.states[sessionID].PendingInputs)
+	ids := make([]string, 0, len(s.states[sessionID].PendingInputs))
+	for _, in := range s.states[sessionID].PendingInputs {
+		ids = append(ids, in.GetId())
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
 }
 
-func projectedPendingCount(ctx context.Context, a *sessionstate.Authority, sessionID string) (int, error) {
+func projectedPendingIDs(ctx context.Context, a *sessionstate.Authority, sessionID string) string {
 	res, err := a.GetSnapshot(ctx, connect.NewRequest(&abiv1.GetSnapshotRequest{SessionId: sessionID}))
 	if err != nil {
-		// An unprojected session holds no pending set — S5 holds
-		// vacuously; treat it as zero rather than a perpetual error
-		// (the diff will surface the session when truth gives it asks).
 		if connect.CodeOf(err) == connect.CodeNotFound {
-			return 0, nil
+			return "" // an unprojected session holds no pending set (S5 vacuous)
 		}
-		return 0, err
+		return "\x00error:" + err.Error()
 	}
-	return len(res.Msg.GetPendingInputs()), nil
+	ids := make([]string, 0, len(res.Msg.GetPendingInputs()))
+	for _, in := range res.Msg.GetPendingInputs() {
+		ids = append(ids, in.GetId())
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ",")
+}
+
+// ErrSoakConfig reports a misshapen SoakConfig (the exported seam the
+// kind row drives must fail loudly, not panic or silently no-op).
+type ErrSoakConfig string
+
+func (e ErrSoakConfig) Error() string { return "soak config: " + string(e) }
+
+func validateSoakConfig(cfg SoakConfig) error {
+	switch {
+	case cfg.Sessions < 1:
+		return ErrSoakConfig("Sessions must be >= 1")
+	case cfg.FaultsPerTick < 0 || cfg.FaultsPerTick > 1:
+		return ErrSoakConfig("FaultsPerTick is a probability in [0,1]")
+	case cfg.Tick <= 0:
+		return ErrSoakConfig("Tick must be > 0")
+	case cfg.Duration <= 0:
+		return ErrSoakConfig("Duration must be > 0")
+	}
+	return nil
 }
 
 // RunSoak drives the authority under the fault stream for cfg.Duration.
 // After each fault, the affected session's projection must converge to
-// the truth's pending-shape inside the lease window (ticking Reconcile,
-// the cadence contract); every breach is a violation, every span a
-// sample. The returned counters and log are the soak's gate.
-func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStore, cfg SoakConfig) (*Violations, *ConvergenceLog) {
+// the truth's pending-IDENTITY (sorted ID sets, not counts) inside the
+// lease window (ticking Reconcile, the cadence contract); every breach
+// is a violation, every span a sample — except ctx teardown, which
+// aborts WITHOUT phantom violations (the hours-scale kind run is
+// wall-clock canceled; a teardown must not poison the gate). The
+// returned counters and log are the soak's gate.
+func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStore, cfg SoakConfig) (*Violations, *ConvergenceLog, error) {
+	if err := validateSoakConfig(cfg); err != nil {
+		return nil, nil, err
+	}
 	v := NewViolations()
 	log := NewConvergenceLog()
 	rng := cfg.Rand
@@ -108,25 +143,24 @@ func RunSoak(ctx context.Context, a *sessionstate.Authority, store *EvidenceStor
 	for i := 0; time.Now().Before(deadline); i++ {
 		if rng.Float64() < cfg.FaultsPerTick {
 			sid := applyFault(store, rng, sessions, i)
-			// Convergence is against CURRENT truth — the fault stream
-			// keeps moving it (a mid-wait fault on the same session
-			// changes the target; chasing a stale snapshot of `want`
-			// would breach spuriously).
+			// Convergence is against CURRENT truth, by pending IDENTITY
+			// (sorted ID sets — counts would read converged while the
+			// projection holds a stale ask and misses a live one, the
+			// exact S5 false-green the soak exists to catch).
 			elapsed, ok := WaitConverges(ctx, soakConvergenceBound, soakPoll, func() bool {
 				a.Reconcile(ctx)
-				got, err := projectedPendingCount(ctx, a, sid)
-				return err == nil && got == store.livePendingCount(sid)
+				return projectedPendingIDs(ctx, a, sid) == store.livePendingIDs(sid)
 			})
 			log.Record("L3", elapsed)
-			if !ok {
-				v.Add("L3")
+			if !ok && ctx.Err() == nil {
+				v.Add("L3") // a real breach; ctx teardown aborts clean
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return v, log
+			return v, log, nil
 		case <-tick.C:
 		}
 	}
-	return v, log
+	return v, log, nil
 }

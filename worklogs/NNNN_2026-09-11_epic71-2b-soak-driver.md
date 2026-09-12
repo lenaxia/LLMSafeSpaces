@@ -56,3 +56,24 @@ None. Remaining for full 2b closure: the hours-scale soak execution on the kind 
 - cmd/workspace-agentd/faultmatrix/faultmatrix.go (keyed-upsert admitter; PendingInputsCalls/TranscriptCount observables)
 - cmd/workspace-agentd/faultmatrix/soak.go (new — the driver)
 - cmd/workspace-agentd/faultmatrix/soak_test.go (new — the rows + self-test)
+
+---
+
+## Review r1 remediation (2026-09-11, PR #1344)
+
+- **Negative control (their finding 1):** `TestSoak_NegativeControl_FailingGatherYieldsViolations` — a truth source whose gather always errors (`FailPendingInputs` lever on the fake) yields real L3 violations with a live ctx; zero-violations is now a proven-detecting gate.
+- **The admitter change has its own pin (finding 2):** `TestInstantAdmitter_KeyedUpsert_S2` — same key twice → same returned id, TranscriptCount stays 1. (Honest note retained: the replay row resolves via `admittedAnywhere` before Admit re-fires — the reviewer's catch.)
+- **Leg 7's out-of-order half (finding 3):** `TestRow_Leg7_OutOfOrderDelivery_S2_S9` — attempt 2 before attempt 1; both resolve, transcript 1, replay grows nothing.
+- **Leg 8 in-process row (finding 5):** `TestRow_Leg8_SlowBoundary_S9_L5` — a ctx-aware 150ms slowAdmitter inside a widened admission window (the "turn ≈ window" shape); resolves from evidence within L5, transcript 1. The PR's closure claim is now earned: legs 1-9 each have an in-process row (leg 6 rides the replay rows; leg 9 the storm row).
+- **Phantom violations (Robustness 1):** ctx teardown aborts WITHOUT adding L3 (`ctx.Err() == nil` guard); pinned by `TestSoak_CtxTeardownNoPhantomViolations`.
+- **Identity predicate (Robustness 2):** the soak compares sorted pending-ID SETS, not counts (a stale-ask + missing-live-ask at equal count is the exact false-green); NotFound reads empty (S5 vacuous — the regression my first identity version introduced and the self-test caught).
+- **Config validation (Robustness 3):** `RunSoak` returns `ErrSoakConfig` on misshape (Sessions/Tick/Duration/FaultsPerTick); pinned by `TestSoak_ConfigValidation`.
+- **Leg-9 dead tail removed** (Style): the row ends at its own contract (cheapness bound + serve correctness).
+
+Counts at this revision: 25 test functions (10 engine/fake + 11 rows incl. out-of-order + leg-8 + 4 soak driver tests).
+
+## Tests Run (r1)
+
+- `go test -race ./cmd/workspace-agentd/faultmatrix/` — ok (~34s)
+- `go test -race -count=3 -run TestSoak` — stable
+- `golangci-lint` — 0 issues
