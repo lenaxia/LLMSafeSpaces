@@ -912,3 +912,319 @@ c"); old=$(printf '%s' "$N" | wc -l); new=$(printf '%s\n' "$N" | grep -c .); ech
 		}
 	}
 }
+
+// TestUS70AC1BRow_XDGLayerClassification executes the AC-1b row's ACTUAL
+// probe text (extracted from the script — r2: an inline re-implementation
+// stays green while the script drifts) against a temp dir: a writable
+// regular file must classify `file`, a read-only file `readonly` (the
+// EACCES class 1d0e5be1 exists to close), a symlink `symlink` (the
+// 0.27.5-era mechanism), an absent path `missing`.
+func TestUS70AC1BRow_XDGLayerClassification(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	// The remote probe is the double-quoted sh -c payload of the XDG_KIND
+	// capture line; its own quoting is single-quoted, so [^"]+ is exact.
+	m := regexp.MustCompile(`XDG_KIND=\$\(kc exec[^\n]* -- sh -c "([^"]+)"`).
+		FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("AC-1b XDG_KIND probe not found in %s in the expected capture form", us70DeliveryScript)
+	}
+	probe := m[1]
+	dir := t.TempDir()
+	writable := filepath.Join(dir, "writable.json")
+	readOnly := filepath.Join(dir, "readonly.json")
+	link := filepath.Join(dir, "symlink.json")
+	absent := filepath.Join(dir, "absent.json")
+	for _, p := range []string{writable, readOnly} {
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(readOnly, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(writable, link); err != nil {
+		t.Fatal(err)
+	}
+	// The row expands ${XDG_CFG} in the OUTER shell before the remote
+	// sh -c sees it (single quotes preserve the literal) — replicate
+	// that substitution per fixture, exactly as kc exec would deliver.
+	var got []string
+	for _, p := range []string{writable, readOnly, link, absent} {
+		out, err := exec.Command(bash, "-c", strings.ReplaceAll(probe, "${XDG_CFG}", p)).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute extracted probe (%q) on %s: %v\n%s", probe, p, err, out)
+		}
+		got = append(got, strings.TrimSpace(string(out)))
+	}
+	joined := strings.Join(got, " ")
+	if joined != "file readonly symlink missing" {
+		t.Fatalf("extracted probe must classify writable/readonly/symlink/absent in order, got %q (probe=%q)", joined, probe)
+	}
+}
+
+// TestUS70AC1BRow_SeedGrepSemantics executes the AC-1b seeded-copy grep
+// semantics as the script runs them (r2 finding: `grep -c` exits 1 on
+// zero matches, so the guard must distinguish transport failure from a
+// legitimate zero count — the `; true` normalization). Pins BOTH arms:
+// count 0 → the content die's condition fires; count ≥1 → passes; any
+// nonzero command exit WITHOUT normalization would invert the arms.
+func TestUS70AC1BRow_SeedGrepSemantics(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	m := regexp.MustCompile(`XDG_SEED=\$\(kc exec[^\n]* -- sh -c "(grep -c [^"]+)"`).
+		FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("AC-1b XDG_SEED grep not found in %s in the expected capture form", us70DeliveryScript)
+	}
+	cmd := m[1]
+	if !strings.Contains(cmd, "; true") {
+		t.Fatalf("the seeded-copy grep must normalize the remote exit (`; true`) — grep -c exits 1 on zero matches and would fire the exec-failure die on the CONTENT path: %q", cmd)
+	}
+	dir := t.TempDir()
+	seeded := filepath.Join(dir, "seeded.json")
+	bare := filepath.Join(dir, "bare.json")
+	if err := os.WriteFile(seeded, []byte(`{"providers":{"ac1b-stub":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bare, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{seeded, true},
+		{bare, false},
+	} {
+		out, err := exec.Command(bash, "-c", fmt.Sprintf("%s; echo exit=$?", strings.ReplaceAll(cmd, "${XDG_CFG}", tc.path))).CombinedOutput()
+		if err != nil {
+			t.Fatalf("execute seeded-grep: %v\n%s", err, out)
+		}
+		text := strings.TrimSpace(string(out))
+		n, perr := strconv.Atoi(strings.Split(text, "\nexit=")[0])
+		if perr != nil {
+			t.Fatalf("seeded-grep output not a count: %q", text)
+		}
+		if (n >= 1) != tc.want {
+			t.Fatalf("seeded-grep on %s: count=%d, want seeded=%v (output %q)", tc.path, n, tc.want, text)
+		}
+	}
+}
+
+// TestUS70AC1BRow_CopyContractPins pins the AC-1b row's copy-contract
+// structurally: the symlink-equality form that 1d0e5be1 invalidated must
+// stay gone, and the copy-contract assertions (writable-file case arms
+// and the seeded-copy grep) must stay present — the row was silently red
+// for two days precisely because nothing pinned it.
+func TestUS70AC1BRow_CopyContractPins(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if strings.Contains(src, "readlink -f /home/sandbox/.config/opencode/opencode.json") {
+		t.Fatalf("AC-1b must not carry the symlink-equality form — 1d0e5be1 replaced the symlink with a copy; the row pins the copy contract")
+	}
+	for _, pin := range []string{
+		`[ -f '${XDG_CFG}' ] && [ -w '${XDG_CFG}' ]`,
+		"XDG registry layer at ${XDG_CFG} is a READ-ONLY regular file",
+		"the 0.27.5-era mechanism",
+		"XDG registry layer MISSING at ${XDG_CFG}",
+		"not seeded from the live config",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("AC-1b copy-contract pin missing from %s: %q", us70DeliveryScript, pin)
+		}
+	}
+}
+
+// TestUS70AC1BRow_CaseBlockExecutes pins the row's central decision
+// expression by EXECUTION (r3: the structural string pins don't run the
+// logic — a mutated case arm could keep the strings elsewhere): the
+// script's actual `case "${XDG_KIND}" in … esac` block is extracted and
+// run against every classification input with a stubbed die, asserting
+// each arm's message. `file` must fall through clean.
+func TestUS70AC1BRow_CaseBlockExecutes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	caseBlock := regexp.MustCompile("(?s)case \"\\$\\{XDG_KIND\\}\" in\n.*?\nesac\n").FindString(src)
+	if caseBlock == "" {
+		t.Fatalf("AC-1b XDG_KIND case block not found in %s", us70DeliveryScript)
+	}
+	wants := []struct{ kind, msg string }{
+		{"file", ""}, // clean fall-through
+		{"readonly", "READ-ONLY regular file"},
+		{"symlink", "the 0.27.5-era mechanism"},
+		{"missing", "never installed the copy"},
+		{"weird", "unexpected"},
+	}
+	for _, w := range wants {
+		script := `die() { echo "DIE:$*"; exit 1; }
+XDG_CFG=/probe/path
+XDG_KIND='` + w.kind + `'
+` + caseBlock + "\n" + `echo OK
+`
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		got := strings.TrimSpace(string(out))
+		if w.msg == "" {
+			if err != nil || got != "OK" {
+				t.Fatalf("classification %q must fall through clean, got err=%v out=%q", w.kind, err, got)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(got, w.msg) {
+			t.Fatalf("classification %q must die with %q, got err=%v out=%q", w.kind, w.msg, err, got)
+		}
+	}
+}
+
+// TestUS70AC1BRow_GuardDiscipline pins the r13/r30 capture guards
+// structurally (r3: reverting both `if !` guards left the suite green —
+// nothing else would catch the silent leg-killer regression).
+func TestUS70AC1BRow_GuardDiscipline(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	for _, pin := range []string{
+		`if ! XDG_KIND=$(kc exec`,
+		`if ! XDG_SEED=$(kc exec`,
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("AC-1b capture guard missing from %s: %q — an unguarded kc exec under set -Eeuo pipefail kills the whole pool leg on a transient failure (r13/r30)", us70DeliveryScript, pin)
+		}
+	}
+}
+
+// TestUS70AC1BRow_SeedDecisionExecutes runs the script's ACTUAL seed
+// guard + decision expression (r4: `-ge 1`→`-ge 2` mutation left the
+// suite green — the threshold was Go-re-implemented, not executed).
+// A fake kc serves the captured value; every outcome is asserted
+// against the script's own die branches.
+func TestUS70AC1BRow_SeedDecisionExecutes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	block := regexp.MustCompile(`(?s)if ! XDG_SEED=\$\(kc exec.*?\nfi\n\[\[.*?\n.*?\n`).
+		FindString(src)
+	if block == "" {
+		t.Fatalf("AC-1b seed guard+decision block not found in %s", us70DeliveryScript)
+	}
+	for _, tc := range []struct {
+		name, kcOut, want string
+		kcExit            int
+	}{
+		{"seeded (count 1) passes", "1", "", 0},
+		{"seeded (count 3) passes", "3", "", 0},
+		{"not seeded (count 0) dies with the content message", "0", "not seeded from the live config", 0},
+		{"transport failure dies with the exec message", "Error from server: timeout", "kc exec failed grepping", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := `set -u
+die() { echo "DIE:$*"; exit 1; }
+POD1B=pod-fake
+XDG_CFG=/probe/path
+kc() { printf '%s\n' '` + tc.kcOut + `'; return ` + strconv.Itoa(tc.kcExit) + `; }
+` + block + "\necho OK\n"
+			out, err := exec.Command(bash, "-c", script).CombinedOutput()
+			got := strings.TrimSpace(string(out))
+			if tc.want == "" {
+				if err != nil || got != "OK" {
+					t.Fatalf("must pass clean, got err=%v out=%q", err, got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(got, tc.want) {
+				t.Fatalf("must die with %q, got err=%v out=%q", tc.want, err, got)
+			}
+		})
+	}
+}
+
+// TestUS70MockLLM_ToolEchoPins pins the AC-1e mock's tools-echo contract
+// (the row was born unsatisfiable in 75a3f802: the mock always replied
+// the canned marker, so the llmsafespaces_ grep could never match —
+// invisible because AC-1b died earlier in every run since). The echo
+// block is EXTRACTED from the serve.py embedded in the delivery script
+// (r5: an inline Go/python duplicate stays green while the script
+// drifts — the exact anti-pattern this PR's r1→r2 history outlawed) and
+// EXECUTED against the three discriminating request shapes; the
+// MOCK-TURN-OK marker must stay first (AC-1d greps it as a substring).
+func TestUS70MockLLM_ToolEchoPins(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	// The echo block inside do_POST: from the marker assignment through
+	// the except-pass that bounds it. Executed verbatim (dedented).
+	block := regexp.MustCompile("(?s)[ ]+marker = \"MOCK-TURN-OK\".*?\n[ ]+except Exception:\n[ ]+pass\n").
+		FindString(src)
+	if block == "" {
+		t.Fatalf("mock serve.py echo block not found in %s — the tools-echo contract is AC-1e's grep target", us70DeliveryScript)
+	}
+	// Dedent by the COMMON leading-whitespace prefix only (the block's
+	// internal try/for nesting must survive).
+	lines := strings.Split(strings.TrimPrefix(block, "\n"), "\n")
+	minIndent := -1
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		n := len(l) - len(strings.TrimLeft(l, " "))
+		if minIndent < 0 || n < minIndent {
+			minIndent = n
+		}
+	}
+	var dedentB strings.Builder
+	for _, l := range lines {
+		if len(l) >= minIndent {
+			l = l[minIndent:]
+		}
+		dedentB.WriteString(l + "\n")
+	}
+	dedented := dedentB.String()
+	wrapper := "import json\n" +
+		"def render(raw):\n" +
+		"    body = raw\n" +
+		indentLines(dedented, 4) +
+		"    return marker\n" +
+		"import sys\n" +
+		"for line in sys.stdin:\n" +
+		"    print(render(line.strip().encode()))\n" +
+		"    print(\"---END---\")\n"
+	if _, lookErr := exec.LookPath("python3"); lookErr != nil {
+		t.Skipf("python3 unavailable — structural extraction was still enforced above")
+	}
+	cmd := exec.Command("python3", "-c", wrapper)
+	cmd.Stdin = strings.NewReader(`{"tools":[{"type":"function","function":{"name":"llmsafespaces_session_list"}},{"type":"function","function":{"name":"bash"}}]}
+{"tools":[{"name":"llmsafespaces_dev_preview_url"}]}
+{"messages":[]}
+`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the EXTRACTED echo block failed to execute (%v) — this pin exists to catch exactly that regression: %s", err, out)
+	}
+	blocks := strings.Split(strings.TrimSpace(string(out)), "---END---")
+	results := make([]string, 0, 3)
+	for _, b := range blocks {
+		if strings.TrimSpace(b) != "" {
+			results = append(results, strings.TrimSpace(b))
+		}
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 outputs, got %d: %q", len(results), string(out))
+	}
+	if !strings.Contains(results[0], "llmsafespaces_session_list") || !strings.HasPrefix(results[0], "MOCK-TURN-OK") {
+		t.Fatalf("chat-completions shape must echo function names after the marker, got %q", results[0])
+	}
+	if !strings.Contains(results[1], "llmsafespaces_dev_preview_url") {
+		t.Fatalf("flat-name shape must echo the tool name, got %q", results[1])
+	}
+	if results[2] != "MOCK-TURN-OK" {
+		t.Fatalf("tools-less request must yield the bare marker (the V2-steer regression shape AC-1e must catch), got %q", results[2])
+	}
+}
+
+// indentLines prefixes every non-empty line with n spaces.
+func indentLines(s string, n int) string {
+	pad := strings.Repeat(" ", n)
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			b.WriteString("\n")
+			continue
+		}
+		b.WriteString(pad + line + "\n")
+	}
+	return b.String()
+}
