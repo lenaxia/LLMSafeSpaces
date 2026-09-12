@@ -369,6 +369,66 @@ func TestUS70FaultsScript_FaultSeamNamesInLockstep(t *testing.T) {
 	}
 }
 
+// f1BudgetCeiling bounds FAULT_COUNT from above: F1's autopush heal burns
+// one fault per eligible secretsreconcile re-notify (backoff base 5s
+// doubling, run 34549292454), so the budget must exhaust AND the heal must
+// land inside the row's 300s converge window. Five eligible pulls already
+// cost 5+10+20+40+80 = 155s; 8 = probe 1 + boot retries 3 (#1300 Fix B) +
+// divergent-pod slack 2 + heal burns 2 (F6's sizing shape). Anything
+// larger is unsatisfiable-by-construction at a bounded cadence.
+const f1BudgetCeiling = 8
+
+// f1BudgetFloor bounds FAULT_COUNT from below: the seam must still be
+// faulted when the heal loop pulls, or F1 silently degrades to a
+// clean-boot no-op pass (probe 1 + boot retries 3 can exhaust a budget
+// of ≤4 before any heal pull; the degrade sample's race guard is
+// warn+continue, so nothing at runtime catches it). 6 = probe 1 + boot
+// retries 3 + at least one faulted heal burn + slack 1.
+const f1BudgetFloor = 6
+
+// TestUS70FaultsScript_F1BudgetSizedToConvergeWindow pins the F1 sizing
+// arithmetic (pool-red since the #1300 merge window; decisive failure run
+// 34549292454 at FAULT_COUNT=24: last fault burned 41s past the 300s
+// deadline, heal never got a clean pull in-window). Both bounds are
+// enforced: a budget above the ceiling cannot exhaust+heal in-window; a
+// budget below the floor never exercises the autopush-heal path at all.
+func TestUS70FaultsScript_F1BudgetSizedToConvergeWindow(t *testing.T) {
+	wfCount := extractSingle(t, mustRead(t, us70PoolWorkflow),
+		regexp.MustCompile(`(?m)^\s*FAULT_COUNT:\s*"?(\d+)"?\s*$`), "workflow FAULT_COUNT env literal")
+	n, _ := strconv.Atoi(wfCount)
+	if n > f1BudgetCeiling {
+		t.Fatalf("FAULT_COUNT=%d exceeds the F1 ceiling %d: at one fault per eligible re-notify (secretsreconcile backoff 5s doubling), the budget cannot exhaust and heal inside F1's 300s converge window — right-size the arm (cf. F6's fresh-arm precedent, runs 34276744182/34284549387)", n, f1BudgetCeiling)
+	}
+	if n < f1BudgetFloor {
+		t.Fatalf("FAULT_COUNT=%d is below the F1 floor %d: probe (1) + boot retries (3) exhaust the seam before any heal pull, so the autopush-heal path is never faulted and F1 degrades to a clean-boot no-op pass", n, f1BudgetFloor)
+	}
+}
+
+// TestUS70FaultsScript_ReconnectsAfterArm pins the r6 fix: the arm step
+// rolls the API deployment BEFORE this script starts (sequential
+// workflow steps); harness_start then establishes the svc forward inside
+// the rollout-complete → old-pod-reap overlap window, where it resolves
+// to and pins on the DYING pod — the faults script must re-establish
+// the forward before its first seam probe (run 34618847909: F1 skipped
+// on a dead forward one second after rollout completion).
+func TestUS70FaultsScript_ReconnectsAfterArm(t *testing.T) {
+	src := mustRead(t, us70FaultsScript)
+	if !strings.Contains(src, "harness_start\n\n# The arm step rolls the API deployment") {
+		t.Fatalf("faults script must document WHY it reconnects after harness_start (the arm-step rollout replaces the forwarded pod)")
+	}
+	idxHarness := strings.Index(src, "harness_start")
+	idxReconnect := strings.Index(src[idxHarness:], "reconnect_api\n")
+	if idxHarness < 0 || idxReconnect < 0 {
+		t.Fatalf("reconnect_api must run after harness_start and before the F1 seam probe")
+	}
+	idxReconnect += idxHarness
+	// It must run before the F1 probe loop (the first seam consumer).
+	idxProbe := strings.Index(src, "FAULT_SEEN=0")
+	if idxProbe < 0 || idxReconnect > idxProbe {
+		t.Fatalf("reconnect_api must precede the F1 seam probe")
+	}
+}
+
 // extractUS70Count is shared count-literal extraction for the lockstep test.
 func extractSingle(t *testing.T, src string, re *regexp.Regexp, what string) string {
 	t.Helper()
