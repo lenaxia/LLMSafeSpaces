@@ -84,3 +84,14 @@ None. After merge: dispatch the ≥2h soak (the 2b gate) + a US-70 pool regressi
 
 - Workflow guard tokens verified; no Go changes this round (r1 gates stand).
 
+
+## Review r3 remediation (2026-09-11, PR #1352)
+
+- **The quoting bug is dead by construction:** both python blocks now run via quoted heredocs (`python3 - <<'PY'`) — the shell never rewrites python syntax (the r2 f-string made every input a SyntaxError; caught by the reviewer's execution, not by me running the step I shipped — the exact class this workflow's own guards exist for). Validated by a local simulation of the EXACT step bodies: 2h0m0s→OK, 3h→OK, 10s-iter→OK, 500ms/1.5h→below-gate, garbage/empty→unparseable. The parser now handles ms/us/ns and decimals (Go duration syntax).
+- The r2 PASS-token guard kept as-is (reviewer-verified correct).
+
+## Tests Run (r3)
+
+- Step-body simulation: ALL-SIM-PASS (7 cases)
+- No Go changes; r1/r2 gates stand
+

@@ -39,41 +39,57 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Validate soak inputs (no green no-op)
+        env:
+          SOAK_DURATION_INPUT: ${{ inputs.duration }}
         run: |
-          test -n "${{ inputs.duration }}" || { echo "::error::duration input is empty — the soak would skip"; exit 1; }
-          python3 -c "import re
-          raw0 = '${{ inputs.duration }}'.removesuffix('-iter')
-          ds = re.findall(r'(\d+)(h|m|s)', raw0)
-          secs = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in ds) if ds else 0
-          assert secs > 0, 'duration must parse to > 0'
+          test -n "$SOAK_DURATION_INPUT" || { echo "::error::duration input is empty — the soak would skip"; exit 1; }
+          # Quoted heredoc: python sees its own syntax, the shell never
+          # rewrites it (the r2 quoting bug made EVERY input a
+          # SyntaxError). Parses real Go durations (ms/us/ns, decimals).
+          python3 - <<'PY'
+          import os, re, sys
+          raw = os.environ['SOAK_DURATION_INPUT']
+          body = raw.removesuffix('-iter')
+          units = {'ns': 1e-9, 'us': 1e-6, 'ms': 1e-3, 's': 1, 'm': 60, 'h': 3600}
+          token = re.compile(r'(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)')
+          leftovers = token.sub('', body).strip()
+          parts = token.findall(body)
+          if not body or leftovers or not parts:
+              print('::error::duration does not parse as a Go duration: ' + raw)
+              sys.exit(1)
+          secs = sum(float(n) * units[u] for n, u in parts)
+          if secs <= 0:
+              print('::error::duration must be > 0')
+              sys.exit(1)
           # The 2b merge gate is >=2h (the #1312 soak row). Shorter
-          # dispatches are iteration cycles: allowed only with the
-          # explicit opt-out suffix (e.g. 10s-iter).
-          if secs < 7200 and not '${{ inputs.duration }}'.endswith('-iter'):
-              print(f"::error::duration ${{ inputs.duration }} is below the 2h soak gate — append -iter explicitly for an iteration cycle")
-              raise SystemExit(1)" \
-            || { echo "::error::duration does not parse as a Go duration"; exit 1; }
+          # dispatches are iteration cycles: only with the explicit
+          # -iter opt-out suffix.
+          if secs < 7200 and not raw.endswith('-iter'):
+              print('::error::duration %s is below the 2h soak gate — append -iter explicitly for an iteration cycle' % raw)
+              sys.exit(1)
+          PY
       - name: Run the soak row
         env:
           LLMSAFESPACES_SOAK_DURATION: ${{ inputs.duration }}
           LLMSAFESPACES_SOAK_SESSIONS: ${{ inputs.sessions }}
           LLMSAFESPACES_SOAK_FAULT_RATE: ${{ inputs.fault_rate }}
           LLMSAFESPACES_SOAK_SEED: ${{ inputs.seed }}
-        # go test -timeout derives from the soak duration + 30m of
-        # build/gate headroom (the job-level 360m is the hard cap). A
-        # SKIP is a green no-op — the dispatch exists to RUN the soak.
+        # go test -timeout derives from the (suffix-stripped) soak
+        # duration + 30m of build/gate headroom (job cap 360m). A SKIP
+        # or a zero-match -run is a green no-op — both fail the guard.
         run: |
-          DUR="${LLMSAFESPACES_SOAK_DURATION%-iter}" # strip the iteration-cycle opt-out suffix
-          LLMSAFESPACES_SOAK_DURATION="$DUR" TIMEOUT=$(python3 -c "import re,os
-          d = sum(int(n)*{'h':3600,'m':60,'s':1}[u] for n,u in re.findall(r'(\d+)(h|m|s)', os.environ['LLMSAFESPACES_SOAK_DURATION']))
-          print(f'{d//60 + 30}m')")
-          export LLMSAFESPACES_SOAK_DURATION="$DUR"
-          echo "soak timeout: $TIMEOUT"
+          export LLMSAFESPACES_SOAK_DURATION="${LLMSAFESPACES_SOAK_DURATION%-iter}"
+          TIMEOUT=$(SOAK_D="$LLMSAFESPACES_SOAK_DURATION" python3 - <<'PY'
+          import os, re
+          units = {'ns': 1e-9, 'us': 1e-6, 'ms': 1e-3, 's': 1, 'm': 60, 'h': 3600}
+          token = re.compile(r'(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)')
+          secs = sum(float(n) * units[u] for n, u in token.findall(os.environ['SOAK_D']))
+          print('%dm' % (int(secs) // 60 + 30))
+          PY
+          )
+          echo "soak timeout: $TIMEOUT (duration: $LLMSAFESPACES_SOAK_DURATION)"
           set -o pipefail
           go test -race -count=1 -timeout "$TIMEOUT" -run TestSoak_Dispatch -v ./cmd/workspace-agentd/faultmatrix/ 2>&1 | tee /tmp/soak.log
-          # The soak must have RUN and PASSED: a SKIP is a green
-          # no-op, and a zero-match -run (rename, package move, build
-          # tag) exits 0 with no tokens at all — require the PASS token.
           if grep -q -- "--- SKIP: TestSoak_Dispatch" /tmp/soak.log; then
             echo "::error::TestSoak_Dispatch SKIPPED — the soak did not run"
             exit 1
