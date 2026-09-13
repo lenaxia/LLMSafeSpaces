@@ -441,7 +441,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	port := extractPort(t, backend.URL)

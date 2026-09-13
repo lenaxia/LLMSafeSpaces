@@ -30,7 +30,14 @@ import (
 func newSubtaskBridgeEnv(t *testing.T, backend http.HandlerFunc) (*testEnv, *eventbroker.Subscriber) {
 	t.Helper()
 	env := newTestEnvWithBackend(t, backend)
-	env.handler.dialect = &agentoc.Dialect{}
+	// #828 batch 4: fetchSessionParent is adapter-only — wire the real
+	// adapter against the same session-serving stub.
+	env.handler.adapter = agentoc.NewAdapter(
+		env.handler.AdapterPasswordResolver(),
+		env.handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
+	)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 	t.Cleanup(stubUsageStream())

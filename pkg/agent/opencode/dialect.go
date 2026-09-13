@@ -10,10 +10,13 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 )
 
-// Dialect implements agent.Dialect for the opencode agent runtime.
+// Dialect is the opencode-specific vocabulary: route paths, SSE event
+// classification, and event parsing. Internal to the agent side since
+// #828 batch 4 (the handler-level agent.Dialect interface is retired):
+// the adapter here and agentd's store readers
+// (cmd/workspace-agentd/sessionstate_wiring.go) are the consumers — no
+// platform/handler code.
 type Dialect struct{}
-
-var _ agent.Dialect = (*Dialect)(nil)
 
 // --- Session route paths ---
 

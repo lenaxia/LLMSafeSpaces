@@ -23,7 +23,7 @@ import (
 func TestWirePolicyEnforcement_ReachesProxyHandler(t *testing.T) {
 	policySvc := policy.New(nil, nil) // store+cache nil is a supported degraded mode
 
-	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil, nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil)
 	require.NoError(t, err)
 	modelsHandler := handlers.NewModelsHandler(nil)
 
@@ -40,7 +40,7 @@ func TestWirePolicyEnforcement_ReachesProxyHandler(t *testing.T) {
 // TestWirePolicyEnforcement_NilPolicy_Noop: org policies disabled must not
 // wire anything (fail-open by configuration, not by accident).
 func TestWirePolicyEnforcement_NilPolicy_Noop(t *testing.T) {
-	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil, nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	wirePolicyEnforcement(nil, nil, proxyHandler)

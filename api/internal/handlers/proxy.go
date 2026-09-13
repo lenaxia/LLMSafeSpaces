@@ -51,7 +51,6 @@ type ProxyHandler struct {
 	httpClient        *http.Client
 	logger            pkginterfaces.LoggerInterface
 	namespace         string
-	dialect           agent.Dialect
 	agentStateChecker AgentStateChecker
 	// stateStore holds the per-workspace state that was previously kept
 	// in process-local maps on ProxyHandler (activeSess, deletedSessions,
@@ -150,15 +149,18 @@ type ProxyHandler struct {
 	// session/message cluster is adapter-only since #828 batches 1+2
 	// (nil adapter -> adapterUnavailable guard, typed 503); the
 	// outbox-backed queue view routes never consult it, and
-	// RenameSessionInAgent fails with its own error. Remaining
-	// nil-checks live in the batch-3/4 files (input, permissions,
-	// session index, parents), their background helpers, the lifecycle
-	// wiring (Start()'s outbox verifier hooks, proxy_lifecycle.go; the
-	// phase-change sweep gate, proxy_events.go), and the inbox wiring
-	// (tryLateAnswer's early-out, proxy_input.go; askLivenessOf,
-	// proxy_inbox.go).
-	// Set via SetAdapter before Start(); the final #828 batch makes it a
-	// required constructor parameter and retires the dialect field.
+	// RenameSessionInAgent fails with its own error. The remaining
+	// nil-checks are the fail-closed guards themselves (proxy_handlers
+	// ×10 incl. the rename helper, input ×8, permissions, session index
+	// ×3, parents, stream/user-events flight gates, inbox wiring) and
+	// the lifecycle wiring (Start()'s outbox verifier hooks,
+	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go)
+	// — the final #828 batch's required-constructor change collapses
+	// them all. The dialect field was retired in batch 4 (zero readers
+	// remained; agent.Dialect's interface went with it — the opencode
+	// Dialect struct stays, agent-side: the adapter and agentd's store
+	// readers consume it, no platform/handler code).
+	// Set via SetAdapter before Start().
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on
@@ -185,7 +187,6 @@ func NewProxyHandler(
 	logger pkginterfaces.LoggerInterface,
 	namespace string,
 	httpClient *http.Client,
-	dialect agent.Dialect,
 ) (*ProxyHandler, error) {
 	if k8sClient == nil {
 		return nil, fmt.Errorf("kubernetes client cannot be nil")
@@ -210,7 +211,6 @@ func NewProxyHandler(
 		httpClient:    httpClient,
 		logger:        logger,
 		namespace:     namespace,
-		dialect:       dialect,
 		stateStore:    wsstate.NewInMemoryStore(),
 		connCount:     make(map[string]int),
 		busyAlerts:    make(map[string]time.Time),

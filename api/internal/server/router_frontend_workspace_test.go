@@ -370,7 +370,7 @@ func newRouterFixtureWithProxy(t *testing.T) (*gin.Engine, *mockServices, *handl
 	// #887 D5.1: adminBearerCandidates reads the pw Secret for the
 	// distinct admin token via Clientset when the statusz path runs.
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset()).Maybe()
-	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil)
 	require.NoError(t, err)
 
 	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
@@ -489,7 +489,7 @@ func TestListWorkspaceSessions_StatuszGroundTruth_StaleActiveShowsIdle(t *testin
 	httpClient := &http.Client{
 		Transport: &statuszRewriteTransport{target: statuszSrv.URL},
 	}
-	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", httpClient, nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", httpClient)
 	require.NoError(t, err)
 	proxyHandler.SetCachedPasswordForTest("ws-1", "test-pw")
 

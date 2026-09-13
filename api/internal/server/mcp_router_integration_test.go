@@ -431,7 +431,7 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 
 	// Proxy handler with the opencode adapter pointed at the stub pod.
 	log := mcpTestLogger(t)
-	proxy, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, &opencode.Dialect{})
+	proxy, err := handlers.NewProxyHandler(k8sMock, log, "default", nil)
 	require.NoError(t, err)
 	adapter := opencode.NewAdapter(
 		proxy.AdapterPasswordResolver(),

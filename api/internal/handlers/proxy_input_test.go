@@ -22,7 +22,6 @@ import (
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
@@ -51,8 +50,6 @@ func newInputTestEnv(t *testing.T) *testEnv {
 			"path":   r.URL.Path,
 		})
 	})
-
-	env.handler.dialect = &agentoc.Dialect{}
 
 	proxy := env.router.Group("/api/v1/workspaces/:id")
 	{
@@ -138,7 +135,7 @@ func TestEpic13_wsConfig_PopulatesMaxActiveSessions(t *testing.T) {
 	ws := makeWorkspaceCRD("ws-1", 10)
 	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	// Call shouldAutoApprovePermissions — this is the production code path
@@ -172,7 +169,7 @@ func newBridgeInputHandler(t *testing.T) (*ProxyHandler, *eventbroker.UserEventB
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	wsMock.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{}, nil)
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	broker := eventbroker.NewUserEventBroker()
 	handler.userBroker = broker
@@ -241,7 +238,7 @@ func TestBridgeInput_Resolved_ReachesUserStream(t *testing.T) {
 }
 
 func TestBridgeInput_UnknownOwner_SkipsUserStream(t *testing.T) {
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	// Note: RecordWorkspaceOwner NOT called — owner unknown
@@ -264,7 +261,7 @@ func TestBridgeInput_UnknownOwner_SkipsUserStream(t *testing.T) {
 }
 
 func TestBridgeInput_NilBrokerAndRequest_NoPanic(t *testing.T) {
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	handler.userBroker = nil
 
@@ -327,7 +324,7 @@ func TestForgottenPublishGuard_BridgeInputReachesUserStream(t *testing.T) {
 			k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 			llmMock.On("Workspaces", "default").Return(wsMock)
 			wsMock.On("Get", mock.Anything, "ws-guard", mock.Anything).Return(&v1.Workspace{}, nil)
-			handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+			handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 			require.NoError(t, err)
 			handler.userBroker = eventbroker.NewUserEventBroker()
 			handler.userBroker.RecordWorkspaceOwner("ws-guard", "user-guard")
@@ -370,10 +367,9 @@ func TestForgottenPublishGuard_BridgeInputReachesUserStream(t *testing.T) {
 func TestEmitPendingInputRequests_EmitsSnapshotCompleteMarker(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("test: k8s unavailable")).Maybe()
-	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
-	handler.dialect = &agentoc.Dialect{}
 
 	userSub, _ := handler.userBroker.SubscribeUser("user-1")
 	defer handler.userBroker.UnsubscribeUser("user-1", userSub)
@@ -397,10 +393,9 @@ func TestEmitPendingInputRequests_EmitsSnapshotCompleteMarker(t *testing.T) {
 func TestEmitPendingInputRequests_MarkerFiresOnTimeout(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("test: k8s unavailable")).Maybe()
-	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
-	handler.dialect = &agentoc.Dialect{}
 
 	userSub, _ := handler.userBroker.SubscribeUser("user-1")
 	defer handler.userBroker.UnsubscribeUser("user-1", userSub)
@@ -438,13 +433,20 @@ func TestSnapshotUserWorkspaces_FansOutPendingForActiveWorkspaces(t *testing.T) 
 	watcher, _ := workspace.NewWatcher(k8sMock, &testLogger{}, "default", func(*v1.Workspace) {})
 	watcher.SetKnownPhase("ws-1", string(v1.WorkspacePhaseActive))
 
+	// #828 batch 4: the fan-out gates on the adapter (the dialect gate is
+	// retired) — wire a failing ListPending mock so the "fetch fails —
+	// marker still fires" D10 contract stays pinned.
 	h := &ProxyHandler{
 		k8sClient:  k8sMock,
 		logger:     &testLogger{},
 		namespace:  "default",
 		userBroker: broker,
 		watcher:    watcher,
-		dialect:    &agentoc.Dialect{},
+		adapter: &mockAdapter{
+			listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+				return nil, assert.AnError
+			},
+		},
 	}
 
 	userSub, _ := broker.SubscribeUser("user-1")
@@ -531,10 +533,9 @@ func TestEmitPendingInputRequests_MarkerOKFalseOnBackendError(t *testing.T) {
 func TestEmitPendingInputRequests_MarkerOKFalseOnK8sFailure(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("test: k8s unavailable")).Maybe()
-	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
-	handler.dialect = &agentoc.Dialect{}
 
 	userSub, _ := handler.userBroker.SubscribeUser("user-1")
 	defer handler.userBroker.UnsubscribeUser("user-1", userSub)

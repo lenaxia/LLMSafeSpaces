@@ -12,7 +12,7 @@ import (
 
 func newHandlerWithMockK8s(t *testing.T) *ProxyHandler {
 	t.Helper()
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	return handler
 }

@@ -40,7 +40,7 @@ func TestReconcileSessionState_ClearsStaleActiveSess(t *testing.T) {
 		Timeout:   5 * time.Second,
 	}
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", srvAddr)
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 	handler.SetCachedPasswordForTest("ws-1", "test-pw")
 	handler.userBroker = eventbroker.NewUserEventBroker()
@@ -108,7 +108,7 @@ func TestReconcileSessionState_LargeStatuszDecodes(t *testing.T) {
 		Timeout:   5 * time.Second,
 	}
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", srvAddr)
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 	handler.SetCachedPasswordForTest("ws-1", "test-pw")
 	handler.userBroker = eventbroker.NewUserEventBroker()

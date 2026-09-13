@@ -5,15 +5,9 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"sync"
 	"time"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // sessionParentEntry is a single cached parent lookup for a session.
@@ -23,8 +17,7 @@ type sessionParentEntry struct {
 }
 
 // sessionParentCache resolves a sessionID → its root sessionID, walking the
-// session.parentID chain in opencode (or any agent that exposes the same
-// shape via the dialect).
+// session.parentID chain the agent Adapter exposes (session.Session.ParentID).
 //
 // Why this exists: opencode's `task` tool spawns subagent sessions whose
 // permission/question events carry the SUBTASK's sessionID, not the user's
@@ -120,68 +113,24 @@ func (c *sessionParentCache) invalidate(workspaceID string) {
 // pod. Used as the default fetcher for sessionParentCache; intentionally
 // not a method so the cache can be unit-tested with a fake fetcher.
 //
-// US-65.4: when the Adapter is wired, this delegates to
-// adapter.GetSession which returns a typed session.Session with
-// ParentID — no inline JSON parse, no raw HTTP, no hardcoded auth/port.
-// The legacy path (raw HTTP + dialect.SessionGetPath) is retained for
-// backward compatibility until all callers verify the Adapter path.
+// Delegates to adapter.GetSession (typed session.Session with ParentID
+// — no inline JSON parse, no raw HTTP, no hardcoded auth/port). The
+// legacy raw-HTTP tail was deleted in #828 batch 4; a nil adapter is a
+// wiring failure surfaced as an error (resolveRoot degrades to
+// returning the session itself).
 func (h *ProxyHandler) fetchSessionParent(ctx context.Context, workspaceID, sessionID string) (string, error) {
 	if err := validateSessionID(sessionID); err != nil {
 		return "", fmt.Errorf("invalid sessionID: %w", err)
 	}
-
-	// Adapter path (US-65.4).
-	if h.adapter != nil {
-		s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
-		if err != nil {
-			return "", fmt.Errorf("adapter GetSession: %w", err)
-		}
-		if s == nil {
-			return "", nil
-		}
-		return s.ParentID, nil
+	if h.adapter == nil {
+		return "", fmt.Errorf("agent adapter not configured")
 	}
-
-	// Legacy path (pre-US-65.4).
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
+	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
 	if err != nil {
-		return "", fmt.Errorf("initialize LLMSafespacesV1 client: %w", err)
+		return "", fmt.Errorf("adapter GetSession: %w", err)
 	}
-	workspace, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get workspace: %w", err)
+	if s == nil {
+		return "", nil
 	}
-	if workspace.Status.PodIP == "" {
-		return "", fmt.Errorf("workspace pod IP not set")
-	}
-
-	password, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return "", fmt.Errorf("get password: %w", err)
-	}
-
-	url := fmt.Sprintf("http://%s:%d%s", workspace.Status.PodIP, opencodePort, h.dialect.SessionGetPath(sessionID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch session: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("session GET returned status %d", resp.StatusCode)
-	}
-
-	var session struct {
-		ParentID string `json:"parentID"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
-		return "", fmt.Errorf("decode session: %w", err)
-	}
-	return session.ParentID, nil
+	return s.ParentID, nil
 }

@@ -288,7 +288,7 @@ func TestRequestBuffer_PerWorkspaceIsolation(t *testing.T) {
 }
 
 func TestSetRequestBufferConfig_ZeroConfigKeepsBufferingEnabled(t *testing.T) {
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	handler.SetRequestBufferConfig(0, 0)
@@ -343,7 +343,7 @@ func newBufferTestEnv(t *testing.T, httpClient *http.Client, workspaceID, podIP 
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 
 	router := gin.New()

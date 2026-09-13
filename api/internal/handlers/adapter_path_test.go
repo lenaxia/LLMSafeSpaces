@@ -389,13 +389,7 @@ func newProxyHandlerForAdapterTest(t *testing.T) *ProxyHandler {
 		},
 	}, nil)
 
-	h, err := NewProxyHandler(
-		k8sMock,
-		&testLogger{},
-		"default",
-		nil,
-		nil,
-	)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	return h
 }
