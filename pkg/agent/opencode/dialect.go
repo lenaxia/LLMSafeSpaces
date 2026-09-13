@@ -11,9 +11,11 @@ import (
 )
 
 // Dialect is the opencode-specific vocabulary: route paths, SSE event
-// classification, and event parsing. Purely internal to this package
-// since #828 batch 4 (the handler-level agent.Dialect interface is
-// retired; the adapter is the only consumer).
+// classification, and event parsing. Internal to the agent side since
+// #828 batch 4 (the handler-level agent.Dialect interface is retired):
+// the adapter here and agentd's store readers
+// (cmd/workspace-agentd/sessionstate_wiring.go) are the consumers — no
+// platform/handler code.
 type Dialect struct{}
 
 // --- Session route paths ---

@@ -137,9 +137,11 @@ func TestBackfillSessionParents_IsIdempotent(t *testing.T) {
 // of the failing backend.
 
 // TestBackfillSessionParents_SkipsWhenWorkspaceNotActive was ported to
-// the adapter seam (#828 batch 4): workspace-phase enforcement is the
-// adapter resolve's concern (pinned in pkg/agent/opencode tests); the
-// handler-level no-write-on-failure contract is pinned by
+// the adapter seam (#828 batch 4): workspace-phase enforcement composes
+// — the empty-IP→ErrNoRunningPod half is pinned in pkg/agent/opencode
+// tests, the non-Active→empty-IP half handlers-side
+// (proxy_adapter_infra_test.go) — and the handler-level
+// no-write-on-failure contract is pinned by
 // AdapterError_ClearsGateForRetry and the nil-adapter NoRetryStorm row.
 
 // TestBackfillSessionParents_InvalidateCachesAllowsRetry verifies that

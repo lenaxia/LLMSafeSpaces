@@ -17,8 +17,7 @@ type sessionParentEntry struct {
 }
 
 // sessionParentCache resolves a sessionID → its root sessionID, walking the
-// session.parentID chain in opencode (or any agent that exposes the same
-// shape via the dialect).
+// session.parentID chain the agent Adapter exposes (session.Session.ParentID).
 //
 // Why this exists: opencode's `task` tool spawns subagent sessions whose
 // permission/question events carry the SUBTASK's sessionID, not the user's

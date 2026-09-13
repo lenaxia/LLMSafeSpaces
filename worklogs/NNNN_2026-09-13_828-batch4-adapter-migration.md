@@ -28,7 +28,7 @@ Migrate the session-index/parents cluster to adapter-only, delete the raw-HTTP t
 
 After the tails died, `h.dialect` had **zero readers**. Rather than ship a written-never-read field (the exact `unused`-lint class that bit batches 2-3), the field, the constructor parameter, and `pkg/agent/dialect.go` (the interface) are retired now:
 - `NewProxyHandler` signature: 5 → 4 args; 87 call sites updated (one automated pass damaged a `.Return(llmMock, nil)` line in `proxy_adapter_infra_test.go` — caught by the full-suite run, repaired, and the whole diff audited for similar damage: exactly one, fixed).
-- `agent.Dialect` interface deleted; the **opencode `Dialect` struct stays** — it is the adapter-internal vocabulary (paths/event classification/parsing), consumed only inside `pkg/agent/opencode` (Rule 12 containment).
+- `agent.Dialect` interface deleted; the **opencode `Dialect` struct stays** — agent-side vocabulary (paths/event classification/parsing) consumed by the adapter AND agentd's store readers (sessionstate_wiring.go); no platform/handler code (Rule 12 containment, corrected r1 — the first draft wrongly said adapter-only).
 - The adapter field doc's nil-check enumeration updated to the post-batch-4 reality.
 
 ### Test migration
@@ -52,7 +52,7 @@ After the tails died, `h.dialect` had **zero readers**. Rather than ship a writt
 ## Assumptions (Rule 7 — stated and validated)
 
 - A1: no consumer of `agent.Dialect` outside the handler field + the opencode compile-assertion → validated by repo-wide grep before deletion.
-- A2: the opencode adapter's internal `Dialect{}` uses are self-contained → validated (adapter.go/translate_abi.go construct it locally; the interface type itself was the only cross-package dependency).
+- A2 (r1 correction): the opencode `Dialect{}` uses are agent-side but NOT adapter-only — agentd's sessionstate_wiring.go also constructs it (the reviewer caught my false "only consumer" claim); the interface type itself was the only handler-layer dependency.
 - A3: the automated ctor-sweep was safe → DISPROVEN for one line (`.Return(llmMock, nil)` damaged); the full-suite run caught it and a diff-wide audit confirmed it was the only instance. Lesson recorded: mechanical rewrites get a damage-audit pass before commit (grep the diff for non-target line changes).
 
 ---
@@ -88,3 +88,12 @@ None.
 - api/internal/app/app.go (ctor call)
 - api/internal/handlers/proxy_batch4_migration_test.go (new — 6 rows)
 - ~35 test files (ctor sweep, backfill/subtask/snapshot ports, import pruning)
+
+---
+
+## Review r1 remediation (PR #1361)
+
+- **Dialect containment claim corrected** (the false "adapter is the only consumer"): agentd's sessionstate_wiring.go also constructs it — the doc, the worklog A2, and the Key-Decision text now say "agent-side; adapter + agentd store readers; no platform/handler code".
+- **Unreachable-state comment fixed:** the nil-adapter branch in runParentBackfill is defense-in-depth (the production gate returns first); the storm-prevention mechanism is the gate, not flag retention.
+- **Stale dialect reference** in session_parents' cache doc removed.
+- **Tombstone misattribution split correctly:** empty-IP→ErrNoRunningPod pinned in pkg/agent/opencode; non-Active→empty-IP pinned handlers-side (proxy_adapter_infra_test.go).

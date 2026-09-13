@@ -71,9 +71,9 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 	defer cancel()
 
 	// Typed []session.Session via the Adapter (#828 batch 4: the raw
-	// SessionListPath legacy tail is deleted). A nil adapter cannot be
-	// remedied mid-process (SetAdapter panics after Start), so the
-	// backfilled flag stays set — no per-request goroutine storm.
+	// SessionListPath legacy tail is deleted). Unreachable via the
+	// production caller (BackfillSessionParents' gate returns first) —
+	// defense-in-depth for direct/test callers.
 	if h.adapter == nil {
 		h.logger.Debug("Backfill skipped: no agent adapter", "workspaceID", workspaceID)
 		return
