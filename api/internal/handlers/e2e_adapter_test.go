@@ -350,11 +350,9 @@ func TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502(t *testing.T) {
 // the wire response is byte-identical to "[]", not "null".
 //
 // Note: TestGetHistory_EmptySession_ReturnsEmptyArrayNotNull (in
-// proxy_history_pagination_test.go) looks like it covers this but
-// does NOT — its harness (newTestEnvWithBackend) leaves h.adapter
-// nil, so the request takes the legacy paginateOpencodeHistory path
-// which is structurally immune. Only THIS test exercises the actual
-// null-guard in the adapter code path.
+// proxy_history_pagination_test.go) rides the same newE2EEnv adapter
+// harness since #828 batch 2 — both rows pin the same wire contract;
+// this one additionally asserts the raw "[]" body shape.
 func TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

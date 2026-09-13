@@ -52,7 +52,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
-	pkgagent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -211,11 +210,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	proxyHandler.SetRequestBufferConfig(cfg.Proxy.RequestBufferSizePerWorkspace, time.Duration(cfg.Proxy.RequestBufferTimeoutSeconds)*time.Second)
 
-	// US-65.4: construct the Agent Adapter and wire it into ProxyHandler.
-	// Batch-1 handlers (session_parents, session_index, proxy_permissions,
-	// proxy_input's emitPendingInputRequests) check h.adapter != nil and
-	// use the Adapter path. Remaining handlers use the legacy dialect path.
-	// US-65.4 batches 2+ will migrate the client-facing proxy handlers.
+	// US-65.4 + #828 batches 1+2: construct the Agent Adapter and wire it
+	// into ProxyHandler. The session/message cluster is adapter-only
+	// (nil adapter -> typed 503); the remaining nil-check sites are the
+	// batch-3/4 files, their helpers, the lifecycle wiring, and the
+	// inbox wiring (see the adapter field doc in proxy.go for the
+	// enumeration). The final #828 batch makes the adapter a required
+	// constructor parameter.
 	//
 	// The resolvers returned by ProxyHandler are generic Go types
 	// (func + interface) to avoid importing pkg/agent/opencode from
@@ -261,12 +262,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		k8s:       k8sClient,
 		namespace: cfg.Kubernetes.Namespace,
 	}))
-
-	// Wire the V2 client concrete factory (US-65.6: removes opencode import
-	// from proxy_v2.go; the factory is the only allowed opencode import site).
-	proxyHandler.SetV2ClientConcreteFactory(func(baseURL, password string) (pkgagent.V2SessionClient, error) {
-		return agentoc.NewClient(baseURL, password, log.ZapLogger()), nil
-	})
 
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up

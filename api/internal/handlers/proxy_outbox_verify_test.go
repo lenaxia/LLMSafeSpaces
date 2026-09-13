@@ -544,14 +544,28 @@ func TestOutboxDeliver_V2NoPromotionNeverFalselyCompletes(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, outbox.StatusPending, entries[0].Status, "absent-after-window verdict schedules the re-admit nudge")
 
-	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
+	// Pass 3 executes the nudge. Pass 2 left the entry
+	// pending-with-backoff; the nudge pass only processes the entry once
+	// the (shrunk) backoff has elapsed — poll for due-ness instead of
+	// assuming the instant pass (flaked ~1/5 under -count load,
+	// PR #1349 CI).
+	passed := false
+	assert.Eventually(t, func() bool {
+		if !passed {
+			passed = env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1")
+		}
+		return passed
+	}, 2*time.Second, 10*time.Millisecond, "the nudge pass must process the entry once due")
+	require.True(t, passed)
+
 	entries = listOutbox(t, env)
 	require.Len(t, entries, 1)
 	assert.NotEqual(t, outbox.StatusError, entries[0].Status, "first nudge is a re-admit, not an error park")
-	backend.mu.Lock()
-	admits := backend.admits
-	backend.mu.Unlock()
-	assert.GreaterOrEqual(t, admits, 2, "the nudge re-admits after the window")
+	assert.Eventually(t, func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return backend.admits >= 2
+	}, 2*time.Second, 10*time.Millisecond, "the nudge re-admits after the window")
 }
 
 // TestOutboxDeliver_V2SlowPromotionCompletesInWindow (#1119): promotion

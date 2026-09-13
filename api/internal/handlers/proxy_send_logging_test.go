@@ -95,7 +95,7 @@ func TestSendPromptAsync_AdapterErrorLogged(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 
-	errLogs := logs.FilterMessage("SendPromptAsync: adapter failed")
+	errLogs := logs.FilterMessage("syncSend: adapter failed")
 	require.NotEmpty(t, errLogs.All(),
 		"/prompt adapter error must be logged — this is the exact path that failed in #817")
 }

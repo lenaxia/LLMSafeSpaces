@@ -89,18 +89,6 @@ type ProxyHandler struct {
 	// Active. Set via SetVersionSyncCallback before Start().
 	versionSyncCb workspace.VersionSyncCallback
 
-	// v2ClientFactory overrides V2 client construction. nil in production
-	// (v2Client resolves pod IP + password and builds the default client).
-	// Tests inject a factory pointing at a dynamic-port httptest.Server,
-	// eliminating the port 4096 dependency that caused non-deterministic
-	// CI failures.
-	v2ClientFactory V2ClientFactory
-
-	// v2ClientConcreteFactory builds a V2SessionClient from a baseURL +
-	// password. Set during wiring (app.go) with opencode.NewClient; this
-	// file does not import pkg/agent/opencode.
-	v2ClientConcreteFactory func(baseURL, password string) (agent.V2SessionClient, error)
-
 	// v2Delivery routes outbox delivery through the V2 admit-and-return
 	// prompt endpoint (design 0052, OPENCODE_V2_DELIVERY). When on, the
 	// adapter MUST also read the V2 store (WithV2Store) — delivery
@@ -158,13 +146,19 @@ type ProxyHandler struct {
 	// SetInboxStore before Start.
 	inbox *inbox.Service
 
-	// adapter is the US-65.3 Agent Adapter seam. nil means the handler
-	// uses the legacy dialect + proxyToWorkspace path (every handler
-	// today). US-65.4 migrates handlers one-by-one to call adapter
-	// methods instead; each migration checks `if h.adapter != nil` and
-	// takes the new path, falling back to the legacy path when nil.
-	// Set via SetAdapter before Start(). Once all handlers migrate,
-	// the dialect field retires and this becomes required.
+	// adapter is the US-65.3 Agent Adapter seam. The migrated
+	// session/message cluster is adapter-only since #828 batches 1+2
+	// (nil adapter -> adapterUnavailable guard, typed 503); the
+	// outbox-backed queue view routes never consult it, and
+	// RenameSessionInAgent fails with its own error. Remaining
+	// nil-checks live in the batch-3/4 files (input, permissions,
+	// session index, parents), their background helpers, the lifecycle
+	// wiring (Start()'s outbox verifier hooks, proxy_lifecycle.go; the
+	// phase-change sweep gate, proxy_events.go), and the inbox wiring
+	// (tryLateAnswer's early-out, proxy_input.go; askLivenessOf,
+	// proxy_inbox.go).
+	// Set via SetAdapter before Start(); the final #828 batch makes it a
+	// required constructor parameter and retires the dialect field.
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on
@@ -233,13 +227,16 @@ func (h *ProxyHandler) adapterUnavailable(c *gin.Context) {
 	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent adapter not configured"})
 }
 
-// SetAdapter wires the US-65.3 Agent Adapter. Once set, handlers that
-// have been migrated check `h.adapter != nil` and take the Adapter path;
-// unmigrated handlers continue through the legacy dialect path. Set
-// before Start(); nil leaves the handler in legacy mode (today's
-// behavior). Panics if called after Start() — same invariant as
-// SetStateStore, preventing a data race on the interface field once
-// handler goroutines begin reading h.adapter.
+// SetAdapter wires the US-65.3 Agent Adapter. The migrated
+// session/message cluster (send, prompt, queue-accept, history, get,
+// list, create, abort, delete) is adapter-only since #828 batches 1+2:
+// a nil adapter there fails closed at the adapterUnavailable guard
+// (typed 503). Exceptions in proxy_handlers.go: the outbox-backed queue
+// view routes (ListQueue/DeleteQueueMessage/RetryQueueMessage) never
+// consult the adapter, and RenameSessionInAgent fails with its own
+// error. Set before Start(). Panics if called after Start() —
+// same invariant as SetStateStore, preventing a data race on the
+// interface field once handler goroutines begin reading h.adapter.
 func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 	if a == nil {
 		return

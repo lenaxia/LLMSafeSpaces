@@ -164,6 +164,7 @@ func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFun
 		proxy.GET("/alerts", handler.GetWorkspaceAlerts)
 	}
 	registerLegacyMessageTransport(router, handler)
+	registerLegacyReadTransport(router, handler)
 
 	return &testEnv{
 		handler:   handler,
@@ -218,7 +219,7 @@ func TestProxy_ProxiesGETRequest(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
@@ -253,7 +254,7 @@ func TestProxy_SendsBasicAuth(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "my-secret-pw")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "opencode", capturedUser)
 	assert.Equal(t, "my-secret-pw", capturedPass)
@@ -265,7 +266,7 @@ func TestProxy_ForwardsQueryParameters(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1?limit=10&offset=0", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1?limit=10&offset=0", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
@@ -348,10 +349,10 @@ func TestProxy_RetriesOnStaleIP(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
+	registerLegacyReadTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -391,10 +392,10 @@ func TestProxy_ConnectionFailureReturns503(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
+	registerLegacyReadTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -428,7 +429,7 @@ func TestProxy_WorkspaceNotRunning(t *testing.T) {
 			sb := makeWorkspaceCRDWithStatus("ws-1", tt.podIP, tt.phase, "ws-1")
 			env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(sb, nil).Once()
 
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 			assert.Equal(t, "10", w.Header().Get("Retry-After"))
 		})
@@ -439,7 +440,7 @@ func TestProxy_WorkspaceNotFound(t *testing.T) {
 	env := newTestEnv(t)
 	env.wsMock.On("Get", mock.Anything, "sb-missing", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/sb-missing/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/sb-missing/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -456,12 +457,12 @@ func TestProxy_PasswordCachedAfterFirstRead(t *testing.T) {
 		return false, nil, nil // fall through to default handler
 	})
 
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w1.Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should be read exactly once on first request")
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w2.Code)
 	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should NOT be re-read on second request (served from cache)")
 }
@@ -470,7 +471,7 @@ func TestProxy_SecretNotFound(t *testing.T) {
 	env := newTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "failed to retrieve workspace credentials")
 }
@@ -486,7 +487,7 @@ func TestProxy_EmptyPasswordKey(t *testing.T) {
 	_, err := env.clientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
@@ -538,7 +539,7 @@ func TestProxy_ReadOnlyBypassesSessionLimit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w1.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1/message", nil)
+	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w2.Code, "read-only GET history should bypass limit")
 }
 
@@ -582,7 +583,7 @@ func TestProxy_ConnectionCeiling_Returns429(t *testing.T) {
 	env.handler.connCount["ws-1"] = 10
 	env.handler.connMu.Unlock()
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 	assert.Contains(t, w.Body.String(), "connection limit reached")
 }
@@ -597,14 +598,15 @@ func TestProxy_EndpointMapping(t *testing.T) {
 		// #828 batch 1: create/list/message rows were deleted with the
 		// handlers' legacy branches (adapter-only now — their upstream
 		// mapping is the adapter's contract, pinned in e2e_adapter_test.go).
-		{"get history", "GET", "/api/v1/workspaces/ws-1/sessions/s1/message", "/session/s1/message"},
-		{"get session", "GET", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
-		{"delete session", "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
+		// NOTE: "get history" row deleted with GetHistory's legacy tail (#828 batch 2);
+		// the adapter path's mapping is pinned by e2e_adapter_test.go.
+		{"get session (seam)", "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", "/session/s1"},
+		{"delete session (seam)", "DELETE", "/api/v1/workspaces/ws-1/legacy-read/s1", "/session/s1"},
 		// NOTE: "events" is intentionally omitted — StreamEvents is broker-based
 		// and does not proxy to the pod; it is covered by stream_events_test.go.
-		// NOTE: "prompt async" and "abort" are intentionally omitted — these are
-		// served by the V2 path (adapter/V2SessionClient) and do not proxy to
-		// opencode's /session/<id>/prompt_async or /session/<id>/abort.
+		// NOTE: "prompt async", "queue", and "abort" are intentionally
+		// omitted — they are adapter/outbox-served (#828 batch 2) and never
+		// hit the raw proxy transport.
 	}
 
 	for _, tt := range tests {
@@ -658,9 +660,9 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 				json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 			}
 			// NOTE: /event is intentionally omitted — StreamEvents no longer proxies to the pod.
-			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are intentionally
-			// omitted — these are served by the V2 path (adapter/V2SessionClient) and
-			// do not proxy to opencode in this test fixture.
+			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are
+			// intentionally omitted — both are adapter-served (#828 batch 2)
+			// and never hit the raw proxy transport.
 		}
 	})
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -676,21 +678,18 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 
 	env.handler.removeActiveSession(context.Background(), "ws-1", "sess-1")
 
+	// #828 batch 2: history/get/delete handlers are adapter-only; the
+	// transport legs ride the read seam.
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/sess-1/message", nil)
+	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/sess-1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/sess-1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/sess-1", nil)
+	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/sess-1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	expected := []string{
 		"POST /session/sess-1/message",
-		"GET /session/sess-1/message",
 		"GET /session/sess-1",
 		"DELETE /session/sess-1",
 	}
@@ -749,7 +748,7 @@ func TestProxy_BackendErrorPassthrough(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 	assert.Contains(t, w.Body.String(), "internal opencode error")
 }
@@ -763,7 +762,7 @@ func TestProxy_Backend404Passthrough(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/missing/message", nil)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/missing", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -831,7 +830,7 @@ func TestProxy_ConcurrentRequests(t *testing.T) {
 	results := make(chan int, 5)
 	for i := 0; i < 5; i++ {
 		go func() {
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 			results <- w.Code
 		}()
 	}
@@ -1172,10 +1171,10 @@ func TestProxy_ActivityNotRecordedOnProxyFailure(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
+	registerLegacyReadTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -1184,52 +1183,26 @@ func TestProxy_ActivityNotRecordedOnProxyFailure(t *testing.T) {
 }
 
 func TestProxy_ActivityRecordedOnSuccess(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}))
-	defer backend.Close()
+	// Ported to the adapter path (#828 batch 2): reads record activity
+	// via recordActivityIfTracked, not the legacy transport.
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return &session.Session{ID: "s1"}, nil
+		},
+	}
 
-	transport := &redirectTransport{server: backend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	tracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
+	env.handler.activityTracker = tracker
 
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	secret := makePasswordSecret("ws-1", "test-pw")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	ws := makeWorkspaceCRD("ws-1", 5)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	tracker := activity.NewActivityTracker(k8sMock, &testLogger{}, "default")
-	handler.activityTracker = tracker
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	router.ServeHTTP(w, req)
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, 1, tracker.PendingCount(),
-		"activity should be recorded (pending for flush) when proxy succeeds")
+		"activity should be recorded (pending for flush) on adapter-path reads")
 }
 
 // US-69.11: TestProxy_OnSessionIdle_RecordsActivityWithoutWsConfig was
@@ -1500,9 +1473,12 @@ func TestProxy_DeleteSession_ProxiesDELETE(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 }
 
 func TestProxy_DeleteSession_EndpointMapping(t *testing.T) {
@@ -1516,7 +1492,7 @@ func TestProxy_DeleteSession_EndpointMapping(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "/session/s1", capturedPath)
 }
@@ -1546,22 +1522,32 @@ func TestProxy_DeleteSession_BypassesActiveLimit(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 0)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code, "delete should bypass active session limit")
+	assert.Equal(t, http.StatusNoContent, w.Code, "delete should bypass active session limit")
 }
 
-func TestProxy_DeleteSession_OpencodeNotFound(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "session not found"})
-	})
+func TestProxy_DeleteSession_AdapterError_Returns502(t *testing.T) {
+	// Port of TestProxy_DeleteSession_OpencodeNotFound: the legacy 404
+	// passthrough died with the transport tail; adapter deletes surface
+	// failures as a typed 502 and run NO side effects.
+	env := newTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error {
+			return fmt.Errorf("session not found")
+		},
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+	assert.False(t, env.handler.isSessionDeleted("ws-1", "s1"),
+		"a failed adapter delete must not tombstone")
 }
 
 func TestProxy_DeleteSession_CleansUpSessionIndex(t *testing.T) {
@@ -1574,9 +1560,12 @@ func TestProxy_DeleteSession_CleansUpSessionIndex(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.True(t, si.called, "sessionIndex.DeleteSession should have been called")
 	assert.Equal(t, "ws-1", si.workspaceID)
 	assert.Equal(t, "s1", si.sessionID)
@@ -1592,9 +1581,12 @@ func TestProxy_DeleteSession_IndexErrorStillReturns200(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code, "should still return 200 even if index delete fails")
+	assert.Equal(t, http.StatusNoContent, w.Code, "should still return 200 even if index delete fails")
 }
 
 // ctxRecordingStore wraps an InMemoryStore to capture the context passed to
@@ -1635,13 +1627,16 @@ func TestProxy_DeleteSession_TombstoneUsesDetachedContext(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	type sentinelKey struct{}
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces/ws-1/sessions/s1", nil).
 		WithContext(context.WithValue(context.Background(), sentinelKey{}, "request"))
 	env.router.ServeHTTP(w, req)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 
 	store.mu.Lock()
 	called := store.called
@@ -1722,9 +1717,12 @@ func TestProxy_DeleteSession_RemovesActiveSession(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 
 	assert.Eventually(t, func() bool {
 		return !env.handler.isSessionActive(context.Background(), "ws-1", "s1")
@@ -1744,12 +1742,15 @@ func TestProxy_DeleteSession_PublishesSSEEvent(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
 	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 
 	select {
 	case evt := <-sub.Ch:
@@ -1761,30 +1762,36 @@ func TestProxy_DeleteSession_PublishesSSEEvent(t *testing.T) {
 	}
 }
 
-func TestProxy_DeleteSession_NoSSEWhenOpencodeFails(t *testing.T) {
+func TestProxy_DeleteSession_NoSSEWhenAdapterFails(t *testing.T) {
 	si := &recordingDeleteSessionIndex{}
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
+	env := newTestEnv(t)
 	env.handler.SetSessionIndex(si)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error {
+			return fmt.Errorf("upstream 500")
+		},
+	}
 
-	sub, _ := env.handler.userBroker.SubscribeWorkspace("ws-1")
+	// Subscribe BEFORE the request (same pattern as the success row) so a
+	// wrongly-published event would surface on the live stream.
+	sub, err := env.handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
 	defer env.handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-
-	assert.False(t, si.called, "session index should NOT be called when opencode fails")
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 
 	select {
 	case evt := <-sub.Ch:
-		t.Fatalf("unexpected SSE event when opencode fails: %+v", evt)
-	default:
+		t.Fatalf("failed delete must not publish SSE, got %+v", evt)
+	case <-time.After(200 * time.Millisecond):
 	}
+	assert.False(t, si.called, "failed delete must not clean the session index")
+	assert.False(t, env.handler.isSessionDeleted("ws-1", "s1"), "failed delete must not tombstone")
 }
 
 func TestProxy_DeleteSession_ConcurrentDeletesIdempotent(t *testing.T) {
@@ -1799,6 +1806,9 @@ func TestProxy_DeleteSession_ConcurrentDeletesIdempotent(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	done := make(chan *httptest.ResponseRecorder, 2)
 	for i := 0; i < 2; i++ {
@@ -1811,7 +1821,7 @@ func TestProxy_DeleteSession_ConcurrentDeletesIdempotent(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case w := <-done:
-			assert.Equal(t, http.StatusOK, w.Code)
+			assert.Equal(t, http.StatusNoContent, w.Code)
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for concurrent delete response")
 		}
@@ -1837,9 +1847,12 @@ func TestProxy_DeleteSession_NoSideEffectsWithoutBroker(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
 
 	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.True(t, si.called)
 }
 
@@ -1855,7 +1868,7 @@ func TestProxy_DeleteSession_DeepNestingEndpointMapping(t *testing.T) {
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/sess_abc-123", nil)
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/sess_abc-123", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "DELETE", capturedMethod)
 	assert.Equal(t, "/session/sess_abc-123", capturedPath)

@@ -7,12 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 // TestE2E_MessageHistory_PaginationFullWalk reproduces the production
@@ -39,21 +38,24 @@ func TestE2E_MessageHistory_PaginationFullWalk(t *testing.T) {
 	// the test will make.
 	upstream := buildHistoryFixture(total)
 
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		// The API must NEVER leak limit/before to opencode — it owns the
-		// pagination semantics, not opencode.
-		assert.NotContains(t, r.URL.RawQuery, "limit=")
+	// Ported to the adapter harness (#828 batch 2): GetHistory is
+	// adapter-only; the fixture serves opencode-shaped JSON the adapter
+	// parses into contract messages. The cursor contract is unchanged.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The API owns pagination semantics: `before` is NEVER forwarded
+		// to the agent. `limit` IS forwarded on the first-page native
+		// fetch (#971 — GetHistoryPage's agent-side pagination); the
+		// cursor itself stays API-owned.
 		assert.NotContains(t, r.URL.RawQuery, "before=")
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstream))
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
+	}))
+	defer backend.Close()
+	env := newE2EEnv(t, backend)
 
 	// ---- Page 1: GET .../message?limit=50 ----
-	w1 := env.doRequestWithT(t, "GET",
+	w1 := env.do("GET",
 		fmt.Sprintf("/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=%d", pageSize), nil)
 	require.Equal(t, http.StatusOK, w1.Code)
 
@@ -68,7 +70,7 @@ func TestE2E_MessageHistory_PaginationFullWalk(t *testing.T) {
 	require.Equal(t, "msg_0034", cursor)
 
 	// ---- Page 2: GET .../message?limit=50&before=<cursor> ----
-	w2 := env.doRequestWithT(t, "GET",
+	w2 := env.do("GET",
 		fmt.Sprintf("/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=%d&before=%s", pageSize, cursor), nil)
 	require.Equal(t, http.StatusOK, w2.Code)
 
@@ -94,14 +96,13 @@ func TestE2E_MessageHistory_PaginationFullWalk(t *testing.T) {
 // last 50 messages) and msg_0000 was effectively orphaned.
 func TestE2E_MessageHistory_FirstMessagePresent(t *testing.T) {
 	upstream := buildHistoryFixture(84)
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(upstream))
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
+	}))
+	defer backend.Close()
+	env := newE2EEnv(t, backend)
 
 	// Walk all the way back to the start.
 	var seen []string
@@ -111,7 +112,7 @@ func TestE2E_MessageHistory_FirstMessagePresent(t *testing.T) {
 		if cursor != "" {
 			path += "&before=" + cursor
 		}
-		w := env.doRequestWithT(t, "GET", path, nil)
+		w := env.do("GET", path, nil)
 		require.Equal(t, http.StatusOK, w.Code)
 
 		page := extractIDs(t, w.Body.Bytes())

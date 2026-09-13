@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -142,7 +143,7 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	k8sMock.On("Clientset").Return(fakeClientset)
 
 	log := &testLogger{}
-	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, &agentoc.Dialect{})
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 
@@ -185,24 +186,33 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		desc           string
 		reachesBackend bool // false = route short-circuits before proxying in this test setup
 	}{
-		// These 3 routes reach the backend with the minimal test fixture:
-		// #828 batch 1: SendMessage is adapter-only — with no adapter set
-		// it short-circuits at the nil-adapter guard (503), like the
-		// queue/question rows below. Its upstream BasicAuth is the
-		// adapter's contract, pinned by e2e_adapter_test.go.
+		// #828 batches 1+2: SendMessage, GetHistory, GetSession, and
+		// DeleteSession are adapter-only — with no adapter set they
+		// short-circuit at the nil-adapter guard (503), as does the
+		// enqueue row below. Their upstream BasicAuth is the adapter's
+		// contract, pinned by pkg/agent/opencode/adapter_test.go (the
+		// fake opencode server rejects wrong credentials on every
+		// request) and asserted present on the handler path by
+		// e2e_adapter_test.go's stub.
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", false},
-		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", true},
-		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", true},
-		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", true},
-		// These routes short-circuit before proxying (no session/queue/question/permission
-		// exists in the test fixture, so the handler returns early without hitting opencode).
-		// The aggregate assertion below still catches them if a future change makes them proxy.
+		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
+		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},
+		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", false},
+		// The question/permission routes are the last raw-proxy transport
+		// surface (#828 batch 3 migrates them) — with the dialect wired
+		// they reach the backend and carry its Basic auth.
+		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", true},
+		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", true},
+		// These routes short-circuit before proxying (no queue state in
+		// the fixture / guarded). The aggregate assertion below still
+		// catches them if a future change makes them proxy.
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/queue", `{"content":"hi"}`, "EnqueueMessage", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/queue", "", "ListQueue", false},
-		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", false},
+		// Reply/reject rows: request IDs below are format-invalid on
+		// purpose (the que_/per_ lexicon) — they pin the 400-not-proxied
+		// validation without provisioning real pending asks.
 		{"POST", "/api/v1/workspaces/ws-contract/question/req1/reply", `{"reply":"yes"}`, "QuestionReply", false},
 		{"POST", "/api/v1/workspaces/ws-contract/question/req1/reject", "", "QuestionReject", false},
-		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", false},
 		{"POST", "/api/v1/workspaces/ws-contract/permission/req1/reply", `{"reply":"allow"}`, "PermissionReply", false},
 	}
 

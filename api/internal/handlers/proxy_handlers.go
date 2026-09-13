@@ -11,19 +11,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
@@ -53,6 +50,7 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 	// never reached the sidebar (2026-08-29: agent listed 3, API
 	// served 2). The platform OWNS session CRUD; index where it
 	// happens instead of hoping an event follows.
+	h.recordActivityIfTracked(wid)
 	if s != nil && h.sessionIndex != nil {
 		h.persistSessionMeta(context.Background(), wid, s.ID, s.Title, s.ParentID)
 	}
@@ -78,6 +76,7 @@ func (h *ProxyHandler) ListSessions(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
 		return
 	}
+	h.recordActivityIfTracked(wid)
 	c.JSON(http.StatusOK, sessions)
 }
 
@@ -185,8 +184,9 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// V2 path (Epic 63): extract text from the V1 parts body and send via
-	// PromptV2 with delivery:"queue". opencode admits atomically.
+	// Extract text from the V1 parts body (files compose into the text
+	// before this point). The body cap bounds allocation before the
+	// 100KB text check below rejects oversized prompts.
 	const maxPromptBodyBytes = 100_000 + 1024
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -217,13 +217,17 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		return
 	}
 
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
+		return
+	}
+
 	// D3 outbox path (design 0050 §D3, #907): accept into the Valkey
 	// outbox and 202 immediately — delivery happens in a detached worker
 	// so a client disconnect (iOS killing an in-flight POST, the
 	// 2026-08-15/16 incident's 6× context-canceled loss class) can never
-	// lose an accepted message. The synchronous adapter path below is the
-	// legacy fallback when the outbox is unset (dev/test).
-	if h.outbox != nil && h.adapter != nil {
+	// lose an accepted message.
+	if h.outbox != nil {
 		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
 		if !ok {
 			return
@@ -291,104 +295,13 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		return
 	}
 
-	// Adapter path: uses synchronous adapter.Send (V1 POST /session/:id/message).
-	// Previously used V2 queue (delivery:"queue") which is never drained on
-	// opencode 1.18.10 — messages vanished (#755). The frontend receives the
-	// assistant response via SSE events regardless of send path.
-	if h.adapter != nil {
-		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-
-		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
-			return
-		}
-		if !h.checkAdapterQuota(c, workspace) {
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-			return
-		}
-		h.adapterEnsureSSEWatch(wid)
-
-		// Per-prompt model selector (contract type session.ModelRef);
-		// the adapter owns any agent-specific wire form. Forwarding it is
-		// what keeps a workspace usable when its persisted default model
-		// is unresolvable (incident 2026-08-16).
-		modelOverride := extractPromptModel(bodyBytes)
-
-		// Org policy enforcement on the explicit override (2026-08-16
-		// follow-up): ListModels hides and SetModel rejects disallowed
-		// models; the prompt override must not be the remaining bypass.
-		// No override → session default routing → not consulted. The
-		// session slot reserved above is released on denial (#913 review
-		// round 3, finding 4).
-		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
-			return
-		}
-
-		// Use synchronous Send (V1 POST /session/:id/message) instead
-		// of V2 queue (POST /api/session/:id/prompt delivery:queue).
-		// The V2 queue is admitted but never drained on opencode 1.18.10
-		// — the SSE event taxonomy that the bridge depends on has
-		// drifted (see #755, #739). The synchronous path works correctly
-		// on all versions. The frontend receives the assistant response
-		// via SSE events regardless of which send path is used.
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-			Model: modelOverride,
-		})
-		if err != nil {
-			// #817: log the underlying adapter error for this path too.
-			h.logger.Error("SendPromptAsync: adapter failed", err,
-				"workspaceID", wid, "sessionID", sid)
-			if sid != "" {
-				h.removeActiveSession(c.Request.Context(), wid, sid)
-			}
-
-			// #944: typed disk-full classification. ENOSPC cannot be
-			// detected from the upstream 500 body (the cause lives only
-			// in opencode's in-pod log), so classification uses the CRD
-			// disk status already in scope. At/above critical the client
-			// gets 507 {"code":"disk_full"} with the usage numbers —
-			// the incident's generic 502 rendered as a bare "Failed to
-			// fetch" with no cause. Below critical, unrelated
-			// provider/pod errors keep the generic 502.
-			if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {
-				c.JSON(http.StatusInsufficientStorage, gin.H{
-					"code":           "disk_full",
-					"message":        "The workspace disk is full; the message could not be processed. Free up space and try again.",
-					"diskUsedBytes":  workspace.Status.DiskUsedBytes,
-					"diskTotalBytes": workspace.Status.DiskTotalBytes,
-				})
-				return
-			}
-
-			errBody := []byte(`{"error":"failed to send message"}`)
-			if h.agentStateChecker != nil {
-				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
-				if checkerErr == nil && !changedAt.IsZero() {
-					errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
-				}
-			}
-			c.Data(http.StatusBadGateway, "application/json", errBody)
-			return
-		}
-		h.postAdapterSuccess(c, workspace, wid, sid, true)
-		if h.sessionIndex != nil {
-			go h.fetchAndPersistTitle(wid, sid)
-		}
-		c.JSON(http.StatusOK, msg)
-		return
-	}
-
-	// Legacy V2 path (no adapter).
-	h.enqueueV2(c, wid, sid, text)
+	// Synchronous fallback when the outbox is unset (dev/test): the
+	// outbox arm above returns unconditionally, so reaching here means
+	// no outbox. The per-prompt model selector (contract type
+	// session.ModelRef) is forwarded — what keeps a workspace usable
+	// when its persisted default model is unresolvable (incident
+	// 2026-08-16).
+	h.syncSend(c, wid, sid, text, extractPromptModel(bodyBytes))
 }
 
 // extractMessageText reads the request body and extracts the
@@ -562,37 +475,34 @@ const historyPageDefaultLimit = 50
 // the API to materialize an unbounded message slice in memory.
 const historyPageMaxLimit = 200
 
-// upstreamHistoryBodyCap bounds how much we'll read from opencode's
-// /session/{id}/message endpoint. opencode returns the entire history
-// array in one shot; 16 MiB covers ~10k typical text-only messages and
-// leaves headroom before we'd OOM the API pod.
-const upstreamHistoryBodyCap = 16 * 1024 * 1024
-
-// GetHistory returns a chronological page of displayable messages for a
-// session.
+// GetHistory returns a chronological page of contract messages for a
+// session, served by the agent Adapter (the raw-proxy tail was deleted
+// in #828 batch 2).
 //
 // Query parameters:
-//   - limit: page size (default 50, max 200). Counts displayable messages
-//     only — system-role messages and messages whose parts collapse to
-//     nothing visible (e.g. only step-start/step-finish) do not count
-//     against the limit. Rejecting invalid limits (<=0 or non-numeric)
-//     surfaces client bugs early.
+//   - limit: page size (default 50, max 200). Counts RAW messages as the
+//     agent returns them — the adapter translates afterwards
+//     (slice-then-translate): step-start/step-finish parts are dropped,
+//     so a marker-only message can surface with empty parts, and system
+//     roles are contract data. Rejecting invalid limits (<=0 or
+//     non-numeric) surfaces client bugs early.
 //   - before: opaque cursor — the message id of the OLDEST message in the
 //     previously-rendered page. Returns messages strictly older than
-//     this cursor. Absent => return the newest `limit` messages.
+//     this cursor. Absent => return the newest `limit` messages via the
+//     agent's native pagination (#971); a full page optimistically emits
+//     a cursor even when no older messages exist (one bounded spurious
+//     back-page).
 //
 // Response:
-//   - body: JSON array of opencode message objects, oldest-first within
-//     the page. Schema preserved as-is so the frontend's transformHistory
-//     keeps working.
-//   - X-Next-Cursor header: present iff more (older) messages exist; its
-//     value is the id of the OLDEST message in the returned page. Absent
-//     means there are no more messages to fetch.
-//
-// The handler fetches the FULL upstream array from opencode (which does
-// not paginate), filters to displayable messages server-side, then
-// slices. Filtering server-side prevents jumpy page sizes that would
-// otherwise happen if the frontend filtered after receiving the page.
+//   - body: JSON array of contract session.Message values, oldest-first
+//     within the page (the adapter translator's output — see the
+//     slice-then-translate note under `limit` above).
+//   - X-Next-Cursor header: the id of the OLDEST message in the returned
+//     page. On the first-page native fetch a FULL page emits the cursor
+//     optimistically (#971 — older messages may exist beyond what the
+//     agent's page can see); a spurious cursor costs one back-page fetch
+//     that returns empty and no further cursor. Absent means no more
+//     messages to fetch.
 func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	sid := c.Param("sessionId")
 	if err := validateSessionID(sid); err != nil {
@@ -609,80 +519,59 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	before := c.Query("before")
 	wid := c.Param("id")
 
-	// Adapter path (US-65.4): typed session.Message[] from the Adapter,
-	// contract-shaped JSON to the client. The Adapter translator already
-	// drops step-start/step-finish and collects patch file paths, so the
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
+		return
+	}
+
+	// Typed session.Message[] from the Adapter, contract-shaped JSON to
+	// the client. The Adapter translator already drops
+	// step-start/step-finish and collects patch file paths, so the
 	// response is clean contract data — no opencode-specific shapes.
-	if h.adapter != nil {
-		_, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-		h.adapterEnsureSSEWatch(wid)
-
-		// #971: the FIRST page (no before-cursor) is the session-load
-		// hot path — fetch ONLY the newest `limit` messages via the
-		// agent's native pagination (measured: ~26ms vs ~1.8s full
-		// fetch+decode on a 452-message session). Older pages (user
-		// scrolled back) keep the full-fetch path: opencode 1.18.10's
-		// cursor params are unusable (before= rejects every shape
-		// probed; cursor= is ignored — verified live), so slicing the
-		// full list remains the only correct back-pagination.
-		var msgs []session.Message
-		var err error
-		if before == "" {
-			msgs, err = h.adapter.GetHistoryPage(c.Request.Context(), "", wid, sid, limit)
-		} else {
-			msgs, err = h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
-		}
-		if err != nil {
-			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
-			return
-		}
-		page, nextCursor := paginateContractHistory(msgs, limit, before)
-		if page == nil {
-			page = []session.Message{}
-		}
-		// Paged-path gap (#971): paginateContractHistory sets the cursor
-		// only when it can SEE older messages (start > 0 in the full
-		// list) — but the native page hides everything older. A full page
-		// (len == limit) means older messages MAY exist; optimistically
-		// emit the page's oldest id. A spurious cursor costs one
-		// back-page fetch that returns empty and no further cursor.
-		if before == "" && nextCursor == "" && len(page) == limit && len(page) > 0 {
-			nextCursor = page[0].ID
-		}
-		if nextCursor != "" {
-			c.Header("X-Next-Cursor", nextCursor)
-		}
-		c.JSON(http.StatusOK, page)
+	_, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
 		return
 	}
+	defer h.releaseConnection(wid)
+	h.adapterEnsureSSEWatch(wid)
 
-	// Legacy path: fetch raw opencode bytes + inline parse + paginate.
-	body, status, fetchErr := h.fetchUpstreamHistory(c, sid)
-	if fetchErr != nil {
+	// #971: the FIRST page (no before-cursor) is the session-load
+	// hot path — fetch ONLY the newest `limit` messages via the
+	// agent's native pagination (measured: ~26ms vs ~1.8s full
+	// fetch+decode on a 452-message session). Older pages (user
+	// scrolled back) keep the full-fetch path: opencode 1.18.10's
+	// cursor params are unusable (before= rejects every shape
+	// probed; cursor= is ignored — verified live), so slicing the
+	// full list remains the only correct back-pagination.
+	var msgs []session.Message
+	if before == "" {
+		msgs, err = h.adapter.GetHistoryPage(c.Request.Context(), "", wid, sid, limit)
+	} else {
+		msgs, err = h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
+	}
+	if err != nil {
+		h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
 		return
 	}
-	if status >= 400 {
-		c.Data(status, "application/json", body)
-		return
+	page, nextCursor := paginateContractHistory(msgs, limit, before)
+	if page == nil {
+		page = []session.Message{}
 	}
-
-	page, nextCursor, parseErr := paginateOpencodeHistory(body, limit, before)
-	if parseErr != nil {
-		h.logger.Error("Failed to parse opencode history", parseErr,
-			"sessionID", sid, "size", len(body))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "malformed upstream history"})
-		return
+	// Paged-path gap (#971): paginateContractHistory sets the cursor
+	// only when it can SEE older messages (start > 0 in the full
+	// list) — but the native page hides everything older. A full page
+	// (len == limit) means older messages MAY exist; optimistically
+	// emit the page's oldest id. A spurious cursor costs one
+	// back-page fetch that returns empty and no further cursor.
+	if before == "" && nextCursor == "" && len(page) == limit && len(page) > 0 {
+		nextCursor = page[0].ID
 	}
-
 	if nextCursor != "" {
 		c.Header("X-Next-Cursor", nextCursor)
 	}
-	c.Data(http.StatusOK, "application/json", page)
+	h.recordActivityIfTracked(wid)
+	c.JSON(http.StatusOK, page)
 }
 
 // parseHistoryLimit normalises the ?limit query parameter. An empty
@@ -705,274 +594,9 @@ func parseHistoryLimit(raw string) (int, error) {
 	return n, nil
 }
 
-// fetchUpstreamHistory is a non-streaming GET of opencode's
-// /session/{id}/message. Returns (body, status, err). On err, the
-// handler has already written a 4xx/5xx to the client and the caller
-// should just return.
-//
-// This duplicates parts of proxyToWorkspaceWithErrBody intentionally:
-// the streaming proxy path doesn't allow us to inspect+slice the
-// response body, which is what pagination requires.
-func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([]byte, int, error) {
-	workspaceID := c.Param("id")
-	if workspaceID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
-		return nil, 0, fmt.Errorf("missing workspace id")
-	}
-
-	var workspace *v1.Workspace
-	if cached, exists := c.Get("workspace"); exists {
-		if sb, ok := cached.(*v1.Workspace); ok {
-			workspace = sb
-		}
-	}
-	if workspace == nil {
-		v1Client, vErr := h.k8sClient.LlmsafespacesV1()
-		if vErr != nil {
-			h.logger.Error("Failed to get LLMSafespacesV1 client", vErr, "workspaceID", workspaceID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return nil, 0, vErr
-		}
-		var getErr error
-		workspace, getErr = v1Client.Workspaces(h.namespace).Get(c.Request.Context(), workspaceID, metav1.GetOptions{})
-		if getErr != nil {
-			h.logger.Error("Failed to get workspace CRD", getErr, "workspaceID", workspaceID)
-			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-			return nil, 0, getErr
-		}
-	}
-	if workspace.Status.Phase != phaseActive || workspace.Status.PodIP == "" {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":      "workspace not ready",
-			"code":       "service_unavailable",
-			"reason":     "not_ready",
-			"phase":      workspace.Status.Phase,
-			"retryAfter": retryAfterSec,
-			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
-		})
-		return nil, 0, fmt.Errorf("workspace not ready")
-	}
-
-	password, err := h.getPassword(c.Request.Context(), workspaceID)
-	if err != nil {
-		h.logger.Error("Failed to get workspace password", err, "workspaceID", workspaceID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workspace credentials"})
-		return nil, 0, err
-	}
-
-	if !h.acquireConnection(workspaceID) {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":      "connection limit reached",
-			"retryAfter": retryAfterSec,
-		})
-		return nil, 0, fmt.Errorf("connection limit")
-	}
-	defer h.releaseConnection(workspaceID)
-
-	// Forward only non-pagination query params to opencode. The
-	// pagination contract (limit/before) is owned by the API, not
-	// opencode — opencode currently ignores them but forwarding them is
-	// noise at best, future breakage at worst.
-	upstreamQuery := stripPaginationQuery(stripVerboseQuery(c.Request.URL.RawQuery))
-
-	podIP := workspace.Status.PodIP
-	body, status, doErr := h.doHistoryRequest(c.Request.Context(), podIP, workspaceID, sessionID, password, upstreamQuery, c.ClientIP())
-
-	// Stale-IP retry: if the first attempt failed with a connection error,
-	// the pod may have been rescheduled to a new IP since the CRD was last
-	// read from cache. Refetch the workspace and try once more if the IP
-	// actually changed. Mirrors the same recovery in proxy.go:290-302.
-	if doErr != nil && isConnectionError(doErr) {
-		freshWS, getErr := func() (*v1.Workspace, error) {
-			v1Client, vErr := h.k8sClient.LlmsafespacesV1()
-			if vErr != nil {
-				return nil, vErr
-			}
-			return v1Client.Workspaces(h.namespace).Get(c.Request.Context(), workspaceID, metav1.GetOptions{})
-		}()
-		if getErr == nil && freshWS.Status.PodIP != "" && freshWS.Status.PodIP != podIP && freshWS.Status.Phase == phaseActive {
-			h.logger.Info("Retrying history with fresh pod IP",
-				"workspaceID", workspaceID, "oldIP", podIP, "newIP", freshWS.Status.PodIP)
-			body, status, doErr = h.doHistoryRequest(c.Request.Context(), freshWS.Status.PodIP, workspaceID, sessionID, password, upstreamQuery, c.ClientIP())
-		}
-	}
-
-	if doErr != nil {
-		if isConnectionError(doErr) {
-			h.logger.Warn("History upstream connection error", "error", doErr, "workspaceID", workspaceID)
-			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			// 503 (not 502) preserves the contract asserted by
-			// TestProxyBuffer_GETHistoryNotBufferedReturns503: read-only
-			// GETs against a non-bufferable upstream return 503 with a
-			// "workspace connection failed" body so the frontend can
-			// distinguish a transient pod-restart from a malformed history
-			// (which surfaces as 502). The 503 is a fast-fail, not a
-			// buffered retry — buffering is reserved for writes.
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":      "workspace connection failed",
-				"code":       "service_unavailable",
-				"reason":     "agent_unreachable",
-				"retryAfter": retryAfterSec,
-				"message":    "Chat history is temporarily unavailable — the agent is restarting or recovering. Please try again in a moment.",
-			})
-			return nil, 0, doErr
-		}
-		h.logger.Error("History upstream request failed", doErr, "workspaceID", workspaceID)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
-		return nil, 0, doErr
-	}
-
-	return body, status, nil
-}
-
-// doHistoryRequest performs one round-trip against opencode's
-// /session/{id}/message endpoint and returns (body, status, error).
-// Extracted from fetchUpstreamHistory so the stale-IP retry path can
-// reuse it without duplicating header / body-cap handling.
-// workspaceID is used for the LLMSafeSpaces#488 upstream-5xx observability
-// signal — logged and used as a metric label.
-func (h *ProxyHandler) doHistoryRequest(ctx context.Context, podIP, workspaceID, sessionID, password, query, clientIP string) ([]byte, int, error) {
-	upstreamURL := fmt.Sprintf("http://%s:%d/session/%s/message", podIP, opencodePort, sessionID)
-	if query != "" {
-		upstreamURL += "?" + query
-	}
-
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
-	if reqErr != nil {
-		return nil, 0, fmt.Errorf("build upstream history request: %w", reqErr)
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-	req.Header.Set("X-Forwarded-For", clientIP)
-
-	resp, doErr := h.httpClient.Do(req)
-	if doErr != nil {
-		return nil, 0, doErr
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	limited := io.LimitReader(resp.Body, upstreamHistoryBodyCap+1)
-	body, readErr := io.ReadAll(limited)
-	if readErr != nil {
-		return nil, 0, fmt.Errorf("read upstream history body: %w", readErr)
-	}
-	if len(body) > upstreamHistoryBodyCap {
-		return nil, 0, fmt.Errorf("upstream history body > %d bytes", upstreamHistoryBodyCap)
-	}
-
-	// LLMSafeSpaces#488: log + count upstream 5xx. The body is already
-	// buffered here (unlike doProxy's streaming path), so include a
-	// preview to make the opencode error-ref discoverable without a
-	// second kubectl-exec round-trip.
-	if resp.StatusCode >= 500 {
-		historyPath := fmt.Sprintf("/session/%s/message", sessionID)
-		recordUpstream5xx(h.logger, workspaceID, historyPath, resp.StatusCode, body)
-	}
-
-	return body, resp.StatusCode, nil
-}
-
-// stripPaginationQuery removes the limit and before parameters that
-// the API consumes for itself. This is a complement to stripVerboseQuery
-// which removes the API's verbose/workspace/directory flags.
-func stripPaginationQuery(rawQuery string) string {
-	if rawQuery == "" {
-		return ""
-	}
-	v, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return rawQuery
-	}
-	v.Del("limit")
-	v.Del("before")
-	return v.Encode()
-}
-
-// paginateOpencodeHistory parses an opencode message array body, filters
-// out non-displayable messages, and slices the result into one page.
-//
-// Contract (mirrors the test file proxy_history_pagination_test.go):
-//   - Input body is a JSON array of opencode message objects, oldest-first.
-//   - Output is a JSON array of the same shape (preserving opencode's
-//     schema), oldest-first within the page.
-//   - If `before` is empty: return the LAST `limit` displayable messages.
-//   - If `before` is set: return up to `limit` displayable messages that
-//     appear strictly before the message whose info.id == before. If the
-//     cursor isn't found, return an empty array (defensive — better than
-//     accidentally returning the head of history).
-//   - Returns (pageBytes, nextCursor, error). nextCursor is the info.id of
-//     the OLDEST message in the returned page; it is empty if there are
-//     no older displayable messages remaining.
-func paginateOpencodeHistory(body []byte, limit int, before string) ([]byte, string, error) {
-	var arr []json.RawMessage
-	if err := json.Unmarshal(body, &arr); err != nil {
-		return nil, "", fmt.Errorf("decode upstream array: %w", err)
-	}
-
-	// Walk once, capture (idx, id) pairs for displayable messages.
-	type entry struct {
-		raw json.RawMessage
-		id  string
-	}
-	displayable := make([]entry, 0, len(arr))
-	for _, raw := range arr {
-		id, ok := messageIsDisplayable(raw)
-		if !ok {
-			continue
-		}
-		displayable = append(displayable, entry{raw: raw, id: id})
-	}
-
-	// Determine the inclusive end of the slice (exclusive of the cursor
-	// itself, which the client already has).
-	endExclusive := len(displayable)
-	if before != "" {
-		idx := -1
-		for i, e := range displayable {
-			if e.id == before {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			// Unknown cursor: empty page, no cursor. The frontend will
-			// treat this as end-of-history.
-			return []byte("[]"), "", nil
-		}
-		endExclusive = idx
-	}
-
-	// Take the last `limit` entries up to endExclusive.
-	start := endExclusive - limit
-	if start < 0 {
-		start = 0
-	}
-	pageEntries := displayable[start:endExclusive]
-
-	// Build the JSON array of raw messages, oldest-first within the page.
-	out := make([]json.RawMessage, len(pageEntries))
-	for i, e := range pageEntries {
-		out[i] = e.raw
-	}
-	pageBytes, err := json.Marshal(out)
-	if err != nil {
-		return nil, "", fmt.Errorf("encode page: %w", err)
-	}
-
-	// Emit a cursor IFF there are older displayable messages we did not
-	// include in this page. The cursor value is the OLDEST id we just
-	// returned — passing it as ?before= yields the next-older page.
-	nextCursor := ""
-	if start > 0 && len(pageEntries) > 0 {
-		nextCursor = pageEntries[0].id
-	}
-	return pageBytes, nextCursor, nil
-}
-
-// paginateContractHistory applies the same cursor-based pagination as
-// paginateOpencodeHistory but on typed session.Message values from the
-// Adapter. Simpler because the Adapter translator already dropped
+// paginateContractHistory applies cursor-based pagination on typed
+// session.Message values from the Adapter. Simpler than the deleted raw
+// path because the Adapter translator already dropped
 // non-displayable messages (step-start/step-finish) and filtered parts.
 // Returns the page + next cursor (empty if no older messages remain).
 func paginateContractHistory(msgs []session.Message, limit int, before string) ([]session.Message, string) {
@@ -1005,88 +629,32 @@ func paginateContractHistory(msgs []session.Message, limit int, before string) (
 	return page, nextCursor
 }
 
-// messageIsDisplayable returns the message id and true iff the message
-// is one a user would see in the chat transcript:
-//   - role must be "user" or "assistant" (system messages are hidden)
-//   - parts must contain at least one part whose type is text, thinking,
-//     reasoning, or tool. Pure step-start/step-finish/patch messages do
-//     not count as displayable.
-//
-// Returns ("", false) for anything not displayable. The id is sourced
-// from info.id with a fallback to top-level id (mirrors the frontend's
-// transformHistory).
-func messageIsDisplayable(raw json.RawMessage) (string, bool) {
-	var probe struct {
-		Info struct {
-			Role string `json:"role"`
-			ID   string `json:"id"`
-		} `json:"info"`
-		ID    string `json:"id"`
-		Role  string `json:"role"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
-	}
-	if err := json.Unmarshal(raw, &probe); err != nil {
-		return "", false
-	}
-	role := probe.Info.Role
-	if role == "" {
-		role = probe.Role
-	}
-	if role != "user" && role != "assistant" {
-		return "", false
-	}
-	hasDisplayable := false
-	for _, p := range probe.Parts {
-		switch p.Type {
-		case "text", "thinking", "reasoning":
-			if p.Text != "" {
-				hasDisplayable = true
-			}
-		case "tool":
-			hasDisplayable = true
-		}
-		if hasDisplayable {
-			break
-		}
-	}
-	if !hasDisplayable {
-		return "", false
-	}
-	id := probe.Info.ID
-	if id == "" {
-		id = probe.ID
-	}
-	return id, true
-}
-
 func (h *ProxyHandler) GetSession(c *gin.Context) {
 	sid := c.Param("sessionId")
 	if err := validateSessionID(sid); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sessionId: " + err.Error()})
 		return
 	}
-	if h.adapter != nil {
-		wid := c.Param("id")
-		_, ok := h.resolveWorkspaceForAdapter(c, wid)
-		if !ok {
-			return
-		}
-		defer h.releaseConnection(wid)
-		h.adapterEnsureSSEWatch(wid)
-
-		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
-		if err != nil {
-			h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
-			return
-		}
-		c.JSON(http.StatusOK, s)
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, "/session/"+sid, false, sid)
+	wid := c.Param("id")
+	_, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	h.adapterEnsureSSEWatch(wid)
+
+	s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
+	if err != nil {
+		h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
+		return
+	}
+	h.recordActivityIfTracked(wid)
+	c.JSON(http.StatusOK, s)
 }
 
 func (h *ProxyHandler) AbortSession(c *gin.Context) {
@@ -1097,25 +665,23 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// Adapter path (US-65.4): abort via adapter.Abort. The V1
-	// POST /session/:id/abort (the only interrupt endpoint on opencode
-	// 1.18.10+) destructively stops the in-flight turn — queued input
-	// is not preserved, unlike the old V2 interrupt which was removed
-	// in 1.18.10. We clear pending tracking so US-63.9 stranded-input
-	// recovery doesn't re-wake a session the user explicitly aborted.
-	if h.adapter != nil {
-		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
-			h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
-			return
-		}
-		c.Status(http.StatusNoContent)
+	// adapter.Abort: the V1 POST /session/:id/abort (the only interrupt
+	// endpoint on opencode 1.18.10+) destructively stops the in-flight
+	// turn — queued input is not preserved, unlike the old V2 interrupt
+	// which was removed in 1.18.10. (A former "clear pending tracking"
+	// step died with the V2 path; stranded-input recovery is the
+	// outbox ledger's concern.)
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-
-	// V2 path (Epic 63): non-destructive interrupt. Queued messages survive
-	// and drain on the next execution.wake (F8).
-	h.abortV2(c, wid, sid)
+	if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
+		h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
+		return
+	}
+	h.recordActivityIfTracked(wid)
+	c.Status(http.StatusNoContent)
 }
 
 func (h *ProxyHandler) DeleteSession(c *gin.Context) {
@@ -1126,26 +692,23 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	}
 	workspaceID := c.Param("id")
 
-	// Adapter path (US-65.4): delegate to adapter, then run the same
-	// post-delete side effects (tombstone, session index cleanup, SSE
-	// tombstone publish) that the legacy path runs.
-	if h.adapter != nil {
-		if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
-			// #817: same observability gap — log the underlying error.
-			h.logger.Error("DeleteSession: adapter failed", err,
-				"workspaceID", workspaceID, "sessionID", sid)
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
-			return
-		}
-		c.Status(http.StatusNoContent)
-	} else {
-		h.proxyToWorkspace(c, "/session/"+sid, false, sid)
-		if c.Writer.Status() >= 400 {
-			return
-		}
+	// Delegate to the adapter, then run the post-delete side effects
+	// (tombstone, session index cleanup, SSE tombstone publish).
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
+		return
 	}
+	if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
+		// #817: same observability gap — log the underlying error.
+		h.logger.Error("DeleteSession: adapter failed", err,
+			"workspaceID", workspaceID, "sessionID", sid)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+	h.recordActivityIfTracked(workspaceID)
 
-	// Post-delete side effects run in both adapter and legacy paths.
+	// Post-delete side effects run after a successful adapter delete.
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // tombstone must survive client disconnect
 
 	if h.sessionIndex != nil {
@@ -1188,57 +751,10 @@ func (h *ProxyHandler) RenameSessionInAgent(ctx context.Context, workspaceID, se
 		return fmt.Errorf("invalid sessionId: %w", err)
 	}
 
-	// Adapter path (US-65.4).
-	if h.adapter != nil {
-		return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
+	if h.adapter == nil {
+		return fmt.Errorf("agent adapter not configured")
 	}
-
-	// Legacy path.
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return fmt.Errorf("initialize LLMSafespacesV1 client: %w", err)
-	}
-	ws, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("get workspace CRD: %w", err)
-	}
-	if ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
-		return fmt.Errorf("workspace not active")
-	}
-
-	password, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return fmt.Errorf("get password: %w", err)
-	}
-
-	type sessionUpdate struct {
-		Title string `json:"title"`
-	}
-	payload := sessionUpdate{Title: title}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
-	}
-
-	targetURL := fmt.Sprintf("http://%s:%d/session/%s", ws.Status.PodIP, opencodePort, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, targetURL, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(agentd.AuthUsername, password)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request to agent: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("agent returned %d: %s", resp.StatusCode, string(respBody))
-	}
-	return nil
+	return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
 }
 
 var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -1257,27 +773,6 @@ func validateSessionID(s string) error {
 		return errors.New("sessionId contains characters outside [a-zA-Z0-9._-]")
 	}
 	return nil
-}
-
-// getPodIPAndPassword returns the pod IP and opencode password for the given
-// workspace. It is a convenience helper shared by several background goroutines.
-func (h *ProxyHandler) getPodIPAndPassword(ctx context.Context, workspaceID string) (podIP, password string, err error) {
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return "", "", fmt.Errorf("getting v1 client: %w", err)
-	}
-	ws, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return "", "", fmt.Errorf("getting workspace: %w", err)
-	}
-	if ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
-		return "", "", fmt.Errorf("workspace not active")
-	}
-	pw, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return "", "", fmt.Errorf("getting password: %w", err)
-	}
-	return ws.Status.PodIP, pw, nil
 }
 
 type enqueueRequest struct {
@@ -1349,7 +844,11 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	// D3 (#907): with the outbox wired, enqueue and prompt are the SAME
 	// accept (single path — client-decides routing is retired). The
 	// clientMessageID field rides the same body.
-	if h.outbox != nil && h.adapter != nil {
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
+		return
+	}
+	if h.outbox != nil {
 		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
 		if !ok {
 			return
@@ -1385,8 +884,87 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 		return
 	}
 
-	// Legacy V2 path (Epic 63): send via PromptV2 with delivery:"queue".
-	h.enqueueV2(c, wid, sid, req.Text)
+	h.syncSend(c, wid, sid, req.Text, nil)
+}
+
+// syncSend is the synchronous adapter send shared by SendPromptAsync and
+// EnqueueMessage when the outbox is unset (dev/test): the D3 outbox is the
+// production accept path; this direct send preserves the queue route's
+// pre-outbox contract (accept → adapter.Send → full response) for
+// adapter-only deployments without it.
+func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOverride *session.ModelRef) {
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+
+	if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+		return
+	}
+	if !h.checkAdapterQuota(c, workspace) {
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		return
+	}
+	h.adapterEnsureSSEWatch(wid)
+
+	// Org policy enforcement on the explicit override: ListModels hides
+	// and SetModel rejects disallowed models; the send override must not
+	// be the remaining bypass. The session slot reserved above is
+	// released on denial (#913 review round 3, finding 4).
+	if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+		return
+	}
+
+	msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+		Model: modelOverride,
+	})
+	if err != nil {
+		h.logger.Error("syncSend: adapter failed", err,
+			"workspaceID", wid, "sessionID", sid)
+		if sid != "" {
+			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+
+		// #944: typed disk-full classification. ENOSPC cannot be
+		// detected from the upstream 500 body (the cause lives only in
+		// opencode's in-pod log), so classification uses the CRD disk
+		// status already in scope. At/above critical the client gets
+		// 507 {"code":"disk_full"} with the usage numbers — the
+		// incident's generic 502 rendered as a bare "Failed to fetch"
+		// with no cause. Below critical, unrelated provider/pod errors
+		// keep the generic 502.
+		if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {
+			c.JSON(http.StatusInsufficientStorage, gin.H{
+				"code":           "disk_full",
+				"message":        "The workspace disk is full; the message could not be processed. Free up space and try again.",
+				"diskUsedBytes":  workspace.Status.DiskUsedBytes,
+				"diskTotalBytes": workspace.Status.DiskTotalBytes,
+			})
+			return
+		}
+
+		errBody := []byte(`{"error":"failed to send message"}`)
+		if h.agentStateChecker != nil {
+			changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+			if checkerErr == nil && !changedAt.IsZero() {
+				errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
+			}
+		}
+		c.Data(http.StatusBadGateway, "application/json", errBody)
+		return
+	}
+	h.postAdapterSuccess(c, workspace, wid, sid, true)
+	if h.sessionIndex != nil {
+		go h.fetchAndPersistTitle(wid, sid)
+	}
+	c.JSON(http.StatusOK, msg)
 }
 
 func (h *ProxyHandler) ListQueue(c *gin.Context) {
@@ -1398,10 +976,9 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	wid := c.Param("id")
 
 	// D3 (#907): the outbox is the real queue — entries listed here ARE
-	// pending delivery (or parked error with retry context). The V2
-	// shadow below is the legacy fallback: a view of the V2 queue that
-	// opencode 1.18.10 never drains (#755) — entries there will never
-	// deliver, which is exactly why it is no longer the primary source.
+	// pending delivery (or parked error with retry context). Without an
+	// outbox there is no queue to list (the V2 queue view died with
+	// enqueueV2, #828 batch 2); an empty list is the honest answer.
 	if h.outbox != nil {
 		entries, err := h.outbox.List(c.Request.Context(), wid, sid)
 		if err != nil {
@@ -1445,8 +1022,8 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 	}
 
 	// D3 (#907): with the outbox wired, dismissal targets the REAL queue
-	// — the entry is removed and will not deliver. The V2 shadow below is
-	// the legacy path.
+	// — the entry is removed and will not deliver. Without an outbox
+	// there is nothing to dismiss (204).
 	if h.outbox != nil {
 		switch h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
 		case outbox.DismissRemoved:

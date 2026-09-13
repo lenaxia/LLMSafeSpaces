@@ -347,11 +347,8 @@ func newBufferTestEnv(t *testing.T, httpClient *http.Client, workspaceID, podIP 
 	require.NoError(t, err)
 
 	router := gin.New()
-	proxy := router.Group("/api/v1/workspaces/:id")
-	{
-		proxy.GET("/sessions/:sessionId/message", handler.GetHistory)
-	}
 	registerLegacyMessageTransport(router, handler)
+	registerLegacyReadTransport(router, handler)
 
 	return &bufferTestEnv{router: router, handler: handler}
 }
@@ -446,7 +443,7 @@ func TestProxyBuffer_GETHistoryNotBufferedReturns503(t *testing.T) {
 	env.handler.requestBuffer = newRequestBuffer(10, 2*time.Second, 5*time.Millisecond, env.handler.logger)
 
 	start := time.Now()
-	w := env.doRequest(t, "GET", "/api/v1/workspaces/ws-buf-get/sessions/s1/message", "")
+	w := env.doRequest(t, "GET", "/api/v1/workspaces/ws-buf-get/legacy-read/s1", "")
 	elapsed := time.Since(start)
 
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -812,7 +809,7 @@ func TestProxyBuffer_ParkedRequestsReleaseConnectionSlotGETAdmitted(t *testing.T
 		return env.handler.connectionCount("ws-buf-slot") == 0
 	}, 300*time.Millisecond, 5*time.Millisecond, "parked requests must hold 0 connection slots")
 
-	getW := env.doRequest(t, "GET", "/api/v1/workspaces/ws-buf-slot/sessions/s1/message", "")
+	getW := env.doRequest(t, "GET", "/api/v1/workspaces/ws-buf-slot/legacy-read/s1", "")
 	assert.NotEqual(t, http.StatusTooManyRequests, getW.Code, "GET must be admitted (not connection-limited) while POSTs are parked")
 	assert.NotContains(t, getW.Body.String(), "connection limit reached")
 }

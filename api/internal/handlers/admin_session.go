@@ -21,7 +21,7 @@ import (
 // ProxyHandler's active-session set (wsstate.Store.activeSess) after the
 // workspace pod has been deleted or become unreachable. It does NOT call the
 // opencode proxy — the pod may be gone, by design. It mirrors the local
-// cleanup half of ProxyHandler.DeleteSession (proxy_handlers.go:234-268)
+// cleanup half of ProxyHandler.DeleteSession (proxy_handlers.go DeleteSession (post-delete side effects))
 // minus the proxy call, plus an audit-log row.
 //
 // The session-index DB row is deliberately NOT cleaned: force-abort clears

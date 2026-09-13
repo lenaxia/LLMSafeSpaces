@@ -4,7 +4,6 @@
 package agent
 
 import (
-	"context"
 	stderrors "errors"
 	"fmt"
 	"net/http"
@@ -33,9 +32,9 @@ var ErrNoRunningPod = &pkgerrors.StatusError{
 	Message: "workspace pod not running",
 }
 
-// V2Delivery selects how the agent's V2 session runner admits a prompt.
-// Generic equivalent of opencode.V2Delivery; allows proxy_v2.go to use
-// V2 types without importing the opencode package.
+// V2Delivery selects how the agent's V2 session runner admits a prompt
+// (consumed by the adapter's PromptV2WithModel; the proxy-side V2
+// client surface was deleted in #828 batch 2).
 type V2Delivery string
 
 const (
@@ -50,29 +49,12 @@ type V2PromptResponse struct {
 	SessionID   string `json:"sessionID"`
 }
 
-// V2SessionClient is the subset of agent client methods the proxy's V2
-// session-queue paths use. Defined in pkg/agent so proxy_v2.go doesn't
-// need to import pkg/agent/opencode.
-type V2SessionClient interface {
-	PromptV2(ctx context.Context, sessionID, text string, delivery V2Delivery) (*V2PromptResponse, error)
-	InterruptV2(ctx context.Context, sessionID string) error
-}
-
-// V2ClientFactory builds a V2SessionClient for the given workspace.
-type V2ClientFactory func(ctx context.Context, workspaceID string) (V2SessionClient, error)
-
 // V2 error sentinels. Re-exported from pkg/agent/opencode; canonical
 // location is here so callers don't import the opencode package.
 var (
 	ErrV2PromptConflict  = stderrors.New("agent V2: prompt conflict (id collision)")
 	ErrV2SessionNotFound = stderrors.New("agent V2: session not found")
 )
-
-// IsSessionNotFound returns true if err is or wraps ErrV2SessionNotFound.
-// Convenience for handlers that need to map to HTTP 404.
-func IsSessionNotFound(err error) bool {
-	return stderrors.Is(err, ErrV2SessionNotFound)
-}
 
 type CredentialState string
 

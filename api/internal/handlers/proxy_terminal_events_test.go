@@ -369,10 +369,10 @@ func TestProxy_US44_1_NonSSEJSONResponse_NoAgentDiedEvent(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/sessions/:sessionId", handler.GetSession)
+	registerLegacyReadTransport(router, handler)
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
 	router.ServeHTTP(w, req)
 
 	body := w.Body.String()
