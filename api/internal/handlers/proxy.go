@@ -158,7 +158,8 @@ type ProxyHandler struct {
 	// — the final #828 batch's required-constructor change collapses
 	// them all. The dialect field was retired in batch 4 (zero readers
 	// remained; agent.Dialect's interface went with it — the opencode
-	// Dialect struct stays, adapter-internal per Rule 12).
+	// Dialect struct stays, agent-side: the adapter and agentd's store
+	// readers consume it, no platform/handler code).
 	// Set via SetAdapter before Start().
 	adapter agent.Adapter
 

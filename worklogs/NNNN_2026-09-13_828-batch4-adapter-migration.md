@@ -34,7 +34,7 @@ After the tails died, `h.dialect` had **zero readers**. Rather than ship a writt
 ### Test migration
 
 - 6 new rows (nil-adapter no-HTTP for title/backfill; nil-adapter typed error for the fetcher; no-retry-storm; adapter-path backfill with NO dialect wired — the gate re-key pin; adapter-error gate-clear-and-retry).
-- Backfill suite ported: HappyPath + IsIdempotent + InvalidateCachesAllowsRetry → adapter mocks; RetriesAfterFailure → superseded by the batch-4 `AdapterError_ClearsGateForRetry` row (tombstone notes why); SkipsWhenWorkspaceNotActive → tombstoned (workspace-phase is the adapter resolve's concern, pinned in pkg/agent/opencode).
+- Backfill suite ported: HappyPath + IsIdempotent + InvalidateCachesAllowsRetry → adapter mocks; RetriesAfterFailure → superseded by the batch-4 `AdapterError_ClearsGateForRetry` row (tombstone notes why); SkipsWhenWorkspaceNotActive → tombstoned (phase enforcement composes: empty-IP→ErrNoRunningPod pinned in pkg/agent/opencode; non-Active→empty-IP pinned handlers-side in proxy_adapter_infra_test.go).
 - Subtask bubble rows: `newSubtaskBridgeEnv` wires the REAL adapter against the same session-serving stub — the parent-resolution round-trip stays covered end-to-end.
 - `TestSnapshotUserWorkspaces_FansOut`: the raw-struct fixture gains a failing `listPendingFn` mock — the D10 "fetch fails, marker still fires" contract stays pinned under the adapter gate.
 - Test-constructor sweep: `agentoc.Dialect{}` / 5th-arg-`nil` call sites + `handler.dialect =` assignments removed across 30+ files; unused imports pruned.
@@ -97,3 +97,10 @@ None.
 - **Unreachable-state comment fixed:** the nil-adapter branch in runParentBackfill is defense-in-depth (the production gate returns first); the storm-prevention mechanism is the gate, not flag retention.
 - **Stale dialect reference** in session_parents' cache doc removed.
 - **Tombstone misattribution split correctly:** empty-IP→ErrNoRunningPod pinned in pkg/agent/opencode; non-Active→empty-IP pinned handlers-side (proxy_adapter_infra_test.go).
+
+---
+
+## Review r2 remediation (PR #1361)
+
+- The twin of r1's dialect.go containment claim — the one in proxy.go's field doc, added by this PR's base commit — aligned to the corrected wording (agent-side: adapter + agentd store readers, no platform/handler code). The r1 pass fixed the sibling 150 lines away and missed it.
+- The worklog's stale pre-r1 sentence (the tombstone misattribution F4 corrected) revised to the composed-pin wording.
