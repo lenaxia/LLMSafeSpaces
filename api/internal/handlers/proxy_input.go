@@ -102,7 +102,13 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "no pending input request"})
 			return
 		}
-		action := map[string]any{"optionIds": payload.Answers[0]}
+		// Flatten every answer group — a silent Answers[1:] drop is
+		// data loss (the flag-off path posts all arrays; r3 carried).
+		opts := make([]string, 0, len(payload.Answers))
+		for _, group := range payload.Answers {
+			opts = append(opts, group...)
+		}
+		action := map[string]any{"optionIds": opts}
 		if !h.actAnswerInput(c, wid, sessionID, requestID, action) {
 			return
 		}

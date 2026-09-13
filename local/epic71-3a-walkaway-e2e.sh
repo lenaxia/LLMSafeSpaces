@@ -284,23 +284,31 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
 [[ "${code5b}" == "404" ]] && ok "W5 dismiss-of-unknown 404s" || note_fail "W5 dismiss-of-unknown: ${code5b}, want 404"
 
 # --- W6: the Act write path e2e (4a / #1302 — S6 + L2) ----------------------
-# The pool installs V2+authority, so the REST dismiss route forwards
-# AnswerInputAction{reply:"reject"} to agentd's Act; the harness has no
-# such ask (staged dead) → opencode 404s both reject endpoints → the
-# authority's resolve-by-absence folds SUCCESS. The 2026-09-10 incident
-# class: the click must CLEAR everywhere (resolved event ≤2s), never a
-# silent no-op.
-log "W6: dismiss through Act — resolve-by-absence clears (S6) within L2"
+# The QUESTION REJECT REST route on a seeded record with NO live harness
+# ask: the terminus branch resolves the session via the inbox fallback
+# and forwards AnswerInputAction{reply:"reject"} to agentd's Act — the
+# ONLY cluster row that genuinely drives actAnswerInput → abiAct → the
+# pod's Act op (a total Act-path regression — payload drift, auth on
+# :4097, error mis-mapping — turns this row red). The harness has no
+# such ask → opencode 404s the reject endpoints → the authority's
+# resolve-by-absence folds SUCCESS. The 2026-09-10 incident class: the
+# click must CLEAR everywhere (resolved event ≤ L2), never a silent
+# no-op.
+log "W6: question reject through Act — resolve-by-absence clears (S6) within L2"
 seed_inbox_record "${W1_WS}" "${W1_SES}" que_e71w1ddd "Act path dead ask?"
 CAP6=/tmp/e71w6_sse.txt
 sse_capture "${CAP6}"
+sleep 1
 T6=$(date +%s%3N)
 code6=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
-    -X DELETE "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/${W1_SES}/inbox/que_e71w1ddd")
-[[ "${code6}" == "204" ]] && ok "W6 dismiss 204 (Act → resolve-by-absence)" || note_fail "W6 dismiss: ${code6}, want 204"
-deadline6=$(( $(date +%s%3N) + 2000 ))
-until grep -q 'que_e71w1ddd' "${CAP6}" 2>/dev/null; do
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1ddd/reject" \
+    -H 'Content-Type: application/json' -d '{}')
+[[ "${code6}" == "200" ]] && ok "W6 reject 200 (Act → resolve-by-absence → dismissed)" || note_fail "W6 reject: ${code6}, want 200"
+# L2: the RESOLVED event's unique keys (the whileAway re-presentation
+# also matches the bare ID — grep what only the clear carries).
+deadline6=$(( T6 + 2000 ))
+until grep -q '"reason":"dismissed"' "${CAP6}" 2>/dev/null; do
     [[ $(date +%s%3N) -lt ${deadline6} ]] || break
     sleep 0.1
 done
@@ -311,6 +319,11 @@ if grep -q '"request_id":"que_e71w1ddd"' "${CAP6}" 2>/dev/null \
     ok "W6 resolved event carries the dismiss (clear signal)"
 else
     note_fail "W6: no dismissed resolved event on the user stream (see ${CAP6})"
+fi
+if [[ ${T6b} -le $(( T6 + 2000 )) ]] && [[ ${T6b} -gt ${T6} ]]; then
+    ok "W6 clear latency $(( T6b - T6 ))ms ≤ 2s (L2)"
+else
+    note_fail "W6 L2 violated: ${T6b} vs ${T6}"
 fi
 ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1ddd)
 [[ "${ST}" == "dismissed" ]] && ok "W6 record terminal dismissed" || note_fail "W6 status '${ST}', want dismissed"

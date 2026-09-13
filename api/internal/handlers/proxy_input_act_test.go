@@ -604,3 +604,42 @@ func TestInputAct_DismissLiveAskGoesThroughAct(t *testing.T) {
 		t.Fatal("Act was never called for the live dismiss")
 	}
 }
+
+func TestInputAct_UnknownLiveSet503OnAllThreeRoutes(t *testing.T) {
+	// r3 carried: the tri-state 503 was pinned only on QuestionReply;
+	// the identical copy-paste on the other two routes gets its own pin.
+	stub := newAnswerActStubPod(t, "")
+	mk := func(route, body string) int {
+		env := newInputActEnv(t, inputActOpts{
+			terminus: true, podURL: stub.server.URL,
+			listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+				return nil, assert.AnError
+			},
+		})
+		w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act"+route, body)
+		return w.Code
+	}
+	assert.Equal(t, http.StatusServiceUnavailable, mk("/question/que_u1/reject", `{}`), "reject: unknown set → 503")
+	assert.Equal(t, http.StatusServiceUnavailable, mk("/permission/per_u1/reply", `{"reply":"once"}`), "permission: unknown set → 503")
+}
+
+func TestInputAct_QuestionReplyFlattensAllAnswerGroups(t *testing.T) {
+	// r3 carried: multi-group answers must not be silently dropped.
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return liveQuestion("que_multi1", "ses_m"), nil
+		},
+	})
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_multi1/reply", `{"answers":[["Go","and","custom"],["second"]]}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	select {
+	case got := <-stub.got:
+		ans, ok := got["answerQuestion"].(map[string]any)
+		require.True(t, ok, "payload: %v", got)
+		assert.Equal(t, []any{"Go", "and", "custom", "second"}, ans["optionIds"], "ALL answer groups ride the action (no silent drop)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called")
+	}
+}

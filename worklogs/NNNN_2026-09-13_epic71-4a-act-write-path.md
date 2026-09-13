@@ -65,3 +65,18 @@ r2 verified all six r1 findings remediated (with the skeptical second pass). One
 - **W7 (unhappy):** re-reply against the dismissed record 409s — the two-exits pin at cluster level.
 
 Structural pin added (`TestEpic71WalkawayScript_ActWritePathRows`). The pool run on the branch is the merge gate (the walk-away row now exercises the Act path under the authority install).
+
+## Review r3 remediation
+
+**Blocker 1 (red CI — TestMCPClientQuestionAndPermissionReply):** root-caused per the review — the MCP fixture arms the terminus flag for the contract-stream route; the new terminus branches 404 unidentifiable asks BEFORE any adapter dial, tripping the Epic-16 routing pin. Scoped per the reviewer's option (b): those rows now run flag-off (the adapter path answers 200 against the stub) with the regime rationale documented in-test; the fixture exposes its proxy; the terminus reply semantics keep their own 17 handler rows. Verified green.
+
+**Blocker 2 (W6 never reached Act):** TRUE — the dismiss route gates on askLivenessOf and skips Act when dead. Rerouted to the QUESTION REJECT REST route: the terminus branch's inbox-fallback resolves the session and forwards `answerQuestion{reply:"reject"}` — the only cluster row that genuinely drives actAnswerInput → abiAct → the pod's Act op (a total Act-path regression turns the row red). Agentd → opencode 404s → resolve-by-absence SUCCESS → 200 + disposition + event.
+
+**W6's vacuous L2:** the wait loop now greps the resolved event's unique key (`"reason":"dismissed"`), T6/T6b measure the budget and assert ≤2s.
+
+**Carried items:** Answers-flattening (all groups ride option_ids — no silent drop; pinned multi-group) and the 503-unknown-set pinned on the remaining two routes.
+
+## Tests run (r3)
+
+- `go test ./api/internal/handlers/ ./api/internal/server/ ./local/` — ok (17 handler rows + the MCP routing pin green again)
+- `bash -n` + the structural pin (now asserting the reject-route Act path + the L2 measurement)
