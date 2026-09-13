@@ -128,9 +128,3 @@ func newProxyHandlerWithMockK8s(t *testing.T, ws *v1.Workspace) *ProxyHandler {
 	require.NoError(t, err)
 	return h
 }
-
-type stubPodIPResolver struct{}
-
-func (s *stubPodIPResolver) GetWorkspacePodIP(_ context.Context, _, _ string) (string, error) {
-	return "", nil
-}

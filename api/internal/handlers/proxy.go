@@ -270,8 +270,8 @@ func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 // mcp-router integration gate (api/internal/server) drives StreamEvents
 // through the production router and publishes events on this broker.
 // SetAdapterForTest wires the Agent Adapter after construction
-// (out-of-package integration tests). In-package tests assign the field
-// directly.
+// (out-of-package integration tests only; in-package tests assign the
+// field directly).
 func (h *ProxyHandler) SetAdapterForTest(a agent.Adapter) {
 	h.adapter = a
 }

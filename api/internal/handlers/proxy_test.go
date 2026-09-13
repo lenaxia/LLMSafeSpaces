@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,26 +53,6 @@ type redirectTransport struct {
 }
 
 func (t *redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = "http"
-	req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
-	return http.DefaultTransport.RoundTrip(req)
-}
-
-type failFirstTransport struct {
-	server   *httptest.Server
-	attempts int32
-	failIP   string
-	newIP    string
-}
-
-func (t *failFirstTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
-	if strings.HasPrefix(host, t.failIP) {
-		if atomic.AddInt32(&t.attempts, 1) == 1 {
-			return nil, fmt.Errorf("dial tcp %s: connection refused", t.failIP)
-		}
-		req.URL.Host = t.newIP
-	}
 	req.URL.Scheme = "http"
 	req.URL.Host = strings.TrimPrefix(t.server.URL, "http://")
 	return http.DefaultTransport.RoundTrip(req)
