@@ -8,113 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// --- US-23.4: copyResponseHeaders strips dangerous headers ---
-
-func TestCopyResponseHeaders_StripsWWWAuthenticate(t *testing.T) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("WWW-Authenticate", "Basic realm=\"opencode\"")
-	src.Set("Content-Length", "42")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Equal(t, "application/json", dst.Get("Content-Type"))
-	assert.Equal(t, "42", dst.Get("Content-Length"))
-	assert.Empty(t, dst.Get("WWW-Authenticate"), "WWW-Authenticate must be stripped")
-}
-
-func TestCopyResponseHeaders_StripsProxyAuthenticate(t *testing.T) {
-	src := http.Header{}
-	src.Set("Proxy-Authenticate", "Basic")
-	src.Set("Content-Type", "text/plain")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Empty(t, dst.Get("Proxy-Authenticate"))
-	assert.Equal(t, "text/plain", dst.Get("Content-Type"))
-}
-
-func TestCopyResponseHeaders_StripsSetCookie(t *testing.T) {
-	src := http.Header{}
-	src.Set("Set-Cookie", "session=abc123")
-	src.Set("ETag", "\"abc\"")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Empty(t, dst.Get("Set-Cookie"))
-	assert.Equal(t, "\"abc\"", dst.Get("ETag"))
-}
-
-func TestCopyResponseHeaders_PreservesSafeHeaders(t *testing.T) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("Cache-Control", "no-cache")
-	src.Set("X-Custom-Header", "value")
-	src.Set("X-Accel-Buffering", "no")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Equal(t, "application/json", dst.Get("Content-Type"))
-	assert.Equal(t, "no-cache", dst.Get("Cache-Control"))
-	assert.Equal(t, "value", dst.Get("X-Custom-Header"))
-	assert.Equal(t, "no", dst.Get("X-Accel-Buffering"))
-}
-
 // --- US-23.4: Upstream 401 → 502 conversion ---
 
-func TestProxy_Upstream401_Returns502(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("WWW-Authenticate", "Basic realm=\"opencode\"")
-		w.WriteHeader(http.StatusUnauthorized)
-	})
-	env.setupWorkspacePodWithT(t, "ws-auth-fail", "10.0.0.1", "Active", "")
-	env.setupPasswordWithT(t, "ws-auth-fail", "stale-password")
+// TestProxy_Upstream401_Returns502 was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-auth-fail/legacy-read/s1", nil)
-
-	assert.Equal(t, http.StatusBadGateway, w.Code,
-		"upstream 401 must be converted to 502")
-	assert.Empty(t, w.Header().Get("WWW-Authenticate"),
-		"WWW-Authenticate must NOT be forwarded to browser")
-	assert.Contains(t, w.Body.String(), "upstream authentication failed")
-}
-
-func TestProxy_Upstream401_InvalidatesPasswordCache(t *testing.T) {
-	callCount := 0
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		if callCount == 1 {
-			w.Header().Set("WWW-Authenticate", "Basic realm=\"opencode\"")
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[]`))
-	})
-	env.setupWorkspacePodWithT(t, "ws-cache-inv", "10.0.0.1", "Active", "")
-	env.setupPasswordWithT(t, "ws-cache-inv", "test-password")
-
-	// First request: 401 → cache invalidated
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-cache-inv/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusBadGateway, w1.Code)
-
-	// Verify cache was invalidated
-	_, cached := env.handler.GetCachedPasswordForTest("ws-cache-inv")
-	assert.False(t, cached, "password cache must be invalidated after 401")
-}
+// TestProxy_Upstream401_InvalidatesPasswordCache was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // --- US-23.4: onPhaseChange cache invalidation ---
 
@@ -224,45 +128,7 @@ func TestProxy_Upstream401_DoesNotPanic_WithoutWorkspaceIDInContext(t *testing.T
 // this kind of integration test — unit tests on the store alone are
 // insufficient evidence of wiring.
 
-// TestProxy_Upstream401_InvalidatesRedisPasswordCache exercises the
-// full 401→invalidate path through a Redis-backed state store. After
-// the 401, the Redis key for the workspace's password must be deleted
-// (not just an in-memory entry) so the next request on any replica
-// falls through to K8s.
-func TestProxy_Upstream401_InvalidatesRedisPasswordCache(t *testing.T) {
-	mr, err := miniredis.Run()
-	require.NoError(t, err)
-	defer mr.Close()
-	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer func() { _ = redisClient.Close() }()
-
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("WWW-Authenticate", "Basic realm=\"opencode\"")
-		w.WriteHeader(http.StatusUnauthorized)
-	})
-	// Swap the default InMemoryStore for a RedisStore so the test
-	// exercises the Redis code path end-to-end.
-	env.handler.SetStateStore(wsstate.NewRedisStore(redisClient, wsstate.DefaultActiveSessTTL))
-
-	env.setupWorkspacePodWithT(t, "ws-redis-inv", "10.0.0.1", "Active", "")
-	env.setupPasswordWithT(t, "ws-redis-inv", "test-password")
-
-	// First request: triggers getPassword (cache miss → K8s fetch →
-	// SetCachedPassword → Redis SET with TTL) then 401 from upstream
-	// → invalidateCaches → InvalidatePassword (Redis DEL).
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-redis-inv/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusBadGateway, w1.Code)
-
-	// Verify the Redis key for the cached password is gone — the 401
-	// invalidation reached the Redis layer, not just an in-memory map.
-	pwKey := "ws:{ws-redis-inv}:pw"
-	assert.False(t, mr.Exists(pwKey),
-		"Redis password cache key must be DELeted after 401 — multi-replica invalidation")
-
-	// Verify via the store interface too (defense-in-depth).
-	_, cached := env.handler.GetCachedPasswordForTest("ws-redis-inv")
-	assert.False(t, cached, "GetCachedPassword must return miss after Redis DEL")
-}
+// TestProxy_Upstream401_InvalidatesRedisPasswordCache was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // --- #902: usage-gate re-arm on Active events (US-69.11 port) ---
 //

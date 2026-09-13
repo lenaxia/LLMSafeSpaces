@@ -6,11 +6,9 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -23,59 +21,21 @@ import (
 // transport there), so a regression to passthrough surfaces as a 200,
 // not a transport-error 503 that coincidentally passes.
 
-func TestCreateSession_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: legacy env, adapter unset")
+// TestCreateSession_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/sessions", nil)
+// TestListSessions_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestSendMessage_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-func TestListSessions_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: legacy env, adapter unset")
-
-	w := env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/sessions", nil)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-func TestSendMessage_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: legacy env, adapter unset")
-
-	body := strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`)
-	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/sessions/s1/message", body)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-// Shared input validation runs before the adapter guard: a malformed
-// request is a 400 regardless of adapter wiring — the guard is a
-// configuration failure, not an input failure, and must not mask the
-// more specific client error.
-func TestSendMessage_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
-	env := newTestEnv(t)
-	require.Nil(t, env.handler.adapter, "precondition: adapter unset")
-
-	w := env.doRequestWithT(t, http.MethodPost, "/api/v1/workspaces/ws-1/sessions/bad!id/message", strings.NewReader(`{}`))
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid sessionId")
-}
+// TestSendMessage_NilAdapter_ValidationPrecedesGuard was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): superseded — validation-first ordering is inherent; bad input 400s before any adapter call with the ctor-required adapter.
 
 // Port of TestProxy_CreateSessionBypassesLimit onto the adapter path:
 // CreateSession must not enforce the active-session ceiling. The

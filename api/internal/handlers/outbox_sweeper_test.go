@@ -69,7 +69,7 @@ func newSweeperEnv(t *testing.T, wsName string, stubURL string) (*ProxyHandler, 
 		makePasswordSecret(wsName, "pw"), metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 	if port > 0 {
 		handler.agentdPortOverride = port
@@ -196,8 +196,9 @@ func TestSweeperReplay_2026_09_10(t *testing.T) {
 // sweep — proven WITHOUT Start()/Run so the periodic pass cannot
 // confound the result (review finding: the previous e2e passed via
 // Run's first tick while the transition path was dead behind the
-// adapter gate). Also pins the gate semantics: terminus on, adapter
-// absent — the transition sweep must still fire.
+// gate). The "terminus on, adapter absent" gate-pin died with the
+// ctor-required adapter (#828 final batch) — the transition sweep is
+// now structurally unconditional.
 func TestSweeperE2E_PhaseChangeTransitionSweeps(t *testing.T) {
 	stub := newLedgerStub(t, 1<<30)
 	stub.muxx.Lock()
@@ -209,7 +210,6 @@ func TestSweeperE2E_PhaseChangeTransitionSweeps(t *testing.T) {
 	// wire the probe exactly as Start does — the Start wiring has its
 	// own test below.
 	svc.SetLedgerProbe(handler.outboxLedgerProbe)
-	assert.Nil(t, handler.adapter, "gate pin: terminus without adapter must still sweep")
 	var delivered atomic.Int32
 	svc.SetOnDelivered(func(ws, ses string, e outbox.Entry) { delivered.Add(1) })
 

@@ -5,13 +5,16 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -39,106 +42,33 @@ import (
 // design, red only under their named reintroductions (guard hoisted
 // above validation; a re-added busy guard).
 
-func TestSendPromptAsync_NilAdapter_Returns503TypedError(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	router, h := newV2TestHandler(t, srv)
-	require.Nil(t, h.adapter, "precondition: no adapter")
+// TestSendPromptAsync_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/prompt_async",
-		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
-	router.ServeHTTP(w, req)
+// TestEnqueueMessage_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestAbortSession_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-func TestEnqueueMessage_NilAdapter_Returns503TypedError(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	router, h := newV2TestHandler(t, srv)
-	require.Nil(t, h.adapter, "precondition: no adapter")
+// TestGetHistory_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
-		strings.NewReader(`{"text":"hello"}`))
-	router.ServeHTTP(w, req)
+// TestGetSession_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestDeleteSession_NilAdapter_Returns503_AndWritesNoTombstone was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the no-tombstone-on-guard half is structurally impossible; the still-tombstones-on-success half survives in this row's sibling TestDeleteSession_AdapterPath_StillTombstones.
 
-func TestAbortSession_NilAdapter_Returns503TypedError(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	router, h := newV2TestHandler(t, srv)
-	require.Nil(t, h.adapter, "precondition: no adapter")
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/abort", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-func TestGetHistory_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1/message", nil)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-func TestGetSession_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-// DeleteSession runs post-delete side effects (tombstone, index cleanup,
-// SSE publish) AFTER a successful delete. The nil-adapter guard must
-// fire BEFORE any of them: a wiring failure must not tombstone a session
-// that was never deleted upstream.
-func TestDeleteSession_NilAdapter_Returns503_AndWritesNoTombstone(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-	assert.False(t, env.handler.isSessionDeleted("ws-1", "s1"),
-		"the nil-adapter guard must not tombstone the session")
-}
-
-// RenameSessionInAgent is a service-layer helper (no gin context): with no
-// adapter it must return its own error naming the wiring failure instead of
-// silently PATCHing the pod over raw HTTP.
-func TestRenameSessionInAgent_NilAdapter_ReturnsTypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	err := env.handler.RenameSessionInAgent(context.Background(), "ws-1", "s1", "new title")
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent adapter not configured")
-}
+// TestRenameSessionInAgent_NilAdapter_ReturnsTypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the typed error cannot fire.
 
 // DeleteSession with the adapter wired runs the same post-delete side
 // effects the legacy path ran — the tombstone pin that the guard row
@@ -158,23 +88,9 @@ func TestDeleteSession_AdapterPath_StillTombstones(t *testing.T) {
 		"successful adapter delete must still tombstone")
 }
 
-// Ports of the two semantic rows from the deleted proxy_v2_test.go:
-// shared validation precedes the guard (400 beats 503), and the prompt
-// route takes no busy/409 guard.
-func TestSendPromptAsync_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	router, h := newV2TestHandler(t, srv)
-	require.Nil(t, h.adapter, "precondition: no adapter")
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/prompt_async",
-		strings.NewReader(`not-json`))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
+// TestSendPromptAsync_NilAdapter_ValidationPrecedesGuard was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): validation-first is inherent now.
 
 func TestSendPromptAsync_AdapterPath_No409Guard(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
@@ -228,23 +144,9 @@ func TestEnqueueMessage_AdapterPath_OutboxUnset_SyncSends(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "msg_sync_1")
 }
 
-// Port of the deleted TestEnqueueV2_EmptyText: shared validation precedes
-// the guard — an empty text is a 400 regardless of adapter wiring.
-func TestEnqueueMessage_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	router, h := newV2TestHandler(t, srv)
-	require.Nil(t, h.adapter, "precondition: no adapter")
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
-		strings.NewReader(`{"text":""}`))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "text must not be empty")
-}
+// TestEnqueueMessage_NilAdapter_ValidationPrecedesGuard was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): validation-first is inherent now; the empty-text 400 is pinned by TestQuestionReply_AdapterPath_EmptyAnswersRejected's sibling semantics.
 
 // --- Write-route activity parity pins (review r7) ---
 
@@ -281,19 +183,14 @@ func TestAbortSession_2xx_RecordsActivity(t *testing.T) {
 
 // DeleteSession's 2xx records workspace activity; the guard and
 // adapter-error paths do not. Pins the r6 parity line.
-func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
+func TestDeleteSession_2xx_RecordsActivity_ErrorDoesNot(t *testing.T) {
 	env := newTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
 
-	// Fresh tracker per phase (global PendingCount only).
-	guardTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
-	env.handler.activityTracker = guardTracker
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", nil)
-	require.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Zero(t, guardTracker.PendingCount(), "the guard records nothing")
-
+	// Fresh tracker per phase (global PendingCount only). The nil-adapter
+	// guard phase died with the ctor-required adapter (#828 final batch).
 	errTracker := activity.NewActivityTracker(env.k8sMock, &testLogger{}, "default")
 	env.handler.activityTracker = errTracker
 	env.handler.adapter = &mockAdapter{
@@ -301,7 +198,7 @@ func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
 			return assert.AnError
 		},
 	}
-	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s2", nil)
+	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s2", nil)
 	require.Equal(t, http.StatusBadGateway, w.Code)
 	assert.Zero(t, errTracker.PendingCount(), "a failed delete records nothing")
 
@@ -313,4 +210,56 @@ func TestDeleteSession_2xx_RecordsActivity_GuardAndErrorDoNot(t *testing.T) {
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s3", nil)
 	require.Equal(t, http.StatusNoContent, w.Code)
 	assert.Equal(t, 1, okTracker.PendingCount(), "successful delete records activity")
+}
+
+// --- r1 (final batch): AbortSession's readiness contract rows ---
+
+func TestAbortSession_WorkspaceNotActive_Returns503(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Suspended", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called for a suspended workspace")
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+func TestAbortSession_WorkspaceNotFound_Returns404(t *testing.T) {
+	env := newTestEnv(t)
+	env.wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
+		Return(nil, fmt.Errorf("not found")).Once()
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called for a missing workspace")
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-missing/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAbortSession_ConnectionCeiling_Returns429(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called when the ceiling rejects")
+			return nil
+		},
+	}
+	env.handler.connMu.Lock()
+	env.handler.connCount["ws-1"] = maxConnectionsPerWorkspace
+	env.handler.connMu.Unlock()
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 }

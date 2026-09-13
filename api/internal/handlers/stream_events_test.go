@@ -112,7 +112,7 @@ func TestStreamEvents_WorkspaceNotFound(t *testing.T) {
 	wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
 		Return(nil, fmt.Errorf("not found")).Once()
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 
@@ -314,7 +314,7 @@ func TestStreamEvents_OnPhaseChange_PublishesToBroker(t *testing.T) {
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	userBroker := eventbroker.NewUserEventBroker()
@@ -595,15 +595,27 @@ func TestStreamUserEvents_SnapshotBranchCounted(t *testing.T) {
 	defer cancel()
 	defer body.Close()
 
-	// The snapshot frame is a data event without an id: line.
-	evt := readNextSSEDataLine(t, bufio.NewReader(body))
-	assert.Equal(t, "workspace.phase", evt["type"], "snapshot phase event delivered")
+	// The snapshot frame is a data event without an id: line. Since the
+	// #828 final batch the input-snapshot flight also runs for Active
+	// workspaces (adapter ctor-required), so its begin/complete markers
+	// may interleave — scan (bounded) for the phase frame rather than
+	// assuming it is first.
+	reader := bufio.NewReader(body)
+	var evt map[string]any
+	found := false
+	for i := 0; i < 8 && !found; i++ {
+		evt = readNextSSEDataLine(t, reader)
+		if evt["type"] == "workspace.phase" {
+			found = true
+		}
+	}
+	require.True(t, found, "snapshot phase event delivered (within the first frames)")
 	assert.Equal(t, "Active", evt["phase"])
 
 	cancel()
 	require.Eventually(t, func() bool { return len(logger.infos("SSE user stream closed")) == 1 },
 		2*time.Second, 5*time.Millisecond)
 	closed := logger.infos("SSE user stream closed")[0]
-	assert.Contains(t, closed, "eventsSent1",
-		"the snapshot branch's increment is pinned (round-7 coverage gap)")
+	assert.Regexp(t, `eventsSent[1-9]\d*`, closed,
+		"the snapshot branch's increment is pinned (round-7 coverage gap); markers may add to the count but it is never zero")
 }

@@ -644,22 +644,11 @@ func TestInbox_Dismiss_HarnessUnknownFailsClosed(t *testing.T) {
 	assert.Len(t, left, 1, "record must stay pending")
 }
 
-func TestInbox_Dismiss_NoAdapterFailsClosed(t *testing.T) {
-	h, in, _, _ := newInboxBackend(t)
-	h.adapter = nil
-	rec := inbox.Record{
-		ID: "que_x", SessionID: "ses_1", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
-		Question: "Q?", RecordedAt: time.Now().UTC(),
-	}
-	require.NoError(t, in.Record(context.Background(), "ws-1", rec))
-
-	c, _ := gin.CreateTestContext(recorderFor(t))
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}, {Key: "requestID", Value: "que_x"}}
-	c.Request = jsonRequest(t, http.MethodDelete, "/x", "")
-
-	h.DismissInboxRecord(c)
-	assert.Equal(t, http.StatusServiceUnavailable, c.Writer.Status())
-}
+// TestInbox_Dismiss_NoAdapterFailsClosed was deleted (#828 final batch
+// — the adapter is a ctor-required parameter): the nil-adapter
+// fail-closed arm of askLivenessOf is structurally impossible; the
+// dismiss flow's liveness-error degrade is pinned by the
+// TestInbox_Dismiss_* rows with failing listPending mocks.
 
 func TestInbox_EmitPending_ListPendingErrorStillEmitsInbox(t *testing.T) {
 	// r1 finding 3: the union must survive the live leg failing — the

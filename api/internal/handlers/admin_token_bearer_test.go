@@ -103,7 +103,7 @@ func TestReconcileSessionState_BearerFallback(t *testing.T) {
 	}
 
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 	// k8s client nil → candidates degrade to [password]; that defeats the
 	// fallback, so this test pins the degrade path too: with no k8s client
@@ -129,7 +129,7 @@ func TestAdminBearerCandidates_TryOrderAndDedup(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	got := h.adminBearerCandidates(context.Background(), "ws-cand", "the-password")
@@ -151,7 +151,7 @@ func TestAdminBearerCandidates_DedupEqualValues(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	got := h.adminBearerCandidates(context.Background(), "ws-dup", "same-value")
@@ -159,7 +159,7 @@ func TestAdminBearerCandidates_DedupEqualValues(t *testing.T) {
 }
 
 func TestAdminBearerCandidates_NilClientFallsBackToPassword(t *testing.T) {
-	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nil", "127.0.0.1"), &testLogger{}, "default", &http.Client{})
+	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nil", "127.0.0.1"), &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.k8sClient = nil // unit handlers construct without k8s
 
@@ -168,7 +168,7 @@ func TestAdminBearerCandidates_NilClientFallsBackToPassword(t *testing.T) {
 }
 
 func TestAdminBearerCandidates_MissingSecretUsesFallback(t *testing.T) {
-	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nosec", "127.0.0.1"), &testLogger{}, "default", &http.Client{})
+	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nosec", "127.0.0.1"), &testLogger{}, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.k8sClient = nil
 

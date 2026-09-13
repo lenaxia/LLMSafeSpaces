@@ -32,8 +32,9 @@ const contractStreamHeartbeat = 25 * time.Second
 // contractStreamUpstreams (US-69.11, the SSE-tracker retirement's
 // scale-to-zero observable): 1 per workspace holding an open pod
 // upstream, series deleted on last detach — so idle fleets scrape an
-// empty (not zero-labeled) series set, same discipline as the
-// request-buffer gauges (DeleteRequestBufferMetrics).
+// empty (not zero-labeled) series set — a discipline the
+// request-buffer gauges once shared (deleted with the buffer,
+// #828 final batch).
 var contractStreamUpstreams = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "llmsafespaces_contract_stream_upstreams",
 	Help: "Open contract-stream pod upstreams per workspace (1 while >=1 browser subscriber is attached; series deleted on last detach — D1-B scale-to-zero).",

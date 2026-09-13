@@ -299,20 +299,23 @@ func (h *ProxyHandler) snapshotUserWorkspaces(ctx context.Context, s *eventbroke
 	// authoritative pending set from the pod so a reconnecting client rebuilds
 	// pendingActions correctly (mirrors busy's seedBusy). Bounded by the ≤10
 	// active-workspace scale constraint; each fetch is timeout-guarded.
-	if h.adapter != nil {
-		for _, wsID := range wsIDs {
-			phase := ""
-			if phases != nil {
-				phase = phases[wsID]
-			}
-			if phase != string(phaseActive) {
-				continue
-			}
-			go func(id string) {
-				defer func() { _ = recover() }() // never let a fetch panic the snapshot
-				h.emitPendingInputRequests(ctx, id)
-			}(wsID)
+	for _, wsID := range wsIDs {
+		phase := ""
+		if phases != nil {
+			phase = phases[wsID]
 		}
+		if phase != string(phaseActive) {
+			continue
+		}
+		go func(id string) {
+			defer func() { _ = recover() }() // never let a fetch panic the snapshot
+			// Detached from the stream ctx (r5): the flight's
+			// body reads contexts concurrently with the stream's
+			// cancel (a -race on the ctx internals); the flight is
+			// bounded by emitPendingInputRequests' own 5s timeout —
+			// the same detach RequestInputSnapshot documents.
+			h.emitPendingInputRequests(context.WithoutCancel(ctx), id)
+		}(wsID)
 	}
 }
 

@@ -93,9 +93,7 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 	rc := http.NewResponseController(c.Writer)
 	_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineWindow))
 
-	if h.adapter != nil {
-		go h.emitPendingInputRequests(streamCtx, workspaceID)
-	}
+	go h.emitPendingInputRequests(streamCtx, workspaceID)
 
 	go heartbeatLoop(streamCtx, sub)
 

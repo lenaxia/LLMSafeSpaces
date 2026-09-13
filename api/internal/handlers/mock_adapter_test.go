@@ -178,3 +178,35 @@ func (m *mockAdapter) ValidateCredentials(raw []byte) (*agent.CredentialCheckRes
 	}
 	panic("mockAdapter.ValidateCredentials not configured")
 }
+
+// newLenientMockAdapter returns a mockAdapter whose every method returns
+// a benign zero value instead of panicking — the default adapter the
+// test envs construct ProxyHandler with since the adapter became a
+// required ctor parameter (#828 final batch). Specific rows overwrite
+// env.handler.adapter (or the Fn fields) as before.
+func newLenientMockAdapter() *mockAdapter {
+	return &mockAdapter{
+		createSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
+			return &session.Session{ID: "ses_mock"}, nil
+		},
+		getSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
+			return &session.Session{ID: "ses_mock"}, nil
+		},
+		listSessionsFn:  func(context.Context, string, string) ([]session.Session, error) { return nil, nil },
+		renameSessionFn: func(context.Context, string, string, string, string) error { return nil },
+		deleteSessionFn: func(context.Context, string, string, string) error { return nil },
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			return &session.Message{ID: "msg_mock", Type: session.MessageAssistant}, nil
+		},
+		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
+			return "msg_mock", nil
+		},
+		abortFn:           func(context.Context, string, string, string) error { return nil },
+		listPendingFn:     func(context.Context, string, string, string) ([]session.InputRequest, error) { return nil, nil },
+		resolveFn:         func(context.Context, string, string, string, string) error { return nil },
+		rejectInputFn:     func(context.Context, string, string, string) error { return nil },
+		answerQuestionFn:  func(context.Context, string, string, string, [][]string) error { return nil },
+		replyPermissionFn: func(context.Context, string, string, string, string, string) error { return nil },
+		getHistoryFn:      func(context.Context, string, string, string) ([]session.Message, error) { return nil, nil },
+	}
+}

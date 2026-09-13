@@ -143,13 +143,13 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	k8sMock.On("Clientset").Return(fakeClientset)
 
 	log := &testLogger{}
-	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient)
+	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, newLenientMockAdapter())
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	// #828 batch 3: every route is adapter-served — wire the REAL adapter
 	// against the same auth-recording backend so the router-level
 	// BasicAuth contract is asserted through the full live stack.
-	handler.SetAdapter(agentoc.NewAdapter(
+	handler.adapter = (agentoc.NewAdapter(
 		handler.AdapterPasswordResolver(),
 		handler.AdapterPodIPResolver(),
 		nil,

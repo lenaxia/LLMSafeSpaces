@@ -35,7 +35,7 @@ func TestOnPhaseChange_TerminatedCleansOutboxResidue(t *testing.T) {
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(&v1.Workspace{}, nil).Maybe()
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.userBroker = eventbroker.NewUserEventBroker()
 	t.Cleanup(stubUsageStream())

@@ -5,8 +5,6 @@ package handlers
 
 import (
 	"context"
-	"net/http"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,21 +19,9 @@ import (
 // no-op for fire-and-forget helpers and an error for the fetcher; and
 // the backfill gate keys on the adapter, not the (retired) dialect.
 
-func TestFetchAndPersistTitle_NilAdapter_NoPodHTTP(t *testing.T) {
-	var hits atomic.Int32
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusOK)
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.handler.sessionIndex = newRecordingSessionIndex()
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	env.handler.fetchAndPersistTitle("ws-1", "ses_1")
-
-	assert.Zero(t, hits.Load(), "the raw-HTTP tail is gone; a nil adapter must not reach the pod")
-}
+// TestFetchAndPersistTitle_NilAdapter_NoPodHTTP was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the raw-HTTP tail is deleted AND the adapter is ctor-required — no pod HTTP is structural.
 
 func TestFetchAndPersistTitle_AdapterPath_PersistsTitleAndParent(t *testing.T) {
 	env := newTestEnv(t)
@@ -56,41 +42,13 @@ func TestFetchAndPersistTitle_AdapterPath_PersistsTitleAndParent(t *testing.T) {
 	assert.Equal(t, "ses_root", si.parentOf("ses_1"))
 }
 
-func TestFetchSessionParent_NilAdapter_ReturnsTypedError(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
+// TestFetchSessionParent_NilAdapter_ReturnsTypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the typed error cannot fire.
 
-	parent, err := env.handler.fetchSessionParent(context.Background(), "ws-1", "ses_1")
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent adapter not configured")
-	assert.Empty(t, parent)
-}
-
-func TestBackfillSessionParents_NilAdapter_NoRetryStorm(t *testing.T) {
-	var hits atomic.Int32
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusOK)
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.handler.sessionIndex = newRecordingSessionIndex()
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	// Repeated calls: the adapter gate returns before any goroutine or
-	// HTTP fires — the raw SessionListPath tail is gone and nothing
-	// spawns at all.
-	for i := 0; i < 5; i++ {
-		env.handler.BackfillSessionParents(context.Background(), "ws-1")
-	}
-	time.Sleep(150 * time.Millisecond)
-
-	assert.Zero(t, hits.Load(), "the raw SessionListPath tail is gone")
-	assert.Zero(t, env.handler.sessionIndex.(*recordingSessionIndex).parentCount(),
-		"nothing written — no goroutine ever ran")
-}
+// TestBackfillSessionParents_NilAdapter_NoRetryStorm was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the gate is gone; nothing spawns without a workspace index, pinned by the remaining rows.
 
 // The gate keys on the adapter, not the dialect (retired): with an
 // adapter wired and no dialect anywhere, the backfill runs.

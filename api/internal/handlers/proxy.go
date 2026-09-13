@@ -4,19 +4,14 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
@@ -52,15 +47,11 @@ type ProxyHandler struct {
 	logger            pkginterfaces.LoggerInterface
 	namespace         string
 	agentStateChecker AgentStateChecker
-	// stateStore holds the per-workspace state that was previously kept
-	// in process-local maps on ProxyHandler (activeSess, deletedSessions,
-	// pwCache, wsConfig, priorPhase, parentBackfilled). Externalizing it
-	// via an interface is the foundation for moving the state to a
-	// shared Redis backend in subsequent Epic 45 stories, which
-	// eliminates the multi-replica drift that caused the 2026-06-16
-	// stuck-session incident. The InMemoryStore used today preserves
-	// single-replica behavior exactly.
-	stateStore wsstate.Store
+	// resolvers owns the shared connection-resolution state (password
+	// cache + pod-IP lookup) the Agent Adapter and the handler both
+	// consume — see ResolverHost. Lazily initialized for struct-literal
+	// constructions.
+	resolvers *ResolverHost
 
 	// connCount is intentionally NOT in stateStore — it represents a
 	// per-replica resource (HTTP file descriptors, memory) that must
@@ -102,10 +93,6 @@ type ProxyHandler struct {
 	usageInference func(modelID, providerID string, inputTokens, outputTokens int64, costDollars float64)
 	usageMetering  func(types.UsageEvent)
 
-	// requestBuffer parks POST /message requests during an opencode restart
-	// (connection-refused window) so users do not see 503s. See US-44.10.
-	requestBuffer *requestBuffer
-
 	startOnce sync.Once
 	stopOnce  sync.Once
 	// started is set true inside startOnce.Do. Used by SetStateStore to
@@ -145,22 +132,14 @@ type ProxyHandler struct {
 	// SetInboxStore before Start.
 	inbox *inbox.Service
 
-	// adapter is the US-65.3 Agent Adapter seam. The migrated
-	// session/message cluster is adapter-only since #828 batches 1+2
-	// (nil adapter -> adapterUnavailable guard, typed 503); the
+	// adapter is the US-65.3 Agent Adapter seam, ctor-required since
+	// the #828 final batch (nil → construction error). The
 	// outbox-backed queue view routes never consult it, and
-	// RenameSessionInAgent fails with its own error. The remaining
-	// nil-checks are the fail-closed guards themselves (proxy_handlers
-	// ×10 incl. the rename helper, input ×8, permissions, session index
-	// ×3, parents, stream/user-events flight gates, inbox wiring) and
-	// the lifecycle wiring (Start()'s outbox verifier hooks,
-	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go)
-	// — the final #828 batch's required-constructor change collapses
-	// them all. The dialect field was retired in batch 4 (zero readers
-	// remained; agent.Dialect's interface went with it — the opencode
-	// Dialect struct stays, agent-side: the adapter and agentd's store
-	// readers consume it, no platform/handler code).
-	// Set via SetAdapter before Start().
+	// RenameSessionInAgent fails with its own error. The dialect field
+	// was retired in batch 4 (zero readers remained; agent.Dialect's
+	// interface went with it — the opencode Dialect struct stays,
+	// agent-side: the adapter and agentd's store readers consume it,
+	// no platform/handler code).
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on
@@ -168,7 +147,7 @@ type ProxyHandler struct {
 	// enforced only by hiding models in ListModels). nil = no enforcement
 	// (personal deployments). Read on the prompt path after Start, so it is
 	// set once via SetModelPolicyChecker before Start — same invariant as
-	// SetAdapter.
+	// SetStateStore.
 	modelPolicyChecker OrgPolicyChecker
 
 	// Epic 68 US-68.2 upload overrides. Zero → env-derived defaults
@@ -187,12 +166,16 @@ func NewProxyHandler(
 	logger pkginterfaces.LoggerInterface,
 	namespace string,
 	httpClient *http.Client,
+	adapter agent.Adapter,
 ) (*ProxyHandler, error) {
 	if k8sClient == nil {
 		return nil, fmt.Errorf("kubernetes client cannot be nil")
 	}
 	if logger == nil {
 		return nil, fmt.Errorf("logger cannot be nil")
+	}
+	if adapter == nil {
+		return nil, fmt.Errorf("agent adapter cannot be nil")
 	}
 	if namespace == "" {
 		namespace = "default"
@@ -207,44 +190,14 @@ func NewProxyHandler(
 		}
 	}
 	return &ProxyHandler{
-		k8sClient:     k8sClient,
-		httpClient:    httpClient,
-		logger:        logger,
-		namespace:     namespace,
-		stateStore:    wsstate.NewInMemoryStore(),
-		connCount:     make(map[string]int),
-		busyAlerts:    make(map[string]time.Time),
-		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
+		k8sClient:  k8sClient,
+		httpClient: httpClient,
+		logger:     logger,
+		namespace:  namespace,
+		connCount:  make(map[string]int),
+		busyAlerts: make(map[string]time.Time),
+		adapter:    adapter,
 	}, nil
-}
-
-// adapterUnavailable is the guard for #828-migrated handlers: their
-// legacy dialect fallback is deleted, so a nil adapter is a wiring
-// failure surfaced as a typed 503 — never a silent passthrough.
-func (h *ProxyHandler) adapterUnavailable(c *gin.Context) {
-	h.logger.Error("Migrated proxy handler called without adapter", nil,
-		"path", c.Request.URL.Path)
-	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "agent adapter not configured"})
-}
-
-// SetAdapter wires the US-65.3 Agent Adapter. The migrated
-// session/message cluster (send, prompt, queue-accept, history, get,
-// list, create, abort, delete) is adapter-only since #828 batches 1+2:
-// a nil adapter there fails closed at the adapterUnavailable guard
-// (typed 503). Exceptions in proxy_handlers.go: the outbox-backed queue
-// view routes (ListQueue/DeleteQueueMessage/RetryQueueMessage) never
-// consult the adapter, and RenameSessionInAgent fails with its own
-// error. Set before Start(). Panics if called after Start() —
-// same invariant as SetStateStore, preventing a data race on the
-// interface field once handler goroutines begin reading h.adapter.
-func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
-	if a == nil {
-		return
-	}
-	if h.started {
-		panic("SetAdapter called after Start — request goroutines may already be reading h.adapter")
-	}
-	h.adapter = a
 }
 
 // SetInboxStore wires the unanswered-question inbox (#1313). nil (or a
@@ -314,7 +267,7 @@ func (h *ProxyHandler) SetUserBrokerForTest(b *eventbroker.UserEventBroker) {
 
 // SetModelPolicyChecker wires the org-policy checker for per-prompt model
 // override enforcement. Optional (nil = unenforced). Panics after Start for
-// the same race-safety reason as SetAdapter.
+// the same race-safety reason as SetStateStore.
 func (h *ProxyHandler) SetModelPolicyChecker(p OrgPolicyChecker) {
 	if p == nil {
 		return
@@ -347,449 +300,22 @@ func (h *ProxyHandler) SetStateStore(store wsstate.Store) {
 	if h.started {
 		panic("SetStateStore called after Start — request goroutines may already be reading stateStore")
 	}
-	h.stateStore = store
+	h.host().SetStateStore(store)
 }
 
-// proxyToWorkspaceWithErrBody is the raw-proxy transport. Since #828
-// batches 1-3 it has NO production caller — every handler route is
-// adapter-only — and it survives solely for the test seams
-// (registerLegacyMessageTransport / registerLegacyReadTransport), which
-// pin the write-op/connection-ceiling/request-buffer/SSE/error-body
-// arms until the final batch deletes the transport with its seams.
-//
-// Contract (unchanged): onErrorBody rewrites buffered 4xx/5xx bodies
-// (chatErrorBufferCap bound); bufferable parks connection-failed
-// requests in the per-workspace request buffer instead of returning
-// 503 immediately (opencode restarts); 2xx responses stream.
-//
-//nolint:gocyclo // proxy path has many independent guard clauses; complexity is inherent
-func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
-	c *gin.Context,
-	targetPath string,
-	isWriteOp bool,
-	sessionID string,
-	onErrorBody func(statusCode int, body []byte) []byte,
-	bufferable bool,
-) {
-	workspaceID := c.Param("id")
-	if workspaceID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
+// SetResolverHost adopts a pre-built ResolverHost (app.go constructs the
+// host first, builds the Agent Adapter over it, then passes the adapter
+// to the handler ctor and adopts the host here — one shared password
+// cache + invalidation for both). Panics if called after Start(): same
+// pre-Start-only invariant as SetStateStore.
+func (h *ProxyHandler) SetResolverHost(host *ResolverHost) {
+	if host == nil {
 		return
 	}
-
-	var workspace *v1.Workspace
-	if cached, exists := c.Get("workspace"); exists {
-		if sb, ok := cached.(*v1.Workspace); ok {
-			workspace = sb
-		}
+	if h.started {
+		panic("SetResolverHost called after Start — request goroutines may already be reading resolvers")
 	}
-	if workspace == nil {
-		v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
-		if v1Err != nil {
-			h.logger.Error("Failed to get LLMSafespacesV1 client", v1Err, "workspaceID", workspaceID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
-		}
-		var err error
-		workspace, err = v1Client.Workspaces(h.namespace).Get(c.Request.Context(), workspaceID, metav1.GetOptions{})
-		if err != nil {
-			h.logger.Error("Failed to get workspace CRD", err, "workspaceID", workspaceID)
-			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-			return
-		}
-	}
-
-	if workspace.Status.Phase != phaseActive || workspace.Status.PodIP == "" {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"error":      "workspace not ready",
-			"code":       "service_unavailable",
-			"reason":     "not_ready",
-			"phase":      workspace.Status.Phase,
-			"retryAfter": retryAfterSec,
-			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
-		})
-		return
-	}
-
-	password, err := h.getPassword(c.Request.Context(), workspaceID)
-	if err != nil {
-		h.logger.Error("Failed to get workspace password", err, "workspaceID", workspaceID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workspace credentials"})
-		return
-	}
-
-	maxSessions := int(workspace.Spec.MaxActiveSessions)
-	if maxSessions <= 0 {
-		maxSessions = defaultMaxActiveSessions
-	}
-
-	if !h.acquireConnection(workspaceID) {
-		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"error":      "connection limit reached",
-			"retryAfter": retryAfterSec,
-		})
-		return
-	}
-	slotReleased := false
-	defer func() {
-		if !slotReleased {
-			h.releaseConnection(workspaceID)
-		}
-	}()
-
-	if isWriteOp && sessionID != "" {
-		if !h.checkAndAddActiveSession(c.Request.Context(), workspaceID, sessionID, maxSessions) {
-			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":             "active session limit reached",
-				"maxActiveSessions": maxSessions,
-				"retryAfter":        retryAfterSec,
-			})
-			return
-		}
-	}
-
-	if isWriteOp && sessionID != "" {
-		h.UsageStream().Open(workspaceID)
-	}
-
-	var bodyBytes []byte
-	if c.Request.Body != nil && c.Request.ContentLength != 0 {
-		limited := http.MaxBytesReader(nil, c.Request.Body, 10*1024*1024)
-		bodyBytes, err = io.ReadAll(limited)
-		_ = c.Request.Body.Close()
-		if err != nil {
-			var maxErr *http.MaxBytesError
-			if errors.As(err, &maxErr) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body exceeds 10 MB limit"})
-				return
-			}
-			h.logger.Error("Failed to read request body", err, "workspaceID", workspaceID)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-			return
-		}
-	}
-
-	// Disk-pressure injection lives in the noticingAdapter decorator
-	// (pkg/agent/systemnotices.Wrap, #944) — the single injection point
-	// covering every entrypoint. The body-rewrite that used to live here
-	// served the legacy raw-proxy message path and was deleted with it
-	// (#828 batch 1).
-
-	podIP := workspace.Status.PodIP
-
-	if h.meteringSvc != nil && workspaceID != "" {
-		if !h.checkProxyQuota(c, workspace) {
-			return
-		}
-	}
-
-	proxyErr := h.doProxy(c, podIP, targetPath, password, bodyBytes, onErrorBody)
-
-	if proxyErr != nil && isConnectionError(proxyErr) && !c.Writer.Written() {
-		freshWS, getErr := func() (*v1.Workspace, error) {
-			v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
-			if v1Err != nil {
-				return nil, v1Err
-			}
-			return v1Client.Workspaces(h.namespace).Get(c.Request.Context(), workspaceID, metav1.GetOptions{})
-		}()
-		if getErr == nil && freshWS.Status.PodIP != "" && freshWS.Status.PodIP != podIP && freshWS.Status.Phase == phaseActive {
-			h.logger.Info("Retrying proxy with fresh pod IP", "workspaceID", workspaceID, "oldIP", podIP, "newIP", freshWS.Status.PodIP)
-			proxyErr = h.doProxy(c, freshWS.Status.PodIP, targetPath, password, bodyBytes, onErrorBody)
-		}
-	}
-
-	if proxyErr != nil && isConnectionError(proxyErr) && !c.Writer.Written() && bufferable &&
-		h.requestBuffer != nil && h.requestBuffer.maxSize > 0 {
-		// podIP is stable for in-place opencode restarts (same pod, agentd
-		// SIGTERMs and restarts opencode in place); pod-recreating restarts
-		// (suspend/resume) go through the not-Active 503 path above, never the
-		// buffer. So re-forwarding the captured podIP is correct for the
-		// restart window this buffer exists to smooth over.
-		bufReq := &bufferedRequest{
-			forward: func() error {
-				if !h.acquireConnection(workspaceID) {
-					return errBufferRetryLater
-				}
-				defer h.releaseConnection(workspaceID)
-				err := h.doProxy(c, podIP, targetPath, password, bodyBytes, onErrorBody)
-				if err != nil && c.Writer.Written() {
-					return errBufferCommitted
-				}
-				return err
-			},
-			result:   make(chan error, 1),
-			deadline: time.Now().Add(h.requestBuffer.timeout),
-			cancelCh: make(chan struct{}),
-			// C5: account the body bytes against the global buffer memory cap.
-			bodySize: len(bodyBytes),
-		}
-		if !h.requestBuffer.tryEnqueue(workspaceID, bufReq) {
-			metrics.RecordRequestBufferFull(workspaceID)
-			if isWriteOp && sessionID != "" {
-				h.removeActiveSession(c.Request.Context(), workspaceID, sessionID)
-			}
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "Too many requests during restart, please try again"})
-			return
-		}
-		// A parked request holds no upstream socket, so release the connection
-		// slot acquired on entry; forward re-acquires (briefly) per attempt.
-		// slotReleased=true neutralizes the top-level deferred release so
-		// connCount is decremented exactly once for this request.
-		h.releaseConnection(workspaceID)
-		slotReleased = true
-		startWait := time.Now()
-		// Always learn the drainer's terminal outcome: even if the client
-		// disconnects, block for the drainer's deliver so a success that
-		// raced with ctx.Done is not silently dropped (which would skip
-		// metering and wrongly remove the active session).
-		var ferr error
-		select {
-		case ferr = <-bufReq.result:
-		case <-c.Request.Context().Done():
-			close(bufReq.cancelCh)
-			ferr = <-bufReq.result
-		}
-		metrics.RecordRequestBufferWait(workspaceID, time.Since(startWait))
-		if ferr == nil {
-			proxyErr = nil
-		} else {
-			if errors.Is(ferr, errBufferTimeout) {
-				metrics.RecordRequestBufferTimeout(workspaceID)
-			}
-			if isWriteOp && sessionID != "" {
-				h.removeActiveSession(c.Request.Context(), workspaceID, sessionID)
-			}
-			if !c.Writer.Written() && c.Request.Context().Err() == nil {
-				if errors.Is(ferr, errBufferTimeout) {
-					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-					c.JSON(http.StatusServiceUnavailable, gin.H{
-						"error":      "Workspace is restarting, please try again in a moment",
-						"code":       "service_unavailable",
-						"reason":     "agent_restarting",
-						"retryAfter": retryAfterSec,
-						"message":    "The agent is restarting (credential change, OOM, or crash recovery). Your request will work once it's back.",
-					})
-				} else {
-					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-					c.JSON(http.StatusServiceUnavailable, gin.H{
-						"error":      "workspace connection failed",
-						"code":       "service_unavailable",
-						"reason":     "agent_unreachable",
-						"retryAfter": retryAfterSec,
-						"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
-					})
-				}
-			}
-			return
-		}
-	}
-
-	if proxyErr != nil {
-		h.logger.Error("Proxy request failed", proxyErr, "workspaceID", workspaceID)
-		if isWriteOp && sessionID != "" {
-			h.removeActiveSession(c.Request.Context(), workspaceID, sessionID)
-		}
-		if !c.Writer.Written() {
-			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"error":      "workspace connection failed",
-				"code":       "service_unavailable",
-				"reason":     "agent_unreachable",
-				"retryAfter": retryAfterSec,
-				"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
-			})
-		}
-		return
-	}
-
-	if h.activityTracker != nil {
-		h.activityTracker.Record(workspaceID)
-	}
-
-	if h.sessionIndex != nil && sessionID != "" && isWriteOp {
-		h.sessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now())
-	}
-
-	if h.meteringSvc != nil && workspaceID != "" {
-		userID, _ := extractAuth(c)
-		if userID != "" && workspace.Labels["llmsafespaces.dev/canary"] != "true" {
-			h.meteringSvc.Record(types.UsageEvent{
-				IdempotencyKey: fmt.Sprintf("llmreq:%s:%d", workspaceID, time.Now().UnixNano()),
-				Owner:          types.BillingOwner{ID: userID, Type: types.OwnerTypeUser},
-				ActorID:        userID,
-				WorkspaceID:    workspaceID,
-				EventType:      "llm_request",
-				EventSubtype:   "message",
-				Quantity:       1,
-				Source:         "api",
-				EventTime:      time.Now(),
-				RequestContext: map[string]any{
-					"ip":         c.ClientIP(),
-					"request_id": c.GetString("request_id"),
-					"session_id": sessionID,
-				},
-			})
-		}
-	}
-}
-
-// chatErrorBufferCap bounds the amount of upstream body buffered when an
-// onErrorBody transform is supplied. Chat error responses are small JSON
-// payloads (~1 KB); a runaway upstream must not consume unbounded memory.
-// Truncation is handled by EnrichChatErrorBody (non-JSON wraps to a 1024-byte
-// "message" field), so anything above this cap is dropped on the floor.
-const chatErrorBufferCap = 64 * 1024
-
-// doProxy sends the request to the sandbox and writes the response back to
-// the client. Streaming endpoints (events) are streamed
-// directly to the client with flushed writes.
-//
-// When onErrorBody is non-nil and the upstream returns status >= 400, the
-// response body is buffered (up to chatErrorBufferCap), passed through
-// onErrorBody, and the transformed bytes are written. This is the US-27b.5
-// path that lets SendMessage enrich chat errors with agentNeedsRefresh / hint
-// fields. 2xx responses always stream chunk-by-chunk.
-func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password string, body []byte, onErrorBody func(int, []byte) []byte) error {
-	targetURL := fmt.Sprintf("http://%s:%d%s", podIP, opencodePort, targetPath)
-	if forwardedQuery := stripVerboseQuery(c.Request.URL.RawQuery); forwardedQuery != "" {
-		targetURL += "?" + forwardedQuery
-	}
-
-	var bodyReader io.Reader
-	if len(body) > 0 {
-		bodyReader = bytes.NewReader(body)
-	}
-
-	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, bodyReader)
-	if err != nil {
-		return fmt.Errorf("creating proxy request: %w", err)
-	}
-
-	// G34: forward only an explicit allowlist of client headers. The caller's
-	// Authorization, Cookie, Origin, Referer, X-Forwarded-* and arbitrary
-	// custom headers describe the caller's relationship with this API server,
-	// not with the tenant pod, and must not reach untrusted agent code.
-	// Authorization is set below via SetBasicAuth; X-Forwarded-For after that.
-	copyRequestHeaders(c.Request.Header, req.Header)
-	req.SetBasicAuth(agentd.AuthUsername, password)
-	req.Header.Set("X-Forwarded-For", c.ClientIP())
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("proxy request to workspace: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// LLMSafeSpaces#488: log + count upstream 5xx as early as possible so
-	// operators have a signal in Prometheus and logs even for streaming
-	// responses (where the body is not buffered and preview will be empty).
-	// The 401 branch below still does its own log — different semantic and
-	// pre-dates this instrumentation. See recordUpstream5xx for path
-	// sanitization.
-	if resp.StatusCode >= 500 {
-		wsID := c.Param("id")
-		recordUpstream5xx(h.logger, wsID, targetPath, resp.StatusCode, nil)
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		wsID := c.Param("id")
-		h.invalidateCaches(c.Request.Context(), wsID)
-		h.logger.Warn("Upstream auth failed; password cache invalidated",
-			"workspaceID", wsID, "path", targetPath)
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error":       "upstream authentication failed; please retry",
-			"workspaceID": wsID,
-		})
-		return nil
-	}
-
-	copyResponseHeaders(resp.Header, c.Writer.Header())
-	c.Writer.Header().Set("X-Accel-Buffering", "no")
-
-	// US-27b.5: when an error-body transform is supplied AND the upstream
-	// returned an error status, buffer the body (bounded), transform, write.
-	// 2xx / 3xx always stream chunk-by-chunk regardless of onErrorBody.
-	if onErrorBody != nil && resp.StatusCode >= 400 {
-		buf := make([]byte, 0, 4*1024)
-		tmp := make([]byte, 32*1024)
-		for {
-			n, readErr := resp.Body.Read(tmp)
-			if n > 0 {
-				if len(buf)+n > chatErrorBufferCap {
-					buf = append(buf, tmp[:chatErrorBufferCap-len(buf)]...)
-				} else {
-					buf = append(buf, tmp[:n]...)
-				}
-			}
-			if readErr != nil {
-				break
-			}
-			if len(buf) >= chatErrorBufferCap {
-				break
-			}
-		}
-		transformed := onErrorBody(resp.StatusCode, buf)
-		// Content-Length is now potentially wrong; drop it and let the writer
-		// send chunked encoding or fixate on the new length.
-		c.Writer.Header().Del("Content-Length")
-		c.Writer.WriteHeader(resp.StatusCode)
-		_, _ = c.Writer.Write(transformed)
-		return nil
-	}
-
-	c.Writer.WriteHeader(resp.StatusCode)
-
-	flusher, canFlush := c.Writer.(http.Flusher)
-	buf := make([]byte, 32*1024)
-	// US-44.1: terminal event on agent death. Scope: SSE responses only
-	// (Content-Type: text/event-stream). On EOF after data on an SSE
-	// stream, the agent process disappeared (OOM/SIGTERM/crash); emit a
-	// terminal `agent_died` event so clients can surface it instead of
-	// seeing a silent close. Non-SSE responses legitimately EOF after
-	// data (normal HTTP), so the heuristic MUST be SSE-scoped or JSON
-	// parsers downstream would be corrupted.
-	isSSEStream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
-	var bytesReceived int64
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			bytesReceived += int64(n)
-			_, _ = c.Writer.Write(buf[:n])
-			if canFlush {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-				if isSSEStream && bytesReceived > 0 {
-					const agentDiedEvent = "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\",\"message\":\"The agent stopped responding (OOM, crash, or restart). Reconnecting…\"}\n\n"
-					_, _ = c.Writer.Write([]byte(agentDiedEvent))
-					if canFlush {
-						flusher.Flush()
-					}
-				}
-				break
-			}
-			// Epic 25 B2: non-EOF errors are network-level failures
-			// (TCP RST, timeout). Keep the existing wire format — it is
-			// intentionally distinct from agent_died so clients can
-			// distinguish "network problem" from "process gone". Both
-			// shapes are pinned by TestProxy_US44_1_ErrorShapesAreDocumented
-			// and TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent.
-			const sseErrEvent = "event: error\ndata: {\"error\":\"upstream connection lost\",\"message\":\"Connection to the agent was lost. Reconnecting…\"}\n\n"
-			_, _ = c.Writer.Write([]byte(sseErrEvent))
-			if canFlush {
-				flusher.Flush()
-			}
-			return fmt.Errorf("upstream stream cut short: %w", readErr)
-		}
-	}
-
-	return nil
+	h.resolvers = host
 }
 
 // checkProxyQuota gates a proxied request on the caller's quotas.

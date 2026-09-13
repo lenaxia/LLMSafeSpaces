@@ -246,9 +246,10 @@ func (h *ProxyHandler) UploadFile(c *gin.Context) {
 }
 
 // resolveWorkspaceCRDForUpload mirrors the workspace resolution of
-// proxyToWorkspaceWithErrBody: gin-context cache when present (tests),
+// resolveWorkspaceForAdapter: gin-context cache when present (tests),
 // otherwise a K8s CRD get — a workspace deleted mid-request 404s here,
-// before any agentd dial.
+// before any agentd dial. (The transport this once mirrored is deleted,
+// #828 final batch.)
 func (h *ProxyHandler) resolveWorkspaceCRDForUpload(c *gin.Context, workspaceID string) (*v1.Workspace, bool) {
 	if cached, exists := c.Get("workspace"); exists {
 		if ws, ok := cached.(*v1.Workspace); ok && ws != nil {

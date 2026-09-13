@@ -29,7 +29,7 @@ func newAdminSessionHandlerForTest(t *testing.T, proxy *ProxyHandler, db *sql.DB
 
 func newProxyForAdminTest(t *testing.T) *ProxyHandler {
 	t.Helper()
-	proxy, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	proxy, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	proxy.userBroker = eventbroker.NewUserEventBroker()
 	return proxy
@@ -237,7 +237,7 @@ func TestAdminSession_ForceAbort_NilDB_DoesNotPanic(t *testing.T) {
 }
 
 func TestAdminSession_ForceAbort_NoBroker_DoesNotPanic(t *testing.T) {
-	proxy, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	proxy, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	// Deliberately leave userBroker nil — exercises the same nil-guard that
 	// publishWorkspaceEvent already applies, proving the handler is safe in

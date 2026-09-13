@@ -18,7 +18,7 @@ import (
 const adapterRetryAfterSec = 10
 
 // resolveWorkspaceForAdapter performs the workspace-readiness check
-// shared between the adapter path and the legacy proxy path. It fetches
+// used by every adapter-served route. It fetches
 // the workspace CRD, verifies the workspace is Active with a PodIP, and
 // enforces the per-workspace connection limit.
 //
@@ -110,7 +110,7 @@ func (h *ProxyHandler) checkAdapterQuota(c *gin.Context, workspace *v1.Workspace
 }
 
 // postAdapterSuccess performs the cross-cutting post-success side
-// effects shared between the adapter path and the legacy proxy path:
+// effects used by every adapter-served route:
 // activity tracking, session-index message recording, and metering.
 func (h *ProxyHandler) postAdapterSuccess(c *gin.Context, workspace *v1.Workspace, workspaceID, sessionID string, isWriteOp bool) {
 	if h.activityTracker != nil {
@@ -155,9 +155,9 @@ func (h *ProxyHandler) adapterEnsureSSEWatch(workspaceID string) {
 
 // recordActivityIfTracked records workspace activity for adapter arms
 // (GetSession/GetHistory/ListSessions/CreateSession reads, and the
-// AbortSession/DeleteSession 2xx writes). The legacy transport recorded
-// activity on every successful proxy 2xx; adapter arms bypass the
-// transport, so they record explicitly (#828 batch 2 parity — batch 1
+// AbortSession/DeleteSession 2xx writes). The raw-proxy transport that
+// recorded activity on every successful 2xx was deleted (#828 final
+// batch); adapter arms record explicitly (#828 batch 2 parity — batch 1
 // missed this for create/list, r6 added the write routes).
 func (h *ProxyHandler) recordActivityIfTracked(workspaceID string) {
 	if h.activityTracker != nil {

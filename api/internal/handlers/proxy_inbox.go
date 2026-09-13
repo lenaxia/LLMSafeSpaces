@@ -208,9 +208,6 @@ const (
 )
 
 func (h *ProxyHandler) askLivenessOf(ctx context.Context, workspaceID, sessionID, askID string) askLiveness {
-	if h.adapter == nil {
-		return askLivenessUnknown
-	}
 	pending, err := h.adapter.ListPending(ctx, "", workspaceID, sessionID)
 	if err != nil {
 		return askLivenessUnknown

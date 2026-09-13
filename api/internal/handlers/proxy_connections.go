@@ -92,27 +92,7 @@ func (h *ProxyHandler) adminBearerCandidates(ctx context.Context, workspaceID, f
 }
 
 func (h *ProxyHandler) getPassword(ctx context.Context, workspaceID string) (string, error) {
-	// Cache-only lookup against the state store; the K8s Secret fetch
-	// fallback stays local so the store remains pure-state with no I/O
-	// dependencies. This separation is what allows US-45.4 to swap the
-	// cache layer to Redis without dragging a K8s client into the store.
-	if pw, ok := h.state().GetCachedPassword(ctx, workspaceID); ok {
-		return pw, nil
-	}
-
-	secretName := fmt.Sprintf("workspace-pw-%s", workspaceID)
-	secret, err := h.k8sClient.Clientset().CoreV1().Secrets(h.namespace).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("reading password secret %s: %w", secretName, err)
-	}
-
-	pw := string(secret.Data["password"])
-	if pw == "" {
-		return "", fmt.Errorf("password secret %s has empty password key", secretName)
-	}
-
-	h.state().SetCachedPassword(ctx, workspaceID, pw)
-	return pw, nil
+	return h.host().GetPassword(ctx, workspaceID)
 }
 
 func (h *ProxyHandler) checkAndAddActiveSession(ctx context.Context, workspaceID, sessionID string, maxSessions int) bool {
@@ -347,22 +327,27 @@ func (h *ProxyHandler) MarkSessionDeletedForTest(workspaceID, sessionID string) 
 	h.state().MarkSessionDeleted(context.Background(), workspaceID, sessionID)
 }
 
-// state returns the per-workspace state store, initializing it lazily.
-// Tests that construct ProxyHandler via `&ProxyHandler{...}` literal
-// bypass NewProxyHandler; this guard prevents a nil-store dereference.
-// Production code goes through NewProxyHandler which initializes the
-// store unconditionally, so the lazy path is never taken in production.
-func (h *ProxyHandler) state() wsstate.Store {
-	if h.stateStore == nil {
-		h.stateStore = wsstate.NewInMemoryStore()
+// host returns the resolver host, initializing it lazily. Tests that
+// construct ProxyHandler via `&ProxyHandler{...}` literal bypass
+// NewProxyHandler; this guard prevents a nil dereference. Production
+// code goes through NewProxyHandler (or SetResolverHost) so the lazy
+// path is never taken in production.
+func (h *ProxyHandler) host() *ResolverHost {
+	if h.resolvers == nil {
+		h.resolvers = &ResolverHost{k8sClient: h.k8sClient, namespace: h.namespace}
 	}
-	return h.stateStore
+	return h.resolvers
+}
+
+// state returns the per-workspace state store (via the resolver host).
+func (h *ProxyHandler) state() wsstate.Store {
+	return h.host().State()
 }
 
 // --- Adapter resolver bridges (US-65.4 infrastructure) ---
 //
-// ProxyHandler already resolves pod IPs and passwords for its legacy
-// proxyToWorkspace path. These thin wrappers expose that infrastructure
+// The ResolverHost resolves pod IPs and passwords — the live resolution
+// infrastructure the Agent Adapter consumes. These thin wrappers expose it
 // as plain Go function/interface types so app.go can construct the
 // Agent Adapter without duplicating the K8s + Secret lookup logic.
 //
@@ -373,17 +358,15 @@ func (h *ProxyHandler) state() wsstate.Store {
 // the type assertion to the opencode-specific resolver interfaces.
 
 // AdapterPasswordResolver returns a function that resolves workspace
-// passwords via ProxyHandler's existing getPassword method.
+// passwords via the shared resolver host.
 func (h *ProxyHandler) AdapterPasswordResolver() func(ctx context.Context, workspaceID string) (string, error) {
-	return h.getPassword
+	return h.host().GetPassword
 }
 
 // AdapterPodIPResolver returns an interface that resolves workspace pod
-// IPs from the K8s CRD status. The userID parameter is accepted per the
-// Adapter's interface contract but not used — the K8s workspace lookup
-// is namespace-scoped, not user-scoped.
+// IPs from the K8s CRD status (the shared resolver host satisfies it).
 func (h *ProxyHandler) AdapterPodIPResolver() WorkspacePodIPResolver {
-	return &proxyPodIPResolver{h: h}
+	return h.host()
 }
 
 // WorkspacePodIPResolver is the agent-generic pod IP resolver interface.
@@ -392,21 +375,4 @@ func (h *ProxyHandler) AdapterPodIPResolver() WorkspacePodIPResolver {
 // without an explicit cast.
 type WorkspacePodIPResolver interface {
 	GetWorkspacePodIP(ctx context.Context, userID, workspaceID string) (string, error)
-}
-
-type proxyPodIPResolver struct{ h *ProxyHandler }
-
-func (r *proxyPodIPResolver) GetWorkspacePodIP(ctx context.Context, _, workspaceID string) (string, error) {
-	v1Client, err := r.h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return "", fmt.Errorf("get K8s client: %w", err)
-	}
-	ws, err := v1Client.Workspaces(r.h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("get workspace %s: %w", workspaceID, err)
-	}
-	if ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
-		return "", nil
-	}
-	return ws.Status.PodIP, nil
 }

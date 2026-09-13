@@ -10,16 +10,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 // US-65.4 infrastructure tests - proxy_connections.go resolver bridges
-// + SetAdapter. PR #716 review requested these.
+// (SetAdapter was deleted by #828's final batch; the resolver-host
+// rows in resolver_host_test.go carry the construction surface).
 
 func TestProxyPodIPResolver_ActivePodWithIP_ReturnsIP(t *testing.T) {
 	ws := &v1.Workspace{
@@ -66,7 +65,7 @@ func TestProxyPodIPResolver_K8sClientError_ReturnsWrappedError(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("client unavailable"))
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	resolver := h.AdapterPodIPResolver()
@@ -88,7 +87,7 @@ func TestProxyPodIPResolver_WorkspaceGetError_ReturnsWrappedError(t *testing.T) 
 	wsMock.On("Get", context.Background(), "ws-1", metav1.GetOptions{}).
 		Return((*v1.Workspace)(nil), fmt.Errorf("not found"))
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	resolver := h.AdapterPodIPResolver()
@@ -99,7 +98,7 @@ func TestProxyPodIPResolver_WorkspaceGetError_ReturnsWrappedError(t *testing.T) 
 }
 
 func TestAdapterPasswordResolver_DelegatesToGetPassword(t *testing.T) {
-	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.state().SetCachedPassword(context.Background(), "ws-1", "test-pw-123")
 
@@ -109,28 +108,11 @@ func TestAdapterPasswordResolver_DelegatesToGetPassword(t *testing.T) {
 	assert.Equal(t, "test-pw-123", pw)
 }
 
-func TestSetAdapter_NilArg_IsNoOp(t *testing.T) {
-	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
-	require.NoError(t, err)
-	require.Nil(t, h.adapter)
+// TestSetAdapter_NilArg_IsNoOp was deleted (#828 final batch — the adapter is a
+// ctor-required parameter): SetAdapter is deleted.
 
-	h.SetAdapter(nil)
-	assert.Nil(t, h.adapter)
-}
-
-func TestSetAdapter_AfterStart_Panics(t *testing.T) {
-	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
-	require.NoError(t, err)
-	h.started = true
-
-	adapter := opencode.NewAdapter(
-		func(_ context.Context, _ string) (string, error) { return "pw", nil },
-		&stubPodIPResolver{},
-		zap.NewNop(),
-	)
-
-	assert.Panics(t, func() { h.SetAdapter(adapter) })
-}
+// TestSetAdapter_AfterStart_Panics was deleted (#828 final batch — the adapter is a
+// ctor-required parameter): SetAdapter is deleted; the race-safety invariant lives on SetResolverHost.
 
 func newProxyHandlerWithMockK8s(t *testing.T, ws *v1.Workspace) *ProxyHandler {
 	t.Helper()
@@ -143,13 +125,7 @@ func newProxyHandlerWithMockK8s(t *testing.T, ws *v1.Workspace) *ProxyHandler {
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	wsMock.On("Get", context.Background(), ws.Name, metav1.GetOptions{}).Return(ws, nil)
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	return h
-}
-
-type stubPodIPResolver struct{}
-
-func (s *stubPodIPResolver) GetWorkspacePodIP(_ context.Context, _, _ string) (string, error) {
-	return "", nil
 }

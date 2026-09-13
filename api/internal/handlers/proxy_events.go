@@ -123,7 +123,7 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			// bounded verification) instead of waiting for manual Retry.
 			// Detached + bounded: phase handling must not block on Redis.
 			// Gated on the adapter (the verify path's dependency).
-			if h.outbox != nil && h.adapter != nil {
+			if h.outbox != nil {
 				wsName := workspace.Name
 				go func() {
 					sctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 30*time.Second)

@@ -12,8 +12,14 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
+
+// nullTestAdapter satisfies agent.Adapter for wiring-only tests: every
+// method delegates to the nil embedded interface and would panic if
+// called — these suites never drive adapter paths.
+type nullTestAdapter struct{ agent.Adapter }
 
 // TestWirePolicyEnforcement_ReachesProxyHandler is the wiring pin the #912
 // round-2 review demanded: SetModelPolicyChecker previously had zero
@@ -23,7 +29,7 @@ import (
 func TestWirePolicyEnforcement_ReachesProxyHandler(t *testing.T) {
 	policySvc := policy.New(nil, nil) // store+cache nil is a supported degraded mode
 
-	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil, nullTestAdapter{})
 	require.NoError(t, err)
 	modelsHandler := handlers.NewModelsHandler(nil)
 
@@ -40,7 +46,7 @@ func TestWirePolicyEnforcement_ReachesProxyHandler(t *testing.T) {
 // TestWirePolicyEnforcement_NilPolicy_Noop: org policies disabled must not
 // wire anything (fail-open by configuration, not by accident).
 func TestWirePolicyEnforcement_NilPolicy_Noop(t *testing.T) {
-	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil)
+	proxyHandler, err := handlers.NewProxyHandler(k8smocks.NewMockKubernetesClient(), nopLogger{}, "default", nil, nullTestAdapter{})
 	require.NoError(t, err)
 
 	wirePolicyEnforcement(nil, nil, proxyHandler)

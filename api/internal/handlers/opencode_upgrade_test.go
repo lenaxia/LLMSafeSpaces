@@ -17,49 +17,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
-// --- stripVerboseQuery tests ---
-
-func TestStripVerboseQuery_StripsVerbose(t *testing.T) {
-	result := stripVerboseQuery("verbose=true&limit=10")
-	assert.Equal(t, "limit=10", result)
-}
-
-func TestStripVerboseQuery_StripsWorkspace(t *testing.T) {
-	result := stripVerboseQuery("workspace=ws_abc&limit=10")
-	assert.Equal(t, "limit=10", result)
-}
-
-func TestStripVerboseQuery_StripsDirectory(t *testing.T) {
-	result := stripVerboseQuery("directory=%2Fhome%2Fuser&limit=10")
-	assert.Equal(t, "limit=10", result)
-}
-
-func TestStripVerboseQuery_StripsAllThree(t *testing.T) {
-	result := stripVerboseQuery("verbose=true&workspace=ws_1&directory=/tmp&limit=5&offset=0")
-	// Remaining params preserved (order may vary due to map iteration)
-	assert.Contains(t, result, "limit=5")
-	assert.Contains(t, result, "offset=0")
-	assert.NotContains(t, result, "verbose")
-	assert.NotContains(t, result, "workspace")
-	assert.NotContains(t, result, "directory")
-}
-
-func TestStripVerboseQuery_PreservesOtherParams(t *testing.T) {
-	result := stripVerboseQuery("limit=10&offset=0&search=hello")
-	assert.Contains(t, result, "limit=10")
-	assert.Contains(t, result, "offset=0")
-	assert.Contains(t, result, "search=hello")
-}
-
-func TestStripVerboseQuery_EmptyString(t *testing.T) {
-	assert.Equal(t, "", stripVerboseQuery(""))
-}
-
-func TestStripVerboseQuery_OnlyStrippedParams(t *testing.T) {
-	result := stripVerboseQuery("verbose=true&workspace=ws_1&directory=/tmp")
-	assert.Equal(t, "", result)
-}
-
 // --- session index mock ---
 //
 // US-69.11: the persistTitleFromEvent / persistContextFromEvent dialect

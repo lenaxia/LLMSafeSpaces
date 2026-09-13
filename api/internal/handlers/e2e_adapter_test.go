@@ -30,6 +30,17 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 )
 
+// stubAgentStateChecker is a minimal AgentStateChecker (moved from the
+// deleted proxy_chat_buffering_test.go, #828 final batch).
+type stubAgentStateChecker struct {
+	changedAt time.Time
+	err       error
+}
+
+func (s stubAgentStateChecker) GetLastCredentialChangedAt(_ context.Context, _ string) (time.Time, error) {
+	return s.changedAt, s.err
+}
+
 // US-65 e2e integration test: exercises the real handler stack with a
 // real Adapter against a mock opencode backend. Verifies the full
 // pipeline: gin router -> ProxyHandler -> Adapter -> HTTP -> translate
@@ -441,7 +452,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	port := extractPort(t, backend.URL)
@@ -453,7 +464,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 		opencode.WithAdapterHTTPClient(backend.Client()),
 		opencode.WithAdapterPort(port),
 	)
-	handler.SetAdapter(adapter)
+	handler.adapter = adapter
 	require.NotNil(t, handler.adapter, "adapter must be wired")
 
 	gin.SetMode(gin.TestMode)

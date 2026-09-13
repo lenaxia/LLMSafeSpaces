@@ -78,7 +78,7 @@ func newActionsTestEnv(t *testing.T, terminus bool, podURL string) *gin.Engine {
 	k8sMock.On("Clientset").Return(fakeClientset)
 
 	log := &testLogger{}
-	handler, err := NewProxyHandler(k8sMock, log, "default", &http.Client{})
+	handler, err := NewProxyHandler(k8sMock, log, "default", &http.Client{}, newLenientMockAdapter())
 	require.NoError(t, err)
 	handler.userBroker = nil
 
