@@ -6,6 +6,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1537,3 +1538,49 @@ func TestAdapter_RejectInput_PrefixAware(t *testing.T) {
 		t.Fatalf("per_ dismiss must reach the permission reply, got: %v", err)
 	}
 }
+
+// 4a r10/r11: the transport corner — a que_ id whose question POST fails
+// at the TRANSPORT level surfaces that error as-is and never attempts
+// the cross-kind permission post (which would mask it with a 400).
+// Verified red-first against the pre-fix tree (the fallback fired).
+func TestAdapter_RejectInput_TransportErrorSurfaces_QueID(t *testing.T) {
+	permPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/permission/") {
+			permPosts++
+		}
+		_, _ = w.Write([]byte(`true`))
+	}))
+	t.Cleanup(srv.Close)
+
+	base := srv.Client().Transport
+	hijacked := &http.Transport{}
+	_ = hijacked
+	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/question/") {
+			return nil, errors.New("connection reset by peer (injected)")
+		}
+		return base.RoundTrip(req)
+	})
+	client := &http.Client{Transport: rt}
+
+	hostPort := srv.URL[len("http://"):]
+	parts := strings.SplitN(hostPort, ":", 2)
+	port, err := strconv.Atoi(parts[1])
+	require.NoError(t, err)
+	pw, ip := staticResolver(parts[0], testPassword)
+	a := NewAdapter(pw, ip, zap.NewNop(),
+		WithAdapterHTTPClient(client),
+		WithAdapterPort(port),
+	)
+
+	err = a.RejectInput(context.Background(), "u-1", "ws-1", "que_transport1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection reset by peer",
+		"the transport error surfaces as-is, not a cross-kind 400")
+	assert.Zero(t, permPosts, "a que_ id must never post cross-kind, even on transport failure")
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
