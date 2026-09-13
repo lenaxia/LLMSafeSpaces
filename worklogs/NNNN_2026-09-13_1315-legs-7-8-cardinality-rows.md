@@ -10,9 +10,9 @@
 
 Close #1315 by delivering the fault-leg rows its test plan demands, with teeth against the exact regression classes the incident rode.
 
-## What already existed (2b's #1337 + #1352)
+## What already existed (r1-corrected attribution and gap analysis)
 
-`TestRow_Leg7_OutOfOrderDelivery_S2_S9` (order-independence, shared-evidence resolution) and `TestRow_Leg8_SlowBoundary_S9_L5` / `TestRow_Leg8_TimeoutLadderRePOST_S2` (slow-inside-window; timeout-then-re-POST). Gap analysis: all three drive `InstantAdmitter`-class fakes whose upsert is keyed UNCONDITIONALLY — a key-send regression in the authority leaves them green (the cardinality assertion is vacuous against it), and none models the incident's decisive mechanism: **the write lands in the transcript while the client's outcome is lost**.
+FOUR leg-7/8 rows predate this PR — landed via **#1344** (`f0b7bfa0`) plus its r1/r4 fix commits, not #1337/#1352 as first written (#1352's only soak_test.go change was `TestSoak_Dispatch`): `TestRow_Leg7_OutOfOrderDelivery_S2_S9`, `TestRow_Leg8_SlowBoundary_S9_L5`, `TestRow_Leg8_TimeoutLadderRePOST_S2`, and `TestRow_Leg8_LadderExhaustion_EvidenceAbsorption_S2_S9`. The first three drive `InstantAdmitter`-class fakes whose upsert is keyed unconditionally; the fourth is already mutation-honest (the reviewer's mutation run — and the corrected run below — shows it RED under the keyless wire via its out-of-band `msg_entry-f` write). **The original gap claim ("every cardinality assertion green") was FALSE — a failed validation surfaced in review, recorded here per Rule 7.** The honest gap: none of the four models the incident's decisive mechanism — **the write lands in the transcript while the client's outcome is lost** — and none pins the single-write (no-re-POST) observable.
 
 ## What this adds
 
@@ -20,14 +20,16 @@ Close #1315 by delivering the fault-leg rows its test plan demands, with teeth a
 2. **Leg 7 row** (`TestRow_Leg7_DuplicateOutOfOrderDeliver_S2`): original send → same-attempt duplicate replay → attempt+1 re-drive after admission. Asserts per-entry cardinality == 1 AND `Writes() == 1` (the replays resolve before POSTing — the idempotency observable the existing rows cannot see).
 3. **Leg 8 row** (`TestRow_Leg8_HungTurnReDrive_S2_L5`): the write lands, outcome lost, the entry re-driven at attempt+1 mid-hang — the sixteen-copy loop, miniature. Asserts cardinality == 1, `Writes() == 1` (the evidence check ends the re-POST loop), and L5 convergence of the stranded rows.
 
-## Mutation verification (the teeth, run before reverting)
+## Mutation verification (the teeth; r1-corrected results)
 
 With `harnessMessageID` mutated to return `""` (the keyless wire):
-- **Leg 8 row: RED** — `map[L5:1 S2.cardinality:1 S2.single-write:1]` (every ladder retry appends; the loop is the incident reborn).
-- The existing leg-7/8 rows: **stay green** — confirming the vacuity gap this PR closes.
-With the mutation reverted: all rows green; full faultmatrix package `-race` green (41s).
+- **The new leg-8 row: RED** — `map[L5:1 S2.cardinality:1 S2.single-write:1]` (every ladder retry appends; the loop is the incident reborn).
+- **`TestRow_Leg8_LadderExhaustion_EvidenceAbsorption_S2_S9` also RED** (`S9.absorb` + `S9.arm` — the pre-existing mutation-honest row the first draft of this worklog wrongly reported green).
+- The other three existing rows: green (their fakes upsert unconditionally).
+- The new leg-7 row: green under this single-layer regression (the cross-attempt dedupe carries it) — its single-write pin fires under the compound regression (key removal AND cross-attempt/evidence removal), as the fake's scoped comment now states.
+With the mutation reverted: all rows green; full faultmatrix package `-race` green (41s); `golangci-lint` v2.13.1 (the CI pin): 0 issues.
 
-Also learned and documented in the rows: the re-drives SERIALIZE on the session single-flight lock (an early `Blocked() >= 2` gate was unreachable by design — the incident's copies were sequential ~180s apart, and the mutation teeth are temporal: the next retry's evidence check is what the key buys).
+Also learned: the re-drives SERIALIZE on the session single-flight lock — the incident's copies were sequential ~180s apart, and the mutation teeth are temporal (the next retry's evidence check is what the key buys).
 
 ## Key Decisions
 

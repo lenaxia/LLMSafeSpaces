@@ -303,16 +303,16 @@ func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text
 // hung synchronous turn). Writes counts completed writes: the row's
 // cheapness observable (how many POSTs actually landed).
 //
-// The teeth: if the authority stops sending the key (or stops
-// consulting evidence before POSTing), duplicate/out-of-order deliveries
-// append distinct messages and the S2 row fails.
+// The teeth (scoped honestly): under a KEYLESS authority the leg-8 row
+// fails (the ladder's re-POSTs append — the incident reborn); the leg-7
+// row stays green under that single-layer regression (the cross-attempt
+// dedupe carries it) and fires only under the compound regression.
 type KeyedAdmitter struct {
 	Out  *EvidenceStore
 	Hang chan struct{}
 
-	mu      sync.Mutex
-	writes  int
-	blocked int
+	mu     sync.Mutex
+	writes int
 }
 
 func (ad *KeyedAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
@@ -340,19 +340,10 @@ func (ad *KeyedAdmitter) Admit(ctx context.Context, sessionID, messageID, text, 
 	// shape: the transcript held the message while the ledger stayed
 	// LEDGERED and every retry re-POSTed).
 	id := doWrite()
-	ad.mu.Lock()
-	ad.blocked++
-	ad.mu.Unlock()
 	select {
 	case <-ad.Hang:
-		ad.mu.Lock()
-		ad.blocked--
-		ad.mu.Unlock()
 		return id, nil
 	case <-ctx.Done():
-		ad.mu.Lock()
-		ad.blocked--
-		ad.mu.Unlock()
 		return "", ctx.Err() // outcome lost — the write stands
 	}
 }
@@ -362,16 +353,6 @@ func (ad *KeyedAdmitter) Writes() int {
 	ad.mu.Lock()
 	defer ad.mu.Unlock()
 	return ad.writes
-}
-
-// Blocked reports writes currently stuck inside the hung turn — the
-// leg-8 release gate (the release must catch CONCURRENT ladders mid hung
-// turn, or the cross-attempt dedupe alone keeps cardinality at one and
-// the row loses its mutation teeth).
-func (ad *KeyedAdmitter) Blocked() int {
-	ad.mu.Lock()
-	defer ad.mu.Unlock()
-	return ad.blocked
 }
 
 type errText string

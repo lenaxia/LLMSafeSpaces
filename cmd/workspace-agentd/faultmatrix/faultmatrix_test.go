@@ -361,11 +361,10 @@ func TestRow_Leg7_DuplicateOutOfOrderDeliver_S2(t *testing.T) {
 	// resolve by the entry's existing outcome, never re-POST.
 	deliver(2)
 
-	elapsed, ok = WaitConverges(context.Background(), 5*time.Second, 2*time.Millisecond, func() bool {
+	if _, ok := WaitConverges(context.Background(), 5*time.Second, 2*time.Millisecond, func() bool {
 		m := a.Metrics()
 		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 2
-	})
-	if !ok {
+	}); !ok {
 		v.Add("S2") // the replayed attempt never resolved idempotently
 	}
 
@@ -455,4 +454,32 @@ func TestRow_Leg8_HungTurnReDrive_S2_L5(t *testing.T) {
 	assert.True(t, log.Within("L5", 30*time.Second))
 	assert.Equal(t, 1, store.TranscriptCount("ses-row"), "per-entry cardinality through the hung turn")
 	assert.Equal(t, 1, admitter.Writes(), "the landed write ends the re-POST loop (evidence)")
+}
+
+// F3 pin: the keyless branch of the wire fake — two keyless POSTs append
+// two DISTINCT transcript messages. This is the distinction that gives
+// the leg-8 row its mutation sensitivity; a future edit collapsing the
+// keyless branch to an upsert would silently neuter it with every row
+// staying green.
+func TestKeyedAdmitter_KeylessAppends_KeyedUpserts(t *testing.T) {
+	store := NewEvidenceStore()
+	ad := &KeyedAdmitter{Out: store}
+	ctx := context.Background()
+
+	id1, err := ad.Admit(ctx, "ses-pin", "msg_key", "a", "")
+	require.NoError(t, err)
+	id2, err := ad.Admit(ctx, "ses-pin", "msg_key", "a", "")
+	require.NoError(t, err)
+	assert.Equal(t, "msg_key", id1, "keyed: the harness echoes the key")
+	assert.Equal(t, "msg_key", id2, "keyed: re-admission upserts the same id")
+	assert.Equal(t, 1, store.TranscriptCount("ses-pin"), "one message for repeated keyed writes")
+	assert.Equal(t, 2, ad.Writes(), "both POSTs landed (the upsert is the HARNESS's)")
+
+	k1, err := ad.Admit(ctx, "ses-pin", "", "a", "")
+	require.NoError(t, err)
+	k2, err := ad.Admit(ctx, "ses-pin", "", "a", "")
+	require.NoError(t, err)
+	assert.NotEqual(t, k1, k2, "keyless: every POST is a NEW transcript message (the pre-0a wire)")
+	assert.Equal(t, 3, store.TranscriptCount("ses-pin"), "the append branch — the duplication class S2 forbids")
+	assert.Equal(t, 4, ad.Writes())
 }
