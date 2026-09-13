@@ -750,8 +750,6 @@ func TestReadBody_TruncatesAtLimit(t *testing.T) {
 	assert.Len(t, got, 1<<20, "a 2MiB body reads as exactly the 1MiB cap — bounded, not unbounded")
 }
 
-// --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
-
 func TestAdapter_AnswerQuestion_PostsAnswersSchema(t *testing.T) {
 	srv := newFakeOpencode(t)
 	srv.register("POST", "/question/que_9/reply", `{}`, 0)

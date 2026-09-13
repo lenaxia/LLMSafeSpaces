@@ -532,16 +532,36 @@ func TestPermissionReply_2xx_MetersLLMRequest(t *testing.T) {
 	ms.AssertCalled(t, "Record", mock.Anything)
 }
 
-// r3 ordering pin: a malformed reply body must NOT burn a quota
+// r3/r4 ordering pin: a malformed reply body must NOT burn a quota
 // reservation — validation precedes the gate (SendMessage's order).
+// Authenticated (doReplyAsUser) + mock configured: with the gate hoisted
+// above validation, ReserveQuota fires before the 400 and this row goes
+// red — the quota-burn regression is test-visible.
 func TestQuestionReply_MalformedBody_DoesNotReserveQuota(t *testing.T) {
 	env := newInputTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
 	env.handler.adapter = &mockAdapter{}
 	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
 	env.handler.SetMeteringService(ms)
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+	w := doReplyAsUser(t, env, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{}`))
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	ms.AssertNotCalled(t, "ReserveQuota", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestPermissionReply_MalformedBody_DoesNotReserveQuota(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
 		strings.NewReader(`{}`))
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	ms.AssertNotCalled(t, "ReserveQuota", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
