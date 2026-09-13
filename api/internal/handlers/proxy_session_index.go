@@ -5,16 +5,9 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 func (h *ProxyHandler) SetSessionIndex(si interfaces.SessionIndexService) {
@@ -25,57 +18,21 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Adapter path (US-65.4): typed session.Session, no raw HTTP.
-	if h.adapter != nil {
-		s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
-		if err != nil || s == nil {
-			return
-		}
-		h.persistSessionMeta(ctx, workspaceID, sessionID, s.Title, s.ParentID)
+	// Typed session.Session via the Adapter (#828 batch 4: the raw-HTTP
+	// legacy tail is deleted; a nil adapter — dev/test wiring — has no
+	// way to fetch a title).
+	if h.adapter == nil {
 		return
 	}
-
-	// Legacy path.
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
+	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
+	if err != nil || s == nil {
 		return
 	}
-	workspace, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil || workspace.Status.PodIP == "" {
-		return
-	}
-	password, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return
-	}
-
-	url := fmt.Sprintf("http://%s:%d/session/%s", workspace.Status.PodIP, opencodePort, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var session struct {
-		Title    string `json:"title"`
-		ParentID string `json:"parentID"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
-		return
-	}
-
-	h.persistSessionMeta(ctx, workspaceID, sessionID, session.Title, session.ParentID)
+	h.persistSessionMeta(ctx, workspaceID, sessionID, s.Title, s.ParentID)
 }
 
-// persistSessionMeta writes the title and parentID to the session index.
-// Shared between the Adapter path (typed session.Session) and the legacy
-// path (inline JSON parse) so both produce identical side effects.
+// persistSessionMeta writes the title and parentID to the session index
+// from the Adapter's typed session.Session.
 func (h *ProxyHandler) persistSessionMeta(ctx context.Context, workspaceID, sessionID, title, parentID string) {
 	if title != "" {
 		if err := h.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
@@ -90,7 +47,7 @@ func (h *ProxyHandler) persistSessionMeta(ctx context.Context, workspaceID, sess
 }
 
 func (h *ProxyHandler) BackfillSessionParents(ctx context.Context, workspaceID string) {
-	if h.sessionIndex == nil || h.dialect == nil {
+	if h.sessionIndex == nil || h.adapter == nil {
 		return
 	}
 	if h.state().GetParentBackfilled(ctx, workspaceID) {
@@ -113,77 +70,20 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Adapter path (US-65.4): typed []session.Session, no raw HTTP.
-	if h.adapter != nil {
-		sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
-		if err != nil {
-			h.logger.Debug("Backfill: adapter ListSessions failed", "workspaceID", workspaceID, "error", err)
-			h.state().DeleteParentBackfilled(ctx, workspaceID)
-			return
-		}
-		written := 0
-		for _, s := range sessions {
-			if s.ID == "" || s.ParentID == "" {
-				continue
-			}
-			if err := h.sessionIndex.UpsertParent(ctx, workspaceID, s.ID, s.ParentID); err != nil {
-				h.logger.Debug("Backfill: upsert parent failed", "workspaceID", workspaceID, "sessionID", s.ID, "error", err)
-				continue
-			}
-			written++
-		}
-		if written > 0 {
-			h.logger.Info("Backfilled session parents", "workspaceID", workspaceID, "count", written)
-		}
+	// Typed []session.Session via the Adapter (#828 batch 4: the raw
+	// SessionListPath legacy tail is deleted). A nil adapter cannot be
+	// remedied mid-process (SetAdapter panics after Start), so the
+	// backfilled flag stays set — no per-request goroutine storm.
+	if h.adapter == nil {
+		h.logger.Debug("Backfill skipped: no agent adapter", "workspaceID", workspaceID)
 		return
 	}
-
-	// Legacy path.
-	v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
-	workspace, err := func() (*v1.Workspace, error) {
-		if v1Err != nil {
-			return nil, v1Err
-		}
-		return v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	}()
-	if err != nil || workspace.Status.Phase != phaseActive || workspace.Status.PodIP == "" {
-		h.state().DeleteParentBackfilled(ctx, workspaceID)
-		return
-	}
-
-	password, err := h.getPassword(ctx, workspaceID)
+	sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
 	if err != nil {
+		h.logger.Debug("Backfill: adapter ListSessions failed", "workspaceID", workspaceID, "error", err)
 		h.state().DeleteParentBackfilled(ctx, workspaceID)
 		return
 	}
-
-	url := fmt.Sprintf("http://%s:%d%s", workspace.Status.PodIP, opencodePort, h.dialect.SessionListPath())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		h.logger.Debug("Backfill: session list fetch failed", "workspaceID", workspaceID, "error", err)
-		h.state().DeleteParentBackfilled(ctx, workspaceID)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		h.state().DeleteParentBackfilled(ctx, workspaceID)
-		return
-	}
-
-	var sessions []struct {
-		ID       string `json:"id"`
-		ParentID string `json:"parentID"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return
-	}
-
 	written := 0
 	for _, s := range sessions {
 		if s.ID == "" || s.ParentID == "" {

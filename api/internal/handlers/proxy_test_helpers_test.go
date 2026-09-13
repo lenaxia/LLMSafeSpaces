@@ -131,7 +131,7 @@ func newV2TestHandler(t *testing.T, srv *httptest.Server) (*gin.Engine, *ProxyHa
 	gin.SetMode(gin.TestMode)
 
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
 	require.NoError(t, err)
 	handler.SetCachedPasswordForTest("ws-1", "test-pw")
 	handler.userBroker = eventbroker.NewUserEventBroker()

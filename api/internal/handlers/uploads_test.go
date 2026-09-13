@@ -142,7 +142,7 @@ func newUploadEnv(t *testing.T, transport *uploadCaptureTransport) *uploadEnv {
 	k8sMock.On("Clientset").Return(fakeClientset)
 
 	httpClient := &http.Client{Transport: transport, Timeout: 10 * time.Second}
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 
 	router := gin.New()

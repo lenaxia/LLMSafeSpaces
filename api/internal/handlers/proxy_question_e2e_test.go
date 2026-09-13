@@ -39,7 +39,6 @@ import (
 func newQuestionFlowEnv(t *testing.T, podHandler http.HandlerFunc) *testEnv {
 	t.Helper()
 	env := newTestEnvWithBackend(t, podHandler)
-	env.handler.dialect = &agentoc.Dialect{}
 	// #828 batch 3: the reply/reject routes ride the real adapter against
 	// the same pod stub (Basic Auth + dialect paths preserved).
 	env.handler.adapter = agentoc.NewAdapter(
@@ -216,7 +215,6 @@ func TestE2E_QuestionFlow_RejectClearsQuestion(t *testing.T) {
 func TestE2E_QuestionFlow_BadRequestIDReturns400(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env := newTestEnv(t)
-	env.handler.dialect = &agentoc.Dialect{}
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
 		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 	env.setupPasswordWithT(t, "ws-1", "test-pw")
@@ -259,7 +257,6 @@ func TestE2E_PermissionReply_WireContract(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 	env := newTestEnvWithBackend(t, podBackend)
-	env.handler.dialect = &agentoc.Dialect{}
 	env.handler.adapter = agentoc.NewAdapter(
 		env.handler.AdapterPasswordResolver(),
 		env.handler.AdapterPodIPResolver(),
@@ -293,7 +290,6 @@ func TestE2E_QuestionFlow_SuspendedWorkspaceReturns503(t *testing.T) {
 	// comes from resolveWorkspaceForAdapter BEFORE the adapter is
 	// consulted (r1 remediation — the guard the raw transport enforced
 	// is re-homed, not lost).
-	env.handler.dialect = &agentoc.Dialect{}
 	env.handler.adapter = agentoc.NewAdapter(
 		env.handler.AdapterPasswordResolver(),
 		env.handler.AdapterPodIPResolver(),

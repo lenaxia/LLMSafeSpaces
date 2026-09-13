@@ -42,7 +42,7 @@ func TestContractEvents_FlagOffIsTyped501(t *testing.T) {
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
 	require.NoError(t, err)
 	// Flag off: the surface does not exist (D4).
 	handler.SetAgentdTerminus(false)
@@ -71,7 +71,7 @@ func TestContractEvents_SSEWireSnapshotFirst(t *testing.T) {
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
 	require.NoError(t, err)
 	handler.SetAgentdTerminus(true)
 

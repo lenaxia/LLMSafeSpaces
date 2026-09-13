@@ -69,7 +69,7 @@ func newSweeperEnv(t *testing.T, wsName string, stubURL string) (*ProxyHandler, 
 		makePasswordSecret(wsName, "pw"), metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
 	require.NoError(t, err)
 	if port > 0 {
 		handler.agentdPortOverride = port

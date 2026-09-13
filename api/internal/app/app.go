@@ -203,7 +203,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to initialize services: %w", err)
 	}
 
-	proxyHandler, err := handlers.NewProxyHandler(k8sClient, log, cfg.Kubernetes.Namespace, nil, &agentoc.Dialect{})
+	proxyHandler, err := handlers.NewProxyHandler(k8sClient, log, cfg.Kubernetes.Namespace, nil)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create proxy handler: %w", err)

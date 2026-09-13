@@ -112,7 +112,7 @@ func TestStreamEvents_WorkspaceNotFound(t *testing.T) {
 	wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
 		Return(nil, fmt.Errorf("not found")).Once()
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 
@@ -314,7 +314,7 @@ func TestStreamEvents_OnPhaseChange_PublishesToBroker(t *testing.T) {
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	userBroker := eventbroker.NewUserEventBroker()

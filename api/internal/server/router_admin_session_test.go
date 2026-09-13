@@ -67,7 +67,7 @@ func newAdminSessionIntegrationRouter(t *testing.T, role string) (*gin.Engine, *
 	met := &imocks.MockMetricsService{}
 	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-	proxy, err := handlers.NewProxyHandler(kmocks.NewMockKubernetesClient(), lmocks.NewMockLogger(), "default", nil, nil)
+	proxy, err := handlers.NewProxyHandler(kmocks.NewMockKubernetesClient(), lmocks.NewMockLogger(), "default", nil)
 	require.NoError(t, err)
 	adminLogger := lmocks.NewMockLogger()
 	adminLogger.On("Info", mock.Anything, mock.Anything).Maybe()

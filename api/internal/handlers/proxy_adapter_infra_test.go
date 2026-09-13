@@ -66,7 +66,7 @@ func TestProxyPodIPResolver_K8sClientError_ReturnsWrappedError(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("client unavailable"))
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	resolver := h.AdapterPodIPResolver()
@@ -88,7 +88,7 @@ func TestProxyPodIPResolver_WorkspaceGetError_ReturnsWrappedError(t *testing.T) 
 	wsMock.On("Get", context.Background(), "ws-1", metav1.GetOptions{}).
 		Return((*v1.Workspace)(nil), fmt.Errorf("not found"))
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 
 	resolver := h.AdapterPodIPResolver()
@@ -99,13 +99,7 @@ func TestProxyPodIPResolver_WorkspaceGetError_ReturnsWrappedError(t *testing.T) 
 }
 
 func TestAdapterPasswordResolver_DelegatesToGetPassword(t *testing.T) {
-	h, err := NewProxyHandler(
-		k8smocks.NewMockKubernetesClient(),
-		&testLogger{},
-		"default",
-		nil,
-		nil,
-	)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	h.state().SetCachedPassword(context.Background(), "ws-1", "test-pw-123")
 
@@ -116,13 +110,7 @@ func TestAdapterPasswordResolver_DelegatesToGetPassword(t *testing.T) {
 }
 
 func TestSetAdapter_NilArg_IsNoOp(t *testing.T) {
-	h, err := NewProxyHandler(
-		k8smocks.NewMockKubernetesClient(),
-		&testLogger{},
-		"default",
-		nil,
-		nil,
-	)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	require.Nil(t, h.adapter)
 
@@ -131,13 +119,7 @@ func TestSetAdapter_NilArg_IsNoOp(t *testing.T) {
 }
 
 func TestSetAdapter_AfterStart_Panics(t *testing.T) {
-	h, err := NewProxyHandler(
-		k8smocks.NewMockKubernetesClient(),
-		&testLogger{},
-		"default",
-		nil,
-		nil,
-	)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	h.started = true
 
@@ -161,7 +143,7 @@ func newProxyHandlerWithMockK8s(t *testing.T, ws *v1.Workspace) *ProxyHandler {
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	wsMock.On("Get", context.Background(), ws.Name, metav1.GetOptions{}).Return(ws, nil)
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
 	require.NoError(t, err)
 	return h
 }

@@ -143,7 +143,7 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	k8sMock.On("Clientset").Return(fakeClientset)
 
 	log := &testLogger{}
-	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, &agentoc.Dialect{})
+	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient)
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	// #828 batch 3: every route is adapter-served — wire the REAL adapter

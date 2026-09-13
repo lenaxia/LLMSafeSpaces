@@ -186,7 +186,7 @@ func newTerminalEventTestEnv(t *testing.T, transport http.RoundTripper) *testEnv
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 
 	gin.SetMode(gin.TestMode)
@@ -364,7 +364,7 @@ func TestProxy_US44_1_NonSSEJSONResponse_NoAgentDiedEvent(t *testing.T) {
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 
 	gin.SetMode(gin.TestMode)
@@ -418,7 +418,7 @@ func TestProxy_US44_1_SSECleanClose_AcceptableFalsePositive(t *testing.T) {
 	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
 	require.NoError(t, err)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
 	require.NoError(t, err)
 
 	gin.SetMode(gin.TestMode)
