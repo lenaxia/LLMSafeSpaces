@@ -37,4 +37,4 @@ The settle alone cannot work: `kubectl port-forward svc/…` pins ONE pod at est
 - The r11-head run 34719089399 = SUCCESS: **F1 PASS** (the mechanism this PR exists to prove), AC-1b/AC-1e PASS, F2–F5 green; F6's faulted-boot row hit the pre-existing arm-timing skip (PASS evidence in prior runs; probe_seam covers its detection path).
 - r12: truthful ok messages (no try-index interpolation), skip-path early return before the final reconnect, comment-stripped body pins.
 - r13: ordering-enforced early-return pin, comment-proof call-site pins, header truth (this commit's earlier edit missed the original header block — the clause survived; now actually removed).
-- Head-exact dispatch 34723719081 on the final head: in flight at the time of the r14 review; its conclusion is the merge-gate citation.
+- r14: [correction — this line previously cited 34723719081 as the head-exact dispatch; that run was CANCELLED when the head moved to 0daa70d3 (the header-clause fix). The head-exact dispatch on the FINAL head is **34724999271**; its conclusion is the merge-gate citation.]
