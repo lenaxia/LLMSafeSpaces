@@ -33,6 +33,12 @@ func newFakeAdapter() *fakeAdapter {
 	return &fakeAdapter{otherCalled: map[string]int{}}
 }
 
+func (f *fakeAdapter) AnswerQuestion(context.Context, string, string, string, [][]string) error {
+	return nil
+}
+func (f *fakeAdapter) ReplyPermission(context.Context, string, string, string, string, string) error {
+	return nil
+}
 func (f *fakeAdapter) CreateSession(ctx context.Context, userID, workspaceID, title string) (*session.Session, error) {
 	f.otherCalled["CreateSession"]++
 	return nil, nil

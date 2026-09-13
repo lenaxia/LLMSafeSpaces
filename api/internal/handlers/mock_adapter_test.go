@@ -31,6 +31,8 @@ type mockAdapter struct {
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
 	rejectInputFn       func(ctx context.Context, userID, workspaceID, requestID string) error
+	answerQuestionFn    func(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error
+	replyPermissionFn   func(ctx context.Context, userID, workspaceID, requestID, reply, message string) error
 	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
 	formatProviderCfgFn func(providers []agent.LLMProviderData) ([]byte, error)
 	validateCredsFn     func(rawConfig []byte) (*agent.CredentialCheckResult, error)
@@ -126,6 +128,18 @@ func (m *mockAdapter) RejectInput(ctx context.Context, uid, wid, rid string) err
 		return m.rejectInputFn(ctx, uid, wid, rid)
 	}
 	panic("mockAdapter.RejectInput not configured")
+}
+func (m *mockAdapter) AnswerQuestion(ctx context.Context, uid, wid, rid string, answers [][]string) error {
+	if m.answerQuestionFn != nil {
+		return m.answerQuestionFn(ctx, uid, wid, rid, answers)
+	}
+	panic("mockAdapter.AnswerQuestion not configured")
+}
+func (m *mockAdapter) ReplyPermission(ctx context.Context, uid, wid, rid, reply, message string) error {
+	if m.replyPermissionFn != nil {
+		return m.replyPermissionFn(ctx, uid, wid, rid, reply, message)
+	}
+	panic("mockAdapter.ReplyPermission not configured")
 }
 func (m *mockAdapter) ListAvailableModels(_ context.Context, _, _ string) ([]session.ModelInfo, error) {
 	panic("mockAdapter.ListAvailableModels not configured")

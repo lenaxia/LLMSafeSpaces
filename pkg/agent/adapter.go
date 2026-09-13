@@ -156,6 +156,18 @@ type Adapter interface {
 	// dismissal result — the model sees the ask was dismissed.
 	RejectInput(ctx context.Context, userID, workspaceID, requestID string) error
 
+	// AnswerQuestion answers a pending question with the user's option
+	// selections / custom text in the question-reply schema
+	// ({answers: string[][]}). Distinct from Resolve: the question reply
+	// endpoint is additionalProperties:false — a {reply: string} body is
+	// schema-rejected, so question answers cannot ride Resolve.
+	AnswerQuestion(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error
+
+	// ReplyPermission answers a pending permission with the decision
+	// ("once" / "always" / "reject") and the user's optional context
+	// message; both fields ride the agent's permission-reply schema.
+	ReplyPermission(ctx context.Context, userID, workspaceID, requestID, reply, message string) error
+
 	// --- Models (design 0049 §4.6) ---
 
 	// ListAvailableModels returns the catalog of models the agent can

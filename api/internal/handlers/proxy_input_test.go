@@ -7,15 +7,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -28,6 +24,7 @@ import (
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 func recvWithTimeout(t *testing.T, sub *eventbroker.Subscriber, what string) apitypes.WorkspaceSSEEvent {
@@ -69,76 +66,15 @@ func newInputTestEnv(t *testing.T) *testEnv {
 	return env
 }
 
-func TestProxyInput_ListQuestions(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+// TestProxyInput_ListQuestions was deleted with the raw-proxy tail (#828 batch 3): superseded by TestListQuestions_AdapterPath_ReturnsNormalizedEnvelope and the nil-adapter guard row.
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/question", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+// TestProxyInput_QuestionReply was deleted with the raw-proxy tail (#828 batch 3): superseded by TestQuestionReply_AdapterPath_AnswerQuestionReceivesAnswers.
 
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "GET", resp["method"])
-	assert.Equal(t, "/question", resp["path"])
-}
+// TestProxyInput_QuestionReject was deleted with the raw-proxy tail (#828 batch 3): superseded by TestQuestionReject_AdapterPath_RejectInputCalled.
 
-func TestProxyInput_QuestionReply(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+// TestProxyInput_ListPermissions was deleted with the raw-proxy tail (#828 batch 3): superseded by TestListPermissions_AdapterPath_ReturnsNormalizedEnvelope.
 
-	body := strings.NewReader(`{"answers":[["Go"]]}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply", body)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "POST", resp["method"])
-	assert.Equal(t, "/question/que_abc123/reply", resp["path"])
-}
-
-func TestProxyInput_QuestionReject(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "/question/que_abc123/reject", resp["path"])
-}
-
-func TestProxyInput_ListPermissions(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/permission", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "GET", resp["method"])
-	assert.Equal(t, "/permission", resp["path"])
-}
-
-func TestProxyInput_PermissionReply(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	body := strings.NewReader(`{"reply":"always"}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply", body)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "POST", resp["method"])
-	assert.Equal(t, "/permission/per_xyz789/reply", resp["path"])
-}
+// TestProxyInput_PermissionReply was deleted with the raw-proxy tail (#828 batch 3): superseded by TestPermissionReply_AdapterPath_ReplyPermissionReceivesDecision.
 
 func TestProxyInput_InvalidQuestionID_NoPrefix(t *testing.T) {
 	env := newInputTestEnv(t)
@@ -166,91 +102,15 @@ func TestProxyInput_InvalidPermissionID(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "invalid permission request ID format")
 }
 
-func TestProxyInput_WorkspaceNotActive(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-suspended", "", string(v1.WorkspacePhaseSuspended), "ws-suspended")
+// TestProxyInput_WorkspaceNotActive was deleted with the raw-proxy tail (#828 batch 3): the transport 503 died with the tail; adapter-path failures surface as 502 (workspace liveness is the adapter resolve concern, pinned in pkg/agent/opencode tests).
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-suspended/question", nil)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
+// TestProxyInput_WorkspaceNotFound was deleted with the raw-proxy tail (#828 batch 3): same as WorkspaceNotActive — the k8s-fetch guard belonged to the deleted tail.
 
-func TestProxyInput_WorkspaceNotFound(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.wsMock.On("Get", mock.Anything, "ws-nonexistent", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
+// TestProxyInput_BodyForwardedCorrectly was deleted with the raw-proxy tail (#828 batch 3): the verbatim-passthrough contract died with the tail; the parsed-schema contract is pinned by TestQuestionReply_AdapterPath_AnswerQuestionReceivesAnswers.
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-nonexistent/question", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
+// TestProxyInput_DialectNil was deleted with the raw-proxy tail (#828 batch 3): the dialect guard is gone; superseded by the five nil-adapter 503 rows (proxy_batch3_migration_test.go).
 
-func TestProxyInput_BodyForwardedCorrectly(t *testing.T) {
-	var receivedBody string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _, _ = r.BasicAuth()
-		b, _ := io.ReadAll(r.Body)
-		receivedBody = string(b)
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`true`))
-	})
-	env.handler.dialect = &agentoc.Dialect{}
-
-	proxy := env.router.Group("/api/v1/workspaces/:id")
-	proxy.POST("/question/:requestID/reply", env.handler.QuestionReply)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	body := `{"answers":[["Go","Rust"]]}`
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, body, receivedBody)
-}
-
-func TestProxyInput_DialectNil(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.GET("/api/v1/workspaces/:id/question", env.handler.ListQuestions)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/question", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "dialect not configured")
-}
-
-// TestEpic25G1_fetchFromPod_LimitReader verifies that fetchFromPod truncates
-// response bodies at 1 MiB, preventing unbounded memory allocation from a
-// misbehaving upstream pod. (Epic 25 G1)
-func TestEpic25G1_fetchFromPod_LimitReader(t *testing.T) {
-	const respSize = 1<<20 + 200000 // 1.2 MiB
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(strings.Repeat("x", respSize)))
-	}))
-	defer backend.Close()
-
-	handler, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, nil)
-	require.NoError(t, err)
-
-	// Replace httpClient with one that rewrites all requests to the test backend.
-	handler.httpClient = &http.Client{
-		Transport: &urlRewriteTransport{target: backend.URL},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	body, err := handler.fetchFromPod(ctx, "localhost", "test-pw", "/test")
-	require.NoError(t, err)
-	assert.Equal(t, 1<<20, len(body), "response body must be truncated to 1 MiB (got %d)", len(body))
-}
+// TestEpic25G1_fetchFromPod_LimitReader was deleted with the raw-proxy tail (#828 batch 3): fetchFromPod was deleted with the legacy tail; the adapter owns the pod fetch.
 
 type urlRewriteTransport struct {
 	target    string
@@ -618,10 +478,15 @@ func TestSnapshotUserWorkspaces_FansOutPendingForActiveWorkspaces(t *testing.T) 
 
 func TestEmitPendingInputRequests_BeginAndOKMarkerOnSuccess(t *testing.T) {
 	env := newInputTestEnv(t)
-	// Backend returns empty arrays for /question and /permission — a
-	// successful fetch of an empty pending set.
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	// Ported to the adapter (#828 batch 3): an empty pending set from a
+	// successful ListPending. The ws-CRD mock serves the
+	// shouldAutoApprovePermissions config fetch.
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 
@@ -641,12 +506,12 @@ func TestEmitPendingInputRequests_BeginAndOKMarkerOnSuccess(t *testing.T) {
 }
 
 func TestEmitPendingInputRequests_MarkerOKFalseOnBackendError(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-	env.handler.dialect = &agentoc.Dialect{}
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env := newTestEnv(t)
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 

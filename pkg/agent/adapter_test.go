@@ -83,6 +83,12 @@ func (f *fakeAdapter) RetryFromEvent(string, string) (string, *ClientRetryStatus
 func (f *fakeAdapter) FormatProviderConfig(_ []LLMProviderData) ([]byte, error) {
 	return nil, nil
 }
+func (f *fakeAdapter) AnswerQuestion(context.Context, string, string, string, [][]string) error {
+	return nil
+}
+func (f *fakeAdapter) ReplyPermission(context.Context, string, string, string, string, string) error {
+	return nil
+}
 func (f *fakeAdapter) ValidateCredentials(_ []byte) (*CredentialCheckResult, error) {
 	return &CredentialCheckResult{State: CredentialStatePresent}, nil
 }
