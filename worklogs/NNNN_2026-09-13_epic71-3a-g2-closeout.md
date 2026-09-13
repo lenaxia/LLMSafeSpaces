@@ -14,7 +14,7 @@
 
 ## G2 execution (live model, pinned opencode 1.18.15)
 
-Setup: this workspace's own harness (127.0.0.1:4096, real model), throwaway session — the 0a-probe precedent (issue #1314 comment 5629429701). Single ask turn ("ask me exactly one question: tabs vs spaces, two labeled options"); the ask rose in ~5s; killed via reject (the deterministic platform death); the late answer sent VERBATIM in the composeQA framing through the V1 message path (the surface the outbox's admission drives).
+Setup: this workspace's own harness (127.0.0.1:4096), live model thekaocloud/glm-5.3 (the pod's agent-config pin), throwaway session — the 0a-probe precedent (issue #1314 comment 5629429701). Single ask turn ("ask me exactly one question: tabs vs spaces, two labeled options"); the ask rose in ~5s; killed via reject (the deterministic platform death); the late answer sent VERBATIM in the composeQA framing through the V1 message path (the surface the outbox's admission drives).
 
 Observed chain:
 
@@ -22,6 +22,8 @@ Observed chain:
 2. Death state in transcript: `tool: question | status: error | error: The user dismissed this question`.
 3. Late answer (user message, composeQA verbatim): `Answering your earlier question — "Which indentation should the new config file use?": "Spaces". Continue with this answer in mind.`
 4. Model's next turn (~25s): "Noted — the new config file will use four-space indentation. … tell me which file to create and I'll write it with 4-space indents."
+
+**Scope, stated honestly:** one model, one turn, question-kind — the permission branch of composeQA has no live leg (by-construction evidence only).
 
 **Verdict:** references the answer ✓ (expands "Spaces" to "four spaces" via the option description); no re-ask ✓ (no question tool call); zero new pending asks ✓; proceeds to act ✓. #1313's core experience assertion holds on the live path.
 

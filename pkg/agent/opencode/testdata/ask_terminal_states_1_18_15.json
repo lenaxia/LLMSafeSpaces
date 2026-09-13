@@ -1,5 +1,5 @@
 {
- "_provenance": "Captured 2026-09-12 against a local opencode serve 1.18.15 (pinned binary) + scripted OpenAI-compatible mock provider; basic auth; OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true. Procedure: testdata/REFRESH.md. epic-71 / 3a (#1313) Rule-7 gates G1/G2 evidence. Redactions: session/message/part IDs shortened to synthetic sequences; timestamps zeroed. G2 (2026-09-13) ran against the LIVE model on the same pinned binary (throwaway session on this workspace's own harness \u2014 the 0a-probe precedent), not the scripted mock.",
+ "_provenance": "Captured 2026-09-12 against a local opencode serve 1.18.15 (pinned binary) + scripted OpenAI-compatible mock provider; basic auth; OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true. Procedure: testdata/REFRESH.md. epic-71 / 3a (#1313) Rule-7 gates G1/G2 evidence. Redactions: session/message/part IDs shortened to synthetic sequences; timestamps zeroed. G2 (2026-09-13) ran against the LIVE model (thekaocloud/glm-5.3) on the same pinned binary (throwaway session on this workspace's own harness \u2014 the 0a-probe precedent), not the scripted mock.",
  "question_tool_schema": {
   "route": "GET /experimental/tool?provider=mock&model=mock-1 \u2192 id=question",
   "parameters": {
@@ -121,8 +121,14 @@
    "id": "que_0\u2026D1Nn",
    "question": "Which indentation should the new config file use?",
    "options": [
-    "Tabs (hard tabs)",
-    "Spaces (four spaces)"
+    {
+     "label": "Tabs",
+     "description": "hard tabs"
+    },
+    {
+     "label": "Spaces",
+     "description": "four spaces"
+    }
    ]
   },
   "death_state": "tool: question | status: error | error: The user dismissed this question",
@@ -134,6 +140,8 @@
    "new_pending_asks": 0,
    "turn_time": "~25s"
   },
-  "implication": "The Q&A framing reads naturally to a real model after a dismissed ask: it expands the chosen label via the option description (Spaces -> four spaces) and proceeds, with no context loss and no burned re-ask turn. #1313's core experience assertion holds on the live path."
+  "implication": "The Q&A framing reads naturally to a real model after a dismissed ask: it expands the chosen label via the option description (Spaces -> four spaces) and proceeds, with no context loss and no burned re-ask turn. #1313's core experience assertion holds on the live path.",
+  "model": "thekaocloud/glm-5.3 (this workspace's live model, via the platform relay; the pod's agent-config pins it)",
+  "scope": "question-kind only; the permission branch of composeQA has no live leg (by-construction evidence only)"
  }
 }
