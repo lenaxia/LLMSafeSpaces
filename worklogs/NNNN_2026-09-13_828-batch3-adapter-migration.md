@@ -117,10 +117,18 @@ None.
 
 ## Review r3 remediation (PR #1357)
 
-- **Quota-before-validation reordered** on QuestionReply/PermissionReply (SendMessage's order): the gate is a permanent reservation — a malformed 400 must not burn an llm_request slot. Pinned by `TestQuestionReply_MalformedBody_DoesNotReserveQuota`. (QuestionReject has no body to validate.)
+- **Quota-before-validation reordered** on QuestionReply/PermissionReply (SendMessage's order): the gate is a permanent reservation — a malformed 400 must not burn an llm_request slot. Pinned by `TestQuestionReply_MalformedBody_DoesNotReserveQuota` (r4 correction: the r3 row was VACUOUS — it rode the unauthenticated env router, so the gate no-op'd under both orderings; r4 re-homed it onto doReplyAsUser with the metering mock configured, mutation-verified: hoisting the gate turns it red). (QuestionReject has no body to validate.)
 - **Metering pinned on all three write routes** (the r2 headline had zero direct pins): happy-path rows with `MockMeteringService.On("Record")` + `AssertCalled`; the rows ride `doReplyAsUser` (a userID-injecting wrapper — postAdapterSuccess's Record keys on extractAuth, which the bare env router doesn't set).
 - **Quota-429 pinned on QuestionReject + PermissionReply** (was 1/3).
 - **Fossilized premise comment fixed** in the test header (writes meter; polls deliberately unmetered).
 - **contract_auth table rot fixed**: with the real adapter wired (r2), GetHistory/GetSession/DeleteSession DO reach the backend — flipped to `reachesBackend=true` with per-row auth assertions now executing; the annotation block rewritten.
-- **G1 pin relocated** above the AnswerQuestion/ReplyPermission section header (cosmetic).
+- **G1 pin relocation (r4 correction):** the r3 worklog CLAIMED the relocation but the diff touched no opencode file — the G1 row sat between two duplicated section headers. r4 deleted the duplicate header (verified: exactly one remains).
 - Standing note for 4a: `sdks/openapi.yaml` still describes the pre-batch-3 shapes — land the regen promptly.
+
+---
+
+## Review r4 remediation (PR #1357)
+
+- **Finding 1 fixed and mutation-verified by me** (the reviewer's method, before pushing this time): both ordering pins re-homed onto `doReplyAsUser` with `CheckQuota`/`ReserveQuota` configured — hoisting the gate above validation on QuestionReply was mutation-tested RED, restored GREEN. PermissionReply twin added. (Landed in commit `7c24b7a9`.)
+- **Finding 2 fixed:** the two false r3 worklog claims corrected in place (this commit) + the duplicated section header actually deleted in `7c24b7a9` (verified: one header remains).
+- Carry to 4a (reviewer-flagged, understated before): the generic request-ID contract (que_/per_ patterns stay handler-side) and the InputRequest envelope retype are EXPLICIT remainder items, not covered by "OpenAPI regen + extractors".
