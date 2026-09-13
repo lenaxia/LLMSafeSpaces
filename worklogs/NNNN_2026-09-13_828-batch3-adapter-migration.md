@@ -88,3 +88,15 @@ None.
 - pkg/agent/adapter_test.go, pkg/agent/systemnotices/systemnotices_test.go (fakes)
 - api/internal/handlers/proxy_batch3_migration_test.go (new — 13 rows)
 - api/internal/handlers/proxy_input_test.go, adapter_path_test.go, proxy_inbox_test.go, proxy_question_e2e_test.go, contract_auth_test.go (ports/deletions with rationale)
+
+---
+
+## Review r1 remediation (PR #1357)
+
+- **Transport guards re-homed on all five routes** (r1's silent-regression finding): `resolveWorkspaceForAdapter` + connection-slot accounting — workspace-404 / not-Active-503-with-Retry-After / conn-ceiling-429 all enforced again, pinned by three new rows (NotActive-503, NotFound-404, Ceiling-429). **Metering deliberately NOT applied**: an ask reply is not an llm_request (the transport metered proxied chat writes); quota checks likewise scoped out (polls are cheap reads) — both documented decisions.
+- **#1302 mandate honored**: ListPending failures on the list routes → 503 non-authoritative (was 502), pinned by a dedicated row; write-route failures stay 502 (the agent's definitive rejection), pinned.
+- **SuspendedWorkspace e2e repaired**: real adapter + suspended CRD — the 503 now comes from the re-homed resolve guard (Retry-After asserted), no longer the vacuous green.
+- **Adapter unit rows added** (pkg/agent/opencode): AnswerQuestion (verbatim {answers} schema JSONEq, no cross-kind fallthrough, 5xx error) and ReplyPermission ×3 (message rides body, empty-message omitted, 5xx error).
+- **PermissionReply real-adapter wire row**: Basic Auth + dialect path + both body fields verbatim to the pod.
+- **#1302 S1 note for the epic**: `AnswerQuestion`/`ReplyPermission` encode the write-to-opencode path that the S1 amendment (replies through agentd Act) will replace — they are transitional surface, to be retired at the Act migration, not calcified. Recorded in the claim.
+- Commit-label nit accepted: the dead-code removal commit should have been `refactor:` (history not rewritten; squash-merge flattens).

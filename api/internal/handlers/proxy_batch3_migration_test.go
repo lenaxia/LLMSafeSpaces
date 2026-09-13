@@ -6,15 +6,18 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // #828 batch 3: the question/permission routes are adapter-only.
@@ -259,4 +262,86 @@ func TestAutoApprovePermission_NilAdapter_NoPodHTTP(t *testing.T) {
 	env.handler.autoApprovePermission("ws-1", "per_abc123")
 
 	assert.Zero(t, hits, "the legacy raw-HTTP tail is gone; a nil adapter must not reach the pod")
+}
+
+// --- r1 remediation rows ---
+
+// Transport-guard parity (review r1): the routes keep the workspace
+// 404 / not-Active 503 / connection-ceiling guards the deleted transport
+// enforced — re-homed via resolveWorkspaceForAdapter. Metering is
+// deliberately NOT applied: an ask reply is not an llm_request (the
+// transport's metering covered proxied chat writes).
+func TestListQuestions_WorkspaceNotActive_Returns503(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Suspended", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			t.Fatal("adapter must not be called for a suspended workspace")
+			return nil, nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/question", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+func TestListQuestions_WorkspaceNotFound_Returns404(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
+		Return(nil, fmt.Errorf("not found")).Once()
+	env.handler.adapter = &mockAdapter{}
+
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-missing/question", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestQuestionReply_ConnectionCeiling_Returns429(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error {
+			t.Fatal("adapter must not be called when the ceiling rejects")
+			return nil
+		},
+	}
+	env.handler.connMu.Lock()
+	env.handler.connCount["ws-1"] = maxConnectionsPerWorkspace
+	env.handler.connMu.Unlock()
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{"answers":[["Go"]]}`))
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+// #1302 mandate: a ListPending failure is non-authoritative — 503,
+// never an authoritative empty.
+func TestListQuestions_AdapterError_Returns503NonAuthoritative(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
+
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/permission", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "#1302: non-authoritative failure, not 502")
+}
+
+// Write-route adapter failures stay 502 (the agent's definitive
+// rejection of the write).
+func TestQuestionReply_AdapterError_Returns502(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error {
+			return assert.AnError
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{"answers":[["Go"]]}`))
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 }

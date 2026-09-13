@@ -33,10 +33,17 @@ func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 	pending, err := h.adapter.ListPending(c.Request.Context(), "", wid, "")
 	if err != nil {
+		// #1302: a ListPending failure is NON-AUTHORITATIVE — 503, never
+		// an authoritative empty (and not a 502: clients must not treat
+		// this as the agent's definitive answer).
 		h.logger.Error("ListQuestions: adapter failed", err, "workspaceID", wid)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list questions"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list questions"})
 		return
 	}
 	out := make([]*agent.QuestionRequest, 0, len(pending))
@@ -66,6 +73,10 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
@@ -102,6 +113,10 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
 		h.logger.Error("QuestionReject: adapter failed", err, "workspaceID", wid, "requestID", requestID)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reject question"})
@@ -121,10 +136,15 @@ func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 	pending, err := h.adapter.ListPending(c.Request.Context(), "", wid, "")
 	if err != nil {
+		// #1302: non-authoritative — 503, never an authoritative empty.
 		h.logger.Error("ListPermissions: adapter failed", err, "workspaceID", wid)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list permissions"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list permissions"})
 		return
 	}
 	out := make([]*agent.PermissionRequest, 0, len(pending))
@@ -155,6 +175,10 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
