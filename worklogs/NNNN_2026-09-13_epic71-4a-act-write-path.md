@@ -61,3 +61,5 @@ Three record-vs-code closings, exactly as ordered:
 - **The transport-error pin landed, red-first by execution both ways:** `TestAdapter_RejectInput_TransportErrorSurfaces_QueID` (hijacked question-post transport, counting permission posts) — run RED against the reverted corner (FAIL captured), green restored at HEAD. Reverting the r10 fix can no longer ship green.
 - **The proto-comment relic corrected:** `action.proto`'s `AnswerInputAction` doc now states the prefix-aware dismiss routing (the "permission fallback" text is gone); `make abi-generate` refreshed `action.pb.go` + `action_pb.ts` (both grep-clean).
 - The unprefixed-transport asymmetry stays as documented legacy (non-blocking per the review; unreachable from the platform — handler prefix validation).
+
+## Review r12 — the two dead scaffolding lines deleted (`hijacked`/`_ = hijacked`); the pin unchanged and green.

@@ -1554,8 +1554,6 @@ func TestAdapter_RejectInput_TransportErrorSurfaces_QueID(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	base := srv.Client().Transport
-	hijacked := &http.Transport{}
-	_ = hijacked
 	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		if strings.Contains(req.URL.Path, "/question/") {
 			return nil, errors.New("connection reset by peer (injected)")
