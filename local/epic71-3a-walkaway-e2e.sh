@@ -300,10 +300,14 @@ log "W6: question reject through Act — resolve-by-absence clears (S6) within L
 # endpoint 404s a missing id (cross-kind posts are 400 Params — pinned
 # in ask_terminal_states_1_18_15.json); that 404 is the absence signal
 # the resolve-by-absence fold consumes.
-W6_SES=$(curl -s -m 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions" \
+# Route is POST /sessions/new (POST /sessions is NOT registered — the r9
+# silent exit-5 was this curl|jq failing under set -e). Loud on failure.
+W6_CODE=$(curl -s -m 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/new" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
-    -d '{"title":"e71-w6-act-row"}' | jq -r '.id // empty')
-[[ -n "${W6_SES}" ]] || die "W6: could not create a session for the row"
+    -d '{}' -o /tmp/e71w6_sess.json -w '%{http_code}') || die "W6: session-create curl failed"
+W6_SES=$(python3 -c "import json;d=json.load(open('/tmp/e71w6_sess.json'));print(d.get('sessionId') or d.get('id') or d.get('info',{}).get('id') or '')" 2>/dev/null || true)
+[[ "${W6_CODE}" == "200" || "${W6_CODE}" == "201" ]] && [[ -n "${W6_SES}" ]] \
+    || die "W6: session-create failed (code=${W6_CODE} body=$(head -c 200 /tmp/e71w6_sess.json))"
 seed_inbox_record "${W1_WS}" "${W6_SES}" que_e71w1ddd "Act path dead ask?"
 CAP6=/tmp/e71w6_sse.txt
 sse_capture "${CAP6}"
