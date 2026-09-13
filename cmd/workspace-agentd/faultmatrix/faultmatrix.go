@@ -15,6 +15,7 @@ package faultmatrix
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"time"
 
@@ -291,6 +292,67 @@ func (ad *InstantAdmitter) Admit(ctx context.Context, sessionID, messageID, text
 		ad.Out.MarkPresent(sessionID, messageID)
 	}
 	return messageID, nil
+}
+
+// KeyedAdmitter is the legs-7/8 fault surface: it models the G1-probed
+// opencode 1.18.15 wire EXACTLY — a POST carrying a messageID is a KEYED
+// upsert (re-admission of the same key overwrites: one transcript
+// message), a KEYLESS POST appends unconditionally (the pre-0a wire
+// shape the incident rode on). A non-nil Hang blocks every write until
+// closed or the caller's ctx aborts (leg 8's boundary slowness — the
+// hung synchronous turn). Writes counts completed writes: the row's
+// cheapness observable (how many POSTs actually landed).
+//
+// The teeth (scoped honestly): under a KEYLESS authority the leg-8 row
+// fails (the ladder's re-POSTs append — the incident reborn); the leg-7
+// row stays green under that single-layer regression (the cross-attempt
+// dedupe carries it) and fires only under the compound regression.
+type KeyedAdmitter struct {
+	Out  *EvidenceStore
+	Hang chan struct{}
+
+	mu     sync.Mutex
+	writes int
+}
+
+func (ad *KeyedAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
+	doWrite := func() string {
+		ad.mu.Lock()
+		ad.writes++
+		n := ad.writes
+		ad.mu.Unlock()
+		if messageID == "" {
+			// Keyless append (pre-0a wire): every write is a NEW
+			// transcript message — the duplication class S2 forbids.
+			id := "msg_append_" + strconv.Itoa(n)
+			ad.Out.MarkPresent(sessionID, id)
+			return id
+		}
+		ad.Out.MarkPresent(sessionID, messageID)
+		return messageID
+	}
+	if ad.Hang == nil {
+		return doWrite(), nil
+	}
+	// The boundary-slow turn, incident-faithful ordering: the WRITE
+	// lands in the harness store, THEN the response hangs — the
+	// client's ctx aborts without learning the outcome (the 2026-09-10
+	// shape: the transcript held the message while the ledger stayed
+	// LEDGERED and every retry re-POSTed).
+	id := doWrite()
+	select {
+	case <-ad.Hang:
+		return id, nil
+	case <-ctx.Done():
+		return "", ctx.Err() // outcome lost — the write stands
+	}
+}
+
+// Writes reports completed harness writes (attempted-and-landed POSTs).
+func (ad *KeyedAdmitter) Writes() int {
+	ad.mu.Lock()
+	defer ad.mu.Unlock()
+	return ad.writes
 }
 
 type errText string

@@ -313,3 +313,173 @@ func TestRow_Leg3_LostAskEvent_AppearsWithinL3(t *testing.T) {
 	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
 	assert.True(t, log.Within("L3", bound))
 }
+
+// Row leg 7 → S2 (rewritten, #1315): duplicate and out-of-order Deliver
+// of the SAME entry — the exact replay shapes the 2026-09-10 incident
+// rode. The keyed-upsert wire plus the authority's evidence short-circuit
+// must hold transcript cardinality at ONE message per entry across every
+// replay, and only ONE harness write may land (the second POST that
+// never fires is the cheapness/idempotency observable).
+func TestRow_Leg7_DuplicateOutOfOrderDeliver_S2(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_IDLE)
+	admitter := &KeyedAdmitter{Out: store}
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir:     t.TempDir(),
+		Parser:          NoopParser{},
+		Store:           store,
+		Passwords:       []string{"row-pw"},
+		Admitter:        admitter,
+		AdmitterTimeout: 2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	v := NewViolations()
+
+	deliver := func(attempt uint32) {
+		_, err := a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "ses-row", EntryId: "entry-1", Attempt: attempt,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "proceed with the split"}}},
+		}))
+		require.NoError(t, err, "Deliver accepts (the ack is idempotent)")
+	}
+
+	// 1. The original send.
+	deliver(1)
+	elapsed, ok := WaitConverges(context.Background(), 5*time.Second, 2*time.Millisecond, func() bool {
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 1
+	})
+	require.True(t, ok, "attempt 1 admits: %v", elapsed)
+
+	// 2. THE FAULT — duplicate replay (same entry, same attempt): the
+	// ledger's (entry, attempt) dedupe must accept-and-noop.
+	deliver(1)
+
+	// 3. THE FAULT — out-of-order replay (same entry, attempt+1 while
+	// the entry is already admitted): the cross-attempt path must
+	// resolve by the entry's existing outcome, never re-POST.
+	deliver(2)
+
+	if _, ok := WaitConverges(context.Background(), 5*time.Second, 2*time.Millisecond, func() bool {
+		m := a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 2
+	}); !ok {
+		v.Add("S2") // the replayed attempt never resolved idempotently
+	}
+
+	// S2 per-entry: the transcript holds exactly ONE message for this
+	// entry — across the original, the duplicate, and the re-order.
+	if got := store.TranscriptCount("ses-row"); got != 1 {
+		v.Add("S2.cardinality")
+	}
+	// The idempotency observable: exactly one harness write landed —
+	// the replays must have been resolved before POSTing.
+	if got := admitter.Writes(); got != 1 {
+		v.Add("S2.single-write")
+	}
+
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+	assert.Equal(t, 1, store.TranscriptCount("ses-row"), "per-entry transcript cardinality (S2 rewritten)")
+	assert.Equal(t, 1, admitter.Writes(), "exactly one harness write for the entry's lifetime")
+}
+
+// Row leg 8 → S2 + L5 (boundary slowness, the incident's driving fault):
+// the synchronous turn's write LANDS but its outcome is LOST (response
+// hangs past the admitter window, client aborts) while the entry is
+// re-driven — the exact loop that manufactured sixteen copies. With the
+// entry key, the next retry's evidence check finds the landed write and
+// resolves ADMITTED-by-evidence with NO second POST; keyless (the
+// pre-fix wire), every retry appends again.
+func TestRow_Leg8_HungTurnReDrive_S2_L5(t *testing.T) {
+	store := NewEvidenceStore()
+	store.SetState("ses-row", abiv1.SessionStatus_SESSION_STATUS_BUSY)
+	hang := make(chan struct{})
+	admitter := &KeyedAdmitter{Out: store, Hang: hang}
+	a, err := sessionstate.New(sessionstate.Config{
+		PlatformDir:     t.TempDir(),
+		Parser:          NoopParser{},
+		Store:           store,
+		Passwords:       []string{"row-pw"},
+		Admitter:        admitter,
+		AdmitterTimeout: 150 * time.Millisecond, // the window (shrunk from 3min)
+	})
+	require.NoError(t, err)
+	defer close(hang) // release any straggler after the row
+
+	v := NewViolations()
+	log := NewConvergenceLog()
+
+	deliver := func(attempt uint32) {
+		_, err := a.Deliver(context.Background(), connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "ses-row", EntryId: "entry-1", Attempt: attempt,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "proceed with the split"}}},
+		}))
+		require.NoError(t, err)
+	}
+
+	// 1. The original send — its write lands, its outcome hangs.
+	deliver(1)
+	// 2. THE FAULT — the out-of-order re-drive while the turn hangs
+	// (the terminus's retryable path re-arms the entry at attempt+1).
+	deliver(2)
+
+	// 3. The ladders retry against the lost outcome; with the entry
+	// key, the first evidence hit ends the loop (no further writes);
+	// the sweep then converges the stranded rows inside L5.
+	elapsed, ok := WaitConverges(context.Background(), 30*time.Second, 5*time.Millisecond, func() bool {
+		a.Reconcile(context.Background())
+		m := a.Metrics()
+		if m.LedgerDepths == nil {
+			return false
+		}
+		return m.LedgerDepths["ledgered"] == 0 && m.LedgerDepths["failed"] == 0
+	})
+	log.Record("L5", elapsed)
+	if !ok {
+		v.Add("L5") // the lost-outcome entry must converge, not strand
+	}
+
+	// S2 per-entry through the hung window: ONE transcript message.
+	if got := store.TranscriptCount("ses-row"); got != 1 {
+		v.Add("S2.cardinality")
+	}
+	// The idempotency observable: the re-POST loop never restarted —
+	// exactly one write for the entry's lifetime.
+	if got := admitter.Writes(); got != 1 {
+		v.Add("S2.single-write")
+	}
+
+	assert.True(t, v.Empty(), "row must end with zero violations: %v", v.Counts())
+	assert.True(t, log.Within("L5", 30*time.Second))
+	assert.Equal(t, 1, store.TranscriptCount("ses-row"), "per-entry cardinality through the hung turn")
+	assert.Equal(t, 1, admitter.Writes(), "the landed write ends the re-POST loop (evidence)")
+}
+
+// F3 pin: the keyless branch of the wire fake — two keyless POSTs append
+// two DISTINCT transcript messages. This is the distinction that gives
+// the leg-8 row its mutation sensitivity; a future edit collapsing the
+// keyless branch to an upsert would silently neuter it with every row
+// staying green.
+func TestKeyedAdmitter_KeylessAppends_KeyedUpserts(t *testing.T) {
+	store := NewEvidenceStore()
+	ad := &KeyedAdmitter{Out: store}
+	ctx := context.Background()
+
+	id1, err := ad.Admit(ctx, "ses-pin", "msg_key", "a", "")
+	require.NoError(t, err)
+	id2, err := ad.Admit(ctx, "ses-pin", "msg_key", "a", "")
+	require.NoError(t, err)
+	assert.Equal(t, "msg_key", id1, "keyed: the harness echoes the key")
+	assert.Equal(t, "msg_key", id2, "keyed: re-admission upserts the same id")
+	assert.Equal(t, 1, store.TranscriptCount("ses-pin"), "one message for repeated keyed writes")
+	assert.Equal(t, 2, ad.Writes(), "both POSTs landed (the upsert is the HARNESS's)")
+
+	k1, err := ad.Admit(ctx, "ses-pin", "", "a", "")
+	require.NoError(t, err)
+	k2, err := ad.Admit(ctx, "ses-pin", "", "a", "")
+	require.NoError(t, err)
+	assert.NotEqual(t, k1, k2, "keyless: every POST is a NEW transcript message (the pre-0a wire)")
+	assert.Equal(t, 3, store.TranscriptCount("ses-pin"), "the append branch — the duplication class S2 forbids")
+	assert.Equal(t, 4, ad.Writes())
+}
