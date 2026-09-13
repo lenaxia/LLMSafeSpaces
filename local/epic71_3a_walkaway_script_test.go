@@ -86,3 +86,16 @@ func TestEpic71WalkawayScript_PoolRunsBeforeFaultArm(t *testing.T) {
 		t.Fatalf("%s must run BEFORE the fault seam is armed (delivery rows are seam-inert)", epic71WalkawayScript)
 	}
 }
+
+func TestEpic71WalkawayScript_ActWritePathRows(t *testing.T) {
+	// 4a r2: the Act write-path e2e rows live in this script — W6 (the
+	// S6 resolve-by-absence clear through Act, dismissed-event signal)
+	// and W7 (the 409 two-exits pin at cluster level).
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "que_e71w1ddd") || !strings.Contains(src, `"reason":"dismissed"`) {
+		t.Fatalf("walk-away script must carry the W6 Act-path row (dismiss → resolved event)")
+	}
+	if !strings.Contains(src, `== "409"`) {
+		t.Fatalf("walk-away script must pin the W7 dismissed re-click 409")
+	}
+}

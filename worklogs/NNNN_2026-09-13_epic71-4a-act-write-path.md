@@ -56,3 +56,12 @@
 **Style:** the duplicated hermetic Setenv pins collapsed to one per test.
 
 **E2E:** the cluster-bound S6 stale-click + L2 ≤2s legs are increment 2's rows (the design doc's sequencing; the write path's integration coverage here is the 15 in-process handler rows against real gin routers, a real event broker, and the Act stub).
+
+## Review r2 remediation
+
+r2 verified all six r1 findings remediated (with the skeptical second pass). One blocker remained: e2e coverage for the changed write path in THIS PR. Landed as cluster rows in the pool-wired walk-away script:
+
+- **W6 (S6 + the clear, happy):** dismiss of a staged dead ask through the REST route → Act (`reply:"reject"`) → agentd → opencode 404s both reject endpoints → resolve-by-absence SUCCESS → 204 + the `agent.*.resolved` event (`reason:"dismissed"`) on the user stream (the L2 clear signal) + the record terminal. This is the 2026-09-10 incident shape: the click clears everywhere, never a silent no-op.
+- **W7 (unhappy):** re-reply against the dismissed record 409s — the two-exits pin at cluster level.
+
+Structural pin added (`TestEpic71WalkawayScript_ActWritePathRows`). The pool run on the branch is the merge gate (the walk-away row now exercises the Act path under the authority install).

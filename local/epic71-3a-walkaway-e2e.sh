@@ -283,6 +283,47 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
     -X DELETE "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/${W1_SES}/inbox/que_does_not_exist")
 [[ "${code5b}" == "404" ]] && ok "W5 dismiss-of-unknown 404s" || note_fail "W5 dismiss-of-unknown: ${code5b}, want 404"
 
+# --- W6: the Act write path e2e (4a / #1302 — S6 + L2) ----------------------
+# The pool installs V2+authority, so the REST dismiss route forwards
+# AnswerInputAction{reply:"reject"} to agentd's Act; the harness has no
+# such ask (staged dead) → opencode 404s both reject endpoints → the
+# authority's resolve-by-absence folds SUCCESS. The 2026-09-10 incident
+# class: the click must CLEAR everywhere (resolved event ≤2s), never a
+# silent no-op.
+log "W6: dismiss through Act — resolve-by-absence clears (S6) within L2"
+seed_inbox_record "${W1_WS}" "${W1_SES}" que_e71w1ddd "Act path dead ask?"
+CAP6=/tmp/e71w6_sse.txt
+sse_capture "${CAP6}"
+T6=$(date +%s%3N)
+code6=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -X DELETE "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/${W1_SES}/inbox/que_e71w1ddd")
+[[ "${code6}" == "204" ]] && ok "W6 dismiss 204 (Act → resolve-by-absence)" || note_fail "W6 dismiss: ${code6}, want 204"
+deadline6=$(( $(date +%s%3N) + 2000 ))
+until grep -q 'que_e71w1ddd' "${CAP6}" 2>/dev/null; do
+    [[ $(date +%s%3N) -lt ${deadline6} ]] || break
+    sleep 0.1
+done
+T6b=$(date +%s%3N)
+sse_stop
+if grep -q '"request_id":"que_e71w1ddd"' "${CAP6}" 2>/dev/null \
+    && grep -q '"reason":"dismissed"' "${CAP6}" 2>/dev/null; then
+    ok "W6 resolved event carries the dismiss (clear signal)"
+else
+    note_fail "W6: no dismissed resolved event on the user stream (see ${CAP6})"
+fi
+ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1ddd)
+[[ "${ST}" == "dismissed" ]] && ok "W6 record terminal dismissed" || note_fail "W6 status '${ST}', want dismissed"
+
+# Unhappy: re-reply against the dismissed record is the 409 two-exits pin
+# at cluster level (a stale tab cannot re-open a dismissed ask).
+code7=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1ddd/reply" \
+    -d '{"answers":[["Yes, deploy"]]}')
+[[ "${code7}" == "409" ]] && ok "W7 dismissed re-click 409s (two exits, cluster-level)" || note_fail "W7 dismissed re-click: ${code7}, want 409"
+
 # Cleanup: leave the workspace suspended to free capacity.
 curl -s -o /dev/null -m 30 -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/suspend" || true
