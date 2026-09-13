@@ -70,7 +70,40 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 		c.JSON(status, gin.H{"error": gin.H{"code": code, "detail": err.Error()}})
 		return
 	}
+	// 4a (3a's deferral landed): a successful answer through the typed
+	// actions route terminalizes the ask's inbox record — the MCP/SDK
+	// reply path now clears whileAway re-presentations like the REST one.
+	h.dispositionInboxOnAction(c, workspaceID, payload)
 	c.Data(http.StatusOK, "application/json", out)
+}
+
+// dispositionInboxOnAction extracts the answerQuestion arm from a
+// successfully forwarded action payload and terminalizes its record:
+// reply=reject → dismissed; any other answer → answered.
+func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID string, payload map[string]json.RawMessage) {
+	if h.inbox == nil {
+		return
+	}
+	raw, ok := payload["answerQuestion"]
+	if !ok || len(raw) == 0 {
+		return
+	}
+	var ans struct {
+		InputID string `json:"inputId"`
+		Reply   string `json:"reply"`
+	}
+	if json.Unmarshal(raw, &ans) != nil || ans.InputID == "" {
+		return
+	}
+	rec, found, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, ans.InputID)
+	if err != nil || !found {
+		return
+	}
+	disposition := "answered"
+	if ans.Reply == "reject" {
+		disposition = "dismissed"
+	}
+	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, disposition)
 }
 
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the

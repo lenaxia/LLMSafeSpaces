@@ -156,12 +156,15 @@ func validateAction(m *abiv1.ActionRequest) error {
 		}
 		// Disjoint answer forms (#1302): reply carries the permission
 		// vocabulary; option_ids/custom_text carry question answers.
+		// 4a D2: message is deny-feedback — only meaningful with reply.
 		hasLegacy := len(ans.GetOptionIds()) > 0 || ans.GetCustomText() != ""
 		switch {
 		case ans.GetReply() != "" && hasLegacy:
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question reply is disjoint from option_ids/custom_text"))
 		case ans.GetReply() == "" && !hasLegacy:
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires option_ids and/or custom_text, or reply"))
+		case ans.GetMessage() != "" && ans.GetReply() == "":
+			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question message requires reply (deny feedback)"))
 		}
 	}
 	return nil

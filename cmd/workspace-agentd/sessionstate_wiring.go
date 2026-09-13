@@ -575,10 +575,36 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 	case *abiv1.ActionRequest_AnswerQuestion:
 		ans := a.AnswerQuestion
 		// The reply form (#1302 contract delta) carries the permission
-		// vocabulary directly — route straight to the permission
+		// vocabulary directly — route straight to the permission reply
 		// endpoint, no question-first probe, no lossy option encoding.
+		// 4a D1: reply="reject" on a question id is the DISMISS exit —
+		// the question reject endpoint first (the mirror of the answer
+		// path's question-first probe), permission fallback on 404.
+		// 4a D2: the optional message rides the permission reply body
+		// (deny feedback the raw passthrough carried).
 		if ans.GetReply() != "" {
-			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": ans.GetReply()}, nil); err != nil {
+			if ans.GetReply() == "reject" {
+				code, err := o.post(ctx, "/question/"+ans.GetInputId()+"/reject", map[string]any{}, nil)
+				if code == http.StatusNotFound {
+					body := map[string]any{"reply": "reject"}
+					if ans.GetMessage() != "" {
+						body["message"] = ans.GetMessage()
+					}
+					if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", body, nil); err != nil {
+						return nil, err
+					}
+					return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+				}
+				if err != nil {
+					return nil, err
+				}
+				return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+			}
+			body := map[string]any{"reply": ans.GetReply()}
+			if ans.GetMessage() != "" {
+				body["message"] = ans.GetMessage()
+			}
+			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", body, nil); err != nil {
 				return nil, err
 			}
 			return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil

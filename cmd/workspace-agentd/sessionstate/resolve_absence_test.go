@@ -176,6 +176,9 @@ func TestValidateAction_AnswerForms(t *testing.T) {
 		{"reply plus custom_text", &abiv1.AnswerInputAction{InputId: "x", Reply: strPtr("reject"), CustomText: strPtr("t")}, true},
 		{"no answer form", &abiv1.AnswerInputAction{InputId: "x"}, true},
 		{"no input id", &abiv1.AnswerInputAction{Reply: strPtr("once")}, true},
+		// 4a D2: message is deny feedback — only meaningful with reply.
+		{"message with reply", &abiv1.AnswerInputAction{InputId: "per_1", Reply: strPtr("reject"), Message: strPtr("why")}, false},
+		{"message without reply", &abiv1.AnswerInputAction{InputId: "que_1", OptionIds: []string{"a"}, Message: strPtr("why")}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

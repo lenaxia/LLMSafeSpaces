@@ -44,12 +44,16 @@ message SwitchAgentAction {
 // custom free-text answer for questions; the permission vocabulary
 // ("once"|"always"|"reject") for permissions. The two forms are disjoint —
 // reply routes to the permission reply endpoint without the question-first
-// probe (#1302 / #1310 slice A).
+// probe (#1302 / #1310 slice A). reply="reject" on a question id is the
+// dismiss exit (question-reject endpoint first, permission fallback). The
+// optional message carries deny-feedback alongside a permission reply
+// (preserves the field the raw passthrough carried, #1302 / 4a).
 message AnswerInputAction {
   string input_id = 1;
   repeated string option_ids = 2;
   optional string custom_text = 3;
   optional string reply = 4;
+  optional string message = 5;
 }
 
 message CompactAction {}

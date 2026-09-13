@@ -187,7 +187,12 @@ func TestCallMCPTool_SessionRead_MissingID(t *testing.T) {
 func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	// Hermetic: the public-origin knob outranks API_URL (mcpPublicAPIOrigin
+	// branch 1) — in-platform dev runs inherit the REAL agentd env and the
+	// ambient value would shadow the pin below.
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 		"port": float64(5173),
@@ -202,7 +207,12 @@ func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	// Hermetic: the public-origin knob outranks API_URL (mcpPublicAPIOrigin
+	// branch 1) — in-platform dev runs inherit the REAL agentd env and the
+	// ambient value would shadow the pin below.
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 		"port": float64(3000),
@@ -216,7 +226,12 @@ func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
 func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	// Hermetic: the public-origin knob outranks API_URL (mcpPublicAPIOrigin
+	// branch 1) — in-platform dev runs inherit the REAL agentd env and the
+	// ambient value would shadow the pin below.
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 		"port": float64(5173),
@@ -231,6 +246,7 @@ func TestCallMCPTool_DevPreviewURL_PortOmitted(t *testing.T) {
 	// Port is optional now (UX round 2): omitted → default 5173, no error.
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
 	require.NoError(t, err)
 	assert.Contains(t, result, "/dev-preview/5173/")
@@ -449,6 +465,7 @@ func TestCallMCPTool_DevPreviewURL_OriginMode(t *testing.T) {
 	// and the browser is redirected to the per-workspace origin.
 	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
@@ -463,7 +480,8 @@ func TestCallMCPTool_DevPreviewURL_OriginMode(t *testing.T) {
 func TestCallMCPTool_DevPreviewURL_PathModeUnchangedWithoutEnv(t *testing.T) {
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
-	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // unset → path mode
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")  // unset → path mode
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 		"port": float64(5173),
@@ -478,6 +496,7 @@ func TestCallMCPTool_DevPreviewURL_DefaultPort(t *testing.T) {
 	// Port omitted → 5173 (Vite default, matches the landing form).
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
 	require.NoError(t, err)
@@ -490,6 +509,7 @@ func TestCallMCPTool_DevPreviewURL_ButtonMarkerShape(t *testing.T) {
 	// The chat UI keys on the marker line + markdown link; pin the shape.
 	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
@@ -509,6 +529,7 @@ func TestCallMCPTool_DevPreviewURL_OriginModeDerivesAPIOrigin(t *testing.T) {
 	// In origin mode the API origin is derivable: https://api.<baseDomain>.
 	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
 	t.Setenv("LLMSAFESPACE_API_URL", "")
+	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
@@ -627,6 +648,7 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	for _, apiURL := range internal {
 		t.Setenv("LLMSAFESPACE_API_URL", apiURL)
+		t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 		result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 			"port": float64(3000),
 		})

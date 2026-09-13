@@ -218,3 +218,58 @@ func TestOpencodeActor_LegacyFormsUnchanged(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestOpencodeActor_ReplyRejectIsTheDismissExit (4a D1): reply="reject"
+// on a question id routes to the question REJECT endpoint (the dismiss
+// exit — the mirror of the answer path's question-first probe), no
+// answer array is sent.
+func TestOpencodeActor_ReplyRejectIsTheDismissExit(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1", Reply: sp("reject")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1, "reject on a question id must hit exactly the question reject endpoint")
+	assert.Equal(t, "/question/q1/reject", reqs[0].Path)
+	assert.JSONEq(t, `{}`, reqs[0].Body)
+}
+
+// TestOpencodeActor_ReplyRejectPermissionFallback (4a D1): a 404 on the
+// question reject endpoint means the input is a permission — the
+// permission reply carries the reject.
+func TestOpencodeActor_ReplyRejectPermissionFallback(t *testing.T) {
+	stub := withStubHarness(t, map[string]int{"/question/": http.StatusNotFound})
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "p1", Reply: sp("reject")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 2)
+	assert.Equal(t, "/question/p1/reject", reqs[0].Path)
+	assert.Equal(t, "/permission/p1/reply", reqs[1].Path)
+	assert.JSONEq(t, `{"reply":"reject"}`, reqs[1].Body)
+}
+
+// TestOpencodeActor_PermissionReplyMessageForwarded (4a D2): the deny
+// feedback rides the permission reply body verbatim.
+func TestOpencodeActor_PermissionReplyMessageForwarded(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "p1", Reply: sp("once"), Message: sp("looks fine")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "/permission/p1/reply", reqs[0].Path)
+	assert.JSONEq(t, `{"reply":"once","message":"looks fine"}`, reqs[0].Body, "message preserves the raw passthrough's deny feedback (#1302)")
+}
