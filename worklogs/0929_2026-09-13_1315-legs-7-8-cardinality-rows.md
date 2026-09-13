@@ -48,4 +48,4 @@ Also learned: the re-drives SERIALIZE on the session single-flight lock — the 
 
 - `cmd/workspace-agentd/faultmatrix/faultmatrix.go` — KeyedAdmitter (keyed/keyless/lost-outcome-hang)
 - `cmd/workspace-agentd/faultmatrix/faultmatrix_test.go` — the legs 7/8 rows
-- `worklogs/NNNN_2026-09-13_1315-legs-7-8-cardinality-rows.md` (this file)
+- `worklogs/0929_2026-09-13_1315-legs-7-8-cardinality-rows.md` (this file)
