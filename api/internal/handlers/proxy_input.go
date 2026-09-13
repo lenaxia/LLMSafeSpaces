@@ -355,17 +355,15 @@ func (h *ProxyHandler) actAnswerInput(c *gin.Context, workspace, sessionID, requ
 // identifies the ask — callers must answer NON-authoritatively (503,
 // the #1302 doctrine), never an authoritative 404.
 func (h *ProxyHandler) inputRequestSession(ctx context.Context, workspaceID, requestID string) (sessionID string, resolvable bool, unknownSet bool) {
-	if h.adapter != nil {
-		pending, err := h.adapter.ListPending(ctx, "", workspaceID, "")
-		if err == nil {
-			for _, ir := range pending {
-				if ir.ID == requestID {
-					return ir.SessionID, true, false
-				}
+	pending, err := h.adapter.ListPending(ctx, "", workspaceID, "")
+	if err == nil {
+		for _, ir := range pending {
+			if ir.ID == requestID {
+				return ir.SessionID, true, false
 			}
-		} else {
-			unknownSet = true
 		}
+	} else {
+		unknownSet = true
 	}
 	if h.inbox != nil {
 		if rec, ok, err := h.inbox.Lookup(ctx, workspaceID, requestID); err == nil && ok {

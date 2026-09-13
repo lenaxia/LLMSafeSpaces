@@ -106,7 +106,13 @@ func newInputActEnv(t *testing.T, opts inputActOpts) *inputActEnv {
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
+	// #1362: the adapter is a required ctor param — pass the opts-shaped
+	// mock up front (configure may replace it later, same as before).
+	ctorAdapter := &mockAdapter{}
+	if opts.listFn != nil {
+		ctorAdapter.listPendingFn = opts.listFn
+	}
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, ctorAdapter)
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.userBroker.RecordWorkspaceOwner("ws-act", "user-1")
