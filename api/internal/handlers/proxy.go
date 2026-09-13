@@ -265,13 +265,6 @@ func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 	h.outbox = o
 }
 
-// SetAdapterForTest wires the Agent Adapter after construction
-// (out-of-package integration tests only; in-package tests assign the
-// field directly).
-func (h *ProxyHandler) SetAdapterForTest(a agent.Adapter) {
-	h.adapter = a
-}
-
 // SetUserBrokerForTest wires the workspace SSE broker without running
 // Start (tests only; production creates the broker inside Start). The
 // mcp-router integration gate (api/internal/server) drives StreamEvents
@@ -282,7 +275,7 @@ func (h *ProxyHandler) SetUserBrokerForTest(b *eventbroker.UserEventBroker) {
 
 // SetModelPolicyChecker wires the org-policy checker for per-prompt model
 // override enforcement. Optional (nil = unenforced). Panics after Start for
-// the same race-safety reason as SetResolverHost.
+// the same race-safety reason as SetStateStore.
 func (h *ProxyHandler) SetModelPolicyChecker(p OrgPolicyChecker) {
 	if p == nil {
 		return

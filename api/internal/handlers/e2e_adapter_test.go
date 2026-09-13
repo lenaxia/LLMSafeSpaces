@@ -464,7 +464,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 		opencode.WithAdapterHTTPClient(backend.Client()),
 		opencode.WithAdapterPort(port),
 	)
-	handler.adapter = (adapter)
+	handler.adapter = adapter
 	require.NotNil(t, handler.adapter, "adapter must be wired")
 
 	gin.SetMode(gin.TestMode)

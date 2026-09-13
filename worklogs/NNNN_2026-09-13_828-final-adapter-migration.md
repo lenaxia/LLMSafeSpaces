@@ -89,3 +89,16 @@ None.
 - api/internal/app/app.go (host-first construction)
 - api/internal/handlers/adapter_required_gate_test.go (new — the gate)
 - ~40 test files (ctor sweep, guard-row deletions with rationale, harness ports)
+
+---
+
+## Review r1 remediation (PR #1362)
+
+- **AbortSession's readiness contract pinned** (the unpinned half of the Delete/Abort resolve repair): NotActive-503+Retry-After, NotFound-404, Ceiling-429 — all with adapter-must-not-be-called assertions.
+- **ResolverHost empty-password arm executed**: `TestResolverHost_GetPassword_EmptyPasswordKey` re-homes the deleted `TestProxy_EmptyPasswordKey` against the host (production-live on every adapter call).
+- **Dead transport helpers deleted** with their suites: `stripVerboseQuery` (+7 rows), `copyResponseHeaders` (+4 rows in auth_cache, +2 in headers_allowlist), `isConnectionError` (+its table row), `blockedResponseHeaders`. `copyRequestHeaders` survives (dev_preview's legitimate consumer).
+- **`SetAdapterForTest` deleted** — zero call sites repo-wide (the mcp harness now constructs with the adapter directly).
+- **Stale refs swept**: adapter field doc (guards/SetAdapter text → ctor-required reality), modelPolicyChecker's invariant cite, proxy_input's mid-sentence, contract-stream/gauges `DeleteRequestBufferMetrics` cites, .golangci.yml's transport cite.
+- **ResolverHost.logger dropped** (assigned-never-read; errors carry the failures).
+- **Design-stories knock-on landed**: `design/stories/README.md` epic-65 row records US-65.4/65.5 completed-and-superseded by #828 with the PR trail.
+- Cosmetic: redundant parens removed, bare brace blocks unwrapped.

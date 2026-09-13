@@ -5,13 +5,16 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -207,4 +210,56 @@ func TestDeleteSession_2xx_RecordsActivity_ErrorDoesNot(t *testing.T) {
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/s3", nil)
 	require.Equal(t, http.StatusNoContent, w.Code)
 	assert.Equal(t, 1, okTracker.PendingCount(), "successful delete records activity")
+}
+
+// --- r1 (final batch): AbortSession's readiness contract rows ---
+
+func TestAbortSession_WorkspaceNotActive_Returns503(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Suspended", "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called for a suspended workspace")
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+func TestAbortSession_WorkspaceNotFound_Returns404(t *testing.T) {
+	env := newTestEnv(t)
+	env.wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
+		Return(nil, fmt.Errorf("not found")).Once()
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called for a missing workspace")
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-missing/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAbortSession_ConnectionCeiling_Returns429(t *testing.T) {
+	env := newTestEnv(t)
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called when the ceiling rejects")
+			return nil
+		},
+	}
+	env.handler.connMu.Lock()
+	env.handler.connCount["ws-1"] = maxConnectionsPerWorkspace
+	env.handler.connMu.Unlock()
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 }

@@ -313,7 +313,7 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 
 	// Unified ListPending returns both questions and permissions in one
 	// call, already typed as session.InputRequest (#828 batch 3: the
-	// two-fetch dialect-parsing legacy tail is deleted). A nil adapter
+	// two-fetch dialect-parsing legacy tail is deleted).
 	ok = h.emitPendingViaAdapter(ctx, workspaceID)
 }
 

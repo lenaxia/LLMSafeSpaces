@@ -334,7 +334,7 @@ func (h *ProxyHandler) MarkSessionDeletedForTest(workspaceID, sessionID string) 
 // path is never taken in production.
 func (h *ProxyHandler) host() *ResolverHost {
 	if h.resolvers == nil {
-		h.resolvers = &ResolverHost{k8sClient: h.k8sClient, logger: h.logger, namespace: h.namespace}
+		h.resolvers = &ResolverHost{k8sClient: h.k8sClient, namespace: h.namespace}
 	}
 	return h.resolvers
 }

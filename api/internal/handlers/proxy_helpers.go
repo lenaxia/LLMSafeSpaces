@@ -5,19 +5,8 @@ package handlers
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 )
-
-// blockedResponseHeaders is the historical denylist used by
-// copyResponseHeaders. Retained for defense-in-depth alongside the
-// hop-by-hop strip — if a future maintainer narrows the hop-by-hop list,
-// these headers remain suppressed regardless.
-var blockedResponseHeaders = map[string]bool{
-	"Www-Authenticate":   true,
-	"Proxy-Authenticate": true,
-	"Set-Cookie":         true,
-}
 
 // hopByHopHeaders is the RFC 7230 §6.1 hop-by-hop header set plus
 // "Upgrade" (RFC 7230 §6.7). These must not be forwarded by a proxy in
@@ -55,21 +44,6 @@ var forwardedRequestHeaders = map[string]bool{
 	"X-Request-ID": true,
 }
 
-func copyResponseHeaders(src http.Header, dst http.Header) {
-	for k, vs := range src {
-		canon := http.CanonicalHeaderKey(k)
-		if blockedResponseHeaders[canon] {
-			continue
-		}
-		if hopByHopHeaders[canon] {
-			continue
-		}
-		for _, v := range vs {
-			dst.Add(k, v)
-		}
-	}
-}
-
 // copyRequestHeaders copies only the allowlisted client headers from src to dst.
 // Hop-by-hop headers and caller credential/session headers are explicitly
 // excluded. The proxy sets Authorization (HTTP Basic) and X-Forwarded-For
@@ -83,20 +57,6 @@ func copyRequestHeaders(src http.Header, dst http.Header) {
 			dst.Add(k, v)
 		}
 	}
-}
-
-func stripVerboseQuery(rawQuery string) string {
-	if rawQuery == "" {
-		return ""
-	}
-	values, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return rawQuery
-	}
-	values.Del("verbose")
-	values.Del("workspace")
-	values.Del("directory")
-	return values.Encode()
 }
 
 func isConnectionError(err error) bool {

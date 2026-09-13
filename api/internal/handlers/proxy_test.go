@@ -368,29 +368,6 @@ func TestProxy_RemoveNonexistentSession(t *testing.T) {
 	assert.Equal(t, 0, handler.activeSessionCount(context.Background(), "sb-missing"))
 }
 
-func TestIsConnectionError(t *testing.T) {
-	tests := []struct {
-		name   string
-		err    error
-		isConn bool
-	}{
-		{"connection refused", fmt.Errorf("dial tcp 10.0.0.1:4096: connection refused"), true},
-		{"no such host", fmt.Errorf("dial tcp: lookup ws-1.default.svc: no such host"), true},
-		{"connection reset", fmt.Errorf("read tcp: connection reset by peer"), true},
-		{"i/o timeout", fmt.Errorf("dial tcp 10.0.0.1:4096: i/o timeout"), true},
-		{"EOF", fmt.Errorf("unexpected EOF"), true},
-		{"network unreachable", fmt.Errorf("dial tcp: network is unreachable"), true},
-		{"nil error", nil, false},
-		{"other error", fmt.Errorf("something else"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.isConn, isConnectionError(tt.err))
-		})
-	}
-}
-
 func TestProxy_NewProxyHandler_Validation(t *testing.T) {
 	tests := []struct {
 		name      string

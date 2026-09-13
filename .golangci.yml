@@ -133,7 +133,9 @@ linters:
       lines: 350
       statements: 250
     gocyclo:
-      # Threshold set above current maxima. proxyToWorkspaceWithErrBody (67)
+      # Threshold set above current maxima. (The former transport
+      # functions were deleted in #828's final batch; the maxima have
+      # only shrunk since.)
       # and config.Load (63) are the remaining offenders with documented
       # //nolint directives. app.New (68) also has //nolint.
       # Target: tighten incrementally — 55 → 30 → 15.

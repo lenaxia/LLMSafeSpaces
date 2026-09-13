@@ -14,62 +14,6 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
-// --- US-23.4: copyResponseHeaders strips dangerous headers ---
-
-func TestCopyResponseHeaders_StripsWWWAuthenticate(t *testing.T) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("WWW-Authenticate", "Basic realm=\"opencode\"")
-	src.Set("Content-Length", "42")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Equal(t, "application/json", dst.Get("Content-Type"))
-	assert.Equal(t, "42", dst.Get("Content-Length"))
-	assert.Empty(t, dst.Get("WWW-Authenticate"), "WWW-Authenticate must be stripped")
-}
-
-func TestCopyResponseHeaders_StripsProxyAuthenticate(t *testing.T) {
-	src := http.Header{}
-	src.Set("Proxy-Authenticate", "Basic")
-	src.Set("Content-Type", "text/plain")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Empty(t, dst.Get("Proxy-Authenticate"))
-	assert.Equal(t, "text/plain", dst.Get("Content-Type"))
-}
-
-func TestCopyResponseHeaders_StripsSetCookie(t *testing.T) {
-	src := http.Header{}
-	src.Set("Set-Cookie", "session=abc123")
-	src.Set("ETag", "\"abc\"")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Empty(t, dst.Get("Set-Cookie"))
-	assert.Equal(t, "\"abc\"", dst.Get("ETag"))
-}
-
-func TestCopyResponseHeaders_PreservesSafeHeaders(t *testing.T) {
-	src := http.Header{}
-	src.Set("Content-Type", "application/json")
-	src.Set("Cache-Control", "no-cache")
-	src.Set("X-Custom-Header", "value")
-	src.Set("X-Accel-Buffering", "no")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Equal(t, "application/json", dst.Get("Content-Type"))
-	assert.Equal(t, "no-cache", dst.Get("Cache-Control"))
-	assert.Equal(t, "value", dst.Get("X-Custom-Header"))
-	assert.Equal(t, "no", dst.Get("X-Accel-Buffering"))
-}
-
 // --- US-23.4: Upstream 401 → 502 conversion ---
 
 // TestProxy_Upstream401_Returns502 was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).

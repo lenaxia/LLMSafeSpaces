@@ -80,11 +80,9 @@ func (h *ProxyHandler) Start() error {
 		// message-loss class). The bridge re-resolves the workspace and
 		// re-checks quota per delivery.
 		if h.outbox != nil {
-			{
-				h.outbox.SetVerifier(h.outboxVerify)
-				h.outbox.SetOnDelivered(h.outboxOnDelivered)
-				h.outbox.SetOnStaged(h.outboxOnStaged)
-			}
+			h.outbox.SetVerifier(h.outboxVerify)
+			h.outbox.SetOnDelivered(h.outboxOnDelivered)
+			h.outbox.SetOnStaged(h.outboxOnStaged)
 			wctx, wcancel := context.WithCancel(context.Background())
 			h.outboxCancel = wcancel
 			h.outboxDone = make(chan struct{})

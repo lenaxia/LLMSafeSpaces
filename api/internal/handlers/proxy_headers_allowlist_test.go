@@ -155,42 +155,4 @@ func TestCopyRequestHeaders_XForwardedForNotCopiedFromCaller(t *testing.T) {
 		"caller-controlled X-Forwarded-For must not reach the tenant pod; the proxy sets its own after this copy")
 }
 
-func TestCopyResponseHeaders_HopByHopStripped(t *testing.T) {
-	hopByHop := []string{
-		"Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"Te",
-		"Trailers",
-		"Transfer-Encoding",
-		"Upgrade",
-	}
-
-	for _, h := range hopByHop {
-		t.Run(h, func(t *testing.T) {
-			src := http.Header{}
-			src.Set(h, "anything")
-			src.Set("Content-Type", "text/event-stream")
-
-			dst := http.Header{}
-			copyResponseHeaders(src, dst)
-
-			assert.Empty(t, dst.Get(h), "%s must be stripped from upstream responses", h)
-			assert.Equal(t, "text/event-stream", dst.Get("Content-Type"))
-		})
-	}
-}
-
-func TestCopyResponseHeaders_StripsSetCookieMultipleValues(t *testing.T) {
-	src := http.Header{}
-	src.Add("Set-Cookie", "session=abc123")
-	src.Add("Set-Cookie", "csrf=xyz")
-
-	dst := http.Header{}
-	copyResponseHeaders(src, dst)
-
-	assert.Empty(t, dst.Values("Set-Cookie"), "all Set-Cookie values must be stripped")
-}
-
 // TestProxy_G34_CallerAuthorizationNotForwarded was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
