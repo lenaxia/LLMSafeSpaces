@@ -133,11 +133,10 @@ linters:
       lines: 350
       statements: 250
     gocyclo:
-      # Threshold set above current maxima. (The former transport
-      # functions were deleted in #828's final batch; the maxima have
-      # only shrunk since.)
-      # and config.Load (63) are the remaining offenders with documented
-      # //nolint directives. app.New (68) also has //nolint.
+      # Threshold set above current maxima. The former transport
+      # functions were deleted in #828's final batch; config.Load and
+      # app.New are the remaining offenders with documented //nolint
+      # directives.
       # Target: tighten incrementally — 55 → 30 → 15.
       min-complexity: 65
     errcheck:

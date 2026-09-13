@@ -208,7 +208,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// as a required parameter — one shared password cache + invalidation
 	// for both the handler and the adapter (SetStateStore swaps forward
 	// into the host).
-	resolverHost := handlers.NewResolverHost(k8sClient, log, cfg.Kubernetes.Namespace)
+	resolverHost := handlers.NewResolverHost(k8sClient, cfg.Kubernetes.Namespace)
 	//
 	// V2 delivery (design 0052, OPENCODE_V2_DELIVERY=1): routes outbox
 	// delivery through the V2 admit-and-return prompt endpoint and

@@ -17,7 +17,8 @@ import (
 )
 
 // US-65.4 infrastructure tests - proxy_connections.go resolver bridges
-// + SetAdapter. PR #716 review requested these.
+// (SetAdapter was deleted by #828's final batch; the resolver-host
+// rows in resolver_host_test.go carry the construction surface).
 
 func TestProxyPodIPResolver_ActivePodWithIP_ReturnsIP(t *testing.T) {
 	ws := &v1.Workspace{

@@ -433,7 +433,7 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 	// (#828 final batch: the adapter is a ctor-required parameter — build
 	// it over local resolvers first, then construct the handler with it).
 	log := mcpTestLogger(t)
-	host := handlers.NewResolverHost(k8sMock, mcpTestLogger(t), "default")
+	host := handlers.NewResolverHost(k8sMock, "default")
 	adapter := opencode.NewAdapter(
 		host.GetPassword,
 		host,

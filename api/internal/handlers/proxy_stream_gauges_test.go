@@ -13,8 +13,9 @@ import (
 // --- US-69.11: the SSE-tracker retirement's scale-to-zero observables.
 // The two stream consumers expose lifecycle hooks; these tests pin the
 // handler-side gauge behavior — set 1 while open, DELETE the series on
-// close (an idle fleet scrapes empty, not a wall of zero series — the
-// (the request-buffer gauges were deleted with the buffer, #828 final batch). ---
+// close (an idle fleet scrapes empty, not a wall of zero series — a
+// discipline the request-buffer gauges once shared; deleted with the
+// buffer, #828 final batch).
 
 func TestContractStreamUpstreamGauge(t *testing.T) {
 	contractStreamUpstreams.Reset()

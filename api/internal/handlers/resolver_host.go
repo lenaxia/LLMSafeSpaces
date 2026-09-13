@@ -36,10 +36,7 @@ type ResolverHost struct {
 
 // NewResolverHost constructs a standalone host with an in-memory state
 // store.
-func NewResolverHost(k8sClient pkginterfaces.KubernetesClient, _ pkginterfaces.LoggerInterface, namespace string) *ResolverHost {
-	// The logger parameter is retained for signature stability of the
-	// app.go wiring; the host's failure modes return errors (no local
-	// logging).
+func NewResolverHost(k8sClient pkginterfaces.KubernetesClient, namespace string) *ResolverHost {
 	return &ResolverHost{k8sClient: k8sClient, namespace: namespace}
 }
 

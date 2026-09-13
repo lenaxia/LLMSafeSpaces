@@ -98,7 +98,16 @@ None.
 - **ResolverHost empty-password arm executed**: `TestResolverHost_GetPassword_EmptyPasswordKey` re-homes the deleted `TestProxy_EmptyPasswordKey` against the host (production-live on every adapter call).
 - **Dead transport helpers deleted** with their suites: `stripVerboseQuery` (+7 rows), `copyResponseHeaders` (+4 rows in auth_cache, +2 in headers_allowlist), `isConnectionError` (+its table row), `blockedResponseHeaders`. `copyRequestHeaders` survives (dev_preview's legitimate consumer).
 - **`SetAdapterForTest` deleted** — zero call sites repo-wide (the mcp harness now constructs with the adapter directly).
-- **Stale refs swept**: adapter field doc (guards/SetAdapter text → ctor-required reality), modelPolicyChecker's invariant cite, proxy_input's mid-sentence, contract-stream/gauges `DeleteRequestBufferMetrics` cites, .golangci.yml's transport cite.
-- **ResolverHost.logger dropped** (assigned-never-read; errors carry the failures).
+- **Stale refs swept (r2 correction):** the r1 worklog CLAIMED the adapter field doc + modelPolicyChecker cite were swept — they were NOT (the r1 commit touched only other files; verified false at r2 review). Actually swept in r2: both field docs, proxy_input's mid-sentence, the contract-stream/gauges cites (three botched r1 rewrites repaired), .golangci.yml's transport cite, the infra-test header's SetAdapter cite.
+- **ResolverHost.logger dropped** (assigned-never-read; errors carry the failures) — and in r2 the unused ctor param went with it (the "signature stability" rationale violated zero-tech-debt; both call sites rewired).
 - **Design-stories knock-on landed**: `design/stories/README.md` epic-65 row records US-65.4/65.5 completed-and-superseded by #828 with the PR trail.
 - Cosmetic: redundant parens removed, bare brace blocks unwrapped.
+
+---
+
+## Review r2 remediation (PR #1362)
+
+- The two field docs (adapter: guards/SetAdapter text → the ctor-required reality; modelPolicyChecker: invariant cite → SetStateStore) actually fixed this round — the r1 claim was false and is corrected above.
+- The three r1 botched rewrites repaired (contract-stream, stream-gauges, .golangci.yml — now grammatical and factually right: config.Load + app.New are the remaining gocyclo offenders).
+- `NewResolverHost` dropped the unused logger parameter; app.go, the mcp harness, and the host test rewired.
+- Record correction: c857d226's message named `isConnectionError` while deleting `hopByHopHeaders`/`fakeK8sWrap` — the `isConnectionError` deletion landed in 8c9d527d. Both commits together complete the orphan sweep the r1 worklog described.

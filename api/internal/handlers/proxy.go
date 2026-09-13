@@ -132,22 +132,14 @@ type ProxyHandler struct {
 	// SetInboxStore before Start.
 	inbox *inbox.Service
 
-	// adapter is the US-65.3 Agent Adapter seam. The migrated
-	// session/message cluster is adapter-only since #828 batches 1+2
-	// (nil adapter -> adapterUnavailable guard, typed 503); the
+	// adapter is the US-65.3 Agent Adapter seam, ctor-required since
+	// the #828 final batch (nil → construction error). The
 	// outbox-backed queue view routes never consult it, and
-	// RenameSessionInAgent fails with its own error. The remaining
-	// nil-checks are the fail-closed guards themselves (proxy_handlers
-	// ×10 incl. the rename helper, input ×8, permissions, session index
-	// ×3, parents, stream/user-events flight gates, inbox wiring) and
-	// the lifecycle wiring (Start()'s outbox verifier hooks,
-	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go)
-	// — the final #828 batch's required-constructor change collapses
-	// them all. The dialect field was retired in batch 4 (zero readers
-	// remained; agent.Dialect's interface went with it — the opencode
-	// Dialect struct stays, agent-side: the adapter and agentd's store
-	// readers consume it, no platform/handler code).
-	// Set via SetAdapter before Start().
+	// RenameSessionInAgent fails with its own error. The dialect field
+	// was retired in batch 4 (zero readers remained; agent.Dialect's
+	// interface went with it — the opencode Dialect struct stays,
+	// agent-side: the adapter and agentd's store readers consume it,
+	// no platform/handler code).
 	adapter agent.Adapter
 
 	// modelPolicyChecker enforces org allowed-models/allowed-providers on
@@ -155,7 +147,7 @@ type ProxyHandler struct {
 	// enforced only by hiding models in ListModels). nil = no enforcement
 	// (personal deployments). Read on the prompt path after Start, so it is
 	// set once via SetModelPolicyChecker before Start — same invariant as
-	// SetAdapter.
+	// SetStateStore.
 	modelPolicyChecker OrgPolicyChecker
 
 	// Epic 68 US-68.2 upload overrides. Zero → env-derived defaults

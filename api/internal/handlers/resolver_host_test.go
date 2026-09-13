@@ -31,7 +31,7 @@ func TestResolverHost_GetPassword_EmptyPasswordKey(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	k8sMock.On("Clientset").Return(fake).Maybe()
 
-	host := NewResolverHost(k8sMock, &testLogger{}, "default")
+	host := NewResolverHost(k8sMock, "default")
 	_, err = host.GetPassword(context.Background(), "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty password key")
