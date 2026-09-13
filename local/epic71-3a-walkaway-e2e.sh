@@ -295,11 +295,11 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
 # click must CLEAR everywhere (resolved event ≤ L2), never a silent
 # no-op.
 log "W6: question reject through Act — resolve-by-absence clears (S6) within L2"
-# A REAL session: the authority's act() validates the session before
-# the answer's resolve-by-absence fold runs — a synthetic id 400s (r5's
-# finding; the missing-ask harness contract itself is 404, pinned in
-# ask_terminal_states_1_18_15.json). A real walk-away ask belongs to a
-# real session; create one and seed the record against it.
+# A REAL session: a walk-away ask belongs to a session that exists (the
+# authority validates it). The harness contract: the ask's OWN kind
+# endpoint 404s a missing id (cross-kind posts are 400 Params — pinned
+# in ask_terminal_states_1_18_15.json); that 404 is the absence signal
+# the resolve-by-absence fold consumes.
 W6_SES=$(curl -s -m 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions" \
     -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
     -d '{"title":"e71-w6-act-row"}' | jq -r '.id // empty')

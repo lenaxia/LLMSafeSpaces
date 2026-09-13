@@ -22,3 +22,13 @@ r6 refuted the r5 diagnosis (session validation) and identified the real defect:
 ## Tests run (r6)
 
 - `go test ./cmd/workspace-agentd/ ./api/internal/handlers/ ./pkg/agent/...` — ok; `golangci-lint` 0 issues
+
+## Review r7 remediation
+
+**The same-shaped flag-off defect r6 ordered — `Adapter.Resolve` — now fixed:** prefix-aware (per_ → permission-direct; que_ → question-only, its 404 surfaces; unprefixed keeps the probe order). Pinned red-first (`TestAdapter_Resolve_PrefixAware`, `TestAdapter_RejectInput_PrefixAware`, `TestAdapter_Resolve_QueIDDoesNotFallThroughOn404`; the legacy 404-fallback row re-pinned on an UNPREFIXED id — the agent-agnostic case it was written for).
+
+**False narratives corrected in place:** the fixture's `cross_prefix_contract.implication` now covers all four sites; the W6 script comment no longer implies both endpoints are hit; the design doc's D1 records the r6/r7 correction (prefix-validation captured live; prefixed ids never post cross-kind).
+
+**Red CI (TestSupervisorSubprocess):** passes locally repeatedly (count=3 + the full package) — the CI failure is the degraded-boot spawn race under runner load, not this PR's surface (the file is untouched; the parent head was green). Re-landing green; if the flake recurs on this branch's runs, it gets its own root-cause outside this stream's scope.
+
+**W6/W7 undemonstrated:** the prior pool run died at cluster SETUP (`API /livez unreachable` — infra, before any row). Re-dispatched on this head; the merge gate remains a completed green pool run.

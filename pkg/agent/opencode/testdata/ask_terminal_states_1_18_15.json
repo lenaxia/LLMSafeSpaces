@@ -205,6 +205,6 @@
     "message": "Expected a string starting with \"que\", got \"per_\u2026\" at [\"requestID\"]"
    }
   },
-  "implication": "The endpoints PREFIX-VALIDATE request IDs: a cross-kind post is a 400 Params error, NEVER a 404. Cross-kind fallbacks (the reject fallback and the answer probe's permission leg for prefixed ids) are therefore forbidden \u2014 the 404 from the ask's OWN kind endpoint is the absence signal the authority's resolve-by-absence consumes (S6). Routing in the actor and Adapter.RejectInput is prefix-aware."
+  "implication": "The endpoints PREFIX-VALIDATE request IDs: a cross-kind post is a 400 Params error, NEVER a 404. Cross-kind fallbacks are therefore forbidden at every site \u2014 the actor's reject routing, the actor's legacy answer forms, Adapter.RejectInput, AND Adapter.Resolve \u2014 the 404 from the ask's OWN kind endpoint is the absence signal the authority's resolve-by-absence consumes (S6). All four sites are prefix-aware; unprefixed ids keep the legacy probe order (agent-agnostic callers)."
  }
 }
