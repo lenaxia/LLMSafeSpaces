@@ -295,7 +295,16 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
 # click must CLEAR everywhere (resolved event ≤ L2), never a silent
 # no-op.
 log "W6: question reject through Act — resolve-by-absence clears (S6) within L2"
-seed_inbox_record "${W1_WS}" "${W1_SES}" que_e71w1ddd "Act path dead ask?"
+# A REAL session: the authority's act() validates the session before
+# the answer's resolve-by-absence fold runs — a synthetic id 400s (r5's
+# finding; the missing-ask harness contract itself is 404, pinned in
+# ask_terminal_states_1_18_15.json). A real walk-away ask belongs to a
+# real session; create one and seed the record against it.
+W6_SES=$(curl -s -m 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions" \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{"title":"e71-w6-act-row"}' | jq -r '.id // empty')
+[[ -n "${W6_SES}" ]] || die "W6: could not create a session for the row"
+seed_inbox_record "${W1_WS}" "${W6_SES}" que_e71w1ddd "Act path dead ask?"
 CAP6=/tmp/e71w6_sse.txt
 sse_capture "${CAP6}"
 sleep 1
@@ -325,7 +334,7 @@ if [[ ${T6b} -le $(( T6 + 2000 )) ]] && [[ ${T6b} -gt ${T6} ]]; then
 else
     note_fail "W6 L2 violated: ${T6b} vs ${T6}"
 fi
-ST=$(inbox_status "${W1_WS}" "${W1_SES}" que_e71w1ddd)
+ST=$(inbox_status "${W1_WS}" "${W6_SES}" que_e71w1ddd)
 [[ "${ST}" == "dismissed" ]] && ok "W6 record terminal dismissed" || note_fail "W6 status '${ST}', want dismissed"
 
 # Unhappy: re-reply against the dismissed record is the 409 two-exits pin

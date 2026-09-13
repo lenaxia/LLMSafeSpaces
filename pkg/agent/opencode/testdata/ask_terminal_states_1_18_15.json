@@ -166,5 +166,25 @@
   },
   "pending_entry_always_field": "GET /permission entries carry always:[\"echo *\"] \u2014 the harness's suggested pattern for the always-allow affordance; the adapter surfaces it as InputRequest.Always",
   "mapping_note": "AnswerInputAction.reply carries this vocabulary verbatim (1a delta, #1324); the edge forwards once/always/reject unchanged \u2014 no lossy option_ids encoding needed."
+ },
+ "missing_ask_reject_contract": {
+  "captured": "2026-09-13, 4a r5 (the W6 e2e failure demanded the real bytes)",
+  "question_reject_missing": {
+   "http": "404",
+   "body": {
+    "_tag": "QuestionNotFoundError",
+    "requestID": "que_\u2026",
+    "message": "Question request not found: que_\u2026"
+   }
+  },
+  "permission_reply_missing": {
+   "http": "404",
+   "body": {
+    "_tag": "PermissionNotFoundError",
+    "requestID": "per_\u2026",
+    "message": "Permission request not found: per_\u2026"
+   }
+  },
+  "implication": "The D1 fallback (question-reject 404 \u2192 permission reply) and the 404-typed resolve-by-absence fold consume the correct harness codes. The W6 e2e 400 was NOT this contract \u2014 it was the authority rejecting a synthetic session id it never knew: the walk-away row must seed its inbox record against a REAL session."
  }
 }
