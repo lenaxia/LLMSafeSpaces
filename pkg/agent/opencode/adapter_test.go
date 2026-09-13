@@ -1495,20 +1495,45 @@ func TestAdapter_Resolve_PrefixAware(t *testing.T) {
 }
 
 func TestAdapter_RejectInput_PrefixAware(t *testing.T) {
+	// r8: models the CAPTURED contract exactly (cross-kind posts are
+	// 400 Params; the ask's own kind 404s a missing id). Both legs are
+	// the reachable stranding cases r6 enumerated — verified red
+	// against the pre-fix code before landing.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/permission/") && strings.Contains(r.URL.Path, "que_"):
+		crossKind := (strings.HasPrefix(r.URL.Path, "/permission/") && strings.Contains(r.URL.Path, "que_")) ||
+			(strings.HasPrefix(r.URL.Path, "/question/") && strings.Contains(r.URL.Path, "per_"))
+		if crossKind {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected a string starting with \"per\""},"kind":"Params"}`))
-		default:
-			_, _ = w.Write([]byte(`true`))
+			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"prefix mismatch"},"kind":"Params"}`))
+			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/question/") {
+			// The dead-ask leg: question reject 404s a missing id.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"_tag":"QuestionNotFoundError"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`true`))
 	}))
 	t.Cleanup(srv.Close)
 
 	a := newTestAdapter(t, srv)
-	if err := a.RejectInput(context.Background(), "", "ws", "que_prefix2"); err != nil {
-		t.Fatalf("que-prefixed reject must stay question-only: %v", err)
+
+	// Leg 1 — dead que_ reject: the 404 from the ask's OWN kind is the
+	// absence signal; the cross-kind post (a guaranteed 400) must never
+	// happen. Pre-fix this errors with the 400 from the fallback.
+	if err := a.RejectInput(context.Background(), "", "ws", "que_dead1"); err == nil {
+		t.Fatal("dead que_ reject must surface the 404 absence signal, got nil")
+	} else if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("dead que_ reject must surface the 404 (absence signal), got: %v", err)
+	}
+
+	// Leg 2 — live per_ dismiss: the question reject endpoint 400s a
+	// per_ id (prefix validation); the permission reply must carry the
+	// reject and succeed. Pre-fix the 400 aborts before the permission
+	// leg is reachable.
+	if err := a.RejectInput(context.Background(), "", "ws", "per_live1"); err != nil {
+		t.Fatalf("per_ dismiss must reach the permission reply, got: %v", err)
 	}
 }

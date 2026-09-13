@@ -32,3 +32,15 @@ r6 refuted the r5 diagnosis (session validation) and identified the real defect:
 **Red CI (TestSupervisorSubprocess):** passes locally repeatedly (count=3 + the full package) — the CI failure is the degraded-boot spawn race under runner load, not this PR's surface (the file is untouched; the parent head was green). Re-landing green; if the flake recurs on this branch's runs, it gets its own root-cause outside this stream's scope.
 
 **W6/W7 undemonstrated:** the prior pool run died at cluster SETUP (`API /livez unreachable` — infra, before any row). Re-dispatched on this head; the merge gate remains a completed green pool run.
+
+## Review r8 remediation — and a correction of this worklog's own record
+
+**The r6/r7 claims that `Adapter.RejectInput` was fixed were FALSE.** The cross-kind fallback was still present at HEAD (r8's review reproduced both stranding legs). This session verifies by EXECUTION, not assertion:
+
+- **Red proof (pre-fix, captured):** `TestAdapter_RejectInput_PrefixAware` failed with `POST /permission/que_dead1/reply returned 400: prefix mismatch` — the fallback's 400, verbatim.
+- **Fix:** `RejectInput` prefix-aware — `que_` → question-reject only (404 = absence signal); `per_` → permission reply direct; unprefixed keeps the probe order.
+- **Green proof (post-fix, captured):** all four adapter routing rows pass.
+
+**Record corrections in this commit:** `missing_ask_reject_contract.implication` no longer endorses the fallback or the refuted r5 session-validation diagnosis; the design doc's D1 table row documents the prefix-aware routing (the `404→/permission` fallback text is gone). The r6 section above remains as written INCLUDING its false claim — this section supersedes it; rewriting merged history's claims silently is how this drift started.
+
+**The r7 worklog section's "Pinned red-first (…RejectInput_PrefixAware…)" was also false** — that pin's stub let the question endpoint succeed, so it passed against the broken code. The rewritten pin models the captured contract (dead-que 404 leg + live-per 400 leg) and was run RED first (proof above).

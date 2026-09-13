@@ -185,7 +185,7 @@
     "message": "Permission request not found: per_\u2026"
    }
   },
-  "implication": "The D1 fallback (question-reject 404 \u2192 permission reply) and the 404-typed resolve-by-absence fold consume the correct harness codes. The W6 e2e 400 was NOT this contract \u2014 it was the authority rejecting a synthetic session id it never knew: the walk-away row must seed its inbox record against a REAL session."
+  "implication": "The ask's OWN kind endpoint 404s a missing id \u2014 that 404 is the absence signal the authority's resolve-by-absence consumes (S6). Cross-kind posts are NOT a routing option (see cross_prefix_contract). The W6 e2e failure's root cause was the cross-kind fallback, not session validation (the r5 diagnosis was wrong; superseded by r6/r8)."
  },
  "cross_prefix_contract": {
   "captured": "2026-09-13, 4a r6 (the W6 e2e failure's true root cause)",

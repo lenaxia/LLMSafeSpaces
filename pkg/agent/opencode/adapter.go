@@ -1009,24 +1009,29 @@ func (a *Adapter) ReplyPermission(ctx context.Context, userID, workspaceID, requ
 }
 
 // RejectInput dismisses a pending ask without an answer (#1313). The
-// question reject endpoint is distinct from the reply endpoint on this
-// harness (the reply schema is additionalProperties:false), so the
-// question path rejects outright and a 404 falls through to the
-// permission reject reply.
+// harness PREFIX-VALIDATES request IDs (a cross-kind post is a 400
+// Params error, never a 404 — captured live, 4a r6/r8): a que_ id
+// rejects on the question endpoint only and its 404 is the absence
+// signal callers consume (S6); a per_ id goes straight to the
+// permission reply; unprefixed ids keep the legacy probe order.
 func (a *Adapter) RejectInput(ctx context.Context, userID, workspaceID, requestID string) error {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return err
 	}
 	d := &Dialect{}
-	qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
-	if qErr == nil {
-		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-		if qResp.StatusCode < 400 {
-			return nil
-		}
-		if qResp.StatusCode != http.StatusNotFound {
-			return a.httpError("POST "+d.QuestionRejectPath(requestID), qResp)
+	isQ := strings.HasPrefix(requestID, "que_")
+	isP := strings.HasPrefix(requestID, "per_")
+	if isQ || !isP {
+		qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
+		if qErr == nil {
+			defer qResp.Body.Close() //nolint:errcheck // best-effort drain
+			if qResp.StatusCode < 400 {
+				return nil
+			}
+			if qResp.StatusCode != http.StatusNotFound || isQ {
+				return a.httpError("POST "+d.QuestionRejectPath(requestID), qResp)
+			}
 		}
 	}
 	pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": "reject"})
