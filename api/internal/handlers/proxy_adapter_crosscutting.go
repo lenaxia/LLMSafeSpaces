@@ -18,7 +18,7 @@ import (
 const adapterRetryAfterSec = 10
 
 // resolveWorkspaceForAdapter performs the workspace-readiness check
-// shared between the adapter path and the legacy proxy path. It fetches
+// used by every adapter-served route. It fetches
 // the workspace CRD, verifies the workspace is Active with a PodIP, and
 // enforces the per-workspace connection limit.
 //
@@ -110,7 +110,7 @@ func (h *ProxyHandler) checkAdapterQuota(c *gin.Context, workspace *v1.Workspace
 }
 
 // postAdapterSuccess performs the cross-cutting post-success side
-// effects shared between the adapter path and the legacy proxy path:
+// effects used by every adapter-served route:
 // activity tracking, session-index message recording, and metering.
 func (h *ProxyHandler) postAdapterSuccess(c *gin.Context, workspace *v1.Workspace, workspaceID, sessionID string, isWriteOp bool) {
 	if h.activityTracker != nil {

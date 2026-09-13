@@ -346,8 +346,8 @@ func (h *ProxyHandler) state() wsstate.Store {
 
 // --- Adapter resolver bridges (US-65.4 infrastructure) ---
 //
-// ProxyHandler already resolves pod IPs and passwords for its legacy
-// resolution infrastructure. These thin wrappers expose that infrastructure
+// The ResolverHost resolves pod IPs and passwords — the live resolution
+// infrastructure the Agent Adapter consumes. These thin wrappers expose it
 // as plain Go function/interface types so app.go can construct the
 // Agent Adapter without duplicating the K8s + Secret lookup logic.
 //

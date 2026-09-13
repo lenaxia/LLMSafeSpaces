@@ -98,8 +98,8 @@ None.
 - **ResolverHost empty-password arm executed**: `TestResolverHost_GetPassword_EmptyPasswordKey` re-homes the deleted `TestProxy_EmptyPasswordKey` against the host (production-live on every adapter call).
 - **Dead transport helpers deleted** with their suites: `stripVerboseQuery` (+7 rows), `copyResponseHeaders` (+4 rows in auth_cache, +2 in headers_allowlist), `isConnectionError` (+its table row), `blockedResponseHeaders`. `copyRequestHeaders` survives (dev_preview's legitimate consumer).
 - **`SetAdapterForTest` deleted** — zero call sites repo-wide (the mcp harness now constructs with the adapter directly).
-- **Stale refs swept (r2 correction):** the r1 worklog CLAIMED the adapter field doc + modelPolicyChecker cite were swept — they were NOT (the r1 commit touched only other files; verified false at r2 review). Actually swept in r2: both field docs, proxy_input's mid-sentence, the contract-stream/gauges cites (three botched r1 rewrites repaired), .golangci.yml's transport cite, the infra-test header's SetAdapter cite.
-- **ResolverHost.logger dropped** (assigned-never-read; errors carry the failures) — and in r2 the unused ctor param went with it (the "signature stability" rationale violated zero-tech-debt; both call sites rewired).
+- **Stale refs swept (r2 correction):** the r1 worklog CLAIMED the adapter field doc + modelPolicyChecker cite were swept — they were NOT (the r1 commit touched only other files; verified false at r2 review). Actually swept: both field docs (r2), proxy_input's mid-sentence (r1, e3485bea — erroneously listed in the r2 set), the contract-stream/gauges cites (three botched r1 rewrites repaired), .golangci.yml's transport cite, the infra-test header's SetAdapter cite.
+- **ResolverHost.logger dropped** (assigned-never-read; errors carry the failures) — and in r2 the unused ctor param went with it (the "signature stability" rationale violated zero-tech-debt; all three call sites rewired — app.go, the mcp harness, the host test).
 - **Design-stories knock-on landed**: `design/stories/README.md` epic-65 row records US-65.4/65.5 completed-and-superseded by #828 with the PR trail.
 - Cosmetic: redundant parens removed, bare brace blocks unwrapped.
 
@@ -111,3 +111,10 @@ None.
 - The three r1 botched rewrites repaired (contract-stream, stream-gauges, .golangci.yml — now grammatical and factually right: config.Load + app.New are the remaining gocyclo offenders).
 - `NewResolverHost` dropped the unused logger parameter; app.go, the mcp harness, and the host test rewired.
 - Record correction: c857d226's message named `isConnectionError` while deleting `hopByHopHeaders`/`fakeK8sWrap` — the `isConnectionError` deletion landed in 8c9d527d. Both commits together complete the orphan sweep the r1 worklog described.
+
+---
+
+## Review r3 remediation (PR #1362)
+
+- The four stale present-tense comments fixed: resolveWorkspaceForAdapter + postAdapterSuccess ("shared between the adapter path and the legacy proxy path" → adapter-served-routes reality), recordActivityIfTracked's transport clause (past tense), the resolver-bridge doc's "legacy resolution infrastructure" (the ResolverHost IS the live infra).
+- The two worklog attribution nits corrected in place (r1-vs-r2 sweep attribution; three call sites, not two).
