@@ -603,26 +603,6 @@ func TestProxy_ActivityRecordedOnSuccess(t *testing.T) {
 
 // --- Epic 25 B2: mid-stream upstream read error → SSE error event ---
 
-// midStreamResetTransport sends one chunk then injects a TCP RST-like error
-// on the next read to simulate a pod crash mid-stream.
-type midStreamResetTransport struct{}
-
-func (t *midStreamResetTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	pr, pw := io.Pipe()
-	resp := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-		Body:       pr,
-		Request:    req,
-	}
-	go func() {
-		// Write one valid SSE chunk, then inject an error simulating a pod crash.
-		_, _ = pw.Write([]byte("data: {\"type\":\"session.started\"}\n\n"))
-		pw.CloseWithError(fmt.Errorf("read tcp: connection reset by peer"))
-	}()
-	return resp, nil
-}
-
 // TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // TestProxy_B2_CleanStreamEnd_NoSSEError was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).

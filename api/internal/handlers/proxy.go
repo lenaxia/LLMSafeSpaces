@@ -265,10 +265,6 @@ func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 	h.outbox = o
 }
 
-// SetUserBrokerForTest wires the workspace SSE broker without running
-// Start (tests only; production creates the broker inside Start). The
-// mcp-router integration gate (api/internal/server) drives StreamEvents
-// through the production router and publishes events on this broker.
 // SetAdapterForTest wires the Agent Adapter after construction
 // (out-of-package integration tests only; in-package tests assign the
 // field directly).
@@ -276,6 +272,10 @@ func (h *ProxyHandler) SetAdapterForTest(a agent.Adapter) {
 	h.adapter = a
 }
 
+// SetUserBrokerForTest wires the workspace SSE broker without running
+// Start (tests only; production creates the broker inside Start). The
+// mcp-router integration gate (api/internal/server) drives StreamEvents
+// through the production router and publishes events on this broker.
 func (h *ProxyHandler) SetUserBrokerForTest(b *eventbroker.UserEventBroker) {
 	h.userBroker = b
 }
@@ -332,13 +332,6 @@ func (h *ProxyHandler) SetResolverHost(host *ResolverHost) {
 	}
 	h.resolvers = host
 }
-
-// chatErrorBufferCap bounds the amount of upstream body buffered when an
-// onErrorBody transform is supplied. Chat error responses are small JSON
-// payloads (~1 KB); a runaway upstream must not consume unbounded memory.
-// Truncation is handled by EnrichChatErrorBody (non-JSON wraps to a 1024-byte
-// "message" field), so anything above this cap is dropped on the floor.
-const chatErrorBufferCap = 64 * 1024
 
 // checkProxyQuota gates a proxied request on the caller's quotas.
 // Returns true if the request should proceed, false if it was rejected
