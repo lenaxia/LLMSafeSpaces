@@ -327,6 +327,9 @@ func TestInbox_QuestionReply_LateAnswerDuplicateIsIdempotent(t *testing.T) {
 }
 
 func TestInbox_QuestionReply_LiveAskStillProxies(t *testing.T) {
+	// "Proxies" predates #828 batch 3: the live ask now answers via
+	// adapter.AnswerQuestion (the raw proxy is gone); every other
+	// observable of this row is unchanged.
 	env := newInputTestEnv(t)
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
@@ -341,6 +344,7 @@ func TestInbox_QuestionReply_LiveAskStillProxies(t *testing.T) {
 				Question: "Go?", Options: []session.InputOption{{Label: "Go", Description: ""}},
 			}}, nil
 		},
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error { return nil },
 	}
 	in := inbox.New(client)
 	require.NoError(t, in.Record(context.Background(), "ws-1", inbox.Record{
@@ -403,6 +407,7 @@ func TestInbox_QuestionReject_LiveRejectTerminalizesDismissed(t *testing.T) {
 	env.handler.SetInboxStoreForTest(in)
 	env.handler.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
 	env.handler.adapter = &mockAdapter{
+		rejectInputFn: func(_ context.Context, _, _, _ string) error { return nil },
 		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
 			return []session.InputRequest{{
 				ID: "que_abc123", SessionID: "ses_1", Kind: session.InputQuestion, Question: "Go?",

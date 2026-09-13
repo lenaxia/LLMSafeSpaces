@@ -40,6 +40,14 @@ func newQuestionFlowEnv(t *testing.T, podHandler http.HandlerFunc) *testEnv {
 	t.Helper()
 	env := newTestEnvWithBackend(t, podHandler)
 	env.handler.dialect = &agentoc.Dialect{}
+	// #828 batch 3: the reply/reject routes ride the real adapter against
+	// the same pod stub (Basic Auth + dialect paths preserved).
+	env.handler.adapter = agentoc.NewAdapter(
+		env.handler.AdapterPasswordResolver(),
+		env.handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
+	)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 	t.Cleanup(stubUsageStream())
@@ -127,7 +135,7 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 	assert.NotEmpty(t, gotPath, "pod must receive the reply POST")
 	assert.Contains(t, gotPath, "que_e2e", "path must include the question ID")
 	assert.Contains(t, gotPath, "/reply", "path must be the reply endpoint")
-	assert.Equal(t, replyPayload, gotBody, "reply body must reach the pod verbatim")
+	assert.JSONEq(t, replyPayload, gotBody, "reply body must reach the pod with the answers schema")
 	assert.Equal(t, "application/json", gotCT)
 
 	// 5. The pod resolves the input; the user stream gets agent.question.resolved.
@@ -231,10 +239,67 @@ func TestE2E_QuestionFlow_BadRequestIDReturns400(t *testing.T) {
 // TestE2E_QuestionFlow_SuspendedWorkspaceReturns503 verifies that a
 // suspended workspace never reaches the pod — the proxy must 503 before
 // forwarding.
+// TestE2E_PermissionReply_WireContract mirrors the question round-trip's
+// wire assertions for the permission branch: the real adapter posts the
+// {reply, message} schema with Basic Auth to the dialect path (#828
+// batch 3 r1: the message field must survive the adapter seam).
+func TestE2E_PermissionReply_WireContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var gotPath, gotBody string
+	var gotUser, gotPass string
+	podBackend := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, _ = r.BasicAuth()
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reply") {
+			b, _ := io.ReadAll(r.Body)
+			gotPath, gotBody = r.URL.Path, string(b)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+	env := newTestEnvWithBackend(t, podBackend)
+	env.handler.dialect = &agentoc.Dialect{}
+	env.handler.adapter = agentoc.NewAdapter(
+		env.handler.AdapterPasswordResolver(),
+		env.handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
+	)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-pw")
+
+	env.router.POST("/api/v1/workspaces/:id/permission/:requestID/reply", env.handler.PermissionReply)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/workspaces/ws-1/permission/per_abc123/reply",
+		strings.NewReader(`{"reply":"always","message":"trusted tool"}`))
+	req.Header.Set("Content-Type", "application/json")
+	env.router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, gotPath, "per_abc123", "path must include the permission ID")
+	assert.Contains(t, gotPath, "/reply")
+	assert.JSONEq(t, `{"reply":"always","message":"trusted tool"}`, gotBody,
+		"both fields reach the pod verbatim")
+	assert.Equal(t, "opencode", gotUser)
+	assert.Equal(t, "test-pw", gotPass)
+}
+
 func TestE2E_QuestionFlow_SuspendedWorkspaceReturns503(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env := newTestEnv(t)
+	// Real adapter wired (as the flow rows) + suspended CRD: the 503 now
+	// comes from resolveWorkspaceForAdapter BEFORE the adapter is
+	// consulted (r1 remediation — the guard the raw transport enforced
+	// is re-homed, not lost).
 	env.handler.dialect = &agentoc.Dialect{}
+	env.handler.adapter = agentoc.NewAdapter(
+		env.handler.AdapterPasswordResolver(),
+		env.handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
+	)
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
 		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseSuspended), "ws-1"), nil).Maybe()
 
@@ -245,4 +310,5 @@ func TestE2E_QuestionFlow_SuspendedWorkspaceReturns503(t *testing.T) {
 		"/api/v1/workspaces/ws-1/question/que_abc/reply", nil)
 	env.router.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.NotEmpty(t, rec.Header().Get("Retry-After"), "the 503 carries the retry payload")
 }

@@ -350,22 +350,17 @@ func (h *ProxyHandler) SetStateStore(store wsstate.Store) {
 	h.stateStore = store
 }
 
-func (h *ProxyHandler) proxyToWorkspace(c *gin.Context, targetPath string, isWriteOp bool, sessionID string) {
-	h.proxyToWorkspaceWithErrBody(c, targetPath, isWriteOp, sessionID, nil, false)
-}
-
-// proxyToWorkspaceWithErrBody behaves like proxyToWorkspace but optionally
-// rewrites the response body on 4xx/5xx. When onErrorBody is non-nil and the
-// upstream returns status >= 400, the response body is buffered (up to
-// chatErrorBufferCap bytes), passed through onErrorBody, and the transformed
-// bytes are written to the client. Used by SendMessage (US-27b.5) to inject
-// the agentNeedsRefresh / hint fields when the agent fails with staged
-// credentials pending. 2xx responses stream as before (no buffering).
+// proxyToWorkspaceWithErrBody is the raw-proxy transport. Since #828
+// batches 1-3 it has NO production caller — every handler route is
+// adapter-only — and it survives solely for the test seams
+// (registerLegacyMessageTransport / registerLegacyReadTransport), which
+// pin the write-op/connection-ceiling/request-buffer/SSE/error-body
+// arms until the final batch deletes the transport with its seams.
 //
-// When bufferable is true and the forward fails with a connection error
-// (opencode restarting), the request is parked in the per-workspace request
-// buffer and retried until the upstream recovers or the buffer timeout elapses,
-// instead of returning 503 immediately. Only SendMessage sets bufferable.
+// Contract (unchanged): onErrorBody rewrites buffered 4xx/5xx bodies
+// (chatErrorBufferCap bound); bufferable parks connection-failed
+// requests in the per-workspace request buffer instead of returning
+// 503 immediately (opencode restarts); 2xx responses stream.
 //
 //nolint:gocyclo // proxy path has many independent guard clauses; complexity is inherent
 func (h *ProxyHandler) proxyToWorkspaceWithErrBody(

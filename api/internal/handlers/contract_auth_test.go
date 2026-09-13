@@ -146,6 +146,15 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, &agentoc.Dialect{})
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
+	// #828 batch 3: every route is adapter-served — wire the REAL adapter
+	// against the same auth-recording backend so the router-level
+	// BasicAuth contract is asserted through the full live stack.
+	handler.SetAdapter(agentoc.NewAdapter(
+		handler.AdapterPasswordResolver(),
+		handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(httpClient),
+	))
 
 	// Set up workspace + password
 	wsName := "ws-contract"
@@ -198,9 +207,9 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},
 		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", false},
-		// The question/permission routes are the last raw-proxy transport
-		// surface (#828 batch 3 migrates them) — with the dialect wired
-		// they reach the backend and carry its Basic auth.
+		// The question/permission lists reach the backend through the
+		// real adapter (ListPending GETs the dialect paths with Basic
+		// auth) — the router-level auth contract stays asserted here.
 		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", true},
 		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", true},
 		// These routes short-circuit before proxying (no queue state in
@@ -244,8 +253,9 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		})
 	}
 
-	// Cross-route sanity: every backend request across ALL subtests carried auth.
-	require.Greater(t, backend.count(), 0, "no routes reached the backend — test setup is broken")
+	// Cross-route sanity: every backend request across ALL subtests carried
+	// auth. The list routes ride the adapter, so records exist again.
+	require.Greater(t, backend.count(), 0, "the adapter-served list routes must reach the backend")
 	assert.True(t, backend.allRequestsHadAuth(),
 		"one or more opencode-proxied requests were missing Basic auth; records: %+v", backend.records())
 }

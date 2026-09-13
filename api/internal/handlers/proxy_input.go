@@ -13,12 +13,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -27,81 +25,195 @@ var (
 	permissionIDPattern = regexp.MustCompile(`^per_[a-zA-Z0-9_]+$`)
 )
 
-// ListQuestions proxies GET /question to the workspace pod.
+// ListQuestions returns the pending questions as the normalized
+// agent.QuestionRequest envelope (adapter ListPending, questions only).
 func (h *ProxyHandler) ListQuestions(c *gin.Context) {
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+	wid := c.Param("id")
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, h.dialect.QuestionListPath(), false, "")
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	pending, err := h.adapter.ListPending(c.Request.Context(), "", wid, "")
+	if err != nil {
+		// #1302: a ListPending failure is NON-AUTHORITATIVE — 503, never
+		// an authoritative empty (and not a 502: clients must not treat
+		// this as the agent's definitive answer).
+		h.logger.Error("ListQuestions: adapter failed", err, "workspaceID", wid)
+		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list questions"})
+		return
+	}
+	out := make([]*agent.QuestionRequest, 0, len(pending))
+	for _, ir := range pending {
+		if ir.Kind == session.InputQuestion {
+			out = append(out, h.toQuestionRequest(c.Request.Context(), wid, ir))
+		}
+	}
+	h.recordActivityIfTracked(wid)
+	c.JSON(http.StatusOK, out)
 }
 
-// QuestionReply proxies POST /question/:requestID/reply to the workspace pod.
-// A reply to a NON-live ask whose inbox record is pending (the walk-away
-// case, #1313) composes the Q&A user message through the outbox instead.
+// QuestionReply answers a live ask. A reply to a NON-live ask whose
+// inbox record is pending (the walk-away case, #1313) composes the Q&A
+// user message through the outbox instead.
 func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	requestID := c.Param("requestID")
 	if !questionIDPattern.MatchString(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question request ID format"})
 		return
 	}
-	if h.tryLateAnswer(c, c.Param("id"), requestID, extractQuestionAnswerBody) {
+	wid := c.Param("id")
+	if h.tryLateAnswer(c, wid, requestID, extractQuestionAnswerBody) {
 		return
 	}
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, h.dialect.QuestionReplyPath(requestID), false, "")
-	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "answered")
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
+		return
+	}
+	var payload struct {
+		Answers [][]string `json:"answers"`
+	}
+	if json.Unmarshal(body, &payload) != nil || len(payload.Answers) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reply carries no answers"})
+		return
+	}
+	if err := h.adapter.AnswerQuestion(c.Request.Context(), "", wid, requestID, payload.Answers); err != nil {
+		h.logger.Error("QuestionReply: adapter failed", err, "workspaceID", wid, "requestID", requestID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer question"})
+		return
+	}
+	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+	h.postAdapterSuccess(c, workspace, wid, "", true)
+	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
 
-// QuestionReject proxies POST /question/:requestID/reject to the workspace
-// pod. Rejecting a live ask is the dismiss exit for its inbox record
-// (#1313 S11): the user saw it and dismissed it — no whileAway
-// re-presentation.
+// QuestionReject dismisses a live ask. Rejecting a live ask is the
+// dismiss exit for its inbox record (#1313 S11): the user saw it and
+// dismissed it — no whileAway re-presentation.
 func (h *ProxyHandler) QuestionReject(c *gin.Context) {
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
-		return
-	}
 	requestID := c.Param("requestID")
 	if !questionIDPattern.MatchString(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question request ID format"})
 		return
 	}
-	h.proxyToWorkspace(c, h.dialect.QuestionRejectPath(requestID), false, "")
-	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "dismissed")
-}
-
-// ListPermissions proxies GET /permission to the workspace pod.
-func (h *ProxyHandler) ListPermissions(c *gin.Context) {
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+	wid := c.Param("id")
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, h.dialect.PermissionListPath(), false, "")
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
+	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
+		h.logger.Error("QuestionReject: adapter failed", err, "workspaceID", wid, "requestID", requestID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reject question"})
+		return
+	}
+	h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
+	h.postAdapterSuccess(c, workspace, wid, "", true)
+	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 }
 
-// PermissionReply proxies POST /permission/:requestID/reply to the
-// workspace pod. A reply to a non-live ask with a pending inbox record
-// lands as guidance-in-history (#1313): the original permission already
-// terminated not-granted; the late decision informs future turns.
+// ListPermissions returns the pending permissions as the normalized
+// agent.PermissionRequest envelope (adapter ListPending, permissions
+// only).
+func (h *ProxyHandler) ListPermissions(c *gin.Context) {
+	wid := c.Param("id")
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
+		return
+	}
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	pending, err := h.adapter.ListPending(c.Request.Context(), "", wid, "")
+	if err != nil {
+		// #1302: non-authoritative — 503, never an authoritative empty.
+		h.logger.Error("ListPermissions: adapter failed", err, "workspaceID", wid)
+		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list permissions"})
+		return
+	}
+	out := make([]*agent.PermissionRequest, 0, len(pending))
+	for _, ir := range pending {
+		if ir.Kind == session.InputPermission {
+			out = append(out, h.toPermissionRequest(c.Request.Context(), wid, ir))
+		}
+	}
+	h.recordActivityIfTracked(wid)
+	c.JSON(http.StatusOK, out)
+}
+
+// PermissionReply answers a live permission ask. A reply to a non-live
+// ask with a pending inbox record lands as guidance-in-history (#1313):
+// the original permission already terminated not-granted; the late
+// decision informs future turns.
 func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	requestID := c.Param("requestID")
 	if !permissionIDPattern.MatchString(requestID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission request ID format"})
 		return
 	}
-	if h.tryLateAnswer(c, c.Param("id"), requestID, extractPermissionReplyBody) {
+	wid := c.Param("id")
+	if h.tryLateAnswer(c, wid, requestID, extractPermissionReplyBody) {
 		return
 	}
-	if h.dialect == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "dialect not configured"})
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
-	h.proxyToWorkspace(c, h.dialect.PermissionReplyPath(requestID), false, "")
-	h.resolveInboxOnProxySuccess(c, c.Param("id"), requestID, "answered")
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
+		return
+	}
+	var payload struct {
+		Reply   string `json:"reply"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &payload) != nil || payload.Reply == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "reply carries no decision"})
+		return
+	}
+	if err := h.adapter.ReplyPermission(c.Request.Context(), "", wid, requestID, payload.Reply, payload.Message); err != nil {
+		h.logger.Error("PermissionReply: adapter failed", err, "workspaceID", wid, "requestID", requestID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer permission"})
+		return
+	}
+	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+	h.postAdapterSuccess(c, workspace, wid, "", true)
+	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
 
 // tryLateAnswer serves the walk-away flow: the ask is dead in the
@@ -214,72 +326,15 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Adapter path (US-65.4): unified ListPending returns both questions
-	// and permissions in one call, already typed as session.InputRequest.
-	// The legacy path does two separate fetchFromPod calls + dialect-based
-	// parsing.
-	if h.adapter != nil {
-		ok = h.emitPendingViaAdapter(ctx, workspaceID)
+	// Unified ListPending returns both questions and permissions in one
+	// call, already typed as session.InputRequest (#828 batch 3: the
+	// two-fetch dialect-parsing legacy tail is deleted). A nil adapter
+	// (dev/test wiring) leaves ok=false — the deferred D10 marker fires
+	// non-authoritative and clients keep their existing pending state.
+	if h.adapter == nil {
 		return
 	}
-
-	// Legacy path.
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return
-	}
-	workspace, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil || workspace.Status.Phase != phaseActive || workspace.Status.PodIP == "" {
-		return
-	}
-
-	password, err := h.getPassword(ctx, workspaceID)
-	if err != nil {
-		return
-	}
-
-	podIP := workspace.Status.PodIP
-
-	// Fetch and emit pending questions
-	if body, err := h.fetchFromPod(ctx, podIP, password, h.dialect.QuestionListPath()); err == nil {
-		ok = true
-		for _, req := range h.parseQuestionList(body) {
-			if h.sessionParents != nil {
-				req.RootSessionID = h.sessionParents.resolveRoot(ctx, workspaceID, req.SessionID)
-			} else {
-				req.RootSessionID = req.SessionID
-			}
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "agent.question",
-				SessionID: req.SessionID,
-				RequestID: req.ID,
-				Data:      req,
-			})
-		}
-	}
-
-	// Fetch and emit pending permissions (only if not auto-approving).
-	// A permission-list failure downgrades ok — the snapshot is not a
-	// complete picture of the workspace's pending set.
-	if !h.shouldAutoApprovePermissions(ctx, workspaceID) {
-		if body, err := h.fetchFromPod(ctx, podIP, password, h.dialect.PermissionListPath()); err == nil {
-			for _, req := range h.parsePermissionList(body) {
-				if h.sessionParents != nil {
-					req.RootSessionID = h.sessionParents.resolveRoot(ctx, workspaceID, req.SessionID)
-				} else {
-					req.RootSessionID = req.SessionID
-				}
-				h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-					Type:      "agent.permission",
-					SessionID: req.SessionID,
-					RequestID: req.ID,
-					Data:      req,
-				})
-			}
-		} else {
-			ok = false
-		}
-	}
+	ok = h.emitPendingViaAdapter(ctx, workspaceID)
 }
 
 // RequestInputSnapshot triggers an input-snapshot flight for the workspace:
@@ -296,8 +351,8 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
 		return
 	}
-	if h.dialect == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input dialect not configured"})
+	if h.adapter == nil {
+		h.adapterUnavailable(c)
 		return
 	}
 	// Detached context: the fetch (≤5s) must outlive this request, which
@@ -338,60 +393,20 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 		// events are droppable (busy-gated stream, broker replay bounds);
 		// this is the recovering write.
 		h.recordInboxAskFromSession(ctx, workspaceID, ir)
-		rootSession := ir.SessionID
-		if h.sessionParents != nil {
-			rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
-		}
 		switch ir.Kind {
 		case session.InputQuestion:
-			questionInfo := agent.QuestionInfo{
-				Question: ir.Question,
-				Header:   ir.Header,
-				Multiple: ir.Multiple,
-				Custom:   ir.Custom,
-			}
-			for _, o := range ir.Options {
-				questionInfo.Options = append(questionInfo.Options,
-					agent.QuestionOption{Label: o.Label, Description: o.Description})
-			}
-			req := &agent.QuestionRequest{
-				ID:            ir.ID,
-				SessionID:     ir.SessionID,
-				RootSessionID: rootSession,
-				Questions:     []agent.QuestionInfo{questionInfo},
-			}
-			if ir.Tool != nil {
-				req.Tool = &agent.ToolRef{
-					MessageID: ir.Tool.MessageID,
-					CallID:    ir.Tool.CallID,
-				}
-			}
 			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 				Type:      "agent.question",
 				SessionID: ir.SessionID,
 				RequestID: ir.ID,
-				Data:      req,
+				Data:      h.toQuestionRequest(ctx, workspaceID, ir),
 			})
 		case session.InputPermission:
-			req := &agent.PermissionRequest{
-				ID:            ir.ID,
-				SessionID:     ir.SessionID,
-				RootSessionID: rootSession,
-				Permission:    ir.Permission,
-				Patterns:      ir.Patterns,
-				Always:        ir.Always,
-			}
-			if ir.Tool != nil {
-				req.Tool = &agent.ToolRef{
-					MessageID: ir.Tool.MessageID,
-					CallID:    ir.Tool.CallID,
-				}
-			}
 			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 				Type:      "agent.permission",
 				SessionID: ir.SessionID,
 				RequestID: ir.ID,
-				Data:      req,
+				Data:      h.toPermissionRequest(ctx, workspaceID, ir),
 			})
 		}
 	}
@@ -401,54 +416,60 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 	return true
 }
 
-// fetchFromPod makes a GET request to the workspace pod.
-func (h *ProxyHandler) fetchFromPod(ctx context.Context, podIP, password, path string) ([]byte, error) {
-	url := fmt.Sprintf("http://%s:%d%s", podIP, opencodePort, path)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
+// toQuestionRequest translates a contract InputRequest into the
+// normalized agent.QuestionRequest envelope (root-session resolved) —
+// the shape both the REST list route and the SSE snapshot emit.
+func (h *ProxyHandler) toQuestionRequest(ctx context.Context, workspaceID string, ir session.InputRequest) *agent.QuestionRequest {
+	rootSession := ir.SessionID
+	if h.sessionParents != nil {
+		rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
 	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		h.logger.Warn("Failed to fetch pending input requests", "error", err, "path", path)
-		return nil, err
+	questionInfo := agent.QuestionInfo{
+		Question: ir.Question,
+		Header:   ir.Header,
+		Multiple: ir.Multiple,
+		Custom:   ir.Custom,
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d from %s", resp.StatusCode, url)
+	for _, o := range ir.Options {
+		questionInfo.Options = append(questionInfo.Options,
+			agent.QuestionOption{Label: o.Label, Description: o.Description})
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-}
-
-// parseQuestionList parses the response from GET /question into normalized requests.
-func (h *ProxyHandler) parseQuestionList(body []byte) []*agent.QuestionRequest {
-	var raw []json.RawMessage
-	if json.Unmarshal(body, &raw) != nil {
-		return nil
+	req := &agent.QuestionRequest{
+		ID:            ir.ID,
+		SessionID:     ir.SessionID,
+		RootSessionID: rootSession,
+		Questions:     []agent.QuestionInfo{questionInfo},
 	}
-	var results []*agent.QuestionRequest
-	for _, r := range raw {
-		if req, err := h.dialect.ParseQuestionRequest("question.asked", r); err == nil {
-			results = append(results, req)
+	if ir.Tool != nil {
+		req.Tool = &agent.ToolRef{
+			MessageID: ir.Tool.MessageID,
+			CallID:    ir.Tool.CallID,
 		}
 	}
-	return results
+	return req
 }
 
-// parsePermissionList parses the response from GET /permission into normalized requests.
-func (h *ProxyHandler) parsePermissionList(body []byte) []*agent.PermissionRequest {
-	var raw []json.RawMessage
-	if json.Unmarshal(body, &raw) != nil {
-		return nil
+// toPermissionRequest translates a contract InputRequest into the
+// normalized agent.PermissionRequest envelope (root-session resolved) —
+// the shape both the REST list route and the SSE snapshot emit.
+func (h *ProxyHandler) toPermissionRequest(ctx context.Context, workspaceID string, ir session.InputRequest) *agent.PermissionRequest {
+	rootSession := ir.SessionID
+	if h.sessionParents != nil {
+		rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
 	}
-	var results []*agent.PermissionRequest
-	for _, r := range raw {
-		if req, err := h.dialect.ParsePermissionRequest("permission.asked", r); err == nil {
-			results = append(results, req)
+	req := &agent.PermissionRequest{
+		ID:            ir.ID,
+		SessionID:     ir.SessionID,
+		RootSessionID: rootSession,
+		Permission:    ir.Permission,
+		Patterns:      ir.Patterns,
+		Always:        ir.Always,
+	}
+	if ir.Tool != nil {
+		req.Tool = &agent.ToolRef{
+			MessageID: ir.Tool.MessageID,
+			CallID:    ir.Tool.CallID,
 		}
 	}
-	return results
+	return req
 }

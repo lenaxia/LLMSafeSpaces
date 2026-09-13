@@ -737,6 +737,78 @@ func TestAdapter_Resolve_QuestionReply5xx_ReturnsError(t *testing.T) {
 		"5xx on question must NOT fall through to permission")
 }
 
+// --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
+
+// The Epic-25 G1 bounded-read invariant, re-pinned at the adapter seam
+// after fetchFromPod's deletion: readBody (the adapter's pod-read
+// chokepoint — ListPending uses the 1 MiB cap) truncates at the limit,
+// never buffering a runaway upstream unbounded.
+func TestReadBody_TruncatesAtLimit(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Repeat("x", 2<<20)))}
+	got, err := readBody(resp, 1<<20)
+	require.NoError(t, err)
+	assert.Len(t, got, 1<<20, "a 2MiB body reads as exactly the 1MiB cap — bounded, not unbounded")
+}
+
+// --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
+
+func TestAdapter_AnswerQuestion_PostsAnswersSchema(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_9/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.AnswerQuestion(context.Background(), "u-1", "ws-1", "que_9", [][]string{{"Go"}, {"Yes", "No"}})
+	require.NoError(t, err)
+	require.Contains(t, srv.requests, "POST /question/que_9/reply")
+	assert.JSONEq(t, `{"answers":[["Go"],["Yes","No"]]}`, string(srv.bodies["POST /question/que_9/reply"]),
+		"the verbatim {answers} schema — the endpoint is additionalProperties:false")
+	require.NotContains(t, srv.requests, "POST /permission",
+		"no cross-kind fallthrough on the schema-faithful method")
+}
+
+func TestAdapter_AnswerQuestion_5xx_ReturnsError(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_9/reply", `boom`, http.StatusBadGateway)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.AnswerQuestion(context.Background(), "u-1", "ws-1", "que_9", [][]string{{"Go"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "502")
+}
+
+func TestAdapter_ReplyPermission_MessageRidesBody(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/permission/per_9/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.ReplyPermission(context.Background(), "u-1", "ws-1", "per_9", "always", "trusted tool")
+	require.NoError(t, err)
+	require.Contains(t, srv.requests, "POST /permission/per_9/reply")
+	assert.JSONEq(t, `{"reply":"always","message":"trusted tool"}`, string(srv.bodies["POST /permission/per_9/reply"]),
+		"both fields ride the agent schema — the raw passthrough carried the message; the adapter preserves it")
+}
+
+func TestAdapter_ReplyPermission_EmptyMessageOmitted(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/permission/per_9/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.ReplyPermission(context.Background(), "u-1", "ws-1", "per_9", "once", "")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"reply":"once"}`, string(srv.bodies["POST /permission/per_9/reply"]),
+		"the message key is omitted when empty — matches the optional schema field")
+}
+
+func TestAdapter_ReplyPermission_5xx_ReturnsError(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/permission/per_9/reply", `boom`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.ReplyPermission(context.Background(), "u-1", "ws-1", "per_9", "once", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+}
+
 // --- FormatProviderConfig (PR #714 review follow-up: was untested) ---
 
 func TestAdapter_FormatProviderConfig_ProducesValidConfig(t *testing.T) {

@@ -329,8 +329,14 @@ func TestEmitPendingInputRequests_Adapter_Success_MarkerOKTrue(t *testing.T) {
 // reconnect).
 func TestRequestInputSnapshot_FiresFlight(t *testing.T) {
 	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
+	// #828 batch 3: the flight rides the adapter (ListPending); the
+	// ws-CRD mock serves the auto-approve config fetch.
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 

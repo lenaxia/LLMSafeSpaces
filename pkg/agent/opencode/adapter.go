@@ -948,6 +948,48 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 	return nil
 }
 
+// AnswerQuestion posts the question-reply schema verbatim
+// ({answers: string[][]}) — the endpoint is additionalProperties:false.
+func (a *Adapter) AnswerQuestion(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	d := &Dialect{}
+	resp, err := a.doPost(ctx, c, d.QuestionReplyPath(requestID), map[string]any{"answers": answers})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort drain
+	if resp.StatusCode >= 400 {
+		return a.httpError("POST "+d.QuestionReplyPath(requestID), resp)
+	}
+	return nil
+}
+
+// ReplyPermission posts the permission-reply schema verbatim
+// ({reply, message?}).
+func (a *Adapter) ReplyPermission(ctx context.Context, userID, workspaceID, requestID, reply, message string) error {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return err
+	}
+	d := &Dialect{}
+	body := map[string]any{"reply": reply}
+	if message != "" {
+		body["message"] = message
+	}
+	resp, err := a.doPost(ctx, c, d.PermissionReplyPath(requestID), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort drain
+	if resp.StatusCode >= 400 {
+		return a.httpError("POST "+d.PermissionReplyPath(requestID), resp)
+	}
+	return nil
+}
+
 // RejectInput dismisses a pending ask without an answer (#1313). The
 // question reject endpoint is distinct from the reply endpoint on this
 // harness (the reply schema is additionalProperties:false), so the
