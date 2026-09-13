@@ -79,9 +79,9 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		return
 	}
 	defer h.releaseConnection(wid)
-	if !h.checkAdapterQuota(c, workspace) {
-		return
-	}
+	// Validate BEFORE the quota gate (SendMessage's order): the gate is a
+	// permanent reservation — a malformed 400 must not burn an
+	// llm_request slot (r3).
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
@@ -92,6 +92,9 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	}
 	if json.Unmarshal(body, &payload) != nil || len(payload.Answers) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reply carries no answers"})
+		return
+	}
+	if !h.checkAdapterQuota(c, workspace) {
 		return
 	}
 	if err := h.adapter.AnswerQuestion(c.Request.Context(), "", wid, requestID, payload.Answers); err != nil {
@@ -190,9 +193,8 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		return
 	}
 	defer h.releaseConnection(wid)
-	if !h.checkAdapterQuota(c, workspace) {
-		return
-	}
+	// Validate BEFORE the quota gate (r3): a malformed 400 must not burn
+	// a permanent llm_request reservation.
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
@@ -204,6 +206,9 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	}
 	if json.Unmarshal(body, &payload) != nil || payload.Reply == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reply carries no decision"})
+		return
+	}
+	if !h.checkAdapterQuota(c, workspace) {
 		return
 	}
 	if err := h.adapter.ReplyPermission(c.Request.Context(), "", wid, requestID, payload.Reply, payload.Message); err != nil {

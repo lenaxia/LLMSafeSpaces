@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -271,9 +272,10 @@ func TestAutoApprovePermission_NilAdapter_NoPodHTTP(t *testing.T) {
 
 // Transport-guard parity (review r1): the routes keep the workspace
 // 404 / not-Active 503 / connection-ceiling guards the deleted transport
-// enforced — re-homed via resolveWorkspaceForAdapter. Metering is
-// deliberately NOT applied: an ask reply is not an llm_request (the
-// transport's metering covered proxied chat writes).
+// enforced — re-homed via resolveWorkspaceForAdapter. The write routes
+// are quota-gated + llm_request-metered (r2; the transport metered every
+// 2xx on these routes); the list polls stay unmetered (the transport's
+// poll metering was an over-count).
 func TestListQuestions_WorkspaceNotActive_Returns503(t *testing.T) {
 	env := newInputTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Suspended", "ws-1")
@@ -473,4 +475,136 @@ func TestQuestionReply_AdapterError_Returns502(t *testing.T) {
 	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
 		strings.NewReader(`{"answers":[["Go"]]}`))
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// --- r3: metering + quota pins for the r2 wiring ---
+
+func TestQuestionReply_2xx_MetersLLMRequest(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error { return nil },
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
+	ms.On("Record", mock.Anything).Return()
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{"answers":[["Go"]]}`))
+	require.Equal(t, http.StatusOK, w.Code)
+	ms.AssertCalled(t, "Record", mock.Anything)
+}
+
+func TestQuestionReject_2xx_MetersLLMRequest(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		rejectInputFn: func(_ context.Context, _, _, _ string) error { return nil },
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
+	ms.On("Record", mock.Anything).Return()
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	ms.AssertCalled(t, "Record", mock.Anything)
+}
+
+func TestPermissionReply_2xx_MetersLLMRequest(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		replyPermissionFn: func(_ context.Context, _, _, _ string, _, _ string) error { return nil },
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(true, int64(9), nil)
+	ms.On("Record", mock.Anything).Return()
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
+		strings.NewReader(`{"reply":"always"}`))
+	require.Equal(t, http.StatusOK, w.Code)
+	ms.AssertCalled(t, "Record", mock.Anything)
+}
+
+// r3 ordering pin: a malformed reply body must NOT burn a quota
+// reservation — validation precedes the gate (SendMessage's order).
+func TestQuestionReply_MalformedBody_DoesNotReserveQuota(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{}
+	ms := new(mocks.MockMeteringService)
+	env.handler.SetMeteringService(ms)
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{}`))
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	ms.AssertNotCalled(t, "ReserveQuota", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestQuestionReject_QuotaExceeded_Returns429(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		rejectInputFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called when over quota")
+			return nil
+		},
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, http.MethodPost, "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+func TestPermissionReply_QuotaExceeded_Returns429(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		replyPermissionFn: func(_ context.Context, _, _, _ string, _, _ string) error {
+			t.Fatal("adapter must not be called when over quota")
+			return nil
+		},
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
+	env.handler.SetMeteringService(ms)
+
+	w := doReplyAsUser(t, env, http.MethodPost, "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
+		strings.NewReader(`{"reply":"always"}`))
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+// doReplyAsUser routes a request with the authenticated-owner context the
+// quota gate and metering key on (extractAuth; the env router has no
+// auth middleware): a fresh router re-registering the input routes with
+// a userID-injecting wrapper.
+func doReplyAsUser(t *testing.T, env *testEnv, method, path string, body io.Reader) *httptest.ResponseRecorder {
+	t.Helper()
+	wrap := func(h gin.HandlerFunc) gin.HandlerFunc {
+		return func(c *gin.Context) {
+			c.Set("userID", "user-1")
+			h(c)
+		}
+	}
+	router := gin.New()
+	proxy := router.Group("/api/v1/workspaces/:id")
+	proxy.POST("/question/:requestID/reply", wrap(env.handler.QuestionReply))
+	proxy.POST("/question/:requestID/reject", wrap(env.handler.QuestionReject))
+	proxy.POST("/permission/:requestID/reply", wrap(env.handler.PermissionReply))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, body)
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	return rec
 }

@@ -112,3 +112,15 @@ None.
 - **Epic-25 G1 re-pinned at the adapter seam**: `TestReadBody_TruncatesAtLimit` (the 1 MiB chokepoint ListPending uses).
 - **Documented deltas vs the deleted transport** (recorded here per r2): body cap 10MB/413 → 1MB/400 on the reply routes; reply responses are the synthesized `{"status":"answered"}` envelope, not the pod body verbatim (frontend ignores reply bodies); a mid-turn pod-404 now surfaces 502 rather than the pod's raw 404 (#1302's absence-means-resolution reconciliation folds into the S1/Act migration).
 - **Batch-4 residue noted for the next session**: the snapshot flights still gate on `h.dialect != nil` in stream_user_events.go:302 + proxy_stream.go:96 though emitPendingInputRequests no longer touches the dialect.
+
+---
+
+## Review r3 remediation (PR #1357)
+
+- **Quota-before-validation reordered** on QuestionReply/PermissionReply (SendMessage's order): the gate is a permanent reservation — a malformed 400 must not burn an llm_request slot. Pinned by `TestQuestionReply_MalformedBody_DoesNotReserveQuota`. (QuestionReject has no body to validate.)
+- **Metering pinned on all three write routes** (the r2 headline had zero direct pins): happy-path rows with `MockMeteringService.On("Record")` + `AssertCalled`; the rows ride `doReplyAsUser` (a userID-injecting wrapper — postAdapterSuccess's Record keys on extractAuth, which the bare env router doesn't set).
+- **Quota-429 pinned on QuestionReject + PermissionReply** (was 1/3).
+- **Fossilized premise comment fixed** in the test header (writes meter; polls deliberately unmetered).
+- **contract_auth table rot fixed**: with the real adapter wired (r2), GetHistory/GetSession/DeleteSession DO reach the backend — flipped to `reachesBackend=true` with per-row auth assertions now executing; the annotation block rewritten.
+- **G1 pin relocated** above the AnswerQuestion/ReplyPermission section header (cosmetic).
+- Standing note for 4a: `sdks/openapi.yaml` still describes the pre-batch-3 shapes — land the regen promptly.
