@@ -146,6 +146,15 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, &agentoc.Dialect{})
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
+	// #828 batch 3: every route is adapter-served — wire the REAL adapter
+	// against the same auth-recording backend so the router-level
+	// BasicAuth contract is asserted through the full live stack.
+	handler.SetAdapter(agentoc.NewAdapter(
+		handler.AdapterPasswordResolver(),
+		handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(httpClient),
+	))
 
 	// Set up workspace + password
 	wsName := "ws-contract"
@@ -198,13 +207,11 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},
 		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", false},
-		// #828 batch 3: the question/permission routes are adapter-only —
-		// they short-circuit at the nil-adapter guard like the rest. The
-		// raw-proxy surface no longer exists anywhere in this route set;
-		// upstream BasicAuth is the adapter's contract, pinned by
-		// pkg/agent/opencode/adapter_test.go.
-		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", false},
-		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", false},
+		// The question/permission lists reach the backend through the
+		// real adapter (ListPending GETs the dialect paths with Basic
+		// auth) — the router-level auth contract stays asserted here.
+		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", true},
+		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", true},
 		// These routes short-circuit before proxying (no queue state in
 		// the fixture / guarded). The aggregate assertion below still
 		// catches them if a future change makes them proxy.
@@ -247,13 +254,10 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 	}
 
 	// Cross-route sanity: every backend request across ALL subtests carried
-	// auth. Post-batch-3 no route in this set proxies raw (zero records is
-	// the expected steady state) — the aggregate guards against a future
-	// route reintroducing the raw surface without auth.
-	if backend.count() > 0 {
-		assert.True(t, backend.allRequestsHadAuth(),
-			"one or more opencode-proxied requests were missing Basic auth; records: %+v", backend.records())
-	}
+	// auth. The list routes ride the adapter, so records exist again.
+	require.Greater(t, backend.count(), 0, "the adapter-served list routes must reach the backend")
+	assert.True(t, backend.allRequestsHadAuth(),
+		"one or more opencode-proxied requests were missing Basic auth; records: %+v", backend.records())
 }
 
 // TestContract_ModelsRoutesSendBasicAuth (US-29.7) verifies that the

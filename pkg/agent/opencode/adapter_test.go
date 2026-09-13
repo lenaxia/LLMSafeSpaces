@@ -739,6 +739,19 @@ func TestAdapter_Resolve_QuestionReply5xx_ReturnsError(t *testing.T) {
 
 // --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
 
+// The Epic-25 G1 bounded-read invariant, re-pinned at the adapter seam
+// after fetchFromPod's deletion: readBody (the adapter's pod-read
+// chokepoint — ListPending uses the 1 MiB cap) truncates at the limit,
+// never buffering a runaway upstream unbounded.
+func TestReadBody_TruncatesAtLimit(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Repeat("x", 2<<20)))}
+	got, err := readBody(resp, 1<<20)
+	require.NoError(t, err)
+	assert.Len(t, got, 1<<20, "a 2MiB body reads as exactly the 1MiB cap — bounded, not unbounded")
+}
+
+// --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
+
 func TestAdapter_AnswerQuestion_PostsAnswersSchema(t *testing.T) {
 	srv := newFakeOpencode(t)
 	srv.register("POST", "/question/que_9/reply", `{}`, 0)

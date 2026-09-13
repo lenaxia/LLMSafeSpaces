@@ -93,10 +93,22 @@ None.
 
 ## Review r1 remediation (PR #1357)
 
-- **Transport guards re-homed on all five routes** (r1's silent-regression finding): `resolveWorkspaceForAdapter` + connection-slot accounting — workspace-404 / not-Active-503-with-Retry-After / conn-ceiling-429 all enforced again, pinned by three new rows (NotActive-503, NotFound-404, Ceiling-429). **Metering deliberately NOT applied**: an ask reply is not an llm_request (the transport metered proxied chat writes); quota checks likewise scoped out (polls are cheap reads) — both documented decisions.
+- **Transport guards re-homed on all five routes** (r1's silent-regression finding): `resolveWorkspaceForAdapter` + connection-slot accounting — workspace-404 / not-Active-503-with-Retry-After / conn-ceiling-429 all enforced again, pinned by three new rows (NotActive-503, NotFound-404, Ceiling-429). Metering/quota initially scoped out on a WRONG premise ("the transport metered chat writes only") — the transport metered every 2xx unconditionally on these routes; r2 re-homed `checkAdapterQuota` + `postAdapterSuccess` (llm_request metering; session-index skipped for the empty sessionID) on all three WRITE routes, and deliberately keeps the LIST polls unmetered (the transport's poll metering was an over-count).
 - **#1302 mandate honored**: ListPending failures on the list routes → 503 non-authoritative (was 502), pinned by a dedicated row; write-route failures stay 502 (the agent's definitive rejection), pinned.
 - **SuspendedWorkspace e2e repaired**: real adapter + suspended CRD — the 503 now comes from the re-homed resolve guard (Retry-After asserted), no longer the vacuous green.
 - **Adapter unit rows added** (pkg/agent/opencode): AnswerQuestion (verbatim {answers} schema JSONEq, no cross-kind fallthrough, 5xx error) and ReplyPermission ×3 (message rides body, empty-message omitted, 5xx error).
 - **PermissionReply real-adapter wire row**: Basic Auth + dialect path + both body fields verbatim to the pod.
 - **#1302 S1 note for the epic**: `AnswerQuestion`/`ReplyPermission` encode the write-to-opencode path that the S1 amendment (replies through agentd Act) will replace — they are transitional surface, to be retired at the Act migration, not calcified. Recorded in the claim.
 - Commit-label nit accepted: the dead-code removal commit should have been `refactor:` (history not rewritten; squash-merge flattens).
+
+---
+
+## Review r2 remediation (PR #1357)
+
+- **Metering/quota corrected** (see the r1 correction above): writes gated + metered like SendMessage (quota-429 row pins the gate); polls stay unmetered as a deliberate over-count fix.
+- **Retry-After** added to both list-failure 503s (consistent retry semantics within a route), pinned.
+- **Coverage completed**: mislabeled 503 row fixed (it hit /permission) + the /question twin added; QuestionReject + PermissionReply 502 rows; guard-wiring rows for QuestionReject (NotActive), ListPermissions (NotFound), PermissionReply (Ceiling-429) — all with adapter mocks that t.Fatal if consulted.
+- **Contract suite un-vacuumed**: the REAL adapter wired against the auth-recording backend — the question/permission lists reach the pod through the full live stack and the router-level BasicAuth aggregate asserts again (records > 0 required).
+- **Epic-25 G1 re-pinned at the adapter seam**: `TestReadBody_TruncatesAtLimit` (the 1 MiB chokepoint ListPending uses).
+- **Documented deltas vs the deleted transport** (recorded here per r2): body cap 10MB/413 → 1MB/400 on the reply routes; reply responses are the synthesized `{"status":"answered"}` envelope, not the pod body verbatim (frontend ignores reply bodies); a mid-turn pod-404 now surfaces 502 rather than the pod's raw 404 (#1302's absence-means-resolution reconciliation folds into the S1/Act migration).
+- **Batch-4 residue noted for the next session**: the snapshot flights still gate on `h.dialect != nil` in stream_user_events.go:302 + proxy_stream.go:96 though emitPendingInputRequests no longer touches the dialect.

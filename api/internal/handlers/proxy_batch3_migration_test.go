@@ -8,13 +8,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -316,8 +319,8 @@ func TestQuestionReply_ConnectionCeiling_Returns429(t *testing.T) {
 }
 
 // #1302 mandate: a ListPending failure is non-authoritative — 503,
-// never an authoritative empty.
-func TestListQuestions_AdapterError_Returns503NonAuthoritative(t *testing.T) {
+// never an authoritative empty. Both list routes.
+func TestListPermissions_AdapterError_Returns503NonAuthoritative(t *testing.T) {
 	env := newInputTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
 	env.handler.adapter = &mockAdapter{
@@ -328,6 +331,132 @@ func TestListQuestions_AdapterError_Returns503NonAuthoritative(t *testing.T) {
 
 	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/permission", nil)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "#1302: non-authoritative failure, not 502")
+	assert.NotEmpty(t, w.Header().Get("Retry-After"), "the 503 carries retry semantics like the guard's")
+}
+
+func TestListQuestions_AdapterError_Returns503NonAuthoritative(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	}
+
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/question", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "#1302: non-authoritative failure, not 502")
+	assert.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+// The remaining write-route 502 branches (r2): every route's adapter-error
+// mapping is pinned.
+func TestQuestionReject_AdapterError_Returns502(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		rejectInputFn: func(_ context.Context, _, _, _ string) error {
+			return assert.AnError
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestPermissionReply_AdapterError_Returns502(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		replyPermissionFn: func(_ context.Context, _, _, _ string, _, _ string) error {
+			return assert.AnError
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
+		strings.NewReader(`{"reply":"always"}`))
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// Guard wiring on the remaining routes (r2): a dropped
+// resolveWorkspaceForAdapter must be test-visible on every route.
+func TestQuestionReject_WorkspaceNotActive_Returns503(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Suspended", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		rejectInputFn: func(_ context.Context, _, _, _ string) error {
+			t.Fatal("adapter must not be called for a suspended workspace")
+			return nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+func TestListPermissions_WorkspaceNotFound_Returns404(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).
+		Return(nil, fmt.Errorf("not found")).Once()
+	env.handler.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _ string, _ string) ([]session.InputRequest, error) {
+			t.Fatal("adapter must not be called for a missing workspace")
+			return nil, nil
+		},
+	}
+
+	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-missing/permission", nil)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestPermissionReply_ConnectionCeiling_Returns429(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspaceWithT(t, "ws-1", 5)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		replyPermissionFn: func(_ context.Context, _, _, _ string, _, _ string) error {
+			t.Fatal("adapter must not be called when the ceiling rejects")
+			return nil
+		},
+	}
+	env.handler.connMu.Lock()
+	env.handler.connCount["ws-1"] = maxConnectionsPerWorkspace
+	env.handler.connMu.Unlock()
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
+		strings.NewReader(`{"reply":"always"}`))
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+// Quota parity (r2): the reply writes are quota-gated like SendMessage.
+func TestQuestionReply_QuotaExceeded_Returns429(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
+	env.handler.adapter = &mockAdapter{
+		answerQuestionFn: func(_ context.Context, _, _, _ string, _ [][]string) error {
+			t.Fatal("adapter must not be called when over quota")
+			return nil
+		},
+	}
+	ms := new(mocks.MockMeteringService)
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_tokens").Return(true, int64(10), nil)
+	ms.On("ReserveQuota", mock.Anything, mock.Anything, "llm_request", int64(1)).Return(false, int64(0), nil)
+	env.handler.SetMeteringService(ms)
+
+	// The quota gate keys on the authenticated owner (extractAuth); the
+	// env router has no auth middleware, so set the context value the
+	// middleware would.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/workspaces/ws-1/question/que_abc123/reply",
+		strings.NewReader(`{"answers":[["Go"]]}`))
+	req.Header.Set("Content-Type", "application/json")
+	router := gin.New()
+	router.POST("/api/v1/workspaces/:id/question/:requestID/reply", func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		env.handler.QuestionReply(c)
+	})
+	router.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
 
 // Write-route adapter failures stay 502 (the agent's definitive

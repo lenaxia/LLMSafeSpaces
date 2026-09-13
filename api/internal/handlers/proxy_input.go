@@ -43,6 +43,7 @@ func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 		// an authoritative empty (and not a 502: clients must not treat
 		// this as the agent's definitive answer).
 		h.logger.Error("ListQuestions: adapter failed", err, "workspaceID", wid)
+		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list questions"})
 		return
 	}
@@ -73,10 +74,14 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
-	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
 		return
 	}
 	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
@@ -95,7 +100,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		return
 	}
 	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
-	h.recordActivityIfTracked(wid)
+	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
 
@@ -113,17 +118,21 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
-	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
 		return
 	}
 	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
 	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
 		h.logger.Error("QuestionReject: adapter failed", err, "workspaceID", wid, "requestID", requestID)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reject question"})
 		return
 	}
 	h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
-	h.recordActivityIfTracked(wid)
+	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 }
 
@@ -144,6 +153,7 @@ func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 	if err != nil {
 		// #1302: non-authoritative — 503, never an authoritative empty.
 		h.logger.Error("ListPermissions: adapter failed", err, "workspaceID", wid)
+		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list permissions"})
 		return
 	}
@@ -175,10 +185,14 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		h.adapterUnavailable(c)
 		return
 	}
-	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+	if !ok {
 		return
 	}
 	defer h.releaseConnection(wid)
+	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unreadable reply body"})
@@ -198,7 +212,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		return
 	}
 	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
-	h.recordActivityIfTracked(wid)
+	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
 
