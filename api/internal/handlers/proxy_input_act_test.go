@@ -106,7 +106,7 @@ func newInputActEnv(t *testing.T, opts inputActOpts) *inputActEnv {
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{})
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.userBroker.RecordWorkspaceOwner("ws-act", "user-1")
