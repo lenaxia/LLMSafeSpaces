@@ -310,7 +310,12 @@ func (h *ProxyHandler) snapshotUserWorkspaces(ctx context.Context, s *eventbroke
 			}
 			go func(id string) {
 				defer func() { _ = recover() }() // never let a fetch panic the snapshot
-				h.emitPendingInputRequests(ctx, id)
+				// Detached from the stream ctx (r5): the flight's
+				// body reads contexts concurrently with the stream's
+				// cancel (a -race on the ctx internals); the flight is
+				// bounded by emitPendingInputRequests' own 5s timeout —
+				// the same detach RequestInputSnapshot documents.
+				h.emitPendingInputRequests(context.WithoutCancel(ctx), id)
 			}(wsID)
 		}
 	}
