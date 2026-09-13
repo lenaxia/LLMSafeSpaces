@@ -40,6 +40,14 @@ func newQuestionFlowEnv(t *testing.T, podHandler http.HandlerFunc) *testEnv {
 	t.Helper()
 	env := newTestEnvWithBackend(t, podHandler)
 	env.handler.dialect = &agentoc.Dialect{}
+	// #828 batch 3: the reply/reject routes ride the real adapter against
+	// the same pod stub (Basic Auth + dialect paths preserved).
+	env.handler.adapter = agentoc.NewAdapter(
+		env.handler.AdapterPasswordResolver(),
+		env.handler.AdapterPodIPResolver(),
+		nil,
+		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
+	)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
 	t.Cleanup(stubUsageStream())
@@ -127,7 +135,7 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 	assert.NotEmpty(t, gotPath, "pod must receive the reply POST")
 	assert.Contains(t, gotPath, "que_e2e", "path must include the question ID")
 	assert.Contains(t, gotPath, "/reply", "path must be the reply endpoint")
-	assert.Equal(t, replyPayload, gotBody, "reply body must reach the pod verbatim")
+	assert.JSONEq(t, replyPayload, gotBody, "reply body must reach the pod with the answers schema")
 	assert.Equal(t, "application/json", gotCT)
 
 	// 5. The pod resolves the input; the user stream gets agent.question.resolved.

@@ -198,11 +198,13 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", false},
 		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", false},
-		// The question/permission routes are the last raw-proxy transport
-		// surface (#828 batch 3 migrates them) — with the dialect wired
-		// they reach the backend and carry its Basic auth.
-		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", true},
-		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", true},
+		// #828 batch 3: the question/permission routes are adapter-only —
+		// they short-circuit at the nil-adapter guard like the rest. The
+		// raw-proxy surface no longer exists anywhere in this route set;
+		// upstream BasicAuth is the adapter's contract, pinned by
+		// pkg/agent/opencode/adapter_test.go.
+		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", false},
+		{"GET", "/api/v1/workspaces/ws-contract/permission", "", "ListPermissions", false},
 		// These routes short-circuit before proxying (no queue state in
 		// the fixture / guarded). The aggregate assertion below still
 		// catches them if a future change makes them proxy.
@@ -244,10 +246,14 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		})
 	}
 
-	// Cross-route sanity: every backend request across ALL subtests carried auth.
-	require.Greater(t, backend.count(), 0, "no routes reached the backend — test setup is broken")
-	assert.True(t, backend.allRequestsHadAuth(),
-		"one or more opencode-proxied requests were missing Basic auth; records: %+v", backend.records())
+	// Cross-route sanity: every backend request across ALL subtests carried
+	// auth. Post-batch-3 no route in this set proxies raw (zero records is
+	// the expected steady state) — the aggregate guards against a future
+	// route reintroducing the raw surface without auth.
+	if backend.count() > 0 {
+		assert.True(t, backend.allRequestsHadAuth(),
+			"one or more opencode-proxied requests were missing Basic auth; records: %+v", backend.records())
+	}
 }
 
 // TestContract_ModelsRoutesSendBasicAuth (US-29.7) verifies that the
