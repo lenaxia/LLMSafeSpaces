@@ -40,3 +40,19 @@
 ## Blockers
 
 - None.
+
+## Review r1 remediation
+
+**F1 (S1 overclaim + DismissInboxRecord gap):** the route joined the Act map — its live reject now rides `answerQuestion{reply:"reject"}` in the authority regime (the same D1 vocabulary; pinned by `TestInputAct_DismissLiveAskGoesThroughAct`); the adapter path survives flag-off. The design doc's remaining-work map and the S1 statement now include it.
+
+**F2 (publishInboxResolved promised but missing):** `resolveInboxOnProxySuccess` and `dispositionInboxOnAction` publish the resolved event on every disposition — a dead ask has no harness INPUT_RESOLVED coming, so the API-side publish is the only cross-tab clear; duplicates for live asks are idempotent (client removal keys on the request ID). Pinned on the REST answer, permission-reject, and SessionAction paths.
+
+**F3 (dead-ask narrative):** the PR/design text now states the precise reachability — tryLateAnswer intercepts replies for record-carrying dead asks; resolve-by-absence serves QuestionReject-with-record and the actions route.
+
+**Robustness (unknown live set → 404):** `inputRequestSession` returns a tri-state; a ListPending failure with no identifying record answers 503 + Retry-After (non-authoritative doctrine), pinned.
+
+**Missing tests delivered (8 new rows):** live-miss→inbox-hit→Act lands; PermissionReply reject→dismissed+event; SessionAction reject→dismissed+event; REST answer publishes the event; unknown-live-set 503; connect-error mapping + flag-off on QuestionReject; flag-off on PermissionReply; live-dismiss through Act.
+
+**Style:** the duplicated hermetic Setenv pins collapsed to one per test.
+
+**E2E:** the cluster-bound S6 stale-click + L2 ≤2s legs are increment 2's rows (the design doc's sequencing; the write path's integration coverage here is the 15 in-process handler rows against real gin routers, a real event broker, and the Act stub).

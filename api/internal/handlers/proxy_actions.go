@@ -104,6 +104,9 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID stri
 		disposition = "dismissed"
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, disposition)
+	// r1 f2: the resolved event is the client's ONLY clear for a dead
+	// ask — publish on every disposition (idempotent by request ID).
+	h.publishInboxResolved(workspaceID, rec, disposition)
 }
 
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the

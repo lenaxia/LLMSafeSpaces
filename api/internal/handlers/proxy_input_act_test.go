@@ -151,6 +151,7 @@ func newInputActEnv(t *testing.T, opts inputActOpts) *inputActEnv {
 	g.POST("/question/:requestID/reject", handler.QuestionReject)
 	g.POST("/permission/:requestID/reply", handler.PermissionReply)
 	g.POST("/sessions/:sessionId/actions", handler.SessionAction)
+	g.DELETE("/sessions/:sessionId/inbox/:requestID", handler.DismissInboxRecord)
 	return &inputActEnv{router: router, handler: handler, inbox: in}
 }
 
@@ -380,4 +381,226 @@ func TestInputAct_SessionActionDispositionHook(t *testing.T) {
 	left, err := env.inbox.List(context.Background(), "ws-act", "ses_mcp")
 	require.NoError(t, err)
 	assert.Empty(t, left, "the SessionAction answer terminalizes the inbox record (3a deferral, landed)")
+}
+
+// --- r1 remediation rows ---
+
+func TestInputAct_LiveMissInboxHitActLands(t *testing.T) {
+	// r1 missing-case 1: the ask is NOT in the live set (dead) but its
+	// inbox record identifies the session — Act still lands (reject on
+	// a dead ask = resolve-by-absence agentd-side). Only reachable on
+	// QuestionReject among the routes (tryLateAnswer intercepts replies).
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil // live miss
+		},
+	})
+	require.NoError(t, env.inbox.Record(context.Background(), "ws-act", inbox.Record{
+		ID: "que_dead1", SessionID: "ses_frominbox", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Dead?", RecordedAt: time.Now().UTC(),
+	}))
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_dead1/reject", `{}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	select {
+	case got := <-stub.got:
+		assert.Equal(t, "ses_frominbox", got["sessionId"], "the inbox record resolves the session on a live miss")
+		ans, _ := got["answerQuestion"].(map[string]any)
+		assert.Equal(t, "que_dead1", ans["inputId"])
+		assert.Equal(t, "reject", ans["reply"])
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called")
+	}
+}
+
+func TestInputAct_PermissionReplyRejectDismissesRecord(t *testing.T) {
+	// r1 missing-case 2: PermissionReply terminus reject → dismissed
+	// disposition + the resolved event (r1 f2 — the client's only clear
+	// for a dead ask).
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "per_live9", SessionID: "ses_p", Kind: session.InputPermission,
+				Permission: "bash", Patterns: []string{"ls"},
+			}}, nil
+		},
+	})
+	require.NoError(t, env.inbox.Record(context.Background(), "ws-act", inbox.Record{
+		ID: "per_live9", SessionID: "ses_p", Kind: inbox.KindPermission, Status: inbox.StatusPending,
+		Permission: "bash", RecordedAt: time.Now().UTC(),
+	}))
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/permission/per_live9/reply", `{"reply":"reject"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	left, err := env.inbox.List(context.Background(), "ws-act", "ses_p")
+	require.NoError(t, err)
+	assert.Empty(t, left, "reject dismisses the record")
+	evt := recvWithTimeout(t, userSub, "agent.permission.resolved")
+	assert.Equal(t, "per_live9", evt.RequestID, "the disposition publishes the clear event (r1 f2)")
+}
+
+func TestInputAct_SessionActionRejectDismissesAndPublishes(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	})
+	require.NoError(t, env.inbox.Record(context.Background(), "ws-act", inbox.Record{
+		ID: "per_act9", SessionID: "ses_mcp", Kind: inbox.KindPermission, Status: inbox.StatusPending,
+		Permission: "bash", RecordedAt: time.Now().UTC(),
+	}))
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/sessions/ses_mcp/actions",
+		`{"answerQuestion":{"inputId":"per_act9","reply":"reject"}}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	left, err := env.inbox.List(context.Background(), "ws-act", "ses_mcp")
+	require.NoError(t, err)
+	assert.Empty(t, left, "SessionAction reject dismisses (r1 missing-case 2)")
+	evt := recvWithTimeout(t, userSub, "agent.permission.resolved")
+	assert.Equal(t, "per_act9", evt.RequestID)
+}
+
+func TestInputAct_QuestionReplyPublishesResolvedEvent(t *testing.T) {
+	// r1 f2: the REST answer path publishes the clear event — for a LIVE
+	// ask the harness event may follow (idempotent duplicate); for the
+	// record-carrying path this is the designed clear.
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return liveQuestion("que_evt7", "ses_e"), nil
+		},
+	})
+	require.NoError(t, env.inbox.Record(context.Background(), "ws-act", inbox.Record{
+		ID: "que_evt7", SessionID: "ses_e", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Go?", RecordedAt: time.Now().UTC(),
+	}))
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_evt7/reply", `{"answers":[["Go"]]}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	evt := recvWithTimeout(t, userSub, "agent.question.resolved")
+	assert.Equal(t, "que_evt7", evt.RequestID)
+}
+
+func TestInputAct_UnknownLiveSetIsNonAuthoritative(t *testing.T) {
+	// r1 robustness: a ListPending failure with no identifying record is
+	// 503 (non-authoritative), never an authoritative 404 (#1302 doctrine).
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	})
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_unresolvable/reply", `{"answers":[["Go"]]}`)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code, "unknown pending set → 503 + Retry-After, not 404")
+	assert.NotEmpty(t, w.Header().Get("Retry-After"))
+}
+
+func TestInputAct_QuestionRejectConnectErrorAndFlagOff(t *testing.T) {
+	failStub := newAnswerActStubPod(t, "not_found")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: failStub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return liveQuestion("que_ce1", "ses_ce"), nil
+		},
+	})
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_ce1/reject", `{}`)
+	assert.Equal(t, http.StatusNotFound, w.Code, "connect codes map on reject too (r1 minor)")
+
+	okStub := newAnswerActStubPod(t, "")
+	rejected := false
+	env2 := newInputActEnv(t, inputActOpts{
+		terminus: false, podURL: okStub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return liveQuestion("que_ce2", "ses_ce2"), nil
+		},
+		configure: func(h *ProxyHandler) {
+			h.adapter = &mockAdapter{
+				listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+					return liveQuestion("que_ce2", "ses_ce2"), nil
+				},
+				rejectInputFn: func(_ context.Context, _, _, _ string) error {
+					rejected = true
+					return nil
+				},
+			}
+		},
+	})
+	w2 := env2.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_ce2/reject", `{}`)
+	require.Equal(t, http.StatusOK, w2.Code, w2.Body.String())
+	assert.True(t, rejected, "flag-off keeps the adapter reject (r1 minor)")
+}
+
+func TestInputAct_PermissionReplyFlagOff(t *testing.T) {
+	replied := false
+	env := newInputActEnv(t, inputActOpts{
+		terminus: false, podURL: "http://127.0.0.1:1",
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+		configure: func(h *ProxyHandler) {
+			h.adapter = &mockAdapter{
+				listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+					return []session.InputRequest{{
+						ID: "per_fo", SessionID: "ses_fo", Kind: session.InputPermission, Permission: "bash",
+					}}, nil
+				},
+				replyPermissionFn: func(_ context.Context, _, _, _, reply, msg string) error {
+					replied = true
+					assert.Equal(t, "once", reply)
+					assert.Empty(t, msg)
+					return nil
+				},
+			}
+		},
+	})
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/permission/per_fo/reply", `{"reply":"once"}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.True(t, replied, "flag-off keeps the adapter permission reply (r1 minor)")
+}
+
+func TestInputAct_DismissLiveAskGoesThroughAct(t *testing.T) {
+	// r1 S1: DismissInboxRecord's live reject rides Act in the authority
+	// regime — the API makes zero mutating harness calls.
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return liveQuestion("que_dm1", "ses_dm"), nil
+		},
+	})
+	require.NoError(t, env.inbox.Record(context.Background(), "ws-act", inbox.Record{
+		ID: "que_dm1", SessionID: "ses_dm", Kind: inbox.KindQuestion, Status: inbox.StatusPending,
+		Question: "Live?", RecordedAt: time.Now().UTC(),
+	}))
+
+	w := env.do(t, http.MethodDelete, "/api/v1/workspaces/ws-act/sessions/ses_dm/inbox/que_dm1", "")
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	select {
+	case got := <-stub.got:
+		ans, ok := got["answerQuestion"].(map[string]any)
+		require.True(t, ok, "payload: %v", got)
+		assert.Equal(t, "que_dm1", ans["inputId"])
+		assert.Equal(t, "reject", ans["reply"], "dismiss of a live ask = the reject vocabulary through Act (r1 S1)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called for the live dismiss")
+	}
 }
