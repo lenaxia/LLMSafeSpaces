@@ -1024,7 +1024,14 @@ func (a *Adapter) RejectInput(ctx context.Context, userID, workspaceID, requestI
 	isP := strings.HasPrefix(requestID, "per_")
 	if isQ || !isP {
 		qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
-		if qErr == nil {
+		if qErr != nil {
+			if isQ {
+				// Transport failure on the ask's own kind surfaces as-is —
+				// falling through to a cross-kind post would trade the
+				// real error for a guaranteed 400 (r10 f1).
+				return qErr
+			}
+		} else {
 			defer qResp.Body.Close() //nolint:errcheck // best-effort drain
 			if qResp.StatusCode < 400 {
 				return nil

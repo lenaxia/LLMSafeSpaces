@@ -585,8 +585,10 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 		// vocabulary directly — route straight to the permission reply
 		// endpoint, no question-first probe, no lossy option encoding.
 		// 4a D1: reply="reject" on a question id is the DISMISS exit —
-		// the question reject endpoint first (the mirror of the answer
-		// path's question-first probe), permission fallback on 404.
+		// question-reject for que_ ids (its 404 is the absence signal
+		// for the fold); permission reply for per_ ids. No cross-kind
+		// fallback (the harness prefix-validates: cross-kind posts are
+		// 400 Params, never 404).
 		// 4a D2: the optional message rides the permission reply body
 		// (deny feedback the raw passthrough carried).
 		if ans.GetReply() != "" {

@@ -48,3 +48,10 @@ r6 refuted the r5 diagnosis (session validation) and identified the real defect:
 ## Review r9 — the silent exit-5 root-caused
 
 The 8th pool attempt died AT W6 with no ✗ line: the script's session-create hit `POST /workspaces/{ws}/sessions` — a GET-only route; the create route is `POST /sessions/new` (local/test.sh's own comment documents exactly this trap). The empty 404 body made `curl | jq` fail under `set -euo pipefail`, killing the script with the pipeline's code (5) and no diagnostic. Fixed: the correct route (`sessions/new`, empty body per test.sh's pinned contract), response parsed like test.sh does (sessionId|id|info.id), and LOUD on failure (code + body in the die). W1–W5 were all green in that run (W1 L7 in 1008ms; the whole walk-away battery to that point passed) — only the new W6 block was broken by my route error.
+
+## Review r10 remediation (the e2e gate CLOSED — run 34779130937, W6 200/event/32ms-L2/terminal + W7 409, whole pool success)
+
+Three record-vs-code closings, exactly as ordered:
+- **f1:** `RejectInput`'s transport-error corner — `qErr` now surfaces as-is for `que_` ids (mirroring `Resolve`); no cross-kind post can mask a transport failure.
+- **f2:** wiring.go's stale "permission fallback on 404" comment corrected to the prefix-aware routing it sits on.
+- **f3:** the W6 script's "(the authority validates it)" narrative replaced with the honest staging rationale (the r5-falsified diagnosis is gone).

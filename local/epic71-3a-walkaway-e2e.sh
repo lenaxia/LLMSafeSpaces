@@ -295,8 +295,10 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
 # click must CLEAR everywhere (resolved event ≤ L2), never a silent
 # no-op.
 log "W6: question reject through Act — resolve-by-absence clears (S6) within L2"
-# A REAL session: a walk-away ask belongs to a session that exists (the
-# authority validates it). The harness contract: the ask's OWN kind
+# A REAL session: a walk-away ask belongs to a session that exists in
+# the harness (the W6 ask id will 404 against it either way — that IS
+# the resolve-by-absence signal — but staging against a real session
+# models the production shape). The harness contract: the ask's OWN kind
 # endpoint 404s a missing id (cross-kind posts are 400 Params — pinned
 # in ask_terminal_states_1_18_15.json); that 404 is the absence signal
 # the resolve-by-absence fold consumes.
