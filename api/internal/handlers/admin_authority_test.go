@@ -55,7 +55,7 @@ func newFlipTestEnv(t *testing.T) (*AuthorityFlipHandler, *ProxyHandler, *httpte
 	wsCR.Status.PodIP = "10.0.0.1"
 	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(wsCR, nil)
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{Transport: &urlRewriteTransport{target: backend.URL}})
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{Transport: &urlRewriteTransport{target: backend.URL}}, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.userBroker = eventbroker.NewUserEventBroker()
 	h.userBroker.RecordWorkspaceOwner("ws-1", "user-1")

@@ -23,7 +23,7 @@ import (
 // userBroker.PublishToWorkspace -> subscriber channel.
 func TestProxy_OnAgentDied_PublishesAgentDiedToBroker(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = eventbroker.NewUserEventBroker()
@@ -50,7 +50,7 @@ func TestProxy_OnAgentDied_PublishesAgentDiedToBroker(t *testing.T) {
 // broker is not wired (e.g. unit tests or before Start).
 func TestProxy_OnAgentDied_NilBrokerDoesNotPanic(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = nil
@@ -65,7 +65,7 @@ func TestProxy_OnAgentDied_NilBrokerDoesNotPanic(t *testing.T) {
 // reconnecting user sees no warning and believes the workspace is healthy.
 func TestProxy_OnAgentDied_AlsoPublishedToUserChannel(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = eventbroker.NewUserEventBroker()
@@ -96,7 +96,7 @@ func TestProxy_OnAgentDied_AlsoPublishedToUserChannel(t *testing.T) {
 // is the exact scenario M2 fixes (frontend reconnects after agent death).
 func TestProxy_OnAgentDied_UserChannelReplaySurvivesReconnect(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = eventbroker.NewUserEventBroker()

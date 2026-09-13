@@ -397,7 +397,7 @@ func newProxyHandlerForAdapterTestWithDisk(t *testing.T, usedBytes, totalBytes i
 	}
 	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(wsCRD, nil)
 
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	return h
 }

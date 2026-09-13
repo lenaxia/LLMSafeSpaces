@@ -121,7 +121,7 @@ func startFullWiring(t *testing.T, wsName, podIP, priorPhase string, reconcileIn
 	require.NoError(t, err)
 
 	logger := &e2eLogger{}
-	handler, err := NewProxyHandler(k8sMock, logger, "default", backend.Client())
+	handler, err := NewProxyHandler(k8sMock, logger, "default", backend.Client(), newLenientMockAdapter())
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	t.Cleanup(func() {

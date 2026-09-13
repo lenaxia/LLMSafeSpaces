@@ -19,7 +19,13 @@ import (
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	kmocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	lmocks "github.com/lenaxia/llmsafespaces/mocks/logger"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 )
+
+// nullTestAdapter satisfies agent.Adapter for wiring-only tests: every
+// method delegates to the nil embedded interface and would panic if
+// called — these suites never drive adapter paths.
+type nullTestAdapter struct{ agent.Adapter }
 
 // adminSessionMockServices is a minimum-viable interfaces.Services that wires
 // only what NewRouter's middleware stack touches (auth, metrics). Everything
@@ -67,7 +73,7 @@ func newAdminSessionIntegrationRouter(t *testing.T, role string) (*gin.Engine, *
 	met := &imocks.MockMetricsService{}
 	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-	proxy, err := handlers.NewProxyHandler(kmocks.NewMockKubernetesClient(), lmocks.NewMockLogger(), "default", nil)
+	proxy, err := handlers.NewProxyHandler(kmocks.NewMockKubernetesClient(), lmocks.NewMockLogger(), "default", nil, nullTestAdapter{})
 	require.NoError(t, err)
 	adminLogger := lmocks.NewMockLogger()
 	adminLogger.On("Info", mock.Anything, mock.Anything).Maybe()

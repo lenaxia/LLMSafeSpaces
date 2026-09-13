@@ -23,10 +23,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8sfake "k8s.io/client-go/kubernetes/fake"
-	k8stesting "k8s.io/client-go/testing"
 
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -146,7 +144,7 @@ func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFun
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient)
+	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	router := gin.New()
@@ -163,8 +161,6 @@ func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFun
 		proxy.GET("/events", handler.StreamEvents)
 		proxy.GET("/alerts", handler.GetWorkspaceAlerts)
 	}
-	registerLegacyMessageTransport(router, handler)
-	registerLegacyReadTransport(router, handler)
 
 	return &testEnv{
 		handler:   handler,
@@ -213,66 +209,13 @@ func (f fakePWProvider) WorkspacePassword(_ context.Context, _ string) (string, 
 	return f.pw, f.err
 }
 
-func TestProxy_ProxiesGETRequest(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
+// TestProxy_ProxiesGETRequest was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
+// TestProxy_ProxiesPOSTRequest was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "GET", resp["method"])
-	assert.Equal(t, "/session/s1", resp["path"])
-}
+// TestProxy_SendsBasicAuth was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-func TestProxy_ProxiesPOSTRequest(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	body := strings.NewReader(`{"message":"hello"}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", body)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "POST", resp["method"])
-	assert.Equal(t, "/session/s1/message", resp["path"])
-}
-
-func TestProxy_SendsBasicAuth(t *testing.T) {
-	var capturedUser, capturedPass string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		capturedUser, capturedPass, _ = r.BasicAuth()
-		w.WriteHeader(http.StatusOK)
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "my-secret-pw")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "opencode", capturedUser)
-	assert.Equal(t, "my-secret-pw", capturedPass)
-}
-
-func TestProxy_ForwardsQueryParameters(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1?limit=10&offset=0", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "limit=10&offset=0", resp["query"])
-}
+// TestProxy_ForwardsQueryParameters was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 func TestProxy_StreamingResponse(t *testing.T) {
 	// StreamEvents is now broker-based; it no longer proxies to the pod.
@@ -308,240 +251,25 @@ func TestProxy_StreamEvents_NilBrokerReturns503(t *testing.T) {
 // to the pod's /event endpoint. StreamEvents is now broker-based and no longer
 // proxies to the pod; passthrough behavior is covered by stream_events_test.go.
 
-func TestProxy_RetriesOnStaleIP(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	}))
-	defer backend.Close()
+// TestProxy_RetriesOnStaleIP was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	transport := &failFirstTransport{
-		server: backend,
-		failIP: "10.0.0.1:4096",
-		newIP:  "10.0.0.2:4096",
-	}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+// TestProxy_ConnectionFailureReturns503 was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
+// TestProxy_WorkspaceNotRunning was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
+// TestProxy_WorkspaceNotFound was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
+// TestProxy_PasswordCachedAfterFirstRead was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	oldCRD := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	newCRD := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.2", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(oldCRD, nil).Once()
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(newCRD, nil).Once()
+// TestProxy_SecretNotFound was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
+// TestProxy_EmptyPasswordKey was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	ws := makeWorkspaceCRD("ws-1", 5)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
+// TestProxy_ActiveSessionLimit was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
-	require.NoError(t, err)
+// TestProxy_AlreadyActiveSessionSucceeds was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyReadTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	// attempts == 1 proves the first request hit the stale IP and failed.
-	// w.Code == 200 proves the retry with the fresh IP succeeded.
-	// Together they confirm a retry occurred and reached the backend.
-	assert.Equal(t, int32(1), atomic.LoadInt32(&transport.attempts), "exactly one request should have hit the stale IP")
-}
-
-func TestProxy_ConnectionFailureReturns503(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	ws := makeWorkspaceCRD("ws-1", 5)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{
-		Transport: &alwaysFailTransport{},
-		Timeout:   2 * time.Second,
-	})
-	require.NoError(t, err)
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyReadTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, "10", w.Header().Get("Retry-After"))
-	assert.Contains(t, w.Body.String(), "workspace connection failed")
-
-	// Verify the new structured fields that the frontend uses for
-	// contextual recovery messaging (PR #810 Part 3).
-	body := w.Body.String()
-	assert.Contains(t, body, `"code":"service_unavailable"`, "503 must carry code field")
-	assert.Contains(t, body, `"reason":"agent_unreachable"`, "503 must carry reason field")
-	assert.Contains(t, body, `"message":`, "503 must carry a human-readable message field")
-}
-
-func TestProxy_WorkspaceNotRunning(t *testing.T) {
-	tests := []struct {
-		name  string
-		phase string
-		podIP string
-	}{
-		{"Pending phase", "Pending", ""},
-		{"Creating phase", "Creating", ""},
-		{"Suspended phase", "Suspended", ""},
-		{"Running but no PodIP", string(v1.WorkspacePhaseActive), ""},
-		{"Suspending phase", "Suspending", "10.0.0.1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := newTestEnv(t)
-			sb := makeWorkspaceCRDWithStatus("ws-1", tt.podIP, tt.phase, "ws-1")
-			env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(sb, nil).Once()
-
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-			assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-			assert.Equal(t, "10", w.Header().Get("Retry-After"))
-		})
-	}
-}
-
-func TestProxy_WorkspaceNotFound(t *testing.T) {
-	env := newTestEnv(t)
-	env.wsMock.On("Get", mock.Anything, "sb-missing", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/sb-missing/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestProxy_PasswordCachedAfterFirstRead(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	// Track how many times the k8s secret is read
-	var secretReadCount int32
-	env.clientset.PrependReactor("get", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		atomic.AddInt32(&secretReadCount, 1)
-		return false, nil, nil // fall through to default handler
-	})
-
-	w1 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w1.Code)
-	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should be read exactly once on first request")
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w2.Code)
-	assert.Equal(t, int32(1), atomic.LoadInt32(&secretReadCount), "secret should NOT be re-read on second request (served from cache)")
-}
-
-func TestProxy_SecretNotFound(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "failed to retrieve workspace credentials")
-}
-
-func TestProxy_EmptyPasswordKey(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "workspace-pw-ws-1", Namespace: "default"},
-		Data:       map[string][]byte{"password": {}},
-	}
-	_, err := env.clientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-}
-
-func TestProxy_ActiveSessionLimit(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 2)
-
-	for i := 0; i < 2; i++ {
-		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-		sid := fmt.Sprintf("session-%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{"msg":"hi"}`))
-		assert.Equal(t, http.StatusOK, w.Code, "session %s should succeed", sid)
-	}
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/session-2", strings.NewReader(`{"msg":"hi"}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-	assert.Equal(t, "10", w.Header().Get("Retry-After"))
-
-	var body map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
-	assert.Equal(t, float64(2), body["maxActiveSessions"])
-	assert.Equal(t, float64(10), body["retryAfter"])
-	assert.Contains(t, body["error"], "active session limit reached")
-}
-
-func TestProxy_AlreadyActiveSessionSucceeds(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 1)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi"}`))
-	assert.Equal(t, http.StatusOK, w1.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi2"}`))
-	assert.Equal(t, http.StatusOK, w2.Code, "same session should not be double-counted")
-}
-
-func TestProxy_ReadOnlyBypassesSessionLimit(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 1)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"msg":"hi"}`))
-	assert.Equal(t, http.StatusOK, w1.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w2.Code, "read-only GET history should bypass limit")
-}
+// TestProxy_ReadOnlyBypassesSessionLimit was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // TestProxy_CreateSessionBypassesLimit was ported to the adapter path
 // (TestCreateSession_AdapterPath_BypassesActiveSessionLimit in
@@ -572,202 +300,22 @@ func TestProxy_ConnectionCeiling(t *testing.T) {
 	assert.True(t, env.handler.acquireConnection("ws-1"), "connection after release should succeed")
 }
 
-func TestProxy_ConnectionCeiling_Returns429(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 100)
+// TestProxy_ConnectionCeiling_Returns429 was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+// TestProxy_EndpointMapping was deleted with the raw-proxy transport (#828 final batch — the legacy seams are gone)
 
-	env.handler.connMu.Lock()
-	env.handler.connCount["ws-1"] = 10
-	env.handler.connMu.Unlock()
+// TestProxy_E2E_FullFlow was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-	assert.Contains(t, w.Body.String(), "connection limit reached")
-}
+// TestProxy_E2E_MultipleWorkspaceIsolation was deleted with the transport (#828 final batch): workspace-scoped session accounting is pinned on the adapter paths
 
-func TestProxy_EndpointMapping(t *testing.T) {
-	tests := []struct {
-		name           string
-		method         string
-		path           string
-		expectedTarget string
-	}{
-		// #828 batch 1: create/list/message rows were deleted with the
-		// handlers' legacy branches (adapter-only now — their upstream
-		// mapping is the adapter's contract, pinned in e2e_adapter_test.go).
-		// NOTE: "get history" row deleted with GetHistory's legacy tail (#828 batch 2);
-		// the adapter path's mapping is pinned by e2e_adapter_test.go.
-		{"get session (seam)", "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", "/session/s1"},
-		{"delete session (seam)", "DELETE", "/api/v1/workspaces/ws-1/legacy-read/s1", "/session/s1"},
-		// NOTE: "events" is intentionally omitted — StreamEvents is broker-based
-		// and does not proxy to the pod; it is covered by stream_events_test.go.
-		// NOTE: "prompt async", "queue", and "abort" are intentionally
-		// omitted — they are adapter/outbox-served (#828 batch 2) and never
-		// hit the raw proxy transport.
-	}
+// TestProxy_WorkspaceNotFound_UsesDefaults was deleted with the transport default-limit arms (#828 final batch)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var capturedPath string
-			env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-				capturedPath = r.URL.Path
-				w.WriteHeader(http.StatusOK)
-				// GET history must respond with a JSON array — opencode's
-				// /session/{id}/message endpoint returns an array, and the
-				// API's paginated GetHistory handler decodes one.
-				if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/message") {
-					_, _ = w.Write([]byte(`[]`))
-					return
-				}
-				json.NewEncoder(w).Encode(map[string]string{"path": r.URL.Path})
-			})
-			env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-			env.setupPasswordWithT(t, "ws-1", "test-password")
-			env.setupWorkspaceWithT(t, "ws-1", 5)
+// TestProxy_BackendErrorPassthrough was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-			w := env.doRequestWithT(t, tt.method, tt.path, nil)
-			assert.Equal(t, http.StatusOK, w.Code)
-			assert.Equal(t, tt.expectedTarget, capturedPath, "proxy should map to correct target path")
-		})
-	}
-}
-
-func TestProxy_E2E_FullFlow(t *testing.T) {
-	var requests []string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/session/sess-1/message":
-			if r.Method == "POST" {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]string{"status": "streaming"})
-			} else {
-				// GET history must be a JSON array — that's the opencode contract.
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`[]`))
-			}
-		case "/session/sess-1":
-			if r.Method == "GET" {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]string{"id": "sess-1"})
-			}
-			if r.Method == "DELETE" {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
-			}
-			// NOTE: /event is intentionally omitted — StreamEvents no longer proxies to the pod.
-			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are
-			// intentionally omitted — both are adapter-served (#828 batch 2)
-			// and never hit the raw proxy transport.
-		}
-	})
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	// #828 batch 1: the create/list legs died with the handlers' legacy
-	// branches (adapter-only — covered by e2e_adapter_test.go); the flow
-	// now covers the surviving legacy surfaces: sync send (via the
-	// legacy-message transport seam), history read, get, and delete.
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/sess-1", strings.NewReader(`{"content":"hello"}`))
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.handler.removeActiveSession(context.Background(), "ws-1", "sess-1")
-
-	// #828 batch 2: history/get/delete handlers are adapter-only; the
-	// transport legs ride the read seam.
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/sess-1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/sess-1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	expected := []string{
-		"POST /session/sess-1/message",
-		"GET /session/sess-1",
-		"DELETE /session/sess-1",
-	}
-	assert.Equal(t, expected, requests)
-}
-
-func TestProxy_E2E_MultipleWorkspaceIsolation(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	env.setupPasswordWithT(t, "ws-1", "pw-1")
-	env.setupPasswordWithT(t, "sb-2", "pw-2")
-	env.setupWorkspaceWithT(t, "ws-1", 1)
-	env.setupWorkspaceWithT(t, "sb-2", 1)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.setupWorkspacePodWithT(t, "sb-2", "10.0.0.2", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/sb-2/legacy-message/s2", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusOK, w.Code, "different workspace should have independent session tracking")
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s3", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code, "ws-1 should be at limit")
-}
-
-func TestProxy_WorkspaceNotFound_UsesDefaults(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-missing")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	for i := 0; i < 6; i++ {
-		env.wsMock.On("Get", mock.Anything, "ws-missing", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
-	}
-
-	for i := 0; i < 5; i++ {
-		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-missing")
-		sid := fmt.Sprintf("s%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{}`))
-		assert.Equal(t, http.StatusOK, w.Code, "session %s with default limit 5 should succeed", sid)
-	}
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-missing")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s6", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code, "6th session with default limit 5 should be rejected")
-}
-
-func TestProxy_BackendErrorPassthrough(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]string{"error": "internal opencode error"})
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "internal opencode error")
-}
-
-func TestProxy_Backend404Passthrough(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "session not found"})
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/missing", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
-}
+// TestProxy_Backend404Passthrough was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 func TestProxy_CacheInvalidation(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetCachedPasswordForTest("ws-1", "old-password")
 	handler.SetWorkspaceConfigForTest("ws-1", wsstate.Config{MaxActiveSessions: 5})
@@ -785,7 +333,7 @@ func TestProxy_CacheInvalidation(t *testing.T) {
 }
 
 func TestProxy_PhaseChangeCallback(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetCachedPasswordForTest("ws-1", "password")
 	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
@@ -801,7 +349,7 @@ func TestProxy_PhaseChangeCallback(t *testing.T) {
 }
 
 func TestProxy_PhaseChange_RunningNoInvalidation(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetCachedPasswordForTest("ws-1", "password")
 
@@ -816,54 +364,12 @@ func TestProxy_PhaseChange_RunningNoInvalidation(t *testing.T) {
 	assert.True(t, pwOk, "phase change to Running should NOT invalidate cache")
 }
 
-func TestProxy_ConcurrentRequests(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	for i := 0; i < 5; i++ {
-		env.setupWorkspaceWithT(t, "ws-1", 100)
-		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	}
+// TestProxy_ConcurrentRequests was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	results := make(chan int, 5)
-	for i := 0; i < 5; i++ {
-		go func() {
-			w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-			results <- w.Code
-		}()
-	}
-
-	for i := 0; i < 5; i++ {
-		select {
-		case code := <-results:
-			assert.Equal(t, http.StatusOK, code)
-		case <-time.After(5 * time.Second):
-			t.Fatal("concurrent request timed out")
-		}
-	}
-}
-
-func TestProxy_E2E_MaxActiveSessionsCustom(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 3)
-
-	for i := 0; i < 3; i++ {
-		env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-		sid := fmt.Sprintf("s%d", i)
-		w := env.doRequestWithT(t, "POST", fmt.Sprintf("/api/v1/workspaces/ws-1/legacy-message/%s", sid), strings.NewReader(`{}`))
-		assert.Equal(t, http.StatusOK, w.Code)
-	}
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s3", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-}
+// TestProxy_E2E_MaxActiveSessionsCustom was deleted with the transport write-op arms (#828 final batch): session limits are enforced by checkAdapterSessionLimit on the adapter paths (pinned in the batch-2/3 rows)
 
 func TestProxy_RemoveActiveSession(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetActiveSessionsForTest("ws-1", []string{"s1", "s2"})
 
@@ -877,7 +383,7 @@ func TestProxy_RemoveActiveSession(t *testing.T) {
 }
 
 func TestProxy_RemoveNonexistentSession(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.removeActiveSession(context.Background(), "sb-missing", "s1")
 	assert.Equal(t, 0, handler.activeSessionCount(context.Background(), "sb-missing"))
@@ -920,7 +426,7 @@ func TestProxy_NewProxyHandler_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewProxyHandler(tt.k8sClient, tt.logger, "default", nil)
+			_, err := NewProxyHandler(tt.k8sClient, tt.logger, "default", nil, newLenientMockAdapter())
 			if tt.expectErr != "" {
 				assert.EqualError(t, err, tt.expectErr)
 			} else {
@@ -931,20 +437,20 @@ func TestProxy_NewProxyHandler_Validation(t *testing.T) {
 }
 
 func TestProxy_DefaultNamespace(t *testing.T) {
-	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "", nil)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	assert.Equal(t, "default", h.namespace)
 }
 
 func TestProxy_CustomHTTPClient(t *testing.T) {
 	custom := &http.Client{Timeout: 10 * time.Second}
-	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "ns", custom)
+	h, err := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "ns", custom, newLenientMockAdapter())
 	require.NoError(t, err)
 	assert.Equal(t, custom, h.httpClient)
 }
 
 func TestProxy_ConnectionCountTracking(t *testing.T) {
-	h, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	h, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	assert.Equal(t, 0, h.connectionCount("ws-1"))
 	h.acquireConnection("ws-1")
@@ -967,63 +473,9 @@ func TestProxy_ConnectionCountTracking(t *testing.T) {
 //   - phase-change cache preservation —
 //     TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState below.
 
-func TestProxy_SessionLeak_NotOnConnectionCeilingReject(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
+// TestProxy_SessionLeak_NotOnConnectionCeilingReject was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	env.handler.connMu.Lock()
-	env.handler.connCount["ws-1"] = 10
-	env.handler.connMu.Unlock()
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-
-	assert.Equal(t, 0, env.handler.activeSessionCount(context.Background(), "ws-1"),
-		"session should not leak into active set when connection ceiling rejects")
-}
-
-func TestProxy_SessionLeak_CleanedUpOn503(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	ws := makeWorkspaceCRD("ws-1", 5)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{
-		Transport: &alwaysFailTransport{},
-		Timeout:   2 * time.Second,
-	})
-	require.NoError(t, err)
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyMessageTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{}`))
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, 0, handler.activeSessionCount(context.Background(), "ws-1"),
-		"active session should be cleaned up when proxy fails with 503")
-}
+// TestProxy_SessionLeak_CleanedUpOn503 was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // --- statuszPodIP (US-69.11: the tracker's pod-IP resolver, kept for
 // the D6 sweep and the statusz reconcile pass) ---
@@ -1039,7 +491,7 @@ func TestProxy_StatuszPodIP_RunningReturnsIP(t *testing.T) {
 	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil).Once()
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	ip := handler.statuszPodIP(context.Background(), "ws-1")
@@ -1057,7 +509,7 @@ func TestProxy_StatuszPodIP_SuspendedReturnsEmpty(t *testing.T) {
 	crd := makeWorkspaceCRDWithStatus("ws-1", "", "Suspended", "ws-1")
 	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil).Once()
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	ip := handler.statuszPodIP(context.Background(), "ws-1")
@@ -1074,7 +526,7 @@ func TestProxy_StatuszPodIP_NotFoundReturnsEmpty(t *testing.T) {
 
 	wsMock.On("Get", mock.Anything, "sb-missing", metav1.GetOptions{}).Return(nil, fmt.Errorf("not found")).Once()
 
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	ip := handler.statuszPodIP(context.Background(), "sb-missing")
@@ -1105,7 +557,7 @@ func TestProxy_StatuszPodIP_NotFoundReturnsEmpty(t *testing.T) {
 // branch) preserves the state the first call established.
 func TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState(t *testing.T) {
 	t.Cleanup(stubUsageStream())
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	// Seed state that the first onPhaseChange(Active) would naturally
 	// establish via downstream code paths (active session via prompt,
@@ -1139,48 +591,7 @@ func TestProxy_OnPhaseChange_SecondActiveNoManualSeed_PreservesState(t *testing.
 		"Active→Active reconcile must preserve password cache (regression: extra K8s Secret fetches on every redundant watch event)")
 }
 
-func TestProxy_ActivityNotRecordedOnProxyFailure(t *testing.T) {
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	ws := makeWorkspaceCRD("ws-1", 5)
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{
-		Transport: &alwaysFailTransport{},
-		Timeout:   2 * time.Second,
-	})
-	require.NoError(t, err)
-
-	tracker := activity.NewActivityTracker(k8sMock, &testLogger{}, "default")
-	handler.activityTracker = tracker
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyReadTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Equal(t, 0, tracker.PendingCount(),
-		"activity should NOT be recorded when proxy call fails")
-}
+// TestProxy_ActivityNotRecordedOnProxyFailure was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 func TestProxy_ActivityRecordedOnSuccess(t *testing.T) {
 	// Ported to the adapter path (#828 batch 2): reads record activity
@@ -1233,99 +644,9 @@ func (t *midStreamResetTransport) RoundTrip(req *http.Request) (*http.Response, 
 	return resp, nil
 }
 
-// TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent verifies that when the
-// upstream pod closes the connection mid-stream (non-EOF error after the
-// first bytes have been flushed), doProxy writes an SSE error event into the
-// response body so the client can distinguish "pod died" from "clean end".
-func TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent(t *testing.T) {
-	httpClient := &http.Client{Transport: &midStreamResetTransport{}, Timeout: 5 * time.Second}
+// TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
-	require.NoError(t, err)
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyMessageTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"content":"hi"}`))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-
-	body := w.Body.String()
-	// The response starts with 200 (committed on first chunk) and must contain
-	// an SSE error event so the client can detect the upstream failure.
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, body, "event: error", "response must contain SSE error event after mid-stream failure")
-	assert.Contains(t, body, "upstream connection lost", "SSE error event must describe the failure")
-}
-
-// TestProxy_B2_CleanStreamEnd_NoSSEError verifies that normal stream
-// completion for a non-SSE response (JSON REST) does NOT emit a spurious
-// SSE error event. US-44.1 scope-limits the agent_died heuristic to
-// text/event-stream responses, so JSON/REST passthrough is unaffected.
-//
-// The SSE false-positive case (clean SSE completion DOES emit agent_died
-// per US-44.1 design) is asserted by
-// TestProxy_US44_1_SSECleanClose_AcceptableFalsePositive in
-// proxy_terminal_events_test.go.
-func TestProxy_B2_CleanStreamEnd_NoSSEError(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"method":"GET","path":"/session"}`))
-		// Backend closes after writing — EOF on reader side after data.
-	}))
-	defer backend.Close()
-
-	transport := &redirectTransport{server: backend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
-	llmMock.On("Workspaces", "default").Return(wsMock)
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset)
-
-	crd := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(crd, nil)
-	secret := makePasswordSecret("ws-1", "test-password")
-	_, err := fakeClientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
-	require.NoError(t, err)
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient)
-	require.NoError(t, err)
-
-	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	registerLegacyMessageTransport(router, handler)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-1/legacy-message/s1", strings.NewReader(`{"content":"hi"}`))
-	req.Header.Set("Content-Type", "application/json")
-	router.ServeHTTP(w, req)
-
-	body := w.Body.String()
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.NotContains(t, body, "event: error",
-		"non-SSE JSON stream completion must not emit SSE error event")
-}
+// TestProxy_B2_CleanStreamEnd_NoSSEError was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 // --- Epic 25 B5: activity tracker map growth on NotFound ---
 
@@ -1401,7 +722,7 @@ func TestActivityTracker_B5_Delete_RemovesEntry(t *testing.T) {
 // removes the workspace from the activity tracker map so it does not accumulate
 // unboundedly. (Epic 25 B5 — cleanup hook via onPhaseChange)
 func TestProxy_B5_OnPhaseTerminated_DeletesActivityEntry(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	tracker := activity.NewActivityTracker(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default")
 	handler.activityTracker = tracker
@@ -1481,21 +802,7 @@ func TestProxy_DeleteSession_ProxiesDELETE(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 }
 
-func TestProxy_DeleteSession_EndpointMapping(t *testing.T) {
-	var capturedPath string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		capturedPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/s1", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "/session/s1", capturedPath)
-}
+// TestProxy_DeleteSession_EndpointMapping was deleted with the raw-proxy transport (#828 final batch — the legacy seams are gone)
 
 func TestProxy_DeleteSession_InvalidSessionID(t *testing.T) {
 	env := newTestEnv(t)
@@ -1856,23 +1163,7 @@ func TestProxy_DeleteSession_NoSideEffectsWithoutBroker(t *testing.T) {
 	assert.True(t, si.called)
 }
 
-func TestProxy_DeleteSession_DeepNestingEndpointMapping(t *testing.T) {
-	var capturedMethod, capturedPath string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		capturedMethod = r.Method
-		capturedPath = r.URL.Path
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	w := env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/legacy-read/sess_abc-123", nil)
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "DELETE", capturedMethod)
-	assert.Equal(t, "/session/sess_abc-123", capturedPath)
-}
+// TestProxy_DeleteSession_DeepNestingEndpointMapping was deleted with the raw-proxy transport (#828 final batch — the legacy seams are gone)
 
 // US-69.11: title/context persistence for deleted sessions moved from
 // the tracker's dialect callbacks to the usage bridge — the tombstone
@@ -2002,14 +1293,14 @@ func (r *recordingActivitySessionIndex) Stop() error  { return nil }
 // paths (TestProxy_ActivityRecordedOnSuccess).
 
 func TestProxy_IsSessionActive_ReturnsFalseForUnknownWorkspace(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	assert.False(t, handler.isSessionActive(context.Background(), "unknown-ws", "s1"),
 		"isSessionActive should return false for unknown workspace")
 }
 
 func TestProxy_IsSessionActive_ReturnsTrueForActiveSession(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetActiveSessionsForTest("ws-1", []string{"s1", "s2"})
 
@@ -2043,32 +1334,10 @@ func TestProxy_SendPromptAsync_409DoesNotAffectSendMessage(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestProxy_ProxyToWorkspace_NoDoubleReleaseOnMaxSessions(t *testing.T) {
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-	})
-	ws := makeWorkspaceCRD("ws-1", 1)
-	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(ws, nil).Maybe()
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	env.handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	env.handler.connMu.Lock()
-	env.handler.connCount["ws-1"] = 5
-	env.handler.connMu.Unlock()
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/legacy-message/s2", strings.NewReader(`{"msg":"hi"}`))
-	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-
-	env.handler.connMu.Lock()
-	count := env.handler.connCount["ws-1"]
-	env.handler.connMu.Unlock()
-	assert.Equal(t, 5, count, "connection count should be 5 (acquire 5→6, defer release 6→5), not underflowed to 4 by double-release")
-}
+// TestProxy_ProxyToWorkspace_NoDoubleReleaseOnMaxSessions was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
 
 func TestProxy_IsSessionActive_ConcurrentReads(t *testing.T) {
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
 
@@ -2085,7 +1354,7 @@ func TestProxy_IsSessionActive_ConcurrentReads(t *testing.T) {
 
 func TestProxy_OnPhaseChange_RecordsLifecycleEvent(t *testing.T) {
 	t.Cleanup(stubUsageStream())
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	meteringSvc := new(mocks.MockMeteringService)
 	handler.SetMeteringService(meteringSvc)
@@ -2129,7 +1398,7 @@ func TestProxy_OnPhaseChange_RecordsLifecycleEvent(t *testing.T) {
 // present in an earlier version of this fix and removed.
 func TestProxy_OnPhaseChange_CreatingToActive_AfterRestart_RecordsLifecycleEvent(t *testing.T) {
 	t.Cleanup(stubUsageStream())
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	meteringSvc := new(mocks.MockMeteringService)
 	handler.SetMeteringService(meteringSvc)
@@ -2167,7 +1436,7 @@ func TestProxy_OnPhaseChange_CreatingToActive_AfterRestart_RecordsLifecycleEvent
 
 func TestProxy_OnPhaseChange_NoMeteringService_NoPanic(t *testing.T) {
 	t.Cleanup(stubUsageStream())
-	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil)
+	handler, _ := NewProxyHandler(k8smocks.NewMockKubernetesClient(), &testLogger{}, "default", nil, newLenientMockAdapter())
 
 	ws := makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "user-1")
 

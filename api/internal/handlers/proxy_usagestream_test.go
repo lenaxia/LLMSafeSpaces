@@ -128,7 +128,7 @@ func newUsageBillingTestHandler(t *testing.T) *ProxyHandler {
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
 	llmMock.On("Workspaces", "default").Return(wsMock)
 	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset())
-	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", http.DefaultClient)
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", http.DefaultClient, newLenientMockAdapter())
 	require.NoError(t, err)
 	h.userBroker = eventbroker.NewUserEventBroker()
 	h.userBroker.RecordWorkspaceOwner("ws1", "u1")

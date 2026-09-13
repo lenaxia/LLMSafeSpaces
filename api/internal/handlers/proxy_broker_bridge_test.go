@@ -19,7 +19,7 @@ import (
 // publishWorkspaceEvent delivers to every subscriber on the same workspace.
 func TestPublishWorkspaceEvent_DeliversToAllWorkspaceSubscribers(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = eventbroker.NewUserEventBroker()
@@ -49,7 +49,7 @@ func TestPublishWorkspaceEvent_DeliversToAllWorkspaceSubscribers(t *testing.T) {
 // TestPublishWorkspaceEvent_NilUserBrokerDoesNotPanic verifies nil-safety.
 func TestPublishWorkspaceEvent_NilUserBrokerDoesNotPanic(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = nil
@@ -63,7 +63,7 @@ func TestPublishWorkspaceEvent_NilUserBrokerDoesNotPanic(t *testing.T) {
 // delivers events via userBroker.SubscribeWorkspace.
 func TestPublishWorkspaceEvent_UserBrokerReceivesEvent(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 
 	handler.userBroker = eventbroker.NewUserEventBroker()

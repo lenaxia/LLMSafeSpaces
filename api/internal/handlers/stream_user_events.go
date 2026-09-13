@@ -299,7 +299,7 @@ func (h *ProxyHandler) snapshotUserWorkspaces(ctx context.Context, s *eventbroke
 	// authoritative pending set from the pod so a reconnecting client rebuilds
 	// pendingActions correctly (mirrors busy's seedBusy). Bounded by the ≤10
 	// active-workspace scale constraint; each fetch is timeout-guarded.
-	if h.adapter != nil {
+	{
 		for _, wsID := range wsIDs {
 			phase := ""
 			if phases != nil {

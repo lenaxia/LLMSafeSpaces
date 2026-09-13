@@ -308,7 +308,7 @@ func newVerifyEnv(t *testing.T, backend *fakeAgentBackend, v2 ...bool) *e2eEnv {
 	env := newE2EEnv(t, srv)
 	if len(v2) > 0 && v2[0] {
 		handler := env.handler
-		handler.SetAdapter(opencode.NewAdapterV2(opencode.NewAdapter(
+		handler.adapter = (opencode.NewAdapterV2(opencode.NewAdapter(
 			handler.AdapterPasswordResolver(),
 			handler.AdapterPodIPResolver(),
 			nil,

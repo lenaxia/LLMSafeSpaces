@@ -122,9 +122,6 @@ func (h *ProxyHandler) fetchSessionParent(ctx context.Context, workspaceID, sess
 	if err := validateSessionID(sessionID); err != nil {
 		return "", fmt.Errorf("invalid sessionID: %w", err)
 	}
-	if h.adapter == nil {
-		return "", fmt.Errorf("agent adapter not configured")
-	}
 	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("adapter GetSession: %w", err)

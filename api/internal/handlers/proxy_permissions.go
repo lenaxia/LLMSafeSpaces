@@ -38,21 +38,13 @@ func (h *ProxyHandler) autoApprovePermission(workspaceID, requestID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Adapter path (US-65.4): adapter.Resolve handles the permission
-	// reply translation internally — no raw HTTP, no hardcoded body.
-	if h.adapter != nil {
-		if err := h.adapter.Resolve(ctx, "", workspaceID, requestID, "always"); err != nil {
-			h.logger.Warn("Auto-approve permission failed via adapter", "error", err,
-				"workspaceID", workspaceID, "requestID", requestID)
-			return
-		}
-		h.logger.Info("Auto-approved permission",
+	// adapter.Resolve handles the permission reply translation
+	// internally — no raw HTTP, no hardcoded body.
+	if err := h.adapter.Resolve(ctx, "", workspaceID, requestID, "always"); err != nil {
+		h.logger.Warn("Auto-approve permission failed via adapter", "error", err,
 			"workspaceID", workspaceID, "requestID", requestID)
 		return
 	}
-
-	// A nil adapter (dev/test wiring) can only log — the raw-HTTP tail is
-	// deleted (#828 batch 3).
-	h.logger.Warn("Auto-approve skipped: no agent adapter",
+	h.logger.Info("Auto-approved permission",
 		"workspaceID", workspaceID, "requestID", requestID)
 }

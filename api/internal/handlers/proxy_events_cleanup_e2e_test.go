@@ -59,7 +59,7 @@ func TestTermination_Integration_WatcherDrivesOutboxCleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	logger := &e2eLogger{}
-	handler, err := NewProxyHandler(k8sMock, logger, "default", nil)
+	handler, err := NewProxyHandler(k8sMock, logger, "default", nil, newLenientMockAdapter())
 	require.NoError(t, err)
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.SetPriorPhaseForTest(wsName, "Active")

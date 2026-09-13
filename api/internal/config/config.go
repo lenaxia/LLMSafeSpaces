@@ -135,8 +135,6 @@ type Config struct {
 	} `mapstructure:"rateLimiting"`
 
 	Proxy struct {
-		RequestBufferSizePerWorkspace int `mapstructure:"requestBufferSizePerWorkspace"`
-		RequestBufferTimeoutSeconds   int `mapstructure:"requestBufferTimeoutSeconds"`
 	} `mapstructure:"proxy"`
 
 	// Billing holds Stripe configuration for org subscriptions (Epic 43).
@@ -576,17 +574,6 @@ func applyImageFactoryEnvOverrides(config *Config) {
 	if v := os.Getenv("LLMSAFESPACES_RATELIMITING_BURSTSIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			config.RateLimiting.BurstSize = n
-		}
-	}
-
-	if v := os.Getenv("LLMSAFESPACES_PROXY_REQUESTBUFFERSIZEPERWORKSPACE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			config.Proxy.RequestBufferSizePerWorkspace = n
-		}
-	}
-	if v := os.Getenv("LLMSAFESPACES_PROXY_REQUESTBUFFERTIMEOUTSECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			config.Proxy.RequestBufferTimeoutSeconds = n
 		}
 	}
 

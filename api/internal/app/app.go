@@ -203,27 +203,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to initialize services: %w", err)
 	}
 
-	proxyHandler, err := handlers.NewProxyHandler(k8sClient, log, cfg.Kubernetes.Namespace, nil)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to create proxy handler: %w", err)
-	}
-	proxyHandler.SetRequestBufferConfig(cfg.Proxy.RequestBufferSizePerWorkspace, time.Duration(cfg.Proxy.RequestBufferTimeoutSeconds)*time.Second)
-
-	// US-65.4 + #828 batches 1+2: construct the Agent Adapter and wire it
-	// into ProxyHandler. The session/message cluster is adapter-only
-	// (nil adapter -> typed 503); the remaining nil-check sites are the
-	// batch-3/4 files, their helpers, the lifecycle wiring, and the
-	// inbox wiring (see the adapter field doc in proxy.go for the
-	// enumeration). The final #828 batch makes the adapter a required
-	// constructor parameter.
-	//
-	// The resolvers returned by ProxyHandler are generic Go types
-	// (func + interface) to avoid importing pkg/agent/opencode from
-	// api/internal/handlers/. agentoc.PasswordResolver is a func type
-	// (explicit conversion); agentoc.PodIPResolver is an interface that
-	// handlers.WorkspacePodIPResolver satisfies structurally (same
-	// method signature, no explicit cast needed — Go structural typing).
+	// #828 final batch: the resolver host is constructed FIRST so the
+	// Agent Adapter can be built over it and passed to the handler ctor
+	// as a required parameter — one shared password cache + invalidation
+	// for both the handler and the adapter (SetStateStore swaps forward
+	// into the host).
+	resolverHost := handlers.NewResolverHost(k8sClient, log, cfg.Kubernetes.Namespace)
 	//
 	// V2 delivery (design 0052, OPENCODE_V2_DELIVERY=1): routes outbox
 	// delivery through the V2 admit-and-return prompt endpoint and
@@ -248,8 +233,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// store. The v2Delivery flag remains for the outbox/terminus wiring
 	// but does NOT change the adapter's store path.
 	baseAdapter := agentoc.NewAdapter(
-		agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
-		proxyHandler.AdapterPodIPResolver(),
+		agentoc.PasswordResolver(resolverHost.GetPassword),
+		resolverHost,
 		log.ZapLogger(),
 	)
 	agentAdapter := agentoc.NewAdapterV1(baseAdapter)
@@ -258,10 +243,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// every entrypoint (HTTP chat, MCP, SDK) shares. The disk-pressure
 	// nudge was twice orphaned by path migrations when it lived in the
 	// proxy transport; wrapping here covers all of them forever.
-	proxyHandler.SetAdapter(systemnotices.Wrap(agentAdapter, &crdDiskUsage{
-		k8s:       k8sClient,
-		namespace: cfg.Kubernetes.Namespace,
-	}))
+	proxyHandler, err := handlers.NewProxyHandler(k8sClient, log, cfg.Kubernetes.Namespace, nil,
+		systemnotices.Wrap(agentAdapter, &crdDiskUsage{
+			k8s:       k8sClient,
+			namespace: cfg.Kubernetes.Namespace,
+		}))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create proxy handler: %w", err)
+	}
+	proxyHandler.SetResolverHost(resolverHost)
 
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up

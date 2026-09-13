@@ -18,12 +18,6 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Typed session.Session via the Adapter (#828 batch 4: the raw-HTTP
-	// legacy tail is deleted; a nil adapter — dev/test wiring — has no
-	// way to fetch a title).
-	if h.adapter == nil {
-		return
-	}
 	s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
 	if err != nil || s == nil {
 		return
@@ -47,7 +41,7 @@ func (h *ProxyHandler) persistSessionMeta(ctx context.Context, workspaceID, sess
 }
 
 func (h *ProxyHandler) BackfillSessionParents(ctx context.Context, workspaceID string) {
-	if h.sessionIndex == nil || h.adapter == nil {
+	if h.sessionIndex == nil {
 		return
 	}
 	if h.state().GetParentBackfilled(ctx, workspaceID) {
@@ -70,14 +64,6 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Typed []session.Session via the Adapter (#828 batch 4: the raw
-	// SessionListPath legacy tail is deleted). Unreachable via the
-	// production caller (BackfillSessionParents' gate returns first) —
-	// defense-in-depth for direct/test callers.
-	if h.adapter == nil {
-		h.logger.Debug("Backfill skipped: no agent adapter", "workspaceID", workspaceID)
-		return
-	}
 	sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
 	if err != nil {
 		h.logger.Debug("Backfill: adapter ListSessions failed", "workspaceID", workspaceID, "error", err)

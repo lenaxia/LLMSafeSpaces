@@ -29,10 +29,6 @@ var (
 // agent.QuestionRequest envelope (adapter ListPending, questions only).
 func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 	wid := c.Param("id")
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
 		return
 	}
@@ -68,10 +64,6 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	}
 	wid := c.Param("id")
 	if h.tryLateAnswer(c, wid, requestID, extractQuestionAnswerBody) {
-		return
-	}
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
 		return
 	}
 	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
@@ -117,10 +109,6 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		return
 	}
 	wid := c.Param("id")
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
 	if !ok {
 		return
@@ -144,10 +132,6 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 // only).
 func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 	wid := c.Param("id")
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
 		return
 	}
@@ -182,10 +166,6 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	}
 	wid := c.Param("id")
 	if h.tryLateAnswer(c, wid, requestID, extractPermissionReplyBody) {
-		return
-	}
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
 		return
 	}
 	workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
@@ -236,7 +216,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 // the outbox (S1/S2: one delivery regime, ask-scoped dedupe), and
 // reports handled=true.
 func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID string, extract func([]byte) string) bool {
-	if h.inbox == nil || h.outbox == nil || h.adapter == nil || workspaceID == "" {
+	if h.inbox == nil || h.outbox == nil || workspaceID == "" {
 		return false
 	}
 	rec, ok, err := h.inbox.Lookup(c.Request.Context(), workspaceID, requestID)
@@ -334,11 +314,6 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 	// Unified ListPending returns both questions and permissions in one
 	// call, already typed as session.InputRequest (#828 batch 3: the
 	// two-fetch dialect-parsing legacy tail is deleted). A nil adapter
-	// (dev/test wiring) leaves ok=false — the deferred D10 marker fires
-	// non-authoritative and clients keep their existing pending state.
-	if h.adapter == nil {
-		return
-	}
 	ok = h.emitPendingViaAdapter(ctx, workspaceID)
 }
 
@@ -354,10 +329,6 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 	workspaceID := c.Param("id")
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
-		return
-	}
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
 		return
 	}
 	// Detached context: the fetch (≤5s) must outlive this request, which

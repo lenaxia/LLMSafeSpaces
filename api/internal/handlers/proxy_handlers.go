@@ -27,10 +27,6 @@ import (
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	wid := c.Param("id")
 	_, ok := h.resolveWorkspaceForAdapter(c, wid)
 	if !ok {
@@ -58,10 +54,6 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 }
 
 func (h *ProxyHandler) ListSessions(c *gin.Context) {
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	wid := c.Param("id")
 	_, ok := h.resolveWorkspaceForAdapter(c, wid)
 	if !ok {
@@ -89,11 +81,6 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	wid := c.Param("id")
 
 	if rejectMessageRouteFiles(c) {
-		return
-	}
-
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
 		return
 	}
 
@@ -214,11 +201,6 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	if len(text) > 100_000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
-		return
-	}
-
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
 		return
 	}
 
@@ -519,11 +501,6 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	before := c.Query("before")
 	wid := c.Param("id")
 
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
-
 	// Typed session.Message[] from the Adapter, contract-shaped JSON to
 	// the client. The Adapter translator already drops
 	// step-start/step-finish and collects patch file paths, so the
@@ -635,10 +612,6 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sessionId: " + err.Error()})
 		return
 	}
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	wid := c.Param("id")
 	_, ok := h.resolveWorkspaceForAdapter(c, wid)
 	if !ok {
@@ -665,16 +638,19 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
+	// Workspace resolution (404/503/ceiling) — cluster-consistent since
+	// the #828 final batch (same rationale as DeleteSession above).
+	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
+		return
+	}
+	defer h.releaseConnection(wid)
+
 	// adapter.Abort: the V1 POST /session/:id/abort (the only interrupt
 	// endpoint on opencode 1.18.10+) destructively stops the in-flight
 	// turn — queued input is not preserved, unlike the old V2 interrupt
 	// which was removed in 1.18.10. (A former "clear pending tracking"
 	// step died with the V2 path; stranded-input recovery is the
 	// outbox ledger's concern.)
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
 		h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
@@ -692,12 +668,16 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	}
 	workspaceID := c.Param("id")
 
-	// Delegate to the adapter, then run the post-delete side effects
-	// (tombstone, session index cleanup, SSE tombstone publish).
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
+	// Workspace resolution (404/503/ceiling) — cluster-consistent since
+	// the #828 final batch; the pre-final skip was a batch-2 omission
+	// surfaced when its coincidental guard-503 pin disappeared.
+	if _, ok := h.resolveWorkspaceForAdapter(c, workspaceID); !ok {
 		return
 	}
+	defer h.releaseConnection(workspaceID)
+
+	// Delegate to the adapter, then run the post-delete side effects
+	// (tombstone, session index cleanup, SSE tombstone publish).
 	if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
 		// #817: same observability gap — log the underlying error.
 		h.logger.Error("DeleteSession: adapter failed", err,
@@ -751,9 +731,6 @@ func (h *ProxyHandler) RenameSessionInAgent(ctx context.Context, workspaceID, se
 		return fmt.Errorf("invalid sessionId: %w", err)
 	}
 
-	if h.adapter == nil {
-		return fmt.Errorf("agent adapter not configured")
-	}
 	return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
 }
 
@@ -844,10 +821,6 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	// D3 (#907): with the outbox wired, enqueue and prompt are the SAME
 	// accept (single path — client-decides routing is retired). The
 	// clientMessageID field rides the same body.
-	if h.adapter == nil {
-		h.adapterUnavailable(c)
-		return
-	}
 	if h.outbox != nil {
 		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
 		if !ok {

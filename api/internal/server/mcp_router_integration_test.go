@@ -429,18 +429,21 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 
 	svc := &contractMockServices{auth: auth, met: met, ws: ws}
 
-	// Proxy handler with the opencode adapter pointed at the stub pod.
+	// Proxy handler with the opencode adapter pointed at the stub pod
+	// (#828 final batch: the adapter is a ctor-required parameter — build
+	// it over local resolvers first, then construct the handler with it).
 	log := mcpTestLogger(t)
-	proxy, err := handlers.NewProxyHandler(k8sMock, log, "default", nil)
-	require.NoError(t, err)
+	host := handlers.NewResolverHost(k8sMock, mcpTestLogger(t), "default")
 	adapter := opencode.NewAdapter(
-		proxy.AdapterPasswordResolver(),
-		proxy.AdapterPodIPResolver(),
+		host.GetPassword,
+		host,
 		nil,
 		opencode.WithAdapterHTTPClient(agentSrv.Client()),
 		opencode.WithAdapterPort(backendPort),
 	)
-	proxy.SetAdapter(adapter)
+	proxy, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, adapter)
+	require.NoError(t, err)
+	proxy.SetResolverHost(host)
 	broker := eventbroker.NewUserEventBroker()
 	proxy.SetUserBrokerForTest(broker)
 	// US-69.11: the MCP client consumes the ABI contract stream — arm

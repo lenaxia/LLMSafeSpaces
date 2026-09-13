@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -33,81 +32,33 @@ import (
 // green against the pre-deletion code by design, red only under a guard
 // hoisted above validation.
 
-func TestListQuestions_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
+// TestListQuestions_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/question", nil)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestQuestionReply_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-func TestQuestionReply_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
+// TestQuestionReject_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reply",
-		strings.NewReader(`{"answers":[["Go"]]}`))
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestListPermissions_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-func TestQuestionReject_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
+// TestPermissionReply_NilAdapter_Returns503TypedError was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the 503 cannot fire.
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/que_abc123/reject", nil)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
+// TestQuestionReply_NilAdapter_ValidationPrecedesGuard was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): validation-first is inherent; the bad-ID 400 is pinned by the original TestProxyInput_Invalid* rows.
 
-func TestListPermissions_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/permission", nil)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-func TestPermissionReply_NilAdapter_Returns503TypedError(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/permission/per_xyz789/reply",
-		strings.NewReader(`{"reply":"always"}`))
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "agent adapter not configured")
-}
-
-func TestQuestionReply_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
-	env := newInputTestEnv(t)
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/notaque/reply",
-		strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid question request ID format")
-}
-
-func TestPermissionReply_NilAdapter_ValidationPrecedesGuard(t *testing.T) {
-	env := newInputTestEnv(t)
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/per_abc/reply",
-		strings.NewReader(`{}`))
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
+// TestPermissionReply_NilAdapter_ValidationPrecedesGuard was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): validation-first is inherent; the bad-ID 400 is pinned by TestProxyInput_InvalidPermissionID.
 
 func TestListQuestions_AdapterPath_ReturnsNormalizedEnvelope(t *testing.T) {
 	env := newInputTestEnv(t)
@@ -232,41 +183,12 @@ func TestPermissionReply_AdapterPath_ReplyPermissionReceivesDecision(t *testing.
 	assert.Equal(t, "trusted tool", gotMessage, "the message field survives — the legacy passthrough carried it")
 }
 
-// emitPendingInputRequests with a nil adapter: no legacy fetch — the
-// deferred snapshot-complete marker still fires with snapshot_ok=false
-// (D10: clients keep their existing pending state).
-func TestEmitPendingInputRequests_NilAdapter_MarkerFiresNotOK(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.handler.userBroker = eventbroker.NewUserEventBroker()
-	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
-	userSub, err := env.handler.userBroker.SubscribeUser("user-1")
-	require.NoError(t, err)
-	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
+// TestEmitPendingInputRequests_NilAdapter_MarkerFiresNotOK was deleted with the nil-adapter guards (#828 final
+// batch — the adapter is a required ctor parameter; the guard is
+// structurally impossible): the D10 marker-on-failure contract is pinned by MarkerOKFalseOnBackendError (adapter error) and the k8s-failure rows.
 
-	env.handler.emitPendingInputRequests(context.Background(), "ws-1")
-
-	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
-	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
-	require.NotNil(t, marker.SnapshotOK)
-	assert.False(t, *marker.SnapshotOK, "nil adapter → non-authoritative marker")
-}
-
-// autoApprovePermission with a nil adapter: no raw HTTP to the pod.
-func TestAutoApprovePermission_NilAdapter_NoPodHTTP(t *testing.T) {
-	var hits int
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		w.WriteHeader(http.StatusOK)
-	})
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", "Active", "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	require.Nil(t, env.handler.adapter, "precondition: no adapter")
-
-	env.handler.autoApprovePermission("ws-1", "per_abc123")
-
-	assert.Zero(t, hits, "the legacy raw-HTTP tail is gone; a nil adapter must not reach the pod")
-}
+// TestAutoApprovePermission_NilAdapter_NoPodHTTP was deleted (#828 final batch — the adapter is a
+// ctor-required parameter): no raw-HTTP tail exists and no nil-adapter state exists; the adapter path is pinned by the permission suites.
 
 // --- r1 remediation rows ---
 

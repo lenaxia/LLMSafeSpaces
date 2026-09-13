@@ -50,7 +50,7 @@ func TestSendMessage_AdapterErrorLogged(t *testing.T) {
 		nil,
 		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
 	)
-	env.handler.SetAdapter(adapter)
+	env.handler.adapter = (adapter)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-log/sessions/ses_1/message",
@@ -85,7 +85,7 @@ func TestSendPromptAsync_AdapterErrorLogged(t *testing.T) {
 		nil,
 		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
 	)
-	env.handler.SetAdapter(adapter)
+	env.handler.adapter = (adapter)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-log2/sessions/ses_1/prompt",
@@ -119,7 +119,7 @@ func TestDeleteSession_AdapterErrorLogged(t *testing.T) {
 		nil,
 		agentoc.WithAdapterHTTPClient(env.handler.httpClient),
 	)
-	env.handler.SetAdapter(adapter)
+	env.handler.adapter = (adapter)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/workspaces/ws-log3/sessions/ses_1", nil)

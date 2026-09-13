@@ -20,7 +20,7 @@ package handlers
 // (Content-Type, Accept, X-Request-ID). The caller's Cookie, Origin,
 // Referer, and Authorization are stripped — they describe the caller's
 // relationship with the API server, not with the tenant pod. Same
-// invariant as proxy.go's doProxy (proxy_helpers.go:copyRequestHeaders).
+// invariant as the deleted raw-proxy transport used (proxy_helpers.go:copyRequestHeaders).
 
 import (
 	"context"

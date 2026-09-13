@@ -5,13 +5,9 @@ package handlers
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 // G34: the proxy must forward only an explicit allowlist of client headers
@@ -197,42 +193,4 @@ func TestCopyResponseHeaders_StripsSetCookieMultipleValues(t *testing.T) {
 	assert.Empty(t, dst.Values("Set-Cookie"), "all Set-Cookie values must be stripped")
 }
 
-// End-to-end wiring check: the proxy really applies copyRequestHeaders when
-// building the upstream request, and the caller's Authorization never reaches
-// the tenant pod — only the opencode basic-auth credential the proxy itself
-// injects. This is the regression that G34 documents.
-func TestProxy_G34_CallerAuthorizationNotForwarded(t *testing.T) {
-	var capturedAuthorization string
-	var capturedCookie string
-	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
-		capturedAuthorization = r.Header.Get("Authorization")
-		capturedCookie = r.Header.Get("Cookie")
-		_, _ = w.Write([]byte(`{}`))
-	})
-	env.setupWorkspacePodWithT(t, "ws-leak", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-leak")
-	env.setupPasswordWithT(t, "ws-leak", "test-password")
-	env.setupWorkspaceWithT(t, "ws-leak", 5)
-
-	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/workspaces/ws-leak/legacy-message/ses-1",
-		nil)
-	req.Header.Set("Authorization", "Bearer callers-jwt-abc")
-	req.Header.Set("Cookie", "lsp_session=caller-session")
-	req.Header.Set("Content-Type", "application/json")
-
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	require.NotEqual(t, http.StatusInternalServerError, w.Code,
-		"proxy should reach the upstream, not fail before it")
-
-	// The only Authorization header on the upstream request must be the
-	// opencode basic-auth credential the proxy itself injected — not the
-	// caller's Bearer JWT.
-	assert.NotContains(t, capturedAuthorization, "callers-jwt-abc",
-		"caller's Bearer JWT must not reach the tenant pod (G34)")
-	assert.Contains(t, capturedAuthorization, "Basic",
-		"proxy must inject HTTP Basic auth for opencode")
-	assert.Empty(t, capturedCookie,
-		"caller's Cookie header must not be forwarded to the tenant pod (G34)")
-}
+// TestProxy_G34_CallerAuthorizationNotForwarded was deleted with the raw-proxy transport (#828 final batch — proxyToWorkspaceWithErrBody/doProxy and the legacy seams are gone; the contract either died with the transport or is pinned at the adapter seam).
