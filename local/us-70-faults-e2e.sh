@@ -91,6 +91,38 @@ reconnect_api() {
     die "reconnect_api: API /livez unreachable after restore"
 }
 
+# probe_seam arm_count — detects the fault seam through whatever forward
+# is currently pinned, RE-ESTABLISHING the forward between failed rounds
+# (r11: `kubectl port-forward svc/…` pins ONE pod at establishment; if it
+# resolves to the terminating pre-arm pod, /livez passes (livez ignores
+# the fault env) but every probe returns 401-while-alive → 000-on-reap —
+# no probe can ever see a 500 through it. Only a fresh forward can reach
+# the armed pod). Rounds: probe loop (2s settle between tries — spacing
+# probes in time; a pinned tunnel re-resolves nothing per connection,
+# the ROUND BOUNDARY's reconnect does the re-resolution) → on miss,
+# reconnect_api (fresh pod resolution) → repeat. Bounded by rounds ×
+# tries; the first 500 breaks out burning exactly one fault.
+probe_seam() {
+    local arm="$1" _round _i _code
+    for _round in 1 2 3 4 5; do
+        for _i in $(seq 1 "${arm}"); do
+            (( _i > 1 || _round > 1 )) && sleep 2
+            _code=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
+                -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe"}' \
+                "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
+            if [[ "${_code}" == "500" ]]; then
+                return 0
+            fi
+        done
+    (( _round == 5 )) && return 1
+    # Seam not visible through this forward: re-resolve before the next
+    # round (the pinned pod may be the terminating pre-arm one). Skipped
+    # on the final round's way out — the skip path must not convert into
+    # a die via reconnect_api's /livez gate.
+    reconnect_api
+    done
+}
+
 # wait_env_absent ws VAR timeout_s — poll until the child environ is
 # non-empty (agent spawned) and assert VAR never appears in it.
 wait_env_absent() {
@@ -161,20 +193,20 @@ log "F1 — fault-injected pod-bootstrap 500s → boot never blocked, autopush h
 # answers 401 to the unauthenticated probe — that means the row can't
 # exercise the seam, so it skips loudly (exit-tracked like the gVisor
 # gate), never silently passes.
+# r10/r11 (main run 34711974833): the arm rollout completed 0.02s before
+# this script started; the forward was pinned to the TERMINATING env-less
+# pod (readiness and /livez outlive the rollout marker; the 660s
+# termination grace means no probe through THAT forward can ever see a
+# 500). probe_seam alternates probing and FORWARD RE-ESTABLISHMENT until
+# the armed pod is reached — the settle alone (r10 draft) could not.
 FAULT_SEEN=0
-for _i in $(seq 1 "${FAULT_COUNT}"); do
-    CODE=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
-        -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe"}' \
-        "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
-    if [[ "${CODE}" == "500" ]]; then
-        FAULT_SEEN=$_i
-        break
-    fi
-done
+if probe_seam "${FAULT_COUNT}"; then
+    FAULT_SEEN=1
+fi
 if (( FAULT_SEEN == 0 )); then
     skip_row "F1" "deploy lacks the fault seam (LLMSAFESPACES_FAULT_INJECTION unset on the API process — probe never saw a 500); AC-8 needs the pool's armed deploy"
 else
-    ok "fault seam active: 500 on try ${FAULT_SEEN} of ${FAULT_COUNT} (≈$((FAULT_COUNT - FAULT_SEEN)) remaining for the pod's bootstraps)"
+    ok "fault seam active (probe_seam; ≈$((FAULT_COUNT - 1)) remaining for the pod's bootstraps — stale-forward probes never burn the armed pod's budget)"
 
     WS1=$(ws_id 1)
     log "F1: seed workspace ${WS1} + bind env-secret before boot"
@@ -245,15 +277,9 @@ reconnect_api
 ok "F6: seam re-armed (${F6_ARM}) + API forward re-established"
 
 FAULT_SEEN6=0
-for _i in $(seq 1 6); do
-    CODE=$(curl -sm 10 -o /dev/null -w '%{http_code}' -X POST \
-        -H 'Content-Type: application/json' -d '{"workspaceID":"fault-probe6"}' \
-        "http://127.0.0.1:${PORTFWD_PORT}/internal/v1/pod-bootstrap" || true)
-    if [[ "${CODE}" == "500" ]]; then
-        FAULT_SEEN6=$_i
-        break
-    fi
-done
+if probe_seam 6; then
+    FAULT_SEEN6=1
+fi
 
 CRED6=$(create_stub_credential "f6-stub" "f6-model-1")
 ok "F6: stub credential created (${CRED6})"
@@ -271,7 +297,7 @@ if (( FAULT_SEEN6 == 0 )); then
     # the fault-path guarantee is only claimed when the seam fired.
     skip_row "F6" "seam inert even after the dedicated re-arm — the boot consumed all 6 faults without F6's probe seeing one (timing); end-state convergence covered by AC-1c"
 else
-    ok "F6: seam still active (500 on try ${FAULT_SEEN6}) — this boot is faulted"
+    ok "F6: seam still active (probe_seam) — this boot is faulted"
 
     wait_phase "${WS6}" Active 300 || die "F6: workspace never Active (never-block-boot violated with retries armed)"
 

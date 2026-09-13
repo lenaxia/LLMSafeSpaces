@@ -1288,3 +1288,64 @@ func indentLines(s string, n int) string {
 	}
 	return b.String()
 }
+
+// TestUS70FaultsScript_ProbeSettlePins pins the r10/r11 fix: the seam
+// probe must (a) space attempts across the arm-rollout reap window AND
+// (b) re-establish the forward between failed rounds — a settle alone
+// cannot reach the armed pod when the forward is pinned to the
+// terminating pre-arm one (main run 34711974833: readiness and /livez
+// outlive the rollout marker; the 660s termination grace means probes
+// through THAT forward see 401-while-alive → 000-on-reap, never 500).
+// Loop membership is enforced by slicing probe_seam's body.
+func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
+	src := mustRead(t, us70FaultsScript)
+	start := strings.Index(src, "probe_seam() {")
+	if start < 0 {
+		t.Fatalf("probe_seam must exist — the F1/F6 seam detection with forward re-establishment")
+	}
+	end := strings.Index(src[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("probe_seam body not found")
+	}
+	body := src[start : start+end]
+	var codeB strings.Builder
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		codeB.WriteString(l + "\n")
+	}
+	codeOnly := codeB.String()
+	for _, pin := range []string{
+		`(( _i > 1 || _round > 1 )) && sleep 2`, // settle inside the try loop
+		"reconnect_api",                         // forward re-resolution between failed rounds
+		`_round in 1 2 3 4 5`,                   // bounded rounds
+		`(( _round == 5 )) && return 1`,         // skip path never runs the final reconnect
+	} {
+		if !strings.Contains(codeOnly, pin) {
+			t.Fatalf("probe_seam must contain %q as CODE, not a comment literal (comment lines stripped before matching)", pin)
+		}
+	}
+	// Ordering enforced (r13): the early return must PRECEDE the final
+	// reconnect — presence alone let the r11 defect (reconnect-then-return)
+	// pass this pin under mutation.
+	if strings.Index(codeOnly, "return 1") > strings.Index(codeOnly, "reconnect_api") {
+		t.Fatalf("probe_seam's skip-path early return must precede reconnect_api — otherwise the skip converts into a die via the /livez gate")
+	}
+	// Both consumers route through probe_seam — F6's identical race is
+	// covered, not just F1's. Comment-stripped (r13): a commented literal
+	// satisfied the raw-src pins under mutation.
+	var codeAll strings.Builder
+	for _, l := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		codeAll.WriteString(l + "\n")
+	}
+	srcCode := codeAll.String()
+	f1 := strings.Index(srcCode, `if probe_seam "${FAULT_COUNT}"`)
+	f6 := strings.Index(srcCode, "if probe_seam 6")
+	if f1 < 0 || f6 < 0 {
+		t.Fatalf("F1 and F6 must both detect the seam through probe_seam")
+	}
+}
