@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"net/http"
-	"strings"
 )
 
 // forwardedRequestHeaders is the explicit allowlist of client headers the
@@ -42,17 +41,4 @@ func copyRequestHeaders(src http.Header, dst http.Header) {
 			dst.Add(k, v)
 		}
 	}
-}
-
-func isConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "no such host") ||
-		strings.Contains(msg, "connection reset") ||
-		strings.Contains(msg, "i/o timeout") ||
-		strings.Contains(msg, "EOF") ||
-		strings.Contains(msg, "network is unreachable")
 }
