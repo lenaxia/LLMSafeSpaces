@@ -8,21 +8,6 @@ import (
 	"strings"
 )
 
-// hopByHopHeaders is the RFC 7230 §6.1 hop-by-hop header set plus
-// "Upgrade" (RFC 7230 §6.7). These must not be forwarded by a proxy in
-// either direction: they describe the transport between two immediate
-// HTTP peers and have no meaning end-to-end.
-var hopByHopHeaders = map[string]bool{
-	"Connection":          true,
-	"Keep-Alive":          true,
-	"Proxy-Authenticate":  true,
-	"Proxy-Authorization": true,
-	"Te":                  true,
-	"Trailers":            true,
-	"Transfer-Encoding":   true,
-	"Upgrade":             true,
-}
-
 // forwardedRequestHeaders is the explicit allowlist of client headers the
 // proxy forwards into the tenant pod. Everything else is dropped.
 //

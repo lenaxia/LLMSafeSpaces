@@ -16,13 +16,6 @@ import (
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 )
 
-// fakeK8sWrap adapts a client-go fake clientset to the handler's
-// KubernetesClient interface expectations (Clientset only — the password
-// path touches nothing else).
-type fakeK8sWrap struct{ inner *k8sfake.Clientset }
-
-func (f *fakeK8sWrap) Clientset() *k8sfake.Clientset { return f.inner }
-
 // Re-home of the deleted TestProxy_EmptyPasswordKey (r1): the
 // empty-password-key arm of ResolverHost.GetPassword — production-live
 // on every adapter call — must surface a wrapped error, never an empty
