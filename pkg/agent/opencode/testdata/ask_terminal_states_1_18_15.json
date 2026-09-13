@@ -143,5 +143,28 @@
   "implication": "The Q&A framing reads naturally to a real model after a dismissed ask: it expands the chosen label via the option description (Spaces -> four spaces) and proceeds, with no context loss and no burned re-ask turn. #1313's core experience assertion holds on the live path.",
   "model": "thekaocloud/glm-5.3 (this workspace's live model, via the platform relay; the pod's agent-config pins it)",
   "scope": "question-kind only; the permission branch of composeQA has no live leg (by-construction evidence only)"
+ },
+ "permission_reply_wire_contract": {
+  "captured": "2026-09-13, 4a fixture gate (issue #1302 Rule-7 assumption: 'confirm exact wire contract via a captured fixture BEFORE writing the handler')",
+  "endpoint": "POST /permission/{id}/reply {\"reply\":\"once\"|\"always\"|\"reject\"}",
+  "vocabulary": {
+   "once": {
+    "http": "200, body true",
+    "tool_state": "status completed (command runs)",
+    "persistence": "NONE \u2014 an immediately-following command matching the same pattern raised a NEW ask (empirically confirmed)"
+   },
+   "always": {
+    "http": "200, body true",
+    "tool_state": "status completed (command runs)",
+    "persistence": "PATTERN-SCOPED ALLOW \u2014 a third command matching the pattern ran straight to completed with ZERO new asks across a 60s window (empirically confirmed)"
+   },
+   "reject": {
+    "http": "200, body true",
+    "tool_state": "status error, 'The user rejected permission to use this specific tool call.'",
+    "persistence": "n/a (G1 row)"
+   }
+  },
+  "pending_entry_always_field": "GET /permission entries carry always:[\"echo *\"] \u2014 the harness's suggested pattern for the always-allow affordance; the adapter surfaces it as InputRequest.Always",
+  "mapping_note": "AnswerInputAction.reply carries this vocabulary verbatim (1a delta, #1324); the edge forwards once/always/reject unchanged \u2014 no lossy option_ids encoding needed."
  }
 }
