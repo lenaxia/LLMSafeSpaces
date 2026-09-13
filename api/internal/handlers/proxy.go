@@ -152,9 +152,11 @@ type ProxyHandler struct {
 	// outbox-backed queue view routes never consult it, and
 	// RenameSessionInAgent fails with its own error. Remaining
 	// nil-checks live in the batch-3/4 files (input, permissions,
-	// session index, parents), their background helpers, and the
-	// lifecycle wiring (Start()'s outbox verifier hooks,
-	// proxy_lifecycle.go; the phase-change sweep gate, proxy_events.go).
+	// session index, parents), their background helpers, the lifecycle
+	// wiring (Start()'s outbox verifier hooks, proxy_lifecycle.go; the
+	// phase-change sweep gate, proxy_events.go), and the inbox wiring
+	// (tryLateAnswer's early-out, proxy_input.go; askLivenessOf,
+	// proxy_inbox.go).
 	// Set via SetAdapter before Start(); the final #828 batch makes it a
 	// required constructor parameter and retires the dialect field.
 	adapter agent.Adapter

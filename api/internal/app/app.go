@@ -210,11 +210,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	proxyHandler.SetRequestBufferConfig(cfg.Proxy.RequestBufferSizePerWorkspace, time.Duration(cfg.Proxy.RequestBufferTimeoutSeconds)*time.Second)
 
-	// US-65.4: construct the Agent Adapter and wire it into ProxyHandler.
-	// Batch-1 handlers (session_parents, session_index, proxy_permissions,
-	// proxy_input's emitPendingInputRequests) check h.adapter != nil and
-	// use the Adapter path. Remaining handlers use the legacy dialect path.
-	// US-65.4 batches 2+ will migrate the client-facing proxy handlers.
+	// US-65.4 + #828 batches 1+2: construct the Agent Adapter and wire it
+	// into ProxyHandler. The session/message cluster is adapter-only
+	// (nil adapter -> typed 503); the remaining nil-check sites are the
+	// batch-3/4 files, their helpers, the lifecycle wiring, and the
+	// inbox wiring (see the adapter field doc in proxy.go for the
+	// enumeration). The final #828 batch makes the adapter a required
+	// constructor parameter.
 	//
 	// The resolvers returned by ProxyHandler are generic Go types
 	// (func + interface) to avoid importing pkg/agent/opencode from
