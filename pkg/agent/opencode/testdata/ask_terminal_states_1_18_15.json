@@ -186,5 +186,25 @@
    }
   },
   "implication": "The D1 fallback (question-reject 404 \u2192 permission reply) and the 404-typed resolve-by-absence fold consume the correct harness codes. The W6 e2e 400 was NOT this contract \u2014 it was the authority rejecting a synthetic session id it never knew: the walk-away row must seed its inbox record against a REAL session."
+ },
+ "cross_prefix_contract": {
+  "captured": "2026-09-13, 4a r6 (the W6 e2e failure's true root cause)",
+  "permission_reply_with_que_id": {
+   "http": "400",
+   "body": {
+    "name": "BadRequest",
+    "kind": "Params",
+    "message": "Expected a string starting with \"per\", got \"que_\u2026\" at [\"requestID\"]"
+   }
+  },
+  "question_reply_with_per_id": {
+   "http": "400",
+   "body": {
+    "name": "BadRequest",
+    "kind": "Params",
+    "message": "Expected a string starting with \"que\", got \"per_\u2026\" at [\"requestID\"]"
+   }
+  },
+  "implication": "The endpoints PREFIX-VALIDATE request IDs: a cross-kind post is a 400 Params error, NEVER a 404. Cross-kind fallbacks (the reject fallback and the answer probe's permission leg for prefixed ids) are therefore forbidden \u2014 the 404 from the ask's OWN kind endpoint is the absence signal the authority's resolve-by-absence consumes (S6). Routing in the actor and Adapter.RejectInput is prefix-aware."
  }
 }
