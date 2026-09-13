@@ -116,5 +116,5 @@ None.
 
 ## Review r3 remediation (PR #1362)
 
-- The four stale present-tense comments fixed: resolveWorkspaceForAdapter + postAdapterSuccess ("shared between the adapter path and the legacy proxy path" → adapter-served-routes reality), recordActivityIfTracked's transport clause (past tense), the resolver-bridge doc's "legacy resolution infrastructure" (the ResolverHost IS the live infra).
+- The four stale present-tense comments fixed (r4 correction: the r3 claim was FALSE for recordActivityIfTracked — its transport clause survived the r3 sweep verbatim and is fixed now, verified): resolveWorkspaceForAdapter + postAdapterSuccess ("shared between the adapter path and the legacy proxy path" → adapter-served-routes reality), recordActivityIfTracked's transport clause (r4: the transport clause is now past-tense + deleted-referencing), the resolver-bridge doc's "legacy resolution infrastructure" (the ResolverHost IS the live infra).
 - The two worklog attribution nits corrected in place (r1-vs-r2 sweep attribution; three call sites, not two).
