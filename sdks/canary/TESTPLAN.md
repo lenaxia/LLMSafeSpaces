@@ -654,10 +654,10 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `GET /question` → 200, array; every entry is the CONTRACT `InputRequest` shape (kind=question, camelCase tags, zero legacy envelope fields) |
+| P1 | `GET /question` → 200, array (hard parse assert); Go additionally asserts every entry is the contract `InputRequest` shape (kind=question, camelCase tags, zero legacy envelope fields) |
 | P2 | `GET /permission` → 200, array; contract shape (kind=permission) |
 | P3 | Send message that triggers tool-use permission |
-| P4 | `GET /permission` returns ≥ 1 pending permission; the LIVE entry is asserted in the contract shape (kind field, no snake_case) |
+| P4 | `GET /permission` returns ≥ 1 pending permission; the LIVE entry is asserted in the contract shape (kind field, no snake_case) — Go and Python assert both; TS asserts kind + no snake_case on the entry it replies to |
 | P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → 2xx (202 = the #1313 late-answer accept) |
 | P6 | After approval, session returns to idle (confirm via SSE or status) |
 | N1 | `POST /question/:id/reply` with an out-of-charset ID (e.g. `bad$id`) and a VALID body → 400 at the ID check (the generic contract `[a-zA-Z0-9._-]{1,128}`) |

@@ -330,8 +330,8 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 			return mcp.NewToolResultText("Question rejected"), nil
 		}
 		var answers [][]string
-		if err := json.Unmarshal([]byte(reply), &answers); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("for questions, reply must be a JSON array of string arrays (e.g. [[\"answer\"]]) or 'reject': %v", err)), nil
+		if err := json.Unmarshal([]byte(reply), &answers); err != nil || len(answers) == 0 {
+			return mcp.NewToolResultError("for questions, reply must be a non-empty JSON array of string arrays (e.g. [[\"answer\"]]) or 'reject'"), nil
 		}
 		if err := h.client.QuestionReply(ctx, workspaceID, requestID, answers); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("failed to reply to question: %v", err)), nil
@@ -350,10 +350,8 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 
 	default:
 		// 4a-2 r3 (#1302): a conforming id with no known prefix is
-		// agent-agnostic — dispatch by reply shape, never reject.
-		if !requestIDValidMCP(requestID) {
-			return mcp.NewToolResultError("invalid request ID (the generic contract: [a-zA-Z0-9._-]{1,128}, no '..')"), nil
-		}
+		// agent-agnostic — dispatch by reply shape (the top-level gate
+		// already validated the ID).
 		if reply == "reject" {
 			if err := h.client.QuestionReject(ctx, workspaceID, requestID); err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("failed to reject question: %v", err)), nil
@@ -373,7 +371,7 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("Permission %s", reply)), nil
 		}
-		return mcp.NewToolResultError("reply must be a JSON array of string arrays (questions), 'once'/'always'/'reject' (permissions), or 'reject' (dismiss)"), nil
+		return mcp.NewToolResultError("reply must be a non-empty JSON array of string arrays (questions), 'once'/'always'/'reject' (permissions), or 'reject' (dismiss)"), nil
 	}
 }
 

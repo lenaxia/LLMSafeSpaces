@@ -47,15 +47,22 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     r.assert(sPerm === 200, 'get-permission-after-msg: 200', `got ${sPerm}`);
 
     if (sPerm === 200) {
-      let perms: any[] = [];
-      try { perms = JSON.parse(permBody.toString()); } catch { perms = []; }
-      // A parse failure or non-array is a SHAPE regression — fail loud,
-      // never the soft-pass (4a-2 r4).
-      r.assert(Array.isArray(perms), 'permission list is an array', permBody.toString().slice(0, 120));
-      if (perms.length > 0 && perms[0].session_id !== undefined) {
-        r.assert(false, 'live permission carries snake_case (legacy envelope)', JSON.stringify(Object.keys(perms[0])));
+      // A parse failure IS the shape regression — do not sanitize (r5 f3).
+      let parsed: unknown;
+      try { parsed = JSON.parse(permBody.toString()); } catch (e) {
+        r.assert(false, 'permission list is JSON (parse failed)', String(e));
+        parsed = [];
       }
-      if (Array.isArray(perms) && perms.length > 0 && perms[0].id) {
+      const perms = Array.isArray(parsed) ? (parsed as any[]) : undefined;
+      if (perms === undefined) {
+        r.assert(false, 'permission list is an array', permBody.toString().slice(0, 120));
+      }
+      if (perms && perms.length > 0) {
+        // The LIVE entry carries the contract shape.
+        r.assert(perms[0].kind === 'permission', 'live permission: contract kind field', JSON.stringify(Object.keys(perms[0])));
+        r.assert(perms[0].session_id === undefined, 'live permission: NO snake_case', JSON.stringify(Object.keys(perms[0])));
+      }
+      if (perms && perms.length > 0 && perms[0].id) {
         const permId = perms[0].id;
         const [sReply] = await rawDo('POST',
           `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/${permId}/reply`,

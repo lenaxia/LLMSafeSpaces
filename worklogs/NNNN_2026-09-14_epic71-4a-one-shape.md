@@ -94,3 +94,17 @@
 **f6 (null/[] dispatch):** both question branches require a non-empty answers array; the error text matches.
 
 **f7 (server-level gate):** `requestIDValidMCP` runs once at the top of runResolve for every branch.
+
+## Review r5 remediation
+
+**f1 (HIGH — the Python fix was inert):** restructured — transport errors retry in a narrow try; the JSON/array parse asserts and the live-entry shape asserts (kind=permission, no snake_case) run OUTSIDE any swallowing handler and record failures via `r.assert_`; "entries exist but none matched" now fails loud instead of the auto-approve soft-pass. (The r4 worklog claim was false — the asserted path did not exist; this one does.)
+
+**f2 (HIGH — the que_ branch dispatched null/[]):** the len guard added (matching the default branch); `TestRunResolve_NullAndEmptyArrayRepliesRejected` pins all four cases (null/[] × que_-prefixed/unprefixed) — the r4-requested row, present this time.
+
+**f3 (TS soft-pass on parse failure):** the catch records the failure instead of sanitizing; the live entry now asserts kind=permission + no snake_case.
+
+**f4 (dead re-check):** removed; the comment states the top-level gate.
+
+**f5 (TESTPLAN honesty):** P1/P4 wording now states which language asserts what (Go full-shape; py kind+snake_case with loud failure; ts kind+snake_case on the replied-to entry).
+
+**f6:** the worklog r4-f1 "null body fails the row" parenthetical was false (null unmarshals to nil) — corrected by this note; the API never emits null (non-nil empty slices), and the TS/Python rows now fail on it regardless.

@@ -834,3 +834,24 @@ func TestRunResolve_PermissionInvalidReply(t *testing.T) {
 	assert.True(t, result.IsError)
 	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "'once', 'always', or 'reject'")
 }
+
+// 4a-2 r5: reply="null"/"[]" must NOT dispatch as question answers —
+// on ANY branch (the que_ fast-path and the unprefixed default).
+func TestRunResolve_NullAndEmptyArrayRepliesRejected(t *testing.T) {
+	h, _ := newTestHandlers()
+	for _, tc := range []struct{ id, reply string }{
+		{"que_1", "null"},
+		{"que_1", "[]"},
+		{"req_plain", "null"},
+		{"req_plain", "[]"},
+	} {
+		result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+			"workspace_id": "ws-123",
+			"request_id":   tc.id,
+			"reply":        tc.reply,
+		}))
+		require.NoError(t, err)
+		assert.True(t, result.IsError, "id=%q reply=%q must error, not dispatch", tc.id, tc.reply)
+		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "non-empty JSON array")
+	}
+}
