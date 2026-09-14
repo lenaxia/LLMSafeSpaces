@@ -24,15 +24,37 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     r.ok('ensure-session: no error');
     const sid = sess.sessionId;
 
-    const [okQ, qBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/question`, cfg.apiKey),
-      'get-question: no error');
-    if (okQ) r.assert(okQ, 'get-question: returned response');
+    // 4a-2 r8: destructure rawDo directly (assertNoError wraps the
+    // TUPLE [status, body], not the body) and check the status for
+    // real — the pre-message GETs assert the array contract shape.
+    const [sQ, qRaw] = await rawDo('GET',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question`, cfg.apiKey);
+    r.assert(sQ === 200, 'get-question: 200', `got ${sQ}`);
+    if (sQ === 200) {
+      let qParsed: unknown;
+      try { qParsed = JSON.parse(qRaw.toString()); } catch (e) {
+        r.assert(false, 'question list is JSON', String(e));
+        qParsed = [];
+      }
+      const qs = qParsed as any[];
+      r.assert(Array.isArray(qs), 'question list is an array', qRaw.toString().slice(0, 120));
+      if (Array.isArray(qs) && qs.length > 0) {
+        r.assert(qs[0].kind === 'question', 'live question: contract kind', JSON.stringify(Object.keys(qs[0])));
+      }
+    }
 
-    const [okP, pBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission`, cfg.apiKey),
-      'get-permission: no error');
-    if (okP) r.assert(okP, 'get-permission: returned response');
+    const [sP2, pRaw] = await rawDo('GET',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey);
+    r.assert(sP2 === 200, 'get-permission: 200', `got ${sP2}`);
+    if (sP2 === 200) {
+      let pParsed: unknown;
+      try { pParsed = JSON.parse(pRaw.toString()); } catch (e) {
+        r.assert(false, 'permission list is JSON', String(e));
+        pParsed = [];
+      }
+      const ps = pParsed as any[];
+      r.assert(Array.isArray(ps), 'permission list is an array', pRaw.toString().slice(0, 120));
+    }
 
     const [okMsg, msg] = await r.assertNoError(
       () => c.sessions.sendMessage(wsId!, sid,
@@ -43,38 +65,63 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     await sleep(3000);
 
     const [sPerm, permBody] = await rawDo('GET',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission`, cfg.apiKey);
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey);
     r.assert(sPerm === 200, 'get-permission-after-msg: 200', `got ${sPerm}`);
 
     if (sPerm === 200) {
-      let perms: any[] = [];
-      try { perms = JSON.parse(permBody.toString()); } catch { perms = []; }
-      if (Array.isArray(perms) && perms.length > 0 && perms[0].id) {
+      // A parse failure IS the shape regression — do not sanitize (r5 f3).
+      let parsed: unknown;
+      try { parsed = JSON.parse(permBody.toString()); } catch (e) {
+        r.assert(false, 'permission list is JSON (parse failed)', String(e));
+        parsed = [];
+      }
+      const perms = Array.isArray(parsed) ? (parsed as any[]) : undefined;
+      if (perms === undefined) {
+        r.assert(false, 'permission list is an array', permBody.toString().slice(0, 120));
+      }
+      if (perms && perms.length > 0) {
+        // The LIVE entry carries the contract shape.
+        r.assert(perms[0].kind === 'permission', 'live permission: contract kind field', JSON.stringify(Object.keys(perms[0])));
+        r.assert(perms[0].session_id === undefined, 'live permission: NO snake_case', JSON.stringify(Object.keys(perms[0])));
+      }
+      if (perms && perms.length > 0 && perms[0].id) {
         const permId = perms[0].id;
         const [sReply] = await rawDo('POST',
-          `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/${permId}/reply`,
+          `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/${permId}/reply`,
           cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'once' })));
-        r.assert(sReply === 200 || sReply === 204, 'permission-reply: success',
+        r.assert(sReply >= 200 && sReply < 300, 'permission-reply: success', // 2xx: 202 = the #1313 late-answer accept
+
           `got ${sReply}`);
       } else {
         r.ok('permission: no pending permissions (model did not trigger tool permission)');
       }
     }
 
+    // 4a-2 r3 (#1302): a REAL charset violation with a VALID body —
+    // only the ID check can 400 this.
     const [sBadQ] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/question/invalid-id/reply`,
-      cfg.apiKey, Buffer.from(JSON.stringify({ text: 'answer' })));
-    r.assert(sBadQ === 400, 'bad-question-id: 400', `got ${sBadQ}`);
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question/bad$id/reply`,
+      cfg.apiKey, Buffer.from(JSON.stringify({ answers: [['Go']] })));
+    r.assert(sBadQ === 400, 'bad-question-id: 400 (charset; valid body)', `got ${sBadQ}`);
 
+    // Traversal: single-segment '..' — multi-segment paths 404 at the
+    // router before validation.
+    const [sTrav] = await rawDo('POST',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question/a..b/reply`,
+      cfg.apiKey, Buffer.from(JSON.stringify({ answers: [['Go']] })));
+    r.assert(sTrav === 400, 'traversal-id: 400 (the .. check)', `got ${sTrav}`);
+
+    // A conforming-but-dead id: the resolved paths (404 terminus / 202
+    // late-answer / 502 flag-off) — never the retired prefix 400.
     const [sBadPerm] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/invalid-id/reply`,
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/invalid-id/reply`,
       cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'maybe' })));
-    r.assert(sBadPerm === 400, 'bad-permission-reply-value: 400', `got ${sBadPerm}`);
+    r.assert(sBadPerm !== 400, 'generic-id: not a validation 400 (prefix contract retired)', `got ${sBadPerm}`);
 
     const [sBadPermId] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/not-per-id/reply`,
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/not.per-id/reply`,
       cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'once' })));
-    r.assert(sBadPermId === 400, 'bad-permission-id-format: 400', `got ${sBadPermId}`);
+    r.assert(sBadPermId !== 400, 'conforming id: not a validation 400', `got ${sBadPermId}`);
 
   } finally {
     if (wsId) { try { await c.workspaces.delete(wsId); } catch {} }

@@ -657,14 +657,19 @@ func (c *HTTPClient) fallbackHistory(ctx context.Context, workspaceID, sessionID
 	return "", nil
 }
 
-// validQuestionID matches opencode question request IDs.
-var validQuestionID = regexp.MustCompile(`^que_[a-zA-Z0-9]+$`)
+// validRequestID is the platform's GENERIC request-ID contract
+// (#1302 item 3 — the same one the REST handlers enforce): charset
+// [a-zA-Z0-9._-], length ≤128, no path traversal. The agent's
+// que_/per_ prefixes are routing knowledge behind the dialect seam,
+// not validation requirements.
+var validRequestID = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
 
-// validPermissionID matches opencode permission request IDs.
-var validPermissionID = regexp.MustCompile(`^per_[a-zA-Z0-9_]+$`)
+func requestIDValid(id string) bool {
+	return validRequestID.MatchString(id) && !strings.Contains(id, "..")
+}
 
 func (c *HTTPClient) QuestionReply(ctx context.Context, workspaceID, requestID string, answers [][]string) error {
-	if !validQuestionID.MatchString(requestID) {
+	if !requestIDValid(requestID) {
 		return fmt.Errorf("invalid question request ID: %s", requestID)
 	}
 	body := questionReplyRequest{Answers: answers}
@@ -673,7 +678,7 @@ func (c *HTTPClient) QuestionReply(ctx context.Context, workspaceID, requestID s
 }
 
 func (c *HTTPClient) QuestionReject(ctx context.Context, workspaceID, requestID string) error {
-	if !validQuestionID.MatchString(requestID) {
+	if !requestIDValid(requestID) {
 		return fmt.Errorf("invalid question request ID: %s", requestID)
 	}
 	path := fmt.Sprintf("/api/v1/workspaces/%s/question/%s/reject", workspaceID, requestID)
@@ -681,7 +686,7 @@ func (c *HTTPClient) QuestionReject(ctx context.Context, workspaceID, requestID 
 }
 
 func (c *HTTPClient) PermissionReply(ctx context.Context, workspaceID, requestID, reply, message string) error {
-	if !validPermissionID.MatchString(requestID) {
+	if !requestIDValid(requestID) {
 		return fmt.Errorf("invalid permission request ID: %s", requestID)
 	}
 	validReplies := map[string]bool{"once": true, "always": true, "reject": true}

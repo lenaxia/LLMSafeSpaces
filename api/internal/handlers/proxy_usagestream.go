@@ -17,8 +17,8 @@ import (
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	abiclient "github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -216,16 +216,17 @@ func (b *usageBridge) InputRequested(workspaceID string, req *abiv1.InputRequest
 	if root == "" {
 		root = b.h.resolveRootSessionID(workspaceID, req.GetSessionId())
 	}
+	// 4a-2 (r1 f1): the ONE contract shape — the ABI InputRequest is
+	// served verbatim (camelCase tags, kind-discriminated); the legacy
+	// envelope expansion is retired with its converters.
 	evt := apitypes.WorkspaceSSEEvent{
 		Type:      "agent.question",
 		SessionID: req.GetSessionId(),
 		RequestID: req.GetId(),
+		Data:      inputRequestFromABI(req, root),
 	}
 	if req.GetKind() == abiv1.InputKind_INPUT_KIND_PERMISSION {
 		evt.Type = "agent.permission"
-		evt.Data = permissionRequestFromABI(req, root)
-	} else {
-		evt.Data = questionRequestFromABI(req, root)
 	}
 	if userID := b.h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 		evt.WorkspaceID = workspaceID
@@ -285,44 +286,34 @@ func (b *usageBridge) AgentDied(workspaceID string) {
 	})
 }
 
-// questionRequestFromABI re-expands the unified InputRequest into the
-// QuestionRequest wire shape the frontend provider stores (the ABI's
-// flattened single-question form reversed).
-func questionRequestFromABI(req *abiv1.InputRequest, root string) agent.QuestionRequest {
-	q := agent.QuestionRequest{
+// inputRequestFromABI maps the ABI InputRequest onto the platform
+// contract shape (root resolved) — the single SSE payload form for both
+// kinds (#1302 item 4).
+func inputRequestFromABI(req *abiv1.InputRequest, root string) session.InputRequest {
+	ir := session.InputRequest{
 		ID:            req.GetId(),
 		SessionID:     req.GetSessionId(),
 		RootSessionID: root,
-		Questions: []agent.QuestionInfo{{
-			Question: req.GetQuestion(),
-			Header:   req.GetHeader(),
-			Multiple: req.GetMultiple(),
-		}},
 	}
-	for _, o := range req.GetOptions() {
-		q.Questions[0].Options = append(q.Questions[0].Options, agent.QuestionOption{Label: o.GetLabel(), Description: o.GetDescription()})
-	}
-	if t := req.GetTool(); t != nil {
-		q.Tool = &agent.ToolRef{MessageID: t.GetMessageId(), CallID: t.GetCallId()}
-	}
-	return q
-}
-
-// permissionRequestFromABI maps the ABI permission input onto the
-// PermissionRequest wire shape.
-func permissionRequestFromABI(req *abiv1.InputRequest, root string) agent.PermissionRequest {
-	p := agent.PermissionRequest{
-		ID:            req.GetId(),
-		SessionID:     req.GetSessionId(),
-		RootSessionID: root,
-		Permission:    req.GetPermission(),
-		Patterns:      req.GetPatterns(),
-		Always:        req.GetAlways(),
+	if req.GetKind() == abiv1.InputKind_INPUT_KIND_PERMISSION {
+		ir.Kind = session.InputPermission
+		ir.Permission = req.GetPermission()
+		ir.Patterns = req.GetPatterns()
+		ir.Always = req.GetAlways()
+	} else {
+		ir.Kind = session.InputQuestion
+		ir.Question = req.GetQuestion()
+		ir.Header = req.GetHeader()
+		ir.Multiple = req.GetMultiple()
+		ir.Custom = req.GetCustom()
+		for _, o := range req.GetOptions() {
+			ir.Options = append(ir.Options, session.InputOption{Label: o.GetLabel(), Description: o.GetDescription()})
+		}
 	}
 	if t := req.GetTool(); t != nil {
-		p.Tool = &agent.ToolRef{MessageID: t.GetMessageId(), CallID: t.GetCallId()}
+		ir.Tool = &session.ToolRef{MessageID: t.GetMessageId(), CallID: t.GetCallId()}
 	}
-	return p
+	return ir
 }
 
 // newUsageStreamClient builds the reference abiclient over a §D1

@@ -78,14 +78,16 @@ func TestListQuestions_AdapterPath_ReturnsNormalizedEnvelope(t *testing.T) {
 	var got []map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	require.Len(t, got, 1, "questions only — permissions filtered out")
+	// 4a increment 2 (#1302): the contract InputRequest shape —
+	// flattened, camelCase, kind-discriminated (the legacy
+	// agent.QuestionRequest envelope is retired).
 	assert.Equal(t, "que_1", got[0]["id"])
-	assert.Equal(t, "ses_1", got[0]["session_id"])
-	assert.Equal(t, "ses_1", got[0]["root_session_id"], "no parents resolver → root == session")
-	questions, ok := got[0]["questions"].([]any)
-	require.True(t, ok, "envelope carries the questions block")
-	require.Len(t, questions, 1)
-	q := questions[0].(map[string]any)
-	assert.Equal(t, "Proceed?", q["question"])
+	assert.Equal(t, "ses_1", got[0]["sessionId"])
+	assert.Equal(t, "ses_1", got[0]["rootSessionId"], "no parents resolver → root == session")
+	assert.Equal(t, "question", got[0]["kind"])
+	assert.Equal(t, "Proceed?", got[0]["question"])
+	assert.NotContains(t, got[0], "questions")
+	assert.NotContains(t, got[0], "session_id")
 }
 
 func TestListPermissions_AdapterPath_ReturnsNormalizedEnvelope(t *testing.T) {

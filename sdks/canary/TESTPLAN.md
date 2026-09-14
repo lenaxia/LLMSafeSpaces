@@ -654,15 +654,15 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `GET /question` → 200, array (may be empty) |
-| P2 | `GET /permission` → 200, array |
-| P3 | Send message that triggers tool-use permission |
-| P4 | `GET /permission` returns ≥ 1 pending permission with `id` |
-| P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → no error |
+| P1 | Go: `GET /question` → 200, hard array-parse assert, every entry contract-shaped (kind=question, camelCase, zero legacy fields). TS: 200 checked, hard array assert, question-kind on live entries. Python: 200 + array assert (no question-kind check) |
+| P2 | Go: `GET /permission` → 200, hard array-parse assert, every entry contract-shaped (kind=permission). TS: 200 checked + array assert. Python: 200 + array assert |
+| P3 | Send message that triggers tool-use permission. Python: a post-message non-200 list regime retries once then FAILS (a transient blip is tolerated; a regime is not) |
+| P4 | Go (hard-fails on none): ≥ 1 pending permission, the LIVE entry contract-asserted before replying. Python/TS: when an entry appears, kind + no-snake_case asserted loudly; a no-pending outcome soft-passes ("model did not trigger") |
+| P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → 2xx (202 = the #1313 late-answer accept) |
 | P6 | After approval, session returns to idle (confirm via SSE or status) |
-| N1 | `POST /question/:id/reply` with invalid ID format (not `que_...`) → 400 |
-| N2 | `POST /permission/:id/reply` with invalid reply value (`"maybe"`) → 400 |
-| N3 | `POST /permission/:id/reply` with invalid ID format (not `per_...`) → 400 |
+| N1 | (Go, TS) `POST /question/:id/reply` with an out-of-charset ID (e.g. `bad$id`) and a VALID body → 400 at the ID check (the generic contract `[a-zA-Z0-9._-]{1,128}`) |
+| N2 | (Go, TS) `POST /permission/:id/reply` with a CONFORMING dead id and `{"reply":"maybe"}` → NOT a validation 400 (the resolved paths: 404 terminus / 202 late-answer / 502 flag-off — the prefix contract is retired) |
+| N3 | (Go, TS) `POST /permission/:id/reply` with a single-segment traversal ID (`a..b`) and a valid body → 400 (the `..` check; multi-segment paths 404 at the router). Python implements no N-rows |
 
 ---
 

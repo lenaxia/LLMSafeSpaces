@@ -1,17 +1,17 @@
 import { useState, useCallback } from "react";
 import { inputApi } from "../../api/input";
-import type { QuestionRequest } from "../../api/types";
+import type { InputRequest } from "../../api/types";
 import { AgentPrompt } from "./AgentPrompt";
 
 interface QuestionPromptProps {
   workspaceId: string;
-  request: QuestionRequest;
+  request: InputRequest & { whileAway?: boolean };
   onResolved: () => void;
 }
 
 export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPromptProps) {
-  const [answers, setAnswers] = useState<string[][]>(request.questions.map(() => []));
-  const [customInputs, setCustomInputs] = useState<string[]>(request.questions.map(() => ""));
+  const [answers, setAnswers] = useState<string[][]>([[]]);
+  const [customInputs, setCustomInputs] = useState<string[]>([""]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +55,7 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
     setError(null);
     try {
       if (request.whileAway) {
-        await inputApi.dismissInboxRecord(workspaceId, request.session_id, request.id);
+        await inputApi.dismissInboxRecord(workspaceId, request.sessionId ?? "", request.id);
       } else {
         await inputApi.questionReject(workspaceId, request.id);
       }
@@ -73,44 +73,42 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
       onDismiss={handleDismiss}
       dismissDisabled={submitting}
     >
-      {request.questions.map((q, qIdx) => (
-        <div key={qIdx} className="border border-blue-200 dark:border-blue-800 rounded p-3 mb-3">
-          {qIdx === 0 && request.whileAway && (
-            <div className="text-xs text-muted-foreground mb-2">
-              This question waited unanswered. Submitting sends your answer to the chat and continues the work.
-            </div>
-          )}
-          <div className="font-medium text-sm mb-1">{q.header}</div>
-          <div className="text-sm mb-2">{q.question}</div>
-          <div className="flex flex-wrap gap-2 mb-2">
-            {q.options.map((opt) => (
-              <button
-                key={opt.label}
-                type="button"
-                disabled={submitting}
-                onClick={() => toggleOption(qIdx, opt.label, !!q.multiple)}
-                className={`px-3 py-1 rounded text-sm border transition-colors ${
-                  (answers[qIdx] ?? []).includes(opt.label)
-                    ? "bg-blue-600 text-white border-blue-600"
-                    : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 hover:border-blue-400"
-                }`}
-                title={opt.description}
-                aria-pressed={(answers[qIdx] ?? []).includes(opt.label)}
-              >
-                {opt.label}
-              </button>
-            ))}
+      <div className="border border-blue-200 dark:border-blue-800 rounded p-3 mb-3">
+        {request.whileAway && (
+          <div className="text-xs text-muted-foreground mb-2">
+            This question waited unanswered. Submitting sends your answer to the chat and continues the work.
           </div>
-          <input
-            type="text"
-            placeholder="Or type your own..."
-            value={customInputs[qIdx] ?? ""}
-            onChange={(e) => setCustom(qIdx, e.target.value)}
-            disabled={submitting}
-            className="w-full px-2 py-1 text-sm border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
-          />
+        )}
+        <div className="font-medium text-sm mb-1">{request.header}</div>
+        <div className="text-sm mb-2">{request.question}</div>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {(request.options ?? []).map((opt) => (
+            <button
+              key={opt.label}
+              type="button"
+              disabled={submitting}
+              onClick={() => toggleOption(0, opt.label, !!request.multiple)}
+              className={`px-3 py-1 rounded text-sm border transition-colors ${
+                (answers[0] ?? []).includes(opt.label)
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 hover:border-blue-400"
+              }`}
+              title={opt.description}
+              aria-pressed={(answers[0] ?? []).includes(opt.label)}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-      ))}
+        <input
+          type="text"
+          placeholder="Or type your own..."
+          value={customInputs[0] ?? ""}
+          onChange={(e) => setCustom(0, e.target.value)}
+          disabled={submitting}
+          className="w-full px-2 py-1 text-sm border rounded bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+        />
+      </div>
 
       {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
 

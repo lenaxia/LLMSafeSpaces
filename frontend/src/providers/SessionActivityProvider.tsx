@@ -4,7 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
 import { workspacesApi } from "../api/workspaces";
-import type { QuestionRequest, PermissionRequest } from "../api/types";
+import type { InputRequest } from "../api/types";
+
+/** Provider-local extension: the envelope's whileAway marker rides the stored object (D3). */
+type StoredInputRequest = InputRequest & { whileAway?: boolean };
 
 interface SessionActivityContextValue {
   isSessionBusy: (sessionId: string) => boolean;
@@ -22,10 +25,10 @@ interface SessionActivityContextValue {
   // the in-chat prompt UI. Content lives in this global layer — not in
   // ChatPage session-local state — so it survives within-tab navigation
   // between a parent session and its subtasks. Filtered by session at read.
-  addPendingQuestion: (workspaceId: string, req: QuestionRequest) => void;
-  addPendingPermission: (workspaceId: string, req: PermissionRequest) => void;
-  pendingQuestionsForSession: (sessionId: string) => QuestionRequest[];
-  pendingPermissionsForSession: (sessionId: string) => PermissionRequest[];
+  addPendingQuestion: (workspaceId: string, req: InputRequest) => void;
+  addPendingPermission: (workspaceId: string, req: InputRequest) => void;
+  pendingQuestionsForSession: (sessionId: string) => StoredInputRequest[];
+  pendingPermissionsForSession: (sessionId: string) => StoredInputRequest[];
   clearSessionPendingPrompts: (sessionId: string) => void;
   // D10: outcome of the most recent agent.input.snapshot_complete per
   // workspace. ChatPage gates its stuck-session auto-abort on a successful
@@ -98,8 +101,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // Pending prompt CONTENT, keyed by requestId. Paired with pendingActions
   // (the ID-only indicator). Content is global so it survives within-tab
   // session navigation (#346); consumers filter by session at read time.
-  const [pendingQuestionContent, setPendingQuestionContent] = useState<Map<string, QuestionRequest>>(new Map());
-  const [pendingPermissionContent, setPendingPermissionContent] = useState<Map<string, PermissionRequest>>(new Map());
+  const [pendingQuestionContent, setPendingQuestionContent] = useState<Map<string, StoredInputRequest>>(new Map());
+  const [pendingPermissionContent, setPendingPermissionContent] = useState<Map<string, StoredInputRequest>>(new Map());
 
   // D9: Legacy staging buffer for snapshot anti-entropy — used when no
   // snapshot flight is open (markers without snapshot_id, older API) and the
@@ -295,17 +298,22 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const requestId = evt.request_id;
           // Always apply optimistically for responsiveness.
           addPendingAction(wsId, sessionId, requestId);
-          // #1313: a whileAway-tagged payload is an INBOX re-presentation —
-          // API-owned content that the pod-side contract fold never
-          // carries (the live ask is gone; that is the point). Store its
-          // content here so the prompt renders; lifecycle rides the
-          // resolved-event path exactly like a live prompt's.
-          const payload = (evt as { data?: { whileAway?: boolean } }).data;
-          if (payload?.whileAway === true) {
+          // #1313 / 4a D3: an envelope-tagged whileAway event is an INBOX
+          // re-presentation — API-owned content the pod-side contract
+          // fold never carries (the live ask is gone; that is the
+          // point). Store its content so the prompt renders; lifecycle
+          // rides the resolved-event path exactly like a live prompt's.
+          const envelope = evt as { whileAway?: boolean };
+          if (envelope.whileAway === true) {
+            // The envelope marker rides the STORED object (provider-local
+            // extension of the contract shape — the ABI InputRequest
+            // itself stays clean of browser concerns; ChatPage's fold
+            // removal exempts on it).
+            const tagged = { ...(evt as unknown as { data: InputRequest }).data, whileAway: true } as StoredInputRequest;
             if (evt.type === "agent.question") {
-              addPendingQuestion(wsId, (evt as unknown as { data: QuestionRequest }).data);
+              addPendingQuestion(wsId, tagged);
             } else {
-              addPendingPermission(wsId, (evt as unknown as { data: PermissionRequest }).data);
+              addPendingPermission(wsId, tagged);
             }
           }
           // Stage if an anti-entropy window is open: into EVERY open flight
@@ -741,8 +749,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     for (const rid of doomedRequests) requestToSessionRef.current.delete(rid);
   }, [pendingActions]);
 
-  const addPendingQuestion = useCallback((workspaceId: string, req: QuestionRequest) => {
-    addPendingAction(workspaceId, req.session_id, req.id);
+  const addPendingQuestion = useCallback((workspaceId: string, req: InputRequest) => {
+    addPendingAction(workspaceId, req.sessionId ?? "", req.id);
     setPendingQuestionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
@@ -751,8 +759,8 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     });
   }, [addPendingAction]);
 
-  const addPendingPermission = useCallback((workspaceId: string, req: PermissionRequest) => {
-    addPendingAction(workspaceId, req.session_id, req.id);
+  const addPendingPermission = useCallback((workspaceId: string, req: InputRequest) => {
+    addPendingAction(workspaceId, req.sessionId ?? "", req.id);
     setPendingPermissionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
@@ -765,20 +773,20 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // whose root_session_id points here, so subtask prompts bubble to the parent
   // view (same rule ChatPage previously applied at write time — now applied at
   // read time so the content is stored regardless of the currently-viewed session).
-  const pendingQuestionsForSession = useCallback((sessionId: string): QuestionRequest[] => {
-    const out: QuestionRequest[] = [];
+  const pendingQuestionsForSession = useCallback((sessionId: string): StoredInputRequest[] => {
+    const out: InputRequest[] = [];
     for (const q of pendingQuestionContent.values()) {
-      const root = q.root_session_id ?? q.session_id;
-      if (root === sessionId || q.session_id === sessionId) out.push(q);
+      const root = q.rootSessionId ?? q.sessionId ?? "";
+      if (root === sessionId || q.sessionId === sessionId) out.push(q);
     }
     return out;
   }, [pendingQuestionContent]);
 
-  const pendingPermissionsForSession = useCallback((sessionId: string): PermissionRequest[] => {
-    const out: PermissionRequest[] = [];
+  const pendingPermissionsForSession = useCallback((sessionId: string): StoredInputRequest[] => {
+    const out: InputRequest[] = [];
     for (const p of pendingPermissionContent.values()) {
-      const root = p.root_session_id ?? p.session_id;
-      if (root === sessionId || p.session_id === sessionId) out.push(p);
+      const root = p.rootSessionId ?? p.sessionId ?? "";
+      if (root === sessionId || p.sessionId === sessionId) out.push(p);
     }
     return out;
   }, [pendingPermissionContent]);
@@ -791,9 +799,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const clearSessionPendingPrompts = useCallback((sessionId: string) => {
     const doomed = new Set<string>();
     for (const rid of pendingActions.get(sessionId) ?? []) doomed.add(rid);
-    const collect = <T extends { id: string; session_id: string }>(m: Map<string, T>) => {
+    const collect = (m: Map<string, InputRequest>) => {
       for (const v of m.values()) {
-        if (v.session_id === sessionId) doomed.add(v.id);
+        if (v.sessionId === sessionId) doomed.add(v.id);
       }
     };
     collect(pendingQuestionContent);
@@ -891,25 +899,25 @@ export function useSessionPendingActions(): Set<string> {
   return ctx.pendingActionSessionIds;
 }
 
-export function useAddPendingQuestion(): (workspaceId: string, req: QuestionRequest) => void {
+export function useAddPendingQuestion(): (workspaceId: string, req: InputRequest) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
   return ctx.addPendingQuestion;
 }
 
-export function useAddPendingPermission(): (workspaceId: string, req: PermissionRequest) => void {
+export function useAddPendingPermission(): (workspaceId: string, req: InputRequest) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
   return ctx.addPendingPermission;
 }
 
-export function usePendingQuestionsForSession(sessionId: string): QuestionRequest[] {
+export function usePendingQuestionsForSession(sessionId: string): StoredInputRequest[] {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return [];
   return ctx.pendingQuestionsForSession(sessionId);
 }
 
-export function usePendingPermissionsForSession(sessionId: string): PermissionRequest[] {
+export function usePendingPermissionsForSession(sessionId: string): StoredInputRequest[] {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return [];
   return ctx.pendingPermissionsForSession(sessionId);

@@ -10,23 +10,28 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
-var (
-	questionIDPattern   = regexp.MustCompile(`^que_[a-zA-Z0-9]+$`)
-	permissionIDPattern = regexp.MustCompile(`^per_[a-zA-Z0-9_]+$`)
-)
+// requestIDPattern is the GENERIC request-ID contract (#1302 item 3):
+// charset [a-zA-Z0-9._-], length ≤128, no path-traversal. The agent's
+// que_/per_ prefixes live behind the dialect seam — the handler accepts
+// any conforming ID from any agent.
+var requestIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]{1,128}$`)
 
-// ListQuestions returns the pending questions as the normalized
-// agent.QuestionRequest envelope (adapter ListPending, questions only).
+func validRequestID(id string) bool {
+	return requestIDPattern.MatchString(id) && !strings.Contains(id, "..")
+}
+
+// ListQuestions returns the pending questions as the contract
+// InputRequest (kind=question; adapter ListPending, root resolved).
 func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 	wid := c.Param("id")
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
@@ -43,10 +48,10 @@ func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list questions"})
 		return
 	}
-	out := make([]*agent.QuestionRequest, 0, len(pending))
+	out := make([]session.InputRequest, 0, len(pending))
 	for _, ir := range pending {
 		if ir.Kind == session.InputQuestion {
-			out = append(out, h.toQuestionRequest(c.Request.Context(), wid, ir))
+			out = append(out, h.resolveInputRequestRoot(c.Request.Context(), wid, ir))
 		}
 	}
 	h.recordActivityIfTracked(wid)
@@ -58,8 +63,8 @@ func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 // user message through the outbox instead.
 func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	requestID := c.Param("requestID")
-	if !questionIDPattern.MatchString(requestID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question request ID format"})
+	if !validRequestID(requestID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request ID"})
 		return
 	}
 	wid := c.Param("id")
@@ -132,8 +137,8 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 // dismissed it — no whileAway re-presentation.
 func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	requestID := c.Param("requestID")
-	if !questionIDPattern.MatchString(requestID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid question request ID format"})
+	if !validRequestID(requestID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request ID"})
 		return
 	}
 	wid := c.Param("id")
@@ -176,9 +181,8 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 }
 
-// ListPermissions returns the pending permissions as the normalized
-// agent.PermissionRequest envelope (adapter ListPending, permissions
-// only).
+// ListPermissions returns the pending permissions as the contract
+// InputRequest (kind=permission; adapter ListPending, root resolved).
 func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 	wid := c.Param("id")
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
@@ -193,10 +197,10 @@ func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to list permissions"})
 		return
 	}
-	out := make([]*agent.PermissionRequest, 0, len(pending))
+	out := make([]session.InputRequest, 0, len(pending))
 	for _, ir := range pending {
 		if ir.Kind == session.InputPermission {
-			out = append(out, h.toPermissionRequest(c.Request.Context(), wid, ir))
+			out = append(out, h.resolveInputRequestRoot(c.Request.Context(), wid, ir))
 		}
 	}
 	h.recordActivityIfTracked(wid)
@@ -209,8 +213,8 @@ func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 // decision informs future turns.
 func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	requestID := c.Param("requestID")
-	if !permissionIDPattern.MatchString(requestID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid permission request ID format"})
+	if !validRequestID(requestID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request ID"})
 		return
 	}
 	wid := c.Param("id")
@@ -478,9 +482,8 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 }
 
 // emitPendingViaAdapter uses the Adapter's ListPending to fetch pending
-// input requests in a single call, then publishes them as SSE events.
-// Converts session.InputRequest to the legacy agent.QuestionRequest /
-// agent.PermissionRequest shapes the SSE consumers expect.
+// input requests in a single call, then publishes them as SSE events in
+// the contract InputRequest shape (one shape for REST and SSE, #1302).
 // Returns true when the ListPending call succeeded.
 //
 // #1313: a ListPending failure still emits the inbox-only half of the
@@ -514,14 +517,14 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 				Type:      "agent.question",
 				SessionID: ir.SessionID,
 				RequestID: ir.ID,
-				Data:      h.toQuestionRequest(ctx, workspaceID, ir),
+				Data:      h.resolveInputRequestRoot(ctx, workspaceID, ir),
 			})
 		case session.InputPermission:
 			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 				Type:      "agent.permission",
 				SessionID: ir.SessionID,
 				RequestID: ir.ID,
-				Data:      h.toPermissionRequest(ctx, workspaceID, ir),
+				Data:      h.resolveInputRequestRoot(ctx, workspaceID, ir),
 			})
 		}
 	}
@@ -531,60 +534,15 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 	return true
 }
 
-// toQuestionRequest translates a contract InputRequest into the
-// normalized agent.QuestionRequest envelope (root-session resolved) —
-// the shape both the REST list route and the SSE snapshot emit.
-func (h *ProxyHandler) toQuestionRequest(ctx context.Context, workspaceID string, ir session.InputRequest) *agent.QuestionRequest {
-	rootSession := ir.SessionID
+// resolveInputRequestRoot returns the contract InputRequest with the
+// root session resolved (subtask prompts bubble to the user-visible
+// ancestor) — ONE shape for both the REST lists and the SSE emitter
+// (#1302 items 1/4).
+func (h *ProxyHandler) resolveInputRequestRoot(ctx context.Context, workspaceID string, ir session.InputRequest) session.InputRequest {
 	if h.sessionParents != nil {
-		rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
+		ir.RootSessionID = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
+	} else {
+		ir.RootSessionID = ir.SessionID
 	}
-	questionInfo := agent.QuestionInfo{
-		Question: ir.Question,
-		Header:   ir.Header,
-		Multiple: ir.Multiple,
-		Custom:   ir.Custom,
-	}
-	for _, o := range ir.Options {
-		questionInfo.Options = append(questionInfo.Options,
-			agent.QuestionOption{Label: o.Label, Description: o.Description})
-	}
-	req := &agent.QuestionRequest{
-		ID:            ir.ID,
-		SessionID:     ir.SessionID,
-		RootSessionID: rootSession,
-		Questions:     []agent.QuestionInfo{questionInfo},
-	}
-	if ir.Tool != nil {
-		req.Tool = &agent.ToolRef{
-			MessageID: ir.Tool.MessageID,
-			CallID:    ir.Tool.CallID,
-		}
-	}
-	return req
-}
-
-// toPermissionRequest translates a contract InputRequest into the
-// normalized agent.PermissionRequest envelope (root-session resolved) —
-// the shape both the REST list route and the SSE snapshot emit.
-func (h *ProxyHandler) toPermissionRequest(ctx context.Context, workspaceID string, ir session.InputRequest) *agent.PermissionRequest {
-	rootSession := ir.SessionID
-	if h.sessionParents != nil {
-		rootSession = h.sessionParents.resolveRoot(ctx, workspaceID, ir.SessionID)
-	}
-	req := &agent.PermissionRequest{
-		ID:            ir.ID,
-		SessionID:     ir.SessionID,
-		RootSessionID: rootSession,
-		Permission:    ir.Permission,
-		Patterns:      ir.Patterns,
-		Always:        ir.Always,
-	}
-	if ir.Tool != nil {
-		req.Tool = &agent.ToolRef{
-			MessageID: ir.Tool.MessageID,
-			CallID:    ir.Tool.CallID,
-		}
-	}
-	return req
+	return ir
 }

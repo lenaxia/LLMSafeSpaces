@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PermissionPrompt } from "./PermissionPrompt";
-import type { PermissionRequest } from "../../api/types";
+import type { InputRequest } from "../../api/types";
 
 vi.mock("../../api/input", () => ({
   inputApi: {
@@ -12,16 +12,18 @@ vi.mock("../../api/input", () => ({
 import { inputApi } from "../../api/input";
 const mockReply = vi.mocked(inputApi.permissionReply);
 
-const shellPermission: PermissionRequest = {
+const shellPermission: InputRequest = {
   id: "per_1",
-  session_id: "ses_1",
+  sessionId: "ses_1",
+  kind: "permission",
   permission: "shell",
   patterns: ["rm -rf /workspace/node_modules"],
 };
 
-const writePermission: PermissionRequest = {
+const writePermission: InputRequest = {
   id: "per_2",
-  session_id: "ses_1",
+  sessionId: "ses_1",
+  kind: "permission",
   permission: "write",
   patterns: ["/workspace/src/main.go", "/workspace/go.mod"],
 };
@@ -94,7 +96,7 @@ describe("PermissionPrompt", () => {
   });
 
   describe("whileAway variant (#1313)", () => {
-    const awayPermission: PermissionRequest = { ...shellPermission, whileAway: true };
+    const awayPermission: InputRequest & { whileAway?: boolean } = { ...shellPermission, whileAway: true };
 
     it("renders the while-you-were-away title and the guidance hint", () => {
       render(<PermissionPrompt workspaceId="ws-1" request={awayPermission} onResolved={onResolved} />);

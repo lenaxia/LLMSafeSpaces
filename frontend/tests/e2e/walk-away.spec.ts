@@ -17,26 +17,25 @@ const API = "**/api/v1";
 
 function whileAwayFlight(): string {
   const begin = { type: "agent.input.snapshot_begin", workspace_id: WS, snapshot_id: "flight-1" };
+  // 4a-2: the data is the contract InputRequest; whileAway rides the
+  // ENVELOPE (D3).
   const question = {
     type: "agent.question",
     workspace_id: WS,
     session_id: SES,
     request_id: "que_e2e_away1",
+    whileAway: true,
     data: {
       id: "que_e2e_away1",
-      session_id: SES,
-      root_session_id: SES,
-      questions: [
-        {
-          question: "Should we ship the widget tonight?",
-          header: "Ship it?",
-          options: [
-            { label: "Ship tonight", description: "deploy now" },
-            { label: "Hold", description: "wait" },
-          ],
-        },
+      sessionId: SES,
+      rootSessionId: SES,
+      kind: "question",
+      question: "Should we ship the widget tonight?",
+      header: "Ship it?",
+      options: [
+        { label: "Ship tonight", description: "deploy now" },
+        { label: "Hold", description: "wait" },
       ],
-      whileAway: true,
     },
   };
   const complete = { type: "agent.input.snapshot_complete", workspace_id: WS, snapshot_id: "flight-1", snapshot_ok: true };

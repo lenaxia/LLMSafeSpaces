@@ -60,13 +60,14 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useRemovePendingAction: () => promptStore.removeAction,
   useAddPendingQuestion: () => promptStore.addQuestion,
   useAddPendingPermission: () => promptStore.addPermission,
+  // 4a-2: contract tags are camelCase.
   usePendingQuestionsForSession: (sessionId: string) =>
     promptStore.questions.filter(
-      (q) => (q.root_session_id ?? q.session_id) === sessionId || q.session_id === sessionId,
+      (q) => (q.rootSessionId ?? q.sessionId) === sessionId || q.sessionId === sessionId,
     ),
   usePendingPermissionsForSession: (sessionId: string) =>
     promptStore.permissions.filter(
-      (p) => (p.root_session_id ?? p.session_id) === sessionId || p.session_id === sessionId,
+      (p) => (p.rootSessionId ?? p.sessionId) === sessionId || p.sessionId === sessionId,
     ),
   useClearSessionPendingPrompts: () => promptStore.clearSessionPrompts,
   useWorkspaceInputSnapshot: () => undefined,
@@ -220,16 +221,16 @@ function permissionInput(overrides: Record<string, unknown> = {}) {
 
 /** What the I12 effect hands the provider for questionInput(). */
 function mappedQuestionRequest() {
+  // 4a-2 (#1302): the contract InputRequest passes through unchanged.
   return {
     id: "que_abc",
-    session_id: "ses_1",
-    root_session_id: "ses_1",
-    questions: [{
-      question: "Pick one",
-      header: "Language",
-      options: [{ label: "Go", description: "fast" }],
-      multiple: false,
-    }],
+    sessionId: "ses_1",
+    rootSessionId: "ses_1",
+    kind: "question",
+    question: "Pick one",
+    header: "Language",
+    options: [{ label: "Go", description: "fast" }],
+    multiple: false,
   };
 }
 
@@ -237,8 +238,9 @@ function mappedQuestionRequest() {
 function mappedPermissionRequest() {
   return {
     id: "per_xyz",
-    session_id: "ses_1",
-    root_session_id: "ses_1",
+    sessionId: "ses_1",
+    rootSessionId: "ses_1",
+    kind: "permission",
     permission: "shell",
     patterns: ["rm -rf /tmp"],
     always: ["bash"],
@@ -328,7 +330,7 @@ describe("ChatPage pending prompts (I12 fold-driven, US-69.10)", () => {
     it("fold removal only touches the viewed session's stored prompts", async () => {
       const qc = makeQueryClient();
       await renderReady(qc);
-      promptStore.questions = [{ ...mappedQuestionRequest(), id: "que_other", session_id: "ses_other" }];
+      promptStore.questions = [{ ...mappedQuestionRequest(), id: "que_other", sessionId: "ses_other", rootSessionId: "ses_other" }];
       applySnapshot(6n, [
         makeSessionSnapshot("ses_1", { status: SessionStatus.BUSY, pendingInputs: [] }),
       ]);

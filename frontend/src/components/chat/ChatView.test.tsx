@@ -5,7 +5,7 @@ import { render } from "../../test/utils";
 import { ChatView } from "./ChatView";
 import { PermissionPrompt } from "./PermissionPrompt";
 import { QuestionPrompt } from "./QuestionPrompt";
-import type { Message, PermissionRequest, QuestionRequest } from "../../api/types";
+import type { InputRequest, Message } from "../../api/types";
 import type { ModelInfo } from "../../api/workspaces";
 
 vi.mock("../../api/input", () => ({
@@ -253,9 +253,10 @@ describe("ChatView", () => {
 
   it("renders real PermissionPrompt inside the scroll container and allows interaction", async () => {
     const onResolved = vi.fn();
-    const request: PermissionRequest = {
+    const request: InputRequest & { whileAway?: boolean } = {
       id: "per_int",
-      session_id: "ses_1",
+      sessionId: "ses_1",
+      kind: "permission",
       permission: "shell",
       patterns: ["rm -rf /tmp/cache"],
     };
@@ -275,14 +276,13 @@ describe("ChatView", () => {
 
   it("renders real QuestionPrompt inside the scroll container and allows interaction", async () => {
     const onResolved = vi.fn();
-    const request: QuestionRequest = {
+    const request: InputRequest & { whileAway?: boolean } = {
       id: "que_int",
-      session_id: "ses_1",
-      questions: [{
-        header: "Pick one",
-        question: "Which language?",
-        options: [{ label: "Go", description: "fast" }],
-      }],
+      sessionId: "ses_1",
+      kind: "question",
+      header: "Pick one",
+      question: "Which language?",
+      options: [{ label: "Go", description: "fast" }],
     };
     render(
       <ChatView

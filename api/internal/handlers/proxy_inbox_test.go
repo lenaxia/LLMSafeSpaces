@@ -24,7 +24,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -167,24 +166,22 @@ func TestInbox_EmitPending_UnionLiveAndInbox(t *testing.T) {
 	var live, away bool
 	for i := 0; i < 2; i++ {
 		evt := recvWithTimeout(t, userSub, "agent.question")
-		req, ok := evt.Data.(*agent.QuestionRequest)
-		if !ok {
-			b, _ := json.Marshal(evt.Data)
-			var qr agent.QuestionRequest
-			require.NoError(t, json.Unmarshal(b, &qr))
-			req = &qr
-		}
-		switch req.ID {
+		b, _ := json.Marshal(evt.Data)
+		var ir session.InputRequest
+		require.NoError(t, json.Unmarshal(b, &ir))
+		switch ir.ID {
 		case "que_live":
 			live = true
-			assert.False(t, req.WhileAway, "live asks are not whileAway")
+			assert.Nil(t, evt.WhileAway, "live asks carry no envelope marker")
 		case "que_stale":
 			away = true
-			assert.True(t, req.WhileAway, "inbox-only records must be whileAway-tagged")
-			assert.Equal(t, "While away?", req.Questions[0].Question)
-			assert.Equal(t, "ses_2", req.SessionID)
+			require.NotNil(t, evt.WhileAway, "inbox-only records carry the ENVELOPE marker (D3)")
+			assert.True(t, *evt.WhileAway)
+			assert.Equal(t, "While away?", ir.Question)
+			assert.Equal(t, "ses_2", ir.SessionID)
+			assert.NotContains(t, string(b), "whileAway", "the marker is NOT on the ABI shape")
 		default:
-			t.Fatalf("unexpected ask %s", req.ID)
+			t.Fatalf("unexpected ask %s", ir.ID)
 		}
 	}
 	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
@@ -229,7 +226,7 @@ func TestInbox_EmitPending_NoDuplicateForLiveRecord(t *testing.T) {
 	for i := 0; i < 1; i++ {
 		evt := recvWithTimeout(t, userSub, "agent.question")
 		count++
-		assert.False(t, evt.Data.(*agent.QuestionRequest).WhileAway)
+		assert.Nil(t, evt.WhileAway, "live asks carry no envelope marker")
 	}
 	_ = count
 	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
@@ -785,11 +782,12 @@ func TestInbox_WhileAwayStack_MultipleRecordsAllRePresent(t *testing.T) {
 	var order []string
 	for i := 0; i < 3; i++ {
 		evt := recvWithTimeout(t, userSub, "agent.question")
+		require.NotNil(t, evt.WhileAway, "inbox-only records carry the envelope marker")
+		assert.True(t, *evt.WhileAway)
 		b, _ := json.Marshal(evt.Data)
-		var qr agent.QuestionRequest
-		require.NoError(t, json.Unmarshal(b, &qr))
-		assert.True(t, qr.WhileAway)
-		order = append(order, qr.ID)
+		var ir session.InputRequest
+		require.NoError(t, json.Unmarshal(b, &ir))
+		order = append(order, ir.ID)
 	}
 	assert.Equal(t, ids, order, "stack re-presents oldest-first")
 }

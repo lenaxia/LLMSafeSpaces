@@ -92,40 +92,71 @@ def run(r: Runner, cfg: Config) -> None:
         if ok2 and msg is not None:
             r.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
 
+        msg_sent = True
+        non200 = 0
         pending_found = False
         deadline = time.time() + 30
         while time.time() < deadline:
+            # Transport errors retry; SHAPE assertions live OUTSIDE the
+            # try so no except can swallow them (r5 f1).
             try:
                 s3, b3 = raw_do(
                     "GET",
                     f"{cfg.api_url}/api/v1/workspaces/{ws_id}/permission",
                     cfg.api_key,
                 )
-                if s3 == 200:
-                    perms_list = json.loads(b3)
-                    for p in perms_list:
-                        if p.get("status") == "pending":
-                            pending_found = True
-                            perm_id = p.get("id", "")
-                            reply_body = json.dumps(
-                                {"reply": "allow", "reason": "canary test"}
-                            ).encode()
-                            s4, _ = raw_do(
-                                "POST",
-                                f"{cfg.api_url}/api/v1/workspaces/{ws_id}/permission/{perm_id}/reply",
-                                cfg.api_key,
-                                reply_body,
-                            )
-                            r.assert_(s4 in (200, 204), "permission-reply: success", str(s4))
-                            break
             except Exception:
-                pass
-            if pending_found:
+                time.sleep(2)
+                continue
+            if s3 != 200:
+                # A post-message non-200 regime is a regression, not
+                # "model didn't trigger" — retry once, then fail (the
+                # mid-poll window tolerates a single transient blip).
+                if msg_sent:
+                    non200 += 1
+                    if non200 >= 2:
+                        r.assert_(False, "permission list non-200 after the message (1 retry)", str(s3))
+                        pending_found = True
+                        break
+                time.sleep(2)
+                continue
+            # A non-array body is a shape regression — fail loud.
+            try:
+                perms_list = json.loads(b3)
+            except Exception:
+                r.assert_(False, "permission list is JSON", b3[:120].decode("utf-8", "replace"))
+                pending_found = True  # stop polling; already failed
+                break
+            if not isinstance(perms_list, list):
+                r.assert_(False, "permission list is an array", type(perms_list).__name__)
+                pending_found = True
+                break
+            if perms_list:
+                # The LIVE entry carries the contract shape (4a-2:
+                # kind-discriminated, camelCase, no legacy envelope).
+                first = perms_list[0]
+                r.assert_(first.get("kind") == "permission",
+                          "live permission: contract kind field",
+                          f"keys={sorted(first.keys())}")
+                r.assert_(first.get("session_id") is None,
+                          "live permission: NO snake_case",
+                          f"keys={sorted(first.keys())}")
+                pending_found = True
+                perm_id = first.get("id", "")
+                # The vocabulary is once/always/reject (the pre-contract
+                # "allow" was never valid).
+                s4, _ = raw_do(
+                    "POST",
+                    f"{cfg.api_url}/api/v1/workspaces/{ws_id}/permission/{perm_id}/reply",
+                    cfg.api_key,
+                    json.dumps({"reply": "once"}).encode(),
+                )
+                r.assert_(200 <= s4 < 300, "permission-reply: success (2xx; 202 = the #1313 late-answer accept)", str(s4))
                 break
             time.sleep(2)
 
         if not pending_found:
-            r.ok("permission: no pending permissions (auto-approved)")
+            r.ok("permission: no pending permissions (model did not trigger tool permission)")
 
     finally:
         if ws_id:

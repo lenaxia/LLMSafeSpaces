@@ -18,7 +18,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -126,64 +125,50 @@ func (h *ProxyHandler) emitInboxOnlyRecords(ctx context.Context, workspaceID str
 		if h.sessionParents != nil {
 			root = h.sessionParents.resolveRoot(ctx, workspaceID, rec.SessionID)
 		}
-		switch rec.Kind {
-		case inbox.KindQuestion:
-			req := questionRequestFromRecord(rec, root)
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "agent.question",
-				SessionID: rec.SessionID,
-				RequestID: rec.ID,
-				Data:      req,
-			})
-		case inbox.KindPermission:
-			req := permissionRequestFromRecord(rec, root)
-			h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "agent.permission",
-				SessionID: rec.SessionID,
-				RequestID: rec.ID,
-				Data:      req,
-			})
+		// D3: the whileAway marker rides the SSE envelope; the Data is
+		// the contract InputRequest (one shape, #1302 item 4).
+		away := true
+		evtType := "agent.question"
+		if rec.Kind == inbox.KindPermission {
+			evtType = "agent.permission"
 		}
+		h.publishWorkspaceAndUserEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			Type:      evtType,
+			SessionID: rec.SessionID,
+			RequestID: rec.ID,
+			Data:      inputRequestFromRecord(rec, root),
+			WhileAway: &away,
+		})
 	}
 }
 
-func questionRequestFromRecord(rec inbox.Record, root string) *agent.QuestionRequest {
-	info := agent.QuestionInfo{
-		Question: rec.Question,
-		Header:   rec.Header,
-		Multiple: rec.Multiple,
-		Custom:   rec.Custom,
+// inputRequestFromRecord renders an inbox record as the contract
+// InputRequest (root resolved by the caller).
+func inputRequestFromRecord(rec inbox.Record, root string) session.InputRequest {
+	ir := session.InputRequest{
+		ID:            rec.ID,
+		SessionID:     rec.SessionID,
+		RootSessionID: root,
 	}
+	if rec.Tool != nil {
+		ir.Tool = &session.ToolRef{MessageID: rec.Tool.MessageID, CallID: rec.Tool.CallID}
+	}
+	if rec.Kind == inbox.KindPermission {
+		ir.Kind = session.InputPermission
+		ir.Permission = rec.Permission
+		ir.Patterns = rec.Patterns
+		ir.Always = rec.Always
+		return ir
+	}
+	ir.Kind = session.InputQuestion
+	ir.Question = rec.Question
+	ir.Header = rec.Header
+	ir.Multiple = rec.Multiple
+	ir.Custom = rec.Custom
 	for _, o := range rec.Options {
-		info.Options = append(info.Options, agent.QuestionOption{Label: o.Label, Description: o.Description})
+		ir.Options = append(ir.Options, session.InputOption{Label: o.Label, Description: o.Description})
 	}
-	req := &agent.QuestionRequest{
-		ID:            rec.ID,
-		SessionID:     rec.SessionID,
-		RootSessionID: root,
-		Questions:     []agent.QuestionInfo{info},
-		WhileAway:     true,
-	}
-	if rec.Tool != nil {
-		req.Tool = &agent.ToolRef{MessageID: rec.Tool.MessageID, CallID: rec.Tool.CallID}
-	}
-	return req
-}
-
-func permissionRequestFromRecord(rec inbox.Record, root string) *agent.PermissionRequest {
-	req := &agent.PermissionRequest{
-		ID:            rec.ID,
-		SessionID:     rec.SessionID,
-		RootSessionID: root,
-		Permission:    rec.Permission,
-		Patterns:      rec.Patterns,
-		Always:        rec.Always,
-		WhileAway:     true,
-	}
-	if rec.Tool != nil {
-		req.Tool = &agent.ToolRef{MessageID: rec.Tool.MessageID, CallID: rec.Tool.CallID}
-	}
-	return req
+	return ir
 }
 
 // askLiveness is the tri-state result of consulting the harness pending

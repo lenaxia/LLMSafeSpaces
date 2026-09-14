@@ -541,28 +541,30 @@ export function ChatPage() {
       // the fold until the projection drops it (INPUT_RESOLVED / fresh
       // snapshot) — that is the answer→event latency window.
       if (resolvedInputIdsRef.current.has(input.id)) continue;
+      // 4a-2: ONE contract shape — the fold's InputRequest passes
+      // through unchanged (kind-discriminated, camelCase).
       if (input.kind === InputKind.PERMISSION) {
         addPendingPermission(workspaceId, {
           id: input.id,
-          session_id: input.sessionId,
-          root_session_id: rootSessionId,
+          sessionId: input.sessionId,
+          rootSessionId,
+          kind: "permission",
           permission: input.permission,
           patterns: [...input.patterns],
           always: [...input.always],
-          ...(input.tool ? { tool: { message_id: input.tool.messageId, call_id: input.tool.callId } } : {}),
+          ...(input.tool ? { tool: { messageId: input.tool.messageId, callId: input.tool.callId } } : {}),
         });
       } else {
         addPendingQuestion(workspaceId, {
           id: input.id,
-          session_id: input.sessionId,
-          root_session_id: rootSessionId,
-          questions: [{
-            question: input.question,
-            header: input.header,
-            options: input.options.map((o) => ({ label: o.label, description: o.description })),
-            multiple: input.multiple,
-          }],
-          ...(input.tool ? { tool: { message_id: input.tool.messageId, call_id: input.tool.callId } } : {}),
+          sessionId: input.sessionId,
+          rootSessionId,
+          kind: "question",
+          question: input.question,
+          header: input.header,
+          options: input.options.map((o) => ({ label: o.label, description: o.description })),
+          multiple: input.multiple,
+          ...(input.tool ? { tool: { messageId: input.tool.messageId, callId: input.tool.callId } } : {}),
         });
       }
     }
@@ -578,14 +580,19 @@ export function ChatPage() {
     for (const id of [...resolvedInputIdsRef.current]) {
       if (!pendingIds.has(id)) resolvedInputIdsRef.current.delete(id);
     }
-    const isOwn = (sid: string) => sid === sessionId || parentOf(sid) === sessionId;
+    const isOwn = (sid: string | undefined) => !!sid && (sid === sessionId || parentOf(sid) === sessionId);
+    // whileAway prompts are EXEMPT (#1313): API-owned inbox
+    // re-presentations the pod fold never carries — fold absence is not
+    // resolution evidence for them. The provider carries the envelope
+    // marker on the stored object (D3: the ABI schema itself stays
+    // clean; this is a provider-local extension).
     for (const q of pendingQuestions) {
       if (q.whileAway) continue;
-      if (isOwn(q.session_id) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) removePendingAction(q.id);
+      if (isOwn(q.sessionId) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) removePendingAction(q.id);
     }
     for (const perm of pendingPermissions) {
       if (perm.whileAway) continue;
-      if (isOwn(perm.session_id) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) removePendingAction(perm.id);
+      if (isOwn(perm.sessionId) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) removePendingAction(perm.id);
     }
     // The sync is idempotent (adds are first-wins by request id; removals
     // key off the fold), so re-running on prompt-store changes converges.

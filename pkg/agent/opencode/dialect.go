@@ -6,6 +6,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 )
@@ -33,6 +34,24 @@ func (d *Dialect) SessionAbortPath(sessionID string) string {
 }
 func (d *Dialect) SessionGetPath(sessionID string) string { return "/session/" + sessionID }
 func (d *Dialect) EventStreamPath() string                { return "/event" }
+
+// KindByPrefix maps a request ID to its input kind by the agent's ID
+// prefix convention (que_ = question, per_ = permission) — the seam's
+// kind discriminator, used by the adapter's prefix-aware routing
+// (#1302 item 3; handlers and the MCP client/server validate the
+// GENERIC contract instead). The actor (cmd/workspace-agentd wiring)
+// keeps its own seam-local helpers; the MCP server's dispatch is a
+// prefix FAST-PATH with reply-shape dispatch for conforming
+// unprefixed ids (dispatch, never validation).
+func (d *Dialect) KindByPrefix(requestID string) string {
+	if strings.HasPrefix(requestID, "que_") {
+		return "question"
+	}
+	if strings.HasPrefix(requestID, "per_") {
+		return "permission"
+	}
+	return ""
+}
 
 // --- Input request route paths ---
 
