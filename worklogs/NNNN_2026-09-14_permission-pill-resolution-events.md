@@ -156,3 +156,18 @@ kept running) — the events appear to have been dropped/queued out. This
 commit re-triggers the synchronize wave; if it also fails to materialize,
 close/reopen fires `reopened` (covered by ci.yml's unfiltered
 pull_request trigger) though not pr-review.yml's [opened, synchronize].
+
+### Outcome (r1 close)
+
+- Automated reviewer verdict on `ab676e52`: **APPROVE** (all findings
+  addressed; red-first reproduction independently verified against main;
+  two non-blocking follow-up notes: flag-off adapter-path reject
+  disposition maps to answered — pre-existing on main — and record-less
+  adapter publishes carry `session_id: ""`).
+- CI: the pull_request webhook path stayed dead for this branch (three
+  synchronize pushes + a fresh PR produced zero runs while issue_comment
+  events flowed); CI was run via the sanctioned `workflow_dispatch` path
+  on `ab676e52` — **success** (lint, test, test-full -race,
+  frontend-test, abi-schema).
+- PR #1369 (supersedes #1368, same branch/commits) — approved and
+  CI-green; left unmerged pending the user's call.
