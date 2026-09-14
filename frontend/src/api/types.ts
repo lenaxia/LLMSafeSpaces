@@ -291,6 +291,8 @@ export interface QuestionRequest {
    * lands the answer in history as a Q&A message; dismissing clears it.
    */
   whileAway?: boolean;
+  /** Client stamp (#1365): when this prompt entered the pending store. */
+  receivedAt?: number;
 }
 
 export interface PermissionRequest {
@@ -305,6 +307,8 @@ export interface PermissionRequest {
   tool?: { message_id: string; call_id: string };
   /** See {@link QuestionRequest.whileAway}. */
   whileAway?: boolean;
+  /** See {@link QuestionRequest.receivedAt}. */
+  receivedAt?: number;
 }
 
 export interface AgentQuestionEvent {

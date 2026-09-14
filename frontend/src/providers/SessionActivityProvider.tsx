@@ -746,7 +746,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingQuestionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      // #1365: stamp on entry — the stale bound for whileAway pills keys
+      // off this, never off the (absent) event stream.
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);
@@ -756,7 +758,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingPermissionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);

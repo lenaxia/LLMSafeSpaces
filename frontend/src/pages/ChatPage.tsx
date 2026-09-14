@@ -570,21 +570,33 @@ export function ChatPage() {
     // Removals: prompts visible from this view that the fold no longer
     // carries were resolved outside this view's event flow. A resolved-id
     // latch clears once the fold drops the input. whileAway prompts are
-    // EXEMPT: they are API-owned inbox re-presentations (#1313) — the
-    // pod fold never carries them (the live ask is gone), so fold
-    // absence is not resolution evidence for them; their lifecycle is
-    // the resolved-event path.
+    // EXEMPT from fold-based removal: they are API-owned inbox
+    // re-presentations (#1313) — the pod fold never carries them (the
+    // live ask is gone), so fold absence is not resolution evidence for
+    // them; their lifecycle is the resolved-event path — EXCEPT they are
+    // time-bounded (#1365): the inbox records a terminal answer/dismiss
+    // and the resolved event on those paths can be missing, so a
+    // whileAway pill older than the bound is dropped as stale rather
+    // than rendered forever. The dismiss button remains the explicit
+    // exit; this is the convergence backstop for a dead event leg.
+    const WHILE_AWAY_STALE_MS = 10 * 60 * 1000;
     const pendingIds = new Set(visibleInputs.map((v) => v.input.id));
     for (const id of [...resolvedInputIdsRef.current]) {
       if (!pendingIds.has(id)) resolvedInputIdsRef.current.delete(id);
     }
     const isOwn = (sid: string) => sid === sessionId || parentOf(sid) === sessionId;
     for (const q of pendingQuestions) {
-      if (q.whileAway) continue;
+      if (q.whileAway) {
+        if (Date.now() - (q.receivedAt ?? 0) > WHILE_AWAY_STALE_MS) removePendingAction(q.id);
+        continue;
+      }
       if (isOwn(q.session_id) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) removePendingAction(q.id);
     }
     for (const perm of pendingPermissions) {
-      if (perm.whileAway) continue;
+      if (perm.whileAway) {
+        if (Date.now() - (perm.receivedAt ?? 0) > WHILE_AWAY_STALE_MS) removePendingAction(perm.id);
+        continue;
+      }
       if (isOwn(perm.session_id) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) removePendingAction(perm.id);
     }
     // The sync is idempotent (adds are first-wins by request id; removals
