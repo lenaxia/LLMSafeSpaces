@@ -115,6 +115,7 @@ func mcpRenameWorkspace(ctx context.Context, name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	//nolint:gosec // G704: apiURL is controller-set via LLMSAFESPACE_API_URL env, not user/tool-controllable (bootstrap.go precedent)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		strings.TrimSuffix(apiURL, "/")+"/internal/v1/workspace-rename", bytes.NewReader(body))
 	if err != nil {
@@ -122,7 +123,7 @@ func mcpRenameWorkspace(ctx context.Context, name string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+string(token))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: controller-set origin, see above
 	if err != nil {
 		return "", fmt.Errorf("failed to reach the platform: %w", err)
 	}

@@ -752,16 +752,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		router.GET("/api/v1/internal/orgs/:orgID/status", cfg.InternalOrgStatusHandler.GetOrgStatus)
 	}
 
-	// Epic 35 US-35.3: pod bootstrap endpoint. Auth is K8s TokenReview (no JWT).
-	if cfg.PodBootstrapHandler != nil {
-		router.POST("/internal/v1/pod-bootstrap", cfg.PodBootstrapHandler.Bootstrap)
-	}
-
-	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
-	// Auth is K8s TokenReview (no JWT), same contract as pod-bootstrap.
-	if cfg.PodWorkspaceRenameHandler != nil {
-		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
-	}
+	registerInternalPodRoutes(router, cfg)
 
 	// Secret management routes (Epic 10)
 	if cfg.SecretsHandler != nil {
@@ -1141,6 +1132,20 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 //
 // proxyHandler may be nil; it is only used to trigger the optional
 // session-parent backfill on the /sessions endpoint and is otherwise unused.
+// registerInternalPodRoutes mounts the pod-identity internal endpoints.
+// Auth is K8s TokenReview per-request (no JWT middleware — init
+// containers and the agent have no user identity); see each handler.
+func registerInternalPodRoutes(router *gin.Engine, cfg RouterConfig) {
+	// Epic 35 US-35.3: pod bootstrap endpoint.
+	if cfg.PodBootstrapHandler != nil {
+		router.POST("/internal/v1/pod-bootstrap", cfg.PodBootstrapHandler.Bootstrap)
+	}
+	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
+	if cfg.PodWorkspaceRenameHandler != nil {
+		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
+	}
+}
+
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig) {
 	wsSvc := services.GetWorkspace()
 	authSvc := services.GetAuth()

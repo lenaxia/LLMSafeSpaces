@@ -75,30 +75,6 @@ func findOrDownloadBinary(t *testing.T) string {
 	return binPath
 }
 
-func writeOpencodeConfig(t *testing.T, configDir string) {
-	t.Helper()
-
-	configContent := `{
-		"$schema": "https://opencode.ai/config.json",
-		"provider": {
-			"opencode": {
-				"options": {
-					"apiKey": "public",
-					"baseURL": "https://opencode.ai/zen/v1"
-				}
-			}
-		}
-	}`
-
-	// Write to XDG config dir (opencode discovers this automatically)
-	xdgConfigDir := filepath.Join(configDir, "opencode")
-	require.NoError(t, os.MkdirAll(xdgConfigDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(xdgConfigDir, "opencode.jsonc"), []byte(configContent), 0o644))
-
-	// Also write to OPENCODE_CONFIG path (last writer wins in opencode)
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "agent-config.json"), []byte(configContent), 0o644))
-}
-
 type opencodeServer struct {
 	baseURL string
 	ctx     context.Context
