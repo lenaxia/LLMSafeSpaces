@@ -1367,6 +1367,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	)
 	platformInfoHandler.SetLogger(log)
 
+	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
+	// Same TokenReview contract as pod-bootstrap; the renamer is the
+	// workspace Service under the owner resolved from the DB lookup.
+	// When the workspace service is not the concrete type the handler
+	// stays nil and the route is not registered (defense-in-depth —
+	// services.New always constructs *workspace.Service).
+	var podWorkspaceRenameHandler *handlers.PodWorkspaceRenameHandler
+	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+		podWorkspaceRenameHandler = handlers.NewPodWorkspaceRenameHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, wsSvc, cfg.Kubernetes.Namespace,
+		)
+	}
+
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
@@ -1411,6 +1424,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PlatformAdminHandler:            platformAdminHandler,
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
 		PodBootstrapHandler:             podBootstrapHandler,
+		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,

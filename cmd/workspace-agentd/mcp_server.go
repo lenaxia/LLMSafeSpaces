@@ -142,6 +142,85 @@ func mcpHandler(password string) http.HandlerFunc {
 							"properties": map[string]any{},
 						},
 					},
+					{
+						Name:        "rename_session",
+						Description: "Rename a session in this workspace — your own current conversation or a past one (IDs from session_list). Use when a session's purpose has crystallized and the auto-generated title no longer describes it: after a pivot mid-task, when the user asks to rename, or to keep history navigable (titles are what you and the user scan in the session list). Pick short, specific, human-scannable titles (\"Fix: PVC subPath mounts\", not \"Task\"). Not for: renaming the workspace itself (rename_workspace), or creating sessions (create_session).",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "The session to rename (from session_list, or your own session)"},
+								"title":      map[string]any{"type": "string", "description": "The new title (max 200 chars)"},
+							},
+							"required": []string{"session_id", "title"},
+						},
+					},
+					{
+						Name:        "rename_workspace",
+						Description: "Rename THIS workspace — the container/label the user sees in their workspace list (not the session, not a file). Use when the user asks to rename the workspace, or when the work has outgrown the original name (a \"quick fix\" that became a refactor). Only affects this workspace's display name; nothing about the filesystem, credentials, or sessions changes. The pod's platform identity authenticates the call — no input identifies the workspace, and a pod can only ever rename itself.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{"type": "string", "description": "The new workspace display name (max 255 chars)"},
+							},
+							"required": []string{"name"},
+						},
+					},
+					{
+						Name:        "call_with_model",
+						Description: "Make ONE single-shot LLM call with a different model than the session's, returning its text response — the exchange lands in THIS conversation as the tool call + result (like every tool), in line with your turn. A clean carrier session runs the call and is deleted afterward, leaving history clean; the carrier is required, not a quirk: a session running a turn (yours, by definition, while a tool executes) BLOCKS incoming messages, so the call must run on an idle session. Use when a capability would serve one sub-task better than switching the whole session's model: a VISION model to interpret images (pass their workspace paths in images — bytes ride the call as attachments), a long-context model to digest a huge file, a fast/cheap model to draft or classify, a second opinion. The model does not inherit your conversation — only your prompt (and images) crosses over — though it does receive the workspace agent's standard setup, so include every bit of context the call needs explicitly. Prefer switching the session model (or asking the user to) when the capability is needed for the ongoing conversation rather than one call.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"prompt": map[string]any{"type": "string", "description": "The complete prompt for the one-shot call — the target model has no tools and no conversation context"},
+								"model":  map[string]any{"type": "string", "description": "Target model as provider/model (e.g. \"anthropic/claude-sonnet-4-5\"). Must be a provider configured in this workspace"},
+								"images": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional workspace file paths of images to show the model (png/jpg/jpeg/gif/webp, 5 MiB each, 8 MiB combined). Vision-incapable models are refused up front"},
+							},
+							"required": []string{"prompt", "model"},
+						},
+					},
+					{
+						Name:        "create_session",
+						Description: "Create a NEW top-level agent session in this workspace — a peer of yours, not a subtask — and hand it a starting prompt, fire-and-forget. Returns the session_id immediately while the new session's first turn runs in the background; you keep working in parallel. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"prompt": map[string]any{"type": "string", "description": "The first prompt for the new session — self-contained: same workspace files, none of this conversation's context"},
+								"title":  map[string]any{"type": "string", "description": "Optional title (max 200 chars); omitted = auto-generated"},
+							},
+							"required": []string{"prompt"},
+						},
+					},
+					{
+						Name:        "get_datetime",
+						Description: "Get the current date and time — in UTC and in this workspace's local timezone (with the zone name and UTC offset). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\"), file timestamps, or when the user asks for the time. Workspace pods default to UTC — do not assume the user's local timezone matches; report both.",
+						InputSchema: map[string]any{
+							"type":       "object",
+							"properties": map[string]any{},
+						},
+					},
+					{
+						Name:        "session_metadata",
+						Description: "Read-only vitals for this workspace's sessions: per-session message count, how full the context window is (tokens used vs the model's limit), total token usage, age, model, busy flag — plus the workspace ID and agent version. Omit session_id for all sessions, or pass one to zoom in. Use when deciding whether to compact (context fill high), whether to spawn a parallel session (who is busy with what), before long work that might exhaust context, or when the user asks how big/old/costly a session is. Output is aggregate metadata only — read message CONTENT with session_read.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "Optional: one session's metadata (from session_list); omitted = every session"},
+							},
+							"required": []string{},
+						},
+					},
+					{
+						Name:        "compact",
+						Description: "Compact a session's history — the model summarizes the conversation and the summary replaces it in the context window, freeing context without losing the thread. Omit session_id to target the single currently-running session (usually your own — find IDs with session_metadata otherwise). Compaction preserves file changes and tool history on disk; only the in-context view shrinks. If the target is busy (your own session always is while a tool runs), the compaction is SCHEDULED and runs exactly when the current turn ends — plan around the context only being freed from your NEXT turn. Optional model overrides the summarizing model (default: the session's current model).",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "Optional: the session to compact; omitted = the single busy session (your own when unambiguous)"},
+								"model":      map[string]any{"type": "string", "description": "Optional provider/model to summarize with (default: the session's current model)"},
+							},
+							"required": []string{},
+						},
+					},
 				},
 			})
 
@@ -197,6 +276,40 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		// layer has no schema validator, so undeclared arguments reach
 		// the dispatcher and are ignored here by construction.
 		return mcpSecretsResync(ctx, password)
+	case "rename_session":
+		sessionID, _ := args["session_id"].(string)
+		title, _ := args["title"].(string)
+		return mcpRenameSession(ctx, password, sessionID, title)
+	case "rename_workspace":
+		// The workspace identity comes from pod env, never from tool
+		// arguments (mirrors secrets_resync's no-identity-input rule).
+		name, _ := args["name"].(string)
+		return mcpRenameWorkspace(ctx, name)
+	case "call_with_model":
+		prompt, _ := args["prompt"].(string)
+		model, _ := args["model"].(string)
+		var images []string
+		if raw, ok := args["images"].([]any); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok {
+					images = append(images, s)
+				}
+			}
+		}
+		return mcpCallWithModel(ctx, password, prompt, model, images)
+	case "create_session":
+		prompt, _ := args["prompt"].(string)
+		title, _ := args["title"].(string)
+		return mcpCreateSession(ctx, password, prompt, title)
+	case "get_datetime":
+		return mcpGetDatetime()
+	case "session_metadata":
+		sessionID, _ := args["session_id"].(string)
+		return mcpSessionMetadata(ctx, password, sessionID)
+	case "compact":
+		sessionID, _ := args["session_id"].(string)
+		model, _ := args["model"].(string)
+		return mcpCompact(ctx, password, sessionID, model)
 	case "dev_preview_url":
 		// Port is optional: default 5173 (the Vite default, the common
 		// case; the landing page's form defaults to the same).
@@ -232,42 +345,18 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 }
 
 func mcpSessionList(ctx context.Context, password string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("%s/session", getAgentAddr()), nil)
-	if err != nil {
-		return "", fmt.Errorf("failed to build session list request: %w", err)
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-	resp, err := http.DefaultClient.Do(req)
+	body, err := seamClientWithPassword(password).SessionListRaw(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("opencode returned status %d for session list", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	return string(body), nil
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
-	url := fmt.Sprintf("%s/session/%s/message?limit=%d", getAgentAddr(), sessionID, limit)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		// A malformed sessionID (spaces, control chars) makes the URL
-		// unparseable; req is nil and SetBasicAuth would panic.
-		return "", fmt.Errorf("failed to build session read request: %w", err)
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-	resp, err := http.DefaultClient.Do(req)
+	body, _, err := seamClientWithPassword(password).SessionMessagesRaw(ctx, sessionID, limit, "")
 	if err != nil {
 		return "", fmt.Errorf("failed to read session: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("opencode returned status %d for session read", resp.StatusCode)
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	return string(body), nil
 }
 

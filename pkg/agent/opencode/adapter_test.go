@@ -231,11 +231,13 @@ func TestAdapter_CreateSession(t *testing.T) {
 
 func TestAdapter_RenameSession(t *testing.T) {
 	srv := newFakeOpencode(t)
-	srv.register("POST", "/session/ses_1", `{}`, 0)
+	// PATCH — POST is accepted-and-ignored by the real agent (2026-09-13
+	// finding); the adapter must use the verb that actually renames.
+	srv.register("PATCH", "/session/ses_1", `{}`, 0)
 
 	a := newTestAdapter(t, srv.Server)
 	require.NoError(t, a.RenameSession(context.Background(), "u-1", "ws-1", "ses_1", "new title"))
-	require.Contains(t, srv.requests, "POST /session/ses_1")
+	require.Contains(t, srv.requests, "PATCH /session/ses_1")
 }
 
 func TestAdapter_DeleteSession(t *testing.T) {

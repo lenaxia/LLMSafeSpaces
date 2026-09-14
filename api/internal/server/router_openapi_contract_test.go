@@ -329,6 +329,11 @@ var implOnlyAllowlist = map[route]bool{
 	// (304 + ETag on an unchanged manifest); the route/method and the
 	// legacy response shape are unchanged, so the contract row is not.
 	{method: "POST", path: "/internal/v1/pod-bootstrap"}: true,
+	// POST /internal/v1/workspace-rename — K8s projected SA token
+	// (TokenReview). The agentd rename_workspace MCP tool is the only
+	// caller; pod identity scopes the rename to the caller's own
+	// workspace.
+	{method: "POST", path: "/internal/v1/workspace-rename"}: true,
 	// POST /internal/image-factory/builds/:id/callback — constant-time
 	// per-build callback token; the builder is the only caller.
 	{method: "POST", path: "/internal/image-factory/builds/:id/callback"}: true,
@@ -451,6 +456,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		PlatformAdminHandler:            &handlers.PlatformAdminHandler{},
 		InternalOrgStatusHandler:        &handlers.InternalOrgStatusHandler{},
 		PodBootstrapHandler:             &handlers.PodBootstrapHandler{},
+		PodWorkspaceRenameHandler:       &handlers.PodWorkspaceRenameHandler{},
 		AdminMCPServersHandler:          &handlers.MCPServersHandler{},
 		OrgMCPServersHandler:            &handlers.MCPServersHandler{},
 		UserMCPServersHandler:           &handlers.MCPServersHandler{},

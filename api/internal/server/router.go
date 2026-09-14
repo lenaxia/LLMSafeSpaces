@@ -195,6 +195,13 @@ type RouterConfig struct {
 	// init container has no user identity); auth is the TokenReview itself.
 	PodBootstrapHandler *handlers.PodBootstrapHandler
 
+	// PodWorkspaceRenameHandler, when non-nil, registers POST
+	// /internal/v1/workspace-rename — the pod-identity path the agentd
+	// rename_workspace MCP tool calls. Same TokenReview auth contract as
+	// PodBootstrapHandler: the SA must be workspace-<id> in the expected
+	// namespace, so a pod can only rename its own workspace.
+	PodWorkspaceRenameHandler *handlers.PodWorkspaceRenameHandler
+
 	// MCPServersHandler handles external MCP server CRUD for all three
 	// scopes (platform/org/user). Optional — when nil, no MCP routes are
 	// registered (Epic 53).
@@ -748,6 +755,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Epic 35 US-35.3: pod bootstrap endpoint. Auth is K8s TokenReview (no JWT).
 	if cfg.PodBootstrapHandler != nil {
 		router.POST("/internal/v1/pod-bootstrap", cfg.PodBootstrapHandler.Bootstrap)
+	}
+
+	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
+	// Auth is K8s TokenReview (no JWT), same contract as pod-bootstrap.
+	if cfg.PodWorkspaceRenameHandler != nil {
+		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
 	}
 
 	// Secret management routes (Epic 10)
