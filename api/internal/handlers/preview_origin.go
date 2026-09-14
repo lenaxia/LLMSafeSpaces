@@ -182,6 +182,18 @@ func NewPreviewOriginHandler(inner *DevPreviewHandler, cfg PreviewOriginConfig, 
 
 // PreviewHost extracts the workspace ID and optional port when host is a preview host.
 // Returns (wsID, port, isPortHost, ok):
+// BaseDomainOrEmpty reports the registrable domain preview hosts live
+// under, or "" when preview origins are not enabled. Consumed by the
+// public /auth/config feature discovery so clients can upgrade old
+// path-tunnel preview links to the bootstrap endpoint. Nil-safe.
+func (h *PreviewOriginHandler) BaseDomainOrEmpty() string {
+	if h == nil || !h.cfg.Enabled {
+		return ""
+	}
+	return h.cfg.BaseDomain
+}
+
+// PreviewHost resolves a preview host to its workspace/port.
 // - wsID: workspace UUID
 // - port: port number (only for port-hosts; 0 for legacy hosts)
 // - isPortHost: true if this is a port-in-subdomain host (Epic 67)

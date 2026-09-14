@@ -18,6 +18,8 @@ export interface AuthConfig {
   ssoProviders?: string[];
   instanceName: string;
   motd?: string;
+  /** #1366: non-empty when per-workspace preview origins are enabled. */
+  previewOriginBaseDomain?: string;
 }
 
 export interface AuthResponse {
