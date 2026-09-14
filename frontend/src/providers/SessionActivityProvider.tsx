@@ -57,6 +57,17 @@ function pruneMany<V>(m: Map<string, V>, doomed: Set<string>): Map<string, V> {
   return next ?? m;
 }
 
+// tombstoneRequest marks a request ID as resolved (#1365): insertion-ordered
+// with a FIFO cap of 1000 so a long-lived tab cannot grow it unbounded.
+function tombstoneRequest(tombs: Map<string, true>, requestId: string): void {
+  if (tombs.has(requestId)) return;
+  tombs.set(requestId, true);
+  if (tombs.size > 1000) {
+    const oldest = tombs.keys().next().value;
+    if (oldest !== undefined) tombs.delete(oldest);
+  }
+}
+
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
   // D6 (#998): workspaces with an active hung-session alert. Set on
@@ -118,6 +129,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // events — the pre-flight single shared map made the second complete commit
   // an authoritative empty over live prompts (PR #852 review C2).
   const flightsRef = useRef(new Map<string, Map<string, Map<string, string>>>());
+
+  // #1365: resolved-tombstones. A request ID removed via removePendingAction
+  // (resolved event, optimistic 2xx clear, fold-sync drop) is resolution
+  // evidence — a racing snapshot flight or a re-presented whileAway event for
+  // the SAME id must not resurrect the pill. IDs are unique per ask, so a
+  // tombstone never blocks a genuinely new ask. Insertion-ordered Map with a
+  // FIFO cap so a long-lived tab cannot grow it unbounded.
+  const resolvedTombstonesRef = useRef(new Map<string, true>());
+
+  // #1365: first-seen timestamps per request ID — the pill stack renders
+  // newest-activity-first, so a stale pill cannot visually shadow the live
+  // ask the user actually needs to answer.
+  const requestFirstSeenRef = useRef(new Map<string, number>());
 
   // D10: Most recent snapshot outcome per workspace (ok + arrival time).
   const [inputSnapshots, setInputSnapshots] = useState<Map<string, { ok: boolean; at: number }>>(new Map());
@@ -455,12 +479,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           }
           if (staged) {
             for (const [requestId, sessionId] of staged) {
+              // #1365: the flight's staged set can carry an ask the user
+              // resolved while the flight was in flight (fetch-before-click,
+              // commit-after-clear). A tombstoned id stays cleared.
+              if (resolvedTombstonesRef.current.has(requestId)) continue;
               const existing = next.get(sessionId);
               const set = new Set(existing ?? []);
               set.add(requestId);
               next.set(sessionId, set);
               requestToSessionRef.current.set(requestId, sessionId);
               pendingActionWsRef.current.set(sessionId, wsId);
+              if (!requestFirstSeenRef.current.has(requestId)) {
+                requestFirstSeenRef.current.set(requestId, Date.now());
+              }
             }
           }
           return next;
@@ -470,6 +501,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (doomedRequestIds.length > 0) {
           for (const rid of doomedRequestIds) {
             requestToSessionRef.current.delete(rid);
+            // The flight did not carry these ids — resolution evidence.
+            tombstoneRequest(resolvedTombstonesRef.current, rid);
+            requestFirstSeenRef.current.delete(rid);
           }
           setPendingQuestionContent((prev) => {
             const next = new Map(prev);
@@ -666,6 +700,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   }, [pendingUnread, queryClient]);
 
   const addPendingAction = useCallback((workspaceId: string, sessionId: string, requestId: string) => {
+    // #1365: a tombstoned ask stays cleared — a racing flight's staged
+    // event or a whileAway re-presentation must not resurrect it.
+    if (resolvedTombstonesRef.current.has(requestId)) return;
     requestToSessionRef.current.set(requestId, sessionId);
     pendingActionWsRef.current.set(sessionId, workspaceId);
     setPendingActions((prev) => {
@@ -675,11 +712,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       const set = new Set(existing ?? []);
       set.add(requestId);
       next.set(sessionId, set);
+      if (!requestFirstSeenRef.current.has(requestId)) {
+        requestFirstSeenRef.current.set(requestId, Date.now());
+      }
       return next;
     });
   }, []);
 
   const removePendingAction = useCallback((requestId: string) => {
+    // The removal is resolution evidence — tombstone the id (#1365).
+    tombstoneRequest(resolvedTombstonesRef.current, requestId);
     // Clear prompt content first (unconditionally) so a resolved event always
     // drops the in-chat prompt even if the indicator entry was already cleared
     // by a session-scoped clear.
@@ -697,6 +739,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     });
 
     const sessionId = requestToSessionRef.current.get(requestId);
+    requestFirstSeenRef.current.delete(requestId);
     if (!sessionId) return;
     requestToSessionRef.current.delete(requestId);
     setPendingActions((prev) => {
@@ -738,10 +781,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     });
     setPendingQuestionContent((prev) => pruneMany(prev, doomedRequests));
     setPendingPermissionContent((prev) => pruneMany(prev, doomedRequests));
-    for (const rid of doomedRequests) requestToSessionRef.current.delete(rid);
+    for (const rid of doomedRequests) {
+      requestToSessionRef.current.delete(rid);
+      requestFirstSeenRef.current.delete(rid);
+    }
   }, [pendingActions]);
 
   const addPendingQuestion = useCallback((workspaceId: string, req: QuestionRequest) => {
+    if (resolvedTombstonesRef.current.has(req.id)) return;
     addPendingAction(workspaceId, req.session_id, req.id);
     setPendingQuestionContent((prev) => {
       if (prev.has(req.id)) return prev;
@@ -752,6 +799,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   }, [addPendingAction]);
 
   const addPendingPermission = useCallback((workspaceId: string, req: PermissionRequest) => {
+    if (resolvedTombstonesRef.current.has(req.id)) return;
     addPendingAction(workspaceId, req.session_id, req.id);
     setPendingPermissionContent((prev) => {
       if (prev.has(req.id)) return prev;
@@ -765,12 +813,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // whose root_session_id points here, so subtask prompts bubble to the parent
   // view (same rule ChatPage previously applied at write time — now applied at
   // read time so the content is stored regardless of the currently-viewed session).
+  // #1365: the stack renders newest-activity-first — a stale pill cannot
+  // shadow the live ask the user needs to answer.
   const pendingQuestionsForSession = useCallback((sessionId: string): QuestionRequest[] => {
     const out: QuestionRequest[] = [];
     for (const q of pendingQuestionContent.values()) {
       const root = q.root_session_id ?? q.session_id;
       if (root === sessionId || q.session_id === sessionId) out.push(q);
     }
+    out.sort((a, b) => (requestFirstSeenRef.current.get(b.id) ?? 0) - (requestFirstSeenRef.current.get(a.id) ?? 0));
     return out;
   }, [pendingQuestionContent]);
 
@@ -780,6 +831,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       const root = p.root_session_id ?? p.session_id;
       if (root === sessionId || p.session_id === sessionId) out.push(p);
     }
+    out.sort((a, b) => (requestFirstSeenRef.current.get(b.id) ?? 0) - (requestFirstSeenRef.current.get(a.id) ?? 0));
     return out;
   }, [pendingPermissionContent]);
 
@@ -808,7 +860,10 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       next.delete(sessionId);
       return next;
     });
-    for (const rid of doomed) requestToSessionRef.current.delete(rid);
+    for (const rid of doomed) {
+      requestToSessionRef.current.delete(rid);
+      requestFirstSeenRef.current.delete(rid);
+    }
   }, [pendingActions, pendingQuestionContent, pendingPermissionContent]);
 
   const isSessionPendingAction = useCallback(

@@ -490,3 +490,46 @@ describe("createSSEConnection named events (contract stream)", () => {
     expect(mock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createSSEConnection — keepalive frames (#1365)", () => {
+  let fetchRestore: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    fetchRestore = globalThis.fetch;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = fetchRestore;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("fires onKeepalive for heartbeat comment frames without emitting onEvent", async () => {
+    const reader = makeMockReader({ chunks: [":\n\n"] });
+    globalThis.fetch = makeMockFetch(reader);
+
+    const onEvent = vi.fn();
+    const onKeepalive = vi.fn();
+    createSSEConnection({ url: "/api/v1/events", onEvent, onKeepalive });
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onKeepalive).toHaveBeenCalledTimes(1);
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("does not fire onKeepalive for data events", async () => {
+    const reader = makeMockReader({ chunks: ['data: {"type":"resync"}\n\n'] });
+    globalThis.fetch = makeMockFetch(reader);
+
+    const onEvent = vi.fn();
+    const onKeepalive = vi.fn();
+    createSSEConnection({ url: "/api/v1/events", onEvent, onKeepalive });
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onKeepalive).not.toHaveBeenCalled();
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+});

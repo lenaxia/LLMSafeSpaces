@@ -325,3 +325,66 @@ test.describe("Epic 16: Agent input requests (mocked backend)", () => {
     await expect(page.getByText("Run shell command")).not.toBeVisible();
   });
 });
+
+test.describe("#1365: pill clears on reply 2xx without a resolved event", () => {
+  test.beforeEach(async ({ page }) => {
+    await setupAPIMocks(page);
+  });
+
+  // The incident: the reply succeeded server-side (200 absence-resolve /
+  // 202 inbox late-answer) but no resolved event ever reached the stream —
+  // the pill must still clear. The contract stream holds after the first
+  // snapshot (no afterBody, no fold drop), so the ONLY clear authority is
+  // the optimistic 2xx path.
+  for (const [name, status, body] of [
+    ["200 answered", 200, JSON.stringify({ status: "answered" })],
+    ["202 inbox late-answer", 202, JSON.stringify({ status: "queued", clientMessageID: "inbox-per_dead-reply", messageID: "msg_1" })],
+  ] as const) {
+    test(`permission pill clears on ${name} with no event and no fold change`, async ({ page }) => {
+      await mockContractStream(page, snapshotFrame(3, [sessionState([permissionInput("per_dead", "shell", ["gh clone talos-ops-prod"])])]));
+
+      await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/permission/per_dead/reply`, async (route: Route) => {
+        await route.fulfill({ status, contentType: "application/json", body });
+      });
+
+      await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+      await expect(page.getByText("Run shell command")).toBeVisible({ timeout: 10_000 });
+
+      await page.getByText("Allow always").click();
+      await expect(page.getByText("Run shell command")).not.toBeVisible({ timeout: 10_000 });
+    });
+  }
+
+  test("a resolved pill is not resurrected by a stale re-snapshot still carrying the dead ask", async ({ page }) => {
+    // The resurrection race: the user answers (2xx), but a snapshot that
+    // was fetched BEFORE the resolution commits AFTER the clear — the fold
+    // (and any in-flight pending set) still lists the dead ask.
+    let resolveReply!: () => void;
+    const replyGate = new Promise<void>((resolve) => { resolveReply = resolve; });
+
+    await mockContractStream(
+      page,
+      snapshotFrame(3, [sessionState([permissionInput("per_stale", "shell", ["ls /tmp"])])]),
+      {
+        gate: replyGate,
+        // The post-reply reconnection STILL carries the dead ask (stale
+        // projection) — the tombstone must keep the cleared pill cleared.
+        afterBody: snapshotFrame(4, [sessionState([permissionInput("per_stale", "shell", ["ls /tmp"])])]),
+      },
+    );
+
+    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/permission/per_stale/reply`, async (route: Route) => {
+      resolveReply();
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "answered" }) });
+    });
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    await expect(page.getByText("Run shell command")).toBeVisible({ timeout: 10_000 });
+
+    await page.getByText("Allow always").click();
+    await expect(page.getByText("Run shell command")).not.toBeVisible({ timeout: 10_000 });
+    // The stale re-snapshot lands after the clear; the pill stays gone.
+    await page.waitForTimeout(2000);
+    await expect(page.getByText("Run shell command")).not.toBeVisible();
+  });
+});
