@@ -93,6 +93,7 @@ def run(r: Runner, cfg: Config) -> None:
             r.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
 
         msg_sent = True
+        non200 = 0
         pending_found = False
         deadline = time.time() + 30
         while time.time() < deadline:
@@ -109,11 +110,14 @@ def run(r: Runner, cfg: Config) -> None:
                 continue
             if s3 != 200:
                 # A post-message non-200 regime is a regression, not
-                # "model didn't trigger" — fail after the first retry.
+                # "model didn't trigger" — retry once, then fail (the
+                # mid-poll window tolerates a single transient blip).
                 if msg_sent:
-                    r.assert_(False, "permission list went non-200 after the message", str(s3))
-                    pending_found = True
-                    break
+                    non200 += 1
+                    if non200 >= 2:
+                        r.assert_(False, "permission list non-200 after the message (1 retry)", str(s3))
+                        pending_found = True
+                        break
                 time.sleep(2)
                 continue
             # A non-array body is a shape regression — fail loud.

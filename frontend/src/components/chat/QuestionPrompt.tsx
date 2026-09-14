@@ -10,7 +10,7 @@ interface QuestionPromptProps {
 }
 
 export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPromptProps) {
-  const [answers, setAnswers] = useState<string[][]>(request.question ? [[]] : [[]]);
+  const [answers, setAnswers] = useState<string[][]>([[]]);
   const [customInputs, setCustomInputs] = useState<string[]>([""]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

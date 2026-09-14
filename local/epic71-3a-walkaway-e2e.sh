@@ -390,17 +390,20 @@ code9=$(curl -s -o /tmp/e71w9_resp.json -w '%{http_code}' -m 20 \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1eee/reply" \
     -d '{"answers":[["Yes, deploy"]]}')
 [[ "${code9}" == "202" ]] && ok "W9 late answer 202 (the outbox path)" || note_fail "W9: ${code9}, want 202"
+# The whileAway re-presentation ALSO matches the bare id (W6's own
+# documented trap) — grep what only the CLEAR carries.
 deadline9=$(( T9 + 2000 ))
-until grep -q '"request_id":"que_e71w1eee"' "${CAP9}" 2>/dev/null; do
+until grep -q '"reason":"answered"' "${CAP9}" 2>/dev/null; do
     [[ $(date +%s%3N) -lt ${deadline9} ]] || break
     sleep 0.1
 done
 T9b=$(date +%s%3N)
 sse_stop
-if grep -q '"request_id":"que_e71w1eee"' "${CAP9}" 2>/dev/null; then
-    ok "W9 resolved event fired on the answer"
+if grep -q '"request_id":"que_e71w1eee"' "${CAP9}" 2>/dev/null \
+    && grep -q '"reason":"answered"' "${CAP9}" 2>/dev/null; then
+    ok "W9 resolved event fired on the answer (reason=answered)"
 else
-    note_fail "W9: no resolved event (see ${CAP9})"
+    note_fail "W9: no answered resolved event (see ${CAP9})"
 fi
 if [[ ${T9b} -le $(( T9 + 2000 )) ]] && [[ ${T9b} -gt ${T9} ]]; then
     ok "W9 clear latency $(( T9b - T9 ))ms ≤ 2s (reply-side L2)"

@@ -124,4 +124,9 @@ func TestEpic71WalkawayScript_W9ReplySideClearRow(t *testing.T) {
 	if !strings.Contains(src, "que_e71w1eee") || !strings.Contains(src, "reply-side L2") {
 		t.Fatalf("walk-away script must carry the W9 reply-side clear row")
 	}
+	// r7: the wait loop must grep the CLEAR's unique key (the bare id
+	// matches the whileAway re-presentation — W6's documented trap).
+	if !strings.Contains(src, `until grep -q '"reason":"answered"'`) {
+		t.Fatalf("W9's deadline loop must grep reason=answered (the unique clear signal)")
+	}
 }

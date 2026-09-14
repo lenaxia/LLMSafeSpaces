@@ -27,12 +27,33 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     const [okQ, qBody] = await r.assertNoError(
       () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question`, cfg.apiKey),
       'get-question: no error');
-    if (okQ) r.assert(okQ, 'get-question: returned response');
+    if (okQ) {
+      // 4a-2 r7: the pre-message GET asserts the array contract shape
+      // (kind asserted when entries exist).
+      let qParsed: unknown;
+      try { qParsed = JSON.parse(qBody.toString()); } catch (e) {
+        r.assert(false, 'question list is JSON', String(e));
+        qParsed = [];
+      }
+      const qs = qParsed as any[];
+      r.assert(Array.isArray(qs), 'question list is an array', qBody.toString().slice(0, 120));
+      if (Array.isArray(qs) && qs.length > 0) {
+        r.assert(qs[0].kind === 'question', 'live question: contract kind', JSON.stringify(Object.keys(qs[0])));
+      }
+    }
 
     const [okP, pBody] = await r.assertNoError(
       () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey),
       'get-permission: no error');
-    if (okP) r.assert(okP, 'get-permission: returned response');
+    if (okP) {
+      let pParsed: unknown;
+      try { pParsed = JSON.parse(pBody.toString()); } catch (e) {
+        r.assert(false, 'permission list is JSON', String(e));
+        pParsed = [];
+      }
+      const ps = pParsed as any[];
+      r.assert(Array.isArray(ps), 'permission list is an array', pBody.toString().slice(0, 120));
+    }
 
     const [okMsg, msg] = await r.assertNoError(
       () => c.sessions.sendMessage(wsId!, sid,

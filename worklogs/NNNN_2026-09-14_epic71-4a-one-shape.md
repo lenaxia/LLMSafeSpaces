@@ -116,3 +116,10 @@
 - **The unreachable `saw_entries` guard:** deleted; the worklog's r5-f1 citation of it was wrong — the real closure is the live-entry branch itself (this correction recorded).
 - **MCP tool schema:** "NON-EMPTY JSON array" (thirteen lines of drift closed).
 - **W9 — the reply-side S6/L2 leg, EXECUTED:** the record-carrying dead ask answered → 202 → the resolved event on the user stream → measured ≤2s clear. W6 (reject-side) and W9 (reply-side) now cover both dispositions the issue specifies.
+
+## Review r7 remediation
+
+- **f1 (W9 vacuous — the r6 trap re-trodden):** the deadline loop greps `"reason":"answered"` (the clear's unique key; the bare id matches the re-presentation — W6's own documented trap); the final check requires BOTH request_id and the reason. The structural pin now enforces the unique-key grep.
+- **f2 (TESTPLAN over-claimed for TS):** TS P1/P2 now IMPLEMENT the claim (status + hard array assert; question-kind on live entries), tautologies deleted; TESTPLAN wording matches all three implementations.
+- **f3 (python false comment + new dead branch):** one REAL retry then fail (`non200` counter); the comment and TESTPLAN describe the retry-once-then-fail semantics; the unreachable branch is gone.
+- **f4 (QuestionPrompt dead conditional, seventh round):** the `request.question ? [[]] : [[]]` is `[[]]`.

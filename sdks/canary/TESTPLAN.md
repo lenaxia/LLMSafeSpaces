@@ -654,9 +654,9 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | Go: `GET /question` → 200, hard array-parse assert, every entry contract-shaped (kind=question, camelCase, zero legacy fields). Python/TS: 200 + array-shape assert (question kind asserted when entries exist) |
+| P1 | Go: `GET /question` → 200, hard array-parse assert, every entry contract-shaped (kind=question, camelCase, zero legacy fields). Python: 200 + array assert (kind when entries exist). TS: 200 + array assert (question kind when entries exist) |
 | P2 | Go: `GET /permission` → 200, hard array-parse assert, every entry contract-shaped (kind=permission). Python/TS pre-message: 200 + array only |
-| P3 | Send message that triggers tool-use permission |
+| P3 | Send message that triggers tool-use permission. Python: a post-message non-200 list regime retries once then FAILS (a transient blip is tolerated; a regime is not) |
 | P4 | Go (hard-fails on none): ≥ 1 pending permission, the LIVE entry contract-asserted before replying. Python/TS: when an entry appears, kind + no-snake_case asserted loudly; a no-pending outcome soft-passes ("model did not trigger") |
 | P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → 2xx (202 = the #1313 late-answer accept) |
 | P6 | After approval, session returns to idle (confirm via SSE or status) |
