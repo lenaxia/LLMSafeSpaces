@@ -218,7 +218,13 @@ func TestSweeperE2E_PhaseChangeTransitionSweeps(t *testing.T) {
 	handler.onPhaseChange(makeWorkspaceCRDWithStatus("ws-swp70tr", "127.0.0.1",
 		string(v1.WorkspacePhaseActive), "ws-swp70tr"))
 
-	waitFor(t, func() bool { return len(queueOf(t, rdb, "ws-swp70tr", "ses-1")) == 0 })
+	// Wait for BOTH effects: the queue drain and the delivered hook. The
+	// hook fires after the redis mutation in the same goroutine, so a
+	// queue-only wait can observe the drain inside the hook's window
+	// (flaky on loaded runners — CI 2026-09-14).
+	waitFor(t, func() bool {
+		return len(queueOf(t, rdb, "ws-swp70tr", "ses-1")) == 0 && delivered.Load() == 1
+	})
 	assert.Empty(t, queueOf(t, rdb, "ws-swp70tr", "ses-1"), "the TRANSITION swept the stranded admission")
 	assert.Equal(t, int32(1), delivered.Load())
 	assert.Equal(t, int64(0), stub.deliverHits.Load(), "recovery is lookup-only")

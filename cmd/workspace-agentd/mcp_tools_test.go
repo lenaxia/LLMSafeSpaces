@@ -756,6 +756,15 @@ func TestMCPCompact_OmittedID_ResolvesSingleBusy(t *testing.T) {
 	out, err := mcpCompact(context.Background(), mcpTestPassword, "", "")
 	require.NoError(t, err)
 	assert.Contains(t, out, s1)
+
+	// Wait for the detached summarize before ending: the goroutine
+	// outlives this test otherwise, and once withAgentServer's cleanup
+	// closes the stub its error path reads the package-level `log` —
+	// racing the next test's withObservedLog global swap (CI data race,
+	// 2026-09-14). BusyScheduled waits for the same reason.
+	require.Eventually(t, func() bool {
+		return f.lastSummary(s1) != nil
+	}, 5*time.Second, 50*time.Millisecond, "detached summarize must fire before the test ends")
 }
 
 func TestMCPCompact_OmittedID_NoBusy(t *testing.T) {
