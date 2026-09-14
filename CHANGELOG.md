@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-14
+
+### Features — agent self-management (PR #1364)
+
+- **Seven new agentd MCP tools** on `/v1/mcp`: `rename_session`,
+  `rename_workspace`, `call_with_model` (per-call model override with
+  optional image attachments, catalog-checked), `create_session`
+  (top-level peer session, fire-and-forget delivery), `get_datetime`,
+  `session_metadata` (message counts, context-window fill, token usage,
+  age, busy flags; read-only aggregate with a pinned secrecy contract),
+  and `compact` (summarize-based history compaction with
+  run-at-turn-boundary scheduling for busy sessions).
+- **Pod-identity workspace rename endpoint**
+  (`POST /internal/v1/workspace-rename`): TokenReview-gated with
+  namespace + workspaceID binding — a pod can only ever rename its own
+  workspace; fail-closed wiring with enforced failure-path logging.
+- **Contained opencode wire seam** (`pkg/agent/opencode/loopback.go`):
+  all opencode HTTP wire knowledge now lives behind one seam; the
+  agentd tools (and the pre-existing `session_list`/`session_read`)
+  hold zero URLs/verbs (Rule 12). Full L0–L3 test plan shipped with it
+  (`docs/testing/agentd-mcp-tools-test-plan.md`) plus a live-pod probe
+  script (`scripts/mcp-tools-liveprobe.sh`).
+
+### Fixes
+
+- **Session rename never landed** (#1364): the adapter's rename used
+  POST, which pinned opencode accepts with 200 and silently ignores —
+  renames reached the platform index but never the agent. Now PATCH,
+  live-verified, pinned at three test levels.
+- **Integration-harness health probe unbounded**: stalled agent boots
+  hung the probe forever; now 2s-bounded with loud failure.
+- **Dev-preview ambient-env test flakes**: three tests broke when the
+  runner carried `LLMSAFESPACE_API_PUBLIC_URL` (in-platform runs).
+- **Pool F1 probe settle race** (#1356) and **fault budget sized to its
+  converge window** (#1321).
+
+### Epic 71 / epic-826 progress (already on main since 0.29.1)
+
+- Input write path: input replies through Act, reject routing + deny
+  feedback (#1302, #1360); unanswered-question inbox with
+  whileAway re-presentation (#1313, #1355).
+- Proxy adapter-only refactor, batches 2–final: session/input/
+  permissions clusters, session-index/parents, transport deletion,
+  required adapter + zero-site gate (#828).
+- Fault-matrix legs 7/8 per-entry cardinality rows (#1358); epic71 soak
+  dispatch row + leg-10 parse-site drift pins (#1312).
+
 ## [0.29.1] - 2026-09-12
 
 ### Fixes — post-0.29.0 correctness hotfixes
