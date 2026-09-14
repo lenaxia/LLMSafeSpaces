@@ -107,6 +107,11 @@ def run(r: Runner, cfg: Config) -> None:
                     # (kind-discriminated, no status field).
                     for p in perms_list:
                         if p.get("kind") == "permission":
+                            # The LIVE entry carries the contract shape
+                            # (4a-2: camelCase, no legacy envelope).
+                            assert p.get("session_id") is None, (
+                                f"live permission carries snake_case: {sorted(p.keys())}"
+                            )
                             pending_found = True
                             perm_id = p.get("id", "")
                             # The vocabulary is once/always/reject (the

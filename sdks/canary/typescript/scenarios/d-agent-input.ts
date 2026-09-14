@@ -49,6 +49,12 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     if (sPerm === 200) {
       let perms: any[] = [];
       try { perms = JSON.parse(permBody.toString()); } catch { perms = []; }
+      // A parse failure or non-array is a SHAPE regression — fail loud,
+      // never the soft-pass (4a-2 r4).
+      r.assert(Array.isArray(perms), 'permission list is an array', permBody.toString().slice(0, 120));
+      if (perms.length > 0 && perms[0].session_id !== undefined) {
+        r.assert(false, 'live permission carries snake_case (legacy envelope)', JSON.stringify(Object.keys(perms[0])));
+      }
       if (Array.isArray(perms) && perms.length > 0 && perms[0].id) {
         const permId = perms[0].id;
         const [sReply] = await rawDo('POST',

@@ -654,15 +654,15 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `GET /question` → 200, array (may be empty) |
-| P2 | `GET /permission` → 200, array |
+| P1 | `GET /question` → 200, array; every entry is the CONTRACT `InputRequest` shape (kind=question, camelCase tags, zero legacy envelope fields) |
+| P2 | `GET /permission` → 200, array; contract shape (kind=permission) |
 | P3 | Send message that triggers tool-use permission |
-| P4 | `GET /permission` returns ≥ 1 pending permission with `id` |
-| P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → no error |
+| P4 | `GET /permission` returns ≥ 1 pending permission; the LIVE entry is asserted in the contract shape (kind field, no snake_case) |
+| P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → 2xx (202 = the #1313 late-answer accept) |
 | P6 | After approval, session returns to idle (confirm via SSE or status) |
-| N1 | `POST /question/:id/reply` with invalid ID format (not `que_...`) → 400 |
-| N2 | `POST /permission/:id/reply` with invalid reply value (`"maybe"`) → 400 |
-| N3 | `POST /permission/:id/reply` with invalid ID format (not `per_...`) → 400 |
+| N1 | `POST /question/:id/reply` with an out-of-charset ID (e.g. `bad$id`) and a VALID body → 400 at the ID check (the generic contract `[a-zA-Z0-9._-]{1,128}`) |
+| N2 | `POST /permission/:id/reply` with a CONFORMING dead id and `{"reply":"maybe"}` → NOT a validation 400 (the resolved paths: 404 terminus / 202 late-answer / 502 flag-off — the prefix contract is retired) |
+| N3 | `POST /permission/:id/reply` with a single-segment traversal ID (`a..b`) and a valid body → 400 (the `..` check; multi-segment paths 404 at the router) |
 
 ---
 

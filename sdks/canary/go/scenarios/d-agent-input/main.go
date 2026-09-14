@@ -77,8 +77,11 @@ func runAgentInput(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(qStatus == 200, "get-question: 200", fmt.Sprintf("got %d", qStatus))
 	if qStatus == 200 {
 		var questions []map[string]any
-		if json.Unmarshal(qBody, &questions) == nil {
-			run.OK("get-question: array response")
+		if json.Unmarshal(qBody, &questions) != nil {
+			run.Assert(false, "get-question: array response (hard)", string(qBody))
+			return
+		}
+		{
 			for _, q := range questions {
 				run.Assert(q["kind"] == "question", "get-question: contract kind field", fmt.Sprintf("%v", q["kind"]))
 				run.Assert(q["sessionId"] != nil || q["id"] != nil, "get-question: camelCase tags", "")
@@ -95,8 +98,11 @@ func runAgentInput(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(pStatus == 200, "get-permission: 200", fmt.Sprintf("got %d", pStatus))
 	if pStatus == 200 {
 		var permissions []map[string]any
-		if json.Unmarshal(pBody, &permissions) == nil {
-			run.OK("get-permission: array response")
+		if json.Unmarshal(pBody, &permissions) != nil {
+			run.Assert(false, "get-permission: array response (hard)", string(pBody))
+			return
+		}
+		{
 			for _, p := range permissions {
 				run.Assert(p["kind"] == "permission", "get-permission: contract kind field", fmt.Sprintf("%v", p["kind"]))
 				run.Assert(p["session_id"] == nil, "get-permission: NO snake_case", "session_id present")
@@ -119,16 +125,17 @@ pollLoop:
 			break pollLoop
 		case <-time.After(3 * time.Second):
 		}
-		var perms []struct {
-			ID string `json:"id"`
-		}
+		var perms []map[string]any
 		status, body, _ := canary.RawDo(ctx, "GET",
 			fmt.Sprintf("%s/api/v1/workspaces/%s/permission", cfg.APIURL, wsID),
 			cfg.APIKey, nil)
-		if status == 200 {
-			_ = json.Unmarshal(body, &perms)
+		if status == 200 && json.Unmarshal(body, &perms) == nil {
 			if len(perms) >= 1 {
-				permID = perms[0].ID
+				// The LIVE pending entry carries the contract shape
+				// (the issue's kind e2e happy leg, executed).
+				run.Assert(perms[0]["kind"] == "permission", "live-permission: contract kind", fmt.Sprintf("%v", perms[0]["kind"]))
+				run.Assert(perms[0]["session_id"] == nil, "live-permission: NO snake_case", "session_id present")
+				permID, _ = perms[0]["id"].(string)
 				break pollLoop
 			}
 		}

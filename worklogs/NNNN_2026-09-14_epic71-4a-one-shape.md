@@ -78,3 +78,19 @@
 ## Tests run (r3)
 
 - `go test ./pkg/mcp/ ./api/internal/handlers/` — ok; lint 0; sdks valid; repolint green; go canary builds
+
+## Review r4 remediation
+
+**f1 (the shape asserts couldn't fire + the soft-guard weakened detection):** the P1/P2 array-parse asserts are HARD again (a non-array/null body fails the row); the per-entry contract asserts now also run where a LIVE pending ask exists — P4's poll parses the full object and asserts kind=permission + no snake_case on the LIVE entry before replying. On a fresh workspace the P-rows still exercise the empty-array contract; the LIVE-entry leg executes whenever the model raises an ask (the canary's raison d'être).
+
+**f2 (Python/TS soft-pass):** python asserts the live entry's shape and FAILS when entries exist but none is kind=permission (a shape regression is no longer an auto-approve green); TS asserts array-ness and no-snake_case loudly.
+
+**f3 (the tool schema):** `run_resolve`'s description + the `request_id` param doc state the generic contract and the reply-shape dispatch.
+
+**f4 (TESTPLAN.md):** the P/N rows rewritten to the delivered semantics (contract shapes, the generic-contract N-rows, the 2xx P5).
+
+**f5 (dialect comment):** updated to the prefix-fast-path + reply-shape dispatch truth.
+
+**f6 (null/[] dispatch):** both question branches require a non-empty answers array; the error text matches.
+
+**f7 (server-level gate):** `requestIDValidMCP` runs once at the top of runResolve for every branch.

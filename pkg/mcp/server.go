@@ -284,9 +284,9 @@ func stringSliceArg(args map[string]any, key string) []string {
 var runResolveTool = mcp.NewTool("run_resolve",
 	mcp.WithDescription("Resolve a pending input request (question or permission) from the agent. "+
 		"Use this when the agent asks a question or requests permission during a session. "+
-		"The request_id determines the type: 'que_*' IDs are questions, 'per_*' IDs are permissions."),
+		"Request IDs conform to the generic contract [a-zA-Z0-9._-]{1,128}. Prefixed IDs dispatch by the agent's prefix; any conforming ID dispatches by the reply's shape (a JSON array of arrays answers a question; once/always/reject answers a permission; reject alone dismisses)."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
-	mcp.WithString("request_id", mcp.Required(), mcp.Description("Request ID ('que_*' for questions, 'per_*' for permissions)")),
+	mcp.WithString("request_id", mcp.Required(), mcp.Description("Request ID (generic contract [a-zA-Z0-9._-]{1,128}; prefixed IDs dispatch by prefix, others by reply shape)")),
 	mcp.WithString("reply", mcp.Required(), mcp.Description(
 		"For questions: JSON array of answers, e.g. [[\"option1\"]]. "+
 			"For permissions: 'once', 'always', or 'reject'.")),
@@ -312,6 +312,11 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 
 	if workspaceID == "" || requestID == "" || reply == "" {
 		return mcp.NewToolResultError("workspace_id, request_id, and reply are required"), nil
+	}
+	// One generic-contract gate for every branch (the HTTP client
+	// re-validates; this keeps the mocked-client surface honest too).
+	if !requestIDValidMCP(requestID) {
+		return mcp.NewToolResultError("invalid request ID (the generic contract: [a-zA-Z0-9._-]{1,128}, no '..')"), nil
 	}
 
 	msg := strArg(args, "message")
@@ -356,7 +361,7 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 			return mcp.NewToolResultText("Question rejected"), nil
 		}
 		var answers [][]string
-		if err := json.Unmarshal([]byte(reply), &answers); err == nil {
+		if err := json.Unmarshal([]byte(reply), &answers); err == nil && len(answers) > 0 {
 			if err := h.client.QuestionReply(ctx, workspaceID, requestID, answers); err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("failed to reply to question: %v", err)), nil
 			}
