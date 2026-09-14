@@ -30,8 +30,8 @@ func validRequestID(id string) bool {
 	return requestIDPattern.MatchString(id) && !strings.Contains(id, "..")
 }
 
-// ListQuestions returns the pending questions as the normalized
-// agent.QuestionRequest envelope (adapter ListPending, questions only).
+// ListQuestions returns the pending questions as the contract
+// InputRequest (kind=question; adapter ListPending, root resolved).
 func (h *ProxyHandler) ListQuestions(c *gin.Context) {
 	wid := c.Param("id")
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
@@ -181,9 +181,8 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 }
 
-// ListPermissions returns the pending permissions as the normalized
-// agent.PermissionRequest envelope (adapter ListPending, permissions
-// only).
+// ListPermissions returns the pending permissions as the contract
+// InputRequest (kind=permission; adapter ListPending, root resolved).
 func (h *ProxyHandler) ListPermissions(c *gin.Context) {
 	wid := c.Param("id")
 	if _, ok := h.resolveWorkspaceForAdapter(c, wid); !ok {
@@ -483,9 +482,8 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 }
 
 // emitPendingViaAdapter uses the Adapter's ListPending to fetch pending
-// input requests in a single call, then publishes them as SSE events.
-// Converts session.InputRequest to the legacy agent.QuestionRequest /
-// agent.PermissionRequest shapes the SSE consumers expect.
+// input requests in a single call, then publishes them as SSE events in
+// the contract InputRequest shape (one shape for REST and SSE, #1302).
 // Returns true when the ListPending call succeeded.
 //
 // #1313: a ListPending failure still emits the inbox-only half of the

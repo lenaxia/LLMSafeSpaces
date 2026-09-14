@@ -198,8 +198,9 @@ func TestBridgeInput_QuestionAsked_ReachesUserStream(t *testing.T) {
 	data, err := json.Marshal(evt.Data)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"id":"que_abc"`)
-	assert.Contains(t, string(data), `"session_id":"ses_xyz"`)
+	assert.Contains(t, string(data), `"sessionId":"ses_xyz"`, "the contract tag is camelCase")
 	assert.Contains(t, string(data), `"question":"Pick?"`)
+	assert.Contains(t, string(data), `"kind":"question"`)
 }
 
 func TestBridgeInput_PermissionAsked_ReachesUserStream(t *testing.T) {

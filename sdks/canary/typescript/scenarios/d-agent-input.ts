@@ -25,12 +25,12 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     const sid = sess.sessionId;
 
     const [okQ, qBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/question`, cfg.apiKey),
+      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question`, cfg.apiKey),
       'get-question: no error');
     if (okQ) r.assert(okQ, 'get-question: returned response');
 
     const [okP, pBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission`, cfg.apiKey),
+      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey),
       'get-permission: no error');
     if (okP) r.assert(okP, 'get-permission: returned response');
 
@@ -43,7 +43,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     await sleep(3000);
 
     const [sPerm, permBody] = await rawDo('GET',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission`, cfg.apiKey);
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey);
     r.assert(sPerm === 200, 'get-permission-after-msg: 200', `got ${sPerm}`);
 
     if (sPerm === 200) {
@@ -52,7 +52,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       if (Array.isArray(perms) && perms.length > 0 && perms[0].id) {
         const permId = perms[0].id;
         const [sReply] = await rawDo('POST',
-          `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/${permId}/reply`,
+          `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/${permId}/reply`,
           cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'once' })));
         r.assert(sReply >= 200 && sReply < 300, 'permission-reply: success', // 2xx: 202 = the #1313 late-answer accept
 
@@ -62,20 +62,24 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       }
     }
 
+    // 4a-2 (#1302): the GENERIC contract — "invalid-id" now CONFORMS
+    // (charset [a-zA-Z0-9._-]); a real charset violation 400s.
     const [sBadQ] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/question/invalid-id/reply`,
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question/bad$id/reply`,
       cfg.apiKey, Buffer.from(JSON.stringify({ text: 'answer' })));
-    r.assert(sBadQ === 400, 'bad-question-id: 400', `got ${sBadQ}`);
+    r.assert(sBadQ === 400, 'bad-question-id: 400 (charset)', `got ${sBadQ}`);
 
+    // A conforming-but-dead id: the resolved paths (404 terminus / 202
+    // late-answer / 502 flag-off) — never the retired prefix 400.
     const [sBadPerm] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/invalid-id/reply`,
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/invalid-id/reply`,
       cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'maybe' })));
-    r.assert(sBadPerm === 400, 'bad-permission-reply-value: 400', `got ${sBadPerm}`);
+    r.assert(sBadPerm !== 400, 'generic-id: not a validation 400 (prefix contract retired)', `got ${sBadPerm}`);
 
     const [sBadPermId] = await rawDo('POST',
-      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/not-per-id/reply`,
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission/not.per-id/reply`,
       cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'once' })));
-    r.assert(sBadPermId === 400, 'bad-permission-id-format: 400', `got ${sBadPermId}`);
+    r.assert(sBadPermId !== 400, 'conforming id: not a validation 400', `got ${sBadPermId}`);
 
   } finally {
     if (wsId) { try { await c.workspaces.delete(wsId); } catch {} }

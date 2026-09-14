@@ -152,17 +152,23 @@ pollLoop:
 		run.Assert(idle, "session-idle-after-approve: session idle", "")
 	}
 
-	// N1: POST /question/{id}/reply with invalid ID format → 400
+	// N1 (4a-2, #1302): the GENERIC request-ID contract — charset
+	// [a-zA-Z0-9._-], no "..". A conforming id passes validation (its
+	// downstream outcome is the harness's contract, not the handler's);
+	// a charset violation 400s.
 	n1Status, _, _ := canary.RawDo(ctx, "POST",
 		fmt.Sprintf("%s/api/v1/workspaces/%s/question/invalid-id-format/reply", cfg.APIURL, wsID),
 		cfg.APIKey, []byte(`{"reply":"answer"}`))
-	run.Assert(n1Status == 400, "n1-invalid-question-id: 400", fmt.Sprintf("got %d", n1Status))
+	run.Assert(n1Status == 400, "n1-charset-violation: 400 (the generic contract)", fmt.Sprintf("got %d", n1Status))
 
-	// N2: POST /permission/{id}/reply with invalid reply value ("maybe") → 400
+	// N2: a CONFORMING but dead id takes the resolved paths (404
+	// terminus / 202 late-answer / 502 flag-off) — never the prefix
+	// 400 the retired contract produced. Assert NOT a 400-class
+	// validation failure.
 	n2Status, _, _ := canary.RawDo(ctx, "POST",
 		fmt.Sprintf("%s/api/v1/workspaces/%s/permission/some-id/reply", cfg.APIURL, wsID),
 		cfg.APIKey, []byte(`{"reply":"maybe"}`))
-	run.Assert(n2Status == 400, "n2-invalid-reply-value: 400", fmt.Sprintf("got %d", n2Status))
+	run.Assert(n2Status != 400, "n2-valid-generic-id: not a validation 400 (the prefix contract is retired)", fmt.Sprintf("got %d", n2Status))
 
 	// N3: POST /permission/{id}/reply with invalid ID format → 400
 	n3Status, _, _ := canary.RawDo(ctx, "POST",

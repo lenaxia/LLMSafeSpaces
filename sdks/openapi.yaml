@@ -1338,7 +1338,6 @@ paths:
         The ask-scoped clientMessageID (`inbox-{requestID}-answer`) makes
         duplicate clicks idempotent.
       operationId: replyQuestion
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1346,7 +1345,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^que_[a-zA-Z0-9]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:
@@ -1378,7 +1377,6 @@ paths:
       tags: [sessions]
       summary: Reject a pending question
       operationId: rejectQuestion
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1386,7 +1384,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^que_[a-zA-Z0-9]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       responses:
         "200":
           description: Rejection accepted
@@ -1432,7 +1430,6 @@ paths:
         permission already terminated not-granted; the message informs
         future turns.
       operationId: replyPermission
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1440,7 +1437,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^per_[a-zA-Z0-9_]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:

@@ -237,3 +237,63 @@ func TestOneShape_DialectOwnsPrefixes(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(src), "que_[a-zA-Z0-9]", "prefix regexes stay out of the handler")
 }
+
+// TestOneShape_SSEAndRestParity — the issue's mandatory parity row: the
+// SSE-emitted InputRequest deep-equals the REST list output for the same
+// pending set (one shape, one converter).
+func TestOneShape_SSEAndRestParity(t *testing.T) {
+	pending := []session.InputRequest{
+		{ID: "que_p1", SessionID: "ses_1", Kind: session.InputQuestion, Question: "Q?", Header: "H",
+			Options: []session.InputOption{{Label: "A", Description: "a"}}},
+		{ID: "per_p1", SessionID: "ses_2", Kind: session.InputPermission, Permission: "bash", Patterns: []string{"ls"}},
+	}
+	h, _, _ := newOneShapeEnv(t, func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+		return pending, nil
+	})
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+	h.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	var sseData [][]byte
+	deadline := time.Now().Add(2 * time.Second)
+	for len(sseData) < 2 && time.Now().Before(deadline) {
+		select {
+		case evt := <-userSub.Ch:
+			if evt.Type != "agent.question" && evt.Type != "agent.permission" {
+				continue
+			}
+			b, _ := json.Marshal(evt.Data)
+			sseData = append(sseData, b)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// REST outputs for the same set.
+	c1, w1 := ginTestCtx(t, http.MethodGet, "/x", "")
+	c1.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	h.ListQuestions(c1)
+	c2, w2 := ginTestCtx(t, http.MethodGet, "/x", "")
+	c2.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	h.ListPermissions(c2)
+	require.Equal(t, http.StatusOK, w1.Code)
+	require.Equal(t, http.StatusOK, w2.Code)
+
+	restByID := map[string]json.RawMessage{}
+	for _, body := range []string{w1.Body.String(), w2.Body.String()} {
+		var arr []map[string]any
+		require.NoError(t, json.Unmarshal([]byte(body), &arr))
+		for _, m := range arr {
+			b, _ := json.Marshal(m)
+			restByID[m["id"].(string)] = b
+		}
+	}
+	require.Len(t, sseData, 2)
+	for _, b := range sseData {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal(b, &m))
+		rest, ok := restByID[m["id"].(string)]
+		require.True(t, ok, "SSE id %v absent from REST", m["id"])
+		assert.JSONEq(t, string(rest), string(b), "SSE and REST payloads deep-equal for %v", m["id"])
+	}
+}

@@ -18,6 +18,7 @@ import (
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	abiclient "github.com/lenaxia/llmsafespaces/pkg/abi/abiclient"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -78,36 +79,33 @@ func TestRecordStepUsage_SkipsWithoutSinks(t *testing.T) {
 	require.Empty(t, events)
 }
 
-func TestQuestionRequestFromABI(t *testing.T) {
+func TestInputRequestFromABI(t *testing.T) {
 	req := &abiv1.InputRequest{
 		Id: "q1", SessionId: "s1", Kind: abiv1.InputKind_INPUT_KIND_QUESTION,
-		Question: "Go?", Header: "Confirm",
-		Options:  []*abiv1.InputOption{{Label: "yes", Description: "y"}, {Label: "no"}},
-		Multiple: true,
-		Tool:     &abiv1.ToolRef{MessageId: "m1", CallId: "c1"},
+		Question: "Go?", Header: "Pick", Multiple: true,
+		Options: []*abiv1.InputOption{{Label: "yes", Description: "y"}, {Label: "no"}},
+		Tool:    &abiv1.ToolRef{MessageId: "m1", CallId: "c1"},
 	}
-	q := questionRequestFromABI(req, "root1")
-	require.Equal(t, "q1", q.ID)
-	require.Equal(t, "s1", q.SessionID)
-	require.Equal(t, "root1", q.RootSessionID)
-	require.Len(t, q.Questions, 1)
-	require.Equal(t, "Go?", q.Questions[0].Question)
-	require.Len(t, q.Questions[0].Options, 2)
-	require.True(t, q.Questions[0].Multiple)
-	require.NotNil(t, q.Tool)
-	require.Equal(t, "c1", q.Tool.CallID)
-}
+	ir := inputRequestFromABI(req, "root1")
+	require.Equal(t, "q1", ir.ID)
+	require.Equal(t, "s1", ir.SessionID)
+	require.Equal(t, "root1", ir.RootSessionID)
+	require.Equal(t, session.InputQuestion, ir.Kind)
+	require.Equal(t, "Go?", ir.Question)
+	require.Len(t, ir.Options, 2)
+	require.True(t, ir.Multiple)
+	require.NotNil(t, ir.Tool)
+	require.Equal(t, "c1", ir.Tool.CallID)
 
-func TestPermissionRequestFromABI(t *testing.T) {
-	req := &abiv1.InputRequest{
+	per := &abiv1.InputRequest{
 		Id: "p1", SessionId: "s1", Kind: abiv1.InputKind_INPUT_KIND_PERMISSION,
-		Permission: "shell", Patterns: []string{"ls"}, Always: []string{"bash"},
+		Permission: "bash", Patterns: []string{"ls"}, Always: []string{"ls *"},
 	}
-	p := permissionRequestFromABI(req, "")
-	require.Equal(t, "p1", p.ID)
-	require.Equal(t, "shell", p.Permission)
-	require.Equal(t, []string{"ls"}, p.Patterns)
-	require.Empty(t, p.RootSessionID)
+	pir := inputRequestFromABI(per, "")
+	require.Equal(t, session.InputPermission, pir.Kind)
+	require.Equal(t, "bash", pir.Permission)
+	require.Equal(t, []string{"ls"}, pir.Patterns)
+	require.Equal(t, []string{"ls *"}, pir.Always)
 }
 
 func stepUsageHelper(messageID string, seq uint64, in, out int64) usagestream.Usage {

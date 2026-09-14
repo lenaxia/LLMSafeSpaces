@@ -21,3 +21,22 @@
 ## Remaining for #1302 closure
 
 - The 4b tail (SDK regeneration — the deprecated frontend shims and the generated SDKs refresh).
+
+## Review r1 remediation
+
+**f1 (HIGH — the live doorbell still spoke legacy):** `usageBridge.InputRequested` now serves the contract `InputRequest` via one converter (`inputRequestFromABI`); `questionRequestFromABI`/`permissionRequestFromABI` retired; the bridge/subtask suites re-pinned to the contract shape (camelCase tags asserted).
+
+**f2 (HIGH — canary Go N1/N2):** N1 re-pinned on a real charset violation; N2 now asserts NOT-400 (a conforming dead id takes the resolved paths — the retired prefix contract can no longer masquerade as validation).
+
+**f3 (MEDIUM — TS canary dead routes):** the `/proxy/` prefix dropped everywhere (the routes died with the #828-final batch; the scenario was structurally dead); the negative rows re-pinned per the generic contract.
+
+**f4 (MEDIUM — OpenAPI 2-of-4):** all four input routes retyped (generic pattern, `x-opencode-proxy` gone from reply/reject too).
+
+**f5 (stale comments + worklog rename):** the three ListQuestions/ListPermissions/emitPending doc comments now describe the contract path; the increment-1 worklog restored to its bot-assigned `0936_` name (un-assigning a consumed number was not a deliberate correction — it was rebase fallout).
+
+**The issue's parity row:** `TestOneShape_SSEAndRestParity` — the SSE-emitted InputRequest deep-equals the REST output for the same pending set (read generically off the subscriber channel; kind-mixed fixture).
+
+## Tests run (r1)
+
+- `go test ./api/internal/handlers/ ./api/internal/server/` — ok; lint 0 issues
+- frontend provider + chat suites — 446/446; `make -C sdks validate` valid; go canary builds
