@@ -283,6 +283,75 @@ code5b=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
     -X DELETE "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/${W1_SES}/inbox/que_does_not_exist")
 [[ "${code5b}" == "404" ]] && ok "W5 dismiss-of-unknown 404s" || note_fail "W5 dismiss-of-unknown: ${code5b}, want 404"
 
+# --- W6: the Act write path e2e (4a / #1302 — S6 + L2) ----------------------
+# The QUESTION REJECT REST route on a seeded record with NO live harness
+# ask: the terminus branch resolves the session via the inbox fallback
+# and forwards AnswerInputAction{reply:"reject"} to agentd's Act — the
+# ONLY cluster row that genuinely drives actAnswerInput → abiAct → the
+# pod's Act op (a total Act-path regression — payload drift, auth on
+# :4097, error mis-mapping — turns this row red). The harness has no
+# such ask → opencode 404s the reject endpoints → the authority's
+# resolve-by-absence folds SUCCESS. The 2026-09-10 incident class: the
+# click must CLEAR everywhere (resolved event ≤ L2), never a silent
+# no-op.
+log "W6: question reject through Act — resolve-by-absence clears (S6) within L2"
+# A REAL session: a walk-away ask belongs to a session that exists in
+# the harness (the W6 ask id will 404 against it either way — that IS
+# the resolve-by-absence signal — but staging against a real session
+# models the production shape). The harness contract: the ask's OWN kind
+# endpoint 404s a missing id (cross-kind posts are 400 Params — pinned
+# in ask_terminal_states_1_18_15.json); that 404 is the absence signal
+# the resolve-by-absence fold consumes.
+# Route is POST /sessions/new (POST /sessions is NOT registered — the r9
+# silent exit-5 was this curl|jq failing under set -e). Loud on failure.
+W6_CODE=$(curl -s -m 15 -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/sessions/new" \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d '{}' -o /tmp/e71w6_sess.json -w '%{http_code}') || die "W6: session-create curl failed"
+W6_SES=$(python3 -c "import json;d=json.load(open('/tmp/e71w6_sess.json'));print(d.get('sessionId') or d.get('id') or d.get('info',{}).get('id') or '')" 2>/dev/null || true)
+[[ "${W6_CODE}" == "200" || "${W6_CODE}" == "201" ]] && [[ -n "${W6_SES}" ]] \
+    || die "W6: session-create failed (code=${W6_CODE} body=$(head -c 200 /tmp/e71w6_sess.json))"
+seed_inbox_record "${W1_WS}" "${W6_SES}" que_e71w1ddd "Act path dead ask?"
+CAP6=/tmp/e71w6_sse.txt
+sse_capture "${CAP6}"
+sleep 1
+T6=$(date +%s%3N)
+code6=$(curl -s -o /dev/null -w '%{http_code}' -m 20 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1ddd/reject" \
+    -H 'Content-Type: application/json' -d '{}')
+[[ "${code6}" == "200" ]] && ok "W6 reject 200 (Act → resolve-by-absence → dismissed)" || note_fail "W6 reject: ${code6}, want 200"
+# L2: the RESOLVED event's unique keys (the whileAway re-presentation
+# also matches the bare ID — grep what only the clear carries).
+deadline6=$(( T6 + 2000 ))
+until grep -q '"reason":"dismissed"' "${CAP6}" 2>/dev/null; do
+    [[ $(date +%s%3N) -lt ${deadline6} ]] || break
+    sleep 0.1
+done
+T6b=$(date +%s%3N)
+sse_stop
+if grep -q '"request_id":"que_e71w1ddd"' "${CAP6}" 2>/dev/null \
+    && grep -q '"reason":"dismissed"' "${CAP6}" 2>/dev/null; then
+    ok "W6 resolved event carries the dismiss (clear signal)"
+else
+    note_fail "W6: no dismissed resolved event on the user stream (see ${CAP6})"
+fi
+if [[ ${T6b} -le $(( T6 + 2000 )) ]] && [[ ${T6b} -gt ${T6} ]]; then
+    ok "W6 clear latency $(( T6b - T6 ))ms ≤ 2s (L2)"
+else
+    note_fail "W6 L2 violated: ${T6b} vs ${T6}"
+fi
+ST=$(inbox_status "${W1_WS}" "${W6_SES}" que_e71w1ddd)
+[[ "${ST}" == "dismissed" ]] && ok "W6 record terminal dismissed" || note_fail "W6 status '${ST}', want dismissed"
+
+# Unhappy: re-reply against the dismissed record is the 409 two-exits pin
+# at cluster level (a stale tab cannot re-open a dismissed ask).
+code7=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1ddd/reply" \
+    -d '{"answers":[["Yes, deploy"]]}')
+[[ "${code7}" == "409" ]] && ok "W7 dismissed re-click 409s (two exits, cluster-level)" || note_fail "W7 dismissed re-click: ${code7}, want 409"
+
 # Cleanup: leave the workspace suspended to free capacity.
 curl -s -o /dev/null -m 30 -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/suspend" || true

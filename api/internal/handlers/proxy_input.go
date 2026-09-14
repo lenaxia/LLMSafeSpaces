@@ -89,6 +89,34 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	if !h.checkAdapterQuota(c, workspace) {
 		return
 	}
+	// 4a (#1302 S1): writes go through agentd Act — the API makes zero
+	// mutating harness calls in the authority regime.
+	if h.agentdTerminus {
+		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
+		if !resolvable {
+			if unknownSet {
+				c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input pending set unknown"})
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending input request"})
+			return
+		}
+		// Flatten every answer group — a silent Answers[1:] drop is
+		// data loss (the flag-off path posts all arrays; r3 carried).
+		opts := make([]string, 0, len(payload.Answers))
+		for _, group := range payload.Answers {
+			opts = append(opts, group...)
+		}
+		action := map[string]any{"optionIds": opts}
+		if !h.actAnswerInput(c, wid, sessionID, requestID, action) {
+			return
+		}
+		h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+		h.postAdapterSuccess(c, workspace, wid, "", true)
+		c.JSON(http.StatusOK, gin.H{"status": "answered"})
+		return
+	}
 	if err := h.adapter.AnswerQuestion(c.Request.Context(), "", wid, requestID, payload.Answers); err != nil {
 		h.logger.Error("QuestionReply: adapter failed", err, "workspaceID", wid, "requestID", requestID)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer question"})
@@ -115,6 +143,27 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	}
 	defer h.releaseConnection(wid)
 	if !h.checkAdapterQuota(c, workspace) {
+		return
+	}
+	// 4a D1: question reject is the dismiss exit — reply="reject" rides
+	// the action vocabulary; agentd routes question-reject-first.
+	if h.agentdTerminus {
+		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
+		if !resolvable {
+			if unknownSet {
+				c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input pending set unknown"})
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending input request"})
+			return
+		}
+		if !h.actAnswerInput(c, wid, sessionID, requestID, map[string]any{"reply": "reject"}) {
+			return
+		}
+		h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
+		h.postAdapterSuccess(c, workspace, wid, "", true)
+		c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 		return
 	}
 	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
@@ -191,6 +240,35 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	if !h.checkAdapterQuota(c, workspace) {
 		return
 	}
+	// 4a (#1302 S1 + D2): the permission vocabulary and the deny
+	// feedback ride AnswerInputAction.reply/message through Act.
+	if h.agentdTerminus {
+		sessionID, resolvable, unknownSet := h.inputRequestSession(c.Request.Context(), wid, requestID)
+		if !resolvable {
+			if unknownSet {
+				c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input pending set unknown"})
+				return
+			}
+			c.JSON(http.StatusNotFound, gin.H{"error": "no pending input request"})
+			return
+		}
+		action := map[string]any{"reply": payload.Reply}
+		if payload.Message != "" {
+			action["message"] = payload.Message
+		}
+		if !h.actAnswerInput(c, wid, sessionID, requestID, action) {
+			return
+		}
+		disposition := "answered"
+		if payload.Reply == "reject" {
+			disposition = "dismissed"
+		}
+		h.resolveInboxOnProxySuccess(c, wid, requestID, disposition)
+		h.postAdapterSuccess(c, workspace, wid, "", true)
+		c.JSON(http.StatusOK, gin.H{"status": "answered"})
+		return
+	}
 	if err := h.adapter.ReplyPermission(c.Request.Context(), "", wid, requestID, payload.Reply, payload.Message); err != nil {
 		h.logger.Error("PermissionReply: adapter failed", err, "workspaceID", wid, "requestID", requestID)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer permission"})
@@ -244,8 +322,64 @@ func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID stri
 	return true
 }
 
+// actAnswerInput forwards one AnswerInputAction to the pod's Act op —
+// the #1302/4a S1 shape: the API makes ZERO mutating harness calls in
+// the authority regime; agentd is the sole writer. Payload keys are
+// protojson camelCase over the bare Connect-JSON body (abiAct).
+func (h *ProxyHandler) actAnswerInput(c *gin.Context, workspace, sessionID, requestID string, action map[string]any) bool {
+	base, pw, err := h.agentdEndpoint(c.Request.Context(), workspace)
+	if err != nil {
+		h.logger.Error("input Act: endpoint unresolved", err, "workspaceID", workspace, "requestID", requestID)
+		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "unresolved", "detail": "agentd endpoint unavailable"}})
+		return false
+	}
+	action["inputId"] = requestID
+	payload := map[string]any{
+		"sessionId":      sessionID,
+		"answerQuestion": action,
+	}
+	var out json.RawMessage
+	if err := abiAct(c.Request.Context(), base, pw, payload, &out); err != nil {
+		status, code := mapConnectError(err)
+		h.logger.Error("input Act failed", err, "workspaceID", workspace, "requestID", requestID)
+		c.JSON(status, gin.H{"error": gin.H{"code": code, "detail": "failed to answer input"}})
+		return false
+	}
+	return true
+}
+
+// inputRequestSession resolves the session an ask belongs to: live
+// pending first, then the inbox record (a dead ask's Act still lands —
+// agentd's resolve-by-absence, #1310/1a). resolvable=false +
+// unknownSet=true means the live set could not be read AND no record
+// identifies the ask — callers must answer NON-authoritatively (503,
+// the #1302 doctrine), never an authoritative 404.
+func (h *ProxyHandler) inputRequestSession(ctx context.Context, workspaceID, requestID string) (sessionID string, resolvable bool, unknownSet bool) {
+	pending, err := h.adapter.ListPending(ctx, "", workspaceID, "")
+	if err == nil {
+		for _, ir := range pending {
+			if ir.ID == requestID {
+				return ir.SessionID, true, false
+			}
+		}
+	} else {
+		unknownSet = true
+	}
+	if h.inbox != nil {
+		if rec, ok, err := h.inbox.Lookup(ctx, workspaceID, requestID); err == nil && ok {
+			return rec.SessionID, true, false
+		}
+	}
+	return "", false, unknownSet
+}
+
 // resolveInboxOnProxySuccess terminalizes the ask's inbox record when the
-// proxied live reply/reject succeeded (2xx from the pod).
+// live reply/reject succeeded and publishes the resolved event — the
+// client lifecycle clears on exactly that event, and a DEAD ask (the
+// #1313 walk-away class) has no harness INPUT_RESOLVED coming, so the
+// API-side publish is the only clear (r1 f2). A duplicate publish for a
+// live ask (the bridge's InputResolved follows) is idempotent
+// client-side: removal keys on the request ID.
 func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, requestID, status string) {
 	if h.inbox == nil || workspaceID == "" || c.Writer.Status() >= 400 {
 		return
@@ -255,6 +389,11 @@ func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, r
 		return
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, status)
+	reason := "answered"
+	if status == "dismissed" {
+		reason = "dismissed"
+	}
+	h.publishInboxResolved(workspaceID, rec, reason)
 }
 
 // emitPendingInputRequests fetches pending questions and permissions from the pod

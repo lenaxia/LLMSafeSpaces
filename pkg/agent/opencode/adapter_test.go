@@ -6,6 +6,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -710,17 +711,32 @@ func TestAdapter_Resolve_QuestionReply_HappyPath(t *testing.T) {
 }
 
 func TestAdapter_Resolve_FallsBackToPermissionOn404(t *testing.T) {
-	// When /question/:id/reply returns 404, the adapter must try
-	// /permission/:id/reply. This is the core complexity of Resolve.
+	// When /question/:id/reply returns 404 for an UNPREFIXED id, the
+	// adapter must try /permission/:id/reply (agent-agnostic callers).
+	// 4a r6/r7: prefixed ids never probe cross-kind — the harness
+	// prefix-validates (cross-kind posts are 400 Params, never 404).
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/req_1/reply", `not found`, http.StatusNotFound)
+	srv.register("POST", "/permission/req_1/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.Resolve(context.Background(), "u-1", "ws-1", "req_1", "allow")
+	require.NoError(t, err)
+	require.Contains(t, srv.requests, "POST /permission/req_1/reply",
+		"404 on question → must fall through to permission reply")
+}
+
+func TestAdapter_Resolve_QueIDDoesNotFallThroughOn404(t *testing.T) {
+	// 4a r6/r7: a que_ id's 404 is the absence signal — surfacing it
+	// beats converting it into a guaranteed 400 cross-kind post.
 	srv := newFakeOpencode(t)
 	srv.register("POST", "/question/que_1/reply", `not found`, http.StatusNotFound)
-	srv.register("POST", "/permission/que_1/reply", `{}`, 0)
 
 	a := newTestAdapter(t, srv.Server)
 	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "allow")
-	require.NoError(t, err)
-	require.Contains(t, srv.requests, "POST /permission/que_1/reply",
-		"404 on question → must fall through to permission reply")
+	require.Error(t, err)
+	require.NotContains(t, srv.requests, "POST /permission",
+		"a prefixed id must never post cross-kind (the harness 400s it)")
 }
 
 func TestAdapter_Resolve_QuestionReply5xx_ReturnsError(t *testing.T) {
@@ -1446,3 +1462,123 @@ func TestGetHistory_V2StoreBranch(t *testing.T) {
 	require.Len(t, paged, 2)
 	assert.Equal(t, session.MessageAssistant, paged[0].Type, "oldest-first within the newest-2 page")
 }
+
+// 4a r7: the harness prefix-validates request IDs (cross-kind posts are
+// 400 Params, never 404 — captured in ask_terminal_states_1_18_15.json).
+// Resolve/RejectInput route prefixed ids to their own kind only.
+func TestAdapter_Resolve_PrefixAware(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/permission/") && strings.Contains(r.URL.Path, "que_"):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected a string starting with \"per\""},"kind":"Params"}`))
+		case strings.HasPrefix(r.URL.Path, "/question/") && strings.Contains(r.URL.Path, "per_"):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected a string starting with \"que\""},"kind":"Params"}`))
+		default:
+			_, _ = w.Write([]byte(`true`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := newTestAdapter(t, srv)
+
+	// A que_ id must NEVER touch the permission endpoint (the stub 400s
+	// exactly as the real harness does) — the question reply resolves.
+	if err := a.Resolve(context.Background(), "", "ws", "que_prefix1", "reject"); err != nil {
+		t.Fatalf("que-prefixed resolve must stay question-only: %v", err)
+	}
+	// A per_ id must go straight to the permission endpoint.
+	if err := a.Resolve(context.Background(), "", "ws", "per_prefix1", "once"); err != nil {
+		t.Fatalf("per-prefixed resolve must be permission-direct: %v", err)
+	}
+}
+
+func TestAdapter_RejectInput_PrefixAware(t *testing.T) {
+	// r8: models the CAPTURED contract exactly (cross-kind posts are
+	// 400 Params; the ask's own kind 404s a missing id). Both legs are
+	// the reachable stranding cases r6 enumerated — verified red
+	// against the pre-fix code before landing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		crossKind := (strings.HasPrefix(r.URL.Path, "/permission/") && strings.Contains(r.URL.Path, "que_")) ||
+			(strings.HasPrefix(r.URL.Path, "/question/") && strings.Contains(r.URL.Path, "per_"))
+		if crossKind {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"prefix mismatch"},"kind":"Params"}`))
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/question/") {
+			// The dead-ask leg: question reject 404s a missing id.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"_tag":"QuestionNotFoundError"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`true`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := newTestAdapter(t, srv)
+
+	// Leg 1 — dead que_ reject: the 404 from the ask's OWN kind is the
+	// absence signal; the cross-kind post (a guaranteed 400) must never
+	// happen. Pre-fix this errors with the 400 from the fallback.
+	if err := a.RejectInput(context.Background(), "", "ws", "que_dead1"); err == nil {
+		t.Fatal("dead que_ reject must surface the 404 absence signal, got nil")
+	} else if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("dead que_ reject must surface the 404 (absence signal), got: %v", err)
+	}
+
+	// Leg 2 — live per_ dismiss: the question reject endpoint 400s a
+	// per_ id (prefix validation); the permission reply must carry the
+	// reject and succeed. Pre-fix the 400 aborts before the permission
+	// leg is reachable.
+	if err := a.RejectInput(context.Background(), "", "ws", "per_live1"); err != nil {
+		t.Fatalf("per_ dismiss must reach the permission reply, got: %v", err)
+	}
+}
+
+// 4a r10/r11: the transport corner — a que_ id whose question POST fails
+// at the TRANSPORT level surfaces that error as-is and never attempts
+// the cross-kind permission post (which would mask it with a 400).
+// Verified red-first against the pre-fix tree (the fallback fired).
+func TestAdapter_RejectInput_TransportErrorSurfaces_QueID(t *testing.T) {
+	permPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/permission/") {
+			permPosts++
+		}
+		_, _ = w.Write([]byte(`true`))
+	}))
+	t.Cleanup(srv.Close)
+
+	base := srv.Client().Transport
+	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/question/") {
+			return nil, errors.New("connection reset by peer (injected)")
+		}
+		return base.RoundTrip(req)
+	})
+	client := &http.Client{Transport: rt}
+
+	hostPort := srv.URL[len("http://"):]
+	parts := strings.SplitN(hostPort, ":", 2)
+	port, err := strconv.Atoi(parts[1])
+	require.NoError(t, err)
+	pw, ip := staticResolver(parts[0], testPassword)
+	a := NewAdapter(pw, ip, zap.NewNop(),
+		WithAdapterHTTPClient(client),
+		WithAdapterPort(port),
+	)
+
+	err = a.RejectInput(context.Background(), "u-1", "ws-1", "que_transport1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection reset by peer",
+		"the transport error surfaces as-is, not a cross-kind 400")
+	assert.Zero(t, permPosts, "a que_ id must never post cross-kind, even on transport failure")
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

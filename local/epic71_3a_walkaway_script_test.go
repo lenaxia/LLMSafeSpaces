@@ -86,3 +86,24 @@ func TestEpic71WalkawayScript_PoolRunsBeforeFaultArm(t *testing.T) {
 		t.Fatalf("%s must run BEFORE the fault seam is armed (delivery rows are seam-inert)", epic71WalkawayScript)
 	}
 }
+
+func TestEpic71WalkawayScript_ActWritePathRows(t *testing.T) {
+	// 4a r3: the Act write-path e2e row lives in this script — W6 drives
+	// actAnswerInput → abiAct → the pod's Act op via the QUESTION REJECT
+	// REST route (the only route whose inbox-fallback reaches Act for a
+	// staged dead ask), with the L2 budget measured on the resolved
+	// event's unique keys. W7 pins the 409 two-exits at cluster level.
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "question/que_e71w1ddd/reject") {
+		t.Fatalf("walk-away script must drive Act through the question reject route (the inbox-fallback path)")
+	}
+	if !strings.Contains(src, `"reason":"dismissed"`) {
+		t.Fatalf("walk-away script must assert the dismissed resolved event (the clear signal)")
+	}
+	if !strings.Contains(src, "L2 violated") {
+		t.Fatalf("walk-away script must measure the L2 clear budget")
+	}
+	if !strings.Contains(src, `== "409"`) {
+		t.Fatalf("walk-away script must pin the W7 dismissed re-click 409")
+	}
+}

@@ -141,8 +141,10 @@ func TestOpencodeActor_WireShapes(t *testing.T) {
 	assert.Equal(t, "/api/session/s1/compact", reqs[4].Path)
 }
 
-// TestOpencodeActor_AnswerPermissionFallback: a 404 on the question route
-// means the input is a permission — the reply shape switches.
+// TestOpencodeActor_AnswerPermissionFallback: a 404 on the question
+// route for an UNPREFIXED id (agent-agnostic callers) means the input
+// is a permission — the reply shape switches. Prefixed ids never probe
+// cross-kind (r6: the harness prefix-validates).
 func TestOpencodeActor_AnswerPermissionFallback(t *testing.T) {
 	stub := withStubHarness(t, map[string]int{"/question/": http.StatusNotFound})
 	actor := opencodeActor{password: "pw", agentKey: "agentID"}
@@ -157,6 +159,24 @@ func TestOpencodeActor_AnswerPermissionFallback(t *testing.T) {
 	assert.Equal(t, "/question/p1/reply", reqs[0].Path)
 	assert.Equal(t, "/permission/p1/reply", reqs[1].Path)
 	assert.JSONEq(t, `{"reply":"always"}`, reqs[1].Body, "the first option rides the permission reply field (once/always/reject)")
+}
+
+// TestOpencodeActor_AnswerQuestionIDNeverProbesPermission (r6): a que_
+// id's dead ask surfaces the 404 (absence signal) — the old cross-kind
+// fallback would have 400'd on the real harness and stranded the record.
+func TestOpencodeActor_AnswerQuestionIDNeverProbesPermission(t *testing.T) {
+	stub := withStubHarness(t, map[string]int{"/question/": http.StatusNotFound})
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "que_dead", OptionIds: []string{"Yes"}},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 404")
+
+	for _, r := range stub.recorded() {
+		assert.NotContains(t, r.Path, "/permission/", "cross-kind posts are forbidden")
+	}
 }
 
 // TestOpencodeActor_HarnessStatusIsTyped: a harness 4xx surfaces as a
@@ -218,3 +238,78 @@ func TestOpencodeActor_LegacyFormsUnchanged(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestOpencodeActor_ReplyRejectIsTheDismissExit (4a D1 + r6): reply
+// ="reject" on a que_-prefixed id routes to the question REJECT
+// endpoint ONLY — the harness prefix-validates (a que_ id on a
+// permission endpoint is a 400 Params error, never a 404; captured in
+// ask_terminal_states_1_18_15.json), so no cross-kind fallback exists.
+// The 404 from the ask's own kind surfaces as the typed NotFound the
+// authority's resolve-by-absence folds (S6).
+func TestOpencodeActor_ReplyRejectIsTheDismissExit(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "que_1", Reply: sp("reject")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1, "reject on a question id must hit exactly the question reject endpoint")
+	assert.Equal(t, "/question/que_1/reject", reqs[0].Path)
+	assert.JSONEq(t, `{}`, reqs[0].Body)
+}
+
+// TestOpencodeActor_ReplyRejectDeadQuestionSurfacesNotFound (r6): the
+// dead-ask reject on a que_ id returns the typed NotFound — the absence
+// signal for the authority's fold — and NEVER posts cross-kind.
+func TestOpencodeActor_ReplyRejectDeadQuestionSurfacesNotFound(t *testing.T) {
+	stub := withStubHarness(t, map[string]int{"/question/": http.StatusNotFound})
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "que_dead", Reply: sp("reject")},
+	}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 404", "the 404 from the ask's own kind is the absence signal")
+
+	reqs := stub.recorded()
+	for _, r := range reqs {
+		assert.NotContains(t, r.Path, "/permission/", "cross-kind posts are forbidden (the harness 400s them)")
+	}
+}
+
+// TestOpencodeActor_ReplyRejectPermissionDirect (r6): a per_-prefixed
+// id rejects straight through the permission reply — no question probe.
+func TestOpencodeActor_ReplyRejectPermissionDirect(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "per_1", Reply: sp("reject")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "/permission/per_1/reply", reqs[0].Path)
+	assert.JSONEq(t, `{"reply":"reject"}`, reqs[0].Body)
+}
+
+// TestOpencodeActor_PermissionReplyMessageForwarded (4a D2): the deny
+// feedback rides the permission reply body verbatim.
+func TestOpencodeActor_PermissionReplyMessageForwarded(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_AnswerQuestion{
+		AnswerQuestion: &abiv1.AnswerInputAction{InputId: "p1", Reply: sp("once"), Message: sp("looks fine")},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "/permission/p1/reply", reqs[0].Path)
+	assert.JSONEq(t, `{"reply":"once","message":"looks fine"}`, reqs[0].Body, "message preserves the raw passthrough's deny feedback (#1302)")
+}

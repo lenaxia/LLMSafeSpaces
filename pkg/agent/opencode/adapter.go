@@ -922,13 +922,23 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 		return err
 	}
 	d := &Dialect{}
-	// Try question reply first; if 404, try permission reply. The
-	// adapter does not know which kind the requestID refers to without
-	// a ListPending round-trip; the caller learns the kind via
-	// ListPending and could call a kind-specific method. For the
-	// simple case we accept the cost of one extra call.
+	// Prefix-aware (4a r6/r7): the harness prefix-validates request IDs
+	// — a cross-kind post is a 400 Params error, never a 404 (captured
+	// in ask_terminal_states_1_18_15.json). Prefixed ids route to their
+	// own kind only; unprefixed ids keep the legacy probe order.
+	if strings.HasPrefix(requestID, "per_") {
+		pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
+		if pErr != nil {
+			return pErr
+		}
+		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
+		if pResp.StatusCode >= 400 {
+			return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
+		}
+		return nil
+	}
 	qResp, qErr := a.doPost(ctx, c, d.QuestionReplyPath(requestID), map[string]any{"reply": reply})
-	if qErr == nil {
+	if qErr == nil && !strings.HasPrefix(requestID, "que_") {
 		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
 		if qResp.StatusCode < 400 {
 			return nil
@@ -936,14 +946,22 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 		if qResp.StatusCode != http.StatusNotFound {
 			return a.httpError("POST "+d.QuestionReplyPath(requestID), qResp)
 		}
+		pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
+		if pErr != nil {
+			return pErr
+		}
+		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
+		if pResp.StatusCode >= 400 {
+			return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
+		}
+		return nil
 	}
-	pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
-	if pErr != nil {
-		return pErr
+	if qErr != nil {
+		return qErr
 	}
-	defer pResp.Body.Close() //nolint:errcheck // best-effort drain
-	if pResp.StatusCode >= 400 {
-		return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
+	defer qResp.Body.Close() //nolint:errcheck // best-effort drain
+	if qResp.StatusCode >= 400 {
+		return a.httpError("POST "+d.QuestionReplyPath(requestID), qResp)
 	}
 	return nil
 }
@@ -991,24 +1009,36 @@ func (a *Adapter) ReplyPermission(ctx context.Context, userID, workspaceID, requ
 }
 
 // RejectInput dismisses a pending ask without an answer (#1313). The
-// question reject endpoint is distinct from the reply endpoint on this
-// harness (the reply schema is additionalProperties:false), so the
-// question path rejects outright and a 404 falls through to the
-// permission reject reply.
+// harness PREFIX-VALIDATES request IDs (a cross-kind post is a 400
+// Params error, never a 404 — captured live, 4a r6/r8): a que_ id
+// rejects on the question endpoint only and its 404 is the absence
+// signal callers consume (S6); a per_ id goes straight to the
+// permission reply; unprefixed ids keep the legacy probe order.
 func (a *Adapter) RejectInput(ctx context.Context, userID, workspaceID, requestID string) error {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return err
 	}
 	d := &Dialect{}
-	qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
-	if qErr == nil {
-		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-		if qResp.StatusCode < 400 {
-			return nil
-		}
-		if qResp.StatusCode != http.StatusNotFound {
-			return a.httpError("POST "+d.QuestionRejectPath(requestID), qResp)
+	isQ := strings.HasPrefix(requestID, "que_")
+	isP := strings.HasPrefix(requestID, "per_")
+	if isQ || !isP {
+		qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
+		if qErr != nil {
+			if isQ {
+				// Transport failure on the ask's own kind surfaces as-is —
+				// falling through to a cross-kind post would trade the
+				// real error for a guaranteed 400 (r10 f1).
+				return qErr
+			}
+		} else {
+			defer qResp.Body.Close() //nolint:errcheck // best-effort drain
+			if qResp.StatusCode < 400 {
+				return nil
+			}
+			if qResp.StatusCode != http.StatusNotFound || isQ {
+				return a.httpError("POST "+d.QuestionRejectPath(requestID), qResp)
+			}
 		}
 	}
 	pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": "reject"})

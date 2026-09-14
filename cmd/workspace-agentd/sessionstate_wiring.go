@@ -458,6 +458,13 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text,
 
 // --- US-69.9: the typed-actions seam (design 0055 M1 op 5) ---------------
 //
+// isQuestionID / isPermissionID discriminate the harness's prefixed
+// request-ID namespaces (que_/per_) — the endpoints prefix-validate and
+// a cross-kind post is a 400 Params error, never a 404 (captured live,
+// 4a r6). Both helpers live HERE: this file is the opencode seam.
+func isQuestionID(id string) bool   { return strings.HasPrefix(id, "que_") }
+func isPermissionID(id string) bool { return strings.HasPrefix(id, "per_") }
+
 // opencodeActor implements sessionstate.Actor: the five frozen-union verbs
 // against the pod's opencode (localhost :4096, §D1 Basic credential — the
 // admitter's transport discipline). Route selection is measured fact, not
@@ -575,10 +582,53 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 	case *abiv1.ActionRequest_AnswerQuestion:
 		ans := a.AnswerQuestion
 		// The reply form (#1302 contract delta) carries the permission
-		// vocabulary directly — route straight to the permission
+		// vocabulary directly — route straight to the permission reply
 		// endpoint, no question-first probe, no lossy option encoding.
+		// 4a D1: reply="reject" on a question id is the DISMISS exit —
+		// question-reject for que_ ids (its 404 is the absence signal
+		// for the fold); permission reply for per_ ids. No cross-kind
+		// fallback (the harness prefix-validates: cross-kind posts are
+		// 400 Params, never 404).
+		// 4a D2: the optional message rides the permission reply body
+		// (deny feedback the raw passthrough carried).
 		if ans.GetReply() != "" {
-			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": ans.GetReply()}, nil); err != nil {
+			// r6: the harness PREFIX-VALIDATES request IDs — a que_-id
+			// posted to a permission endpoint (or the reverse) is a 400
+			// Params error, never a 404 (captured in
+			// ask_terminal_states_1_18_15.json cross_prefix_contract).
+			// Cross-kind fallbacks are therefore forbidden; the 404 from
+			// the ask's OWN kind is the absence signal the authority's
+			// resolve-by-absence consumes.
+			if ans.GetReply() == "reject" {
+				if isQuestionID(ans.GetInputId()) {
+					// The dismiss exit on a question: question-reject
+					// only; 404 → the typed NotFound surfaces for the
+					// fold (the ask is gone — exactly S6).
+					if _, err := o.post(ctx, "/question/"+ans.GetInputId()+"/reject", map[string]any{}, nil); err != nil {
+						return nil, err
+					}
+					return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+				}
+				body := map[string]any{"reply": "reject"}
+				if ans.GetMessage() != "" {
+					body["message"] = ans.GetMessage()
+				}
+				if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", body, nil); err != nil {
+					return nil, err
+				}
+				return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+			}
+			if isQuestionID(ans.GetInputId()) {
+				// A non-reject reply vocabulary on a question id is a
+				// malformed ask — surface it loudly (the frontend only
+				// sends reply for permissions).
+				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("answer_question reply vocabulary is permission-only; input %s is a question (use option_ids/custom_text)", ans.GetInputId()))
+			}
+			body := map[string]any{"reply": ans.GetReply()}
+			if ans.GetMessage() != "" {
+				body["message"] = ans.GetMessage()
+			}
+			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", body, nil); err != nil {
 				return nil, err
 			}
 			return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
@@ -592,11 +642,25 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 		if ans.GetCustomText() != "" {
 			options = append(options, ans.GetCustomText())
 		}
-		code, err := o.post(ctx, "/question/"+ans.GetInputId()+"/reply", map[string]any{"answers": [][]string{options}}, nil)
-		if code == http.StatusNotFound {
+		// r6: prefix-aware — a que_ id answers the question endpoint only
+		// (its 404 is the absence signal for the fold); a per_ id goes
+		// straight to the permission reply. Unknown prefixes keep the
+		// legacy probe order (agent-agnostic callers).
+		if isPermissionID(ans.GetInputId()) {
 			reply := "once"
 			if len(options) > 0 {
 				reply = options[0] // "once"|"always"|"reject" ride the same field
+			}
+			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": reply}, nil); err != nil {
+				return nil, err
+			}
+			return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()}}}, nil
+		}
+		code, err := o.post(ctx, "/question/"+ans.GetInputId()+"/reply", map[string]any{"answers": [][]string{options}}, nil)
+		if code == http.StatusNotFound && !isQuestionID(ans.GetInputId()) {
+			reply := "once"
+			if len(options) > 0 {
+				reply = options[0]
 			}
 			if _, err := o.post(ctx, "/permission/"+ans.GetInputId()+"/reply", map[string]any{"reply": reply}, nil); err != nil {
 				return nil, err

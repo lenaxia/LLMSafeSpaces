@@ -318,6 +318,7 @@ type mcpFixture struct {
 	trgStore  *fakeTriggerStore
 	agentSrv  *httptest.Server // stub opencode pod
 	promptGot chan map[string]any
+	proxy     *handlers.ProxyHandler
 }
 
 func (f *mcpFixture) lastWorkflowUpdate() *wf.WorkflowUpdate {
@@ -471,6 +472,7 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 		trgStore:  trgStore,
 		agentSrv:  agentSrv,
 		promptGot: promptGot,
+		proxy:     proxy,
 		client: &mcppkg.HTTPClient{
 			BaseURL:    apiSrv.URL,
 			HTTPClient: apiSrv.Client(),
@@ -847,6 +849,16 @@ func TestMCPClientWorkflowAndTriggerCRUD(t *testing.T) {
 func TestMCPClientQuestionAndPermissionReply(t *testing.T) {
 	f := newMCPRouterFixture(t)
 	ctx := context.Background()
+
+	// 4a (#1302): the fixture arms the terminus flag for the
+	// contract-stream route; these rows are the EPIC-16 ROUTING pins
+	// (route exists, method matches, IDs accepted, auth passes) and run
+	// them under the flag-off regime — the adapter path answers 200
+	// against the stub pod. In the terminus regime an unidentifiable
+	// ask correctly 404s (inputRequestSession), which this assert
+	// forbids BY DESIGN (it pins routing, not resolution semantics);
+	// the terminus reply semantics have their own 15 handler rows.
+	f.proxy.SetAgentdTerminus(false)
 
 	assertRouteResolved(t, func() error {
 		return f.client.QuestionReply(ctx, mcpTestWSID, "que_abc123", [][]string{{"yes"}})

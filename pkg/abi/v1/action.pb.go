@@ -301,13 +301,19 @@ func (x *SwitchAgentAction) GetAgentId() string {
 // custom free-text answer for questions; the permission vocabulary
 // ("once"|"always"|"reject") for permissions. The two forms are disjoint —
 // reply routes to the permission reply endpoint without the question-first
-// probe (#1302 / #1310 slice A).
+// probe (#1310 slice A). reply="reject" is the dismiss exit: a
+// question-id reject goes to the question-reject endpoint (its 404 is
+// the absence signal), a permission-id reject to the permission reply —
+// never cross-kind (the harness prefix-validates ids). The optional
+// message carries deny-feedback alongside a permission reply (preserves
+// the field the raw passthrough carried, #1302 / 4a).
 type AnswerInputAction struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	InputId       string                 `protobuf:"bytes,1,opt,name=input_id,json=inputId,proto3" json:"input_id,omitempty"`
 	OptionIds     []string               `protobuf:"bytes,2,rep,name=option_ids,json=optionIds,proto3" json:"option_ids,omitempty"`
 	CustomText    *string                `protobuf:"bytes,3,opt,name=custom_text,json=customText,proto3,oneof" json:"custom_text,omitempty"`
 	Reply         *string                `protobuf:"bytes,4,opt,name=reply,proto3,oneof" json:"reply,omitempty"`
+	Message       *string                `protobuf:"bytes,5,opt,name=message,proto3,oneof" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -366,6 +372,13 @@ func (x *AnswerInputAction) GetCustomText() string {
 func (x *AnswerInputAction) GetReply() string {
 	if x != nil && x.Reply != nil {
 		return *x.Reply
+	}
+	return ""
+}
+
+func (x *AnswerInputAction) GetMessage() string {
+	if x != nil && x.Message != nil {
+		return *x.Message
 	}
 	return ""
 }
@@ -777,16 +790,19 @@ const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\x11SwitchModelAction\x124\n" +
 	"\x05model\x18\x01 \x01(\v2\x1e.llmsafespaces.abi.v1.ModelRefR\x05model\".\n" +
 	"\x11SwitchAgentAction\x12\x19\n" +
-	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\xa8\x01\n" +
+	"\bagent_id\x18\x01 \x01(\tR\aagentId\"\xd3\x01\n" +
 	"\x11AnswerInputAction\x12\x19\n" +
 	"\binput_id\x18\x01 \x01(\tR\ainputId\x12\x1d\n" +
 	"\n" +
 	"option_ids\x18\x02 \x03(\tR\toptionIds\x12$\n" +
 	"\vcustom_text\x18\x03 \x01(\tH\x00R\n" +
 	"customText\x88\x01\x01\x12\x19\n" +
-	"\x05reply\x18\x04 \x01(\tH\x01R\x05reply\x88\x01\x01B\x0e\n" +
+	"\x05reply\x18\x04 \x01(\tH\x01R\x05reply\x88\x01\x01\x12\x1d\n" +
+	"\amessage\x18\x05 \x01(\tH\x02R\amessage\x88\x01\x01B\x0e\n" +
 	"\f_custom_textB\b\n" +
-	"\x06_reply\"\x0f\n" +
+	"\x06_replyB\n" +
+	"\n" +
+	"\b_message\"\x0f\n" +
 	"\rCompactAction\"\xe2\x03\n" +
 	"\fActionResult\x12\x1d\n" +
 	"\n" +

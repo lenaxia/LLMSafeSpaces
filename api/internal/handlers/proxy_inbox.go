@@ -351,7 +351,15 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "harness pending set unknown — retry dismiss"})
 		return
 	case askLive:
-		if err := h.adapter.RejectInput(c.Request.Context(), "", workspaceID, askID); err != nil {
+		// 4a r1: the live reject goes through Act too (S1 — the API
+		// makes zero mutating harness calls in the authority regime);
+		// D1's reply="reject" is exactly the dismiss vocabulary. The
+		// adapter path survives flag-off (D4).
+		if h.agentdTerminus {
+			if !h.actAnswerInput(c, workspaceID, sessionID, askID, map[string]any{"reply": "reject"}) {
+				return
+			}
+		} else if err := h.adapter.RejectInput(c.Request.Context(), "", workspaceID, askID); err != nil {
 			h.logger.Warn("inbox dismiss: live reject failed", "error", err, "workspace", workspaceID, "ask", askID)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "live ask reject failed"})
 			return
