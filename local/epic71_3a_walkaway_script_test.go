@@ -107,3 +107,12 @@ func TestEpic71WalkawayScript_ActWritePathRows(t *testing.T) {
 		t.Fatalf("walk-away script must pin the W7 dismissed re-click 409")
 	}
 }
+
+func TestEpic71WalkawayScript_W8NoRecordRow(t *testing.T) {
+	// 4a-2 r3: the reply-side S6 disposition row — a dead no-record
+	// reply 404s and nothing re-presents.
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "que_norecord") {
+		t.Fatalf("walk-away script must carry the W8 no-record row")
+	}
+}

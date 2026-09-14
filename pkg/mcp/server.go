@@ -293,12 +293,17 @@ var runResolveTool = mcp.NewTool("run_resolve",
 	mcp.WithString("message", mcp.Description("Optional message to send with the reply")),
 )
 
+// requestIDValidMCP mirrors the client's generic-contract check.
+func requestIDValidMCP(id string) bool { return requestIDValid(id) }
+
 // runResolve (US-65.7): unified handler that routes to question or
-// permission resolution based on the request_id prefix. 'que_' →
-// question reply/reject, 'per_' → permission reply. This collapses
-// the three separate tools (session_question_reply, session_question_reject,
-// session_permission_reply) into one matching the Adapter's unified
-// InputRequest contract.
+// permission resolution. Prefixed ids dispatch by the agent's prefix
+// convention; CONFORMING unprefixed ids dispatch by the reply's shape
+// (a JSON array of arrays → question; the permission vocabulary →
+// permission; "reject" → the question-reject dismiss default, matching
+// the actor's probe order). IDs are validated against the platform's
+// GENERIC request-ID contract (#1302 item 3) — the same one the REST
+// handlers enforce.
 func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	workspaceID := strArg(args, "workspace_id")
@@ -339,7 +344,31 @@ func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultText(fmt.Sprintf("Permission %s", reply)), nil
 
 	default:
-		return mcp.NewToolResultError("request_id must start with 'que_' (question) or 'per_' (permission)"), nil
+		// 4a-2 r3 (#1302): a conforming id with no known prefix is
+		// agent-agnostic — dispatch by reply shape, never reject.
+		if !requestIDValidMCP(requestID) {
+			return mcp.NewToolResultError("invalid request ID (the generic contract: [a-zA-Z0-9._-]{1,128}, no '..')"), nil
+		}
+		if reply == "reject" {
+			if err := h.client.QuestionReject(ctx, workspaceID, requestID); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to reject question: %v", err)), nil
+			}
+			return mcp.NewToolResultText("Question rejected"), nil
+		}
+		var answers [][]string
+		if err := json.Unmarshal([]byte(reply), &answers); err == nil {
+			if err := h.client.QuestionReply(ctx, workspaceID, requestID, answers); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to reply to question: %v", err)), nil
+			}
+			return mcp.NewToolResultText("Question answered"), nil
+		}
+		if reply == "once" || reply == "always" {
+			if err := h.client.PermissionReply(ctx, workspaceID, requestID, reply, msg); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to reply to permission request: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Permission %s", reply)), nil
+		}
+		return mcp.NewToolResultError("reply must be a JSON array of string arrays (questions), 'once'/'always'/'reject' (permissions), or 'reject' (dismiss)"), nil
 	}
 }
 

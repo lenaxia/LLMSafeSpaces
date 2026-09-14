@@ -677,7 +677,55 @@ func TestRunResolve_PermissionReject(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-func TestRunResolve_InvalidRequestIDPrefix(t *testing.T) {
+func TestRunResolve_UnprefixedConformingIDDispatches(t *testing.T) {
+	// 4a-2 r3 (#1302): a conforming id with no known prefix is
+	// agent-agnostic — dispatch by reply shape, never rejected for the
+	// prefix alone. (The pre-contract behavior — reject "unknown_abc" —
+	// contradicted the generic contract the REST handlers enforce.)
+	h, mockClient := newTestHandlers()
+	mockClient.On("QuestionReply", mock.Anything, "ws-123", "unknown_abc", [][]string{{"yes"}}).Return(nil).Once()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "unknown_abc",
+		"reply":        `[["yes"]]`,
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError, "a conforming id dispatches: %v", result.Content[0])
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_UnprefixedPermissionVocabulary(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	mockClient.On("PermissionReply", mock.Anything, "ws-123", "req.plain-1", "once", "").Return(nil).Once()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "req.plain-1",
+		"reply":        "once",
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_NonConformingIDRejected(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "bad$id",
+		"reply":        `[["yes"]]`,
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "generic contract")
+}
+
+func TestRunResolve_UnprefixedUnrecognizableReplyErrors(t *testing.T) {
 	h, _ := newTestHandlers()
 
 	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
@@ -688,7 +736,7 @@ func TestRunResolve_InvalidRequestIDPrefix(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, result.IsError)
-	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "must start with 'que_'")
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "reply must be")
 }
 
 func TestRunResolve_MissingArgs(t *testing.T) {

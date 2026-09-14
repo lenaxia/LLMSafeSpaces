@@ -352,6 +352,28 @@ code7=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
     -d '{"answers":[["Yes, deploy"]]}')
 [[ "${code7}" == "409" ]] && ok "W7 dismissed re-click 409s (two exits, cluster-level)" || note_fail "W7 dismissed re-click: ${code7}, want 409"
 
+# --- W8: dead reply with NO record — the honest 404, no stranding ----
+# The reply-side S6 disposition: a dead ask with no inbox record 404s
+# ("no pending input request") — and nothing re-presents later (the
+# pill-clearing for the no-record class rides the harness-side
+# INPUT_RESOLVED → bridge event, pinned by W6's click-side leg).
+log "W8: dead reply with no record 404s and never re-presents"
+code8=$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_norecord/reply" \
+    -d '{"answers":[["Yes, deploy"]]}')
+[[ "${code8}" == "404" ]] && ok "W8 dead no-record reply 404s (nothing to answer; no record to strand)" || note_fail "W8: ${code8}, want 404"
+CAP8=/tmp/e71w8_sse.txt
+sse_capture "${CAP8}"
+sleep 3
+sse_stop
+if grep -q 'que_norecord' "${CAP8}" 2>/dev/null; then
+    note_fail "W8: an ask with no record re-presented (nothing owns it)"
+else
+    ok "W8 nothing re-presents for the record-less id"
+fi
+
 # Cleanup: leave the workspace suspended to free capacity.
 curl -s -o /dev/null -m 30 -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/suspend" || true

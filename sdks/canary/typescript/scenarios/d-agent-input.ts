@@ -62,12 +62,19 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       }
     }
 
-    // 4a-2 (#1302): the GENERIC contract — "invalid-id" now CONFORMS
-    // (charset [a-zA-Z0-9._-]); a real charset violation 400s.
+    // 4a-2 r3 (#1302): a REAL charset violation with a VALID body —
+    // only the ID check can 400 this.
     const [sBadQ] = await rawDo('POST',
       `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question/bad$id/reply`,
-      cfg.apiKey, Buffer.from(JSON.stringify({ text: 'answer' })));
-    r.assert(sBadQ === 400, 'bad-question-id: 400 (charset)', `got ${sBadQ}`);
+      cfg.apiKey, Buffer.from(JSON.stringify({ answers: [['Go']] })));
+    r.assert(sBadQ === 400, 'bad-question-id: 400 (charset; valid body)', `got ${sBadQ}`);
+
+    // Traversal: single-segment '..' — multi-segment paths 404 at the
+    // router before validation.
+    const [sTrav] = await rawDo('POST',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question/a..b/reply`,
+      cfg.apiKey, Buffer.from(JSON.stringify({ answers: [['Go']] })));
+    r.assert(sTrav === 400, 'traversal-id: 400 (the .. check)', `got ${sTrav}`);
 
     // A conforming-but-dead id: the resolved paths (404 terminus / 202
     // late-answer / 502 flag-off) — never the retired prefix 400.

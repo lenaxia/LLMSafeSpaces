@@ -1330,9 +1330,10 @@ paths:
       tags: [sessions]
       summary: Reply to a pending question
       description: >-
-        Proxies the reply body to the workspace pod. Request ID must match
-        `^que_[a-zA-Z0-9]+$`. When the ask is no longer live but its
-        unanswered-question inbox record is pending (#1313), the reply
+        Answers a live question (routed through agentd Act; request IDs
+        conform to the generic contract `[a-zA-Z0-9._-]{1,128}`). When
+        the ask is no longer live but its unanswered-question inbox
+        record is pending (#1313), the reply
         composes a Q&A user message through the standard delivery path
         instead: 202 with `{status: "queued", clientMessageID, messageID}`.
         The ask-scoped clientMessageID (`inbox-{requestID}-answer`) makes
@@ -1376,7 +1377,7 @@ paths:
     post:
       tags: [sessions]
       summary: Reject (dismiss) a pending question
-      description: Routed through agentd Act (reply=reject — the dismiss exit).
+      description: The dismiss exit — reply=reject through agentd Act in the authority regime (adapter RejectInput under flag-off).
       operationId: rejectQuestion
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"

@@ -68,24 +68,40 @@ func runAgentInput(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 	sessionID := sess.SessionID
 
-	// P1: GET /question → 200, array (may be empty)
+	// P1: GET /question → 200, array — the CONTRACT InputRequest shape
+	// (4a-2: kind-discriminated, camelCase; ZERO legacy envelope
+	// fields — the issue's kind e2e happy leg).
 	qStatus, qBody, _ := canary.RawDo(ctx, "GET",
 		fmt.Sprintf("%s/api/v1/workspaces/%s/question", cfg.APIURL, wsID),
 		cfg.APIKey, nil)
 	run.Assert(qStatus == 200, "get-question: 200", fmt.Sprintf("got %d", qStatus))
 	if qStatus == 200 {
-		var questions []any
-		run.Assert(json.Unmarshal(qBody, &questions) == nil, "get-question: array response", "")
+		var questions []map[string]any
+		if json.Unmarshal(qBody, &questions) == nil {
+			run.OK("get-question: array response")
+			for _, q := range questions {
+				run.Assert(q["kind"] == "question", "get-question: contract kind field", fmt.Sprintf("%v", q["kind"]))
+				run.Assert(q["sessionId"] != nil || q["id"] != nil, "get-question: camelCase tags", "")
+				run.Assert(q["questions"] == nil, "get-question: NO legacy envelope", "questions[] present")
+				run.Assert(q["session_id"] == nil, "get-question: NO snake_case", "session_id present")
+			}
+		}
 	}
 
-	// P2: GET /permission → 200, array
+	// P2: GET /permission → 200, array — contract shape.
 	pStatus, pBody, _ := canary.RawDo(ctx, "GET",
 		fmt.Sprintf("%s/api/v1/workspaces/%s/permission", cfg.APIURL, wsID),
 		cfg.APIKey, nil)
 	run.Assert(pStatus == 200, "get-permission: 200", fmt.Sprintf("got %d", pStatus))
 	if pStatus == 200 {
-		var permissions []any
-		run.Assert(json.Unmarshal(pBody, &permissions) == nil, "get-permission: array response", "")
+		var permissions []map[string]any
+		if json.Unmarshal(pBody, &permissions) == nil {
+			run.OK("get-permission: array response")
+			for _, p := range permissions {
+				run.Assert(p["kind"] == "permission", "get-permission: contract kind field", fmt.Sprintf("%v", p["kind"]))
+				run.Assert(p["session_id"] == nil, "get-permission: NO snake_case", "session_id present")
+			}
+		}
 	}
 
 	// P3: Send message that triggers tool-use permission

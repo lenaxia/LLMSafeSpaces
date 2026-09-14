@@ -58,3 +58,23 @@
 ## Tests run (r2)
 
 - `go test ./pkg/mcp/ ./api/internal/handlers/ ./pkg/agent/opencode/` — ok; lint 0 issues; `make -C sdks validate` valid; go canary builds
+
+## Review r3 remediation
+
+**f1 (HIGH — the MCP server rejected conforming unprefixed ids):** `runResolve`'s default branch now DISPATCHES instead of rejecting — conforming unprefixed ids route by reply shape (JSON array → question; once/always → permission; "reject" → the question-dismiss default, the actor's probe order); non-conforming ids get the generic-contract error. The false pin replaced by four rows (unprefixed-question dispatch, unprefixed-permission dispatch, non-conforming rejection, unrecognizable-reply error).
+
+**f2 (the dialect doc's new falsehood):** now TRUE by construction — the MCP server's default is dispatch, not validation.
+
+**f3 (the question-reply OpenAPI prose):** the `^que_…$` line replaced (Act routing + the generic contract); zero `que_[a-zA-Z0-9]` literals remain in the spec.
+
+**f4 (the design doc's false claim):** edited for real this time — the prefix-knowledge surfaces enumerated honestly (dialect/actor seams + the MCP dispatch fast-path, explicitly "never a validation requirement").
+
+**f5 (TS canary):** the charset row carries a VALID body; the traversal row added (`a..b`).
+
+**f6:** the reject description scopes Act to the authority regime.
+
+**The e2e kind legs:** the canary P-rows now assert the CONTRACT SHAPE on the live surface (kind field, camelCase tags, ZERO legacy-envelope fields — the issue's happy leg in the only live-model environment the repo has), and W8 stages the reply-side no-record disposition (404, nothing re-presents — the stranding non-proof; W6 remains the click-side S6 pin).
+
+## Tests run (r3)
+
+- `go test ./pkg/mcp/ ./api/internal/handlers/` — ok; lint 0; sdks valid; repolint green; go canary builds
