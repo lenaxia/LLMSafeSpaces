@@ -349,21 +349,20 @@ func TestMCPSessionRead_HappyPath(t *testing.T) {
 }
 
 // TestMCPSessionRead_MalformedSessionID_NoPanic pins the URL-build error
-// branch (Go 1.26 toolchain bump PR): a sessionID containing a control
-// character makes the URL unparseable; previously req was nil and
-// SetBasicAuth panicked before Do. Must return a build error, not panic.
+// branch: a sessionID containing a control character makes the URL
+// unparseable. Must return a build error through the seam, not panic.
 func TestMCPSessionRead_MalformedSessionID_NoPanic(t *testing.T) {
 	var got error
 	assert.NotPanics(t, func() {
 		_, got = mcpSessionRead(context.Background(), "test-pw", "ses_\x7f", 50)
 	})
-	assert.Error(t, got, "malformed sessionID must return a build error")
-	assert.Contains(t, got.Error(), "failed to build session read request")
+	assert.Error(t, got, "malformed sessionID must return an error")
+	assert.Contains(t, got.Error(), "failed to read session")
 }
 
 // TestMCPSessionList_MalformedAgentAddr_NoPanic pins the list-path build
 // error branch: an agent addr that yields an unparseable URL must return
-// a build error, not panic at SetBasicAuth.
+// an error through the seam, not panic.
 func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 	old := agentAddrAtomic.Load().(string)
 	agentAddrAtomic.Store("http://127.0.0.1:1:2") // double port — unparseable
@@ -373,8 +372,8 @@ func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		_, got = mcpSessionList(context.Background(), "test-pw")
 	})
-	assert.Error(t, got, "malformed agent addr must return a build error")
-	assert.Contains(t, got.Error(), "failed to build session list request")
+	assert.Error(t, got, "malformed agent addr must return an error")
+	assert.Contains(t, got.Error(), "failed to list sessions")
 }
 
 // TestInjectAgentdMCPServer_EmptyPassword_Disabled pins the empty-password
@@ -633,7 +632,6 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 	}
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
-	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	for _, apiURL := range internal {
 		t.Setenv("LLMSAFESPACE_API_URL", apiURL)
 		t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
@@ -754,6 +752,70 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"approaches tried and abandoned",             // what prior sessions hold
 			"summarize for yourself rather than dumping", // no history-dump replies
 			"not a running log",                          // negative scope
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("rename_session guidance", func(t *testing.T) {
+		d, ok := descs["rename_session"]
+		require.True(t, ok, "rename_session in tools/list")
+		for _, want := range []string{
+			"your own current conversation", // self-rename is the primary case
+			"session_list",                  // ID provenance for other sessions
+			"auto-generated title",          // the trigger: title no longer fits
+			"Not for:",                      // negative scope
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("rename_workspace guidance", func(t *testing.T) {
+		d, ok := descs["rename_workspace"]
+		require.True(t, ok, "rename_workspace in tools/list")
+		for _, want := range []string{
+			"workspace list",          // what the name actually is
+			"not the session",         // disambiguation from rename_session
+			"only ever rename itself", // pod-identity scoping
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("call_with_model guidance", func(t *testing.T) {
+		d, ok := descs["call_with_model"]
+		require.True(t, ok, "call_with_model in tools/list")
+		for _, want := range []string{
+			"ONE single-shot LLM call",           // scope: one call, not a conversation
+			"does not inherit your conversation", // scope: no carried context — prompt must be self-contained
+			"VISION",                             // the canonical capability use case
+			"switching the whole session",        // the alternative and when to prefer it
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("create_session guidance", func(t *testing.T) {
+		d, ok := descs["create_session"]
+		require.True(t, ok, "create_session in tools/list")
+		for _, want := range []string{
+			"fire-and-forget",             // delivery semantics
+			"in the background",           // returns before the turn completes
+			"session_list / session_read", // follow-up path
+			"not retried",                 // loss semantics on restart
+			"self-contained",              // prompt must carry its own context
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("get_datetime guidance", func(t *testing.T) {
+		d, ok := descs["get_datetime"]
+		require.True(t, ok, "get_datetime in tools/list")
+		for _, want := range []string{
+			"UTC",            // always reported
+			"local timezone", // always reported alongside
+			"default to UTC", // pods are UTC — do not assume user's zone
 		} {
 			assert.Contains(t, d, want)
 		}

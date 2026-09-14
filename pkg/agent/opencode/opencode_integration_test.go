@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,30 +75,6 @@ func findOrDownloadBinary(t *testing.T) string {
 	return binPath
 }
 
-func writeOpencodeConfig(t *testing.T, configDir string) {
-	t.Helper()
-
-	configContent := `{
-		"$schema": "https://opencode.ai/config.json",
-		"provider": {
-			"opencode": {
-				"options": {
-					"apiKey": "public",
-					"baseURL": "https://opencode.ai/zen/v1"
-				}
-			}
-		}
-	}`
-
-	// Write to XDG config dir (opencode discovers this automatically)
-	xdgConfigDir := filepath.Join(configDir, "opencode")
-	require.NoError(t, os.MkdirAll(xdgConfigDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(xdgConfigDir, "opencode.jsonc"), []byte(configContent), 0o644))
-
-	// Also write to OPENCODE_CONFIG path (last writer wins in opencode)
-	require.NoError(t, os.WriteFile(filepath.Join(configDir, "agent-config.json"), []byte(configContent), 0o644))
-}
-
 type opencodeServer struct {
 	baseURL string
 	ctx     context.Context
@@ -107,6 +84,28 @@ type opencodeServer struct {
 
 func startOpencodeServer(t *testing.T, port int) *opencodeServer {
 	t.Helper()
+	return startOpencodeServerWithConfig(t, port, legacyIntegrationConfig)
+}
+
+// legacyIntegrationConfig is the historical integration-provider config
+// (opencode.ai zen) the provider/config endpoint tests run against.
+const legacyIntegrationConfig = `{
+	"$schema": "https://opencode.ai/config.json",
+	"provider": {
+		"opencode": {
+			"options": {
+				"apiKey": "public",
+				"baseURL": "https://opencode.ai/zen/v1"
+			}
+		}
+	}
+}`
+
+// startOpencodeServerWithConfig boots the real opencode binary with an
+// arbitrary agent config (the loopback L2 tests point it at a local mock
+// provider so sends complete offline).
+func startOpencodeServerWithConfig(t *testing.T, port int, configJSON string) *opencodeServer {
+	t.Helper()
 
 	binary := findOrDownloadBinary(t)
 
@@ -114,15 +113,26 @@ func startOpencodeServer(t *testing.T, port int) *opencodeServer {
 	dataDir := filepath.Join(configDir, "data")
 	require.NoError(t, os.MkdirAll(dataDir, 0o755))
 
-	writeOpencodeConfig(t, configDir)
+	agentConfigPath := filepath.Join(configDir, "agent-config.json")
+	require.NoError(t, os.WriteFile(agentConfigPath, []byte(configJSON), 0o644))
+	xdgConfigDir := filepath.Join(configDir, "opencode")
+	require.NoError(t, os.MkdirAll(xdgConfigDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(xdgConfigDir, "opencode.jsonc"), []byte(configJSON), 0o644))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	agentConfigPath := filepath.Join(configDir, "agent-config.json")
 	cmd := exec.CommandContext(ctx, binary, "serve",
 		"--hostname", "127.0.0.1",
 		"--port", fmt.Sprintf("%d", port),
 	)
+	// EXPLICIT env, not os.Environ()+overrides: duplicated vars resolve
+	// first-match in the child's libc, so an inherited HOME/XDG_* from the
+	// runner (a workspace pod carries its own opencode config + auth
+	// there) silently overrides the test's configDirs and the instance
+	// answers with the POD's providers instead of the test's — the exact
+	// failure mode live-debugged 2026-09-13 (send hangs, mock never
+	// dialed, "ServeError" in stderr). Path/TMPDIR are the only
+	// pass-throughs the binary needs.
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_CONFIG="+agentConfigPath,
 		"XDG_DATA_HOME="+dataDir,
@@ -131,18 +141,41 @@ func startOpencodeServer(t *testing.T, port int) *opencodeServer {
 		"OPENCODE_SERVER_PASSWORD=test-password",
 	)
 	cmd.Dir = configDir
+	// Session-detached, mirroring how agentd's supervisor actually
+	// spawns opencode and how every live-validated manual boot ran: the
+	// pinned binary's outbound fetches misbehave when it remains in the
+	// test runner's process group (live-debugged 2026-09-13 — same
+	// binary/config/mock answers perfectly when detached, "Cannot
+	// connect to API" for every provider call when not).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
-	stderr, err := cmd.StderrPipe()
+	// stderr/stdout to a FILE, not a pipe: a pipe consumer that stalls
+	// or dies can block the child's stderr writer, and opencode places
+	// writes on the request path under load (live-debugged 2026-09-13:
+	// harness boots served health but hung every message send; the
+	// shell-booted identical binary+config served the same sends in
+	// ~1s). The file also survives for post-mortem; the tail is dumped
+	// into the test log at cleanup.
+	logPath := filepath.Join(configDir, "oc.stderr.log")
+	logFile, err := os.Create(logPath)
 	require.NoError(t, err)
+	cmd.Stderr = logFile
+	cmd.Stdout = logFile
 
 	require.NoError(t, cmd.Start())
 
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			t.Logf("[opencode] %s", scanner.Text())
+	t.Cleanup(func() {
+		_ = logFile.Close()
+		if data, rerr := os.ReadFile(logPath); rerr == nil {
+			lines := strings.Split(string(data), "\n")
+			if len(lines) > 40 {
+				lines = lines[len(lines)-40:]
+			}
+			for _, l := range lines {
+				t.Logf("[opencode] %s", l)
+			}
 		}
-	}()
+	})
 
 	t.Cleanup(func() {
 		if cmd.Process != nil {
@@ -170,6 +203,13 @@ func startOpencodeServer(t *testing.T, port int) *opencodeServer {
 
 func (s *opencodeServer) waitForHealthy(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
+	// Bounded probe client: an unbounded Do() hangs forever when the
+	// child boots into a stalled state (its catalog fetch can blackhole
+	// on egress-filtered runners — the kernel accepts the SYN, the app
+	// never answers). Bounded probes turn that into a retry, then a
+	// loud timeout, instead of an infinite hang (live-debugged
+	// 2026-09-13).
+	probeClient := &http.Client{Timeout: 2 * time.Second}
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequest(http.MethodGet, s.baseURL+"/global/health", nil)
 		if err != nil {
@@ -177,7 +217,7 @@ func (s *opencodeServer) waitForHealthy(timeout time.Duration) {
 			continue
 		}
 		req.SetBasicAuth("opencode", "test-password")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := probeClient.Do(req)
 		if err == nil {
 			var body map[string]interface{}
 			json.NewDecoder(resp.Body).Decode(&body)

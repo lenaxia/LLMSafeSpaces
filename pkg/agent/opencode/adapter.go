@@ -217,13 +217,28 @@ func (a *Adapter) RenameSession(ctx context.Context, userID, workspaceID, sessio
 	if err != nil {
 		return err
 	}
-	resp, err := a.doPost(ctx, c, "/session/"+sessionID, map[string]any{"title": title})
+	// PATCH, not POST: the pinned agent accepts POST /session/{id} with
+	// 200 but IGNORES the body — renames silently never landed (found
+	// 2026-09-13 via the loopback L2 leg; the SDK's sessionUpdate is
+	// PATCH, live-verified to update the title immediately).
+	body, err := json.Marshal(map[string]string{"title": title})
 	if err != nil {
-		return err
+		return fmt.Errorf("PATCH /session/%s: marshal: %w", sessionID, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+		c.baseURL+"/session/"+sessionID, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("PATCH /session/%s: build: %w", sessionID, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PATCH /session/%s: %w", sessionID, err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort drain
 	if resp.StatusCode >= 400 {
-		return a.httpError("POST /session/"+sessionID, resp)
+		return a.httpError("PATCH /session/"+sessionID, resp)
 	}
 	return nil
 }

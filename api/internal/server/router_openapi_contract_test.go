@@ -114,6 +114,18 @@ func TestOpenAPIRouterContract(t *testing.T) {
 		}
 		t.Errorf("Either document in sdks/openapi.yaml or add to implOnlyAllowlist with rationale.")
 	}
+
+	// Reverse pin (review finding, PR #1364): the implOnly loop above
+	// only inspects REGISTERED routes, so deleting a router.go
+	// registration leaves an allowlisted route green here — a
+	// production wiring failure no test would catch. Every allowlisted
+	// internal route MUST be present in the fixture's registration set;
+	// this fixture wires every optional handler the production app does.
+	for r := range implOnlyAllowlist {
+		if !implSet[r] {
+			t.Errorf("implOnlyAllowlist entry %s is NOT registered by the fixture/production wiring — either the route was dropped (production wiring failure) or the fixture is missing the handler", r)
+		}
+	}
 }
 
 // loadOpenAPIRoutes parses sdks/openapi.yaml and returns one route
@@ -329,6 +341,11 @@ var implOnlyAllowlist = map[route]bool{
 	// (304 + ETag on an unchanged manifest); the route/method and the
 	// legacy response shape are unchanged, so the contract row is not.
 	{method: "POST", path: "/internal/v1/pod-bootstrap"}: true,
+	// POST /internal/v1/workspace-rename — K8s projected SA token
+	// (TokenReview). The agentd rename_workspace MCP tool is the only
+	// caller; pod identity scopes the rename to the caller's own
+	// workspace.
+	{method: "POST", path: "/internal/v1/workspace-rename"}: true,
 	// POST /internal/image-factory/builds/:id/callback — constant-time
 	// per-build callback token; the builder is the only caller.
 	{method: "POST", path: "/internal/image-factory/builds/:id/callback"}: true,
@@ -451,6 +468,7 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		PlatformAdminHandler:            &handlers.PlatformAdminHandler{},
 		InternalOrgStatusHandler:        &handlers.InternalOrgStatusHandler{},
 		PodBootstrapHandler:             &handlers.PodBootstrapHandler{},
+		PodWorkspaceRenameHandler:       &handlers.PodWorkspaceRenameHandler{},
 		AdminMCPServersHandler:          &handlers.MCPServersHandler{},
 		OrgMCPServersHandler:            &handlers.MCPServersHandler{},
 		UserMCPServersHandler:           &handlers.MCPServersHandler{},
