@@ -147,3 +147,12 @@ None.
 - `frontend/src/pages/ChatPage.tsx` (fold-sync uses dropPendingAction)
 - `frontend/src/providers/SessionActivityProvider.test.tsx` (+3 tests)
 - `frontend/tests/e2e/pill-lifecycle-1365.spec.ts` (new — 3 tests)
+
+### Note (r1 push)
+
+The two synchronize pushes after r0 (a4eb1d05, 6ede7fb8) produced no
+workflow runs on GitHub Actions (zero runs by head_sha; other branches
+kept running) — the events appear to have been dropped/queued out. This
+commit re-triggers the synchronize wave; if it also fails to materialize,
+close/reopen fires `reopened` (covered by ci.yml's unfiltered
+pull_request trigger) though not pr-review.yml's [opened, synchronize].
