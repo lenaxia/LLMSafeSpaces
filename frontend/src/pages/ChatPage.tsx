@@ -34,7 +34,7 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
@@ -213,6 +213,9 @@ export function ChatPage() {
   const addPendingQuestion = useAddPendingQuestion();
   const addPendingPermission = useAddPendingPermission();
   const removePendingAction = useRemovePendingAction();
+  // Absence-evidence removal (fold-sync): must not tombstone — a stale fold
+  // omitting a live ask is the incident's own failure mode (#1365 r1).
+  const dropPendingAction = useDropPendingAction();
   const clearSessionPendingPrompts = useClearSessionPendingPrompts();
 
   useEffect(() => {
@@ -581,15 +584,15 @@ export function ChatPage() {
     const isOwn = (sid: string) => sid === sessionId || parentOf(sid) === sessionId;
     for (const q of pendingQuestions) {
       if (q.whileAway) continue;
-      if (isOwn(q.session_id) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) removePendingAction(q.id);
+      if (isOwn(q.session_id) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) dropPendingAction(q.id);
     }
     for (const perm of pendingPermissions) {
       if (perm.whileAway) continue;
-      if (isOwn(perm.session_id) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) removePendingAction(perm.id);
+      if (isOwn(perm.session_id) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) dropPendingAction(perm.id);
     }
     // The sync is idempotent (adds are first-wins by request id; removals
     // key off the fold), so re-running on prompt-store changes converges.
-  }, [workspaceId, sessionId, contractStream, sessionsListData, pendingQuestions, pendingPermissions, addPendingQuestion, addPendingPermission, removePendingAction]);
+  }, [workspaceId, sessionId, contractStream, sessionsListData, pendingQuestions, pendingPermissions, addPendingQuestion, addPendingPermission, dropPendingAction]);
 
   // Auto-abort sessions stuck on a question/permission tool that the agent
   // lost from its queue (e.g. the harness restarting while a question was

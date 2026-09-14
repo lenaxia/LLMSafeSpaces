@@ -108,3 +108,42 @@ None.
 - `frontend/src/hooks/useUserEventStream.test.tsx` (2 new tests)
 - `frontend/tests/e2e/input-requests.spec.ts` (3 new Playwright tests)
 - `worklogs/NNNN_2026-09-14_permission-pill-resolution-events.md` (this file)
+
+---
+
+## Review Iteration (r1 — automated reviewer CHANGES_REQUESTED, same session)
+
+### Findings addressed
+
+1. **Dual-target/dedupe branches untested (blocking).** Added `TestInputResolved_DualTarget_OwnerAndClickerEachGetOneEvent` (owner=user-1 + clicker=user-77 → exactly one event per stream) and `..._OwnerEqualsClicker_DedupesToOneEvent` (single publish; an inverted dedupe would now fail a test).
+2. **Both-targets-absent path untested.** Added `..._NoTargets_WarnsAndPublishesNothing` — degrades to the logged warn, no panic, reply still 200.
+3. **LookupPending transient error untested.** Added `..._LookupPendingError_StillPublishes_RecordUntouched` — miniredis `SetError` forces the miss; the event still publishes with caller-derived kind/session; the record stays pending (enrichment is best-effort, resolution is not silently dropped).
+4. **Negative control restored.** Added `..._ActFailure_NoEventRecordUntouched` — stub Act `not_found` → 4xx, zero events, record untouched. Pins the no-publish-on-failure invariant.
+5. **False-tombstone vector (robustness r1.1) — fixed by restriction, not re-arm.** Tombstones are now RESOLUTION EVIDENCE ONLY (resolved event, optimistic 2xx clear, prompt dismissal). Absence evidence never tombstones: the snapshot-commit doom loop no longer tombstones, and the ChatPage fold-sync removal now uses a new non-tombstoning `dropPendingAction` (absence-evidence sibling of `removePendingAction`). Rationale: the incident itself proved projections go stale — a successful-but-incomplete flight would doom a live ask, and a no-TTL tombstone would hide it for the tab's lifetime. Post-#1365 every reply path emits the resolved event, so a ghost pill left by absence is clickable-and-clearing; hiding a live ask is the strictly worse failure. Regression pinned in vitest: flight 1 ok-omitting → flight 2 re-carrying → re-added.
+6. **Bulk-clear inconsistency (robustness r1.2) — resolved by the same restriction.** Bulk clears (`clearWorkspacePendingActions`, `clearSessionPendingPrompts`) are lifecycle, not resolution: they must NOT tombstone, and whileAway re-presentation after a bulk clear re-adds — now pinned as intended semantics with a test and comments.
+7. **Session fidelity in the typed-action path (minor).** `dispositionInboxOnAction` now receives the route's authoritative `:sessionId`; record-less typed-action replies carry a real `session_id` instead of `""`.
+8. **Dead guard removed (minor).** `resolveInboxOnProxySuccess`'s `c.Writer.Status() >= 400` check was unreachable at every call site (all callers return before it on failure) — deleted.
+9. **Undelivered issue test-plan rows — delivered.**
+   - *Dead pill + live ask in one view*: Playwright `pill-lifecycle-1365.spec.ts` renders both asks (no shadowing) and converges to the live ask after refresh.
+   - *Stale-stream kill → flight re-run → convergence*: Playwright kills the user stream server-side (heartbeat then FIN); the browser heals via reconnect, the re-run flight's whileAway union re-presents the ask, and the pill renders WITHOUT reload — then clears on the 202 reply.
+   - *Unhappy e2e row*: 5xx reply keeps the pill actionable and surfaces the inline error.
+10. **Count correction.** The PR body claimed "+10" vitest tests; the r0 diff added **8** (4 provider + 2 hook + 2 sse). r1 adds 3 more provider tests → **11** total across the three files.
+
+### Tests Run (r1)
+
+- `go test -run 'TestInputResolved' ./api/internal/handlers/` — 12/12 (7 from r0 + 5 new).
+- `go test -race -count=3 -run 'TestMCPCompact' ./cmd/workspace-agentd/` and `-count=5 -run 'TestSweeperE2E' ./api/internal/handlers/` — flake fixes verified.
+- Frontend vitest: provider file 83/83 (3 new r1 tests + the r0 four); full suite re-run below.
+- Playwright: `pill-lifecycle-1365.spec.ts` 3/3; `input-requests.spec.ts` 11/11.
+
+### Files Modified (r1)
+
+- `api/internal/handlers/proxy_actions.go`, `proxy_input.go` (fidelity + dead-guard removal)
+- `api/internal/handlers/proxy_input_act_test.go` (expose miniredis via env)
+- `api/internal/handlers/proxy_input_resolved_test.go` (+5 tests)
+- `api/internal/handlers/outbox_sweeper_test.go` (CI flake: wait for the delivered hook)
+- `cmd/workspace-agentd/mcp_tools_test.go` (CI race: wait for the detached compact goroutine)
+- `frontend/src/providers/SessionActivityProvider.tsx` (restricted tombstones; dropPendingAction)
+- `frontend/src/pages/ChatPage.tsx` (fold-sync uses dropPendingAction)
+- `frontend/src/providers/SessionActivityProvider.test.tsx` (+3 tests)
+- `frontend/tests/e2e/pill-lifecycle-1365.spec.ts` (new — 3 tests)

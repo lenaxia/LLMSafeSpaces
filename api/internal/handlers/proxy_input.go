@@ -383,7 +383,7 @@ func (h *ProxyHandler) inputRequestSession(ctx context.Context, workspaceID, req
 // InputResolved follows) is idempotent client-side: removal keys on the
 // request ID.
 func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, sessionID, requestID string, kind string, status string) {
-	if workspaceID == "" || requestID == "" || c.Writer.Status() >= 400 {
+	if workspaceID == "" || requestID == "" {
 		return
 	}
 	if h.inbox != nil {

@@ -16,6 +16,8 @@ interface SessionActivityContextValue {
   pendingActionSessionIds: Set<string>;
   addPendingAction: (workspaceId: string, sessionId: string, requestId: string) => void;
   removePendingAction: (requestId: string) => void;
+  // Absence-evidence removal (no tombstone) — see dropPendingAction below.
+  dropPendingAction: (requestId: string) => void;
   clearWorkspacePendingActions: (workspaceId: string) => void;
   // Pending prompt CONTENT (issue #346). The indicator (pendingActions above)
   // drives the sidebar pulse; the content (question/permission bodies) drives
@@ -130,12 +132,17 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   // an authoritative empty over live prompts (PR #852 review C2).
   const flightsRef = useRef(new Map<string, Map<string, Map<string, string>>>());
 
-  // #1365: resolved-tombstones. A request ID removed via removePendingAction
-  // (resolved event, optimistic 2xx clear, fold-sync drop) is resolution
-  // evidence — a racing snapshot flight or a re-presented whileAway event for
-  // the SAME id must not resurrect the pill. IDs are unique per ask, so a
-  // tombstone never blocks a genuinely new ask. Insertion-ordered Map with a
-  // FIFO cap so a long-lived tab cannot grow it unbounded.
+  // #1365: resolved-tombstones. A tombstone is RESOLUTION EVIDENCE ONLY:
+  // the resolved event, the optimistic 2xx clear, a prompt dismissal. It
+  // is never set on absence evidence (a fold the snapshot lacked, a bulk
+  // lifecycle clear) — the pod projection is authority but it goes stale
+  // (the incident itself), and a false tombstone would permanently hide a
+  // live ask for the tab's lifetime. Absence-based removals use
+  // dropPendingAction instead; a ghost pill left by absence clears on its
+  // next click (every reply path emits the resolved event post-#1365).
+  // IDs are unique per ask, so a tombstone never blocks a genuinely new
+  // ask. Insertion-ordered Map with a FIFO cap so a long-lived tab cannot
+  // grow it unbounded.
   const resolvedTombstonesRef = useRef(new Map<string, true>());
 
   // #1365: first-seen timestamps per request ID — the pill stack renders
@@ -501,8 +508,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (doomedRequestIds.length > 0) {
           for (const rid of doomedRequestIds) {
             requestToSessionRef.current.delete(rid);
-            // The flight did not carry these ids — resolution evidence.
-            tombstoneRequest(resolvedTombstonesRef.current, rid);
+            // Absence, NOT resolution: a successful-but-stale projection
+            // can omit a live ask (the incident's own failure mode), so no
+            // tombstone here — a later flight that re-carries the id re-adds
+            // it. Ghost pills left behind clear on click (every reply path
+            // emits the resolved event post-#1365).
             requestFirstSeenRef.current.delete(rid);
           }
           setPendingQuestionContent((prev) => {
@@ -719,9 +729,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const removePendingAction = useCallback((requestId: string) => {
-    // The removal is resolution evidence — tombstone the id (#1365).
-    tombstoneRequest(resolvedTombstonesRef.current, requestId);
+  // removeNow is the shared removal core — clears content, indicator, and
+  // bookkeeping. Tombstoning is the caller's decision: resolution evidence
+  // (removePendingAction) tombstones; absence evidence (dropPendingAction)
+  // must not (#1365 review r1: a false tombstone permanently hides a live
+  // ask, and stale projections do produce false absences).
+  const removeNow = useCallback((requestId: string) => {
     // Clear prompt content first (unconditionally) so a resolved event always
     // drops the in-chat prompt even if the indicator entry was already cleared
     // by a session-scoped clear.
@@ -756,6 +769,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       return next;
     });
   }, []);
+
+  const removePendingAction = useCallback((requestId: string) => {
+    // The removal is resolution evidence — tombstone the id (#1365).
+    tombstoneRequest(resolvedTombstonesRef.current, requestId);
+    removeNow(requestId);
+  }, [removeNow]);
+
+  // dropPendingAction removes on ABSENCE evidence (the fold/snapshot no
+  // longer carries the ask) without tombstoning — a later re-presentation
+  // of the same id may be a live ask the stale projection briefly lacked.
+  const dropPendingAction = useCallback((requestId: string) => {
+    removeNow(requestId);
+  }, [removeNow]);
 
   const clearWorkspacePendingActions = useCallback((workspaceId: string) => {
     // Collect doomed requestIds from the CURRENT pendingActions snapshot. This
@@ -883,7 +909,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   return (
     <SessionActivityContext.Provider
-      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
+      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, dropPendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
     >
       {children}
     </SessionActivityContext.Provider>
@@ -938,6 +964,13 @@ export function useRemovePendingAction(): (requestId: string) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
   return ctx.removePendingAction;
+}
+
+// useDropPendingAction: absence-evidence removal — no tombstone (#1365).
+export function useDropPendingAction(): (requestId: string) => void {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return () => {};
+  return ctx.dropPendingAction;
 }
 
 export function useSessionPendingActions(): Set<string> {

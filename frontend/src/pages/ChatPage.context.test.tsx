@@ -51,6 +51,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useSessionPendingActions: () => new Set<string>(),
   useAddPendingAction: () => () => {},
   useRemovePendingAction: () => () => {},
+  useDropPendingAction: () => () => {},
   useAddPendingQuestion: () => () => {},
   useAddPendingPermission: () => () => {},
   usePendingQuestionsForSession: () => [],

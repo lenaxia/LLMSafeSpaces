@@ -74,7 +74,8 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 	// 4a (3a's deferral landed): a successful answer through the typed
 	// actions route terminalizes the ask's inbox record — the MCP/SDK
 	// reply path now clears whileAway re-presentations like the REST one.
-	h.dispositionInboxOnAction(c, workspaceID, payload)
+	// The route's :sessionId is authoritative (same as the Act payload).
+	h.dispositionInboxOnAction(c, workspaceID, sessionID, payload)
 	c.Data(http.StatusOK, "application/json", out)
 }
 
@@ -83,7 +84,7 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 // reply=reject → dismissed; any other answer → answered. The resolved
 // event publishes unconditionally (#1365) — the MCP/SDK reply path
 // clears every tab exactly like the REST one, record or no record.
-func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID string, payload map[string]json.RawMessage) {
+func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID, sessionID string, payload map[string]json.RawMessage) {
 	raw, ok := payload["answerQuestion"]
 	if !ok || len(raw) == 0 {
 		return
@@ -103,7 +104,7 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID stri
 	if permissionIDPattern.MatchString(ans.InputID) {
 		kind = inbox.KindPermission
 	}
-	h.resolveInboxOnProxySuccess(c, workspaceID, "", ans.InputID, kind, disposition)
+	h.resolveInboxOnProxySuccess(c, workspaceID, sessionID, ans.InputID, kind, disposition)
 }
 
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the
