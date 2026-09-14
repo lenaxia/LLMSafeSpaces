@@ -654,15 +654,15 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `GET /question` → 200, array (hard parse assert); Go additionally asserts every entry is the contract `InputRequest` shape (kind=question, camelCase tags, zero legacy envelope fields) |
-| P2 | `GET /permission` → 200, array; contract shape (kind=permission) |
+| P1 | Go: `GET /question` → 200, hard array-parse assert, every entry contract-shaped (kind=question, camelCase, zero legacy fields). Python/TS: 200 + array-shape assert (question kind asserted when entries exist) |
+| P2 | Go: `GET /permission` → 200, hard array-parse assert, every entry contract-shaped (kind=permission). Python/TS pre-message: 200 + array only |
 | P3 | Send message that triggers tool-use permission |
-| P4 | `GET /permission` returns ≥ 1 pending permission; the LIVE entry is asserted in the contract shape (kind field, no snake_case) — Go and Python assert both; TS asserts kind + no snake_case on the entry it replies to |
+| P4 | Go (hard-fails on none): ≥ 1 pending permission, the LIVE entry contract-asserted before replying. Python/TS: when an entry appears, kind + no-snake_case asserted loudly; a no-pending outcome soft-passes ("model did not trigger") |
 | P5 | `POST /permission/:id/reply` with `{"reply": "once"}` → 2xx (202 = the #1313 late-answer accept) |
 | P6 | After approval, session returns to idle (confirm via SSE or status) |
-| N1 | `POST /question/:id/reply` with an out-of-charset ID (e.g. `bad$id`) and a VALID body → 400 at the ID check (the generic contract `[a-zA-Z0-9._-]{1,128}`) |
-| N2 | `POST /permission/:id/reply` with a CONFORMING dead id and `{"reply":"maybe"}` → NOT a validation 400 (the resolved paths: 404 terminus / 202 late-answer / 502 flag-off — the prefix contract is retired) |
-| N3 | `POST /permission/:id/reply` with a single-segment traversal ID (`a..b`) and a valid body → 400 (the `..` check; multi-segment paths 404 at the router) |
+| N1 | (Go, TS) `POST /question/:id/reply` with an out-of-charset ID (e.g. `bad$id`) and a VALID body → 400 at the ID check (the generic contract `[a-zA-Z0-9._-]{1,128}`) |
+| N2 | (Go, TS) `POST /permission/:id/reply` with a CONFORMING dead id and `{"reply":"maybe"}` → NOT a validation 400 (the resolved paths: 404 terminus / 202 late-answer / 502 flag-off — the prefix contract is retired) |
+| N3 | (Go, TS) `POST /permission/:id/reply` with a single-segment traversal ID (`a..b`) and a valid body → 400 (the `..` check; multi-segment paths 404 at the router). Python implements no N-rows |
 
 ---
 

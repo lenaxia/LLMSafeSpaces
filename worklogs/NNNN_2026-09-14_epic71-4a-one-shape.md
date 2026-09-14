@@ -108,3 +108,11 @@
 **f5 (TESTPLAN honesty):** P1/P4 wording now states which language asserts what (Go full-shape; py kind+snake_case with loud failure; ts kind+snake_case on the replied-to entry).
 
 **f6:** the worklog r4-f1 "null body fails the row" parenthetical was false (null unmarshals to nil) — corrected by this note; the API never emits null (non-nil empty slices), and the TS/Python rows now fail on it regardless.
+
+## Review r6 remediation (all residuals + the executed reply-side leg)
+
+- **TESTPLAN (a)–(d):** every P/N row now carries per-language annotations matching what each implementation actually asserts (P1's hard-parse is Go-only; P2/P4 semantics split; N1–N3 marked Go/TS with "Python implements no N-rows" disclosed).
+- **Python post-message soft-pass:** a non-200 list regime after the message FAILS (after one retry) instead of riding to the "no pending" soft-pass.
+- **The unreachable `saw_entries` guard:** deleted; the worklog's r5-f1 citation of it was wrong — the real closure is the live-entry branch itself (this correction recorded).
+- **MCP tool schema:** "NON-EMPTY JSON array" (thirteen lines of drift closed).
+- **W9 — the reply-side S6/L2 leg, EXECUTED:** the record-carrying dead ask answered → 202 → the resolved event on the user stream → measured ≤2s clear. W6 (reject-side) and W9 (reply-side) now cover both dispositions the issue specifies.

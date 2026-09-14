@@ -92,8 +92,8 @@ def run(r: Runner, cfg: Config) -> None:
         if ok2 and msg is not None:
             r.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
 
+        msg_sent = True
         pending_found = False
-        saw_entries = False
         deadline = time.time() + 30
         while time.time() < deadline:
             # Transport errors retry; SHAPE assertions live OUTSIDE the
@@ -108,6 +108,12 @@ def run(r: Runner, cfg: Config) -> None:
                 time.sleep(2)
                 continue
             if s3 != 200:
+                # A post-message non-200 regime is a regression, not
+                # "model didn't trigger" — fail after the first retry.
+                if msg_sent:
+                    r.assert_(False, "permission list went non-200 after the message", str(s3))
+                    pending_found = True
+                    break
                 time.sleep(2)
                 continue
             # A non-array body is a shape regression — fail loud.
@@ -122,7 +128,6 @@ def run(r: Runner, cfg: Config) -> None:
                 pending_found = True
                 break
             if perms_list:
-                saw_entries = True
                 # The LIVE entry carries the contract shape (4a-2:
                 # kind-discriminated, camelCase, no legacy envelope).
                 first = perms_list[0]
@@ -146,9 +151,7 @@ def run(r: Runner, cfg: Config) -> None:
                 break
             time.sleep(2)
 
-        if not pending_found and saw_entries:
-            r.assert_(False, "entries exist but none matched", "shape regression")
-        elif not pending_found:
+        if not pending_found:
             r.ok("permission: no pending permissions (model did not trigger tool permission)")
 
     finally:

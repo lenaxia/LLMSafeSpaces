@@ -374,6 +374,40 @@ else
     ok "W8 nothing re-presents for the record-less id"
 fi
 
+# --- W9: reply-side S6/L2 — dead ask + answer click clears ≤2s -------
+# W6 proves the resolve-by-absence machinery on the REJECT disposition;
+# this is the issue's literal reply leg: the record-carrying dead ask,
+# answered, clears other tabs on the resolved event within L2.
+log "W9: late answer clears via the resolved event (reply-side L2)"
+seed_inbox_record "${W1_WS}" "${W6_SES}" que_e71w1eee "Reply-side clear?"
+CAP9=/tmp/e71w9_sse.txt
+sse_capture "${CAP9}"
+sleep 1
+T9=$(date +%s%3N)
+code9=$(curl -s -o /tmp/e71w9_resp.json -w '%{http_code}' -m 20 \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    -H 'Content-Type: application/json' \
+    -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/question/que_e71w1eee/reply" \
+    -d '{"answers":[["Yes, deploy"]]}')
+[[ "${code9}" == "202" ]] && ok "W9 late answer 202 (the outbox path)" || note_fail "W9: ${code9}, want 202"
+deadline9=$(( T9 + 2000 ))
+until grep -q '"request_id":"que_e71w1eee"' "${CAP9}" 2>/dev/null; do
+    [[ $(date +%s%3N) -lt ${deadline9} ]] || break
+    sleep 0.1
+done
+T9b=$(date +%s%3N)
+sse_stop
+if grep -q '"request_id":"que_e71w1eee"' "${CAP9}" 2>/dev/null; then
+    ok "W9 resolved event fired on the answer"
+else
+    note_fail "W9: no resolved event (see ${CAP9})"
+fi
+if [[ ${T9b} -le $(( T9 + 2000 )) ]] && [[ ${T9b} -gt ${T9} ]]; then
+    ok "W9 clear latency $(( T9b - T9 ))ms ≤ 2s (reply-side L2)"
+else
+    note_fail "W9 L2 violated: ${T9b} vs ${T9}"
+fi
+
 # Cleanup: leave the workspace suspended to free capacity.
 curl -s -o /dev/null -m 30 -H "Authorization: Bearer ${AUTH_TOKEN}" \
     -X POST "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${W1_WS}/suspend" || true

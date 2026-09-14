@@ -284,7 +284,7 @@ func stringSliceArg(args map[string]any, key string) []string {
 var runResolveTool = mcp.NewTool("run_resolve",
 	mcp.WithDescription("Resolve a pending input request (question or permission) from the agent. "+
 		"Use this when the agent asks a question or requests permission during a session. "+
-		"Request IDs conform to the generic contract [a-zA-Z0-9._-]{1,128}. Prefixed IDs dispatch by the agent's prefix; any conforming ID dispatches by the reply's shape (a JSON array of arrays answers a question; once/always/reject answers a permission; reject alone dismisses)."),
+		"Request IDs conform to the generic contract [a-zA-Z0-9._-]{1,128}. Prefixed IDs dispatch by the agent's prefix; any conforming ID dispatches by the reply's shape (a NON-EMPTY JSON array of arrays answers a question; once/always/reject answers a permission; reject alone dismisses)."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
 	mcp.WithString("request_id", mcp.Required(), mcp.Description("Request ID (generic contract [a-zA-Z0-9._-]{1,128}; prefixed IDs dispatch by prefix, others by reply shape)")),
 	mcp.WithString("reply", mcp.Required(), mcp.Description(

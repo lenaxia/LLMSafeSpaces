@@ -116,3 +116,12 @@ func TestEpic71WalkawayScript_W8NoRecordRow(t *testing.T) {
 		t.Fatalf("walk-away script must carry the W8 no-record row")
 	}
 }
+
+func TestEpic71WalkawayScript_W9ReplySideClearRow(t *testing.T) {
+	// 4a-2 r6: the reply-side S6/L2 leg — the record-carrying dead ask,
+	// answered, clears on the resolved event within L2.
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "que_e71w1eee") || !strings.Contains(src, "reply-side L2") {
+		t.Fatalf("walk-away script must carry the W9 reply-side clear row")
+	}
+}
