@@ -123,3 +123,8 @@
 - **f2 (TESTPLAN over-claimed for TS):** TS P1/P2 now IMPLEMENT the claim (status + hard array assert; question-kind on live entries), tautologies deleted; TESTPLAN wording matches all three implementations.
 - **f3 (python false comment + new dead branch):** one REAL retry then fail (`non200` counter); the comment and TESTPLAN describe the retry-once-then-fail semantics; the unreachable branch is gone.
 - **f4 (QuestionPrompt dead conditional, seventh round):** the `request.question ? [[]] : [[]]` is `[[]]`.
+
+## Review r8 remediation
+
+- **f1 (the TS tuple-vs-body confusion — my r7 rewrite was red by construction):** the pre-message GETs destructure `rawDo` directly (the post-message rows' own pattern) and CHECK THE STATUS (200) before the array/kind asserts. Verified: `rawDo` returns `[status, body]`; the old `qBody.toString()` was the whole tuple.
+- **f2/f3 (TESTPLAN):** P1/P2 now state exactly what each language asserts — Python's absence of a question-kind check and TS's status check are both recorded.

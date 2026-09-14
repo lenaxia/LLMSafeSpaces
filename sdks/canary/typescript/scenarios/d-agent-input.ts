@@ -24,35 +24,36 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     r.ok('ensure-session: no error');
     const sid = sess.sessionId;
 
-    const [okQ, qBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question`, cfg.apiKey),
-      'get-question: no error');
-    if (okQ) {
-      // 4a-2 r7: the pre-message GET asserts the array contract shape
-      // (kind asserted when entries exist).
+    // 4a-2 r8: destructure rawDo directly (assertNoError wraps the
+    // TUPLE [status, body], not the body) and check the status for
+    // real — the pre-message GETs assert the array contract shape.
+    const [sQ, qRaw] = await rawDo('GET',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/question`, cfg.apiKey);
+    r.assert(sQ === 200, 'get-question: 200', `got ${sQ}`);
+    if (sQ === 200) {
       let qParsed: unknown;
-      try { qParsed = JSON.parse(qBody.toString()); } catch (e) {
+      try { qParsed = JSON.parse(qRaw.toString()); } catch (e) {
         r.assert(false, 'question list is JSON', String(e));
         qParsed = [];
       }
       const qs = qParsed as any[];
-      r.assert(Array.isArray(qs), 'question list is an array', qBody.toString().slice(0, 120));
+      r.assert(Array.isArray(qs), 'question list is an array', qRaw.toString().slice(0, 120));
       if (Array.isArray(qs) && qs.length > 0) {
         r.assert(qs[0].kind === 'question', 'live question: contract kind', JSON.stringify(Object.keys(qs[0])));
       }
     }
 
-    const [okP, pBody] = await r.assertNoError(
-      () => rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey),
-      'get-permission: no error');
-    if (okP) {
+    const [sP2, pRaw] = await rawDo('GET',
+      `${cfg.apiUrl}/api/v1/workspaces/${wsId}/permission`, cfg.apiKey);
+    r.assert(sP2 === 200, 'get-permission: 200', `got ${sP2}`);
+    if (sP2 === 200) {
       let pParsed: unknown;
-      try { pParsed = JSON.parse(pBody.toString()); } catch (e) {
+      try { pParsed = JSON.parse(pRaw.toString()); } catch (e) {
         r.assert(false, 'permission list is JSON', String(e));
         pParsed = [];
       }
       const ps = pParsed as any[];
-      r.assert(Array.isArray(ps), 'permission list is an array', pBody.toString().slice(0, 120));
+      r.assert(Array.isArray(ps), 'permission list is an array', pRaw.toString().slice(0, 120));
     }
 
     const [okMsg, msg] = await r.assertNoError(
