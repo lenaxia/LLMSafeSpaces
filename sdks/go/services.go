@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -551,30 +553,88 @@ func (s *UsageService) GetQuota(ctx context.Context) (map[string]any, error) {
 }
 
 // InputRequestsService handles agent question and permission requests.
+// The whole surface speaks the platform contract shape (InputRequest,
+// #1302): typed list returns, the late-answer 202 body on replies, and
+// the inbox dismiss exit (#1313).
 type InputRequestsService struct{ c *Client }
 
-func (s *InputRequestsService) ListQuestions(ctx context.Context, workspaceID string) ([]map[string]any, error) {
-	var result []map[string]any
+// ListQuestions returns the pending questions as contract InputRequest
+// values (kind=question). A failed pending-set fetch is a 503 error —
+// never an authoritative empty list.
+func (s *InputRequestsService) ListQuestions(ctx context.Context, workspaceID string) ([]InputRequest, error) {
+	var result []InputRequest
 	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/question", nil, &result)
 	return result, err
 }
 
-func (s *InputRequestsService) ReplyQuestion(ctx context.Context, workspaceID, requestID string, body map[string]any) error {
-	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/question/%s/reply", workspaceID, requestID), body, nil)
+// ReplyQuestion answers a live question. When the ask is no longer live
+// but its unanswered-question inbox record is pending (#1313), the
+// server accepts the answer as a late answer through the delivery outbox
+// (202) and the returned body carries the outbox entry; a live answer
+// (200) returns nil.
+func (s *InputRequestsService) ReplyQuestion(ctx context.Context, workspaceID, requestID string, answers [][]string) (*InboxLateAnswerAccepted, error) {
+	return s.replyOutcome(ctx, http.MethodPost,
+		fmt.Sprintf("/workspaces/%s/question/%s/reply", workspaceID, requestID),
+		map[string]any{"answers": answers})
 }
 
+// RejectQuestion rejects (dismisses) a pending question.
 func (s *InputRequestsService) RejectQuestion(ctx context.Context, workspaceID, requestID string) error {
 	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/question/%s/reject", workspaceID, requestID), nil, nil)
 }
 
-func (s *InputRequestsService) ListPermissions(ctx context.Context, workspaceID string) ([]map[string]any, error) {
-	var result []map[string]any
+// ListPermissions returns the pending permissions as contract
+// InputRequest values (kind=permission).
+func (s *InputRequestsService) ListPermissions(ctx context.Context, workspaceID string) ([]InputRequest, error) {
+	var result []InputRequest
 	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/permission", nil, &result)
 	return result, err
 }
 
-func (s *InputRequestsService) ReplyPermission(ctx context.Context, workspaceID, requestID string, body map[string]any) error {
-	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/permission/%s/reply", workspaceID, requestID), body, nil)
+// ReplyPermission answers a live permission request with the reply
+// vocabulary ("once" | "always" | "reject") and an optional message.
+// A late decision (ask no longer live, inbox record pending) returns
+// the 202 outbox entry; a live answer (200) returns nil.
+func (s *InputRequestsService) ReplyPermission(ctx context.Context, workspaceID, requestID, reply, message string) (*InboxLateAnswerAccepted, error) {
+	body := map[string]any{"reply": reply}
+	if message != "" {
+		body["message"] = message
+	}
+	return s.replyOutcome(ctx, http.MethodPost,
+		fmt.Sprintf("/workspaces/%s/permission/%s/reply", workspaceID, requestID), body)
+}
+
+// DismissInboxRecord terminalizes an unanswered-question inbox record
+// (#1313): the record becomes dismissed; a still-live ask is rejected
+// first server-side.
+func (s *InputRequestsService) DismissInboxRecord(ctx context.Context, workspaceID, sessionID, requestID string) error {
+	return s.c.do(ctx, "DELETE",
+		fmt.Sprintf("/workspaces/%s/sessions/%s/inbox/%s", workspaceID, sessionID, requestID), nil, nil)
+}
+
+// RequestInputSnapshot triggers an input-snapshot flight (202): the
+// pending-input events arrive on the workspace/user event streams.
+func (s *InputRequestsService) RequestInputSnapshot(ctx context.Context, workspaceID string) error {
+	return s.c.do(ctx, "POST", "/workspaces/"+workspaceID+"/input-snapshot", nil, nil)
+}
+
+// replyOutcome performs a reply POST and decodes the 202 late-answer
+// body; a live answer (200, empty body) yields nil.
+func (s *InputRequestsService) replyOutcome(ctx context.Context, method, path string, body any) (*InboxLateAnswerAccepted, error) {
+	resp, err := s.c.send(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, nil
+	}
+	var late InboxLateAnswerAccepted
+	if err := s.c.decode(resp, &late); err != nil {
+		return nil, err
+	}
+	return &late, nil
 }
 
 // AuthService additions: auth lifecycle methods.

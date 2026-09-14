@@ -263,13 +263,6 @@ export interface QuestionOption {
   description: string;
 }
 
-export interface QuestionInfo {
-  question: string;
-  header: string;
-  options: QuestionOption[];
-  multiple?: boolean;
-}
-
 /**
  * The platform's unified pending-input contract (#1302 / 4a-2): ONE shape
  * on REST and SSE, `kind`-discriminated. On SSE events the inbox-only
@@ -292,29 +285,6 @@ export interface InputRequest {
   always?: string[];
   metadata?: Record<string, unknown>;
   tool?: { messageId: string; callId: string };
-}
-
-/** @deprecated Use {@link InputRequest} — retained for the migration window. */
-export interface QuestionRequest {
-  id: string;
-  session_id: string;
-  root_session_id?: string;
-  questions: QuestionInfo[];
-  tool?: { message_id: string; call_id: string };
-  whileAway?: boolean;
-}
-
-/** @deprecated Use {@link InputRequest} — retained for the migration window. */
-export interface PermissionRequest {
-  id: string;
-  session_id: string;
-  root_session_id?: string;
-  permission: string;
-  patterns: string[];
-  metadata?: Record<string, unknown>;
-  always?: string[];
-  tool?: { message_id: string; call_id: string };
-  whileAway?: boolean;
 }
 
 export interface AgentQuestionEvent {

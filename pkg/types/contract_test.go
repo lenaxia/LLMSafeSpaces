@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 // TestGenerateContractFixtures outputs JSON fixtures that the frontend
@@ -69,36 +69,38 @@ func TestGenerateContractFixtures(t *testing.T) {
 				Active:   true,
 			},
 		},
-		// QuestionRequest / PermissionRequest live in pkg/agent because they
-		// are agent-protocol payloads, not API response types. We include
-		// them here because the frontend's contract.test.ts asserts the
-		// JSON shape and needs a single fixtures.json to read from.
-		"QuestionRequest": agent.QuestionRequest{
+		// The input fixtures are the platform contract shape
+		// (session.InputRequest, #1302) — the same type the REST list
+		// routes and the SSE emitter serve. They live in pkg/session
+		// because they are the agent-facing contract, not API response
+		// types; we include them here because the frontend's
+		// contract.test.ts asserts the JSON shape and needs a single
+		// fixtures.json to read from.
+		"InputRequestQuestion": session.InputRequest{
 			ID:            "que_18b28260affeoxXrX1iwPH8wFg",
 			SessionID:     "ses_18b28260affeoxXrX1iwPH8wFg",
 			RootSessionID: "ses_18b28260affeoxXrX1iwPH8wFg",
-			Questions: []agent.QuestionInfo{
-				{
-					Question: "What programming language do you want to use?",
-					Header:   "Choose language",
-					Options: []agent.QuestionOption{
-						{Label: "Go", Description: "Fast compiled language"},
-						{Label: "Python", Description: "Easy scripting"},
-					},
-					Multiple: false,
-				},
+			Kind:          session.InputQuestion,
+			Question:      "What programming language do you want to use?",
+			Header:        "Choose language",
+			Options: []session.InputOption{
+				{Label: "Go", Description: "Fast compiled language"},
+				{Label: "Python", Description: "Easy scripting"},
 			},
-			Tool: &agent.ToolRef{MessageID: "msg_abc", CallID: "call_xyz"},
+			Multiple: false,
+			Custom:   true,
+			Tool:     &session.ToolRef{MessageID: "msg_abc", CallID: "call_xyz"},
 		},
-		"PermissionRequest": agent.PermissionRequest{
+		"InputRequestPermission": session.InputRequest{
 			ID:            "per_18b28260affeoxXrX1iwPH8wFg",
 			SessionID:     "ses_18b28260affeoxXrX1iwPH8wFg",
 			RootSessionID: "ses_18b28260affeoxXrX1iwPH8wFg",
+			Kind:          session.InputPermission,
 			Permission:    "shell",
 			Patterns:      []string{"/workspace/src/main.go"},
-			Metadata:      map[string]interface{}{"command": "go build"},
+			Metadata:      map[string]json.RawMessage{"command": []byte(`"go build"`)},
 			Always:        []string{"/workspace/*"},
-			Tool:          &agent.ToolRef{MessageID: "msg_abc", CallID: "call_xyz"},
+			Tool:          &session.ToolRef{MessageID: "msg_abc", CallID: "call_xyz"},
 		},
 	}
 

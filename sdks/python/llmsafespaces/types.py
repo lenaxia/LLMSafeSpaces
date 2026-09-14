@@ -124,6 +124,17 @@ class InputRequest(TypedDict, total=False):
     tool: ToolRef
 
 
+class InboxLateAnswerAccepted(TypedDict, total=False):
+    """The 202 body for a reply that landed as a late answer through the
+    delivery outbox (#1313): the ask was no longer live, so the answer
+    rides a Q&A user message instead of the live ask."""
+
+    status: str
+    clientMessageID: str
+    messageID: str
+    duplicate: bool
+
+
 class Part(TypedDict, total=False):
     """One renderable part of a message — the closed 5-type union."""
 

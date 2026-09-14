@@ -34,50 +34,47 @@
       "emailVerified": false
     }
   },
-  "PermissionRequest": {
+  "InputRequestPermission": {
     "id": "per_18b28260affeoxXrX1iwPH8wFg",
-    "session_id": "ses_18b28260affeoxXrX1iwPH8wFg",
-    "root_session_id": "ses_18b28260affeoxXrX1iwPH8wFg",
+    "sessionId": "ses_18b28260affeoxXrX1iwPH8wFg",
+    "rootSessionId": "ses_18b28260affeoxXrX1iwPH8wFg",
+    "kind": "permission",
     "permission": "shell",
     "patterns": [
       "/workspace/src/main.go"
     ],
-    "metadata": {
-      "command": "go build"
-    },
     "always": [
       "/workspace/*"
     ],
+    "metadata": {
+      "command": "go build"
+    },
     "tool": {
-      "message_id": "msg_abc",
-      "call_id": "call_xyz"
+      "messageId": "msg_abc",
+      "callId": "call_xyz"
     }
   },
-  "QuestionRequest": {
+  "InputRequestQuestion": {
     "id": "que_18b28260affeoxXrX1iwPH8wFg",
-    "session_id": "ses_18b28260affeoxXrX1iwPH8wFg",
-    "root_session_id": "ses_18b28260affeoxXrX1iwPH8wFg",
-    "questions": [
+    "sessionId": "ses_18b28260affeoxXrX1iwPH8wFg",
+    "rootSessionId": "ses_18b28260affeoxXrX1iwPH8wFg",
+    "kind": "question",
+    "question": "What programming language do you want to use?",
+    "header": "Choose language",
+    "options": [
       {
-        "question": "What programming language do you want to use?",
-        "header": "Choose language",
-        "options": [
-          {
-            "label": "Go",
-            "description": "Fast compiled language"
-          },
-          {
-            "label": "Python",
-            "description": "Easy scripting"
-          }
-        ],
-        "multiple": false,
-        "custom": false
+        "label": "Go",
+        "description": "Fast compiled language"
+      },
+      {
+        "label": "Python",
+        "description": "Easy scripting"
       }
     ],
+    "custom": true,
     "tool": {
-      "message_id": "msg_abc",
-      "call_id": "call_xyz"
+      "messageId": "msg_abc",
+      "callId": "call_xyz"
     }
   },
   "SessionListItem": {

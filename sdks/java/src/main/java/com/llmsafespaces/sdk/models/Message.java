@@ -69,38 +69,6 @@ public class Message {
         public int deletions;
     }
 
-    /** The unified pending-input shape ("the agent needs a human"). */
-    public static class InputRequest {
-        public String id;
-        @SerializedName("sessionId")
-        public String sessionId;
-        @SerializedName("rootSessionId")
-        public String rootSessionId;
-        public String kind;
-        public String question;
-        public String header;
-        public java.util.List<InputOption> options;
-        public boolean multiple;
-        public boolean custom;
-        public String permission;
-        public java.util.List<String> patterns;
-        public java.util.List<String> always;
-        public JsonObject metadata;
-        public ToolRef tool;
-    }
-
-    public static class InputOption {
-        public String label;
-        public String description;
-    }
-
-    public static class ToolRef {
-        @SerializedName("messageId")
-        public String messageId;
-        @SerializedName("callId")
-        public String callId;
-    }
-
     /** Extension valve; {@code kind} discriminates. */
     public static class CustomPart {
         public String kind;

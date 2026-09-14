@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from llmsafespaces import AsyncLLMSafeSpaces
+from tests.input_contract_fixtures import LATE_ANSWER_BODY, QUESTION_ROW
 from llmsafespaces.errors import AuthError, NotFoundError, RateLimitError
 
 
@@ -523,3 +524,53 @@ async def test_async_enqueue_files(client: AsyncLLMSafeSpaces):
     assert mid == "qm-1"
     body = _json.loads(route.calls[0].request.content)
     assert body == {"text": "later", "files": [UPLOAD_PATH]}
+
+
+# --- input requests: the async contract rows (#1302 / 4b) ---
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_list_questions_typed_contract(client: AsyncLLMSafeSpaces):
+    respx.get(f"{BASE}/api/v1/workspaces/ws-1/question").respond(json=[QUESTION_ROW])
+    result = await client.input_requests.list_questions("ws-1")
+    assert len(result) == 1
+    assert result[0]["kind"] == "question"
+    assert result[0]["options"][0]["label"] == "Go"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_reply_question_late_answer_202_body(client: AsyncLLMSafeSpaces):
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=202, json=LATE_ANSWER_BODY
+    )
+    late = await client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is not None
+    assert late["status"] == "queued"
+    assert late["clientMessageID"] == "inbox-que_1-answer"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_reply_question_live_answer_returns_none(client: AsyncLLMSafeSpaces):
+    route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/question/que_1/reply").respond(status_code=200)
+    late = await client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is None
+    assert route.calls.last.request.content == b'{"answers":[["Go"]]}'
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_dismiss_inbox_record(client: AsyncLLMSafeSpaces):
+    route = respx.delete(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/inbox/que_1").respond(status_code=204)
+    await client.input_requests.dismiss_inbox_record("ws-1", "ses_1", "que_1")
+    assert route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_request_input_snapshot(client: AsyncLLMSafeSpaces):
+    route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/input-snapshot").respond(status_code=202)
+    await client.input_requests.request_input_snapshot("ws-1")
+    assert route.called

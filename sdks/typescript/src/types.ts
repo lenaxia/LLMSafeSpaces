@@ -194,6 +194,21 @@ export interface ToolRef {
   callId?: string;
 }
 
+/**
+ * The 202 body for a reply that landed as a late answer through the
+ * delivery outbox (#1313): the ask was no longer live, so the answer
+ * rides a Q&A user message instead of the live ask.
+ */
+export interface InboxLateAnswerAccepted {
+  status: "queued";
+  /** Ask-scoped dedupe key (`inbox-{requestID}-answer`); duplicate clicks return the original. */
+  clientMessageID: string;
+  /** The outbox entry ID (202) or the original accepted entry (duplicate). */
+  messageID: string;
+  /** Present and true when the ask-scoped key was already accepted. */
+  duplicate?: boolean;
+}
+
 export interface ModelRef {
   id: string;
   provider?: string;

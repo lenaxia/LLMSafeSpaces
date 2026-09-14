@@ -43,6 +43,7 @@ public class LLMSafeSpacesClient {
     public final McpServersService mcpServers;
     public final AdminMcpServersService adminMcpServers;
     public final OrgMcpServersService orgMcpServers;
+    public final InputRequestsService inputRequests;
 
     private LLMSafeSpacesClient(Builder builder) {
         this.baseUrl = builder.baseUrl.replaceAll("/$", "");
@@ -68,6 +69,7 @@ public class LLMSafeSpacesClient {
         this.mcpServers = new McpServersService(this);
         this.adminMcpServers = new AdminMcpServersService(this);
         this.orgMcpServers = new OrgMcpServersService(this);
+        this.inputRequests = new InputRequestsService(this);
     }
 
     public static Builder builder(String baseUrl) {
