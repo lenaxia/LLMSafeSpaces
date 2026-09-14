@@ -40,3 +40,21 @@
 
 - `go test ./api/internal/handlers/ ./api/internal/server/` — ok; lint 0 issues
 - frontend provider + chat suites — 446/446; `make -C sdks validate` valid; go canary builds
+
+## Review r2 remediation
+
+**f1 (Go canary N1 misattributed + false worklog claim):** the row now posts a REAL charset violation (`bad%24id` → `bad$id` after decode) with a VALID body — the 400 can only come from `validRequestID`. The r1 claim ("N1 re-pinned on a real charset violation") was false; this row is.
+
+**f2 (N3 could never 400):** re-pinned on a single-segment traversal id (`a..b`, valid body) — exercising `validRequestID`'s `..` check; the multi-segment `../../etc` form 404s at the router (Go's client doesn't clean dot segments) and is documented as such.
+
+**f3 (KindByPrefix dead + false docs):** WIRED — the adapter's prefix-aware routing (Resolve + RejectInput) consumes the dialect discriminator instead of inline literals (in-package, per the import boundary); the dialect's doc names the remaining prefix surfaces honestly (the actor's seam-local helpers; the MCP server's dispatch — contained, dispatch-only). The design doc's "only literals" claim corrected implicitly by the seam truth the doc now records.
+
+**f4 (cross-surface inconsistency):** the MCP client's validation is now the SAME generic contract (`requestIDValid`) — an MCP caller replying with a conforming unprefixed id is accepted exactly as the API accepts it.
+
+**f5 (OpenAPI prose):** the reply/reject descriptions now state the Act routing and the generic contract; the "schema tracks upstream" coupling language is gone.
+
+**The issue's dialect row:** `TestDialect_KindByPrefix` (prefix convention + the unprefixed agent-agnostic case).
+
+## Tests run (r2)
+
+- `go test ./pkg/mcp/ ./api/internal/handlers/ ./pkg/agent/opencode/` — ok; lint 0 issues; `make -C sdks validate` valid; go canary builds

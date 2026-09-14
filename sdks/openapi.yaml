@@ -1352,7 +1352,7 @@ paths:
           application/json:
             schema:
               type: object
-              description: Reply body (forwarded to agent — schema tracks upstream)
+              description: The question answers ({"answers":[[...]]}) or the permission decision ({"reply":"once"|"always"|"reject", "message"?}).
       responses:
         "200":
           description: Reply accepted
@@ -1375,7 +1375,8 @@ paths:
   /workspaces/{id}/question/{requestID}/reject:
     post:
       tags: [sessions]
-      summary: Reject a pending question
+      summary: Reject (dismiss) a pending question
+      description: Routed through agentd Act (reply=reject — the dismiss exit).
       operationId: rejectQuestion
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
@@ -1422,8 +1423,9 @@ paths:
       tags: [sessions]
       summary: Reply to a pending permission request
       description: >-
-        Proxies the reply body to the workspace pod. When the ask is no
-        longer live but its inbox record is pending (#1313), the late
+        Answers a live permission request (routed through agentd Act).
+        When the ask is no longer live but its inbox record is pending
+        (#1313), the late
         decision lands as guidance-in-history through the standard
         delivery path: 202 with
         `{status: "queued", clientMessageID, messageID}`. The original
@@ -1444,7 +1446,7 @@ paths:
           application/json:
             schema:
               type: object
-              description: Reply body (forwarded to agent — schema tracks upstream)
+              description: The question answers ({"answers":[[...]]}) or the permission decision ({"reply":"once"|"always"|"reject", "message"?}).
       responses:
         "200":
           description: Reply accepted

@@ -423,3 +423,15 @@ func TestDialect_ParsePermissionRequest_NoTool(t *testing.T) {
 	assert.Nil(t, req.Tool)
 	assert.Equal(t, "edit", req.Permission)
 }
+
+// 4a-2 (#1302): the seam's kind discriminator — the prefix convention
+// the adapter's routing consumes.
+func TestDialect_KindByPrefix(t *testing.T) {
+	d := &Dialect{}
+	assert.Equal(t, "question", d.KindByPrefix("que_abc123"))
+	assert.Equal(t, "question", d.KindByPrefix("que_"))
+	assert.Equal(t, "permission", d.KindByPrefix("per_abc_123"))
+	assert.Equal(t, "permission", d.KindByPrefix("per_"))
+	assert.Equal(t, "", d.KindByPrefix("req.plain-1"), "unprefixed ids are agent-agnostic — no kind")
+	assert.Equal(t, "", d.KindByPrefix(""))
+}

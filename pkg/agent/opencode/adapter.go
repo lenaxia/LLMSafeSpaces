@@ -925,8 +925,9 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 	// Prefix-aware (4a r6/r7): the harness prefix-validates request IDs
 	// — a cross-kind post is a 400 Params error, never a 404 (captured
 	// in ask_terminal_states_1_18_15.json). Prefixed ids route to their
-	// own kind only; unprefixed ids keep the legacy probe order.
-	if strings.HasPrefix(requestID, "per_") {
+	// own kind only (the dialect owns the prefix convention); unprefixed
+	// ids keep the legacy probe order.
+	if d.KindByPrefix(requestID) == "permission" {
 		pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
 		if pErr != nil {
 			return pErr
@@ -938,7 +939,7 @@ func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, r
 		return nil
 	}
 	qResp, qErr := a.doPost(ctx, c, d.QuestionReplyPath(requestID), map[string]any{"reply": reply})
-	if qErr == nil && !strings.HasPrefix(requestID, "que_") {
+	if qErr == nil && d.KindByPrefix(requestID) != "question" {
 		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
 		if qResp.StatusCode < 400 {
 			return nil
@@ -1020,8 +1021,9 @@ func (a *Adapter) RejectInput(ctx context.Context, userID, workspaceID, requestI
 		return err
 	}
 	d := &Dialect{}
-	isQ := strings.HasPrefix(requestID, "que_")
-	isP := strings.HasPrefix(requestID, "per_")
+	kind := d.KindByPrefix(requestID)
+	isQ := kind == "question"
+	isP := kind == "permission"
 	if isQ || !isP {
 		qResp, qErr := a.doPost(ctx, c, d.QuestionRejectPath(requestID), map[string]any{})
 		if qErr != nil {
