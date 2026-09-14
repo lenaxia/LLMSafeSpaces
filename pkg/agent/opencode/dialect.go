@@ -6,6 +6,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 )
@@ -33,6 +34,22 @@ func (d *Dialect) SessionAbortPath(sessionID string) string {
 }
 func (d *Dialect) SessionGetPath(sessionID string) string { return "/session/" + sessionID }
 func (d *Dialect) EventStreamPath() string                { return "/event" }
+
+// KindByPrefix maps a request ID to its input kind by the agent's ID
+// prefix convention (que_ = question, per_ = permission). This is the
+// ONLY place outside the adapter where the prefix literals appear
+// (#1302 item 3: handlers validate a generic contract; the routing in
+// the actor/adapter consults this convention via their own seam-local
+// helpers). Empty string for unknown prefixes.
+func (d *Dialect) KindByPrefix(requestID string) string {
+	if strings.HasPrefix(requestID, "que_") {
+		return "question"
+	}
+	if strings.HasPrefix(requestID, "per_") {
+		return "permission"
+	}
+	return ""
+}
 
 // --- Input request route paths ---
 

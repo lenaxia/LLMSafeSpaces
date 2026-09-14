@@ -103,12 +103,16 @@ def run(r: Runner, cfg: Config) -> None:
                 )
                 if s3 == 200:
                     perms_list = json.loads(b3)
+                    # 4a-2 (#1302): the list is the contract InputRequest
+                    # (kind-discriminated, no status field).
                     for p in perms_list:
-                        if p.get("status") == "pending":
+                        if p.get("kind") == "permission":
                             pending_found = True
                             perm_id = p.get("id", "")
+                            # The vocabulary is once/always/reject (the
+                            # pre-contract "allow" was never valid).
                             reply_body = json.dumps(
-                                {"reply": "allow", "reason": "canary test"}
+                                {"reply": "once"}
                             ).encode()
                             s4, _ = raw_do(
                                 "POST",
@@ -116,7 +120,7 @@ def run(r: Runner, cfg: Config) -> None:
                                 cfg.api_key,
                                 reply_body,
                             )
-                            r.assert_(s4 in (200, 204), "permission-reply: success", str(s4))
+                            r.assert_(200 <= s4 < 300, "permission-reply: success (2xx; 202 = the #1313 late-answer accept)", str(s4))
                             break
             except Exception:
                 pass

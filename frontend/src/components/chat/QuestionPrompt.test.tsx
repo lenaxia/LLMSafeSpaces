@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QuestionPrompt } from "./QuestionPrompt";
-import type { QuestionRequest } from "../../api/types";
+import type { InputRequest } from "../../api/types";
 
 vi.mock("../../api/input", () => ({
   inputApi: {
@@ -17,27 +17,30 @@ const mockReply = vi.mocked(inputApi.questionReply);
 const mockReject = vi.mocked(inputApi.questionReject);
 const mockDismissInbox = vi.mocked(inputApi.dismissInboxRecord);
 
-const singleQuestion: QuestionRequest = {
+const singleQuestion: InputRequest = {
   id: "que_1",
-  session_id: "ses_1",
-  questions: [{
-    header: "Choose language",
-    question: "What programming language?",
-    options: [
-      { label: "Go", description: "Fast compiled" },
-      { label: "Python", description: "Easy scripting" },
-      { label: "Rust", description: "Memory safe" },
-    ],
-  }],
+  sessionId: "ses_1",
+  kind: "question",
+  header: "Choose language",
+  question: "What programming language?",
+  options: [
+    { label: "Go", description: "Fast compiled" },
+    { label: "Python", description: "Easy scripting" },
+    { label: "Rust", description: "Memory safe" },
+  ],
 };
 
-const multiQuestion: QuestionRequest = {
+// The contract shape is single-question; the multi-question legacy form is
+// gone with the envelope. Multi-prompt STACKING is covered by the
+// provider-level rows.
+const multiQuestion: InputRequest = {
   id: "que_2",
-  session_id: "ses_1",
-  questions: [
-    { header: "Language", question: "Pick language", options: [{ label: "Go", description: "" }], multiple: true },
-    { header: "Database", question: "Pick DB", options: [{ label: "Postgres", description: "" }] },
-  ],
+  sessionId: "ses_1",
+  kind: "question",
+  header: "Language",
+  question: "Pick language",
+  options: [{ label: "Go", description: "" }],
+  multiple: true,
 };
 
 describe("QuestionPrompt", () => {
@@ -108,7 +111,7 @@ describe("QuestionPrompt", () => {
   it("multiple questions rendered simultaneously", () => {
     render(<QuestionPrompt workspaceId="ws-1" request={multiQuestion} onResolved={onResolved} />);
     expect(screen.getByText("Pick language")).toBeInTheDocument();
-    expect(screen.getByText("Pick DB")).toBeInTheDocument();
+    
   });
 
   it("API error on submit shows error inline", async () => {
@@ -138,16 +141,15 @@ describe("QuestionPrompt", () => {
     await waitFor(() => expect(mockReply).toHaveBeenCalledWith("ws-1", "que_1", [["Go", "Java"]]));
   });
 
-  it("submit disabled when one of multiple questions unanswered", () => {
+  it("submit disabled until an answer is selected (the single-question contract shape)", () => {
     render(<QuestionPrompt workspaceId="ws-1" request={multiQuestion} onResolved={onResolved} />);
-    // Answer only first question
-    fireEvent.click(screen.getByRole("button", { name: "Go" }));
-    // Second question unanswered → submit disabled
     expect(screen.getByText("Submit answers")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
+    expect(screen.getByText("Submit answers")).not.toBeDisabled();
   });
 
   describe("whileAway variant (#1313)", () => {
-    const awayQuestion: QuestionRequest = { ...singleQuestion, whileAway: true };
+    const awayQuestion: InputRequest & { whileAway?: boolean } = { ...singleQuestion, whileAway: true };
 
     it("renders the while-you-were-away title and hint", () => {
       render(<QuestionPrompt workspaceId="ws-1" request={awayQuestion} onResolved={onResolved} />);

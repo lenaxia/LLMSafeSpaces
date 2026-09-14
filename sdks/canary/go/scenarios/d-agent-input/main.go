@@ -125,7 +125,8 @@ pollLoop:
 		replyStatus, _, _ := canary.RawDo(ctx, "POST",
 			fmt.Sprintf("%s/api/v1/workspaces/%s/permission/%s/reply", cfg.APIURL, wsID, permID),
 			cfg.APIKey, []byte(`{"reply":"once"}`))
-		run.Assert(replyStatus == 200 || replyStatus == 204, "approve-permission: success",
+		// 2xx: 202 = the #1313 late-answer accept (4a-2).
+		run.Assert(replyStatus >= 200 && replyStatus < 300, "approve-permission: success",
 			fmt.Sprintf("got %d", replyStatus))
 	}
 

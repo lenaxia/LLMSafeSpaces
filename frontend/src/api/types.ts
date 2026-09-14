@@ -270,44 +270,58 @@ export interface QuestionInfo {
   multiple?: boolean;
 }
 
+/**
+ * The platform's unified pending-input contract (#1302 / 4a-2): ONE shape
+ * on REST and SSE, `kind`-discriminated. On SSE events the inbox-only
+ * re-presentation marker rides the event ENVELOPE (`whileAway` on
+ * AgentQuestionEvent/AgentPermissionEvent), not this schema.
+ */
+export interface InputRequest {
+  id: string;
+  sessionId?: string;
+  /** The user-visible ancestor session (subtask prompts bubble up). */
+  rootSessionId?: string;
+  kind: "question" | "permission";
+  question?: string;
+  header?: string;
+  options?: QuestionOption[];
+  multiple?: boolean;
+  custom?: boolean;
+  permission?: string;
+  patterns?: string[];
+  always?: string[];
+  metadata?: Record<string, unknown>;
+  tool?: { messageId: string; callId: string };
+}
+
+/** @deprecated Use {@link InputRequest} — retained for the migration window. */
 export interface QuestionRequest {
   id: string;
   session_id: string;
-  /**
-   * Top-level session in the parent chain. Equals session_id for top-level
-   * sessions; for subagent/subtask sessions (e.g. opencode `task` tool spawning
-   * child sessions) it points at the user-visible ancestor session. The chat
-   * UI matches incoming prompts against this so subtask prompts bubble up to
-   * the parent session view.
-   */
   root_session_id?: string;
   questions: QuestionInfo[];
   tool?: { message_id: string; call_id: string };
-  /**
-   * Inbox-only re-presentation (#1313): the live ask is gone; this prompt
-   * re-presents the recorded ask with its choices still active. Submitting
-   * lands the answer in history as a Q&A message; dismissing clears it.
-   */
   whileAway?: boolean;
 }
 
+/** @deprecated Use {@link InputRequest} — retained for the migration window. */
 export interface PermissionRequest {
   id: string;
   session_id: string;
-  /** See {@link QuestionRequest.root_session_id}. */
   root_session_id?: string;
   permission: string;
   patterns: string[];
   metadata?: Record<string, unknown>;
   always?: string[];
   tool?: { message_id: string; call_id: string };
-  /** See {@link QuestionRequest.whileAway}. */
   whileAway?: boolean;
 }
 
 export interface AgentQuestionEvent {
   type: "agent.question";
-  data: QuestionRequest;
+  data: InputRequest;
+  /** Envelope marker: an inbox-only re-presentation (#1313 / 4a D3). */
+  whileAway?: boolean;
 }
 
 export interface AgentQuestionResolvedEvent {
@@ -317,7 +331,9 @@ export interface AgentQuestionResolvedEvent {
 
 export interface AgentPermissionEvent {
   type: "agent.permission";
-  data: PermissionRequest;
+  data: InputRequest;
+  /** Envelope marker: an inbox-only re-presentation (#1313 / 4a D3). */
+  whileAway?: boolean;
 }
 
 export interface AgentPermissionResolvedEvent {

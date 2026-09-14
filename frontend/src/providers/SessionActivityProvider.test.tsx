@@ -3,7 +3,7 @@ import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
-import type { QuestionRequest, PermissionRequest } from "../api/types";
+import type { InputRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
 let capturedOnReconnect: (() => void) | undefined;
@@ -1147,12 +1147,12 @@ describe("SessionActivityProvider — pending actions", () => {
 // --- Pending prompt content (issue #346): content lives in the global layer so
 // it survives within-tab session navigation. Filtered by session at read time. ---
 
-function makeQuestion(id: string, sessionId: string, rootSessionId?: string): QuestionRequest {
-  return { id, session_id: sessionId, root_session_id: rootSessionId ?? sessionId, questions: [] };
+function makeQuestion(id: string, sessionId: string, rootSessionId?: string): InputRequest {
+  return { id, sessionId, rootSessionId: rootSessionId ?? sessionId, kind: "question" };
 }
 
-function makePermission(id: string, sessionId: string, rootSessionId?: string): PermissionRequest {
-  return { id, session_id: sessionId, root_session_id: rootSessionId ?? sessionId, permission: "bash", patterns: [] };
+function makePermission(id: string, sessionId: string, rootSessionId?: string): InputRequest {
+  return { id, sessionId, rootSessionId: rootSessionId ?? sessionId, kind: "permission", permission: "bash", patterns: [] };
 }
 
 describe("SessionActivityProvider — pending prompt content", () => {
@@ -2307,24 +2307,29 @@ describe("whileAway inbox prompts (#1313)", () => {
         {pending.map((q) => (
           <li key={q.id} data-testid={`q-${q.id}`}>
             {q.whileAway ? "AWAY: " : ""}
-            {q.questions[0]?.question ?? q.id}
+            {q.question ?? q.id}
           </li>
         ))}
       </ul>
     );
   }
 
+  // 4a D3: the whileAway marker rides the event ENVELOPE; the data is
+  // the contract InputRequest (flattened, camelCase).
   const awayEvent = (id: string, question: string) => ({
     type: "agent.question",
     workspace_id: "ws-1",
     session_id: "ses-1",
     request_id: id,
+    whileAway: true,
     data: {
       id,
-      session_id: "ses-1",
-      root_session_id: "ses-1",
-      questions: [{ question, header: "H", options: [{ label: "A", description: "" }] }],
-      whileAway: true,
+      sessionId: "ses-1",
+      rootSessionId: "ses-1",
+      kind: "question",
+      question,
+      header: "H",
+      options: [{ label: "A", description: "" }],
     },
   });
 

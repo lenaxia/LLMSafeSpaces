@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,30 +74,30 @@ func newInputTestEnv(t *testing.T) *testEnv {
 
 // TestProxyInput_PermissionReply was deleted with the raw-proxy tail (#828 batch 3): superseded by TestPermissionReply_AdapterPath_ReplyPermissionReceivesDecision.
 
-func TestProxyInput_InvalidQuestionID_NoPrefix(t *testing.T) {
+// 4a increment 2 (#1302 item 3): the generic request-ID contract —
+// prefixed AND non-prefixed ids are both VALID (prefix knowledge lives
+// behind the dialect seam); only charset/length/traversal fail. The
+// wrong-prefix ids below now pass validation and proceed (they fail
+// downstream against the harness — pinned by the actor/adapter suites).
+func TestProxyInput_RequestIDGenericContract(t *testing.T) {
 	env := newInputTestEnv(t)
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/invalid/reply", nil)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid question request ID format")
-}
+	// Charset/traversal violations 400 ("invalid" is now a CONFORMING
+	// bare id — the prefix requirement is gone; letters are in-charset).
+	for _, id := range []string{"bad$id", "has..dots"} {
+		w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/"+id+"/reply", nil)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "id %q", id)
+		assert.Contains(t, w.Body.String(), "invalid request ID")
+	}
 
-func TestProxyInput_InvalidQuestionID_WrongPrefix(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/per_abc/reply", nil)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-}
-
-func TestProxyInput_InvalidPermissionID(t *testing.T) {
-	env := newInputTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/permission/que_abc/reply", nil)
-	assert.Equal(t, http.StatusBadRequest, w.Code)
-	assert.Contains(t, w.Body.String(), "invalid permission request ID format")
+	// Conforming ids — prefixed, cross-prefix, or bare — pass validation
+	// with a well-formed body (they may fail downstream; that is the
+	// harness's contract, not the handler's).
+	for _, id := range []string{"que_abc", "per_abc", "req.plain-1", "invalid"} {
+		w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/question/"+id+"/reply", strings.NewReader(`{"answers":[["Go"]]}`))
+		assert.NotEqual(t, http.StatusBadRequest, w.Code, "conforming id %q must pass the generic contract", id)
+	}
 }
 
 // TestProxyInput_WorkspaceNotActive was deleted with the raw-proxy tail (#828 batch 3): the transport 503 died with the tail; adapter-path failures surface as 502 (workspace liveness is the adapter resolve concern, pinned in pkg/agent/opencode tests).

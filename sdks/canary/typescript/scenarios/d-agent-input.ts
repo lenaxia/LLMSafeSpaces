@@ -54,7 +54,8 @@ async function run(r: Runner, cfg: Config): Promise<void> {
         const [sReply] = await rawDo('POST',
           `${cfg.apiUrl}/api/v1/workspaces/${wsId}/proxy/permission/${permId}/reply`,
           cfg.apiKey, Buffer.from(JSON.stringify({ reply: 'once' })));
-        r.assert(sReply === 200 || sReply === 204, 'permission-reply: success',
+        r.assert(sReply >= 200 && sReply < 300, 'permission-reply: success', // 2xx: 202 = the #1313 late-answer accept
+
           `got ${sReply}`);
       } else {
         r.ok('permission: no pending permissions (model did not trigger tool permission)');

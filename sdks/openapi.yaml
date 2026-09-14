@@ -1191,26 +1191,29 @@ paths:
       tags: [sessions]
       summary: List pending questions from the agent
       description: |
-        Proxies to the workspace pod. Questions originate from the agent
-        (opencode) when it needs user input. Response schema tracks upstream.
+        Returns the pending questions as the platform contract shape
+        (`InputRequest`, kind=question) via the agent adapter — root
+        session resolved, agent identifiers contained behind the seam
+        (#1302). A failed pending-set fetch is 503 non-authoritative,
+        never an authoritative empty.
       operationId: listQuestions
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
         "200":
-          description: Pending questions
+          description: Pending questions (contract InputRequest, kind=question)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
-                  description: Question object (schema tracks upstream opencode)
+                  $ref: "#/components/schemas/InputRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          description: Pending set unknown (non-authoritative; Retry-After present)
   /workspaces/{id}/input-snapshot:
     post:
       tags: [sessions]
@@ -1397,20 +1400,21 @@ paths:
     get:
       tags: [sessions]
       summary: List pending permission requests from the agent
+      description: |
+        Returns the pending permissions as the platform contract shape
+        (`InputRequest`, kind=permission) via the agent adapter (#1302).
       operationId: listPermissions
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
         "200":
-          description: Pending permissions
+          description: Pending permissions (contract InputRequest, kind=permission)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
-                  description: Permission object (schema tracks upstream opencode)
+                  $ref: "#/components/schemas/InputRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
