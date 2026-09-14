@@ -12,7 +12,14 @@ vi.mock("../../env", () => ({
   getEnv: () => ({ apiBaseUrl: testEnvState.apiBaseUrl, turnstileSiteKey: "" }),
   loadEnv: async () => ({ apiBaseUrl: testEnvState.apiBaseUrl, turnstileSiteKey: "" }),
 }));
-afterEach(() => { testEnvState.apiBaseUrl = "/api/v1"; });
+// #1366: preview-origin feature discovery is mocked so the tunnel-link
+// upgrade tests can pin both deployment shapes deterministically.
+const testPreviewState: { base?: string } = {};
+vi.mock("../../api/previewConfig", () => ({
+  usePreviewOriginBaseDomain: () => testPreviewState.base,
+  previewOriginBaseDomain: () => testPreviewState.base,
+}));
+afterEach(() => { testEnvState.apiBaseUrl = "/api/v1"; testPreviewState.base = undefined; });
 import { highlight } from "../../lib/shiki";
 
 vi.mock("../../lib/shiki", () => ({
@@ -709,6 +716,49 @@ describe("DevPreviewOutput via MessagePart", () => {
   it("falls back to plain text for output without the marker", () => {
     render(<MessagePart part={{ type: "tool_result", text: "https://old.example.com/preview", name: "dev_preview_url" } as never} isUser={false} />);
     expect(screen.queryByTestId("dev-preview-button")).toBeNull();
+  });
+
+  // #1366: legacy path-tunnel links (baked into pre-preview-origin chat
+  // messages) are upgraded to the bootstrap endpoint when the deployment
+  // has preview origins; left untouched otherwise.
+  const WS_UUID = "1f4e68af-8558-48e6-acb6-8781dfc1224c";
+
+  it("upgrades a legacy tunnel link to bootstrap when preview origins are enabled", () => {
+    testPreviewState.base = "safespaces.dev";
+    testEnvState.apiBaseUrl = "https://api.example.com/api/v1";
+    const output = `LSP_DEV_PREVIEW_V1 port=3000 mode=path\n[Open dev preview :3000](https://api.example.com/api/v1/workspaces/${WS_UUID}/dev-preview/3000/)\nOpens the dev preview tunnel.`;
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toHaveAttribute("href", `https://api.example.com/api/v1/workspaces/${WS_UUID}/dev-preview-bootstrap/3000`);
+  });
+
+  it("upgrades a RELATIVE legacy tunnel link too (pre-#1334 pod output)", () => {
+    testPreviewState.base = "safespaces.dev";
+    testEnvState.apiBaseUrl = "https://api.example.com/api/v1";
+    const output = `LSP_DEV_PREVIEW_V1 port=3000 mode=path\n[Open dev preview :3000](/api/v1/workspaces/${WS_UUID}/dev-preview/3000/)\nOpens the dev preview tunnel.`;
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toHaveAttribute("href", `https://api.example.com/api/v1/workspaces/${WS_UUID}/dev-preview-bootstrap/3000`);
+  });
+
+  it("leaves the tunnel link untouched when preview origins are not enabled", () => {
+    testPreviewState.base = ""; // feature discovery resolved: no origins
+    testEnvState.apiBaseUrl = "https://api.example.com/api/v1";
+    const tunnelHref = `/api/v1/workspaces/${WS_UUID}/dev-preview/3000/`;
+    const output = `LSP_DEV_PREVIEW_V1 port=3000 mode=path\n[Open dev preview :3000](${tunnelHref})\nOpens the dev preview tunnel.`;
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toHaveAttribute("href", `https://api.example.com${tunnelHref}`);
+  });
+
+  it("leaves the tunnel link untouched while feature discovery is unresolved", () => {
+    testPreviewState.base = undefined; // fetch in flight
+    testEnvState.apiBaseUrl = "https://api.example.com/api/v1";
+    const tunnelHref = `/api/v1/workspaces/${WS_UUID}/dev-preview/3000/`;
+    const output = `LSP_DEV_PREVIEW_V1 port=3000 mode=path\n[Open dev preview :3000](${tunnelHref})\nOpens the dev preview tunnel.`;
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toHaveAttribute("href", `https://api.example.com${tunnelHref}`);
   });
 });
 

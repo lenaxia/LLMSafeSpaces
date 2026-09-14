@@ -110,6 +110,12 @@ type AuthConfig struct {
 	SSOProviders         []string `json:"ssoProviders,omitempty"`
 	InstanceName         string   `json:"instanceName"`
 	MOTD                 string   `json:"motd"`
+	// PreviewOriginBaseDomain is the registrable domain per-workspace
+	// preview hosts live under (deployments with preview origins
+	// enabled; empty otherwise). Public feature discovery: clients use
+	// it to know that old path-tunnel preview links can be upgraded to
+	// the policy-free preview origin via the bootstrap endpoint.
+	PreviewOriginBaseDomain string `json:"previewOriginBaseDomain,omitempty"`
 }
 
 // DEKSource identifies which encryption tier a user's personal secrets live in.

@@ -7,6 +7,7 @@ import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
 import { useNow } from "../../hooks/useNow";
 import { getEnv } from "../../env";
+import { usePreviewOriginBaseDomain } from "../../api/previewConfig";
 import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
 import { parseAttachments } from "../../lib/attachments";
@@ -244,6 +245,23 @@ function DevPreviewOutput({ output }: { output: string }) {
     const { apiBaseUrl } = getEnv();
     const apiOrigin = apiBaseUrl.replace(/\/api\/v1\/?$/, "");
     href = apiOrigin + (href.startsWith("/") ? href : "/" + href);
+  }
+  // #1366: legacy path-tunnel links (emitted by agentd before preview
+  // origins, and baked into older chat messages) carry every preview
+  // asset through the rate-limited API path. When the deployment has
+  // preview origins, upgrade the tunnel link to the bootstrap endpoint:
+  // one authenticated GET mints a 7-day preview session and 302s to the
+  // policy-free per-workspace origin host. Bootstrap and origin links
+  // pass through untouched; deployments without preview origins keep
+  // the tunnel working exactly as before.
+  const previewBase = usePreviewOriginBaseDomain();
+  if (link && href && previewBase) {
+    const tunnel = /^(https?:\/\/[^/]+)?\/api\/v1\/workspaces\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/dev-preview\/(\d{1,5})(?:[/?#]|$)/i.exec(href);
+    if (tunnel) {
+      const { apiBaseUrl } = getEnv();
+      const apiOrigin = apiBaseUrl.replace(/\/api\/v1\/?$/, "");
+      href = `${apiOrigin}/api/v1/workspaces/${tunnel[2]}/dev-preview-bootstrap/${tunnel[3]}`;
+    }
   }
   const explanation = lines.slice(link ? 2 : 1).join("\n").trim();
   return (

@@ -424,7 +424,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup, cfg.PreviewOriginHandler.BaseDomainOrEmpty())
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -902,7 +902,7 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool, previewOriginBaseDomain string) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -934,6 +934,11 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 			PasskeyDefaultSignup: passkeyDefaultSignup,
 			InstanceName:         instanceName,
 			MOTD:                 motd,
+			// Feature discovery (#1366): non-empty when per-workspace
+			// preview origins are enabled — clients use it to upgrade
+			// old path-tunnel preview links (rate-limited API path) to
+			// the policy-free origin via the bootstrap endpoint.
+			PreviewOriginBaseDomain: previewOriginBaseDomain,
 		})
 	})
 

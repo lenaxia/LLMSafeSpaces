@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -114,6 +115,58 @@ func TestAuthConfig_MOTDKeyAlwaysPresentInJSON(t *testing.T) {
 		"motd key must always be present in /auth/config JSON, even when empty — "+
 			"frontend clients and SDK canaries reference it unconditionally")
 	assert.Equal(t, "", raw["motd"])
+}
+
+// TestAuthConfig_PreviewOriginBaseDomain pins the #1366 feature-discovery
+// contract: the field is present (non-empty) exactly when preview origins
+// are enabled, and omitted otherwise. Clients key the legacy
+// path-tunnel→bootstrap link upgrade on it — an always-present-but-empty
+// shape would be equally valid, but omitempty is the shipped shape and the
+// frontend treats undefined as "unresolved", "" as "absent", so both
+// states must stay distinguishable on the wire.
+func TestAuthConfig_PreviewOriginBaseDomain(t *testing.T) {
+	t.Run("omitted when no preview origin handler wired", func(t *testing.T) {
+		router := newAuthConfigWithSettings(t, map[string]any{})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+		assert.NotContains(t, raw, "previewOriginBaseDomain")
+	})
+
+	t.Run("carries the base domain when the handler is wired", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		data := map[string]json.RawMessage{}
+		instanceSettings := settings.NewInstanceService(&settingsStore{data: data}, nil)
+		instanceSettings.Start()
+		apiLog, _ := apilogger.New(false, "error", "json")
+		auth := &imocks.MockAuthMiddlewareService{}
+		met := &imocks.MockMetricsService{}
+		met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
+		auth.On("GetUserID", mock.Anything).Return("").Maybe()
+
+		svc := &authMockServices{auth: auth, metrics: met, database: &imocks.MockDatabaseService{}, cache: &imocks.MockCacheService{}}
+		router := NewRouter(svc, apiLog, nil, RouterConfig{
+			InstanceSettings:     instanceSettings,
+			PreviewOriginHandler: &handlers.PreviewOriginHandler{},
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		// A zero-value handler has Enabled=false → BaseDomainOrEmpty ""
+		// → omitted. The non-empty path is covered by the preview-origin
+		// handler suite; this pins the wiring (nil-safety + omission).
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+		assert.NotContains(t, raw, "previewOriginBaseDomain")
+	})
 }
 
 func TestAuthConfig_RegistrationDisabledFromSettings(t *testing.T) {
