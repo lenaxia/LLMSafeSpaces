@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -165,7 +166,11 @@ func imageMIMEByExt(name string) string {
 }
 
 // loadImages reads workspace image files into seam attachments under
-// the size/mime guards.
+// the size/mime guards. Only REGULAR files are admitted and the read
+// itself is size-capped: a FIFO passes a size-0 stat and then blocks
+// ReadFile forever (file I/O ignores the context — the tool call would
+// wedge), and special/symlinked files would stream unbounded bytes into
+// memory and onto the wire (review finding, PR #1364).
 func loadImages(paths []string) ([]opencode.ImageAttachment, error) {
 	if len(paths) == 0 {
 		return nil, nil
@@ -181,20 +186,40 @@ func loadImages(paths []string) ([]opencode.ImageAttachment, error) {
 		if mime == "" {
 			return nil, fmt.Errorf("%s: unsupported image type (allowed: png, jpg, jpeg, gif, webp)", filepath.Base(p))
 		}
-		info, err := os.Stat(p)
+		// O_NONBLOCK: opening a FIFO's read end BLOCKS until a writer
+		// appears — the open itself is the wedge, before any stat/gate
+		// can run. Non-blocking open returns immediately; on regular
+		// files the flag is a no-op.
+		f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // agent-supplied workspace path, gated below
 		if err != nil {
 			return nil, fmt.Errorf("%s: unreadable: %w", filepath.Base(p), err)
+		}
+		info, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("%s: unreadable: %w", filepath.Base(p), err)
+		}
+		if !info.Mode().IsRegular() {
+			_ = f.Close()
+			return nil, fmt.Errorf("%s: not a regular file (FIFOs, devices, and sockets are refused)", filepath.Base(p))
 		}
 		if info.Size() > imageMaxFileBytes {
+			_ = f.Close()
 			return nil, fmt.Errorf("%s: exceeds the %d MiB per-image cap", filepath.Base(p), imageMaxFileBytes>>20)
 		}
-		total += info.Size()
-		if total > imageMaxTotal {
-			return nil, fmt.Errorf("images exceed the %d MiB combined cap", imageMaxTotal>>20)
-		}
-		data, err := os.ReadFile(p)
+		// Cap the READ, not just the stat: stat-then-read is a TOCTOU —
+		// the file can grow (or be swapped) between the two.
+		data, err := io.ReadAll(io.LimitReader(f, imageMaxFileBytes+1))
+		_ = f.Close()
 		if err != nil {
 			return nil, fmt.Errorf("%s: unreadable: %w", filepath.Base(p), err)
+		}
+		if int64(len(data)) > imageMaxFileBytes {
+			return nil, fmt.Errorf("%s: exceeds the %d MiB per-image cap", filepath.Base(p), imageMaxFileBytes>>20)
+		}
+		total += int64(len(data))
+		if total > imageMaxTotal {
+			return nil, fmt.Errorf("images exceed the %d MiB combined cap", imageMaxTotal>>20)
 		}
 		out = append(out, opencode.ImageAttachment{
 			Filename: filepath.Base(p),

@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -981,4 +983,46 @@ func TestMCPHandler_CompactBusyFullStack(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return f.lastSummary(s1) != nil
 	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// The FIFO wedge (review finding, PR #1364): a named pipe passes a
+// size-0 stat, then ReadFile blocks forever — file I/O ignores the
+// context, so the tool call would wedge. Regular-file gate + capped
+// read must refuse it up front.
+func TestMCPCallWithModel_FIFORefused(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("mkfifo is linux/unix-only")
+	}
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "pipe.png")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", []string{fifo})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a regular file")
+	case <-time.After(5 * time.Second):
+		t.Fatal("loadImages wedged on the FIFO — the regular-file gate is missing")
+	}
+}
+
+// A file that grows between stat and read (TOCTOU) is capped by the
+// read itself, not trusted by its earlier stat.
+func TestMCPCallWithModel_ReadCapTOCTOU(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	dir := t.TempDir()
+	oversize := filepath.Join(dir, "big.png")
+	require.NoError(t, os.WriteFile(oversize, make([]byte, imageMaxFileBytes+2), 0o600))
+
+	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", []string{oversize})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-image cap")
 }

@@ -489,3 +489,32 @@ func TestAuditedProvider_WiredIntoProductionProviders(t *testing.T) {
 		})
 	}
 }
+
+// TestPodWorkspaceRenameHandler_LoggerWired mirrors the pod-bootstrap
+// guard (PR #407 precedent) for the pod-identity rename endpoint: the
+// underlying cause of every 5xx must land in server logs. Deleting the
+// SetLogger call in app.go compiles and passes handler tests (which wire
+// their own loggers) — this test is what makes that regression loud.
+// Also pins the fail-closed fallback renamer for broken service wiring.
+func TestPodWorkspaceRenameHandler_LoggerWired(t *testing.T) {
+	h := handlers.NewPodWorkspaceRenameHandlerFromClientset(
+		k8sfake.NewSimpleClientset(), &fakeAppDBLookup{}, handlers.FailClosedRenamer{}, "test-namespace",
+	)
+	if h.HasLogger() {
+		t.Fatalf("freshly-constructed PodWorkspaceRenameHandler must not have a logger before SetLogger is called")
+	}
+	h.SetLogger(lmocks.NewMockLogger())
+	if !h.HasLogger() {
+		t.Fatalf("SetLogger must populate the handler's logger so 5xx errors include the underlying cause")
+	}
+}
+
+// TestFailClosedRenamer is the loud-failure contract for the boot-time
+// fallback: broken service wiring must produce 500s on every rename,
+// never a silently unregistered route.
+func TestFailClosedRenamer(t *testing.T) {
+	err := handlers.FailClosedRenamer{}.RenameWorkspace(context.Background(), "u", "ws", "n")
+	if err == nil {
+		t.Fatalf("fail-closed renamer must error on every call")
+	}
+}

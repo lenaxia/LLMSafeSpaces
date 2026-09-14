@@ -114,6 +114,18 @@ func TestOpenAPIRouterContract(t *testing.T) {
 		}
 		t.Errorf("Either document in sdks/openapi.yaml or add to implOnlyAllowlist with rationale.")
 	}
+
+	// Reverse pin (review finding, PR #1364): the implOnly loop above
+	// only inspects REGISTERED routes, so deleting a router.go
+	// registration leaves an allowlisted route green here — a
+	// production wiring failure no test would catch. Every allowlisted
+	// internal route MUST be present in the fixture's registration set;
+	// this fixture wires every optional handler the production app does.
+	for r := range implOnlyAllowlist {
+		if !implSet[r] {
+			t.Errorf("implOnlyAllowlist entry %s is NOT registered by the fixture/production wiring — either the route was dropped (production wiring failure) or the fixture is missing the handler", r)
+		}
+	}
 }
 
 // loadOpenAPIRoutes parses sdks/openapi.yaml and returns one route

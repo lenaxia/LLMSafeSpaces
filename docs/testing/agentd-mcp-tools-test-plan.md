@@ -2,7 +2,7 @@
 
 **Status:** L0/L1/L2 implemented and green; L3 scripted (`scripts/mcp-tools-liveprobe.sh`, 7/7 on the live pod 2026-09-13). The L2/L3 legs found and fixed two real defects: the silent no-op rename (POST vs PATCH — §2) and the unbounded health probe.
 **Date:** 2026-09-13
-**Scope:** The seven agent-side MCP tools on `/v1/mcp` (`session_list`, `session_read`, `rename_session`, `rename_workspace`, `call_with_model`, `create_session`, `get_datetime`, `session_metadata`, `compact`) plus the opencode wire seam (`pkg/agent/opencode` loopback methods) they ride on, and the API-side `POST /internal/v1/workspace-rename`.
+**Scope:** The SEVEN NEW agent-side MCP tools on `/v1/mcp` (`rename_session`, `rename_workspace`, `call_with_model`, `create_session`, `get_datetime`, `session_metadata`, `compact`), the two PRE-EXISTING tools rerouted through the new seam (`session_list`, `session_read`), the seam itself (`pkg/agent/opencode` loopback methods), and the API-side `POST /internal/v1/workspace-rename`.
 **Related:** worklog `worklogs/0923_2026-09-13_agentd-mcp-five-tools.md` (initial five) and `worklogs/0924_2026-09-13_agentd-mcp-tools-v2.md` (this revision)
 
 ---

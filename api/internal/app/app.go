@@ -1368,17 +1368,26 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	platformInfoHandler.SetLogger(log)
 
 	// Pod-identity workspace rename (agentd rename_workspace MCP tool).
-	// Same TokenReview contract as pod-bootstrap; the renamer is the
-	// workspace Service under the owner resolved from the DB lookup.
-	// When the workspace service is not the concrete type the handler
-	// stays nil and the route is not registered (defense-in-depth —
-	// services.New always constructs *workspace.Service).
+	// Same TokenReview contract as pod-bootstrap. The renamer is the
+	// workspace Service; if the concrete-type assertion ever fails
+	// (services.New always constructs it today), the handler is built
+	// with a FAIL-CLOSED renamer that 500s loudly on every call and the
+	// error is logged at boot — the route must never silently vanish
+	// (review finding: wiring failures of new routes are the named
+	// failure class of the wiring guards).
 	var podWorkspaceRenameHandler *handlers.PodWorkspaceRenameHandler
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		podWorkspaceRenameHandler = handlers.NewPodWorkspaceRenameHandlerFromClientset(
 			k8sClient.Clientset(), dbSvc, wsSvc, cfg.Kubernetes.Namespace,
 		)
+	} else {
+		log.Error("workspace-rename wiring: workspace service is not the concrete type; installing fail-closed renamer",
+			errors.New("svc.Workspace type assertion failed"))
+		podWorkspaceRenameHandler = handlers.NewPodWorkspaceRenameHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, handlers.FailClosedRenamer{}, cfg.Kubernetes.Namespace,
+		)
 	}
+	podWorkspaceRenameHandler.SetLogger(log)
 
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,

@@ -385,3 +385,27 @@ func TestSeam_ModelInfo_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "catalog")
 }
+
+// Session IDs are interpolated into URL paths — hostile IDs must be
+// rejected before ANY request is built (no dial, no path injection).
+func TestSeam_SessionIDValidation(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("no request may reach the wire for an invalid session id: %s %s", r.Method, r.URL.Path)
+	})
+	ctx := context.Background()
+	for _, bad := range []string{"ses_\x7f", "../etc", "a/b", "", "ses x", "ses%20x"} {
+		assert.Error(t, c.SessionRename(ctx, bad, "t"), "rename %q", bad)
+		assert.Error(t, c.SessionDelete(ctx, bad), "delete %q", bad)
+		_, err := c.SessionSend(ctx, bad, "t", "", nil)
+		assert.Error(t, err, "send %q", bad)
+		assert.Error(t, c.SessionSummarize(ctx, bad, "p", "m"), "summarize %q", bad)
+		_, _, err = c.SessionMessagesRaw(ctx, bad, 5, "")
+		assert.Error(t, err, "messages %q", bad)
+		_, err = c.SessionContextCount(ctx, bad)
+		assert.Error(t, err, "context %q", bad)
+		_, err = c.SessionMessageCount(ctx, bad)
+		assert.Error(t, err, "count %q", bad)
+	}
+	// Valid opaque IDs still pass.
+	assert.NoError(t, validateSessionID("ses_f66ef51e3ffeFahEENfR3r2ia4"))
+}

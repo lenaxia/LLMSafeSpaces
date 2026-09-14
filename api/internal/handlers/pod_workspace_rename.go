@@ -12,6 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 // workspaceNameMaxLength matches the workspaces.name column
@@ -41,6 +43,7 @@ type PodWorkspaceRenameHandler struct {
 	lookup            bootstrapWorkspaceLookup
 	renamer           podWorkspaceRenamer
 	expectedNamespace string
+	logger            interfaces.LoggerInterface
 }
 
 // NewPodWorkspaceRenameHandler constructs the handler. reviewer is the
@@ -63,6 +66,21 @@ func NewPodWorkspaceRenameHandlerFromClientset(clientset kubernetes.Interface, l
 	return NewPodWorkspaceRenameHandler(&k8sTokenReviewer{clientset: clientset}, lookup, renamer, expectedNamespace)
 }
 
+// SetLogger installs a structured logger so 5xx responses carry the
+// underlying error server-side — the pod-bootstrap precedent (PR #407:
+// the missing log line turned the 2026-06-24 outage into a 30-minute
+// diagnosis). Optional for tests; production wiring MUST call it (see
+// TestPodWorkspaceRenameHandler_LoggerWired).
+func (h *PodWorkspaceRenameHandler) SetLogger(l interfaces.LoggerInterface) {
+	h.logger = l
+}
+
+// HasLogger reports whether a logger is wired; the app-level wiring
+// guard asserts this so the observability fix cannot silently regress.
+func (h *PodWorkspaceRenameHandler) HasLogger() bool {
+	return h.logger != nil
+}
+
 // Rename handles POST /internal/v1/workspace-rename.
 func (h *PodWorkspaceRenameHandler) Rename(c *gin.Context) {
 	token := extractBearerToken(c.GetHeader("Authorization"))
@@ -76,6 +94,9 @@ func (h *PodWorkspaceRenameHandler) Rename(c *gin.Context) {
 		if errors.Is(err, errTokenNotAuthenticated) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token not authenticated"})
 			return
+		}
+		if h.logger != nil {
+			h.logger.Error("workspace-rename: token review failed", err)
 		}
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "token review failed"})
 		return
@@ -116,6 +137,9 @@ func (h *PodWorkspaceRenameHandler) Rename(c *gin.Context) {
 
 	ws, err := h.lookup.GetWorkspace(c.Request.Context(), req.WorkspaceID)
 	if err != nil {
+		if h.logger != nil {
+			h.logger.Error("workspace-rename: lookup failed", err, "workspaceID", req.WorkspaceID)
+		}
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workspace lookup failed"})
 		return
 	}
@@ -125,8 +149,22 @@ func (h *PodWorkspaceRenameHandler) Rename(c *gin.Context) {
 	}
 
 	if err := h.renamer.RenameWorkspace(c.Request.Context(), ws.UserID, req.WorkspaceID, name); err != nil {
+		if h.logger != nil {
+			h.logger.Error("workspace-rename: rename failed", err,
+				"workspaceID", req.WorkspaceID, "userID", ws.UserID)
+		}
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to rename workspace"})
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+// FailClosedRenamer is the fallback renamer for broken service wiring:
+// every call errors loudly (500 + logged) instead of letting the route
+// silently vanish. app.go installs it when the workspace service is
+// not the concrete *workspace.Service.
+type FailClosedRenamer struct{}
+
+func (FailClosedRenamer) RenameWorkspace(context.Context, string, string, string) error {
+	return errors.New("workspace rename unavailable: service wiring failed at boot (see api server logs)")
 }

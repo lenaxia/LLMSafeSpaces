@@ -189,9 +189,6 @@ func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
-	// The dedicated public-origin override wins over API_URL when ambient
-	// (dev pods carry it) — clear it so this test pins the API_URL path.
-	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
 		"port": float64(5173),
@@ -635,7 +632,6 @@ func TestCallMCPTool_DevPreviewURL_RefusesClusterInternalOrigin(t *testing.T) {
 	}
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "")
-	t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "")
 	for _, apiURL := range internal {
 		t.Setenv("LLMSAFESPACE_API_URL", apiURL)
 		t.Setenv("LLMSAFESPACE_API_PUBLIC_URL", "") // hermetic: outranks API_URL (branch 1); in-platform runs inherit the real agentd env

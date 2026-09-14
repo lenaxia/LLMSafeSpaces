@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -102,6 +103,23 @@ type ModelInfo struct {
 	ImageInput   bool
 }
 
+// sessionIDPattern pins what may be interpolated into a seam URL path:
+// the agent's opaque IDs. Anything else (control chars, slashes, "..")
+// is rejected before any request is built — a sessionID containing a
+// control character otherwise makes the URL unparseable or path-injects
+// (review finding, PR #1364 — the pre-existing pattern this seam
+// widened).
+var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// validateSessionID guards every seam method that interpolates an ID
+// into a path.
+func validateSessionID(sessionID string) error {
+	if !sessionIDPattern.MatchString(sessionID) {
+		return fmt.Errorf("invalid session id %q", sessionID)
+	}
+	return nil
+}
+
 // SessionCreate creates a session; title may be empty (omitted — the
 // agent auto-titles).
 func (c *Client) SessionCreate(ctx context.Context, title string) (string, error) {
@@ -142,6 +160,10 @@ func (c *Client) SessionCreate(ctx context.Context, title string) (string, error
 // 2026-09-13: POST /session/{id} returned 200 with the title unchanged;
 // PATCH updates it immediately; the SDK's sessionUpdate is PATCH).
 func (c *Client) SessionRename(ctx context.Context, sessionID, title string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+
 	raw, err := json.Marshal(map[string]string{"title": title})
 	if err != nil {
 		return err
@@ -164,6 +186,10 @@ func (c *Client) SessionRename(ctx context.Context, sessionID, title string) err
 
 // SessionDelete removes a session and its message history.
 func (c *Client) SessionDelete(ctx context.Context, sessionID string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		fmt.Sprintf("%s/session/%s", c.baseURL, sessionID), nil)
 	if err != nil {
@@ -204,6 +230,10 @@ func SplitModelRef(model string) (providerID, modelID string, err error) {
 // The caller MUST NOT target a session whose turn is waiting on this call
 // (busy sessions block — see the file contract).
 func (c *Client) SessionSend(ctx context.Context, sessionID, text, model string, images []ImageAttachment) (*SendResult, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+
 	parts := make([]map[string]any, 0, len(images)+1)
 	parts = append(parts, map[string]any{"type": "text", "text": text})
 	for _, img := range images {
@@ -273,6 +303,10 @@ func (c *Client) SessionSend(ctx context.Context, sessionID, text, model string,
 // and completes at the turn boundary (live-proven) — callers that must
 // not block run this from a detached context.
 func (c *Client) SessionSummarize(ctx context.Context, sessionID, providerID, modelID string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+
 	raw, err := json.Marshal(map[string]string{"providerID": providerID, "modelID": modelID})
 	if err != nil {
 		return err
@@ -329,6 +363,10 @@ func (c *Client) SessionListRaw(ctx context.Context) ([]byte, error) {
 // SessionMessagesRaw returns one page of the V1 message list plus the
 // X-Next-Cursor continuation token ("" when exhausted).
 func (c *Client) SessionMessagesRaw(ctx context.Context, sessionID string, limit int, cursor string) ([]byte, string, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, "", err
+	}
+
 	url := fmt.Sprintf("%s/session/%s/message?limit=%d", c.baseURL, sessionID, limit)
 	if cursor != "" {
 		url += "&before=" + cursor
@@ -356,6 +394,10 @@ func (c *Client) SessionMessagesRaw(ctx context.Context, sessionID string, limit
 // returns the total message count. The bound keeps a pathological
 // session from making the metadata call unbounded.
 func (c *Client) SessionMessageCount(ctx context.Context, sessionID string) (int, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return 0, err
+	}
+
 	const pageSize = 500
 	const maxPages = 40 // 20k messages ceiling
 	total := 0
@@ -381,6 +423,10 @@ func (c *Client) SessionMessageCount(ctx context.Context, sessionID string) (int
 // SessionContextCount returns how many messages are currently inside the
 // session's context window (GET /api/session/{id}/context).
 func (c *Client) SessionContextCount(ctx context.Context, sessionID string) (int, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return 0, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("%s/api/session/%s/context", c.baseURL, sessionID), nil)
 	if err != nil {
@@ -408,6 +454,10 @@ func (c *Client) SessionContextCount(ctx context.Context, sessionID string) (int
 // cache.write (the Epic 36 formula — what the next prompt will actually
 // cost the window). 0 when no assistant turn exists yet.
 func (c *Client) SessionPromptTokens(ctx context.Context, sessionID string) int64 {
+	if validateSessionID(sessionID) != nil {
+		return 0
+	}
+
 	body, _, err := c.SessionMessagesRaw(ctx, sessionID, 20, "")
 	if err != nil {
 		return 0
