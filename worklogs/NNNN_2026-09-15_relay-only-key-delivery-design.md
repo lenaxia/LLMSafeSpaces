@@ -41,6 +41,10 @@ Five findings, all validated as real (Rule 11 Phase 2), fixed in commit 2:
 5. False `[epic-72]` label claim → rephrased as "to be applied at epic filing".
 Carried forward per reviewer's test note: `revocation_secret_delete_401` gains a deletion→401 window bound (informer propagation) + `exp` clock-skew test; §4.4 wording updated (revocation bounded by watch propagation, not immediate).
 
+### Review iteration 2 (AI reviewer, CHANGES_REQUESTED → fixed)
+
+Round-1 fixes verified addressed; four new findings (three introduced/stale from the fix commit, one robustness minor), all validated real, fixed in commit 3: (1) §4.2↔§4.3 RBAC contradiction — router-SA keypair writes vs get/list/watch-only posture → name-scoped write carve-out for exactly `llm-relay-hpke-key`/`llm-relay-hpke-pub`, stated in §4.2, §4.3, US-72.2; (2) stale `POST /v1/…` diagram label → `/w/<ws>/<slug>/v1/…`; (3) dangling §9 citation for the per-credential-refusal rejection → §9 row added; (4) hop-6 revocation cross-ref §3 → §4.4. Robustness minor: HPKE rotation availability window → prior keypair retained until re-seal confirms (fail-open availability, fail-closed trust), §4.2. Ride-along citation nits: `routerHopHeaders` `proxy.go:66-75` (was 59-68), `applyModelAllowlist` `injection.go:525+` (was 531+), epic-69 story range `#1135–#1148` with `#1134` as the tracking issue.
+
 ### Files
 
 - `design/0058_2026-09-15_relay-only-key-delivery.md` — the design doc (house style per 0055/0057: status header, depends/composes, numbered sections, threat model, assumptions table, rejected alternatives, open items)

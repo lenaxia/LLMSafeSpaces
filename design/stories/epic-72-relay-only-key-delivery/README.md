@@ -11,7 +11,7 @@
 > **chat file attachments** (`design/stories/epic-68-chat-file-attachments/` — itself
 > renumbered 67→68 at its closure, 2026-08-27). This folder takes the next free
 > number, **72** (70 = secret-delivery-v2, 71 = input-delivery-robustness; 69 has no
-> on-disk folder — its stories US-69.1–.14 live in issues #1134–#1148). All story IDs
+> on-disk folder — its stories US-69.1–.14 live in issues #1135–#1148 (epic tracking issue #1134)). All story IDs
 > from the decision record's draft (`US-68.0`…`US-68.6`) are renamed `US-72.0`…`US-72.6`
 > here, one-for-one, same order. The repo's epic-number hygiene (two `0052` docs, two
 > `epic-55`/`epic-64` folders on disk) is the separately-filed hygiene follow-up named
@@ -147,7 +147,7 @@ HMAC-SHA256, payload `{workspaceID, providerSlug, baseURL, modelAllowlist, iat,
 exp, keyID}` — validity = HMAC ∧ staged-Secret-present ∧ not-expired); Secret
 informer cache (ciphertext only); request pipeline: client-Authorization replace
 (generalize `applyUpstreamAuth`, `proxy.go:40-56`), hop-by-hop + identity header
-strip (extend `routerHopHeaders`, `proxy.go:59-68`), method/path allowlist
+strip (extend `routerHopHeaders`, `proxy.go:66-75`), method/path allowlist
 (chat-completions-class + `/models`), request/response size caps, model-allowlist
 enforcement (`model` field against token scope), per-workspace quota counters +
 Prometheus alerts; `/models` served from staged `LLMProviderData.Models`; routing path
@@ -161,7 +161,8 @@ Deployment ×2 + PDB `maxUnavailable: 1`, `terminationGracePeriodSeconds` sized 
 max stream duration (a cap not a delay — #1078), preStop not-ready, Service,
 NetworkPolicy (workspace-ns egress carve-out via namespaceSelector, the
 `relay-router-networkpolicy.yaml` pattern), RBAC (router SA: get/list/watch
-Secrets in `llm-relay` only).
+Secrets in `llm-relay`, plus the §4.3 name-scoped write carve-out for exactly the
+two HPKE keypair Secrets).
 
 **Acceptance criteria:**
 - All three scope conjuncts enforced per request (workspace, baseURL, model
