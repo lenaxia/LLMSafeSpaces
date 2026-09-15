@@ -802,6 +802,8 @@ paths:
           description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          description: Request body exceeds the 10 MB limit
         "422":
           description: |
             The session's history contains an image and the active model
@@ -1229,6 +1231,10 @@ paths:
             carries a body `retryAfter` hint (no header); the
             connection/session-limit arms set both; the quota arm carries
             `{"error", "event_type"}` with neither.
+        "503":
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
     get:
       tags: [sessions]
       summary: List queued messages for a session

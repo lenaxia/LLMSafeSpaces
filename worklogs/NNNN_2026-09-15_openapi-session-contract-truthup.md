@@ -139,3 +139,12 @@ None.
 ## Tests run (r2)
 
 - `make -C sdks validate` + `make sdk-check` — green; `go test ./api/internal/server/` (conformance suite) — ok; all 13 hurl files green against Prism.
+
+## Review r3 remediation
+
+**f1 (enqueueMessage had NO 503 row — and the r2 worklog/commit over-claimed):** the r2 note said the fail-closed 503 was "folded into the 503 row descriptions of the three quota-gated routes", but enqueueMessage is quota-gated too (`proxy_handlers.go:833`) and never had a 503 row to fold into — its not-ready arm (`:825`) and the quota fail-closed 503 were both undocumented. Row added (same wording as the siblings). The r2 claim was corrected here rather than rewritten (worklogs are append-only).
+**f2 (sendMessage 413):** `rejectMessageRouteFiles`' MaxBytesReader arm (`proxy_handlers.go:349-351`, called at `:83` before body extraction) answers 413 `{"error": "request body exceeds 10 MB limit"}` — now documented. (sendPromptAsync/enqueue cap their bodies with the same reader but surface it as 400 "failed to read request body" — verified, no 413 rows there.)
+
+## Tests run (r3)
+
+- `make -C sdks validate` + `make sdk-check` — green (spec valid, router parity holds).
