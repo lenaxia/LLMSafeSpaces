@@ -46,6 +46,14 @@ func actVerb(m *abiv1.ActionRequest) (abiv1.ActionType, string, bool) {
 		return abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION, "action.answer_question", true
 	case *abiv1.ActionRequest_Compact:
 		return abiv1.ActionType_ACTION_TYPE_COMPACT, "action.compact", true
+	case *abiv1.ActionRequest_CreateSession:
+		return abiv1.ActionType_ACTION_TYPE_CREATE_SESSION, "action.create_session", true
+	case *abiv1.ActionRequest_Send:
+		return abiv1.ActionType_ACTION_TYPE_SEND, "action.send", true
+	case *abiv1.ActionRequest_DeleteSession:
+		return abiv1.ActionType_ACTION_TYPE_DELETE_SESSION, "action.delete_session", true
+	case *abiv1.ActionRequest_RenameSession:
+		return abiv1.ActionType_ACTION_TYPE_RENAME_SESSION, "action.rename_session", true
 	default:
 		return abiv1.ActionType_ACTION_TYPE_UNSPECIFIED, "action.unknown", false
 	}
@@ -165,6 +173,26 @@ func validateAction(m *abiv1.ActionRequest) error {
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires option_ids and/or custom_text, or reply"))
 		case ans.GetMessage() != "" && ans.GetReply() == "":
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question message requires reply (deny feedback)"))
+		}
+	case *abiv1.ActionRequest_Send:
+		// #1372: the session-scoped sessions verbs require their target;
+		// create_session is exempt (the harness mints the id).
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("send requires session_id"))
+		}
+		if a.Send.GetText() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("send requires text"))
+		}
+	case *abiv1.ActionRequest_DeleteSession:
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("delete_session requires session_id"))
+		}
+	case *abiv1.ActionRequest_RenameSession:
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("rename_session requires session_id"))
+		}
+		if a.RenameSession.GetTitle() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("rename_session requires title"))
 		}
 	}
 	return nil

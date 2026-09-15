@@ -30,8 +30,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // opencodeStoreReader is the US-69.3 StoreReader: opencode's session list
@@ -498,6 +501,16 @@ func opencodeActionSurface(client *OpenCodeClient, password string) (sessionstat
 		abiv1.ActionType_ACTION_TYPE_INTERRUPT,
 		abiv1.ActionType_ACTION_TYPE_SWITCH_MODEL,
 		abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION,
+		// #1372 (S1 completion): the sessions-cluster verbs. Declared
+		// unconditionally — their harness routes are the production
+		// adapter path's own V1 routes (POST /session, POST
+		// /session/:id/message, DELETE /session/:id, PATCH /session/:id),
+		// the same regression-pinned confidence class as the trio above;
+		// the boot probe below stays for the unpinned V2 routes only.
+		abiv1.ActionType_ACTION_TYPE_CREATE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_SEND,
+		abiv1.ActionType_ACTION_TYPE_DELETE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_RENAME_SESSION,
 	}
 	switchAgent, agentKey, compact := probeActionRoutes(client)
 	if switchAgent {
@@ -693,31 +706,110 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 		}
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Compact{Compact: &abiv1.CompactResult{}}}, nil
 
+	case *abiv1.ActionRequest_CreateSession:
+		// #1372: the adapter path's own create wire — POST /session with
+		// the optional title (empty object when absent). The response
+		// round-trips through the SAME exported translator the adapter
+		// uses, then converts to the ABI result shape.
+		body := map[string]any{}
+		if a.CreateSession.GetTitle() != "" {
+			body["title"] = a.CreateSession.GetTitle()
+		}
+		_, raw, err := o.do(ctx, http.MethodPost, "/session", body, nil)
+		if err != nil {
+			return nil, err
+		}
+		s, perr := opencode.ParseSessionWire(raw, "")
+		if perr != nil {
+			return nil, connect.NewError(connect.CodeInternal, perr)
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_CreateSession{
+			CreateSession: &abiv1.CreateSessionResult{Session: sessionToABI(s)},
+		}}, nil
+
+	case *abiv1.ActionRequest_Send:
+		// #1372: the synchronous send wire — the adapter's V1 message
+		// route, parts + the per-prompt model OBJECT form (the shared
+		// MessageModelOverrideWire seam; the differ enrichment stays
+		// dead in production on both paths — WithFileDiffProducer has
+		// zero production callers).
+		sa := a.Send
+		body := map[string]any{
+			"parts": []map[string]any{{"type": "text", "text": sa.GetText()}},
+		}
+		if wire, ok := opencode.MessageModelOverrideWire(modelRefFromABI(sa.GetModel())); ok {
+			body["model"] = wire
+		}
+		_, raw, err := o.do(ctx, http.MethodPost, "/session/"+sessionID+"/message", body, nil)
+		if err != nil {
+			return nil, err
+		}
+		msg, _, perr := opencode.ParseMessageWire(raw)
+		if perr != nil {
+			return nil, connect.NewError(connect.CodeInternal, perr)
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{
+			Send: &abiv1.SendResult{Message: messageToABI(&msg)},
+		}}, nil
+
+	case *abiv1.ActionRequest_DeleteSession:
+		if _, _, err := o.do(ctx, http.MethodDelete, "/session/"+sessionID, nil, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_DeleteSession{
+			DeleteSession: &abiv1.DeleteSessionResult{},
+		}}, nil
+
+	case *abiv1.ActionRequest_RenameSession:
+		// PATCH, not POST: the pinned agent accepts POST /session/{id}
+		// with 200 but IGNORES the body (the adapter comment's
+		// silent-rename finding, 2026-09-13).
+		if _, _, err := o.do(ctx, http.MethodPatch, "/session/"+sessionID,
+			map[string]any{"title": a.RenameSession.GetTitle()}, nil); err != nil {
+			return nil, err
+		}
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_RenameSession{
+			RenameSession: &abiv1.RenameSessionResult{},
+		}}, nil
+
 	default:
 		return nil, fmt.Errorf("opencodeActor: unhandled action %T", a)
 	}
 }
 
-// post is the action transport: POST JSON, expect 2xx. A non-2xx returns
-// a typed connect error so the Act op surfaces the harness's status
-// (InvalidArgument/Failure etc.) instead of a generic 500.
+// post is the POST transport for the verbs that ignore the response
+// body; do returns it.
 func (o opencodeActor) post(ctx context.Context, path string, body any, out any) (int, error) {
-	b, err := json.Marshal(body)
-	if err != nil {
-		return 0, err
+	code, _, err := o.do(ctx, http.MethodPost, path, body, out)
+	return code, err
+}
+
+// do is the action transport: one Basic-auth JSON request, expect 2xx. A
+// non-2xx returns a typed connect error so the Act op surfaces the
+// harness's status (InvalidArgument/NotFound etc.) instead of a generic
+// 500. The response body is returned (bounded) for the caller's
+// translation.
+func (o opencodeActor) do(ctx context.Context, method, path string, body any, out any) (int, []byte, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, getAgentAddr()+path, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, method, getAgentAddr()+path, rdr)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	req.SetBasicAuth(agentd.AuthUsername, o.password)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 	if resp.StatusCode >= 400 {
 		code := connect.CodeInternal
 		switch resp.StatusCode {
@@ -728,14 +820,238 @@ func (o opencodeActor) post(ctx context.Context, path string, body any, out any)
 		case http.StatusUnauthorized:
 			code = connect.CodeUnauthenticated
 		}
-		return resp.StatusCode, connect.NewError(code, fmt.Errorf("POST %s: status %d: %s", path, resp.StatusCode, string(data)))
+		return resp.StatusCode, nil, connect.NewError(code, fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, string(data)))
 	}
 	if out != nil {
 		if err := json.Unmarshal(data, out); err != nil {
-			return resp.StatusCode, err
+			return resp.StatusCode, data, err
 		}
 	}
-	return resp.StatusCode, nil
+	return resp.StatusCode, data, nil
+}
+
+// --- #1372: contract ↔ ABI converters for the sessions verbs -----------
+//
+// The wiring-side halves (the opencode seam's questionToABI/
+// permissionToABI are the precedent); the API-side halves live beside
+// inputRequestFromABI in the handlers. The parity pins (handler tests)
+// hold both sides to the contract JSON.
+
+func modelRefFromABI(m *abiv1.ModelRef) *session.ModelRef {
+	if m == nil {
+		return nil
+	}
+	return &session.ModelRef{ID: m.GetId(), Provider: m.GetProvider()}
+}
+
+func modelRefToABI(m *session.ModelRef) *abiv1.ModelRef {
+	if m == nil {
+		return nil
+	}
+	return &abiv1.ModelRef{Id: m.ID, Provider: m.Provider}
+}
+
+func sessionStatusToABI(s session.Status) abiv1.SessionStatus {
+	switch s {
+	case session.StatusIdle:
+		return abiv1.SessionStatus_SESSION_STATUS_IDLE
+	case session.StatusBusy:
+		return abiv1.SessionStatus_SESSION_STATUS_BUSY
+	case session.StatusError:
+		return abiv1.SessionStatus_SESSION_STATUS_ERROR
+	case session.StatusCompacting:
+		return abiv1.SessionStatus_SESSION_STATUS_COMPACTING
+	case session.StatusArchived:
+		return abiv1.SessionStatus_SESSION_STATUS_ARCHIVED
+	default:
+		return abiv1.SessionStatus_SESSION_STATUS_UNKNOWN
+	}
+}
+
+func costToABI(c *session.Cost) *abiv1.Cost {
+	if c == nil {
+		return nil
+	}
+	return &abiv1.Cost{
+		InputTokens:      c.InputTokens,
+		OutputTokens:     c.OutputTokens,
+		ReasoningTokens:  c.ReasoningTokens,
+		CacheReadTokens:  c.CacheReadTokens,
+		CacheWriteTokens: c.CacheWriteTokens,
+		TotalTokens:      c.TotalTokens,
+		CostUsd:          c.CostUSD,
+	}
+}
+
+func timeRangeToABI(tr *session.TimeRange) *abiv1.TimeRange {
+	if tr == nil {
+		return nil
+	}
+	out := &abiv1.TimeRange{}
+	if !tr.StartedAt.IsZero() {
+		out.StartedAt = timestamppb.New(tr.StartedAt)
+	}
+	if tr.CompletedAt != nil {
+		out.CompletedAt = timestamppb.New(*tr.CompletedAt)
+	}
+	return out
+}
+
+func sessionToABI(s *session.Session) *abiv1.Session {
+	if s == nil {
+		return nil
+	}
+	return &abiv1.Session{
+		Id:          s.ID,
+		WorkspaceId: s.WorkspaceID,
+		ParentId:    s.ParentID,
+		Title:       s.Title,
+		AgentId:     s.AgentID,
+		Model:       modelRefToABI(s.Model),
+		Status:      sessionStatusToABI(s.Status),
+		Cost:        costToABI(s.Cost),
+		Time:        timeRangeToABI(s.Time),
+		Summary:     s.Summary,
+		Archived:    s.Archived,
+	}
+}
+
+func messageStatusToABI(t session.MessageType) abiv1.MessageType {
+	switch t {
+	case session.MessageUser:
+		return abiv1.MessageType_MESSAGE_TYPE_USER
+	case session.MessageAssistant:
+		return abiv1.MessageType_MESSAGE_TYPE_ASSISTANT
+	case session.MessageShell:
+		return abiv1.MessageType_MESSAGE_TYPE_SHELL
+	case session.MessageAgentSwitch:
+		return abiv1.MessageType_MESSAGE_TYPE_AGENT_SWITCH
+	case session.MessageModelSwitch:
+		return abiv1.MessageType_MESSAGE_TYPE_MODEL_SWITCH
+	case session.MessageCompaction:
+		return abiv1.MessageType_MESSAGE_TYPE_COMPACTION
+	case session.MessageSystem:
+		return abiv1.MessageType_MESSAGE_TYPE_SYSTEM
+	default:
+		return abiv1.MessageType_MESSAGE_TYPE_UNSPECIFIED
+	}
+}
+
+func toolStatusToABI(s session.ToolStatus) abiv1.ToolStatus {
+	switch s {
+	case session.ToolStatusPending:
+		return abiv1.ToolStatus_TOOL_STATUS_PENDING
+	case session.ToolStatusRunning:
+		return abiv1.ToolStatus_TOOL_STATUS_RUNNING
+	case session.ToolStatusCompleted:
+		return abiv1.ToolStatus_TOOL_STATUS_COMPLETED
+	case session.ToolStatusError:
+		return abiv1.ToolStatus_TOOL_STATUS_ERROR
+	default:
+		return abiv1.ToolStatus_TOOL_STATUS_UNSPECIFIED
+	}
+}
+
+func changeStatusToABI(s session.ChangeStatus) abiv1.ChangeStatus {
+	switch s {
+	case session.ChangeAdded:
+		return abiv1.ChangeStatus_CHANGE_STATUS_ADDED
+	case session.ChangeModified:
+		return abiv1.ChangeStatus_CHANGE_STATUS_MODIFIED
+	case session.ChangeDeleted:
+		return abiv1.ChangeStatus_CHANGE_STATUS_DELETED
+	case session.ChangeRenamed:
+		return abiv1.ChangeStatus_CHANGE_STATUS_RENAMED
+	default:
+		return abiv1.ChangeStatus_CHANGE_STATUS_UNSPECIFIED
+	}
+}
+
+func partToABI(p session.Part) *abiv1.Part {
+	out := &abiv1.Part{Id: p.ID}
+	switch p.Type {
+	case session.PartText:
+		out.Type = abiv1.PartType_PART_TYPE_TEXT
+		out.Payload = &abiv1.Part_Text{Text: p.Text}
+	case session.PartReasoning:
+		out.Type = abiv1.PartType_PART_TYPE_REASONING
+		out.Payload = &abiv1.Part_Reasoning{Reasoning: p.Reasoning}
+	case session.PartTool:
+		if p.Tool == nil {
+			return nil
+		}
+		out.Type = abiv1.PartType_PART_TYPE_TOOL
+		tool := &abiv1.ToolPart{
+			CallId: p.Tool.CallID,
+			Name:   p.Tool.Name,
+			Input:  p.Tool.Input,
+			Output: p.Tool.Output,
+			State:  &abiv1.ToolState{Status: toolStatusToABI(p.Tool.State.Status), Error: p.Tool.State.Error},
+		}
+		if p.Tool.State.StartedAt != nil {
+			tool.State.StartedAt = timestamppb.New(*p.Tool.State.StartedAt)
+		}
+		if p.Tool.State.CompletedAt != nil {
+			tool.State.CompletedAt = timestamppb.New(*p.Tool.State.CompletedAt)
+		}
+		out.Payload = &abiv1.Part_Tool{Tool: tool}
+	case session.PartFileChange:
+		if p.FileChange == nil {
+			return nil
+		}
+		out.Type = abiv1.PartType_PART_TYPE_FILE_CHANGE
+		out.Payload = &abiv1.Part_FileChange{FileChange: &abiv1.FileDiff{
+			Path:      p.FileChange.Path,
+			OldPath:   p.FileChange.OldPath,
+			Status:    changeStatusToABI(p.FileChange.Status),
+			Patch:     p.FileChange.Patch,
+			Additions: int32(p.FileChange.Additions), //nolint:gosec // display-only diff counts
+			Deletions: int32(p.FileChange.Deletions), //nolint:gosec // display-only diff counts
+		}}
+	case session.PartCustom:
+		if p.Custom == nil {
+			return nil
+		}
+		out.Type = abiv1.PartType_PART_TYPE_CUSTOM
+		out.Payload = &abiv1.Part_Custom{Custom: &abiv1.CustomPart{Kind: p.Custom.Kind, Data: p.Custom.Data}}
+	default:
+		return nil
+	}
+	return out
+}
+
+func messageToABI(m *session.Message) *abiv1.Message {
+	if m == nil {
+		return nil
+	}
+	out := &abiv1.Message{
+		Id:        m.ID,
+		SessionId: m.SessionID,
+		Type:      messageStatusToABI(m.Type),
+		Text:      m.Text,
+		Command:   m.Command,
+		FromAgent: m.FromAgent,
+		ToAgent:   m.ToAgent,
+		FromModel: modelRefToABI(m.FromModel),
+		ToModel:   modelRefToABI(m.ToModel),
+		Model:     modelRefToABI(m.Model),
+		Cost:      costToABI(m.Cost),
+	}
+	if m.CreatedAt != nil {
+		out.CreatedAt = timestamppb.New(*m.CreatedAt)
+	}
+	if m.ExitCode != nil {
+		out.ExitCode = proto.Int32(int32(*m.ExitCode)) //nolint:gosec // display-only
+	}
+	if m.Error != nil {
+		out.Error = &abiv1.Error{Code: m.Error.Code, Message: m.Error.Message}
+	}
+	for _, p := range m.Parts {
+		if ap := partToABI(p); ap != nil {
+			out.Parts = append(out.Parts, ap)
+		}
+	}
+	return out
 }
 
 // PendingInputs is the lease diff's truth source: the live ask registries

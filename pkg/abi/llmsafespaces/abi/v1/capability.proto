@@ -30,6 +30,10 @@ enum ActionType {
   ACTION_TYPE_SWITCH_AGENT = 3;
   ACTION_TYPE_ANSWER_QUESTION = 4;
   ACTION_TYPE_COMPACT = 5;
+  ACTION_TYPE_CREATE_SESSION = 6;
+  ACTION_TYPE_SEND = 7;
+  ACTION_TYPE_DELETE_SESSION = 8;
+  ACTION_TYPE_RENAME_SESSION = 9;
 }
 
 // DeliveryPartKind enumerates delivery part kinds for capability

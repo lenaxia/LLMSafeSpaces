@@ -72,6 +72,14 @@ func verbOf(m *abiv1.ActionRequest) string {
 		return "answer_question"
 	case *abiv1.ActionRequest_Compact:
 		return "compact"
+	case *abiv1.ActionRequest_CreateSession:
+		return "create_session"
+	case *abiv1.ActionRequest_Send:
+		return "send"
+	case *abiv1.ActionRequest_DeleteSession:
+		return "delete_session"
+	case *abiv1.ActionRequest_RenameSession:
+		return "rename_session"
 	default:
 		return "unknown"
 	}
@@ -89,6 +97,14 @@ func verbResult(verb string, m *abiv1.ActionRequest) *abiv1.ActionResult {
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: m.GetAnswerQuestion().GetInputId()}}}
 	case "compact":
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Compact{Compact: &abiv1.CompactResult{}}}
+	case "create_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_CreateSession{CreateSession: &abiv1.CreateSessionResult{}}}
+	case "send":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}
+	case "delete_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_DeleteSession{DeleteSession: &abiv1.DeleteSessionResult{}}}
+	case "rename_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_RenameSession{RenameSession: &abiv1.RenameSessionResult{}}}
 	}
 	return &abiv1.ActionResult{}
 }
@@ -100,6 +116,10 @@ func allActions() []abiv1.ActionType {
 		abiv1.ActionType_ACTION_TYPE_SWITCH_AGENT,
 		abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION,
 		abiv1.ActionType_ACTION_TYPE_COMPACT,
+		abiv1.ActionType_ACTION_TYPE_CREATE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_SEND,
+		abiv1.ActionType_ACTION_TYPE_DELETE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_RENAME_SESSION,
 	}
 }
 
@@ -143,17 +163,24 @@ func TestActOp_UnionMembers(t *testing.T) {
 		{SessionId: "s1", Action: &abiv1.ActionRequest_SwitchAgent{SwitchAgent: &abiv1.SwitchAgentAction{AgentId: "plan"}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1", OptionIds: []string{"Go"}}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_Compact{Compact: &abiv1.CompactAction{}}},
+		// #1372: the sessions-cluster verbs. create_session carries no
+		// session id (the harness mints it) — the row proves the empty
+		// session_id path dispatches like any other member.
+		{Action: &abiv1.ActionRequest_CreateSession{CreateSession: &abiv1.CreateSessionAction{Title: "T"}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "hi"}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_DeleteSession{DeleteSession: &abiv1.DeleteSessionAction{}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{Title: "T"}}},
 	}
 	for _, req := range cases {
 		res, err := c.Act(ctx, connect.NewRequest(req))
 		require.NoError(t, err, "verb %s", verbOf(req))
-		assert.Equal(t, "s1", res.Msg.GetSessionId())
+		assert.Equal(t, req.GetSessionId(), res.Msg.GetSessionId())
 		assert.NotNil(t, res.Msg.GetResult(), "typed result set for %s", verbOf(req))
 		assert.Zero(t, res.Msg.GetEffectSeq(), "effect_seq unset: not knowable before the response returns")
 	}
 	actor.mu.Lock()
 	defer actor.mu.Unlock()
-	assert.Equal(t, []string{"interrupt", "switch_model", "switch_agent", "answer_question", "compact"}, actor.verbs)
+	assert.Equal(t, []string{"interrupt", "switch_model", "switch_agent", "answer_question", "compact", "create_session", "send", "delete_session", "rename_session"}, actor.verbs)
 }
 
 // TestActOp_NotSupportedTyped: an undeclared verb is a TYPED
@@ -242,6 +269,14 @@ func TestActOp_Validation(t *testing.T) {
 		{SessionId: "s1", Action: &abiv1.ActionRequest_SwitchAgent{SwitchAgent: &abiv1.SwitchAgentAction{}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1"}}},
+		// #1372: send requires text AND a session; rename requires a
+		// session and a title; delete requires a session. create_session
+		// has no requirements (title optional, no session yet).
+		{SessionId: "s1", Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{}}},
+		{Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "hi"}}},
+		{Action: &abiv1.ActionRequest_DeleteSession{DeleteSession: &abiv1.DeleteSessionAction{}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{}}},
+		{Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{Title: "T"}}},
 	}
 	for _, req := range bad {
 		_, err := c.Act(ctx, connect.NewRequest(req))

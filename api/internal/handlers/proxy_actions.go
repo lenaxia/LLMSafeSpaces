@@ -13,6 +13,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
@@ -112,19 +114,42 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID, ses
 // terminus transport discipline: zero generated-code coupling in the API
 // binary path).
 func abiAct(ctx context.Context, base, pw string, payload any, out any) error {
-	body, err := json.Marshal(payload)
+	data, err := abiActRaw(ctx, base, pw, payload)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+abiActPath, bytes.NewReader(body))
+	// Connect unary success: the body IS the message (bare JSON).
+	return json.Unmarshal(data, out)
+}
+
+// abiActProto is abiAct with a protojson decode — for callers consuming
+// the result as a generated message (the #1372 sessions verbs).
+// DiscardUnknown keeps mixed-generation windows forward-compatible: a
+// newer agentd may emit fields this API's schema does not carry yet.
+func abiActProto(ctx context.Context, base, pw string, payload any, out proto.Message) error {
+	data, err := abiActRaw(ctx, base, pw, payload)
 	if err != nil {
 		return err
+	}
+	return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(data, out)
+}
+
+// abiActRaw performs the Act POST and returns the success body (with the
+// connect-error mapping applied on failure).
+func abiActRaw(ctx context.Context, base, pw string, payload any) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+abiActPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
 	req.SetBasicAuth("opencode", pw)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := agentdHTTPClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -137,12 +162,11 @@ func abiAct(ctx context.Context, base, pw string, payload any, out any) error {
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(data, &e) == nil && e.Code != "" {
-			return &connectCodeError{code: e.Code, msg: e.Message}
+			return nil, &connectCodeError{code: e.Code, msg: e.Message}
 		}
-		return fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
+		return nil, fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
 	}
-	// Connect unary success: the body IS the message (bare JSON).
-	return json.Unmarshal(data, out)
+	return data, nil
 }
 
 // connectCodeError carries the connect error code string off the wire.
