@@ -409,3 +409,20 @@ func TestSeam_SessionIDValidation(t *testing.T) {
 	// Valid opaque IDs still pass.
 	assert.NoError(t, validateSessionID("ses_f66ef51e3ffeFahEENfR3r2ia4"))
 }
+
+// Mid-turn, the in-flight assistant message carries a zeroed token
+// stamp until step completion (live-proven 2026-09-14: busy sessions
+// reported no context usage because the scan stopped at the
+// placeholder). The scan must skip zero-total stamps and report the
+// last COMPLETED step.
+func TestSeam_SessionPromptTokens_SkipsInFlightZeroStamp(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"info":{"role":"assistant","tokens":{"input":455,"cache":{"read":559168,"write":0}}}},
+			{"info":{"role":"user"}},
+			{"info":{"role":"assistant","tokens":{"input":0,"cache":{"read":0,"write":0}}}}
+		]`))
+	})
+	got := c.SessionPromptTokens(context.Background(), "ses_1")
+	assert.Equal(t, int64(455+559168), got, "must report the last COMPLETED step, skipping the zeroed in-flight stamp")
+}

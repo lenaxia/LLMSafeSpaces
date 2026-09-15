@@ -450,9 +450,16 @@ func (c *Client) SessionContextCount(ctx context.Context, sessionID string) (int
 }
 
 // SessionPromptTokens returns the approximate live context usage in
-// tokens: the most recent assistant message's input + cache.read +
-// cache.write (the Epic 36 formula — what the next prompt will actually
-// cost the window). 0 when no assistant turn exists yet.
+// tokens: the most recent COMPLETED assistant step's input + cache.read
+// + cache.write (the Epic 36 formula — what the next prompt will
+// actually cost the window). 0 when no assistant turn exists yet.
+//
+// Mid-turn, the in-flight assistant message carries a ZEROED token
+// stamp (real usage lands at step completion — live-proven 2026-09-14:
+// busy sessions reported no context usage because the scan stopped at
+// the placeholder). Zero-total stamps are skipped; a real completion
+// always carries input > 0, so busy sessions report the last completed
+// step — the honest "as of last step" number.
 func (c *Client) SessionPromptTokens(ctx context.Context, sessionID string) int64 {
 	if validateSessionID(sessionID) != nil {
 		return 0
@@ -478,8 +485,11 @@ func (c *Client) SessionPromptTokens(ctx context.Context, sessionID string) int6
 		return 0
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Info.Role == "assistant" && msgs[i].Info.Tokens != nil {
-			return msgs[i].Info.Tokens.Input + msgs[i].Info.Tokens.Cache.Read + msgs[i].Info.Tokens.Cache.Write
+		if msgs[i].Info.Role != "assistant" || msgs[i].Info.Tokens == nil {
+			continue
+		}
+		if total := msgs[i].Info.Tokens.Input + msgs[i].Info.Tokens.Cache.Read + msgs[i].Info.Tokens.Cache.Write; total > 0 {
+			return total
 		}
 	}
 	return 0
