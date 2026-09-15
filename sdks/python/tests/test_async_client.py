@@ -8,7 +8,9 @@ import respx
 
 from llmsafespaces import AsyncLLMSafeSpaces
 from tests.input_contract_fixtures import LATE_ANSWER_BODY, QUESTION_ROW
+from tests.session_contract_fixtures import PROMPT_DUPLICATE_BODY, PROMPT_QUEUED_BODY, SESSION_ROW
 from llmsafespaces.errors import AuthError, NotFoundError, RateLimitError
+from llmsafespaces.types import PromptAccepted, Session
 
 
 BASE = "https://llmsafespaces.test"
@@ -586,3 +588,50 @@ async def test_async_request_input_snapshot(client: AsyncLLMSafeSpaces):
     route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/input-snapshot").respond(status_code=202)
     await client.input_requests.request_input_snapshot("ws-1")
     assert route.called
+
+
+# --- sessions: the contract Session surface (#1304 / 4b-c2) ---
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_get_session_typed_contract(client: AsyncLLMSafeSpaces):
+    respx.get(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_7f9d").respond(json=SESSION_ROW)
+    result: Session = await client.sessions.get("ws-1", "ses_7f9d")
+    assert result["id"] == "ses_7f9d"
+    assert result["workspaceId"] == "ws-1"
+    assert result["status"] == "busy"
+    assert result["model"]["id"] == "claude-sonnet-4.5"
+    assert result["contextUsage"]["used"] == 45000
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_send_prompt_async_returns_accepted_receipt(client: AsyncLLMSafeSpaces):
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/prompt").respond(
+        status_code=202, json=PROMPT_QUEUED_BODY
+    )
+    rcpt: PromptAccepted = await client.sessions.send_prompt_async("ws-1", "ses_1", "hello")
+    assert rcpt["messageID"] == "msg_9"
+    assert rcpt["clientMessageID"] == "cmid-1"
+    assert rcpt["status"] == "queued"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_send_prompt_async_duplicate_returns_original_receipt(client: AsyncLLMSafeSpaces):
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/prompt").respond(
+        status_code=200, json=PROMPT_DUPLICATE_BODY
+    )
+    rcpt: PromptAccepted = await client.sessions.send_prompt_async("ws-1", "ses_1", "hello")
+    assert rcpt["messageID"] == "msg_orig"
+    assert rcpt["status"] == "duplicate"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_abort_and_delete_are_no_content(client: AsyncLLMSafeSpaces):
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/abort").respond(status_code=204)
+    respx.delete(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1").respond(status_code=204)
+    await client.sessions.abort("ws-1", "ses_1")
+    await client.sessions.delete("ws-1", "ses_1")

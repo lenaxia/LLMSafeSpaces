@@ -15,8 +15,9 @@ from llmsafespaces import (
     Message,
     ProviderCredential,
 )
-from llmsafespaces.types import InboxLateAnswerAccepted, InputRequest
+from llmsafespaces.types import InboxLateAnswerAccepted, InputRequest, PromptAccepted, Session
 from tests.input_contract_fixtures import LATE_ANSWER_BODY, PERMISSION_ROW, QUESTION_ROW
+from tests.session_contract_fixtures import PROMPT_DUPLICATE_BODY, PROMPT_QUEUED_BODY, SESSION_ROW
 
 
 BASE = "http://localhost:8080/api/v1"
@@ -1022,3 +1023,65 @@ def test_request_input_snapshot():
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.input_requests.request_input_snapshot("ws-1")
     assert route.called
+
+
+# --- sessions: the contract Session surface (#1304 / 4b-c2) ---
+
+
+@respx.mock
+def test_get_session_typed_contract():
+    respx.get(f"{BASE}/workspaces/ws-1/sessions/ses_7f9d").respond(json=SESSION_ROW)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result: Session = client.sessions.get("ws-1", "ses_7f9d")
+    assert result["id"] == "ses_7f9d"
+    assert result["workspaceId"] == "ws-1"
+    assert result["parentId"] == "ses_root"
+    assert result["status"] == "busy"
+    assert result["model"]["id"] == "claude-sonnet-4.5"
+    assert result["cost"]["totalTokens"] == 200
+    assert result["contextUsage"]["used"] == 45000
+
+
+@respx.mock
+def test_get_session_raw_upstream_shape_is_not_the_contract():
+    # The RETIRED raw passthrough shape (opencode parentID casing, no
+    # workspaceId) must not decode as the contract.
+    respx.get(f"{BASE}/workspaces/ws-1/sessions/ses_1").respond(
+        json={"id": "ses_1", "title": "t", "parentID": "ses_0"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result: Session = client.sessions.get("ws-1", "ses_1")
+    assert result.get("parentId", "") == ""
+    assert result.get("workspaceId", "") == ""
+
+
+@respx.mock
+def test_send_prompt_async_returns_accepted_receipt():
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/prompt").respond(
+        status_code=202, json=PROMPT_QUEUED_BODY
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    rcpt: PromptAccepted = client.sessions.send_prompt_async("ws-1", "ses_1", "hello")
+    assert rcpt["messageID"] == "msg_9"
+    assert rcpt["clientMessageID"] == "cmid-1"
+    assert rcpt["status"] == "queued"
+
+
+@respx.mock
+def test_send_prompt_async_duplicate_returns_original_receipt():
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/prompt").respond(
+        status_code=200, json=PROMPT_DUPLICATE_BODY
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    rcpt: PromptAccepted = client.sessions.send_prompt_async("ws-1", "ses_1", "hello")
+    assert rcpt["messageID"] == "msg_orig"
+    assert rcpt["status"] == "duplicate"
+
+
+@respx.mock
+def test_abort_and_delete_are_no_content():
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/ses_1/abort").respond(status_code=204)
+    respx.delete(f"{BASE}/workspaces/ws-1/sessions/ses_1").respond(status_code=204)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.abort("ws-1", "ses_1")
+    client.sessions.delete("ws-1", "ses_1")

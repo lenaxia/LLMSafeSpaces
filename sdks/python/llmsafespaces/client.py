@@ -33,7 +33,9 @@ from .types import (
     Message,
     ModelRef,
     Part,
+    PromptAccepted,
     ProviderCredential,
+    Session,
     SecretResponse,
     TerminalTicket,
     UpdateAgentRoleRequest,
@@ -474,7 +476,8 @@ class _SessionsAPI:
             json={"title": title},
         )
 
-    def get(self, workspace_id: str, session_id: str) -> dict[str, Any]:
+    def get(self, workspace_id: str, session_id: str) -> Session:
+        """One session in contract shape (pkg/session Session)."""
         return self._c._request(
             "GET", f"/workspaces/{workspace_id}/sessions/{session_id}"
         )
@@ -488,15 +491,17 @@ class _SessionsAPI:
         session_id: str,
         message: str,
         files: list[str] | None = None,
-    ) -> None:
-        """Send a prompt asynchronously (202; the reply arrives on the
-        workspace SSE stream). ``files`` are upload-namespace paths
-        (Epic 68) — the API composes the v1 attachment manifest into the
-        dispatched text."""
+    ) -> PromptAccepted:
+        """Send a prompt asynchronously into the delivery outbox (202)
+        and return the accepted-entry receipt; the reply arrives on the
+        workspace SSE stream. A retried ``clientMessageID`` answers 200
+        with the ORIGINAL accepted entry (status ``"duplicate"``).
+        ``files`` are upload-namespace paths (Epic 68) — the API composes
+        the v1 attachment manifest into the dispatched text."""
         body: dict[str, Any] = {"parts": [{"type": "text", "text": message}]}
         if files:
             body["files"] = files
-        self._c._request(
+        return self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/prompt",
             json=body,

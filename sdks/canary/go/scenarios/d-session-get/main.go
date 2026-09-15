@@ -61,12 +61,11 @@ func runSessionGet(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	sessObj, err := c.Sessions.Get(ctx, wsID, sessionID)
 	if run.AssertNoError(err, "p1-get-session") {
-		id, _ := sessObj["id"].(string)
-		run.Assert(id == sessionID, "p2-id-matches",
-			fmt.Sprintf("got %q want %q", id, sessionID))
-
-		_, hasTitle := sessObj["title"]
-		run.Assert(hasTitle, "p3-has-title-field", "")
+		run.Assert(sessObj.ID == sessionID, "p2-id-matches",
+			fmt.Sprintf("got %q want %q", sessObj.ID, sessionID))
+		run.Assert(sessObj.Title != "", "p3-has-title-field", sessObj.Title)
+		run.Assert(sessObj.WorkspaceID == wsID && sessObj.Status != "", "p3b-contract-fields",
+			fmt.Sprintf("workspaceId=%q status=%q", sessObj.WorkspaceID, sessObj.Status))
 	}
 
 	newTitle := "canary-renamed-title"
@@ -75,9 +74,8 @@ func runSessionGet(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	renamedObj, err := c.Sessions.Get(ctx, wsID, sessionID)
 	if run.AssertNoError(err, "p4-get-after-rename") {
-		title, _ := renamedObj["title"].(string)
-		run.Assert(title == newTitle, "p4-title-updated",
-			fmt.Sprintf("got %q want %q", title, newTitle))
+		run.Assert(renamedObj.Title == newTitle, "p4-title-updated",
+			fmt.Sprintf("got %q want %q", renamedObj.Title, newTitle))
 	}
 
 	_, err = c.Sessions.Get(ctx, wsID, "nonexistent-id-000000000")

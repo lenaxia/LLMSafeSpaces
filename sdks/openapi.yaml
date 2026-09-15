@@ -4,7 +4,7 @@ info:
   description: |
     LLMSafeSpaces is a Kubernetes-first platform for running AI agents securely in isolated sandboxes.
     Every sandbox runs `opencode serve` as a persistent HTTP server with a PVC-backed persistent workspace.
-  version: "0.7.0"
+  version: "1.0.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -730,17 +730,17 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
-  # --- Proxy (to opencode serve) ---
+  # --- Sessions (agent adapter surface) ---
   /workspaces/{id}/sessions/{sessionId}/message:
     post:
       tags: [sessions]
       summary: Send a message to the agent (synchronous — blocks until LLM responds)
       description: |
-        Proxies to opencode's `POST /session/:id/message`. Blocks until the LLM
-        produces a complete response. For long prompts, consider using the async
-        prompt endpoint instead.
+        Sends a user message through the agent adapter and blocks until the
+        turn completes; the response is the contract `Message` (pkg/session)
+        with typed parts. For long prompts, consider using the async prompt
+        endpoint instead.
       operationId: sendMessage
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/SessionId"
@@ -756,16 +756,32 @@ paths:
           application/json:
             schema:
               type: object
-              required: [content]
+              required: [parts]
               properties:
+                parts:
+                  type: array
+                  description: |
+                    Text parts of the message (concatenated in order) — the
+                    server extracts the prompt text from here.
+                  items:
+                    type: object
+                    required: [type, text]
+                    properties:
+                      type:
+                        type: string
+                        enum: [text]
+                      text:
+                        type: string
                 content:
                   type: string
-                  description: The message text to send to the agent
+                  description: |
+                    Accepted for backwards compatibility; ignored. The prompt
+                    text is extracted from `parts`.
                 model:
                   $ref: "#/components/schemas/ModelSelector"
       responses:
         "200":
-          description: Agent response
+          description: The completed assistant turn — a contract Message
           content:
             application/json:
               schema:
@@ -773,8 +789,7 @@ paths:
         "400":
           description: |
             Invalid request — including a `files` array (Epic 68): this
-            synchronous route proxies the body verbatim and rejects file
-            references explicitly with
+            synchronous route rejects file references explicitly with
             `{"error": "files not supported on this route; use /prompt"}`.
             Use the async prompt route instead.
           content:
@@ -787,6 +802,8 @@ paths:
           description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
+        "413":
+          description: Request body exceeds the 10 MB limit
         "422":
           description: |
             The session's history contains an image and the active model
@@ -799,11 +816,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "502":
+          description: The agent adapter failed to complete the send
+        "503":
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
+        "429":
+          description: |
+            Rate limited — connection, active-session, or quota limit.
+            The connection/session-limit arms set a `retryAfter` body
+            hint and the Retry-After header; the quota arm carries
+            `{"error", "event_type"}` with neither.
     get:
       tags: [sessions]
       summary: Get message history for a session
       operationId: getHistory
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/SessionId"
@@ -833,7 +861,8 @@ paths:
       responses:
         "200":
           description: |
-            Message history page (newest-first ordering within a page). The
+            Message history page — contract `Message` values in
+            chronological (oldest-first) order within the page. The
             `X-Next-Cursor` response header, when present, is the cursor for the
             next (older) page; its absence means the beginning of the session
             was reached.
@@ -854,6 +883,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "502":
+          description: The agent adapter failed to fetch the transcript
+        "503":
+          description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
   /workspaces/{id}/sessions/{sessionId}/prompt:
     post:
       tags: [sessions]
@@ -869,7 +904,6 @@ paths:
         is idempotent: a retried `clientMessageID` re-dispatches exactly
         one manifest.
       operationId: sendPromptAsync
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/SessionId"
@@ -912,7 +946,23 @@ paths:
                   $ref: "#/components/schemas/ModelSelector"
       responses:
         "202":
-          description: Prompt accepted
+          description: |
+            Prompt accepted into the delivery outbox; the agent's reply
+            arrives on the workspace SSE stream. The body is the accepted
+            entry receipt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptAccepted"
+        "200":
+          description: |
+            Retry of an already-accepted `clientMessageID` (idempotent
+            accept): the body echoes the ORIGINAL accepted entry with
+            `status: "duplicate"`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromptAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -921,44 +971,32 @@ paths:
           description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          description: |
+            Rate limited — the session queue is full or an
+            active-session/quota/connection limit. The queue-full arm
+            carries a body `retryAfter` hint (no header); the
+            connection/session-limit arms set both; the quota arm carries
+            `{"error", "event_type"}` with neither.
+        "503":
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
   /workspaces/{id}/sessions/{sessionId}:
     get:
       tags: [sessions]
       summary: Get session details
       operationId: getSession
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/SessionId"
       responses:
         "200":
-          description: Session details from opencode
+          description: The session — the contract `Session` (pkg/session)
           content:
             application/json:
               schema:
-                type: object
-                description: Opencode session object (schema tracks upstream)
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-    delete:
-      tags: [sessions]
-      summary: Delete a session and its children
-      description: |
-        Deletes a session by proxying DELETE /session/:id to the workspace's
-        opencode agent. The session and all child sessions are removed from
-        both opencode and the session_index. After a successful delete, an SSE
-        `session.status` event with `status: "deleted"` is published for
-        multi-tab consistency.
-      operationId: deleteSession
-      x-opencode-proxy: true
-      parameters:
-        - $ref: "#/components/parameters/WorkspaceId"
-        - $ref: "#/components/parameters/SessionId"
-      responses:
-        "200":
-          description: Session deleted successfully
+                $ref: "#/components/schemas/Session"
         "400":
           description: Invalid session ID (path traversal characters)
           content:
@@ -972,24 +1010,81 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "502":
+          description: The agent adapter failed to load the session
         "503":
           description: Workspace is not active (suspended or transitioning)
-  /workspaces/{id}/sessions/{sessionId}/abort:
-    post:
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
+    delete:
       tags: [sessions]
-      summary: Abort the current agent operation
-      operationId: abortSession
-      x-opencode-proxy: true
+      summary: Delete a session and its children
+      description: |
+        Deletes a session through the agent adapter. The session and all
+        child sessions are removed from both the agent and the
+        session_index. After a successful delete, an SSE
+        `session.status` event with `status: "deleted"` is published for
+        multi-tab consistency.
+      operationId: deleteSession
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - $ref: "#/components/parameters/SessionId"
       responses:
-        "200":
-          description: Abort acknowledged
+        "204":
+          description: Session deleted (no body)
+        "400":
+          description: Invalid session ID (path traversal characters)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "502":
+          description: The agent adapter failed to delete the session
+        "503":
+          description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
+  /workspaces/{id}/sessions/{sessionId}/abort:
+    post:
+      tags: [sessions]
+      summary: Abort the current agent operation
+      description: |
+        Destructively interrupts the in-flight turn through the agent
+        adapter. Queued input is not preserved; stranded-input recovery
+        is the delivery outbox ledger's concern.
+      operationId: abortSession
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204":
+          description: Abort acknowledged (no body)
+        "400":
+          description: Invalid session ID (path traversal characters)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: The agent adapter failed to abort the session
+        "503":
+          description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
   /workspaces/{id}/contract-events:
     get:
       tags: [sessions]
@@ -1089,13 +1184,15 @@ paths:
                     are rejected with 400.
                   items:
                     type: string
-                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
+                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
                 clientMessageID:
                   type: string
                   description: Caller-chosen idempotency key; a retry with the same value returns the originally accepted entry
       responses:
         "202":
-          description: Message enqueued
+          description: |
+            Message accepted into the delivery outbox. The body is the
+            accepted-entry receipt (`status: "queued"`).
           content:
             application/json:
               schema:
@@ -1103,12 +1200,41 @@ paths:
                 properties:
                   messageID:
                     type: string
+                  status:
+                    type: string
+                    enum: [queued]
+        "200":
+          description: |
+            Retry of an already-accepted `clientMessageID` (idempotent
+            accept): the body echoes the ORIGINAL accepted entry with
+            `status: "duplicate"`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messageID:
+                    type: string
+                  status:
+                    type: string
+                    enum: [duplicate]
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          description: |
+            Rate limited — the session queue is full or an
+            active-session/quota/connection limit. The queue-full arm
+            carries a body `retryAfter` hint (no header); the
+            connection/session-limit arms set both; the quota arm carries
+            `{"error", "event_type"}` with neither.
+        "503":
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
     get:
       tags: [sessions]
       summary: List queued messages for a session
@@ -1182,7 +1308,6 @@ paths:
         /workspaces/{id}/contract-events instead (raw ABI StreamFrames: a
         stamped snapshot, then sequenced events).
       operationId: streamEvents
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
@@ -1197,6 +1322,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          description: Too many SSE connections for this workspace
+        "503":
+          description: Event broker not initialized
   # --- Agent Input Requests (Epic 16) ---
   /workspaces/{id}/question:
     get:
@@ -8441,13 +8570,13 @@ components:
       description: |
         One renderable part of a message (pkg/session contract). The 5-type
         union is closed forever (design 0049 discipline rule 1): text,
-        reasoning, tool, file-change, custom. Tools are discriminated by
+        reasoning, tool, file_change, custom. Tools are discriminated by
         tool.name, not by part type.
       required: [type]
       properties:
         type:
           type: string
-          enum: [text, reasoning, tool, file-change, custom]
+          enum: [text, reasoning, tool, file_change, custom]
         id:
           type: string
         text:
@@ -8548,7 +8677,7 @@ components:
         status:
           type: string
         session:
-          $ref: "#/components/schemas/SessionSummary"
+          $ref: "#/components/schemas/Session"
         message:
           $ref: "#/components/schemas/Message"
         part:
@@ -8625,29 +8754,84 @@ components:
           type: string
         callId:
           type: string
-    SessionSummary:
+    Session:
       type: object
-      description: The session fields carried on session.updated contract
-        events (contextUsage.used is the live occupancy numerator;
-        ModelInfo.contextWindow denominates it).
+      description: |
+        The platform-owned view of one agent session (pkg/session
+        contract, design 0049) — the shape of getSession responses and
+        of the session payload on contract events. Agent/model switches
+        and compaction ride the transcript as Message entries, not
+        side-band fields here.
       required: [id]
       properties:
         id:
           type: string
-        title:
+        workspaceId:
           type: string
         parentId:
           type: string
+        title:
+          type: string
+        agentId:
+          type: string
+        model:
+          $ref: "#/components/schemas/ModelRef"
+        status:
+          type: string
+          enum: [unknown, idle, busy, error, compacting, archived]
+        cost:
+          $ref: "#/components/schemas/Cost"
         contextUsage:
-          type: object
-          required: [used]
-          properties:
-            used:
-              type: integer
-              format: int64
-            window:
-              type: integer
-              format: int64
+          $ref: "#/components/schemas/ContextUsage"
+        time:
+          $ref: "#/components/schemas/TimeRange"
+        summary:
+          type: string
+        archived:
+          type: boolean
+    ContextUsage:
+      type: object
+      description: |
+        The session's live context occupancy — the numerator for the
+        "context: 45% used" display. Used is semantic (tokens of window
+        currently occupied); non-monotonic by design (compaction resets
+        it).
+      required: [used]
+      properties:
+        used:
+          type: integer
+          format: int64
+        window:
+          type: integer
+          format: int64
+    TimeRange:
+      type: object
+      description: Bounds a session or message. CompletedAt is absent while busy.
+      required: [startedAt]
+      properties:
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+    PromptAccepted:
+      type: object
+      description: |
+        The accepted-entry receipt for an async prompt: the 202 body of a
+        fresh accept, and the 200 body of a retried clientMessageID
+        (which echoes the ORIGINAL accepted entry with status
+        "duplicate").
+      properties:
+        messageID:
+          type: string
+          description: The outbox entry ID (202) or the originally accepted entry (duplicate retry).
+        clientMessageID:
+          type: string
+          description: The caller-chosen idempotency key, echoed back.
+        status:
+          type: string
+          enum: [queued, duplicate]
     SessionError:
       type: object
       required: [message]

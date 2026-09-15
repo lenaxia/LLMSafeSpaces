@@ -141,11 +141,12 @@ func TestSendPromptAsync_Files(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(202)
 	})
-	err := c.Sessions.SendPromptAsync(context.Background(), "ws-1", "ses_1", "review please",
+	rcpt, err := c.Sessions.SendPromptAsync(context.Background(), "ws-1", "ses_1", "review please",
 		"/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt")
 	if err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
+	_ = rcpt
 	parts, _ := gotBody["parts"].([]any)
 	if len(parts) != 1 {
 		t.Fatalf("parts: %+v", gotBody)
@@ -166,7 +167,7 @@ func TestSendPromptAsync_PartsShape_NoDeadMessageField(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&raw)
 		w.WriteHeader(202)
 	})
-	if err := c.Sessions.SendPromptAsync(context.Background(), "ws-1", "ses_1", "hi", ""); err != nil {
+	if _, err := c.Sessions.SendPromptAsync(context.Background(), "ws-1", "ses_1", "hi", ""); err != nil {
 		t.Fatalf("prompt: %v", err)
 	}
 	if _, dead := raw["message"]; dead {

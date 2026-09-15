@@ -71,7 +71,11 @@ func runPromptAsync(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 	sessionID := sess.SessionID
 
 	// P1: prompt_async returns 202 immediately
-	err = c.Sessions.SendPromptAsync(ctx, wsID, sessionID, "Reply with the word: ASYNC-OK")
+	rcpt, err := c.Sessions.SendPromptAsync(ctx, wsID, sessionID, "Reply with the word: ASYNC-OK")
+	if run.AssertNoError(err, "prompt-async-send") {
+		run.Assert(rcpt.Status == "queued" && rcpt.MessageID != "", "prompt-async-receipt",
+			fmt.Sprintf("status=%q messageID=%q", rcpt.Status, rcpt.MessageID))
+	}
 	run.AssertNoError(err, "prompt-async: 202 immediate response")
 
 	// P2+P3: Subscribe to SSE and wait for session.idle
@@ -87,7 +91,7 @@ func runPromptAsync(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 	}
 
 	// P5: Abort during in-flight prompt
-	err = c.Sessions.SendPromptAsync(ctx, wsID, sessionID, "Count slowly from 1 to 1000")
+	_, err = c.Sessions.SendPromptAsync(ctx, wsID, sessionID, "Count slowly from 1 to 1000")
 	if run.AssertNoError(err, "second-prompt-async: 202") {
 		time.Sleep(500 * time.Millisecond) // let it start
 		err = c.Sessions.Abort(ctx, wsID, sessionID)

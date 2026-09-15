@@ -75,8 +75,29 @@ func TestOutbox_DedupeReturnsOriginal(t *testing.T) {
 
 	w1 := postPrompt(t, env, `{"clientMessageID":"cm-dup","parts":[{"type":"text","text":"hello"}]}`)
 	require.Equal(t, http.StatusAccepted, w1.Code)
+	var accepted struct {
+		MessageID       string `json:"messageID"`
+		ClientMessageID string `json:"clientMessageID"`
+		Status          string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(w1.Body.Bytes(), &accepted))
+	require.Equal(t, "cm-dup", accepted.ClientMessageID)
+	require.Equal(t, "queued", accepted.Status)
+
+	// #1304: the 200 duplicate row is the PromptAccepted receipt echoing
+	// the ORIGINAL accepted entry — pinned at the handler level so the
+	// spec's 200 row can never drift from the wire again.
 	w2 := postPrompt(t, env, `{"clientMessageID":"cm-dup","parts":[{"type":"text","text":"hello"}]}`)
 	assert.Equal(t, http.StatusOK, w2.Code, "retry with the same clientMessageID is 200-idempotent, not a second accept")
+	var duplicate struct {
+		MessageID       string `json:"messageID"`
+		ClientMessageID string `json:"clientMessageID"`
+		Status          string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &duplicate))
+	assert.Equal(t, accepted.MessageID, duplicate.MessageID, "duplicate echoes the ORIGINAL messageID")
+	assert.Equal(t, "cm-dup", duplicate.ClientMessageID)
+	assert.Equal(t, "duplicate", duplicate.Status)
 
 	entries := listOutbox(t, env)
 	require.Len(t, entries, 1, "exactly one entry exists after a duplicate retry")

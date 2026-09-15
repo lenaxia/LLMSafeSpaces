@@ -217,25 +217,31 @@ func (s *SessionsService) Rename(ctx context.Context, workspaceID, sessionID, ti
 		map[string]string{"title": title}, nil)
 }
 
-func (s *SessionsService) Get(ctx context.Context, workspaceID, sessionID string) (map[string]any, error) {
-	var result map[string]any
+// Get returns one session in contract shape (pkg/session Session).
+func (s *SessionsService) Get(ctx context.Context, workspaceID, sessionID string) (*Session, error) {
+	var result Session
 	err := s.c.do(ctx, "GET", fmt.Sprintf("/workspaces/%s/sessions/%s", workspaceID, sessionID), nil, &result)
-	return result, err
+	return &result, err
 }
 
-// SendPromptAsync delivers a prompt asynchronously (202; the reply arrives
-// on the workspace SSE stream). The body carries the parts shape the API
-// extracts text from. Optional files are upload-namespace paths returned by
-// WorkspacesService.UploadFile (Epic 68): the API composes the v1
-// attachment manifest into the dispatched text.
-func (s *SessionsService) SendPromptAsync(ctx context.Context, workspaceID, sessionID, message string, files ...string) error {
+// SendPromptAsync delivers a prompt asynchronously into the delivery
+// outbox (202) and returns the accepted-entry receipt; the agent's reply
+// arrives on the workspace SSE stream. A retried clientMessageID answers
+// 200 with the ORIGINAL accepted entry (status "duplicate"). The body
+// carries the parts shape the API extracts text from. Optional files are
+// upload-namespace paths returned by WorkspacesService.UploadFile
+// (Epic 68): the API composes the v1 attachment manifest into the
+// dispatched text.
+func (s *SessionsService) SendPromptAsync(ctx context.Context, workspaceID, sessionID, message string, files ...string) (*PromptAccepted, error) {
 	body := map[string]any{
 		"parts": []map[string]string{{"type": "text", "text": message}},
 	}
 	if len(files) > 0 {
 		body["files"] = files
 	}
-	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID), body, nil)
+	var rcpt PromptAccepted
+	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID), body, &rcpt)
+	return &rcpt, err
 }
 
 func (s *SessionsService) Delete(ctx context.Context, workspaceID, sessionID string) error {

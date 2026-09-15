@@ -24,7 +24,7 @@ client = LLMSafeSpaces("https://llmsafespaces.example.com", api_key="lsp_...")
 ws = client.workspaces.create(name="my-project", runtime="base", storage_size="5Gi")
 session = client.sessions.ensure(ws.id)
 response = client.sessions.send_message(ws.id, session.session_id, "Hello!")
-print(response.content)
+print(response["text"])
 ```
 
 ## Quick start (TypeScript)
@@ -36,7 +36,7 @@ const client = new LLMSafeSpaces({ baseUrl: "https://llmsafespaces.example.com",
 const ws = await client.workspaces.create({ name: "my-project", runtime: "base", storageSize: "5Gi" });
 const session = await client.sessions.ensure(ws.id);
 const response = await client.sessions.sendMessage(ws.id, session.sessionId, "Hello!");
-console.log(response.content);
+console.log(response.text);
 ```
 
 ## Structure
@@ -57,5 +57,6 @@ sdks/
 The spec and SDKs version INDEPENDENTLY of the platform (semver over the API
 surface: additive changes bump the minor, breaking changes the major). The
 platform release version (e.g. `v0.21.3`) tracks the deployable artifacts,
-not the SDK surface. When the spec minor bumps, Python and TypeScript SDKs
-are republished from the same change; Go modules resolve from VCS tags.
+not the SDK surface. When the spec version bumps, Python and TypeScript SDKs
+are republished from the same change (see sdks/README.md for the breaking-
+change notes); Go modules resolve from VCS tags.
