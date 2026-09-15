@@ -19,7 +19,9 @@ package local_test
 // wrong-length, non-hex) that must be rejected.
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -60,4 +62,53 @@ func TestS5Gvisor_DelegatesToLib(t *testing.T) {
 
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// The S5.6 delegation must carry the s5 cluster identity across the
+// process boundary: CLUSTER_NAME/CTX are plain vars in the s5 script,
+// and gvisor.sh's own default targets a context that does not exist on
+// the s5 runner. Executes the delegation lines with a stub gvisor.sh
+// that records what it inherited.
+func TestS5Gvisor_DelegationCarriesClusterEnv(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, s5Script)
+
+	start := strings.Index(src, `if CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME"`)
+	end := strings.Index(src, `bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then`)
+	if start < 0 || end < 0 || end < start {
+		t.Fatal("S5.6 delegation lines not found in the expected explicit-env form")
+	}
+	delegation := src[start : end+len(`bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then`)]
+
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "local", "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(libDir, "gvisor.sh")
+	rec := filepath.Join(dir, "env-record")
+	stubBody := "#!/bin/bash\n" +
+		"echo \"CLUSTER_NAME=$CLUSTER_NAME CTX=$CTX args=$*\" >> " + rec + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(stub, []byte(stubBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "REPO_ROOT=" + shQuote(dir) + "\n" +
+		"CLUSTER_NAME=s5-ovl\n" +
+		delegation + "\n: \nfi\n" +
+		"echo delegated-ok\n"
+	got, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("delegation failed: %v: %s", err, got)
+	}
+	if !strings.Contains(string(got), "delegated-ok") {
+		t.Fatalf("delegation chain must succeed, got: %s", got)
+	}
+	recorded, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatal("stub gvisor.sh was never invoked")
+	}
+	if !strings.Contains(string(recorded), "CLUSTER_NAME=s5-ovl CTX=kind-s5-ovl") {
+		t.Fatalf("the child must inherit the s5 cluster identity, got: %s", recorded)
+	}
 }

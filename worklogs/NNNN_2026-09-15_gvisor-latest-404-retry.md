@@ -39,3 +39,15 @@ The retry wrapper (#1373) was the wrong diagnosis carried one step too far: pool
 
 - `go test -timeout 300s ./local/` — ok; `bash -n` both scripts; `golangci-lint` 0 issues
 - Live: `resolve_tag` executed against the real redirect → `release-20260907.0`
+
+## Review r2 remediation (#1375)
+
+**f1 (BLOCKER — the delegation was mis-wired):** `CLUSTER_NAME`/`CTX` are plain vars in the s5 script and never crossed the process boundary — the child `gvisor.sh runtimeclass` would have targeted `kind-llmsafespaces-ci`, a context that does not exist on the s5 runner (its cluster is `s5-ovl`): install succeeds, RuntimeClass apply dies, S5.6 red with a misleading diagnosis. Fixed with EXPLICIT per-call env assignments (`CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME" bash …`), pinned by `TestS5Gvisor_DelegationCarriesClusterEnv` — extract-and-execute of the delegation lines against a stub gvisor.sh recording its inherited environment (the r1 claim "the delegation test pins the wiring" was false — the substring pins could not see this; recorded as a correction).
+
+**Test-gap closures (all mutation-verified blind in r2):**
+- `resolve_tag` retry rows: ride-through (stub failing non-zero twice — r2's stub exited 0 which the `&& break` treats as success; corrected semantics) and give-up-loudly under errexit; the stub is `-L`-aware (a followed redirect yields exit-0-empty — GitHub's real shape), so the happy row also proves the script never passes `-L`.
+- `TestUS70Gvisor_VerifyBeforeExtractAndInstall` — call-site ordering pinned (verify < extract < install), the ordering half the r1 body-level pin missed.
+
+## Tests run (r2)
+
+- `go test -timeout 300s ./local/` — ok; `golangci-lint` 0; `bash -n` both scripts

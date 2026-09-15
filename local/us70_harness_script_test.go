@@ -1602,3 +1602,88 @@ func TestUS70GvisorVerifyBundle_Executes(t *testing.T) {
 		t.Fatal("verify_bundle must not install — verification strictly precedes installation")
 	}
 }
+
+// resolve_tag's retry loop must ride through transient failures and
+// give up loudly - the same rows fetch_retry carries. The stub is
+// -L-AWARE: if the caller follows redirects (-L), GitHub lands on the
+// release page and redirect_url comes back EMPTY (the documented
+// footgun) - so the happy row also proves the script does not pass -L.
+func TestUS70GvisorResolveTag_RetriesRideThroughAndGiveUp(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "resolve_tag")
+
+	dir := t.TempDir()
+	fails := filepath.Join(dir, "fails")
+	sawL := filepath.Join(dir, "saw-L")
+	stubPath := filepath.Join(dir, "curl")
+	stubTmpl := `#!/bin/bash
+for a in "$@"; do
+  case "$a" in -L|--location) echo followed >> SAWL; printf '
+'; exit 0;; esac
+done
+printf x >> FAILS
+if [ "$(wc -c < FAILS)" -gt 2 ]; then
+  printf 'https://github.com/google/gvisor/releases/tag/release-20260907.0
+'
+  exit 0
+fi
+exit 7
+`
+	stub := strings.NewReplacer("SAWL", sawL, "FAILS", fails).Replace(stubTmpl)
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("ride-through two transient failures", func(t *testing.T) {
+		os.Remove(fails)
+		os.Remove(sawL)
+		script := "PATH=" + shQuote(dir) + ":$PATH\nsleep() { :; }\n" + body + "\nresolve_tag\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("must ride through: %v: %s", err, out)
+		}
+		if !strings.Contains(string(out), "release-20260907.0") {
+			t.Fatalf("tag not resolved, got: %s", out)
+		}
+		if _, err := os.Stat(sawL); err == nil {
+			t.Fatal("resolve_tag must not follow redirects (-L empties redirect_url)")
+		}
+	})
+
+	t.Run("all attempts empty - gives up loudly", func(t *testing.T) {
+		os.Remove(fails)
+		os.Remove(sawL)
+		// A curl that always exits 0 with empty output (the -L shape).
+		emptyStub := "#!/bin/bash\nprintf '\\n'\nexit 0\n"
+		if err := os.WriteFile(stubPath, []byte(emptyStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "set -e\nPATH=" + shQuote(dir) + ":$PATH\nsleep() { :; }\n" + body + "\nresolve_tag\necho should-not-reach\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		if err == nil {
+			t.Fatalf("exhaustion must fail, got success: %s", out)
+		}
+		if strings.Contains(string(out), "should-not-reach") {
+			t.Fatalf("must abort the caller, got: %s", out)
+		}
+		if !strings.Contains(string(out), "could not resolve") {
+			t.Fatalf("loud diagnosis expected, got: %s", out)
+		}
+	})
+}
+
+// Verification strictly precedes installation at the call site (the
+// structural pin's ordering half — the body-level pin lives in
+// TestUS70GvisorVerifyBundle_Executes).
+func TestUS70Gvisor_VerifyBeforeExtractAndInstall(t *testing.T) {
+	src := mustRead(t, us70GvisorScript)
+	verify := strings.Index(src, "verify_bundle /tmp/gvisor.tar.zstd")
+	extract := strings.Index(src, "tar --zstd -xf")
+	install := strings.Index(src, "install -m 0755 /tmp/runsc")
+	if verify < 0 || extract < 0 || install < 0 {
+		t.Fatal("bundle flow sites not found")
+	}
+	if verify >= extract || extract >= install {
+		t.Fatalf("ordering violated: verify=%d extract=%d install=%d — verification must precede extraction and installation", verify, extract, install)
+	}
+}

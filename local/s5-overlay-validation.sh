@@ -453,9 +453,15 @@ else
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
   # One provisioning flow: local/lib/gvisor.sh (the inline GCS copy this
   # block carried was the same permanently-dead fetch fixed there —
-  # upstream dropped the standalone release binaries 2026-09).
-  if bash "$REPO_ROOT/local/lib/gvisor.sh" install "$NODE" \
-      && bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then
+  # upstream dropped the standalone release binaries 2026-09). The env
+  # rides EXPLICIT per-call assignments: CLUSTER_NAME/CTX are plain
+  # shell vars in this script (never exported), and gvisor.sh's own
+  # default (llmsafespaces-ci) would target a context that does not
+  # exist on the s5 runner.
+  if CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME" \
+       bash "$REPO_ROOT/local/lib/gvisor.sh" install "$NODE" \
+      && CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME" \
+       bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then
     WS_GVISOR="ws-s5-gvisor"
     log "S5.6: creating gvisor workspace $WS_GVISOR"
     # spec.runtimeClass (the CRD field) is admin-gated: the webhook
