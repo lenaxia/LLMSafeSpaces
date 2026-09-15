@@ -6,8 +6,8 @@ import type { InputRequest } from "../../api/types";
 
 vi.mock("../../api/input", () => ({
   inputApi: {
-    questionReply: vi.fn().mockResolvedValue(true),
-    questionReject: vi.fn().mockResolvedValue(true),
+    questionReply: vi.fn().mockResolvedValue(undefined),
+    questionReject: vi.fn().mockResolvedValue(undefined),
     dismissInboxRecord: vi.fn().mockResolvedValue(undefined),
   },
 }));

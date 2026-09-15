@@ -160,13 +160,13 @@ The authoritative Go types live in `pkg/session/` (created by US-65.2). The shap
 - **`Cost`** / **`Usage`** — display-only token/cost fields.
 - **`ModelRef`** / **`ModelInfo`** — identity + context/output limits (limits needed for "context: 45% used" display).
 
-### 4.6 The Adapter interface (~18 methods)
+### 4.6 The Adapter interface (~22 methods)
 
 The `pkg/agent.Adapter` interface folds the existing `Dialect` + `AgentRuntime` into one seam:
 
 - **Sessions (5):** Create, Get, List, Rename, Delete
 - **Messaging (4):** Send, SendAsync, Abort, GetHistory
-- **Streaming/Input (3):** Stream, ListPending, RejectInput (the legacy generic `Resolve` was deleted with the S1 migration — #1371; question/permission replies are typed (`AnswerQuestion`/`ReplyPermission`) and the API writes through agentd `Act`)
+- **Streaming/Input (5):** Stream, ListPending, RejectInput, AnswerQuestion, ReplyPermission (the legacy generic `Resolve` was deleted with the S1 migration — #1371; the API writes through agentd `Act`)
 - **Config/Credentials (3):** ApplyConfig (returns `restartRequired bool`), FormatProviderConfig, ValidateCredentials
 - **Models (2):** ListModels, SetModel
 - **Capabilities + pass-through (3):** Capabilities, Rewind, Fork

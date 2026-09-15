@@ -361,6 +361,7 @@ func TestInputAct_AdapterPathSurvivesFlagOff(t *testing.T) {
 
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_abc123/reply", `{"answers":[["Go"]]}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "flag-off reply 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, answered, "flag-off regime keeps the batch-3 adapter path (D4 single regime per flag)")
 }
 
@@ -556,6 +557,7 @@ func TestInputAct_QuestionRejectConnectErrorAndFlagOff(t *testing.T) {
 	})
 	w2 := env2.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_ce2/reject", `{}`)
 	require.Equal(t, http.StatusOK, w2.Code, w2.Body.String())
+	assert.Empty(t, w2.Body.String(), "flag-off reject 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, rejected, "flag-off keeps the adapter reject (r1 minor)")
 }
 
@@ -584,6 +586,7 @@ func TestInputAct_PermissionReplyFlagOff(t *testing.T) {
 	})
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/permission/per_fo/reply", `{"reply":"once"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "flag-off permission reply 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, replied, "flag-off keeps the adapter permission reply (r1 minor)")
 }
 

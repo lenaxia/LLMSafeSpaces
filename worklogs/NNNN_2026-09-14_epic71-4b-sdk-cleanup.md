@@ -162,3 +162,14 @@ None.
 
 - `go test -timeout 600s -race` on `./api/internal/handlers/ ./pkg/agent/... ./pkg/types/ ./pkg/mcp/` — ok
 - `make -C sdks validate` valid; `make repolint` all checks passed; `golangci-lint` 0 issues; frontend api/provider suites 218/218
+
+## Review r4 remediation (final-round items)
+
+- **Flag-off empty-body pins:** the three flag-off success rows (`TestInputAct_QuestionReplyFlagOff`-family — question reply, question reject, permission reply) now assert the bodyless 200 alongside the status, matching the terminus rows' pin family — a one-line revert to a `c.JSON` body in either regime now fails the suite.
+- **Reply-row 502s:** both reply rows document the flag-off adapter-failure 502 (same wording as the sibling reject row landed in r3); spec validates.
+- **Doc nits:** design/0049 §4.6 header and group counts corrected (Streaming/Input (5); ~22 methods); `frontend/src/api/input.ts` reply/reject calls retyped `post<void>` (the bodyless contract — `post<boolean>` was a false type), the two prompt-test mocks retyped to match.
+
+## Tests run (r4)
+
+- `go test -timeout 600s -race ./api/internal/handlers/` — ok; `make -C sdks validate` valid; `make repolint` passed; `golangci-lint` 0 issues
+- Frontend: full vitest **1812/1812**, `tsc --noEmit` clean

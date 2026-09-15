@@ -5,7 +5,7 @@ import type { InputRequest } from "../../api/types";
 
 vi.mock("../../api/input", () => ({
   inputApi: {
-    permissionReply: vi.fn().mockResolvedValue(true),
+    permissionReply: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -92,7 +92,7 @@ describe("PermissionPrompt", () => {
     // vi.clearAllMocks does not drop implementations — restore the
     // resolving default so later tests are not poisoned by the
     // never-resolving stub.
-    mockReply.mockReset().mockResolvedValue(true);
+    mockReply.mockReset().mockResolvedValue(undefined);
   });
 
   describe("whileAway variant (#1313)", () => {
