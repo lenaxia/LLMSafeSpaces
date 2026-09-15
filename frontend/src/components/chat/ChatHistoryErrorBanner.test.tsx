@@ -102,18 +102,21 @@ describe("ChatHistoryErrorBanner", () => {
     expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
   });
 
-  it("shows the API's own `error` field when the promoted message is absent (503 workspace-connection-failed)", () => {
-    // Real API shape. Body has `error` (via ApiError type), no
-    // promoted agent fields.
+  it("shows the API's own `error` field when the promoted message is absent (real 503 not-ready body)", () => {
+    // Real API shape (proxy_adapter_crosscutting.go
+    // resolveWorkspaceForAdapter — the only 503 the history routes
+    // emit): `error` + `phase` + `retryAfter`, no promoted agent
+    // fields, no reason → red error state, message from body.error.
     const err = new ApiClientError(503, {
-      error: "workspace connection failed",
+      error: "workspace not ready",
+      phase: "Suspended",
       retryAfter: 5,
     });
     render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
     fireEvent.click(screen.getByText("Details"));
 
     expect(screen.getByText("HTTP 503")).toBeInTheDocument();
-    expect(screen.getByText(/workspace connection failed/)).toBeInTheDocument();
+    expect(screen.getByText(/workspace not ready/)).toBeInTheDocument();
     expect(screen.queryByText(/^Ref:/)).not.toBeInTheDocument();
   });
 
@@ -169,6 +172,11 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows yellow 'Reconnecting…' state for 503 with agent_unreachable reason", () => {
+    // Defensive display branch only — NO API producer currently emits
+    // a reason-keyed 503 body on the message routes (the real 503 is
+    // the not-ready shape above; the branch awaits a recovery-reason
+    // producer, tracked with #796's parity sweep). Rows keep the
+    // branch covered until then.
     const err = new ApiClientError(503, {
       error: "workspace connection failed",
       message: "The agent is not responding. Please try again in a moment.",
@@ -185,6 +193,7 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows yellow 'Reconnecting…' state for 503 with agent_restarting reason", () => {
+    // Defensive display branch only — see the agent_unreachable row.
     const err = new ApiClientError(503, {
       error: "Workspace is restarting",
       message: "The agent is restarting. Please try again in a moment.",
@@ -197,6 +206,7 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows red error state for 503 with not_ready reason (not recovering)", () => {
+    // Defensive display branch only — see the agent_unreachable row.
     const err = new ApiClientError(503, {
       error: "workspace not ready",
       message: "Workspace is pending.",

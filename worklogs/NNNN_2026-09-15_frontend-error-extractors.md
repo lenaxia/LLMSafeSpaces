@@ -69,3 +69,13 @@ Live error-body shapes on the message routes (read from current `proxy_handlers.
 - f3 "AgentSession status required could break mocks" — false alarm: tsc 0 errors; runtime reads are optional-chained.
 - f4 "wiring test isn't the dev_preview router" — real limitation; disclosed above, not worked around silently.
 - f5 "`SessionStatusEvent.status` still has `"retry"`" — inspected: backend-emitted SSE tracker event (types.ts:260), one of the four issue locations is not it; out of scope, noted for #796's sweep.
+
+## Review r1 remediation (PR #1378, REQUEST_CHANGES → fixed)
+
+Findings validated against source before fixing:
+
+- **r1-f1 (mislabeled 503 fixtures)** — REAL. The only 503 the message routes emit is `{"error":"workspace not ready","phase":…,"retryAfter":…}` (`proxy_adapter_crosscutting.go` resolveWorkspaceForAdapter, quoted at line 59); no handler authors `workspace connection failed`, `reason`, or a 503 `message` — and "The agent is not responding…" is the frontend's own fallback string (`useChatStream.ts:192-196`, a different component). Fixed: wiring test + Playwright 503 rows now use the exact not-ready body and assert the red error state (message from `body.error`, no reason branch taken); header comments quote both real bodies with their source files.
+- **r1-f2 (carried-over dead-shape rows)** — REAL. The "Real API shape" 503 rows in `ChatHistoryErrorBanner.test.tsx` and the `ChatPage.historyError.test.tsx` Retry row pinned the dead `workspace connection failed` body. Fixed: unit row → the real not-ready body; Retry row → the real not-ready body.
+- **r1-f3 (reason-keyed `isRecovering` branch has no API producer)** — noted by the second-pass reviewer. Branch KEPT (frontend display logic, outside #1303's four locations); its two coverage rows relabeled as defensive-branch-only with the no-producer fact and the #796 cross-reference, matching the `"retry"` flag treatment. Also flagged for #796: `useChatStream.ts`'s 503 `err.body?.message` read (same no-producer family).
+
+Gates re-run post-remediation: vitest **1835/1835** (168 files), tsc **0**, Playwright `history-error-banner.spec.ts` **2/2**.

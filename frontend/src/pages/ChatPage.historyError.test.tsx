@@ -155,7 +155,7 @@ describe("ChatPage — message history error banner (#490)", () => {
   it("Retry button triggers a refetch of the message history", async () => {
     // First call fails; second call (after Retry click) succeeds.
     getHistoryPageMock
-      .mockRejectedValueOnce(new ApiClientError(503, { error: "workspace connection failed", retryAfter: 5 }))
+      .mockRejectedValueOnce(new ApiClientError(503, { error: "workspace not ready", phase: "Suspended", retryAfter: 5 }))
       .mockResolvedValueOnce({ messages: [], nextCursor: undefined });
 
     renderChat("/chat/ws-1/sess-1");

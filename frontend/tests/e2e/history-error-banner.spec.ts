@@ -7,8 +7,10 @@
  *      {"error":"failed to fetch history"} (proxy_handlers.go GetHistory)
  *      renders the banner with that message — no nested-envelope field
  *      is consulted (the raw passthrough died with #828).
- *   2. A GET history 503 with the API-authored recovery body renders
- *      the "Reconnecting…" state from `message`/`reason`.
+ *   2. A GET history 503 with the API-authored not-ready body
+ *      {"error":"workspace not ready","phase","retryAfter"}
+ *      (proxy_adapter_crosscutting.go resolveWorkspaceForAdapter)
+ *      renders the red error state with the API's message.
  *
  * Deferred kind-cluster leg (not runnable in this environment — no
  * kind/docker): kill/suspend the agent pod mid-session, then load chat
@@ -85,22 +87,19 @@ test.describe("History error banner from API-authored bodies (#1303)", () => {
     await expect(page.getByText(/^undefined$/)).toHaveCount(0);
   });
 
-  test("503 recovery body: banner shows Reconnecting… from API message/reason", async ({ page }) => {
+  test("503 not-ready body: banner shows the red error state from API fields only", async ({ page }) => {
     await setupAPIMocks(page, {
       status: 503,
-      body: {
-        error: "workspace connection failed",
-        message: "The agent is not responding. Please try again in a moment.",
-        reason: "agent_unreachable",
-        retryAfter: 10,
-      },
+      body: { error: "workspace not ready", phase: "Suspended", retryAfter: 10 },
     });
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    await expect(page.getByText("Reconnecting…")).toBeVisible({ timeout: 15000 });
+    // Real 503 shape (proxy_adapter_crosscutting.go) carries no
+    // recovery reason — the red state renders, message from body.error.
+    await expect(page.getByText("Chat history unavailable")).toBeVisible({ timeout: 15000 });
     await page.getByText("Details").click();
-    await expect(page.getByText("Reason: agent_unreachable")).toBeVisible();
-    await expect(page.getByText(/The agent is not responding/)).toBeVisible();
+    await expect(page.getByText("HTTP 503")).toBeVisible();
+    await expect(page.getByText("workspace not ready")).toBeVisible();
     await expect(page.getByText(/^Ref:/)).toHaveCount(0);
   });
 });

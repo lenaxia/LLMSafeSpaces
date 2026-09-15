@@ -10,10 +10,13 @@ import { ApiClientError } from "../../api/client";
  * the EXACT bodies the API authors, feeding the REAL banner component —
  * covering what the isolated unit tests mock away (path construction,
  * response parsing, error-class construction, banner rendering) without
- * a browser or live cluster. The endpoint's server side (GetHistory →
- * adapter → 502 {"error":"failed to fetch history"}) is covered by the
- * Go suite; the kind-cluster leg (agent pod killed mid-session) is the
- * e2e continuation documented in worklogs.
+ * a browser or live cluster. The bodies are quoted from the handlers:
+ * 502 {"error":"failed to fetch history"} (proxy_handlers.go GetHistory)
+ * and 503 {"error":"workspace not ready","phase","retryAfter"}
+ * (proxy_adapter_crosscutting.go resolveWorkspaceForAdapter). The
+ * endpoint's server side is covered by the Go suite; the kind-cluster
+ * leg (agent pod killed mid-session) is the e2e continuation documented
+ * in worklogs.
  */
 describe("history-error wiring: API-authored bodies → banner", () => {
   afterEach(() => {
@@ -52,15 +55,19 @@ describe("history-error wiring: API-authored bodies → banner", () => {
     expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
   });
 
-  it("GET history 503: API-authored recovery body renders the reconnecting state from API fields only", async () => {
+  it("GET history 503: real not-ready body renders the red error state from API fields only", async () => {
+    // Exact body from proxy_adapter_crosscutting.go
+    // resolveWorkspaceForAdapter: the only 503 the GET history route
+    // emits. No `message`, no `reason` — the banner's message comes
+    // from body.error, and the red (not "Reconnecting…") state renders
+    // because no recovery reason is present.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         new Response(
           JSON.stringify({
-            error: "workspace connection failed",
-            message: "The agent is not responding. Please try again in a moment.",
-            reason: "agent_unreachable",
+            error: "workspace not ready",
+            phase: "Suspended",
             retryAfter: 10,
           }),
           { status: 503, headers: { "Content-Type": "application/json" } },
@@ -73,14 +80,14 @@ describe("history-error wiring: API-authored bodies → banner", () => {
       .then(() => undefined, (e: unknown) => e);
     const err = rejection as ApiClientError;
     expect(err.status).toBe(503);
+    expect(err.body.error).toBe("workspace not ready");
 
     render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
-    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.getByText("Chat history unavailable")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Details"));
-    expect(screen.getByText("Reason: agent_unreachable")).toBeInTheDocument();
-    expect(
-      screen.getByText(/The agent is not responding/),
-    ).toBeInTheDocument();
+    expect(screen.getByText("HTTP 503")).toBeInTheDocument();
+    expect(screen.getByText("workspace not ready")).toBeInTheDocument();
     expect(screen.queryByText(/^Ref:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
   });
 });
