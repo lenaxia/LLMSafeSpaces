@@ -6,14 +6,12 @@ package opencode
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -112,9 +110,6 @@ func TestAdapterSendAsync_ClassifiesTextOnlyWedge400(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, agent.ErrImageInTextOnlyHistory)
 }
-
-var _ = errors.Is
-var _ = zap.NewNop
 
 // --- #1307 read-time repair (the #1374 pattern: strict failure semantics) ---
 
@@ -222,6 +217,55 @@ func TestGetHistory_Repair_MinimalFilePartShapeDerivedFromURI(t *testing.T) {
 		}
 	}
 	require.True(t, found)
+}
+
+// TestGetHistory_Repair_PartialCapabilitiesBlocksStayUnknown is the r1
+// finding-1 regression: a PARTIAL capabilities block
+// ("capabilities":{}, "input":{}, "input":{"text":true}) is UNKNOWN
+// capability — the value-struct decode flattened these to known-false
+// and the repair stripped images from possibly-vision models.
+// TestStripImageDataURLs pins the MCP session_read surface (r1 finding
+// 3): the raw opencode message array must never carry image data URLs —
+// image-bearing dicts keep their metadata and gain an explicit omission
+// marker, everything else is byte-preserving.
+func TestStripImageDataURLs(t *testing.T) {
+	raw := []byte(`[{"info":{"id":"m1","role":"user"},"parts":[
+		{"type":"text","text":"read the screenshot"},
+		{"type":"file","mime":"image/png","filename":"shot.png","url":"data:image/png;base64,aVBORw0KGgo="},
+		{"type":"file","uri":"data:image/jpeg;base64,aGVsbG8="}
+	]},
+	{"info":{"id":"m2","role":"assistant"},"parts":[
+		{"type":"tool","tool":"read","state":{"status":"completed","structured":{"parts":[{"type":"file","mime":"image/png","uri":"data:image/png;base64,aVBORw0KGgo="}]}}}
+	]}]`)
+
+	out := string(StripImageDataURLs(raw))
+	require.NotContains(t, out, "base64", "no image bytes on the MCP surface")
+	require.NotContains(t, out, "data:image", "no data URLs on the MCP surface")
+	require.Contains(t, out, "image/png", "mime metadata preserved")
+	require.Contains(t, out, "shot.png", "filename metadata preserved")
+	require.Contains(t, out, "imageOmitted", "explicit omission marker")
+	require.Contains(t, out, "read the screenshot", "non-image content untouched")
+
+	// Non-image JSON round-trips byte-identically.
+	plain := []byte(`[{"info":{"id":"m","role":"user"},"parts":[{"type":"text","text":"hi"}]}]`)
+	require.JSONEq(t, string(plain), string(StripImageDataURLs(plain)))
+}
+
+func TestGetHistory_Repair_PartialCapabilitiesBlocksStayUnknown(t *testing.T) {
+	shapes := []string{
+		`{"providers":[{"id":"thekao","models":{"glm-5.3":{"id":"glm-5.3","capabilities":{}}}}]}`,
+		`{"providers":[{"id":"thekao","models":{"glm-5.3":{"id":"glm-5.3","capabilities":{"input":{}}}}}]}`,
+		`{"providers":[{"id":"thekao","models":{"glm-5.3":{"id":"glm-5.3","capabilities":{"input":{"text":true}}}}}]}`,
+	}
+	for _, providers := range shapes {
+		f := newFakeOpencode(t)
+		registerWedgeFlow(f, providers, 200)
+		a := newTestAdapter(t, f.Server)
+
+		msgs, err := a.GetHistory(context.Background(), "", "ws-1", "ses_wedge")
+		require.NoError(t, err)
+		requireUndowngradedImagePart(t, msgs)
+	}
 }
 
 func TestGetHistory_Repair_TextOnlyModelDowngrades(t *testing.T) {

@@ -11,7 +11,7 @@ import type { QueuedMessage } from "../../hooks/useMessageQueue";
 import type { PendingAttachment } from "../../hooks/useComposerAttachments";
 
 interface StreamingPart {
-  type: "thinking" | "text" | "tool";
+  type: "thinking" | "text" | "tool" | "file_notice";
   text: string;
   toolState?: string;
   toolStartedAt?: string;

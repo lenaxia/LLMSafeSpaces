@@ -39,6 +39,14 @@ Close the three product gaps the incident exposed: (1) no capability gating on t
 - `docs/getting-started/concepts.md` §Session: text-only models and image-bearing history — the wedge mechanism, the catalog field, the recovery.
 - `README-LLM.md` known fragilities #5: the wedge class, the platform containment, the out-of-repo litellm fix, and the runbook's non-obvious details (`pkill -9 -x`, dual-write into `session_message.data`).
 
+### 5. Review r1 remediation (REQUEST_CHANGES → all findings fixed with regressions)
+
+- **f1 (fail-safe invariant broken on partial capabilities blocks — confirmed bug):** `ModelInfo`'s value-struct decode flattened `"capabilities":{}`, `"input":{}`, and `"input":{"text":true}` into known-false, so the repair stripped images from possibly-vision models and `call_with_model` refused unknown-capability image calls. Pointerized `Input`/`Image` all the way down; regression rows pin all three partial shapes through the repair (adapter level). The handler-side parser already had the correct semantics — both parsers now agree.
+- **f2 (the omission notice was invisible in every renderer):** the frontend dropped Custom parts in `transformHistory`, `partToStreamPart`, and `MessagePart`. New shared decoder `frontend/src/api/fileNotices.ts`; file parts (kind "file") now render as a muted `file_notice` note on the history path, the live SSE path, and the renderer — with rows in `messages.test.ts` and `MessagePart.test.tsx`.
+- **f3 (MCP `session_read` served raw base64):** new seam function `StripImageDataURLs` (image-bearing dicts keep metadata, lose url/uri, gain an `imageOmitted` marker; non-image JSON round-trips unchanged) wired into `mcpSessionRead`; seam row + tool-level regression row.
+- **Non-blocking:** route-agnosticism of `textOnlyWedgeError` documented at the function; the V1/V2 tool-output asymmetry documented at the translate site; dead import retainers removed.
+- **Process note (reviewer's Project Alignment item):** the triage's C1b flow (design doc under `design/stories/` before history-mutation code) was not followed — deviation rationale: the serve-view rewrite is read-time only (the durable store is never written), lives inside the `pkg/agent/opencode/` seam, and follows the merged-and-shipped #1374 read-time-repair precedent.
+
 ---
 
 ## Key Decisions
@@ -68,12 +76,13 @@ None. (One transient: `TestLive_Worklogs_NoDuplicates` failed locally mid-sessio
 
 - `go test -timeout 120s ./api/internal/handlers/ -run "TestOpencodeProviderParser|TestAnnotateModels|TestListModels"` — ok
 - `go test -timeout 120s ./api/internal/handlers/ -run "TextOnlyWedge"` — ok (3 e2e: sync message 422, generic-400 stays 502, /prompt fallback 422)
-- `go test -timeout 120s ./pkg/agent/opencode/ -run "TestGetHistory|TestAdapterSend|TestAdapterSendAsync"` — ok (11 repair/translate rows + 4 classification rows)
-- `go test -timeout 30m ./...` — ok (full repo)
+- `go test -timeout 120s ./pkg/agent/opencode/ -run "TestGetHistory|TestAdapterSend|TestAdapterSendAsync|TestStripImageDataURLs"` — ok (r1: + partial-capabilities rows, + strip rows)
+- `go test -timeout 300s ./cmd/workspace-agentd/ -run "TestMCPSessionRead|TestMCPCallWithModel"` — ok (r1: + session_read strip row)
+- `go test -timeout 30m ./...` — ok (full repo, post-r1)
 - `go test -timeout 900s -short ./cmd/workspace-agentd/...` — ok
 - `golangci-lint run` — 0 issues
 - `make -C sdks sdk-check` — ok (spec valid + router parity)
-- `cd frontend && npx vitest run` — 1825 passed (166 files), including the new text-only badge and SSE-error mapping rows
+- `cd frontend && npx vitest run` — 1830 passed post-r1 (incl. file_notice rows), `tsc --noEmit` clean
 - `go build ./...` — ok
 
 ---
@@ -94,9 +103,17 @@ None. (One transient: `TestLive_Worklogs_NoDuplicates` failed locally mid-sessio
 - api/internal/handlers/proxy_chat_enrichment.go
 - api/internal/handlers/proxy_handlers.go
 - api/internal/handlers/vision_wedge_test.go (new)
+- cmd/workspace-agentd/mcp_server.go
+- cmd/workspace-agentd/mcp_server_test.go
 - cmd/workspace-agentd/mcp_tools.go
 - docs/getting-started/concepts.md
+- frontend/src/api/fileNotices.ts (new)
+- frontend/src/api/messages.ts
+- frontend/src/api/messages.test.ts
 - frontend/src/api/workspaces.ts
+- frontend/src/components/chat/ChatView.tsx
+- frontend/src/components/chat/MessagePart.tsx
+- frontend/src/components/chat/MessagePart.test.tsx
 - frontend/src/components/chat/ModelSelector.tsx
 - frontend/src/components/chat/ModelSelector.test.tsx
 - frontend/src/pages/ChatPage.tsx

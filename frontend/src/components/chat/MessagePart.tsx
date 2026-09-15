@@ -577,5 +577,16 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
     );
   }
 
+  // #1307: file parts (image attachments + omission notices) — a muted
+  // system note, distinct from errors: the record is honest, the session
+  // is not necessarily broken.
+  if (part.type === "file_notice" && part.text) {
+    return (
+      <div className="my-1.5 rounded-md border border-border bg-muted/30 px-3 py-2">
+        <p className="text-xs text-muted-foreground">{part.text}</p>
+      </div>
+    );
+  }
+
   return null;
 }

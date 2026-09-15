@@ -550,8 +550,8 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 					Context int64 `json:"context"`
 				} `json:"limit"`
 				Capabilities *struct {
-					Input struct {
-						Image bool `json:"image"`
+					Input *struct {
+						Image *bool `json:"image"`
 					} `json:"input"`
 				} `json:"capabilities"`
 			} `json:"models"`
@@ -566,8 +566,13 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 		}
 		if m, ok := p.Models[modelID]; ok {
 			info := &ModelInfo{ContextLimit: m.Limit.Context}
-			if m.Capabilities != nil {
-				info.ImageInput = m.Capabilities.Input.Image
+			// Partial capabilities blocks stay UNKNOWN: pointerized all
+			// the way down so "capabilities":{}, "input":{}, and
+			// "input":{"text":true} never flatten into known-false (#1307
+			// review r1 finding 1 — the value struct made the repair
+			// strip images from possibly-vision models).
+			if m.Capabilities != nil && m.Capabilities.Input != nil && m.Capabilities.Input.Image != nil {
+				info.ImageInput = *m.Capabilities.Input.Image
 				info.ImageInputKnown = true
 			}
 			return info, nil

@@ -27,6 +27,12 @@ const textOnlyWedgeMarker = "messages.content.type is invalid"
 // wedge and renders the actionable error (cause + remediation, not the
 // raw provider body alone). Returns nil when the response does not carry
 // the signature — callers fall through to their generic status error.
+//
+// Deliberately route-agnostic (it lives in the shared httpError funnel):
+// the marker string is replay-specific — it can only appear in a body an
+// agent surfaced from a provider rejecting replayed content, on any send
+// route (message POST, V2 prompt, summarize). Non-send 400s never carry
+// it; if that ever changes, tighten to the send funnels.
 func textOnlyWedgeError(path string, status int, body string) error {
 	if status != http.StatusBadRequest || !strings.Contains(body, textOnlyWedgeMarker) {
 		return nil
@@ -225,6 +231,58 @@ func stripImageData(v *any) bool {
 		changed := false
 		for i := range t {
 			if stripImageData(&t[i]) {
+				changed = true
+			}
+		}
+		return changed
+	}
+	return false
+}
+
+// StripImageDataURLs removes image data URLs from a raw opencode message
+// array — the MCP session_read surface (#1307 review r1 finding 3): the
+// raw store previously shipped multi-megabyte base64 blobs to MCP
+// consumers. Every image-bearing dict (mime image/* or a data:image/
+// url/uri) keeps its metadata, loses its url/uri bytes, and gains an
+// explicit imageOmitted marker so the record stays honest. All other
+// content is preserved. Non-image input round-trips unchanged.
+func StripImageDataURLs(raw []byte) []byte {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return raw
+	}
+	if !stripDataURLs(&v) {
+		return raw
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func stripDataURLs(v *any) bool {
+	switch t := (*v).(type) {
+	case map[string]any:
+		changed := false
+		if looksLikeImageDict(t) {
+			delete(t, "url")
+			delete(t, "uri")
+			t["imageOmitted"] = true
+			changed = true
+		}
+		for k, child := range t {
+			c := child
+			if stripDataURLs(&c) {
+				t[k] = c
+				changed = true
+			}
+		}
+		return changed
+	case []any:
+		changed := false
+		for i := range t {
+			if stripDataURLs(&t[i]) {
 				changed = true
 			}
 		}

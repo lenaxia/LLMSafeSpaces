@@ -49,6 +49,20 @@ describe("MessagePart", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  // Issue #1307 (review r1 finding 2): the image-omission notice must be
+  // user-visible, styled as a muted system note (not an error).
+  it("renders a file_notice part as a visible, muted note", () => {
+    render(<MessagePart part={{ type: "file_notice", text: "[image omitted] The active model only accepts text — switch to a vision-capable model to continue. — shot.png (image/png)" }} isUser={false} />);
+    const el = screen.getByText(/\[image omitted\]/);
+    expect(el).toBeInTheDocument();
+    expect(el.className).toContain("muted-foreground");
+  });
+
+  it("renders nothing for a file_notice without text", () => {
+    const { container } = render(<MessagePart part={{ type: "file_notice", text: "" }} isUser={false} />);
+    expect(container.innerHTML).toBe("");
+  });
+
   it("renders nothing when text is empty", () => {
     const { container } = render(<MessagePart part={{ type: "text", text: "" }} isUser={true} />);
     expect(container.innerHTML).toBe("");

@@ -348,6 +348,30 @@ func TestMCPSessionRead_HappyPath(t *testing.T) {
 	assert.Contains(t, body, "msg_1")
 }
 
+// TestMCPSessionRead_StripsImageDataURLs pins the #1307 r1-finding-3
+// regression: the agent-facing session_read surface must never re-serve
+// raw image bytes — data URLs strip to metadata + omission markers.
+func TestMCPSessionRead_StripsImageDataURLs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"info":{"id":"m1","role":"user"},"parts":[
+			{"type":"file","mime":"image/png","filename":"shot.png","url":"data:image/png;base64,aVBORw0KGgo="}
+		]}]`))
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	body, err := mcpSessionRead(context.Background(), "test-pw", "ses_1", 50)
+	assert.NoError(t, err)
+	assert.NotContains(t, body, "base64")
+	assert.NotContains(t, body, "data:image")
+	assert.Contains(t, body, "shot.png")
+	assert.Contains(t, body, "imageOmitted")
+}
+
 // TestMCPSessionRead_MalformedSessionID_NoPanic pins the URL-build error
 // branch: a sessionID containing a control character makes the URL
 // unparseable. Must return a build error through the seam, not panic.

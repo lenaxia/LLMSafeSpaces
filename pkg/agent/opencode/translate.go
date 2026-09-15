@@ -965,6 +965,10 @@ func translateV2Tool(cp V2ContentPart) *session.ToolPart {
 		} else if len(cp.State.Structured) > 0 {
 			// Image bytes never cross the seam: embedded image dicts
 			// (the #1307 structured copy) reduce to metadata markers.
+			// (V1 asymmetry, documented: the V1 flat tool shape carries
+			// tool output as a plain string with no evidenced
+			// image-dict embedding — only V2's structured copy rides
+			// dicts, per the #1307 runbook's dual-write.)
 			tp.Output = stripEmbeddedImageData(cp.State.Structured)
 		}
 		tp.State.Status = translateToolStatus(cp.State.Status)
