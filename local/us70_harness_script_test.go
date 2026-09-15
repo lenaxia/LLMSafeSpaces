@@ -1409,13 +1409,31 @@ func TestUS70GvisorFetchRetry_RetriesThroughTransient404(t *testing.T) {
 
 func TestUS70GvisorFetch_AllFetchSitesRideTheWrapper(t *testing.T) {
 	src := mustRead(t, us70GvisorScript)
-	for _, artifact := range []string{"runsc", "runsc.sha512", "containerd-shim-runsc-v1", "containerd-shim-runsc-v1.sha512"} {
-		if !strings.Contains(src, "fetch_retry \"$BASE/"+artifact+"\"") {
-			t.Fatalf("artifact %s must be fetched via fetch_retry (the moving-alias 404 window)", artifact)
+	// 2026-09-15: gVisor stopped publishing standalone runsc/shim
+	// binaries to GCS release/latest (the shim 404s permanently); the
+	// artifacts ship only inside the GitHub release tarball. Both
+	// bundle artifacts must ride fetch_retry from ONE resolved tag —
+	// a straddled release flip must fail the checksum, not install a
+	// mixed pair.
+	for _, pin := range []string{
+		"fetch_retry \"$BASE/$BUNDLE\"",
+		"fetch_retry \"$BASE/SHA512SUMS\"",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("bundle fetch missing fetch_retry site %q", pin)
 		}
 	}
+	if strings.Contains(src, "storage.googleapis.com/gvisor/releases") {
+		t.Fatal("the GCS standalone-binary path is dead upstream (shim 404s permanently) — the bundle flow replaced it")
+	}
 	if strings.Contains(src, "$CURL \"$BASE/") || strings.Contains(src, "curl -fsSL \"$BASE/") {
-		t.Fatal("a bare fetch of the latest alias survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+		t.Fatal("a bare fetch of the release assets survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+	}
+	// The tag resolution must precede the fetches (pair coherence).
+	resolve := strings.Index(src, "releases/latest)")
+	bundle := strings.Index(src, "fetch_retry \"$BASE/$BUNDLE\"")
+	if resolve < 0 || bundle < 0 || resolve > bundle {
+		t.Fatal("the release tag must be resolved BEFORE the artifact fetches (pair coherence across flips)")
 	}
 }
 
