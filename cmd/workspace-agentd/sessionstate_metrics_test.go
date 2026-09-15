@@ -182,9 +182,82 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 		"llmsafespaces_sessionstate_panics_contained",
 		"llmsafespaces_sessionstate_subscribers",
 		"llmsafespaces_loop_last_run_timestamp_seconds",
+		// #1342 S12: the orphan-sweep counter must be on the scrape —
+		// its absence would silently blind the fleet-wide orphan signal
+		// (registration is package-init; a wiring typo is otherwise
+		// invisible until an operator needs it).
+		"llmsafespaces_orphan_parts_aborted_total",
 	} {
 		assert.Contains(t, string(body), name, "metric scrapes")
 	}
+}
+
+// metricFunnelStore is the minimal store for the orphan-funnel test: one
+// session the sweep can restore into.
+type metricFunnelStore struct{}
+
+func (metricFunnelStore) SessionStates(context.Context) (map[string]sessionstate.SessionSeed, error) {
+	return map[string]sessionstate.SessionSeed{
+		"ses_m": {Status: abiv1.SessionStatus_SESSION_STATUS_IDLE},
+	}, nil
+}
+
+func (metricFunnelStore) MessagePresence(_ context.Context, _ string, messageIDs []string) (map[string]bool, error) {
+	present := map[string]bool{}
+	for _, id := range messageIDs {
+		present[id] = false
+	}
+	return present, nil
+}
+
+func (metricFunnelStore) PendingInputs(context.Context) (map[string][]*abiv1.InputRequest, error) {
+	return map[string][]*abiv1.InputRequest{}, nil
+}
+
+type metricFunnelParser struct{}
+
+func (metricFunnelParser) Parse([]byte) (*abiv1.Event, bool, error) { return nil, false, nil }
+
+// TestOrphanPartsMetric_FunnelAdvances pins the #1342 Prometheus bridge
+// end-to-end (r3): a harness-restart sweep's cumulative counter must
+// advance the REGISTERED counter through recordSessionStateMetrics —
+// and only by the delta (a re-record without new sweeps must not
+// double-count). Deleting the bridge block must fail this test.
+func TestOrphanPartsMetric_FunnelAdvances(t *testing.T) {
+	a, err := sessionstate.New(sessionstate.Config{
+		Parser:      metricFunnelParser{},
+		Store:       metricFunnelStore{},
+		Passwords:   []string{"pw"},
+		PlatformDir: t.TempDir(),
+		FastCursor:  true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.Close() })
+
+	a.IngestForTest(&abiv1.Event{
+		Type: abiv1.EventType_EVENT_TYPE_MESSAGE_START, SessionId: "ses_m",
+		Message: &abiv1.Message{Id: "msg_1", Parts: []*abiv1.Part{{
+			Id:   "prt_run",
+			Type: abiv1.PartType_PART_TYPE_TOOL,
+			Payload: &abiv1.Part_Tool{Tool: &abiv1.ToolPart{
+				CallId: "call_1", Name: "bash",
+				State: &abiv1.ToolState{Status: abiv1.ToolStatus_TOOL_STATUS_RUNNING},
+			}},
+		}}},
+	})
+	require.NoError(t, a.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
+	require.EqualValues(t, 1, a.Metrics().OrphanPartsAborted, "the sweep folded exactly one orphan")
+
+	wsID := "ws-orphan-funnel"
+	recordSessionStateMetrics(wsID, a)
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.orphanPartsAborted),
+		"the funnel must advance the registered orphan-parts counter")
+
+	// Delta discipline (customValveDelta's convention): re-recording the
+	// same cumulative must not double-count.
+	recordSessionStateMetrics(wsID, a)
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.orphanPartsAborted),
+		"the delta bridge must not re-add the cumulative on every scrape")
 }
 
 // instantAdmitter admits synchronously (the watchdog e2e's ledger).
