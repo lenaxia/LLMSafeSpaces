@@ -112,7 +112,7 @@ None.
 - `sdks/java/src/main/java/com/llmsafespaces/sdk/models/Session.java` (new), `.../models/PromptAccepted.java` (new), `.../services/SessionsService.java`, `sdks/java/src/test/java/com/llmsafespaces/sdk/SessionsContractTest.java` (new), `sdks/java/pom.xml`
 - `sdks/canary/go/scenarios/{d-agent-input,d-prompt-async,d-session-ensure,d-session-get,d-session-limit,d-session-subtask}/main.go`
 - `sdks/tests/contract/sessions_contract.hurl` (new), `sessions.hurl`, `sessions_delete_seen.hurl`, `sessions_queue.hurl`
-- `worklogs/NNNN_2026-09-15_openapi-session-contract-truthup.md` (this file)
+- `worklogs/0948_2026-09-15_openapi-session-contract-truthup.md` (this file)
 
 ## Review r1 remediation
 
