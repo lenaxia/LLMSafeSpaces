@@ -192,6 +192,29 @@ func mcpHandler(password string) http.HandlerFunc {
 						},
 					},
 					{
+						Name:        "send_message",
+						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing is returned to you. Read the target later with session_read if you need its response. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the message must be self-contained either way: the target does not inherit this conversation's context. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "The target session (from session_list / session_metadata)"},
+								"message":    map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
+							},
+							"required": []string{"session_id", "message"},
+						},
+					},
+					{
+						Name:        "abort_session",
+						Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), freeing a busy session so a queued follow-up or your next send_message lands on a fresh turn, or stopping work that's no longer needed so it stops consuming tokens. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; sessions are never deleted through these tools).",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "The session whose current turn should be stopped"},
+							},
+							"required": []string{"session_id"},
+						},
+					},
+					{
 						Name:        "get_datetime",
 						Description: "Get the current date and time — in UTC and in this workspace's local timezone (with the zone name and UTC offset). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\"), file timestamps, or when the user asks for the time. Workspace pods default to UTC — do not assume the user's local timezone matches; report both.",
 						InputSchema: map[string]any{
@@ -302,6 +325,13 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		prompt, _ := args["prompt"].(string)
 		title, _ := args["title"].(string)
 		return mcpCreateSession(ctx, password, prompt, title)
+	case "send_message":
+		sessionID, _ := args["session_id"].(string)
+		message, _ := args["message"].(string)
+		return mcpSendMessage(ctx, password, sessionID, message)
+	case "abort_session":
+		sessionID, _ := args["session_id"].(string)
+		return mcpAbortSession(ctx, password, sessionID)
 	case "get_datetime":
 		return mcpGetDatetime()
 	case "session_metadata":

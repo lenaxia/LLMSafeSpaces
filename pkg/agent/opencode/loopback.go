@@ -626,3 +626,28 @@ func NewLoopbackClient(baseURL, password string) *Client {
 		Transport: transport,
 	}))
 }
+
+// SessionAbort stops a session's current turn (V1 abort — the only
+// interrupt route on pinned agents >= 1.18.10; the V2 interrupt route
+// was removed upstream, regression-pinned by the sessionstate actor).
+// The turn ends; session history and the platform's delivery ledger are
+// untouched.
+func (c *Client) SessionAbort(ctx context.Context, sessionID string) error {
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("%s/session/%s/abort", c.baseURL, sessionID), bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return fmt.Errorf("POST /session/%s/abort: build: %w", sessionID, err)
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort drain
+	if resp.StatusCode >= 400 {
+		return c.statusError("POST /session/"+sessionID+"/abort", resp)
+	}
+	return nil
+}

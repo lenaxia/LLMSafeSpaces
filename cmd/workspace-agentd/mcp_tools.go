@@ -550,3 +550,90 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 		return "", fmt.Errorf("multiple sessions are busy (%s) — pass session_id explicitly", strings.Join(busyIDs, ", "))
 	}
 }
+
+// --- send_message ---------------------------------------------------------
+
+// mcpSendMessage delivers a text message to another session in this
+// workspace, fire-and-forget: the reply (if any) stays in the target
+// session — nothing returns to the caller (the same philosophy as
+// create_session; the task tool is the blocking/returns-result path).
+//
+// Busy targets queue the message server-side and deliver it when their
+// current turn ends (live-proven run-at-boundary semantics — the same
+// POST shape that powers compact's scheduling), so delivery is detached
+// either way and the tool reports which case applies.
+func mcpSendMessage(ctx context.Context, password, sessionID, message string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", fmt.Errorf("message is required")
+	}
+
+	client := seamClientWithPassword(password)
+
+	// Reject unknown IDs up front rather than failing silently in the
+	// detached delivery (the caller cannot see the goroutine's error).
+	sessions, err := client.SessionList(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve the target session: %w", err)
+	}
+	known := false
+	for _, s := range sessions {
+		if s.ID == sessionID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)", sessionID)
+	}
+
+	busy, err := client.GetSessionStatuses(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read session status: %w", err)
+	}
+
+	status := "delivering"
+	if busy[sessionID] == "busy" {
+		status = "delivering_after_current_turn"
+	}
+
+	// Detached delivery: WithoutCancel so it survives the tool response;
+	// server-side queuing handles busy targets. Delivery is not retried
+	// (same loss semantics as create_session — stated in the description).
+	go func() {
+		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, message, "", nil); err != nil {
+			log.Warn("send_message: background delivery failed",
+				zap.String("sessionID", sessionID), zap.Error(err))
+		}
+	}()
+
+	out, _ := json.Marshal(map[string]string{
+		"status":     status,
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}
+
+// --- abort_session --------------------------------------------------------
+
+// mcpAbortSession stops a session's current turn via the V1 abort route
+// (the seam's SessionAbort). Non-destructive to history and the
+// delivery ledger; aborting an idle session is a server-side no-op.
+func mcpAbortSession(ctx context.Context, password, sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	if err := seamClientWithPassword(password).SessionAbort(ctx, sessionID); err != nil {
+		return "", fmt.Errorf("failed to abort session: %w", err)
+	}
+	out, _ := json.Marshal(map[string]string{
+		"status":     "aborted",
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}

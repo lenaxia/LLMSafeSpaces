@@ -42,6 +42,7 @@ type fakeAgent struct {
 	titles     map[string]string // id -> title
 	renamed    map[string]string
 	deleted    []string
+	aborted    []string
 	sentBodies map[string][]map[string]any // id -> decoded message bodies
 	summaries  map[string]map[string]string
 	busySet    map[string]bool
@@ -140,6 +141,12 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 					"info":  map[string]any{"id": "msg_1", "role": "assistant", "modelID": f.models[id]},
 					"parts": parts,
 				})
+			case "/abort":
+				// NOTE: no locking here — the handler holds f.mu for the
+				// whole request (locked at entry); re-locking deadlocks.
+				f.aborted = append(f.aborted, id)
+				f.busySet[id] = false
+				w.WriteHeader(http.StatusOK)
 			default: // rename
 				f.renamed[id], _ = body["title"].(string)
 				w.WriteHeader(http.StatusOK)
@@ -874,7 +881,8 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 	for _, want := range []string{
 		"session_list", "session_read", "dev_preview_url", "secrets_resync",
 		"rename_session", "rename_workspace", "call_with_model",
-		"create_session", "get_datetime", "session_metadata", "compact",
+		"create_session", "send_message", "get_datetime", "session_metadata",
+		"compact", "abort_session",
 	} {
 		assert.True(t, names[want], "%s must be in tools/list", want)
 	}
@@ -884,7 +892,7 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 	for _, tool := range []string{
 		"session_list", "session_read", "rename_session", "rename_workspace",
-		"call_with_model", "create_session", "get_datetime",
+		"call_with_model", "create_session", "send_message", "abort_session", "get_datetime",
 		"session_metadata", "compact", "secrets_resync", "dev_preview_url",
 	} {
 		params, _ := json.Marshal(map[string]any{"name": tool, "arguments": map[string]any{}})
@@ -1034,4 +1042,139 @@ func TestMCPCallWithModel_ReadCapTOCTOU(t *testing.T) {
 	_, err := mcpCallWithModel(context.Background(), mcpTestPassword, "p", "p/vision", []string{oversize})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "per-image cap")
+}
+
+// --- send_message ---------------------------------------------------------
+
+func TestMCPSendMessage_IdleTarget(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "please continue")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"delivering"`)
+
+	require.Eventually(t, func() bool {
+		bodies := f.sentFor(s1)
+		return len(bodies) == 1
+	}, 5*time.Second, 50*time.Millisecond, "detached delivery must land")
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	assert.Equal(t, "please continue", parts[0].(map[string]any)["text"])
+	_, hasModel := f.sentFor(s1)[0]["model"]
+	assert.False(t, hasModel, "no model override — the target runs its own default")
+}
+
+func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("busy-target")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests")
+	require.NoError(t, err)
+	assert.Contains(t, out, "delivering_after_current_turn")
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(s1)) == 1
+	}, 5*time.Second, 50*time.Millisecond, "delivery POST fires detached")
+}
+
+func TestMCPSendMessage_UnknownSession(t *testing.T) {
+	f := newFakeAgent()
+	f.newSession("real")
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "ses_absent", "hi")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestMCPSendMessage_MissingArgs(t *testing.T) {
+	f := newFakeAgent()
+	withAgentServer(t, f.handler(t))
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "", "hi")
+	require.Error(t, err)
+	_, err = mcpSendMessage(context.Background(), mcpTestPassword, "ses_1", "   ")
+	require.Error(t, err)
+	assert.Empty(t, f.sentBodies, "no delivery without valid args")
+}
+
+// Full-stack JSON-RPC: the busy path returns immediately with the
+// queued status while the POST lands in the background.
+func TestMCPHandler_SendMessageFullStack(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("steer-me")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "send_message",
+		"arguments": map[string]any{"session_id": s1, "message": "pivot to the fallback design"},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 11, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.Nil(t, result["isError"], "%v", result)
+	content := result["content"].([]any)
+	assert.Contains(t, content[0].(map[string]any)["text"], "delivering_after_current_turn")
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(s1)) == 1
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
+// --- abort_session --------------------------------------------------------
+
+func TestMCPAbortSession_HappyPath(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("busy")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpAbortSession(context.Background(), mcpTestPassword, s1)
+	require.NoError(t, err)
+	assert.Contains(t, out, "aborted")
+	assert.Equal(t, []string{s1}, f.aborted)
+}
+
+func TestMCPAbortSession_MissingID(t *testing.T) {
+	_, err := mcpAbortSession(context.Background(), mcpTestPassword, "  ")
+	require.Error(t, err)
+}
+
+func TestMCPAbortSession_Non2xx(t *testing.T) {
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	_, err := mcpAbortSession(context.Background(), mcpTestPassword, "ses_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
+}
+
+func TestMCPHandler_AbortSessionFullStack(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("runaway")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "abort_session",
+		"arguments": map[string]any{"session_id": s1},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 12, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.Nil(t, result["isError"], "%v", result)
+	assert.Equal(t, []string{s1}, f.aborted)
 }
