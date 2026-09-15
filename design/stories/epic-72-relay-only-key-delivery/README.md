@@ -3,7 +3,7 @@
 **Status:** Planning (design accepted pending review — implementation stories filed against this folder)
 **Created:** 2026-09-15
 **Priority:** P1 (security — closes #820)
-**Tracking:** GitHub issue #820 (epic label `[epic-72]`); this document is the authoritative story map. Execution status lives on GitHub.
+**Tracking:** GitHub issue #820 (epic label `[epic-72]` to be applied when the epic issues are filed — #820 currently carries `P1`/`security`/`agent-integration` only); this document is the authoritative story map. Execution status lives on GitHub.
 **Design:** [`design/0058_2026-09-15_relay-only-key-delivery.md`](../../0058_2026-09-15_relay-only-key-delivery.md) · **Normative decisions:** the owner's 2026-08-27 decision record on #820 (D1 relay-through default, D2 per-request resolve / no plaintext cache, D3 agentd non-decrypt-capable) — fixed inputs.
 
 > **Renumbered 68 → 72 (2026-09-15).** The 2026-08-27 decision record drafted this
@@ -29,6 +29,11 @@ from user repos); the key is one prompt injection away from exfiltration (#820
 live evidence; the exfil sink itself is #821). Relay-only key delivery removes the
 key from the pod entirely: providers point at a resolve-capable router, agent
 config carries only an ephemeral scoped token, and the router holds the unwrap.
+Coverage is uniform across owner types — user, admin, and org llm-provider
+credentials all ride the same batch construction (`injection.go:482-518`) and are
+rewritten identically; this is the design's answer to the 2026-09-15 triage
+question on #820 (per-credential "refuse raw-key when relay-reachable" rejected —
+design §4.1/§9).
 
 ## What this epic is NOT
 
@@ -103,7 +108,13 @@ plaintext KEK exists only in controller/router memory.
 **Scope/files:** `pkg/secrets/staging_provider.go` (+tests) alongside the KEK
 machinery (`root_key.go`, `kms_aws_provider.go`, `kms_gcp_provider.go` precedents);
 versioned envelope wire format (`stg:v1:` prefix, algorithm-discriminated);
-`llm-relay-kek` Secret contract (KMS-wrapped blob + key id).
+`llm-relay-kek` Secret contract (KMS-wrapped blob + key id); HPKE mode: candidate
+library `github.com/cloudflare/circl` (RFC 9180) — **dependency review is part of
+this story** (version pin, license, govulncheck/Trivy evidence recorded in the
+worklog; no stdlib HPKE exists and `go.mod` carries no HPKE dependency today);
+HPKE key distribution per design §4.2 (router-generated keypair, private key in a
+router-SA-writable Secret, public key published for the controller —
+RBAC-authenticated, not trust-on-first-use; rotation = reconcile-driven re-seal).
 
 **Acceptance criteria:**
 - Seal→resolve roundtrip both algorithms; envelope versioning discriminates.
@@ -139,8 +150,13 @@ informer cache (ciphertext only); request pipeline: client-Authorization replace
 strip (extend `routerHopHeaders`, `proxy.go:59-68`), method/path allowlist
 (chat-completions-class + `/models`), request/response size caps, model-allowlist
 enforcement (`model` field against token scope), per-workspace quota counters +
-Prometheus alerts; `/models` served from staged `LLMProviderData.Models`;
-`/v1/w/<workspaceID>/<providerSlug>/...` routing; Helm: `llm-relay` namespace,
+Prometheus alerts; `/models` served from staged `LLMProviderData.Models`; routing path
+`/w/<workspaceID>/<providerSlug>/v1/…` (terminates in `/v1` so OpenAI-compatible
+clients append `/chat/completions` — design §4.5 is authoritative on the shape);
+**log/persistence posture (K7)**: metadata-only logging (workspace, slug, keyID,
+status, latency, bytes, rejection reason) — request/response bodies never logged,
+sampled, or buffered to disk; body-adjacent diagnostics must pass `pkg/redact` or
+are forbidden; Helm: `llm-relay` namespace,
 Deployment ×2 + PDB `maxUnavailable: 1`, `terminationGracePeriodSeconds` sized to
 max stream duration (a cap not a delay — #1078), preStop not-ready, Service,
 NetworkPolicy (workspace-ns egress carve-out via namespaceSelector, the
@@ -160,7 +176,11 @@ Secrets in `llm-relay` only).
 
 **Test plan (TDD):** red-first table-driven `token_scope_matrix` (wrong workspace /
 wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
-`credential_stale`); `router_sanitization_suite`; `revocation_secret_delete_401`;
+`credential_stale`); `router_sanitization_suite`; `revocation_secret_delete_401`
+— **asserting an upper bound on the deletion→401 window** (informer watch
+propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
+tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
+request/response, capture every log/metric emission, assert zero body bytes);
 `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule unit);
 informer-drop test (Secret deleted → cache evicted → next request 401).
 
@@ -310,5 +330,10 @@ a deliberate positive-control mode.
 - **K3 — Token validity is conjunctive**: HMAC ∧ staged-Secret-present ∧ not-expired.
 - **K4 — agentd never decrypts, never signs** (D3): no KEK, no signing key, no DEK
   in agentd's reachable space, either container mode.
-- **K5 — Revocation = Secret deletion** (D2): no second revocation mechanism.
+- **K5 — Revocation = Secret deletion** (D2): no second revocation mechanism;
+  effect bounded by informer watch propagation (test-pinned upper bound).
 - **K6 — No new delivery path**: tokens ride the Epic 70 batch machinery only.
+- **K7 — Router persistence posture**: metadata-only logging; request/response
+  bodies never logged, sampled, traced, or buffered to disk at any verbosity;
+  body-adjacent diagnostics pass `pkg/redact` or are forbidden (design 0027
+  proxy-as-trust-boundary principle; design 0058 §4.7).

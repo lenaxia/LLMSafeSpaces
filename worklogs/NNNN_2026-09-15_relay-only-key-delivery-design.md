@@ -31,6 +31,16 @@ The Aug-14 verification comment's four-surface list is stale in one place: US-70
 
 `AgentConfigWriter` seam passes provider bytes verbatim (`pkg/agent/agentconfig.go:85-147`); `upstreamAuth` router-side injection precedent (`cmd/relay-router/proxy.go:40-56`, `helm` `controller.inferenceRelay.upstreamAuth.keySecret`); per-binding `ModelAllowlist` already exists and is enforced batch-side (`pkg/secrets/credential_store.go:50`, `injection.go:531+`); KMS provider precedents (`kms_aws_provider.go`, `kms_gcp_provider.go`, `RootKeyProvider` at `root_key.go:35`); #1078 = deploy-drain grace (cap-not-delay) + in-flight surfacing, pattern applied to the 2-replica router; `shouldSkipRelay` (`relay_injector.go:98-131`) is free-tier-Zen-only, orthogonal to BYO relay-through; NetworkPolicy carve-out pattern (`relay-router-networkpolicy.yaml` namespaceSelector); condition-types precedent (`workspace_types.go:264-294`, `SecretsDelivery` at `:439`).
 
+### Review iteration 1 (AI reviewer, CHANGES_REQUESTED → fixed)
+
+Five findings, all validated as real (Rule 11 Phase 2), fixed in commit 2:
+1. Router log/persistence posture unspecified → §4.7 persistence invariant added (metadata-only; bodies never logged/sampled/buffered; `pkg/redact` gate) + epic K7 + `router_logs_metadata_only` test.
+2. HPKE under-specified → §4.2 pinned: candidate lib `cloudflare/circl` (no stdlib HPKE; verified no circl/hpke in `go.mod`), RBAC-authenticated key distribution (router-SA-writable Secrets, not TOFU), reconcile-driven rotation, US-72.1 dependency-review requirement; §10.3 no-KMS-prod trust statement (same class as US-50.1 KEK mount).
+3. 2026-09-15 triage question unengaged → §4.1 coverage paragraph (all owner types; per-credential refusal rejected per §9) + epic problem statement.
+4. Route-path contradiction design vs epic → unified to `/w/<workspaceID>/<providerSlug>/v1` (design §4.5 authoritative; verified the `/v1` terminal shape matches `@ai-sdk/openai-compatible` induction, `format.go:74-83`).
+5. False `[epic-72]` label claim → rephrased as "to be applied at epic filing".
+Carried forward per reviewer's test note: `revocation_secret_delete_401` gains a deletion→401 window bound (informer propagation) + `exp` clock-skew test; §4.4 wording updated (revocation bounded by watch propagation, not immediate).
+
 ### Files
 
 - `design/0058_2026-09-15_relay-only-key-delivery.md` — the design doc (house style per 0055/0057: status header, depends/composes, numbered sections, threat model, assumptions table, rejected alternatives, open items)
