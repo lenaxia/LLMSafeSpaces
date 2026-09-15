@@ -213,11 +213,20 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 		return 0
 	}
 
+	// Mid-turn, the in-flight assistant message carries a ZEROED token
+	// stamp until step completion (live-proven 2026-09-14 — same root
+	// cause as the seam's SessionPromptTokens; post-#1342 interrupt-first
+	// restarts can leave those stamps zeroed permanently, so skipping them
+	// is what keeps fillGaps/statusz ContextUsed honest). A real
+	// completion always carries input > 0; zero-total stamps are skipped.
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Info.Role == "assistant" && messages[i].Info.Tokens != nil {
-			return messages[i].Info.Tokens.Input + messages[i].Info.Tokens.Cache.Read + messages[i].Info.Tokens.Cache.Write
+		if messages[i].Info.Role != "assistant" || messages[i].Info.Tokens == nil {
+			continue
+		}
+		if total := messages[i].Info.Tokens.Input + messages[i].Info.Tokens.Cache.Read + messages[i].Info.Tokens.Cache.Write; total > 0 {
+			return total
 		}
 	}
-	log.Debug("fetchSessionPromptTokens: no assistant message with tokens found", zap.String("sessionID", sessionID))
+	log.Debug("fetchSessionPromptTokens: no completed assistant step with tokens found", zap.String("sessionID", sessionID))
 	return 0
 }

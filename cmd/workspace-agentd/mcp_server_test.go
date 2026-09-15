@@ -706,9 +706,21 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	tools := resp.Result.(map[string]any)["tools"].([]any)
 
 	descs := map[string]string{}
+	schemaDescs := map[string]string{} // "tool/property" -> property description
 	for _, tool := range tools {
 		tt := tool.(map[string]any)
 		descs[tt["name"].(string)] = tt["description"].(string)
+		if schema, ok := tt["inputSchema"].(map[string]any); ok {
+			if props, ok := schema["properties"].(map[string]any); ok {
+				for prop, raw := range props {
+					if pm, ok := raw.(map[string]any); ok {
+						if pd, ok := pm["description"].(string); ok {
+							schemaDescs[tt["name"].(string)+"/"+prop] = pd
+						}
+					}
+				}
+			}
+		}
 	}
 
 	t.Run("dev_preview_url guidance", func(t *testing.T) {
@@ -799,14 +811,25 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["create_session"]
 		require.True(t, ok, "create_session in tools/list")
 		for _, want := range []string{
-			"fire-and-forget",             // delivery semantics
-			"in the background",           // returns before the turn completes
-			"session_list / session_read", // follow-up path
-			"not retried",                 // loss semantics on restart
-			"self-contained",              // prompt must carry its own context
+			"fire-and-forget",                // delivery semantics
+			"in the background",              // returns before the turn completes
+			"does NOT come back to you",      // the result never returns to the caller
+			"will NOT depend on its result",  // use-case gate 1: independence
+			"require HUMAN input",            // use-case gate 2: human-in-the-loop sessions
+			"intended for human consumption", // ...or sessions a person will consume/steer
+			"use the task tool",              // the blocking alternative for outcome-needed work
+			"blocks and returns the result",  // what the task tool offers instead
+			"session_list / session_read",    // follow-up path
+			"not retried",                    // loss semantics on restart
+			"self-contained",                 // prompt must carry its own context
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The prompt InputSchema description carries the no-return
+		// contract too (PR #1379 review finding 3 — schema text is
+		// agent-visible contract and must not regress silently).
+		require.Contains(t, schemaDescs, "create_session/prompt")
+		assert.Contains(t, schemaDescs["create_session/prompt"], "will NOT return to you")
 	})
 
 	t.Run("get_datetime guidance", func(t *testing.T) {
