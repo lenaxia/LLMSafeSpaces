@@ -29,15 +29,37 @@ managed by another session."
   targets are a no-op. Own-session excluded by description (you cannot
   abort your way out of your own turn).
 
-## Assumptions validated
+## Assumptions stated, then validated (review round 1 corrected the record)
 
 1. V1 abort route + empty-JSON body — the sessionstate actor's pinned
    regression (opencodeActor Interrupt) uses exactly this shape; seam
-   test pins method/path/body.
-2. Busy-queue delivery for send_message — same server-side behavior
-   proven for summarize (200 after the generation finished).
+   tests pin method/path/body.
+2. Busy-target delivery for /message — **initially carried by analogy
+   from the summarize route (review finding 1, correctly flagged);
+   then proven directly**: `TestLoopbackL2_BusyMessageDeliversAtBoundary`
+   holds a real turn open (mock delay), POSTs mid-turn, and observes the
+   POST complete at the boundary, the message persist as the next user
+   turn, and the target answer it (13.0s). The test plan §2 row now
+   records block-then-deliver-at-boundary with both evidence legs.
 3. sessionID validation + SessionList existence check — seam pins
    (no-wire-call for hostile IDs) and the up-front 404-equivalent error.
+4. Retry-status targets ("retry" after stream errors) treated as busy —
+   pinned (`TestMCPSendMessage_RetryStatusTreatedAsBusy`); the advisory
+   label's TOCTOU noted in-code.
+
+## Review remediations (round 1)
+
+- Finding 1: L2 boundary-delivery proof added (above); description keeps
+  the boundary claim now on direct evidence.
+- Finding 2: loss semantics disclosed in the description ("Delivery is
+  not retried...") and pinned.
+- Finding 3: `Client.SessionAbort` (new duplicate) DELETED; `Client.Abort`
+  is the ONE V1 abort — now with sessionID validation (hardens the
+  API-proxy interrupt path, which takes caller-supplied IDs), `{}` body,
+  and body-bearing errors; the tool uses it; seam pins retargeted.
+- Finding 4: test plan scope corrected to NINE tools; §2 busy-row
+  reconciled with the L2 proof.
+- L3: liveprobe gained send_message/abort probes (9 checks green).
 
 ## Tests
 

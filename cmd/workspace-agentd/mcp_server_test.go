@@ -869,6 +869,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"use the task tool",                  // blocking alternative for answers needed here
 			"create_session",                     // pointer: new sessions go there
 			"self-contained",                     // target inherits no context
+			"Delivery is not retried",            // loss semantics disclosed (finding 2)
 		} {
 			assert.Contains(t, d, want)
 		}

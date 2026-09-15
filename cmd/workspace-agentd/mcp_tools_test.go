@@ -1178,3 +1178,21 @@ func TestMCPHandler_AbortSessionFullStack(t *testing.T) {
 	assert.Nil(t, result["isError"], "%v", result)
 	assert.Equal(t, []string{s1}, f.aborted)
 }
+
+// A session in retry backoff behaves like busy: the POST waits for the
+// retrying turn to settle, so the label says after_current_turn.
+func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("retrying")
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/session/status" {
+			fmt.Fprintf(w, `{"%s":{"type":"retry","attempt":2}}`, s1)
+			return
+		}
+		f.handler(t)(w, r)
+	})
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please")
+	require.NoError(t, err)
+	assert.Contains(t, out, "delivering_after_current_turn")
+}

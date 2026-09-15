@@ -403,7 +403,7 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 			ID:    s.ID,
 			Title: s.Title,
 			Agent: s.Agent,
-			Busy:  busy[s.ID] == "busy",
+			Busy:  busy[s.ID] == "busy" || busy[s.ID] == "retry",
 		}
 		if s.Time.Created > 0 {
 			created := time.UnixMilli(s.Time.Created)
@@ -596,8 +596,15 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 		return "", fmt.Errorf("failed to read session status: %w", err)
 	}
 
+	// Advisory label only (TOCTOU: the status may flip between read and
+	// POST) — delivery correctness never depends on it; the POST itself
+	// queues server-side either way. "retry" targets (backing off after
+	// stream errors) behave like busy: the POST waits for the retrying
+	// turn to settle — same reporting bucket, matching how the rest of
+	// the codebase treats retry-as-busy.
 	status := "delivering"
-	if busy[sessionID] == "busy" {
+	switch busy[sessionID] {
+	case "busy", "retry":
 		status = "delivering_after_current_turn"
 	}
 
@@ -620,15 +627,16 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 
 // --- abort_session --------------------------------------------------------
 
-// mcpAbortSession stops a session's current turn via the V1 abort route
-// (the seam's SessionAbort). Non-destructive to history and the
-// delivery ledger; aborting an idle session is a server-side no-op.
+// mcpAbortSession stops a session's current turn via the consolidated
+// V1 abort (Client.Abort — the same method the API proxy's interrupt
+// path uses). Non-destructive to history and the delivery ledger;
+// aborting an idle session is a server-side no-op.
 func mcpAbortSession(ctx context.Context, password, sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
 	}
-	if err := seamClientWithPassword(password).SessionAbort(ctx, sessionID); err != nil {
+	if err := seamClientWithPassword(password).Abort(ctx, sessionID); err != nil {
 		return "", fmt.Errorf("failed to abort session: %w", err)
 	}
 	out, _ := json.Marshal(map[string]string{

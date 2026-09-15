@@ -384,3 +384,63 @@ func TestLoopbackL2_ModelInfoCatalog(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(100000), info.ContextLimit)
 }
+
+// TestLoopbackL2_BusyMessageDeliversAtBoundary settles the load-bearing
+// question for send_message (PR #1382 review finding 1): the summarize
+// route was PROVEN to queue server-side on busy, but the /message route
+// was only ever observed to BLOCK (the liveprobe killed the POST at
+// 20s). This test holds a turn open against the real binary, POSTs a
+// message to the busy session with a generous budget, and asserts the
+// POST completes AND the message becomes the next turn — delivery at
+// the turn boundary, not a drop.
+func TestLoopbackL2_BusyMessageDeliversAtBoundary(t *testing.T) {
+	mock := &mockProvider{delay: 4 * time.Second}
+	client := startLoopbackL2(t, 14117, 14157, mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	id, err := client.SessionCreate(ctx, "busy-message")
+	require.NoError(t, err)
+	defer func() { _ = client.SessionDelete(context.Background(), id) }()
+
+	// Turn 1 runs for ~4s (every mock completion costs delay).
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.SessionSend(context.Background(), id, "turn one: write a word", "", nil)
+		first <- err
+	}()
+	require.Eventually(t, func() bool {
+		busy, err := client.GetSessionStatuses(ctx)
+		return err == nil && busy[id] == "busy"
+	}, 15*time.Second, 200*time.Millisecond, "turn one must be running")
+
+	// The message POST lands while the session is busy. Budget covers
+	// turn one's tail plus turn two's full delay plus margin.
+	msgDone := make(chan error, 1)
+	go func() {
+		_, err := client.SessionSend(context.Background(), id, "queued message: reply QUEUED-OK", "", nil)
+		msgDone <- err
+	}()
+	time.Sleep(2 * time.Second) // the POST is in flight against the busy session
+
+	select {
+	case err := <-first:
+		require.NoError(t, err, "turn one must complete cleanly")
+	case <-time.After(60 * time.Second):
+		t.Fatal("turn one never completed")
+	}
+
+	select {
+	case err := <-msgDone:
+		require.NoError(t, err, "the busy-targeted message POST must complete (delivery at boundary), not drop or hang")
+	case <-time.After(120 * time.Second):
+		t.Fatal("message POST never completed — the /message route does NOT deliver at the boundary; send_message's busy semantics must be redesigned")
+	}
+
+	// The queued message actually became the next turn: its text is the
+	// last user message and an assistant reply exists.
+	body, _, err := client.SessionMessagesRaw(ctx, id, 10, "")
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "queued message: reply QUEUED-OK", "the queued message must be persisted as the next user turn")
+	assert.Contains(t, string(body), "MOCK-REPLY", "the target session must have answered the queued message")
+}
