@@ -730,6 +730,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#text-only-models-and-image-bearing-history-issue-1307" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Text-only models and image-bearing history (issue #1307)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2320,6 +2337,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Session">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#text-only-models-and-image-bearing-history-issue-1307" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Text-only models and image-bearing history (issue #1307)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2538,6 +2572,13 @@
 <li><strong>Deleted</strong> — removed.</li>
 </ul>
 <p>The API overlays the live active-session set (from the pod) onto the persisted session list so callers see which sessions are currently running.</p>
+<h3 id="text-only-models-and-image-bearing-history-issue-1307">Text-only models and image-bearing history (issue #1307)<a class="headerlink" href="#text-only-models-and-image-bearing-history-issue-1307" title="Permanent link">&para;</a></h3>
+<p>Some models (e.g. GLM 4.x/5.x via the free tier) only accept text input. When a tool result carries an image into the session history (reading a PNG screenshot with the <code>read</code> tool, playwright flows, attached screenshots), a text-only model rejects the replayed history with a 400 on <strong>every</strong> subsequent turn — the session is wedged until the model is switched.</p>
+<ul>
+<li>The model catalog (<code>GET /workspaces/:id/models</code>) surfaces <code>supportsVision</code> per model: <code>false</code> = known text-only (the picker shows a "text-only" badge), absent = unknown.</li>
+<li>A wedged send returns <code>422 {"code":"text_only_model_image_history"}</code> naming the recovery instead of the raw provider error.</li>
+<li><strong>Recovery:</strong> switch the session to a vision-capable model (the model picker / <code>PUT /workspaces/:id/model</code>) — the wedge is only fatal while the text-only model stays selected — or start a new session.</li>
+</ul>
 <hr />
 <h2 id="secret">Secret<a class="headerlink" href="#secret" title="Permanent link">&para;</a></h2>
 <p>A user-owned encrypted value stored in the encrypted secret store.</p>
@@ -2731,7 +2772,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 07:21:03 UTC"><span class="timeago" datetime="2026-07-11T07:21:03+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 07:21:03 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 15, 2026 19:25:35 UTC"><span class="timeago" datetime="2026-09-15T19:25:35+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 15, 2026 19:25:35 UTC">2026-09-15</span>
   </span>
 
     
