@@ -5,6 +5,8 @@ import com.llmsafespaces.sdk.LLMSafeSpacesClient;
 import com.llmsafespaces.sdk.models.EnsureSessionResponse;
 import com.llmsafespaces.sdk.models.HistoryPage;
 import com.llmsafespaces.sdk.models.Message;
+import com.llmsafespaces.sdk.models.PromptAccepted;
+import com.llmsafespaces.sdk.models.Session;
 
 import java.util.HashMap;
 import java.util.List;
@@ -96,21 +98,29 @@ public class SessionsService {
                 "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/seen", null);
     }
 
-    public void sendPromptAsync(String workspaceId, String sessionId, String message) {
-        sendPromptAsync(workspaceId, sessionId, message, null);
+    /** Gets one session in contract shape (pkg/session Session). */
+    public Session get(String workspaceId, String sessionId) {
+        return c.request("GET",
+                "/workspaces/" + workspaceId + "/sessions/" + sessionId, null, Session.class);
+    }
+
+    public PromptAccepted sendPromptAsync(String workspaceId, String sessionId, String message) {
+        return sendPromptAsync(workspaceId, sessionId, message, null);
     }
 
     /**
-     * Sends a prompt asynchronously (202; the reply arrives on the workspace
-     * SSE stream) in the parts shape the API extracts text from. Optional
+     * Sends a prompt asynchronously into the delivery outbox (202) and
+     * returns the accepted-entry receipt; the agent's reply arrives on the
+     * workspace SSE stream. A retried {@code clientMessageID} answers 200
+     * with the ORIGINAL accepted entry (status "duplicate"). Optional
      * {@code files} are upload-namespace paths (Epic 68) — the API composes
      * the v1 attachment manifest into the dispatched text.
      */
-    public void sendPromptAsync(String workspaceId, String sessionId, String message, List<String> files) {
+    public PromptAccepted sendPromptAsync(String workspaceId, String sessionId, String message, List<String> files) {
         Map<String, Object> body = new HashMap<>();
         body.put("parts", List.of(Map.of("type", "text", "text", message)));
         if (files != null && !files.isEmpty()) body.put("files", files);
-        c.requestVoid("POST",
-                "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/prompt", body);
+        return c.request("POST",
+                "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/prompt", body, PromptAccepted.class);
     }
 }

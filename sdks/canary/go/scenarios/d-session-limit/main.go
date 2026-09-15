@@ -85,7 +85,7 @@ func runSessionLimit(ctx context.Context, run *canary.Runner, cfg canary.Config)
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			err := c.Sessions.SendPromptAsync(ctx, wsID, sessionIDs[idx],
+			_, err := c.Sessions.SendPromptAsync(ctx, wsID, sessionIDs[idx],
 				"Count from 1 to 100 slowly, writing each number.")
 			errCh <- err
 		}(i)

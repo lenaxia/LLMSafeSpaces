@@ -135,6 +135,49 @@ class InboxLateAnswerAccepted(TypedDict, total=False):
     duplicate: bool
 
 
+class Session(TypedDict, total=False):
+    """The platform-owned view of one agent session (pkg/session
+    contract, design 0049) — the get_session response shape."""
+
+    id: str
+    workspaceId: str
+    parentId: str
+    title: str
+    agentId: str
+    model: ModelRef
+    status: str
+    cost: Cost
+    contextUsage: ContextUsage
+    time: TimeRange
+    summary: str
+    archived: bool
+
+
+class ContextUsage(TypedDict, total=False):
+    """The session's live context occupancy (non-monotonic: compaction
+    resets it)."""
+
+    used: int
+    window: int
+
+
+class TimeRange(TypedDict, total=False):
+    """Bounds a session or message. completedAt is absent while busy."""
+
+    startedAt: str
+    completedAt: str
+
+
+class PromptAccepted(TypedDict, total=False):
+    """The delivery-outbox receipt for an async prompt: the 202 body of a
+    fresh accept, and the 200 body of a retried clientMessageID (which
+    echoes the ORIGINAL accepted entry with status "duplicate")."""
+
+    messageID: str
+    clientMessageID: str
+    status: str
+
+
 class Part(TypedDict, total=False):
     """One renderable part of a message — the closed 5-type union."""
 

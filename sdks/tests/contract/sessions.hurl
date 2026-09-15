@@ -41,10 +41,10 @@ HTTP 200
 [Asserts]
 jsonpath "$" exists
 
-# Abort any in-flight message (no body; idempotent)
+# Abort any in-flight message (bodyless 204; idempotent)
 POST {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/abort
 Authorization: Bearer {{token}}
-HTTP 200
+HTTP 204
 
 # Get the active session pointer
 GET {{base_url}}/workspaces/{{workspace_id}}/sessions/active

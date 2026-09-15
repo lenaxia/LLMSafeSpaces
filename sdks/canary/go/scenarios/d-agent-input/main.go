@@ -111,7 +111,7 @@ func runAgentInput(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 
 	// P3: Send message that triggers tool-use permission
-	err = c.Sessions.SendPromptAsync(ctx, wsID, sessionID,
+	_, err = c.Sessions.SendPromptAsync(ctx, wsID, sessionID,
 		"Create a file called /tmp/canary-test.txt with the content: hello world")
 	run.AssertNoError(err, "trigger-permission: async prompt sent")
 
@@ -165,11 +165,9 @@ pollLoop:
 			case <-time.After(3 * time.Second):
 			}
 			detail, err := c.Sessions.Get(ctx, wsID, sessionID)
-			if err == nil {
-				if s, _ := detail["status"].(string); s == "idle" {
-					idle = true
-					break idleLoop
-				}
+			if err == nil && detail.Status == "idle" {
+				idle = true
+				break idleLoop
 			}
 		}
 		run.Assert(idle, "session-idle-after-approve: session idle", "")

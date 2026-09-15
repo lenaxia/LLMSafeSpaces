@@ -31,7 +31,8 @@ When API routes or types change:
 
 1. Update `openapi.yaml` to match the new behavior
 2. Run `make validate` to ensure structural correctness
-3. Regenerate SDKs with `make generate-all`
+3. Hand-sync the four SDKs to the spec (see "Keeping the SDKs in
+   sync" below — the generation targets are no-ops)
 
 ### Validation
 
@@ -45,9 +46,14 @@ This runs a Go-based structural validator that checks:
 - Security schemes defined
 - At least one path defined
 
-### Proxy endpoints
+### Session and input surfaces (platform contract)
 
-Endpoints marked with `x-opencode-proxy: true` return responses from the upstream opencode agent. Their response schemas are version-coupled to the opencode version running in sandboxes. These schemas may drift if opencode updates its API format.
+The session and input-request surfaces are typed against the
+platform-owned session contract (`pkg/session`, design 0049) — they are
+NOT raw passthroughs of the upstream agent. Response shapes
+(`Session`, `Message`, `Part`, `InputRequest`) are the contract's
+camelCase JSON; agent-specific identifiers and shapes never appear.
+Adding a field is a spec change against `pkg/session` first, then here.
 
 ### SSE endpoint
 
@@ -84,7 +90,39 @@ make validate
 1. **OpenAPI 3.0.3** (not 3.1) — chosen for maximum cross-generator compatibility
 2. **Hand-written spec** — no swag annotations exist in the codebase; `swag init` produces empty output
 3. **REST-only in v1** — SSE/WebSocket streaming not modeled in SDK types (use native libraries)
-4. **Proxy responses loosely typed** — opencode response format may change; marked with `x-opencode-proxy`
+4. **Contract-typed session/input responses** — session, history, and input surfaces are the platform-owned `pkg/session` contract (design 0049); no response schema tracks the upstream agent. Agent-specific shapes are contained behind the adapter seam.
+
+## Versioning and breaking changes
+
+The spec and SDKs version independently of the platform (semver over the
+API surface — see [PACKAGES.md](PACKAGES.md): additive changes bump the
+minor, breaking changes the major).
+
+### 1.0.0 (from 0.7.0)
+
+Breaking, covering the input-surface retype (epic-71 4b, #1302 cleanup)
+and the session-surface truth-up (#1304):
+
+- `getSession` now documents the contract `Session` (pkg/session) — it
+  previously documented a raw passthrough object.
+- `deleteSession` and `abortSession` are bodyless `204` (previously
+  documented as `200`).
+- `sendPromptAsync` documents its real bodies: `202` carries the
+  accepted-entry receipt (`{messageID, clientMessageID, status}`), and a
+  retried `clientMessageID` answers `200` with the original entry
+  (`status: "duplicate"`). SDK `sendPromptAsync`/`sendPrompt` methods
+  return the receipt instead of nothing (Go/TS/Python/Java signatures
+  changed).
+- `sendMessage`'s request body extracts text from `parts`; `content` is
+  accepted but ignored (previously documented as the text carrier).
+- `getHistory` pages are oldest-first (chronological) within a page —
+  the previously documented "newest-first ordering within a page" was
+  wrong.
+- Question/permission surfaces speak the contract `InputRequest`
+  vocabulary (#1302): typed lists, contract reply bodies, bodyless 200s
+  on live replies/rejects, `202` late-answer bodies
+  (`InboxLateAnswerAccepted`), the inbox dismiss exit (204), and
+  `input-snapshot` (202). SDK reply signatures changed accordingly.
 
 ## Session Queue (Epic 63)
 

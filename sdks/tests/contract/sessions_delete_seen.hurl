@@ -30,4 +30,4 @@ HTTP 204
 # Delete the session
 DELETE {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}
 Authorization: Bearer {{token}}
-HTTP 200
+HTTP 204

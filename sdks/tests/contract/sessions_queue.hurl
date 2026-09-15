@@ -22,16 +22,18 @@ HTTP 200
 [Captures]
 session_id: jsonpath "$.sessionId"
 
-# Enqueue a message
+# Enqueue a message — 202 carries the accepted-entry receipt
 POST {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
 Authorization: Bearer {{token}}
 Content-Type: application/json
+Prefer: code=202
 {
   "text": "queued message 1"
 }
 HTTP 202
 [Asserts]
 jsonpath "$.messageID" isString
+jsonpath "$.status" isString
 [Captures]
 message_id: jsonpath "$.messageID"
 

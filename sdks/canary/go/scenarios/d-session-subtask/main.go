@@ -70,7 +70,7 @@ func runSessionSubtask(ctx context.Context, run *canary.Runner, cfg canary.Confi
 	parentSessionID := sess.SessionID
 
 	// P1: Send message that triggers a subagent session
-	err = c.Sessions.SendPromptAsync(ctx, wsID, parentSessionID,
+	_, err = c.Sessions.SendPromptAsync(ctx, wsID, parentSessionID,
 		"Use the task tool to create a subtask that writes hello world to /tmp/canary-subtask.txt")
 	run.AssertNoError(err, "trigger-subtask: async prompt sent")
 

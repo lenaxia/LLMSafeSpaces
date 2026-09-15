@@ -26,8 +26,16 @@ CI runs `make contract-test-mock` on every PR via the `sdk-contract` job
 | `auth.hurl` | Register, login, API key CRUD, auth header format |
 | `workspaces.hurl` | Create, list, get, rename, suspend, activate, delete |
 | `sessions.hurl` | Ensure, list, get, abort, active-session pointer |
+| `sessions_contract.hurl` | Contract Session on getSession, prompt receipt bodies, bodyless 204s on abort/delete (#1304) |
+| `sessions_delete_seen.hurl` | Mark-seen (204), delete (204) |
+| `sessions_queue.hurl` | Enqueue receipt, queue list, dismiss |
 | `pagination.hurl` | limit/offset honored, pagination envelope shape, audit log |
 | `errors.hurl` | 400, 401, 404 error format consistency |
+| `inputs.hurl` | InputRequest lists, reply vocabulary, late-answer 202 body, dismiss exit (#1302) |
+| `mcp-servers.hurl` | MCP server CRUD (Epic 53) |
+| `orgs.hurl` | Org CRUD, invitations, policies |
+| `passkeys.hurl` | WebAuthn ceremony shapes (Epic 59) |
+| `workflows.hurl` | Workflow CRUD + runs (Epic 64) |
 
 ## Contract Guarantees
 

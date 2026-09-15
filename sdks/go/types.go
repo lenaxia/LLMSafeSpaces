@@ -291,6 +291,45 @@ type SessionListItem struct {
 	Status        string     `json:"status"`
 }
 
+// Session is the platform-owned view of one agent session (pkg/session
+// contract, design 0049) — the getSession response shape.
+type Session struct {
+	ID           string        `json:"id"`
+	WorkspaceID  string        `json:"workspaceId"`
+	ParentID     string        `json:"parentId,omitempty"`
+	Title        string        `json:"title,omitempty"`
+	AgentID      string        `json:"agentId,omitempty"`
+	Model        *ModelRef     `json:"model,omitempty"`
+	Status       string        `json:"status"`
+	Cost         *Cost         `json:"cost,omitempty"`
+	ContextUsage *ContextUsage `json:"contextUsage,omitempty"`
+	Time         *TimeRange    `json:"time,omitempty"`
+	Summary      string        `json:"summary,omitempty"`
+	Archived     bool          `json:"archived,omitempty"`
+}
+
+// ContextUsage is the session's live context occupancy (non-monotonic:
+// compaction resets it).
+type ContextUsage struct {
+	Used   int64 `json:"used"`
+	Window int64 `json:"window,omitempty"`
+}
+
+// TimeRange bounds a session or message. CompletedAt is nil while busy.
+type TimeRange struct {
+	StartedAt   time.Time  `json:"startedAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// PromptAccepted is the delivery-outbox receipt for an async prompt:
+// the 202 body of a fresh accept and the 200 body of a retried
+// clientMessageID (which echoes the ORIGINAL accepted entry).
+type PromptAccepted struct {
+	MessageID       string `json:"messageID"`
+	ClientMessageID string `json:"clientMessageID,omitempty"`
+	Status          string `json:"status"`
+}
+
 // ActiveSessionsResponse is returned by GET /workspaces/:id/sessions/active.
 type ActiveSessionsResponse struct {
 	Active    []string `json:"active"`

@@ -101,6 +101,48 @@ export interface SessionListItem {
   status: string;
 }
 
+/**
+ * The platform-owned view of one agent session (pkg/session contract,
+ * design 0049) — the getSession response shape.
+ */
+export interface Session {
+  id: string;
+  workspaceId: string;
+  parentId?: string;
+  title?: string;
+  agentId?: string;
+  model?: ModelRef;
+  status: "unknown" | "idle" | "busy" | "error" | "compacting" | "archived";
+  cost?: Cost;
+  contextUsage?: ContextUsage;
+  time?: TimeRange;
+  summary?: string;
+  archived?: boolean;
+}
+
+/** The session's live context occupancy (non-monotonic: compaction resets it). */
+export interface ContextUsage {
+  used: number;
+  window?: number;
+}
+
+/** Bounds a session or message. completedAt is absent while busy. */
+export interface TimeRange {
+  startedAt: string;
+  completedAt?: string;
+}
+
+/**
+ * The delivery-outbox receipt for an async prompt: the 202 body of a
+ * fresh accept, and the 200 body of a retried clientMessageID (which
+ * echoes the ORIGINAL accepted entry with status "duplicate").
+ */
+export interface PromptAccepted {
+  messageID: string;
+  clientMessageID?: string;
+  status: "queued" | "duplicate";
+}
+
 export interface ActiveSessionsResponse {
   active: string[];
   maxActive: number;

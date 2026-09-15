@@ -100,7 +100,7 @@ func runSessionEnsure(ctx context.Context, run *canary.Runner, cfg canary.Config
 	// P9: GET individual session
 	sessionObj, err := c.Sessions.Get(ctx, wsID, sessionID)
 	if run.AssertNoError(err, "get-session: no error") {
-		run.Assert(sessionObj["id"] != nil, "get-session: id field present", "")
+		run.Assert(sessionObj.ID == sessionID, "get-session: id matches", sessionObj.ID)
 	}
 
 	// P10: Abort (idle session — should not error)

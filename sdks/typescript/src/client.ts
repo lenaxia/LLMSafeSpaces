@@ -26,8 +26,10 @@ import type {
   McpServer,
   Message,
   ProviderCredential,
+  PromptAccepted,
   QueuedMessage,
   SecretResponse,
+  Session,
   SessionListItem,
   TerminalTicket,
   UpdateProviderCredentialRequest,
@@ -393,18 +395,22 @@ class SessionsAPI {
   abort(workspaceId: string, sessionId: string) {
     return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/abort`);
   }
-  get(workspaceId: string, sessionId: string) {
-    return this.client.request<Record<string, unknown>>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}`);
+  /** Gets one session in contract shape (pkg/session Session). */
+  get(workspaceId: string, sessionId: string): Promise<Session> {
+    return this.client.request<Session>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}`);
   }
   /**
-   * Sends a prompt asynchronously (202; the reply arrives on the workspace
-   * SSE stream). Optional `files` (Epic 68) are upload-namespace paths —
-   * the API composes the v1 attachment manifest into the dispatched text.
+   * Sends a prompt asynchronously into the delivery outbox (202) and
+   * returns the accepted-entry receipt; the agent's reply arrives on the
+   * workspace SSE stream. A retried clientMessageID answers 200 with the
+   * ORIGINAL accepted entry (status "duplicate"). Optional `files`
+   * (Epic 68) are upload-namespace paths — the API composes the v1
+   * attachment manifest into the dispatched text.
    */
-  sendPromptAsync(workspaceId: string, sessionId: string, message: string, files?: string[]) {
+  sendPromptAsync(workspaceId: string, sessionId: string, message: string, files?: string[]): Promise<PromptAccepted> {
     const body: Record<string, unknown> = { parts: [{ type: "text", text: message }] };
     if (files && files.length > 0) body.files = files;
-    return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, body);
+    return this.client.request<PromptAccepted>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, body);
   }
   delete(workspaceId: string, sessionId: string) {
     return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}`);
