@@ -1618,7 +1618,10 @@ func TestUS70GvisorResolveTag_RetriesRideThroughAndGiveUp(t *testing.T) {
 	stubPath := filepath.Join(dir, "curl")
 	stubTmpl := `#!/bin/bash
 for a in "$@"; do
-  case "$a" in -L|--location) echo followed >> SAWL; printf '
+  # -L exact OR any short-flag cluster containing L (e.g. -fsSL) —
+  # following the redirect lands on the release page and redirect_url
+  # comes back empty.
+  case "$a" in -L|--location|-*L*) echo followed >> SAWL; printf '
 '; exit 0;; esac
 done
 printf x >> FAILS
@@ -1653,8 +1656,11 @@ exit 7
 	t.Run("all attempts empty - gives up loudly", func(t *testing.T) {
 		os.Remove(fails)
 		os.Remove(sawL)
-		// A curl that always exits 0 with empty output (the -L shape).
-		emptyStub := "#!/bin/bash\nprintf '\\n'\nexit 0\n"
+		// A curl that always FAILS non-zero — the retry loop must
+		// exhaust (the empty-redirect shape is covered separately by
+		// TestUS70GvisorResolveTag_HappyAndFailClosed's followed-redirect
+		// row).
+		emptyStub := "#!/bin/bash\nexit 7\n"
 		if err := os.WriteFile(stubPath, []byte(emptyStub), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -51,3 +51,14 @@ The retry wrapper (#1373) was the wrong diagnosis carried one step too far: pool
 ## Tests run (r2)
 
 - `go test -timeout 300s ./local/` — ok; `golangci-lint` 0; `bash -n` both scripts
+
+## Review r3 remediation (#1375, final)
+
+- The delegation pin now asserts BOTH invocations' inherited env (two record lines, each `CLUSTER_NAME=s5-ovl CTX=kind-s5-ovl`, the second being `runtimeclass` — the CTX consumer the r2 anchor missed).
+- The `-L` stub catches combined short-flag clusters (`-*L*`, e.g. `-fsSL`) — the `-fsSL` mutation now fails the happy row.
+- The exhaustion row uses an always-non-zero stub so the retry loop actually exhausts (the exit-0-empty shape rides the `HappyAndFailClosed` row); `for i in 1` truncation is caught by the ride-through row.
+- Both of the reviewer's mutations re-executed against the new pins: FAIL as required; restored state green (`./local/` ok, lint 0).
+
+## Tests run (r3)
+
+- `go test -timeout 300s ./local/` — ok; `golangci-lint` 0; mutation checks (above)

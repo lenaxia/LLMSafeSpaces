@@ -108,7 +108,19 @@ func TestS5Gvisor_DelegationCarriesClusterEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal("stub gvisor.sh was never invoked")
 	}
-	if !strings.Contains(string(recorded), "CLUSTER_NAME=s5-ovl CTX=kind-s5-ovl") {
-		t.Fatalf("the child must inherit the s5 cluster identity, got: %s", recorded)
+	// BOTH invocations carry the identity — the runtimeclass call is the
+	// one whose env is load-bearing (CTX names the kubectl context; the
+	// install call never evaluates it).
+	lines := strings.Split(strings.TrimSpace(string(recorded)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("both delegation calls must run, got %d: %s", len(lines), recorded)
+	}
+	for i, ln := range lines {
+		if !strings.Contains(ln, "CLUSTER_NAME=s5-ovl CTX=kind-s5-ovl") {
+			t.Fatalf("call %d must inherit the s5 cluster identity, got: %s", i+1, ln)
+		}
+	}
+	if !strings.Contains(lines[1], "runtimeclass") {
+		t.Fatalf("the runtimeclass invocation is the CTX consumer — it must carry the env (record: %s)", recorded)
 	}
 }
