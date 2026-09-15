@@ -140,7 +140,9 @@ func TestSessionAwareRestartDecision_SessionsBusy_DefersRestart(t *testing.T) {
 	tracker.set("ses_2", "idle")
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 50 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	decided := makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{PollInterval: 50 * time.Millisecond})
 
 	assert.False(t, decided,
 		"sessions busy — restart must be deferred, not immediate")

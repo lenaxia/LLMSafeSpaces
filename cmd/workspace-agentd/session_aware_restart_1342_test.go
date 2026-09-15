@@ -202,7 +202,9 @@ func TestRestart1342_ProgressingSessionDefersUnbounded(t *testing.T) {
 	tracker.set("ses_build", "busy")
 
 	proc := newOrderRecordingProc()
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // the defer goroutine must die with the test
+	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{
 		PollInterval: 20 * time.Millisecond,
 		StallBound:   100 * time.Millisecond,
 		GraceWindow:  30 * time.Millisecond,
@@ -239,7 +241,9 @@ func TestRestart1342_MixedProgressAndStalled_DefersWhileAnyProgress(t *testing.T
 
 	proc := newOrderRecordingProc()
 	intr := newRecordingInterrupter()
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // the defer goroutine must die with the test
+	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{
 		PollInterval: 20 * time.Millisecond,
 		StallBound:   80 * time.Millisecond,
 		GraceWindow:  30 * time.Millisecond,
@@ -331,7 +335,9 @@ func TestRestart1342_ZeroStallBoundFallsBackToDefault(t *testing.T) {
 	tracker.processEvent(`{"type":"message.part.updated","properties":{"sessionID":"ses_fresh","part":{"id":"p","type":"text","text":"x"}}}`)
 
 	proc := newOrderRecordingProc()
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // the defer goroutine must die with the test
+	decided := makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{
 		PollInterval: 20 * time.Millisecond,
 		StallBound:   0, // fallback
 	})

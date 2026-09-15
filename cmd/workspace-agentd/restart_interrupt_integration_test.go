@@ -97,11 +97,18 @@ func integrationApplyDeps(t *testing.T, proc restartableProcess, pending *pendin
 		home:            dir,
 	}
 	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 2 * time.Second}}
+	// Cancelable lifecycle context: a deferred-restart goroutine that
+	// outlives the test body (e.g. one still riding the maintenance
+	// window at assert time) MUST be torn down with the test — its poll
+	// tick's lister would otherwise cross-talk into a later test's fake
+	// harness (the CI race-suite catch on the actor call-recorder).
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	t.Cleanup(bgCancel)
 	deps := applySecretsDeps{
 		Proc:                    proc,
 		OpencodePassword:        "pw",
 		Tracker:                 newSessionStatusTracker(),
-		BgCtx:                   context.Background(),
+		BgCtx:                   bgCtx,
 		Lister:                  func(ctx context.Context) []string { return liveIDs(client, ctx) },
 		Interrupter:             newSessionInterrupter("pw"),
 		PendingApply:            pending,
