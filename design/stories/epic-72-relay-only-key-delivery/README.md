@@ -183,9 +183,14 @@ Secrets + `get` on `llm-relay-hpke-pub`).
   identity headers stripped; oversize bodies refused; disallowed methods/paths 404.
 - HPKE machinery replica-symmetric on the ×2 topology: simultaneous cold start
   converges on one adopted keypair (fingerprint asserted); rotation keeps both
-  replicas resolving old+new envelopes within the watch-propagation bound;
-  prior keys drop uniformly after the retention interval; DR (keypair Secret
-  loss) regenerates with an honest `CredentialStale` window until re-seal.
+  replicas resolving old+new envelopes within the watch-propagation bound —
+  with the design §4.2 stated failure modes pinned: a replica restarting
+  mid-re-seal resolves only the new key until re-seal completes; a re-seal
+  overrunning the retention interval degrades to `CredentialStale`, never
+  silently; the private-then-pub update ordering makes torn rotations
+  un-confirmable; prior keys drop uniformly after the retention interval;
+  DR (keypair Secret loss *or* corruption) regenerates with an honest
+  `CredentialStale` window until re-seal.
 
 **Test plan (TDD):** red-first table-driven `token_scope_matrix` (wrong workspace /
 wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
@@ -195,9 +200,14 @@ propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
 tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
 request/response, capture every log/metric emission, assert zero body bytes);
 key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
-(window ≤ watch bound, both replicas), `prior_key_retention_expiry`,
-`dr_keypair_loss_failclosed_recovery`, `envelope_keyid_aad_bound` (design §7
-rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
+(window ≤ watch bound, both replicas), `rotation_replica_restart_mid_reseal`
+(old-keyID fails on the restarted replica only until re-seal completes),
+`reseal_completes_before_retention_expiry` (default settings; overrun degrades
+to `CredentialStale`, not silent), `rotation_torn_update_unconfirmable`
+(private-then-pub ordering; a pub read predating the rotate return never
+confirms), `prior_key_retention_expiry`, `dr_keypair_loss_failclosed_recovery`
+(including the corrupted-Secret overwrite path), `envelope_keyid_aad_bound`
+(design §7 rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
 unit); informer-drop test (Secret deleted → cache evicted → next request 401).
 
 **Sizing:** L. **Dependencies:** US-72.1.
@@ -236,7 +246,8 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
 
 **Test plan (TDD):** red-first controller reconcile tests (stage/unbind/rotate —
 rotate leg: trigger `POST /internal/v1/keys/rotate`, re-seal every envelope,
-confirm completion by envelope `keyID` metadata alone, never decrypt);
+confirm completion by envelope `keyID` metadata alone, never decrypt —
+confirmation reads the controller's own write-acks, no envelope read-back);
 mixed-fleet batch tests (`mixed_fleet_batches`: same deployment serves legacy
 bare-key batch to pre-flip semantics and token batch post-flip — the W15 pin
 pattern); envtest conditions matrix; helm-render tests for the flag/guard/namespace.
