@@ -180,11 +180,11 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "create_session",
-						Description: "Create a NEW top-level agent session in this workspace — a peer of yours, not a subtask — and hand it a starting prompt, fire-and-forget. Returns the session_id immediately while the new session's first turn runs in the background; you keep working in parallel. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
+						Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"prompt": map[string]any{"type": "string", "description": "The first prompt for the new session — self-contained: same workspace files, none of this conversation's context"},
+								"prompt": map[string]any{"type": "string", "description": "The first prompt for the new session — self-contained: same workspace files, none of this conversation's context. Its output will NOT return to you."},
 								"title":  map[string]any{"type": "string", "description": "Optional title (max 200 chars); omitted = auto-generated"},
 							},
 							"required": []string{"prompt"},

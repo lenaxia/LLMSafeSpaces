@@ -799,11 +799,17 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["create_session"]
 		require.True(t, ok, "create_session in tools/list")
 		for _, want := range []string{
-			"fire-and-forget",             // delivery semantics
-			"in the background",           // returns before the turn completes
-			"session_list / session_read", // follow-up path
-			"not retried",                 // loss semantics on restart
-			"self-contained",              // prompt must carry its own context
+			"fire-and-forget",                // delivery semantics
+			"in the background",              // returns before the turn completes
+			"does NOT come back to you",      // the result never returns to the caller
+			"will NOT depend on its result",  // use-case gate 1: independence
+			"require HUMAN input",            // use-case gate 2: human-in-the-loop sessions
+			"intended for human consumption", // ...or sessions a person will consume/steer
+			"use the task tool",              // the blocking alternative for outcome-needed work
+			"blocks and returns the result",  // what the task tool offers instead
+			"session_list / session_read",    // follow-up path
+			"not retried",                    // loss semantics on restart
+			"self-contained",                 // prompt must carry its own context
 		} {
 			assert.Contains(t, d, want)
 		}
