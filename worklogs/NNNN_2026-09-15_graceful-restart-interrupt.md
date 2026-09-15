@@ -70,6 +70,7 @@ Close the 2026-09-11 incident class: a fleet-wide credential delivery force-rest
 5. **Activity tracking in the tracker, not the authority.** The tracker already receives every SSE event, is always constructed (authority may be degraded/nil), and is the restart path's existing busyness source. The wire-shape knowledge (properties.sessionID) is contained in `wire.SessionIDFromProps` (Rule 12).
 6. **Pending-apply surface on healthz (15s controller cadence), mirroring the secretsDelivery precedent** — smallest honest mechanism; statusz (60s, expensive) would delay operator visibility.
 7. **Generation-change reseed retried via `startStateAuthorityReseed`** (also replays unresolved ledger rows after success — #1311-correct after a generation death). Required for the sweep ("backstop") to actually fire when opencode is slow to answer post-restart.
+8. **The E2E row's "agent's next turn references the interruption" clause is proxied, not asserted literally (r2 decision).** An LLM-prose assertion is non-deterministic by construction, and for the kill-9 case it is unsatisfiable by the disclosed read-time repair design (opencode's own store/prompt context is never written — writing it would be a worse architecture than the read-seam repair). The deterministic proxies stand in: history shows the tool terminal (no phantom spinner) with the harness-restart reason, the restart/credential-apply observed, and the sweep metric visible. Recorded here per Rule 11 rather than silently dropped.
 
 ## Assumptions (stated + validated — Rule 7)
 

@@ -171,3 +171,45 @@ func TestGetHistory_CompletedTool_NeverTouched(t *testing.T) {
 		"terminal parts keep their own state — the repair touches running only")
 	assert.Empty(t, tool.State.Error)
 }
+
+// --- the V2 store path (AdapterV2 → getHistoryV2Store) ---------------------
+//
+// Same repair, second call site (r2 blocking finding): the V2 route is
+// `/api/session/:id/message` with the {data:[...]} envelope; a running
+// tool content part closed at read time when the live registry says no
+// turn runs, untouched when one does.
+
+const v2HistoryWithRunningTool = `{"data":[
+	{"id":"msg_1","type":"assistant",
+	 "content":[{"type":"tool","id":"tpu_1","name":"bash","state":{"status":"running"}}]}
+]}`
+
+func TestGetHistoryV2_OrphanedRunningTool_RepairedWhenIdle(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/api/session/ses_a/message", v2HistoryWithRunningTool, 0)
+	srv.register("GET", "/session/status", `{"ses_a":{"type":"idle"}}`, 0)
+
+	a := NewAdapterV2(newTestAdapter(t, srv.Server))
+	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_a")
+	require.NoError(t, err)
+
+	tool := firstToolPart(t, msgs)
+	assert.Equal(t, session.ToolStatusError, tool.State.Status,
+		"the V2 store path must repair an orphaned running part on an idle session (deleting its repair call site must fail this test)")
+	assert.Equal(t, session.ToolAbortReasonHarnessRestart, tool.State.Error)
+}
+
+func TestGetHistoryV2_RunningTool_LiveBusySessionUntouched(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/api/session/ses_a/message", v2HistoryWithRunningTool, 0)
+	srv.register("GET", "/session/status", `{"ses_a":{"type":"busy"}}`, 0)
+
+	a := NewAdapterV2(newTestAdapter(t, srv.Server))
+	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_a")
+	require.NoError(t, err)
+
+	tool := firstToolPart(t, msgs)
+	assert.Equal(t, session.ToolStatusRunning, tool.State.Status,
+		"the V2 store path must never falsely abort a live turn's running part")
+	assert.Empty(t, tool.State.Error)
+}
