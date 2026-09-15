@@ -107,17 +107,17 @@ plaintext KEK exists only in controller/router memory.
 
 **Scope/files:** `pkg/secrets/staging_provider.go` (+tests) alongside the KEK
 machinery (`root_key.go`, `kms_aws_provider.go`, `kms_gcp_provider.go` precedents);
-versioned envelope wire format (`stg:v1:` prefix, algorithm-discriminated);
+versioned envelope wire format (`stg:v1:` prefix, algorithm-discriminated) with a
+**plaintext `keyID` discriminator bound as GCM AAD** (integrity-bound — envelopes
+cannot claim a key they weren't sealed under; design §4.2's rotation depends on it);
 `llm-relay-kek` Secret contract (KMS-wrapped blob + key id); HPKE mode: candidate
 library `github.com/cloudflare/circl` (RFC 9180) — **dependency review is part of
 this story** (version pin, license, govulncheck/Trivy evidence recorded in the
 worklog; no stdlib HPKE exists and `go.mod` carries no HPKE dependency today);
-HPKE key distribution per design §4.2 (router-generated keypair, private key in a
-router-SA-writable Secret, public key published for the controller —
-RBAC-authenticated, not trust-on-first-use; rotation is controller-driven:
-same-name in-place update + router-side in-memory prior-key retention with
-dual-key resolve, completion confirmed by envelope `keyID` metadata alone —
-the controller never gains decrypt capability).
+HPKE keypair machinery per design §4.2 (create-or-adopt first boot, Secret-watch
+key loading, dual-key resolve window, time-bounded prior-key retention, DR
+regeneration — the router-side halves land in US-72.2; this story owns the
+sealing leg and the envelope format the machinery speaks).
 
 **Acceptance criteria:**
 - Seal→resolve roundtrip both algorithms; envelope versioning discriminates.
@@ -141,31 +141,35 @@ plaintext fallback; cross-algorithm envelope confusion rejected.
 **Goal:** the router that validates tokens, resolves envelopes per request (local
 AES-GCM against informer-cached ciphertext — D2), sanitizes requests (§4.7),
 injects the real key upstream, and drains gracefully on deploy (#1078 pattern).
-
 **Scope/files:** extend `cmd/relay-router/` with BYO resolve mode (deployment-shape
 decision — separate Deployment in `llm-relay` vs a second listener — settled in
 this story's worklog, leaning separate Deployment: blast radius and quota models
 differ from the fleet router); token mint/verify (`POST /internal/v1/tokens`,
 HMAC-SHA256, payload `{workspaceID, providerSlug, baseURL, modelAllowlist, iat,
-exp, keyID}` — validity = HMAC ∧ staged-Secret-present ∧ not-expired); Secret
-informer cache (ciphertext only); request pipeline: client-Authorization replace
-(generalize `applyUpstreamAuth`, `proxy.go:40-56`), hop-by-hop + identity header
-strip (extend `routerHopHeaders`, `proxy.go:66-75`), method/path allowlist
+exp, keyID}` — validity = HMAC ∧ staged-Secret-present ∧ not-expired) and key
+machinery (`POST /internal/v1/keys/rotate`, create-or-adopt first boot with
+fingerprint assert, Secret-watch key loading, dual-key resolve, time-bounded
+prior-key retention — design §4.2, replica-symmetric for the ×2 topology);
+Secret informer cache (ciphertext only); request pipeline: client-Authorization
+replace (generalize `applyUpstreamAuth`, `proxy.go:40-56`), hop-by-hop + identity
+header strip (extend `routerHopHeaders`, `proxy.go:66-75`), method/path allowlist
 (chat-completions-class + `/models`), request/response size caps, model-allowlist
 enforcement (`model` field against token scope), per-workspace quota counters +
-Prometheus alerts; `/models` served from staged `LLMProviderData.Models`; routing path
-`/w/<workspaceID>/<providerSlug>/v1/…` (terminates in `/v1` so OpenAI-compatible
-clients append `/chat/completions` — design §4.5 is authoritative on the shape);
-**log/persistence posture (K7)**: metadata-only logging (workspace, slug, keyID,
-status, latency, bytes, rejection reason) — request/response bodies never logged,
-sampled, or buffered to disk; body-adjacent diagnostics must pass `pkg/redact` or
-are forbidden; Helm: `llm-relay` namespace,
+Prometheus alerts; `/models` served from staged `LLMProviderData.Models`;
+routing path `/w/<workspaceID>/<providerSlug>/v1/…` (terminates in `/v1` so
+OpenAI-compatible clients append `/chat/completions` — design §4.5 is
+authoritative on the shape); **log/persistence posture (K7)**: metadata-only
+logging (workspace, slug, keyID, status, latency, bytes, rejection reason) —
+request/response bodies never logged, sampled, or buffered to disk;
+body-adjacent diagnostics must pass `pkg/redact` or are forbidden; Helm:
+`llm-relay` namespace,
 Deployment ×2 + PDB `maxUnavailable: 1`, `terminationGracePeriodSeconds` sized to
 max stream duration (a cap not a delay — #1078), preStop not-ready, Service,
 NetworkPolicy (workspace-ns egress carve-out via namespaceSelector, the
 `relay-router-networkpolicy.yaml` pattern), RBAC (router SA: get/list/watch
 Secrets in `llm-relay`, plus the §4.3 name-scoped write carve-out for exactly the
-two HPKE keypair Secrets).
+two HPKE keypair Secrets; controller SA: create/update/delete other `llm-relay`
+Secrets + `get` on `llm-relay-hpke-pub`).
 
 **Acceptance criteria:**
 - All three scope conjuncts enforced per request (workspace, baseURL, model
@@ -177,6 +181,11 @@ two HPKE keypair Secrets).
   (two-replica drain drill).
 - Sanitization suite green: client-supplied Authorization never reaches upstream;
   identity headers stripped; oversize bodies refused; disallowed methods/paths 404.
+- HPKE machinery replica-symmetric on the ×2 topology: simultaneous cold start
+  converges on one adopted keypair (fingerprint asserted); rotation keeps both
+  replicas resolving old+new envelopes within the watch-propagation bound;
+  prior keys drop uniformly after the retention interval; DR (keypair Secret
+  loss) regenerates with an honest `CredentialStale` window until re-seal.
 
 **Test plan (TDD):** red-first table-driven `token_scope_matrix` (wrong workspace /
 wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
@@ -185,8 +194,11 @@ wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
 propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
 tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
 request/response, capture every log/metric emission, assert zero body bytes);
-`deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule unit);
-informer-drop test (Secret deleted → cache evicted → next request 401).
+key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
+(window ≤ watch bound, both replicas), `prior_key_retention_expiry`,
+`dr_keypair_loss_failclosed_recovery`, `envelope_keyid_aad_bound` (design §7
+rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
+unit); informer-drop test (Secret deleted → cache evicted → next request 401).
 
 **Sizing:** L. **Dependencies:** US-72.1.
 
@@ -222,7 +234,9 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
   and applies it behind the session-aware restart decision (#852), no manual
   intervention.
 
-**Test plan (TDD):** red-first controller reconcile tests (stage/unbind/rotate);
+**Test plan (TDD):** red-first controller reconcile tests (stage/unbind/rotate —
+rotate leg: trigger `POST /internal/v1/keys/rotate`, re-seal every envelope,
+confirm completion by envelope `keyID` metadata alone, never decrypt);
 mixed-fleet batch tests (`mixed_fleet_batches`: same deployment serves legacy
 bare-key batch to pre-flip semantics and token batch post-flip — the W15 pin
 pattern); envtest conditions matrix; helm-render tests for the flag/guard/namespace.
