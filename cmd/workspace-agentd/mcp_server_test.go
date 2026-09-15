@@ -706,9 +706,21 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	tools := resp.Result.(map[string]any)["tools"].([]any)
 
 	descs := map[string]string{}
+	schemaDescs := map[string]string{} // "tool/property" -> property description
 	for _, tool := range tools {
 		tt := tool.(map[string]any)
 		descs[tt["name"].(string)] = tt["description"].(string)
+		if schema, ok := tt["inputSchema"].(map[string]any); ok {
+			if props, ok := schema["properties"].(map[string]any); ok {
+				for prop, raw := range props {
+					if pm, ok := raw.(map[string]any); ok {
+						if pd, ok := pm["description"].(string); ok {
+							schemaDescs[tt["name"].(string)+"/"+prop] = pd
+						}
+					}
+				}
+			}
+		}
 	}
 
 	t.Run("dev_preview_url guidance", func(t *testing.T) {
@@ -813,6 +825,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The prompt InputSchema description carries the no-return
+		// contract too (PR #1379 review finding 3 — schema text is
+		// agent-visible contract and must not regress silently).
+		require.Contains(t, schemaDescs, "create_session/prompt")
+		assert.Contains(t, schemaDescs["create_session/prompt"], "will NOT return to you")
 	})
 
 	t.Run("get_datetime guidance", func(t *testing.T) {

@@ -1315,3 +1315,44 @@ func TestStatuszEndpoint_OldestBusySeconds(t *testing.T) {
 	assert.GreaterOrEqual(t, resp2.OldestBusySeconds, 1199, "20-minute busy session surfaces as oldest_busy_seconds")
 	assert.Contains(t, resp2.BusyAges, "ses-x")
 }
+
+// The twin of the seam's zero-stamp regression (PR #1379 finding 1):
+// a zeroed in-flight (or #1342-abandoned) assistant stamp after a
+// completed step must not blind fillGaps/statusz ContextUsed.
+func TestFetchSessionPromptTokens_SkipsZeroedInFlightStamp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"info":{"role":"assistant","tokens":{"input":455,"cache":{"read":559168,"write":0}}}},
+			{"info":{"role":"user"}},
+			{"info":{"role":"assistant","tokens":{"input":0,"cache":{"read":0,"write":0}}}}
+		]`))
+	}))
+	defer server.Close()
+
+	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 5 * time.Second}}
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(server.URL)
+
+	tokens := client.fetchSessionPromptTokens(context.Background(), "ses_1")
+	assert.Equal(t, int64(455+559168), tokens, "must report the last COMPLETED step, skipping the zeroed stamp")
+}
+
+// First-turn mid-flight: the ONLY assistant stamp is zeroed → 0 is the
+// honest answer (nothing has completed yet).
+func TestFetchSessionPromptTokens_OnlyZeroStamps_ReturnsZero(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"info":{"role":"user"}},
+			{"info":{"role":"assistant","tokens":{"input":0,"cache":{"read":0,"write":0}}}}
+		]`))
+	}))
+	defer server.Close()
+
+	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 5 * time.Second}}
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(server.URL)
+
+	assert.Equal(t, int64(0), client.fetchSessionPromptTokens(context.Background(), "ses_1"))
+}

@@ -426,3 +426,15 @@ func TestSeam_SessionPromptTokens_SkipsInFlightZeroStamp(t *testing.T) {
 	got := c.SessionPromptTokens(context.Background(), "ses_1")
 	assert.Equal(t, int64(455+559168), got, "must report the last COMPLETED step, skipping the zeroed in-flight stamp")
 }
+
+// First-turn mid-flight edge: the only assistant stamp is the zeroed
+// in-flight one → 0 is the honest answer (nothing has completed yet).
+func TestSeam_SessionPromptTokens_OnlyZeroStamps(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{"info":{"role":"user"}},
+			{"info":{"role":"assistant","tokens":{"input":0,"cache":{"read":0,"write":0}}}}
+		]`))
+	})
+	assert.Equal(t, int64(0), c.SessionPromptTokens(context.Background(), "ses_1"))
+}
