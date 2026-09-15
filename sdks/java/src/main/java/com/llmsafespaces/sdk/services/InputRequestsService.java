@@ -32,9 +32,9 @@ public class InputRequestsService {
      * the outbox entry is returned; a live answer (200) returns null.
      */
     public InboxLateAnswerAccepted replyQuestion(String workspaceId, String requestId, List<List<String>> answers) {
-        return c.request("POST",
+        return lateAnswerOnly(c.request("POST",
                 "/workspaces/" + workspaceId + "/question/" + requestId + "/reply",
-                questionReplyBody(answers), InboxLateAnswerAccepted.class);
+                questionReplyBody(answers), InboxLateAnswerAccepted.class));
     }
 
     /** Rejects (dismisses) a pending question. */
@@ -57,9 +57,9 @@ public class InputRequestsService {
      * 202 outbox entry; a live answer (200) returns null.
      */
     public InboxLateAnswerAccepted replyPermission(String workspaceId, String requestId, String reply, String message) {
-        return c.request("POST",
+        return lateAnswerOnly(c.request("POST",
                 "/workspaces/" + workspaceId + "/permission/" + requestId + "/reply",
-                permissionReplyBody(reply, message), InboxLateAnswerAccepted.class);
+                permissionReplyBody(reply, message), InboxLateAnswerAccepted.class));
     }
 
     /**
@@ -77,7 +77,9 @@ public class InputRequestsService {
     }
 
     static Map<String, Object> questionReplyBody(List<List<String>> answers) {
-        return Map.of("answers", answers);
+        Map<String, Object> body = new HashMap<>();
+        body.put("answers", answers);
+        return body;
     }
 
     static Map<String, Object> permissionReplyBody(String reply, String message) {
@@ -87,5 +89,16 @@ public class InputRequestsService {
             body.put("message", message);
         }
         return body;
+    }
+
+    /**
+     * Live-vs-late classification for input replies: only the outbox's
+     * accepted-entry body (status "queued") is a late answer. A live
+     * answer is bodyless per the published contract — and if a server
+     * ever answers 200 with a body anyway, it must still classify as
+     * live (r1 review).
+     */
+    private static InboxLateAnswerAccepted lateAnswerOnly(InboxLateAnswerAccepted late) {
+        return late != null && "queued".equals(late.status) ? late : null;
     }
 }

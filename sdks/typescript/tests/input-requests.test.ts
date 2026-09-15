@@ -99,6 +99,13 @@ describe("inputRequests (contract InputRequest surface)", () => {
     );
   });
 
+  it("replies to a question — a 200-with-body server regression still classifies as live", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ status: "answered" }, 200));
+
+    const late = await client.inputRequests.replyQuestion("ws-1", "que_1", [["Go"]]);
+    expect(late).toBeUndefined();
+  });
+
   it("replies to a question — late answer returns the 202 body", async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse(

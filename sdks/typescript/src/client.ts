@@ -158,7 +158,12 @@ export class LLMSafeSpaces {
           throw new RateLimitError(msg);
         case 503: {
           const reason = (errBody as { reason?: string }).reason;
-          const retryAfter = (errBody as { retryAfter?: number }).retryAfter;
+          // The retry hint rides the body (reason-bearing 503s) or the
+          // Retry-After header (the input surface's non-authoritative
+          // 503s carry only {"error"} + the header).
+          const headerAfter = Number(res.headers.get("Retry-After"));
+          const retryAfter = (errBody as { retryAfter?: number }).retryAfter
+            ?? (Number.isFinite(headerAfter) && headerAfter > 0 ? headerAfter : undefined);
           const apiMessage = (errBody as { message?: string }).message ?? msg;
           throw new ServiceUnavailableError(apiMessage, reason, retryAfter);
         }
@@ -586,6 +591,17 @@ class UsageAPI {
  * platform contract shape (InputRequest, #1302): typed list returns,
  * the late-answer 202 body on replies, and the inbox dismiss exit (#1313).
  */
+
+/**
+ * Live-vs-late classification for input replies: only the outbox's
+ * accepted-entry body (status "queued") is a late answer. A live answer
+ * is bodyless per the published contract — and if a server ever answers
+ * 200 with a body anyway, it must still classify as live (r1 review).
+ */
+function lateAnswerOnly(late: InboxLateAnswerAccepted | undefined): InboxLateAnswerAccepted | undefined {
+  return late?.status === "queued" ? late : undefined;
+}
+
 class InputRequestsAPI {
   constructor(private client: LLMSafeSpaces) {}
 
@@ -599,7 +615,9 @@ class InputRequestsAPI {
    * (202) and the resolved value carries the outbox entry; a live
    * answer (200) resolves to undefined.
    */
-  replyQuestion(workspaceId: string, requestId: string, answers: string[][]) { return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/question/${requestId}/reply`, { answers }); }
+  replyQuestion(workspaceId: string, requestId: string, answers: string[][]) {
+    return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/question/${requestId}/reply`, { answers }).then(lateAnswerOnly);
+  }
 
   /** Rejects (dismisses) a pending question. */
   rejectQuestion(workspaceId: string, requestId: string) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/question/${requestId}/reject`); }
@@ -616,7 +634,7 @@ class InputRequestsAPI {
   replyPermission(workspaceId: string, requestId: string, reply: "once" | "always" | "reject", message?: string) {
     const body: Record<string, unknown> = { reply };
     if (message !== undefined && message !== "") body.message = message;
-    return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/permission/${requestId}/reply`, body);
+    return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/permission/${requestId}/reply`, body).then(lateAnswerOnly);
   }
 
   /**

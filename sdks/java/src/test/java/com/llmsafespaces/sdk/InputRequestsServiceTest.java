@@ -125,6 +125,21 @@ class InputRequestsServiceTest {
     }
 
     @Test
+    void replyQuestionLiveAnswerWithBodyIsNotLate() throws Exception {
+        // A server regression answering 200 WITH a body must still
+        // classify as a live answer (r1 review).
+        var mock = startMock(200, "{\"status\":\"answered\"}");
+        try {
+            var c = client(mock.server());
+            InboxLateAnswerAccepted late =
+                    c.inputRequests.replyQuestion("ws-1", "que_1", List.of(List.of("Go")));
+            assertNull(late);
+        } finally {
+            mock.server().stop(0);
+        }
+    }
+
+    @Test
     void replyQuestionLateAnswerReturns202Body() throws Exception {
         var mock = startMock(202, LATE_ANSWER_BODY);
         try {

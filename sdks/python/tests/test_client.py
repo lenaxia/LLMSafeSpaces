@@ -938,6 +938,18 @@ def test_reply_question_live_answer_returns_none():
 
 
 @respx.mock
+def test_reply_question_live_answer_with_body_is_not_late():
+    # A server regression answering 200 WITH a body must still classify
+    # as a live answer (r1 review).
+    respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=200, json={"status": "answered"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    late = client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is None
+
+
+@respx.mock
 def test_reply_question_late_answer_202_body():
     respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(
         status_code=202, json=LATE_ANSWER_BODY

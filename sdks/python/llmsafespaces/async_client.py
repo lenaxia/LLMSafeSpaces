@@ -21,6 +21,7 @@ from .errors import (
     ServiceUnavailableError,
     TimeoutError,
 )
+from .client import _late_answer_only
 from .types import (
     APIKey,
     AuthResponse,
@@ -807,10 +808,12 @@ class _AsyncInputRequestsAPI:
         unanswered-question inbox record is pending (#1313), the answer is
         accepted as a late answer through the delivery outbox (202) and
         the outbox entry is returned; a live answer (200) returns None."""
-        return await self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/question/{request_id}/reply",
-            json={"answers": answers},
+        return _late_answer_only(
+            await self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/question/{request_id}/reply",
+                json={"answers": answers},
+            )
         )
 
     async def reject_question(self, workspace_id: str, request_id: str) -> None:
@@ -832,10 +835,12 @@ class _AsyncInputRequestsAPI:
         body: dict[str, Any] = {"reply": reply}
         if message:
             body["message"] = message
-        return await self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/permission/{request_id}/reply",
-            json=body,
+        return _late_answer_only(
+            await self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/permission/{request_id}/reply",
+                json=body,
+            )
         )
 
     async def dismiss_inbox_record(

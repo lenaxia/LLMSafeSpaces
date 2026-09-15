@@ -950,6 +950,16 @@ class _UsageAPI:
         return self._c._request("GET", "/usage/quota")
 
 
+def _late_answer_only(late: Any) -> InboxLateAnswerAccepted | None:
+    """Live-vs-late classification for input replies: only the outbox's
+    accepted-entry body (status "queued") is a late answer. A live answer
+    is bodyless per the published contract — and if a server ever answers
+    200 with a body anyway, it must still classify as live (r1 review)."""
+    if isinstance(late, dict) and late.get("status") == "queued":
+        return late
+    return None
+
+
 class _InputRequestsAPI:
     """Agent question/permission requests — the whole surface speaks the
     platform contract shape (InputRequest, #1302): typed list returns,
@@ -971,10 +981,12 @@ class _InputRequestsAPI:
         unanswered-question inbox record is pending (#1313), the answer is
         accepted as a late answer through the delivery outbox (202) and
         the outbox entry is returned; a live answer (200) returns None."""
-        return self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/question/{request_id}/reply",
-            json={"answers": answers},
+        return _late_answer_only(
+            self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/question/{request_id}/reply",
+                json={"answers": answers},
+            )
         )
 
     def reject_question(self, workspace_id: str, request_id: str) -> None:
@@ -998,10 +1010,12 @@ class _InputRequestsAPI:
         body: dict[str, Any] = {"reply": reply}
         if message:
             body["message"] = message
-        return self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/permission/{request_id}/reply",
-            json=body,
+        return _late_answer_only(
+            self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/permission/{request_id}/reply",
+                json=body,
+            )
         )
 
     def dismiss_inbox_record(

@@ -152,28 +152,39 @@ func TestRunParentBackfill_Adapter_Error_ClearsBackfillGate(t *testing.T) {
 		"adapter error must clear the backfill gate so a retry can fire")
 }
 
-// --- autoApprovePermission via adapter ---
+// --- autoApprovePermission via adapter (flag-off regime) ---
+//
+// S1 (#1302): under flag-off the headless auto-approve uses the typed
+// adapter method (ReplyPermission, the PermissionReply path) — never the
+// legacy Resolve probe.
 
 func TestAutoApprovePermission_Adapter_HappyPath(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	called := false
+	resolveCalled := false
+	replied := false
 	h.adapter = &mockAdapter{
-		resolveFn: func(_ context.Context, _, _, rid, reply string) error {
-			called = true
+		replyPermissionFn: func(_ context.Context, _, _, rid, reply, message string) error {
+			replied = true
 			assert.Equal(t, "per_1", rid)
 			assert.Equal(t, "always", reply)
+			assert.Equal(t, "", message)
+			return nil
+		},
+		resolveFn: func(_ context.Context, _, _, _, _ string) error {
+			resolveCalled = true
 			return nil
 		},
 	}
 
 	h.autoApprovePermission("ws-1", "per_1")
-	assert.True(t, called, "adapter.Resolve must be called")
+	assert.True(t, replied, "adapter.ReplyPermission must be called (the typed PermissionReply path)")
+	assert.False(t, resolveCalled, "the legacy adapter.Resolve probe must not be called (S1)")
 }
 
 func TestAutoApprovePermission_Adapter_Error_NoPanic(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	h.adapter = &mockAdapter{
-		resolveFn: func(_ context.Context, _, _, _, _ string) error {
+		replyPermissionFn: func(_ context.Context, _, _, _, _, _ string) error {
 			return fmt.Errorf("network error")
 		},
 	}

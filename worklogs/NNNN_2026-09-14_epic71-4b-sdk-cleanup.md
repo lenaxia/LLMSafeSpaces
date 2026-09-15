@@ -109,3 +109,26 @@ None.
 - `frontend/src/api/types.ts`, `frontend/src/api/contract.test.ts`, `frontend/src/api/contract-fixtures.json` (regenerated)
 - `pkg/types/contract_test.go`, `pkg/agent/types.go`
 - `worklogs/NNNN_2026-09-14_epic71-4b-sdk-cleanup.md` (this file)
+
+## Review r1 remediation
+
+**f1+f3 (HIGH — the reply-200 contract was falsified by the real API):** the server answered live replies with `200 {"status":"answered"}` (4 sites, `proxy_input.go`) while the published spec (and the Go SDK) said bodyless — TS/Python/Java parsed the body and misclassified every live answer as a late answer. Root cause: my Rule-7 A3 validated the 200 shape against the SPEC only, never the server (the exact failure mode Rule 7 exists for — recorded here as the correction). Fix, both directions:
+- **Server conforms to the published contract:** the four sites now emit a bodyless 200 (`c.Status(http.StatusOK)`). Zero consumers of the body verified by grep (frontend `post<boolean>` ignores it; the MCP client `doJSON(..., nil)` ignores it; the e2e script's `ST == "answered"` reads the inbox record status via `inbox_status`, not the reply body; the MCP server test asserts the tool's own result text). Pinned: `TestInputAct_*` rows now assert `w.Body` empty.
+- **SDK-side body-aware classification (defense-in-depth):** live-vs-late is decided by the payload being the outbox's accepted entry (`status == "queued"`), never by body presence — Go already status-gated (200 body discarded); TS/Python/Java gained `lateAnswerOnly` classification. The reviewer's requested regression row landed per language: **a 200-with-body server regression still classifies as live** (`LiveAnswerWithBodyIsNotLate` / `live_answer_with_body_is_not_late`).
+
+**f2 (the test surface pinned a wire shape the server never produced):** resolved by the above — the bodyless-200 mocks now match the real wire, and the with-body regression rows pin the misclassification scenario explicitly.
+
+**S1/auto-approve (HIGH — #1302's own criterion, missed by the 4a map):** `autoApprovePermission` still made a direct mutating harness call via `adapter.Resolve` — the exact second writer #1302's amendment kills, with its test plan stating "Auto-approve routes through the same Act path". Migrated:
+- `actAnswerInputCtx` extracted (context-level Act core; the gin wrapper keeps the 409-unresolved sentinel + connect-code mapping).
+- Authority regime: resolve the ask's session (`inputRequestSession`; unknown set → non-authoritative skip, warn — auto-approved permissions carry no inbox record by design), then Act with `AnswerInputAction reply="always"` — the PermissionReply path verbatim.
+- Flag-off regime: the typed `adapter.ReplyPermission` (the PermissionReply flag-off path), never the legacy `Resolve` probe.
+- Red-first: `TestAutoApprovePermission_ActRegime` (panicked on the unconfigured Resolve mock before the fix — the red), `_ActUnknownPendingSetSkips`, `_ActErrorNoPanic`; the two `adapter_path_test` rows rewritten to assert `ReplyPermission` called AND `Resolve` never called; `proxy_inbox_test`'s auto-approve row rewired to `replyPermissionFn`.
+
+**f4 (Java NPE asymmetry):** `questionReplyBody` uses a null-tolerant `HashMap` — a null `answers` serializes as `{"answers":null}` and the server 400s, symmetric with Go/TS/Python.
+
+**f5 (TS 503 retry hint):** the 503 branch also parses the `Retry-After` response header (this surface's 503s carry only `{"error"}` + the header). Red demonstrated: without the fix the new row fails (`retryAfter` undefined — observed via an accidental stash-revert), with it 74/74.
+
+## Tests run (r1)
+
+- `go test -timeout 600s -race ./api/internal/handlers/` — ok (incl. the three new auto-approve rows + bodyless-200 pins)
+- Go SDK `-race` ok (new `LiveAnswerWithBodyIsNotLate`); TS 74/74 + tsc clean (with-body row + Retry-After header row); Python 123 passed (with-body row); Java 40/40 (with-body row); `golangci-lint` 0 issues

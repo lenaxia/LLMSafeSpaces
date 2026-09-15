@@ -238,7 +238,11 @@ func TestInputAct_QuestionReplyForwardsAnswerAction(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
 	}
-	assert.JSONEq(t, `{"status":"answered"}`, w.Body.String())
+	// The reply 200 is bodyless (the published contract —
+	// sdks/openapi.yaml replyQuestion "200": no content schema): the
+	// status code IS the accept signal; a body here would misclassify
+	// live answers as late answers in the body-parsing SDKs (r1 f1).
+	assert.Empty(t, w.Body.String(), "reply 200 must carry no body")
 }
 
 func TestInputAct_PermissionReplyCarriesReplyAndMessage(t *testing.T) {
@@ -266,6 +270,7 @@ func TestInputAct_PermissionReplyCarriesReplyAndMessage(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
 	}
+	assert.Empty(t, w.Body.String(), "reply 200 must carry no body (the published contract)")
 }
 
 func TestInputAct_QuestionRejectIsTheDismissExit(t *testing.T) {
@@ -645,6 +650,78 @@ func TestInputAct_QuestionReplyFlattensAllAnswerGroups(t *testing.T) {
 		ans, ok := got["answerQuestion"].(map[string]any)
 		require.True(t, ok, "payload: %v", got)
 		assert.Equal(t, []any{"Go", "and", "custom", "second"}, ans["optionIds"], "ALL answer groups ride the action (no silent drop)")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called")
+	}
+}
+
+// --- auto-approve rides the same Act path (S1, #1302 r1-f2) ---------
+
+// The headless auto-approve must not make direct mutating harness calls:
+// in the authority regime it goes through agentd Act with
+// AnswerInputAction reply="always" — exactly the PermissionReply path.
+func TestAutoApprovePermission_ActRegime(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "per_auto1", SessionID: "ses_live", Kind: session.InputPermission,
+				Permission: "bash", Patterns: []string{"ls"},
+			}}, nil
+		},
+	})
+
+	env.handler.autoApprovePermission("ws-act", "per_auto1")
+
+	select {
+	case got := <-stub.got:
+		ans, ok := got["answerQuestion"].(map[string]any)
+		require.True(t, ok, "payload: %v", got)
+		assert.Equal(t, "per_auto1", ans["inputId"])
+		assert.Equal(t, "always", ans["reply"], "auto-approve rides the permission vocabulary through Act")
+		assert.Equal(t, "ses_live", got["sessionId"], "the ask's live session addresses Act")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called — auto-approve bypassed the Act path")
+	}
+}
+
+// Unknown pending set (unreadable live set, no identifying record):
+// auto-approve skips non-authoritatively — no Act call, no panic.
+func TestAutoApprovePermission_ActUnknownPendingSetSkips(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_gone") })
+	select {
+	case got := <-stub.got:
+		t.Fatalf("Act must not fire on an unknown pending set, got %v", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Act transport failure: warn-and-return — never a panic.
+func TestAutoApprovePermission_ActErrorNoPanic(t *testing.T) {
+	stub := newAnswerActStubPod(t, "not_found")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "per_dead1", SessionID: "ses_live", Kind: session.InputPermission,
+				Permission: "bash",
+			}}, nil
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_dead1") })
+	// The stub pod answered; the drain keeps the channel empty for the next reader.
+	select {
+	case <-stub.got:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
 	}

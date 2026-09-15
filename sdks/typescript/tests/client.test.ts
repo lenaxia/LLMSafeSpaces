@@ -435,6 +435,22 @@ describe("LLMSafeSpaces Client", () => {
         expect(sue.message).toBe("The agent is not responding.");
       }
     });
+
+    it("reads retryAfter from the Retry-After header when the 503 body carries only the error (input surface)", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(
+        JSON.stringify({ error: "input pending set unknown" }),
+        { status: 503, headers: { "Content-Type": "application/json", "Retry-After": "5" } },
+      ));
+
+      try {
+        await client.workspaces.list();
+        throw new Error("expected ServiceUnavailableError");
+      } catch (e) {
+        expect(e).toBeInstanceOf(ServiceUnavailableError);
+        const sue = e as ServiceUnavailableError;
+        expect(sue.retryAfter).toBe(5);
+      }
+    });
   });
 });
 

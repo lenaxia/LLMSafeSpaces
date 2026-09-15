@@ -170,6 +170,21 @@ func TestInputRequests_ReplyQuestion_LiveAnswer(t *testing.T) {
 	}
 }
 
+// The r1 review's misclassification scenario: a server that (against the
+// published contract) answers 200 WITH a body must not be classified as
+// a late answer — live-vs-late is decided by the status code, never by
+// body presence.
+func TestInputRequests_ReplyQuestion_LiveAnswerWithBodyIsNotLate(t *testing.T) {
+	c := newInputClient(t, http.StatusOK, `{"status":"answered"}`, nil)
+	late, err := c.InputRequests.ReplyQuestion(context.Background(), "ws-1", "que_1", [][]string{{"Go"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if late != nil {
+		t.Errorf("200-with-body must still classify as a live answer, got %+v", late)
+	}
+}
+
 func TestInputRequests_ReplyQuestion_LateAnswer202(t *testing.T) {
 	rec := &inputRecorder{}
 	c := newInputClient(t, http.StatusAccepted,
