@@ -173,7 +173,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		if sid != "" {
 			h.removeActiveSession(c.Request.Context(), wid, sid)
 		}
-		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		if isTextOnlyWedgeSendErr(sendErr) {
 			writeTextOnlyWedgeBody(c)
 			return
 		}
@@ -315,6 +315,21 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	// when its persisted default model is unresolvable (incident
 	// 2026-08-16).
 	h.syncSend(c, wid, sid, text, extractPromptModel(bodyBytes))
+}
+
+// isTextOnlyWedgeSendErr classifies the #1307 wedge across BOTH regimes:
+// flag-off the adapter wraps agent.ErrImageInTextOnlyHistory; authority
+// the Act path surfaces the harness 400 inside a connect error message
+// (agentd's actor embeds the body verbatim) — the same marker either way.
+func isTextOnlyWedgeSendErr(err error) bool {
+	if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		return true
+	}
+	var cce *connectCodeError
+	if errors.As(err, &cce) {
+		return agent.IsImageInTextOnlyHistoryMessage(cce.msg)
+	}
+	return false
 }
 
 // extractMessageText reads the request body and extracts the
@@ -979,7 +994,7 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		// incident's generic 502 rendered as a bare "Failed to fetch"
 		// with no cause. Below critical, unrelated provider/pod errors
 		// keep the generic 502.
-		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		if isTextOnlyWedgeSendErr(err) {
 			writeTextOnlyWedgeBody(c)
 			return
 		}

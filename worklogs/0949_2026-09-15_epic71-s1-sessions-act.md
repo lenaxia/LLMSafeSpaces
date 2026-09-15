@@ -94,3 +94,15 @@ The passkey/uploads panics in the same CI run passed locally on both branches un
 
 - `go test -race` on handlers (900s), server, agentd + sessionstate, pkg/agent/..., pkg/abi — ok
 - golangci-lint 0 issues; make repolint passed
+
+## Mid-r2: main advanced under the branch — #1307 wedge interplay
+
+Main's #1376/#1379 train landed the #1307 text-only-wedge classification (`agent.ErrImageInTextOnlyHistory` → 422) into the exact SendMessage/syncSend error paths this PR rewrote. The rebase auto-merged the classification in, with two defects found by execution:
+
+1. **The merge wired SendMessage's check to a stale variable** (`err` — the body-parse error — instead of `sendErr`): the wedge classification could never fire on that route. Fixed via the shared helper.
+2. **The authority regime had no wedge path at all** (Act failures are connect errors; the sentinel never rides): the marker is now defined ONCE on pkg/agent (`agent.TextOnlyWedgeMarker` + `agent.IsImageInTextOnlyHistoryMessage`), the opencode seam's `textOnlyWedgeMarker` aliases it (single source), and `isTextOnlyWedgeSendErr` classifies both regimes (sentinel wrap OR connect-message marker). Pinned `TestSessionsAct_SendMessage_TextOnlyWedge422` — RED proof captured with the connect probe removed (expected 422, got 502), green restored; main's own flag-off wedge rows stay green.
+
+## Tests run (mid-r2)
+
+- `-race` full: handlers, server, pkg/agent/..., agentd + sessionstate, pkg/abi — ok
+- golangci-lint 0 issues; repolint passed

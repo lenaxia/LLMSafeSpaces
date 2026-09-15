@@ -14,14 +14,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
-// textOnlyWedgeMarker is the live-verified #1307 wedge signature (issue
-// body, reproduced 1:1 against the live litellm): a text-only provider
-// (litellm model_info supports_vision:false) answers any replay carrying
-// a non-text content part with a 400 whose body names the invalid
-// messages.content.type. The marker is deliberately the full
-// "messages.content.type is invalid" phrase — a tight, provider-agnostic
-// substring of the real body — so unrelated 400s never classify.
-const textOnlyWedgeMarker = "messages.content.type is invalid"
+// textOnlyWedgeMarker is the #1307 wedge signature, defined ONCE on
+// pkg/agent (agent.TextOnlyWedgeMarker) so the authority regime's
+// Act-path probe classifies the same bytes (see IsImageInTextOnlyHistory
+// HistoryMessage); this seam only matches the marker into adapter errors.
+const textOnlyWedgeMarker = agent.TextOnlyWedgeMarker
 
 // textOnlyWedgeError classifies a non-2xx response body as the #1307
 // wedge and renders the actionable error (cause + remediation, not the

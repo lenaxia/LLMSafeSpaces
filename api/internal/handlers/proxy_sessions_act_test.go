@@ -42,6 +42,8 @@ type sessionsActStubPod struct {
 	server *httptest.Server
 	got    chan map[string]any
 	fail   string // connect code to serve ("" = success)
+	// failMessage overrides the connect error message ("" = "stubbed failure").
+	failMessage string
 	// result is marshaled as the Act response body on success.
 	result any
 }
@@ -58,8 +60,12 @@ func newSessionsActStubPod(t *testing.T, fail string, result any) *sessionsActSt
 		stub.got <- m
 		w.Header().Set("Content-Type", "application/json")
 		if stub.fail != "" {
+			msg := stub.failMessage
+			if msg == "" {
+				msg = "stubbed failure"
+			}
 			w.WriteHeader(http.StatusNotImplemented)
-			_ = json.NewEncoder(w).Encode(map[string]string{"code": stub.fail, "message": "stubbed failure"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"code": stub.fail, "message": msg})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(stub.result)
@@ -88,6 +94,8 @@ type sessionsActOpts struct {
 	terminus bool
 	// fail arms the stub pod with a connect error code ("" = success).
 	fail string
+	// failMessage overrides the connect error message.
+	failMessage string
 	// result is the stub pod's Act response body.
 	result any
 	// adapter overrides the handler's adapter after construction.
@@ -99,6 +107,7 @@ func newSessionsActEnv(t *testing.T, opts sessionsActOpts) *sessionsActEnv {
 	gin.SetMode(gin.TestMode)
 
 	stub := newSessionsActStubPod(t, opts.fail, opts.result)
+	stub.failMessage = opts.failMessage
 	podHost, podPort := stub.endpoint()
 
 	k8sMock := k8smocks.NewMockKubernetesClient()
@@ -643,4 +652,25 @@ func TestSessionsAct_SessionIdIsAuthoritative(t *testing.T) {
 	payload := env.captured(t)
 	assert.Equal(t, "ses_authoritative", payload["sessionId"],
 		"the injected session id must be authoritative — a stray action-map key must never override it")
+}
+
+// TestSessionsAct_SendMessage_TextOnlyWedge422 (#1307 × #1372): the
+// authority regime keeps the actionable wedge error — agentd's actor
+// embeds the harness 400 body in the typed connect error, and the handler
+// classifies the marker to the same structured 422 the adapter path
+// serves. Red pre-fix: every Act failure mapped to the generic 502.
+func TestSessionsAct_SendMessage_TextOnlyWedge422(t *testing.T) {
+	env := newSessionsActEnv(t, sessionsActOpts{
+		terminus: true,
+		fail:     "invalid_argument",
+		failMessage: "POST /session/ses_1/message: status 400: " +
+			`{"name":"ProviderServerError","data":{"message":"Provider request failed with HTTP 400: litellm.BadRequestError: ZaiException - messages.content.type is invalid, allowed values: ['text']"}}`,
+	})
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-s1/sessions/ses_1/message",
+		`{"parts":[{"type":"text","text":"continue"}]}`)
+	require.Equal(t, http.StatusUnprocessableEntity, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "text_only_model_image_history")
+	assert.Contains(t, w.Body.String(), "vision")
+	assert.NotContains(t, w.Body.String(), "litellm.BadRequestError", "raw provider body must not be the user surface")
 }
