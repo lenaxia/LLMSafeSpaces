@@ -47,6 +47,13 @@ Close the three product gaps the incident exposed: (1) no capability gating on t
 - **Non-blocking:** route-agnosticism of `textOnlyWedgeError` documented at the function; the V1/V2 tool-output asymmetry documented at the translate site; dead import retainers removed.
 - **Process note (reviewer's Project Alignment item):** the triage's C1b flow (design doc under `design/stories/` before history-mutation code) was not followed — deviation rationale: the serve-view rewrite is read-time only (the durable store is never written), lives inside the `pkg/agent/opencode/` seam, and follows the merged-and-shipped #1374 read-time-repair precedent.
 
+### 6. Review r2 remediation (final)
+
+- **Gating finding (live-SSE notice branch untested):** added `ChatPage.sse.test.tsx` rows driving a CustomPart with protobuf-bytes data (the only branch the live path executes) through to the rendered `file_notice`, plus a non-file custom kind → filtered; new `fileNotices.test.ts` pins the decoder's Uint8Array / object / string wire forms in isolation. The row caught a REAL bug: `instanceof Uint8Array` is false for cross-realm typed arrays (jsdom/protobuf runtimes) — the exact silent-vanish failure mode the review predicted. Fixed with a realm-safe `Object.prototype.toString` check.
+- **r2 non-blocking findings, validated and documented (not changed):**
+  - Parser shape-vocabulary divergence (`ModelInfo` reads only `capabilities.input.image`; the catalog parser also honors `attachment`/`modalities.input`): false alarm at worst latent — `/config/providers` is live-validated to carry the RESOLVED capabilities shape only, so parsing the other two shapes there would guess at an unevidenced wire (violates the validated-wire discipline). Both parsers read the same field with the same precedence for the shapes their surfaces actually carry; the dangerous direction (strip on possibly-vision) is impossible since both require the explicit `capabilities.input.image` value.
+  - `any`-roundtrip re-marshal decodes int64 > 2^53 as float64: unreachable with the pinned opencode wire shapes (no large integers ride file parts / tool structured outputs); `json.Decoder.UseNumber` noted as the fix if shapes ever grow large integers.
+
 ---
 
 ## Key Decisions
@@ -82,7 +89,7 @@ None. (One transient: `TestLive_Worklogs_NoDuplicates` failed locally mid-sessio
 - `go test -timeout 900s -short ./cmd/workspace-agentd/...` — ok
 - `golangci-lint run` — 0 issues
 - `make -C sdks sdk-check` — ok (spec valid + router parity)
-- `cd frontend && npx vitest run` — 1830 passed post-r1 (incl. file_notice rows), `tsc --noEmit` clean
+- `cd frontend && npx vitest run` — 1839 passed post-r2 (incl. live-SSE Uint8Array rows + decoder unit rows), `tsc --noEmit` clean
 - `go build ./...` — ok
 
 ---
@@ -108,6 +115,7 @@ None. (One transient: `TestLive_Worklogs_NoDuplicates` failed locally mid-sessio
 - cmd/workspace-agentd/mcp_tools.go
 - docs/getting-started/concepts.md
 - frontend/src/api/fileNotices.ts (new)
+- frontend/src/api/fileNotices.test.ts (new)
 - frontend/src/api/messages.ts
 - frontend/src/api/messages.test.ts
 - frontend/src/api/workspaces.ts

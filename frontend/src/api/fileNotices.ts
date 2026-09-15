@@ -18,10 +18,16 @@ interface FilePartPayload {
 // decodeFilePartData accepts the Custom data in any of its wire forms —
 // a parsed object (REST history), a JSON string, or raw JSON bytes
 // (protobuf custom part on SSE) — and returns the payload when it is a
-// file part.
+// file part. The bytes check is realm-safe (Object.prototype.toString,
+// not instanceof — jsdom/protobuf runtimes can hand over cross-realm
+// Uint8Arrays where instanceof is false).
+function isUint8ArrayBytes(value: unknown): value is Uint8Array {
+  return Object.prototype.toString.call(value) === "[object Uint8Array]";
+}
+
 export function decodeFilePartData(data: unknown): FilePartPayload | null {
   let value: unknown = data;
-  if (value instanceof Uint8Array) {
+  if (isUint8ArrayBytes(value)) {
     try {
       value = JSON.parse(new TextDecoder().decode(value));
     } catch {
