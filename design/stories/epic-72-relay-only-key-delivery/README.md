@@ -204,8 +204,9 @@ request/response, capture every log/metric emission, assert zero body bytes);
 key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
 (window ≤ watch bound, both replicas), `rotation_assert_quiesced_in_torn_window`
 (peer private-key load during the private-then-pub window never fires DR — the
-assert is self-contained, generation-tagged; cross-Secret generation checks
-live only at controller seal time), `pub_sealtime_generation_validated`
+assert is self-contained, generation-tagged; generation checks against the pub
+Secret live only at the controller: vs the rotate response at seal time, vs
+last-sealed at reconcile), `pub_sealtime_generation_validated`
 (pub generation ≠ rotate response → rejected, never sealed against; shape-valid
 wrong-pub residual surfaces as CredentialStale), `rotation_replica_restart_mid_reseal`
 (old-keyID fails on the restarted replica only until re-seal completes),
@@ -215,7 +216,10 @@ to `CredentialStale`, not silent), `rotation_torn_update_unconfirmable`
 confirms), `prior_key_retention_expiry`, `dr_keypair_loss_failclosed_recovery`
 (including the corrupted-Secret overwrite path, detected by the watch-time
 fingerprint assert with no restart — a running fleet converges on the bounded
-recovery), `envelope_keyid_aad_bound`
+recovery), `dr_dual_replica_recovery_single_keypair` (simultaneous failures →
+generation-preconditioned single lineage, pub-write loser adopts the winner),
+`dr_window_reconcile_terminates` (generation-change re-seal; persistent stale
+→ anti-storm-bounded rotate escalation), `envelope_keyid_aad_bound`
 (design §7 rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
 unit); informer-drop test (Secret deleted → cache evicted → next request 401).
 
