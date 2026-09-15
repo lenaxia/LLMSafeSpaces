@@ -1414,7 +1414,52 @@ func TestUS70GvisorFetch_AllFetchSitesRideTheWrapper(t *testing.T) {
 			t.Fatalf("artifact %s must be fetched via fetch_retry (the moving-alias 404 window)", artifact)
 		}
 	}
-	if strings.Contains(src, "$CURL \"$BASE/") {
-		t.Fatal("a bare $CURL fetch of the latest alias survives — every artifact fetch must ride fetch_retry")
+	if strings.Contains(src, "$CURL \"$BASE/") || strings.Contains(src, "curl -fsSL \"$BASE/") {
+		t.Fatal("a bare fetch of the latest alias survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+	}
+}
+
+// TestUS70GvisorFetch_BoundPins pins the bounded-retry property (the
+// repo's ProbeSettlePins pattern): the wrapper must be a 5-attempt,
+// 15s-backoff loop — an unbounded-refactor regression would otherwise
+// hang provisioning until the job timeout (mutation-verified invisible
+// to the ride-through row alone).
+func TestUS70GvisorFetch_BoundPins(t *testing.T) {
+	body := extractUS70Fetch(t)
+	for _, pin := range []string{"for i in 1 2 3 4 5", "sleep 15", "return 1"} {
+		if !strings.Contains(body, pin) {
+			t.Fatalf("fetch_retry must pin %q — the bounded give-up is the property (got body: %s)", pin, body)
+		}
+	}
+}
+
+// TestUS70GvisorFetch_GivesUpLoudly: an always-failing fetch must drive
+// the wrapper to a non-zero exit — the loud failure the fix preserves.
+func TestUS70GvisorFetch_GivesUpLoudly(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fetch(t)
+
+	dir := t.TempDir()
+	stubPath := filepath.Join(dir, "curlstub")
+	if err := os.WriteFile(stubPath, []byte("#!/bin/bash\nexit 22\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// set -e mirrors the real caller (the script block runs under
+	// errexit) — the give-up return must abort provisioning.
+	script := "set -e\n" +
+		"CURL=" + shQuote(stubPath) + "\n" +
+		"sleep() { :; }\n" +
+		body + "\n" +
+		"fetch_retry http://flip/latest/runsc " + shQuote(filepath.Join(dir, "out")) + "\n" +
+		"echo should-not-reach\n"
+	got, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err == nil {
+		t.Fatalf("an always-failing fetch must exit non-zero, got success: %s", got)
+	}
+	if strings.Contains(string(got), "should-not-reach") {
+		t.Fatalf("the give-up must abort the caller, got: %s", got)
+	}
+	if !strings.Contains(string(got), "failed after 5 attempts") {
+		t.Fatalf("exhaustion must be loud (5-attempt message), got: %s", got)
 	}
 }

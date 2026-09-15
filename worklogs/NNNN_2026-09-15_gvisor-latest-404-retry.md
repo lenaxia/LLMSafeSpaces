@@ -23,3 +23,13 @@
 ## Files modified
 
 - `local/lib/gvisor.sh`, `local/us70_harness_script_test.go`, this worklog
+
+## Review r1 remediation
+
+- `TestUS70GvisorFetch_BoundPins` — the 5-attempt/15s-backoff/return-1 shape pinned on the extracted body (the ProbeSettlePins pattern; the unbounded-refactor mutation is now caught).
+- `TestUS70GvisorFetch_GivesUpLoudly` — an always-failing fetch exits non-zero under errexit (mirroring the real caller), aborts the caller, and fails with the 5-attempt message. Writing this row surfaced a harness truth: the give-up only aborts because the script block runs under `set -e` — the test now mirrors that.
+- The negative assertion also catches a direct `curl -fsSL "$BASE/…` bypass, not just `$CURL`.
+
+## Tests run (r1)
+
+- `go test -timeout 300s ./local/` — ok
