@@ -18,7 +18,7 @@ interface ChatHistoryErrorBannerProps {
  *   - Retry action — the underlying react-query hook supports refetch;
  *     wire it here so the user can self-service the transient case
  *     (pod-restart, rate-limit, etc.) without a page reload.
- *   - Opencode ref — pulled from the API error body via
+ *   - Agent ref — pulled from the API error body via
  *     extractAgentErrorRef, shown in a `<details>` block. Not front-and-
  *     center (users don't need it) but discoverable for operators
  *     debugging their own or a support-ticketed session.
@@ -29,15 +29,18 @@ interface ChatHistoryErrorBannerProps {
  * The companion server-side observability (#488) records the same ref
  * as a metric label + log line. An operator debugging an incident goes:
  * user reports "chat blank" → operator opens the DevTools banner →
- * copies the ref → greps opencode logs by that ref → stack trace.
+ * copies the ref → greps agent logs by that ref → stack trace.
  *
- * Message extraction hierarchy (verified against production shapes):
- *   1. `extractAgentErrorMessage(body)` — nested-or-flat opencode `message`.
- *      Handles both the raw envelope (#486 GET-history shape,
- *      `body.data.message`) and the allowlisted shape (POST-prompt path,
- *      where the backend promotes `message` to top level).
- *   2. `body.error` — the API's own error responses (e.g. 503
- *      "workspace connection failed" from proxy_handlers.go:298).
+ * Message extraction hierarchy (verified against the API-authored
+ * shapes; the API authors every error body on the message routes since
+ * #828/#1302 — #1303):
+ *   1. `extractAgentErrorMessage(body)` — the top-level allowlisted
+ *      `message` the API promotes via EnrichChatErrorBody on the
+ *      POST-prompt path, and the API's own structured `message`
+ *      (e.g. the 507 disk-full body from proxy_handlers.go).
+ *   2. `body.error` — the API's own error responses (e.g. the GET
+ *      history 502 "failed to fetch history" and the 503
+ *      "workspace not ready" from proxy_adapter_crosscutting.go).
  *   3. `err.message` from the Error base class — network-layer failures
  *      where there is no body at all (fetch threw). Note: for an
  *      ApiClientError this equals `body.error` because the constructor
@@ -61,7 +64,8 @@ export function ChatHistoryErrorBanner({
   const isRecovering = status === 503 && (reason === "agent_unreachable" || reason === "agent_restarting");
 
   if (error instanceof ApiClientError) {
-    // Prefer the API's structured `message` field (always present on 503s).
+    // Prefer the API's structured `message` field (e.g. the 507
+    // disk-full body) when present; absent on the {error}-only bodies.
     if (typeof error.body?.message === "string" && error.body.message.length > 0) {
       message = error.body.message;
     } else {

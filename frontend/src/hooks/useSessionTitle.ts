@@ -4,12 +4,13 @@ import { workspacesApi } from "../api/workspaces";
 import type { SessionListItem } from "../api/types";
 
 /**
- * Fetches the opencode session title for the active session via the proxy.
+ * Fetches the active session's title via the session contract endpoint
+ * (GET /workspaces/:id/sessions/:sessionId — AgentSession).
  *
  * Behaviour:
  * - Fetches on mount when workspaceId + sessionId are available and active is true.
  * - Re-fetches whenever `streaming` transitions from true → false (i.e. after
- *   the agent finishes a response, which is when opencode generates a title).
+ *   the agent finishes a response, which is when the agent generates a title).
  * - When a non-empty title is received, invalidates ["sessions", workspaceId]
  *   so the sidebar reflects the new title immediately.
  */
@@ -26,13 +27,15 @@ export function useSessionTitle(
     queryKey: ["session-title", workspaceId, sessionId],
     queryFn: () => workspacesApi.getSession(workspaceId!, sessionId!),
     enabled: !!workspaceId && !!sessionId && active,
-    // Don't auto-retry on 404 — a brand new session may not exist in opencode yet.
+    // Don't auto-retry on 404 — a brand new session may not exist on the
+    // agent yet.
     retry: false,
     // Don't refetch on window focus; title changes only happen after messages.
     refetchOnWindowFocus: false,
   });
 
-  // Re-fetch when streaming ends — opencode generates the title after the first exchange.
+  // Re-fetch when streaming ends — the agent generates the title after
+  // the first exchange.
   // Retry after a delay since title generation is async.
   useEffect(() => {
     if (prevStreaming.current && !streaming && workspaceId && sessionId && active) {

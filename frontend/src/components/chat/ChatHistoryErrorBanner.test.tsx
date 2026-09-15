@@ -7,25 +7,17 @@ import { ApiClientError } from "../../api/client";
 // isError. These tests target the banner in isolation (integration with
 // ChatPage.tsx is covered separately by ChatPage.historyError.test.tsx).
 //
-// IMPORTANT — fixture fidelity: the production error shapes are
-// distinct at both /message endpoints. The GET history path
-// (proxy_handlers.go:154-157) passes opencode's raw envelope through
-// verbatim, so `body.error` does NOT exist at the top level — the
-// human-readable message is at `body.data.message` and the ref is at
-// `body.data.ref`. The POST prompt path runs EnrichChatErrorBody
+// IMPORTANT — fixture fidelity (#1303): the API authors every error
+// body on the message routes. GET history failures return the API's
+// own `{"error": "failed to fetch history"}` (proxy_handlers.go
+// GetHistory); the POST prompt path runs EnrichChatErrorBody
 // (proxy_chat_enrichment.go) which promotes the allowlisted fields
-// (including `message` and `ref`) to the top level. Tests below use
-// the real shapes; synthetic top-level `error` fields would let bugs
-// pass artificially. This was the finding from the first #491 review.
-
-// A cast type for the opencode nested envelope shape. The API's
-// ApiError type doesn't declare `name` or `data` because those are
-// opencode-owned fields, not LLMSafeSpaces API fields. Cast at the
-// fixture boundary rather than augmenting production types.
-type OpencodeErrorEnvelope = {
-  name: string;
-  data: { message?: string; ref?: string };
-};
+// (including `message` and `ref`) to the top level. The raw agent
+// envelope `{name, data:{...}}` stopped reaching the client when #828
+// deleted the passthrough — a fixture keeps only as a graceful-fallback
+// row below. Tests use the real API-authored shapes; synthetic shapes
+// would let bugs pass artificially (the finding from the first #491
+// review).
 
 describe("ChatHistoryErrorBanner", () => {
   it("renders the user-facing header and Retry action", () => {
@@ -43,45 +35,33 @@ describe("ChatHistoryErrorBanner", () => {
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 
-  it("shows HTTP status + opencode message + ref for the raw envelope shape (GET history, the #486 shape)", () => {
-    // This is the EXACT shape #486 hit — opencode's raw error envelope
-    // passed through by the API on GET /message. `body.error` DOES NOT
-    // EXIST at top level. The message is at data.message; the ref is
-    // at data.ref. `ApiClientError`'s super(body.error) with
-    // body.error=undefined leaves err.message = "" (empty string —
-    // the Error constructor treats `undefined` as absent). The banner
-    // must skip past empty err.message (via the truthy `&&` guard) and
-    // fall back to opencode's data.message via extractAgentErrorMessage.
-    // Regression test at line ~137 pins this end-to-end.
-    const body = {
-      name: "UnknownError",
-      data: {
-        message: "Unexpected server error. Check server logs for details.",
-        ref: "err_b8d02ae9",
-      },
-    } as unknown as OpencodeErrorEnvelope;
-    const err = new ApiClientError(
-      500,
-      body as unknown as ConstructorParameters<typeof ApiClientError>[1],
-    );
+  it("shows HTTP status + the API's error message for the GET-history 502 body (#486 regression intent)", () => {
+    // The API-authored GET history failure body (proxy_handlers.go
+    // GetHistory): {"error":"failed to fetch history"} with a 502. The
+    // #486 regression intent — a meaningful message must render where
+    // the pre-#490 UI was silently empty — now holds against the
+    // API-authored shape: `extractAgentErrorMessage` finds no top-level
+    // `message`, the banner falls back to `body.error`.
+    // `ApiClientError`'s super(body.error) carries the same string.
+    const err = new ApiClientError(502, { error: "failed to fetch history" });
     render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
 
     fireEvent.click(screen.getByText("Details"));
-    expect(screen.getByText("HTTP 500")).toBeInTheDocument();
-    expect(screen.getByText(/Unexpected server error/)).toBeInTheDocument();
-    expect(screen.getByText("Ref: err_b8d02ae9")).toBeInTheDocument();
-    // Explicit negative: the literal "undefined" string (from
-    // super(body.error) with no top-level error) must never render.
+    expect(screen.getByText("HTTP 502")).toBeInTheDocument();
+    expect(screen.getByText("failed to fetch history")).toBeInTheDocument();
+    // No ref in the API-authored body — none may be invented.
+    expect(screen.queryByText(/^Ref:/)).not.toBeInTheDocument();
+    // Explicit negative: the literal "undefined" string must never render.
     expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
   });
 
-  it("shows HTTP status + opencode message + ref for the flat allowlisted shape (POST prompt path)", () => {
+  it("shows HTTP status + message + ref for the flat allowlisted shape (POST prompt path)", () => {
     // After EnrichChatErrorBody's allowlist, `message`, `ref`, `_tag`
     // etc. sit at the top level. body.error is still absent — the
     // allowlist does not synthesize it. Banner reads message via
     // extractAgentErrorMessage, not body.error.
     const body = {
-      _tag: "SomeOpencodeError",
+      _tag: "SomeAgentError",
       message: "big-pickle rate-limited",
       ref: "err_topLevel",
       sessionID: "ses_abc",
@@ -95,18 +75,48 @@ describe("ChatHistoryErrorBanner", () => {
     expect(screen.getByText("Ref: err_topLevel")).toBeInTheDocument();
   });
 
-  it("shows the API's own `error` field when opencode's message is absent (503 workspace-connection-failed)", () => {
-    // Real API shape from proxy_handlers.go:298. Body has `error`
-    // (via ApiError type), no opencode fields.
+  it("degrades gracefully on a legacy nested envelope: no nested extraction, placeholder message (#1303)", () => {
+    // Pre-#828, GET history passed the raw agent envelope
+    // `{name, data:{message, ref}}` through verbatim (the shape #486
+    // hit). That passthrough is deleted and the nested extractor went
+    // with it — a stray legacy body must extract NOTHING (no
+    // data.message, no data.ref) and fall through to the "Unknown
+    // error" placeholder (body.error is absent and super(undefined)
+    // leaves err.message = "").
+    const body = {
+      name: "UnknownError",
+      data: {
+        message: "Unexpected server error. Check server logs for details.",
+        ref: "err_b8d02ae9",
+      },
+    } as unknown as ConstructorParameters<typeof ApiClientError>[1];
+    const err = new ApiClientError(500, body);
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("HTTP 500")).toBeInTheDocument();
+    // The nested message and ref must NOT surface.
+    expect(screen.queryByText(/Unexpected server error/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Ref:/)).not.toBeInTheDocument();
+    expect(screen.getByText("Unknown error")).toBeInTheDocument();
+    expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
+  });
+
+  it("shows the API's own `error` field when the promoted message is absent (real 503 not-ready body)", () => {
+    // Real API shape (proxy_adapter_crosscutting.go
+    // resolveWorkspaceForAdapter — the only 503 the history routes
+    // emit): `error` + `phase` + `retryAfter`, no promoted agent
+    // fields, no reason → red error state, message from body.error.
     const err = new ApiClientError(503, {
-      error: "workspace connection failed",
+      error: "workspace not ready",
+      phase: "Suspended",
       retryAfter: 5,
     });
     render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
     fireEvent.click(screen.getByText("Details"));
 
     expect(screen.getByText("HTTP 503")).toBeInTheDocument();
-    expect(screen.getByText(/workspace connection failed/)).toBeInTheDocument();
+    expect(screen.getByText(/workspace not ready/)).toBeInTheDocument();
     expect(screen.queryByText(/^Ref:/)).not.toBeInTheDocument();
   });
 
@@ -139,11 +149,11 @@ describe("ChatHistoryErrorBanner", () => {
     // `super(body.error)` when body.error is `undefined` produces
     // `err.message = ""` (the empty string — the Error constructor
     // treats `undefined` as absent). Pre-fix, the banner's fallback
-    // chain preferred `error.message` over opencode's `data.message`,
-    // so it rendered a blank line in Details for the #486 shape.
+    // chain preferred `error.message` over the body's message, so it
+    // rendered a blank line in Details.
     //
     // This test constructs a body with NO top-level `error` AND NO
-    // opencode message/data, forcing every extraction step to fail
+    // extractable message/ref, forcing every extraction step to fail
     // through to the placeholder.
     const body = {
       some_other_field: 42,
@@ -162,8 +172,13 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows yellow 'Reconnecting…' state for 503 with agent_unreachable reason", () => {
+    // Defensive display branch only — NO API producer currently emits
+    // a reason-keyed 503 body on the message routes (the real 503 is
+    // the not-ready shape above; the branch awaits a recovery-reason
+    // producer, tracked with #796's parity sweep). Rows keep the
+    // branch covered until then.
     const err = new ApiClientError(503, {
-      error: "workspace connection failed",
+      error: "agent did not respond",
       message: "The agent is not responding. Please try again in a moment.",
       reason: "agent_unreachable",
       retryAfter: 10,
@@ -178,6 +193,7 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows yellow 'Reconnecting…' state for 503 with agent_restarting reason", () => {
+    // Defensive display branch only — see the agent_unreachable row.
     const err = new ApiClientError(503, {
       error: "Workspace is restarting",
       message: "The agent is restarting. Please try again in a moment.",
@@ -190,6 +206,7 @@ describe("ChatHistoryErrorBanner", () => {
   });
 
   it("shows red error state for 503 with not_ready reason (not recovering)", () => {
+    // Defensive display branch only — see the agent_unreachable row.
     const err = new ApiClientError(503, {
       error: "workspace not ready",
       message: "Workspace is pending.",
