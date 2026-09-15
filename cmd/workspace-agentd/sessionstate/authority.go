@@ -25,6 +25,8 @@ import (
 
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // ErrNoStore is returned by Reseed when no store reader is wired: the
@@ -52,6 +54,19 @@ func (r ReseedReason) proto() abiv1.ReseedReason {
 	}
 	return abiv1.ReseedReason_RESEED_REASON_BOOT
 }
+
+// OrphanSweepReason is the synthetic terminal-state error folded onto
+// in-flight tool parts orphaned by a harness restart (#1342 S12
+// backstop): the part never received terminal state because the process
+// died mid-turn; the restored projection reports it aborted so the UI
+// renders honestly and the agent's next turn sees the tool died. The
+// value equals the contract constant session.ToolAbortReasonHarnessRestart
+// (the adapter's transcript repair closes already-orphaned parts with the
+// same reason) — the equality is pinned by TestOrphanSweepReasonMatches-
+// ContractConstant so the two repair sites never fork. The constant is
+// duplicated rather than imported: the module seal (seal_test.go) admits
+// only the ABI schema into this package.
+const OrphanSweepReason = "harness restart"
 
 // EventParser translates one raw harness SSE payload into a contract
 // event. ok=false means the payload carries nothing projectable (dropped,
@@ -187,6 +202,9 @@ type Authority struct {
 	parserFailures    int64
 	panicsContained   atomic.Int64 // no lock: the reseed flush parses UNDER a.mu; reads go through .Load()
 	customValveEvents int64
+	// orphanPartsAborted counts in-flight tool parts folded as aborted
+	// by the #1342 reseed sweep (cumulative).
+	orphanPartsAborted int64
 	// Cumulative #1311 reconcile outcomes (Metrics bridge; a.mu-guarded).
 	reconPromoted int64
 	// reconcileTimeoutVal bounds one reconcile pass's evidence I/O
@@ -389,6 +407,18 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 
 	a.mu.Lock()
 	a.buffering = true
+	// #1342 S12 backstop: a generation change means the previous harness
+	// died. In-flight tool parts that never reached terminal state are
+	// orphans by definition (nothing will ever fold their PART_END) —
+	// capture them from the pre-restart projection BEFORE the ledger
+	// evidence sweep runs: that sweep legitimately clears busy-view
+	// in-flight state for ledgered sessions (L4), and the orphans must
+	// not be silently dropped ahead of the abort fold. Capture happens
+	// with buffering armed, so no live event can interleave.
+	var orphans map[string][]*abiv1.Part
+	if reason == ReseedReasonGenerationChange {
+		orphans = a.captureOrphanedPartsLocked(seeds)
+	}
 	a.mu.Unlock()
 	// quiesce point: everything ingested from here on buffers.
 
@@ -439,10 +469,76 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	}
 	frame := &abiv1.StreamFrame{Frame: &abiv1.StreamFrame_Reseeded{Reseeded: &abiv1.ReseedNotice{Seq: next, Reason: reason.proto()}}}
 	a.fanoutLocked(frame)
+	// Fold the synthetic aborts into the restored projection (seq-assigned,
+	// fanned out — subscribers see reseeded → aborted PART_ENDs). Runs
+	// before the buffered flush so new-generation events land after the
+	// aborts in seq order. The counter advances only when the fold actually
+	// published: applyLocked drops the event on a cursor-persist failure,
+	// and the metric must not overcount in exactly the disk-failure case it
+	// exists to surface.
+	for sid, parts := range orphans {
+		for _, p := range parts {
+			seqBefore := a.seq
+			a.applyLocked(&abiv1.Event{
+				SessionId: sid,
+				Type:      abiv1.EventType_EVENT_TYPE_PART_END,
+				Part:      p,
+			})
+			if a.seq > seqBefore {
+				a.orphanPartsAborted++
+			}
+		}
+	}
 	a.mu.Unlock()
 
 	flush()
 	return nil
+}
+
+// captureOrphanedPartsLocked collects the pre-restart projection's
+// non-terminal TOOL parts for sessions the store still holds: these are
+// the parts a harness restart killed mid-flight (no terminal state, no
+// future PART_END). Each is cloned with the synthetic aborted state
+// (TOOL_STATUS_ERROR + OrphanSweepReason + completed stamp) so folding
+// it as PART_END renders the restored projection honestly. Terminal
+// parts (COMPLETED/ERROR) keep their own state; text parts are not
+// resurrected (the phantom-spinner class is tools); sessions absent
+// from the seeds are not resurrected. a.mu must be held.
+func (a *Authority) captureOrphanedPartsLocked(seeds map[string]SessionSeed) map[string][]*abiv1.Part {
+	var orphans map[string][]*abiv1.Part
+	now := timestamppb.New(time.Now())
+	for sid, rec := range a.sessions {
+		if rec == nil {
+			continue
+		}
+		if _, live := seeds[sid]; !live {
+			continue
+		}
+		for _, p := range rec.inFly {
+			tool, ok := p.GetPayload().(*abiv1.Part_Tool)
+			if !ok {
+				continue
+			}
+			switch tool.Tool.GetState().GetStatus() {
+			case abiv1.ToolStatus_TOOL_STATUS_COMPLETED, abiv1.ToolStatus_TOOL_STATUS_ERROR:
+				continue // already terminal — its own state is honest
+			}
+			if orphans == nil {
+				orphans = map[string][]*abiv1.Part{}
+			}
+			clone := proto.Clone(p).(*abiv1.Part)
+			if toolClone, ok := clone.GetPayload().(*abiv1.Part_Tool); ok {
+				toolClone.Tool.State = &abiv1.ToolState{
+					Status:      abiv1.ToolStatus_TOOL_STATUS_ERROR,
+					Error:       OrphanSweepReason,
+					StartedAt:   tool.Tool.GetState().GetStartedAt(),
+					CompletedAt: now,
+				}
+			}
+			orphans[sid] = append(orphans[sid], clone)
+		}
+	}
+	return orphans
 }
 
 // State returns the atomically-stamped projection snapshot.
@@ -589,7 +685,11 @@ type Metrics struct {
 	LeaseResolved    int64
 	LeaseAppeared    int64
 	LeaseGatherFails int64
-	StalledEntries   int64
+	// OrphanPartsAborted is the cumulative count of in-flight tool parts
+	// folded as aborted by the #1342 harness-restart sweep (S12's
+	// backstop — every count is a turn that died without terminal state).
+	OrphanPartsAborted int64
+	StalledEntries     int64
 	// OldestPromotionStallSeconds is the age of the oldest
 	// admitted-unpromoted row (0 when none).
 	OldestPromotionStallSeconds float64
@@ -620,6 +720,7 @@ func (a *Authority) Metrics() Metrics {
 		LeaseGatherFails:            a.leaseGatherFails,
 		LeaseResolved:               a.leaseResolvedCum,
 		LeaseAppeared:               a.leaseAppearedCum,
+		OrphanPartsAborted:          a.orphanPartsAborted,
 	}
 	if a.ledger != nil {
 		m.LedgerDepths = a.ledger.depths()

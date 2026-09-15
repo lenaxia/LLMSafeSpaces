@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHealthzResponse_JSON(t *testing.T) {
@@ -17,6 +18,34 @@ func TestHealthzResponse_JSON(t *testing.T) {
 	assert.Contains(t, string(data), `"healthy":true`)
 	assert.Contains(t, string(data), `"version":"1.2.27"`)
 	assert.Contains(t, string(data), `"uptime_seconds":3600`)
+}
+
+func TestHealthzResponse_PendingApply_JSON(t *testing.T) {
+	resp := HealthzResponse{Healthy: true, PendingApply: &PendingApplyHealth{
+		Reason:         "credential_change",
+		WaitingSeconds: 300,
+		BusySessions:   2,
+	}}
+	data, err := json.Marshal(resp)
+	assert.NoError(t, err)
+	assert.Contains(t, string(data), `"pendingApply"`)
+	assert.Contains(t, string(data), `"reason":"credential_change"`)
+	assert.Contains(t, string(data), `"waitingSeconds":300`)
+	assert.Contains(t, string(data), `"busySessions":2`)
+
+	var decoded HealthzResponse
+	assert.NoError(t, json.Unmarshal(data, &decoded))
+	require.NotNil(t, decoded.PendingApply)
+	assert.Equal(t, "credential_change", decoded.PendingApply.Reason)
+	assert.Equal(t, 300, decoded.PendingApply.WaitingSeconds)
+	assert.Equal(t, 2, decoded.PendingApply.BusySessions)
+}
+
+func TestHealthzResponse_NilPendingApply_Omitted(t *testing.T) {
+	resp := HealthzResponse{Healthy: true}
+	data, err := json.Marshal(resp)
+	assert.NoError(t, err)
+	assert.NotContains(t, string(data), `"pendingApply"`)
 }
 
 func TestReadyzResponse_JSON(t *testing.T) {

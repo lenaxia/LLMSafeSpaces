@@ -51,7 +51,13 @@ type sessionStatusTracker struct {
 	// busySince records when each session last transitioned to busy
 	// (design 0050 D6 / #998): backs oldest_busy_seconds in statusz for
 	// unattended-escalation detection. Cleared on idle.
-	busySince    map[string]time.Time
+	busySince map[string]time.Time
+	// lastEventAt records when the stream last carried ANY event for the
+	// session (#1342: the progress signal). Restart-worthiness keys on
+	// progress, not wall-clock — a busy session with fresh part output
+	// is never a force-restart candidate no matter how long the turn
+	// runs. Maintained alongside statuses; prune() owns deletion.
+	lastEventAt  map[string]time.Time
 	promptTokens map[string]int64 // session ID → current context size (input + cache.read + cache.write)
 	// onRawEvent, when non-nil, receives every raw SSE payload before
 	// dialect parsing (Epic 69 US-69.2 — the sessionstate authority's
@@ -63,6 +69,7 @@ func newSessionStatusTracker() *sessionStatusTracker {
 	return &sessionStatusTracker{
 		statuses:     make(map[string]string),
 		busySince:    make(map[string]time.Time),
+		lastEventAt:  make(map[string]time.Time),
 		promptTokens: make(map[string]int64),
 	}
 }
@@ -78,6 +85,47 @@ func (t *sessionStatusTracker) set(sessionID, status string) {
 		delete(t.busySince, sessionID)
 	}
 	t.mu.Unlock()
+}
+
+// noteActivity stamps the session's progress signal (#1342). Called for
+// every SSE event that carries the session's ID — part updates, usage
+// steps, and status transitions alike: any harness activity for the
+// session proves the turn is alive.
+func (t *sessionStatusTracker) noteActivity(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	t.mu.Lock()
+	t.lastEventAt[sessionID] = time.Now()
+	t.mu.Unlock()
+}
+
+// busyPartitions splits the currently-busy sessions into progressing
+// (harness activity fresher than stallBound) and stalled (#1342: the
+// force-path eligibility signal — a busy session silent past the bound
+// has likely wedged, and the interrupt path is safe). A busy session
+// with no recorded event falls back to its busy-mark: the mark is the
+// earliest activity evidence, so a never-observed busy session stalls
+// one bound after the mark, never instantly.
+func (t *sessionStatusTracker) busyPartitions(stallBound time.Duration) (progressing, stalled []string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	for id, s := range t.statuses {
+		if s != "busy" {
+			continue
+		}
+		last, ok := t.lastEventAt[id]
+		if !ok {
+			last = t.busySince[id]
+		}
+		if now.Sub(last) > stallBound {
+			stalled = append(stalled, id)
+		} else {
+			progressing = append(progressing, id)
+		}
+	}
+	return progressing, stalled
 }
 
 // busyDurations returns (session ID → time busy) for every session
@@ -212,6 +260,7 @@ func (t *sessionStatusTracker) prune(activeIDs []string) {
 		if _, exists := active[id]; !exists {
 			delete(t.statuses, id)
 			delete(t.promptTokens, id)
+			delete(t.lastEventAt, id)
 		}
 	}
 	t.mu.Unlock()
@@ -371,6 +420,9 @@ func (t *sessionStatusTracker) processEvent(data string) {
 		if json.Unmarshal([]byte(data), &nested) != nil {
 			return
 		}
+		if sid := wire.SessionIDFromProps(nested.Payload.Properties); sid != "" {
+			t.noteActivity(sid)
+		}
 		switch nested.Payload.Type {
 		case "session.status":
 			t.handleSessionStatus(nested.Payload.Properties)
@@ -379,6 +431,7 @@ func (t *sessionStatusTracker) processEvent(data string) {
 				log.Warn("usage event claims tokens but fails to decode — wire drift?",
 					zap.Error(err), zap.String("eventType", nested.Payload.Type))
 			} else if ok {
+				t.noteActivity(u.SessionID)
 				t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
 			}
 		}
@@ -393,7 +446,14 @@ func (t *sessionStatusTracker) processEvent(data string) {
 			log.Warn("usage event claims tokens but fails to decode — wire drift?",
 				zap.Error(err), zap.String("eventType", evt.Type))
 		} else if ok {
+			t.noteActivity(u.SessionID)
 			t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
+		} else if sid := wire.SessionIDFromProps(evt.Properties); sid != "" {
+			// #1342: non-usage part updates (streaming text/tool output)
+			// are the progress signal for long-running turns — the
+			// 40-min build rule. Extracted through the wire seam, not
+			// re-derived here.
+			t.noteActivity(sid)
 		}
 	}
 }
@@ -408,6 +468,7 @@ func (t *sessionStatusTracker) handleSessionStatus(props json.RawMessage) {
 	if json.Unmarshal(props, &p) != nil || p.SessionID == "" {
 		return
 	}
+	t.noteActivity(p.SessionID)
 	switch p.Status.Type {
 	case "idle":
 		t.set(p.SessionID, "idle")

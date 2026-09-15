@@ -130,6 +130,23 @@ func ParseStepUsageProps(eventType string, props json.RawMessage) (StepUsage, bo
 	}
 }
 
+// SessionIDFromProps extracts the owning session from one event's
+// properties payload (#1342: the SSE progress signal — any event
+// carrying a sessionID is evidence that session's turn is alive).
+// Empty when the payload carries none (sessionless events).
+func SessionIDFromProps(props json.RawMessage) string {
+	if len(props) == 0 {
+		return ""
+	}
+	var p struct {
+		SessionID string `json:"sessionID"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return ""
+	}
+	return p.SessionID
+}
+
 func parseLegacyStepEnded(props json.RawMessage) (StepUsage, bool, error) {
 	var p struct {
 		SessionID string  `json:"sessionID"`

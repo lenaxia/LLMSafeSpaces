@@ -36,6 +36,15 @@ type ModelInfo struct {
 	MaxOutput     int64  `json:"maxOutput,omitempty"`
 }
 
+// ToolAbortReasonHarnessRestart is the synthetic terminal-state reason for
+// a tool part orphaned by a harness restart (#1342 S12): the process that
+// ran the tool died before writing terminal state, and the platform — the
+// agentd projection sweep or the adapter's transcript repair — closes the
+// part honestly so no surface renders an eternal spinner. One constant
+// across both repair sites so the reason users see never forks by read
+// path.
+const ToolAbortReasonHarnessRestart = "harness restart"
+
 // Capability advertises an optional agent behavior. Clients render or hide
 // affordances based on the set an adapter reports (design 0049 §4.2/§4.6).
 // Agent-specific operations (rewind/fork/stash) are pass-through until a

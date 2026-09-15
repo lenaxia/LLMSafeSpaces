@@ -112,6 +112,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Pod unreachable — clear the terminal-verified delivery state
 		// (US-70.1): no evidence from a dead pod beats stale evidence.
 		ws.Status.SecretsDelivery = nil
+		// Same evidence rule for the deferred-apply surface (#1342): a
+		// dead pod's deferral state is unknown, not pending.
+		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, err.Error())
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -130,6 +133,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Response undecodable: same reasoning as unreachable — we
 		// can't trust any prior value, clear to nil.
 		ws.Status.SecretsDelivery = nil
+		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
 		return
@@ -139,6 +143,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		ws.Status.ConsecutiveHealthFailures++
 		// Agent reports unhealthy: don't trust its delivery signal.
 		ws.Status.SecretsDelivery = nil
+		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
 			v1.ReasonAgentUnhealthy, "agent process not responding")
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -169,6 +174,18 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 			DegradedReason: reason,
 			FilesRev:       healthResp.SpawnEnv.FilesRev,
 		}
+	}
+	// #1342 item 4 (L11): mirror the deferred-credential-apply state so
+	// operators see WHY a credential change has not applied — it rides a
+	// maintenance window behind busy sessions. Absent field (nothing
+	// pending, or a pre-#1342 runtime) clears the condition.
+	if healthResp.PendingApply != nil {
+		r.setCondition(ws, v1.WorkspaceConditionCredentialsApplyPending, "True",
+			v1.ReasonCredentialsApplyDeferred,
+			fmt.Sprintf("credential change deferred behind %d busy session(s) for %ds (applies on idle or stalled-session interrupt)",
+				healthResp.PendingApply.BusySessions, healthResp.PendingApply.WaitingSeconds))
+	} else {
+		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 	}
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
 		v1.ReasonAgentHealthy, appendAgentWarnings(

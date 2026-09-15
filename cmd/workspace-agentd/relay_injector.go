@@ -490,7 +490,9 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		//
 		// Metric note: "success" counts config APPLICATIONS (relay block
 		// written + auth.json updated). The actual process restart may be
-		// deferred up to defaultMaxDefer by the session-aware kill decision
+		// deferred (unbounded while sessions progress; interrupt-first
+		// force path once every busy session stalls) by the
+		// session-aware kill decision
 		// while sessions are busy — the config takes effect at that restart.
 		cfg.KillOpenCode()
 		relayInjectorOutcomes.WithLabelValues("success").Inc()

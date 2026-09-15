@@ -51,7 +51,14 @@ import (
 // degrade surfaces as the spawnEnv field AND a `degraded:<reason>`
 // warning the controller relays into the AgentHealthy condition, never
 // as Healthy=false (a secrets degrade must not cascade to pod-kill).
-func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth) http.HandlerFunc {
+//
+// pendingApplySnapshot (#1342 item 4), when non-nil, supplies the
+// deferred-credential-apply state for the pendingApply field: a
+// restart-worthy credential change staged on the pod whose applying
+// restart is riding a maintenance window behind busy sessions. Cached
+// state only — the handler contract is unchanged. The controller
+// mirrors it into the CredentialsApplyPending condition.
+func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot func() *agentd.SpawnEnvHealth, pendingApplySnapshot func() *agentd.PendingApplyHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		warnings := modelResolutionWarnings(modelWarnPath)
 		var spawnEnv *agentd.SpawnEnvHealth
@@ -60,6 +67,10 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 			if w := spawnEnvWarning(spawnEnv); w != "" {
 				warnings = append(warnings, w)
 			}
+		}
+		var pendingApply *agentd.PendingApplyHealth
+		if pendingApplySnapshot != nil {
+			pendingApply = pendingApplySnapshot()
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
@@ -70,6 +81,7 @@ func healthzHandler(startedAt time.Time, modelWarnPath string, spawnEnvSnapshot 
 			UptimeSeconds: int(time.Since(startedAt).Seconds()),
 			Delivery:      agentd.DeliveryCapability,
 			SpawnEnv:      spawnEnv,
+			PendingApply:  pendingApply,
 			Warnings:      warnings,
 		})
 	}

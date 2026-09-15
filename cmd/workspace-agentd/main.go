@@ -214,7 +214,7 @@ func main() {
 		sseTracker.onRawEvent = stateAuthority.Ingest
 	}
 
-	proc := startManagedProcess(supervise, sseTracker, stateAuthority)
+	proc := startManagedProcess(bgCtx, supervise, sseTracker, stateAuthority)
 	if stateAuthority != nil {
 		startStateAuthorityReseed(bgCtx, stateAuthority, sessionstate.ReseedReasonBoot)
 		// US-69.12 + #1311: the convergence watchdog — store-evidence
@@ -243,6 +243,8 @@ func main() {
 		resolvedAdminToken: bootAdminToken,
 		startedAt:          startedAt,
 		agentConfigWriter:  agentConfigWriter,
+		pendingApply:       newPendingApplyTracker(),
+		interrupter:        newSessionInterrupter(password),
 	}
 	// Nil guard: bare `workspace-agentd` (server-only, no --supervise)
 	// runs without a managed process — every deps.proc consumer already
@@ -268,7 +270,7 @@ func main() {
 	if deps.proc != nil {
 		liveSessions := liveSessionsLister(deps)
 		go watchAgentConfigForChanges(bgCtx, effectiveAgentConfigPath(), log,
-			relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions))
+			relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter))
 	}
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
@@ -380,7 +382,13 @@ func runRedactCommand(args []string) int {
 // authoritative generation-change signal for the session-state authority
 // (agentd is opencode's parent — design 0055 A9); the reseed runs async
 // so the supervisor path never blocks on store reads.
-func startManagedProcess(supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority) *managedProcess {
+//
+// #1342: the generation-change reseed rides the RETRYING driver (same
+// as boot) — opencode may not answer /session for seconds after a
+// restart, and a one-shot reseed would leave the orphan sweep (S12's
+// backstop) unfired until the NEXT generation. Retries are ctx-bounded
+// (bgCtx — canceled at shutdown) and idempotent per attempt.
+func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sessionStatusTracker, authority *sessionstate.Authority) *managedProcess {
 	if !supervise {
 		return nil
 	}
@@ -390,11 +398,7 @@ func startManagedProcess(supervise bool, sseTracker *sessionStatusTracker, autho
 			a := authority
 			proc.onChildStarted = func() {
 				sseTracker.onOpencodeGenerationStart()
-				go func() {
-					if err := a.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange); err != nil {
-						log.Warn("sessionstate: generation-change reseed failed (will retry on next generation)", zap.Error(err))
-					}
-				}()
+				go startStateAuthorityReseed(bgCtx, a, sessionstate.ReseedReasonGenerationChange)
 			}
 		} else {
 			proc.onChildStarted = sseTracker.onOpencodeGenerationStart
@@ -430,7 +434,7 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		AuthJSONPath:      authJSONPath,
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
-		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
+		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter),
 	})
 }
 
@@ -458,13 +462,23 @@ func liveSessionsLister(deps serverDeps) sessionLister {
 // queue dies with the process while SQLite keeps toolState:"running",
 // permanently sticking the session. The restart is routed through the same
 // deferral the credential-reload path uses: restart now if no session is
-// busy, else poll until idle (bounded by defaultMaxDefer).
-func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister) func() {
+// busy, else poll until idle (unbounded while sessions progress; the
+// interrupt-first force path fires when every busy session is stalled —
+// #1342). No pending-apply surfacing: a relay restart is not a credential
+// apply.
+func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister, interrupter sessionInterrupter) func() {
 	if proc == nil {
 		return func() {}
 	}
 	return func() {
-		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be canceled at shutdown
+		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartDecisionConfig{
+			PollInterval: restartIdleCheckInterval,
+			StallBound:   restartStallBound,
+			GraceWindow:  defaultInterruptGrace,
+			Lister:       lister,
+			Interrupter:  interrupter,
+			BgWg:         bgWg,
+		}) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be canceled at shutdown
 	}
 }
 

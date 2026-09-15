@@ -122,7 +122,7 @@ func TestSessionAwareRestartDecision_AllIdle_RestartsImmediately(t *testing.T) {
 	tracker.set("ses_2", "idle")
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 5*time.Second, time.Hour, nil, nil)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 5 * time.Second})
 
 	assert.True(t, decided,
 		"all sessions idle — restart must proceed immediately")
@@ -140,7 +140,9 @@ func TestSessionAwareRestartDecision_SessionsBusy_DefersRestart(t *testing.T) {
 	tracker.set("ses_2", "idle")
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 50*time.Millisecond, time.Hour, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	decided := makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{PollInterval: 50 * time.Millisecond})
 
 	assert.False(t, decided,
 		"sessions busy — restart must be deferred, not immediate")
@@ -156,7 +158,7 @@ func TestSessionAwareRestartDecision_DeferredRestart_AppliesWhenIdle(t *testing.
 	tracker.set("ses_1", "busy")
 
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, 20*time.Millisecond, time.Hour, nil, nil)
+	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 20 * time.Millisecond})
 
 	// Session is still busy — restart should NOT fire yet.
 	time.Sleep(50 * time.Millisecond)
@@ -179,7 +181,7 @@ func TestSessionAwareRestartDecision_NilProc_NoPanic(t *testing.T) {
 	tracker.set("ses_1", "idle")
 
 	assert.NotPanics(t, func() {
-		decided := makeSessionAwareRestartDecision(context.Background(), nil, tracker, 5*time.Second, time.Hour, nil, nil)
+		decided := makeSessionAwareRestartDecision(context.Background(), nil, tracker, restartDecisionConfig{PollInterval: 5 * time.Second})
 		assert.True(t, decided, "nil proc with idle sessions returns true (no-op)")
 	})
 }
@@ -210,7 +212,7 @@ func TestSessionAwareRestartDecision_C2a_PruneClearsStaleBusy(t *testing.T) {
 	tracker.set("ses_alive", "idle")
 
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, 20*time.Millisecond, time.Hour, lister, nil)
+	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 20 * time.Millisecond, Lister: lister})
 
 	// ses_stale is pruned on the first poll tick → hasAnyBusy false → restart.
 	require.Eventually(t, func() bool {
@@ -248,7 +250,7 @@ func TestSessionAwareRestartDecision_EmptyTracker_OpencodeAliveWithSessions_Rest
 	}
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 50*time.Millisecond, 200*time.Millisecond, lister, nil)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 50 * time.Millisecond, StallBound: 200 * time.Millisecond, Lister: lister})
 
 	assert.True(t, decided,
 		"empty tracker MUST restart immediately regardless of /session records — records are historical, not busy signal (design 0045 Change 4)")
@@ -268,7 +270,7 @@ func TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeUnreachable_Restar
 	}
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 5*time.Second, time.Hour, lister, nil)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 5 * time.Second, Lister: lister})
 
 	assert.True(t, decided,
 		"empty tracker + unreachable opencode must restart immediately — nothing to lose")
@@ -286,7 +288,7 @@ func TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeAliveNoSessions_Re
 	}
 
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 5*time.Second, time.Hour, lister, nil)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 5 * time.Second, Lister: lister})
 
 	assert.True(t, decided,
 		"alive opencode with zero sessions must restart immediately — nothing to lose")
@@ -298,7 +300,7 @@ func TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeAliveNoSessions_Re
 // immediate restart (no way to probe opencode, assume safe).
 func TestSessionAwareRestartDecision_NilTracker_NilLister_RestartsImmediately(t *testing.T) {
 	proc := &mockManagedProcess{}
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, nil, 5*time.Second, time.Hour, nil, nil)
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, nil, restartDecisionConfig{PollInterval: 5 * time.Second})
 
 	assert.True(t, decided,
 		"nil tracker with no lister must restart immediately — cannot probe opencode")
@@ -306,25 +308,26 @@ func TestSessionAwareRestartDecision_NilTracker_NilLister_RestartsImmediately(t 
 }
 
 // TestSessionAwareRestartDecision_FallbackDefaults_ZeroValues_UseDefaults verifies
-// the defensive fallbacks: maxDefer <= 0 and pollInterval <= 0 must fall back to
-// their defaults (defaultMaxDefer / restartIdleCheckInterval) rather than
-// disabling the mechanism or crashing. We cannot observe the 15m maxDefer
-// (design 0045 Change 5 — reduced from 2h) directly in a test, so we assert
-// the observable contract: a busy session DEFERS (does not immediately
-// restart, which would happen if maxDefer were 0 or negative), and once it
-// goes idle the restart fires via the default poll interval (proving
-// pollInterval=0 fell back to 5s, not infinity).
+// the defensive fallbacks: StallBound <= 0 and PollInterval <= 0 must fall back
+// to their defaults (restartStallBound / restartIdleCheckInterval) rather than
+// disabling the mechanism or crashing. We cannot observe the 30s stall bound
+// (#1342: derived from the #1312 lease-clock family) directly in a test, so we
+// assert the observable contract: a busy session DEFERS (does not immediately
+// restart, which would happen if StallBound were treated as 0 — every busy
+// session instantly stalled), and once it goes idle the restart fires via the
+// default poll interval (proving pollInterval=0 fell back to 5s, not
+// infinity).
 func TestSessionAwareRestartDecision_FallbackDefaults_ZeroValues_UseDefaults(t *testing.T) {
 	tracker := newSessionStatusTracker()
 	tracker.set("ses_1", "busy")
 
 	proc := &mockManagedProcess{}
-	// maxDefer=0 and pollInterval=0 — both must fall back to their defaults.
-	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 0, 0, nil, nil)
+	// StallBound=0 and pollInterval=0 — both must fall back to their defaults.
+	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{})
 
-	assert.False(t, decided, "busy session must DEFER even with zero maxDefer/pollInterval (fallbacks active)")
+	assert.False(t, decided, "busy session must DEFER even with zero StallBound/PollInterval (fallbacks active)")
 	assert.Equal(t, 0, proc.restartCount(),
-		"restart must not fire immediately — maxDefer=0 must not mean 'force now'")
+		"restart must not fire immediately — StallBound=0 must not mean 'force now'")
 
 	// Session goes idle — restart must fire via the default poll interval (5s),
 	// proving pollInterval=0 fell back. Within 2x the default poll is generous.
@@ -363,7 +366,7 @@ func TestSessionAwareRestartDecision_C2a_PruneDuringDeferredPollTick(t *testing.
 	}
 
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, 15*time.Millisecond, time.Hour, lister, nil)
+	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{PollInterval: 15 * time.Millisecond, Lister: lister})
 
 	require.Eventually(t, func() bool {
 		return proc.restartCount() == 1
@@ -384,7 +387,7 @@ func TestSessionAwareRestartDecision_H1a_ContextCancel_StopsGoroutine(t *testing
 
 	ctx, cancel := context.WithCancel(context.Background())
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, 20*time.Millisecond, time.Hour, nil, nil)
+	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{PollInterval: 20 * time.Millisecond})
 
 	// Cancel the context (simulate shutdown) while session is still busy.
 	cancel()
@@ -401,25 +404,32 @@ func TestSessionAwareRestartDecision_H1a_ContextCancel_StopsGoroutine(t *testing
 }
 
 // ---------------------------------------------------------------------------
-// H1b: maxDefer force-restarts a stuck-busy session
+// H1b (post-#1342): the force path force-restarts a wedged-busy session
 // ---------------------------------------------------------------------------
 
-// TestSessionAwareRestartDecision_H1b_MaxDefer_ForceRestarts verifies that
-// a session stuck busy (infinite loop, hung tool) eventually gets the
-// credential applied via the maxDefer force-restart. Pre-fix, the goroutine
-// deferred forever and the credential silently never applied.
-func TestSessionAwareRestartDecision_H1b_MaxDefer_ForceRestarts(t *testing.T) {
+// TestSessionAwareRestartDecision_H1b_Stalled_ForceRestarts verifies that
+// a session stuck busy with NO harness activity (infinite loop, hung
+// tool) eventually gets the credential applied via the #1342 force path
+// (stall detection → interrupt → grace → restart). The fixed 15-minute
+// maxDefer is retired; liveness is preserved through the progress-keyed
+// stall bound instead.
+func TestSessionAwareRestartDecision_H1b_Stalled_ForceRestarts(t *testing.T) {
 	tracker := newSessionStatusTracker()
-	tracker.set("ses_stuck", "busy") // never goes idle
+	tracker.set("ses_stuck", "busy") // never goes idle, never streams
 
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, 10*time.Millisecond, 80*time.Millisecond, nil, nil)
+	_ = makeSessionAwareRestartDecision(context.Background(), proc, tracker, restartDecisionConfig{
+		PollInterval: 10 * time.Millisecond,
+		StallBound:   80 * time.Millisecond,
+		GraceWindow:  10 * time.Millisecond,
+	})
 
-	// Session stays busy; maxDefer (80ms) must force the restart.
+	// Session stays busy and silent; the stall bound (80ms) must make it
+	// force-eligible and the force path must restart.
 	require.Eventually(t, func() bool {
 		return proc.restartCount() == 1
 	}, 500*time.Millisecond, 10*time.Millisecond,
-		"maxDefer must force-restart a stuck-busy session so the credential applies")
+		"the stalled-session force path must restart a wedged-busy session so the credential applies")
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +448,7 @@ func TestSessionAwareRestartDecision_H1c_WaitGroupTracked(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	proc := &mockManagedProcess{}
-	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, 20*time.Millisecond, time.Hour, nil, bgWg)
+	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{PollInterval: 20 * time.Millisecond, BgWg: bgWg})
 
 	// Goroutine is running (session busy). Cancel and Wait must return.
 	cancel()
@@ -480,7 +490,7 @@ func (m *mockManagedProcess) restartCount() int {
 func TestRelayKillFunc_IdleTracker_RestartsImmediately(t *testing.T) {
 	proc := &mockManagedProcess{}
 	tracker := newSessionStatusTracker()
-	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil)
+	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil, nil)
 	kill()
 	assert.Equal(t, 1, proc.restartCount(), "idle sessions — restart must fire immediately")
 }
@@ -489,13 +499,13 @@ func TestRelayKillFunc_BusyTracker_DefersRestart(t *testing.T) {
 	proc := &mockManagedProcess{}
 	tracker := newSessionStatusTracker()
 	tracker.set("ses_busy", "busy")
-	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil)
+	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil, nil)
 	kill()
 	assert.Equal(t, 0, proc.restartCount(),
 		"a busy session (e.g. waiting on a pending question) must not be killed by the relay injector")
 }
 
 func TestRelayKillFunc_NilProc_NoPanic(t *testing.T) {
-	kill := relayKillFunc(context.Background(), nil, nil, newSessionStatusTracker(), nil)
+	kill := relayKillFunc(context.Background(), nil, nil, newSessionStatusTracker(), nil, nil)
 	kill() // must not panic
 }

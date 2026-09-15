@@ -186,6 +186,7 @@ func runSidecarCommand(_ []string) int {
 	})
 	deps.client = client
 	deps.agentConfigWriter = agentConfigWriter
+	deps.interrupter = newSessionInterrupter(password)
 
 	// Epic 69 US-69.2: the sidecar runs the session-state authority too —
 	// same machinery, boot reseed only (the sidecar is not opencode's
@@ -288,6 +289,7 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 		restarter:            so.restarter(),
 		vitals:               so.vitals(fmtAgentAddr()),
 		sys:                  so.sysMetrics(),
+		pendingApply:         newPendingApplyTracker(),
 	}
 }
 
