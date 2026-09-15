@@ -1,9 +1,9 @@
 import { api } from "./client";
-import type { QuestionRequest, PermissionRequest } from "./types";
+import type { InputRequest } from "./types";
 
 export const inputApi = {
   listQuestions: (workspaceId: string) =>
-    api.get<QuestionRequest[]>(`/workspaces/${workspaceId}/question`),
+    api.get<InputRequest[]>(`/workspaces/${workspaceId}/question`),
 
   questionReply: (workspaceId: string, requestId: string, answers: string[][]) =>
     api.post<boolean>(`/workspaces/${workspaceId}/question/${requestId}/reply`, { answers }),
@@ -12,7 +12,7 @@ export const inputApi = {
     api.post<boolean>(`/workspaces/${workspaceId}/question/${requestId}/reject`, {}),
 
   listPermissions: (workspaceId: string) =>
-    api.get<PermissionRequest[]>(`/workspaces/${workspaceId}/permission`),
+    api.get<InputRequest[]>(`/workspaces/${workspaceId}/permission`),
 
   permissionReply: (workspaceId: string, requestId: string, reply: "once" | "always" | "reject", message?: string) =>
     api.post<boolean>(`/workspaces/${workspaceId}/permission/${requestId}/reply`, { reply, ...(message ? { message } : {}) }),

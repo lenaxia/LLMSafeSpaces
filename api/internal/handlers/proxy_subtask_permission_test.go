@@ -16,9 +16,9 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
-	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 // Subtask root-session resolution (US-65.x), ported to the US-69.11
@@ -84,8 +84,8 @@ func TestSubtaskPermission_BubblesToRootSession(t *testing.T) {
 	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_subtask", "ses_child"))
 
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req, ok := evt.Data.(agent.PermissionRequest)
-	require.True(t, ok, "event data should be *agent.PermissionRequest, got %T", evt.Data)
+	req, ok := evt.Data.(session.InputRequest)
+	require.True(t, ok, "event data should be session.InputRequest, got %T", evt.Data)
 	assert.Equal(t, "per_subtask", req.ID)
 	assert.Equal(t, "ses_child", req.SessionID, "SessionID stays the subtask")
 	assert.Equal(t, "ses_root", req.RootSessionID, "RootSessionID points to user-visible parent")
@@ -104,7 +104,7 @@ func TestSubtaskPermission_ABIProvidesRoot_NoWalk(t *testing.T) {
 	(&usageBridge{h: env.handler}).InputRequested("ws-1", req)
 
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	pr := evt.Data.(agent.PermissionRequest)
+	pr := evt.Data.(session.InputRequest)
 	assert.Equal(t, "ses_child", pr.SessionID)
 	assert.Equal(t, "ses_root", pr.RootSessionID)
 }
@@ -117,7 +117,7 @@ func TestSubtaskPermission_ResolutionDisabled_RootEqualsSelf(t *testing.T) {
 	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_x", "ses_x"))
 
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(agent.PermissionRequest)
+	req := evt.Data.(session.InputRequest)
 	assert.Equal(t, "ses_x", req.SessionID)
 	assert.Equal(t, "ses_x", req.RootSessionID, "fallback to self when resolution is disabled")
 }
@@ -140,7 +140,7 @@ func TestSubtaskPermission_TopLevelSession_RootEqualsSelf(t *testing.T) {
 	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_top", "ses_top"))
 
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(agent.PermissionRequest)
+	req := evt.Data.(session.InputRequest)
 	assert.Equal(t, "ses_top", req.SessionID)
 	assert.Equal(t, "ses_top", req.RootSessionID, "top-level session is its own root")
 }
@@ -168,7 +168,7 @@ func TestSubtaskQuestion_BubblesToRootSession(t *testing.T) {
 	})
 
 	evt := recvWithTimeout(t, sub, "agent.question")
-	req := evt.Data.(agent.QuestionRequest)
+	req := evt.Data.(session.InputRequest)
 	assert.Equal(t, "que_subtask", req.ID)
 	assert.Equal(t, "ses_child", req.SessionID)
 	assert.Equal(t, "ses_root", req.RootSessionID)
@@ -186,7 +186,7 @@ func TestSubtaskPermission_FetcherFails_FallsBackToSelf(t *testing.T) {
 	(&usageBridge{h: env.handler}).InputRequested("ws-1", abiPermission("per_x", "ses_unreachable"))
 
 	evt := recvWithTimeout(t, sub, "agent.permission")
-	req := evt.Data.(agent.PermissionRequest)
+	req := evt.Data.(session.InputRequest)
 	assert.Equal(t, "ses_unreachable", req.SessionID)
 	assert.Equal(t, "ses_unreachable", req.RootSessionID, "fallback to self when fetch fails")
 }
@@ -211,4 +211,4 @@ func TestSessionParentCache_InvalidateOnWorkspaceCacheFlush(t *testing.T) {
 }
 
 var _ = metav1.GetOptions{}
-var _ = (*agent.PermissionRequest)(nil)
+var _ session.InputRequest

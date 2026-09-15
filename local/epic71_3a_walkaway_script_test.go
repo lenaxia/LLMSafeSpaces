@@ -107,3 +107,26 @@ func TestEpic71WalkawayScript_ActWritePathRows(t *testing.T) {
 		t.Fatalf("walk-away script must pin the W7 dismissed re-click 409")
 	}
 }
+
+func TestEpic71WalkawayScript_W8NoRecordRow(t *testing.T) {
+	// 4a-2 r3: the reply-side S6 disposition row — a dead no-record
+	// reply 404s and nothing re-presents.
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "que_norecord") {
+		t.Fatalf("walk-away script must carry the W8 no-record row")
+	}
+}
+
+func TestEpic71WalkawayScript_W9ReplySideClearRow(t *testing.T) {
+	// 4a-2 r6: the reply-side S6/L2 leg — the record-carrying dead ask,
+	// answered, clears on the resolved event within L2.
+	src := mustRead(t, epic71WalkawayScript)
+	if !strings.Contains(src, "que_e71w1eee") || !strings.Contains(src, "reply-side L2") {
+		t.Fatalf("walk-away script must carry the W9 reply-side clear row")
+	}
+	// r7: the wait loop must grep the CLEAR's unique key (the bare id
+	// matches the whileAway re-presentation — W6's documented trap).
+	if !strings.Contains(src, `until grep -q '"reason":"answered"'`) {
+		t.Fatalf("W9's deadline loop must grep reason=answered (the unique clear signal)")
+	}
+}

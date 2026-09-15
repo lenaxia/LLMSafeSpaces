@@ -24,4 +24,10 @@ type WorkspaceSSEEvent struct {
 	// workspace (workspace SSE + user stream connecting together) must not
 	// consume each other's staged events. Empty on legacy markers.
 	SnapshotID string `json:"snapshot_id,omitempty"`
+	// WhileAway marks an inbox-only re-presentation (#1313 / 4a D3):
+	// the marker rides the platform envelope — the ABI InputRequest is
+	// agent-facing and stays clean of browser-only concerns. Only set
+	// on agent.question/agent.permission events whose ask is dead and
+	// re-presented from the inbox.
+	WhileAway *bool `json:"whileAway,omitempty"`
 }

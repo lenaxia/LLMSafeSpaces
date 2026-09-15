@@ -197,9 +197,12 @@ func TestInputResolved_SecondClickAfterResolution_Idempotent(t *testing.T) {
 	assertNoPendingEvents(t, userSub)
 }
 
-// TestInputResolved_SessionAction_NoRecord_PublishesEvent — the typed
-// actions route (MCP/SDK replies) publishes without a record too.
-func TestInputResolved_SessionAction_NoRecord_PublishesEvent(t *testing.T) {
+// TestInputResolved_SessionAction_NoRecord_DegradesToQuestionEvent — the
+// typed actions route (MCP/SDK replies) publishes without a record too.
+// #1302 item 3: the que_/per_ prefixes live behind the dialect seam, so a
+// record-less kind degrades to question.resolved (the bridge's documented
+// cross-replica degrade; the frontend removes by request id either way).
+func TestInputResolved_SessionAction_NoRecord_DegradesToQuestionEvent(t *testing.T) {
 	stub := newAnswerActStubPod(t, "")
 	env := newInputActEnv(t, inputActOpts{
 		terminus: true, podURL: stub.server.URL,
@@ -214,7 +217,7 @@ func TestInputResolved_SessionAction_NoRecord_PublishesEvent(t *testing.T) {
 		`{"answerQuestion":{"inputId":"per_mcp","reply":"once"}}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
-	evt := recvWithTimeout(t, userSub, "agent.permission.resolved")
+	evt := recvWithTimeout(t, userSub, "agent.question.resolved")
 	assert.Equal(t, "per_mcp", evt.RequestID)
 }
 

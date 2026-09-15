@@ -100,11 +100,12 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID, ses
 	if ans.Reply == "reject" {
 		disposition = inbox.StatusDismissed
 	}
-	kind := inbox.KindQuestion
-	if permissionIDPattern.MatchString(ans.InputID) {
-		kind = inbox.KindPermission
-	}
-	h.resolveInboxOnProxySuccess(c, workspaceID, sessionID, ans.InputID, kind, disposition)
+	// #1302 item 3: the que_/per_ prefixes live behind the dialect seam —
+	// the API does not know them. Without a record the kind degrades to
+	// question (the usageBridge's documented cross-replica degrade; the
+	// frontend removes by request id either way); a pending record's kind
+	// wins when one exists.
+	h.resolveInboxOnProxySuccess(c, workspaceID, sessionID, ans.InputID, inbox.KindQuestion, disposition)
 }
 
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the

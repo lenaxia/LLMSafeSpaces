@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { inputApi } from "../../api/input";
-import type { PermissionRequest } from "../../api/types";
+import type { InputRequest } from "../../api/types";
 import { AgentPrompt } from "./AgentPrompt";
 
 interface PermissionPromptProps {
   workspaceId: string;
-  request: PermissionRequest;
+  request: InputRequest & { whileAway?: boolean };
   onResolved: () => void;
 }
 
@@ -54,12 +54,12 @@ export function PermissionPrompt({ workspaceId, request, onResolved }: Permissio
         </div>
       )}
       <div className="text-sm mb-1">
-        The agent wants to: <strong>{formatPermission(request.permission)}</strong>
+        The agent wants to: <strong>{formatPermission(request.permission ?? "")}</strong>
       </div>
-      {request.patterns.length > 0 && (
+      {(request.patterns ?? []).length > 0 && (
         <div className="text-sm mb-3">
           <span className="text-muted-foreground">On: </span>
-          {request.patterns.map((p, i) => (
+          {(request.patterns ?? []).map((p, i) => (
             <code key={i} className="bg-gray-100 dark:bg-gray-800 px-1 rounded text-xs mr-1">{p}</code>
           ))}
         </div>

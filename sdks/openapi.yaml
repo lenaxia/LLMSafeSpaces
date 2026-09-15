@@ -1191,26 +1191,29 @@ paths:
       tags: [sessions]
       summary: List pending questions from the agent
       description: |
-        Proxies to the workspace pod. Questions originate from the agent
-        (opencode) when it needs user input. Response schema tracks upstream.
+        Returns the pending questions as the platform contract shape
+        (`InputRequest`, kind=question) via the agent adapter — root
+        session resolved, agent identifiers contained behind the seam
+        (#1302). A failed pending-set fetch is 503 non-authoritative,
+        never an authoritative empty.
       operationId: listQuestions
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
         "200":
-          description: Pending questions
+          description: Pending questions (contract InputRequest, kind=question)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
-                  description: Question object (schema tracks upstream opencode)
+                  $ref: "#/components/schemas/InputRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          description: Pending set unknown (non-authoritative; Retry-After present)
   /workspaces/{id}/input-snapshot:
     post:
       tags: [sessions]
@@ -1327,15 +1330,15 @@ paths:
       tags: [sessions]
       summary: Reply to a pending question
       description: >-
-        Proxies the reply body to the workspace pod. Request ID must match
-        `^que_[a-zA-Z0-9]+$`. When the ask is no longer live but its
-        unanswered-question inbox record is pending (#1313), the reply
+        Answers a live question (routed through agentd Act; request IDs
+        conform to the generic contract `[a-zA-Z0-9._-]{1,128}`). When
+        the ask is no longer live but its unanswered-question inbox
+        record is pending (#1313), the reply
         composes a Q&A user message through the standard delivery path
         instead: 202 with `{status: "queued", clientMessageID, messageID}`.
         The ask-scoped clientMessageID (`inbox-{requestID}-answer`) makes
         duplicate clicks idempotent.
       operationId: replyQuestion
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1343,14 +1346,14 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^que_[a-zA-Z0-9]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              description: Reply body (forwarded to agent — schema tracks upstream)
+              description: The question answers ({"answers":[[...]]}) or the permission decision ({"reply":"once"|"always"|"reject", "message"?}).
       responses:
         "200":
           description: Reply accepted
@@ -1373,9 +1376,9 @@ paths:
   /workspaces/{id}/question/{requestID}/reject:
     post:
       tags: [sessions]
-      summary: Reject a pending question
+      summary: Reject (dismiss) a pending question
+      description: The dismiss exit — reply=reject through agentd Act in the authority regime (adapter RejectInput under flag-off).
       operationId: rejectQuestion
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1383,7 +1386,7 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^que_[a-zA-Z0-9]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       responses:
         "200":
           description: Rejection accepted
@@ -1397,20 +1400,21 @@ paths:
     get:
       tags: [sessions]
       summary: List pending permission requests from the agent
+      description: |
+        Returns the pending permissions as the platform contract shape
+        (`InputRequest`, kind=permission) via the agent adapter (#1302).
       operationId: listPermissions
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
       responses:
         "200":
-          description: Pending permissions
+          description: Pending permissions (contract InputRequest, kind=permission)
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
-                  description: Permission object (schema tracks upstream opencode)
+                  $ref: "#/components/schemas/InputRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1420,15 +1424,15 @@ paths:
       tags: [sessions]
       summary: Reply to a pending permission request
       description: >-
-        Proxies the reply body to the workspace pod. When the ask is no
-        longer live but its inbox record is pending (#1313), the late
+        Answers a live permission request (routed through agentd Act).
+        When the ask is no longer live but its inbox record is pending
+        (#1313), the late
         decision lands as guidance-in-history through the standard
         delivery path: 202 with
         `{status: "queued", clientMessageID, messageID}`. The original
         permission already terminated not-granted; the message informs
         future turns.
       operationId: replyPermission
-      x-opencode-proxy: true
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
         - name: requestID
@@ -1436,14 +1440,14 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^per_[a-zA-Z0-9_]+$'
+            pattern: '^[a-zA-Z0-9._-]{1,128}$'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              description: Reply body (forwarded to agent — schema tracks upstream)
+              description: The question answers ({"answers":[[...]]}) or the permission decision ({"reply":"once"|"always"|"reject", "message"?}).
       responses:
         "200":
           description: Reply accepted
