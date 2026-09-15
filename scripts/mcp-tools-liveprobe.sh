@@ -95,17 +95,25 @@ fi
 # cleanup
 curl -s -o /dev/null -u "opencode:$PW" -X DELETE "$OC/session/$S"
 
-echo "---"
-echo "liveprobe: $PASS pass, $FAIL fail"
-[ "$FAIL" = 0 ]
 
 # --- send_message + abort_session probes (PR #1382) ---
 S2=$(curl -s -u "opencode:$PW" -X POST "$OC/session" -H 'Content-Type: application/json' -d '{"title":"liveprobe-msg"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' 2>/dev/null)
 [ -n "$S2" ] && note 0 "send_message target session created" || note 1 "send_message target create"
 if [ -n "$S2" ]; then
-  ST=$(curl -s -u "opencode:$PW" "$OC/session/status" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('$S2',{}).get('type','idle'))" 2>/dev/null)
-  # abort on an idle session = server-side no-op 2xx (the seam's consolidated Client.Abort)
+  # send_message's wire path: POST /session/{id}/message on an IDLE target
+  # completes synchronously (200 = accepted + turn ran; the exact reply
+  # text is model-dependent and not asserted).
+  DM=$(curl -s -u "opencode:$PW" "$OC/config" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("model",""))' 2>/dev/null)
+  MC=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "$OC/session/$S2/message" -H 'Content-Type: application/json' \
+    -d "{\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly: PROBE-OK\"}],\"model\":{\"modelID\":\"${DM#*/}\",\"providerID\":\"${DM%%/*}\"}}" --max-time 120)
+  [ "$MC" = 200 ] && note 0 "send_message idle delivery (POST /message 200)" || note 1 "send_message idle delivery (HTTP $MC)"
+  # abort on an idle session = server-side no-op 2xx (the consolidated Client.Abort)
   AC=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "$OC/session/$S2/abort" -H 'Content-Type: application/json' -d '{}' --max-time 10)
-  [ "$AC" = 200 ] || [ "$AC" = 204 ] && note 0 "abort_session idle no-op (HTTP $AC)" || note 1 "abort_session idle no-op (HTTP $AC)"
+  { [ "$AC" = 200 ] || [ "$AC" = 204 ]; } && note 0 "abort_session idle no-op (HTTP $AC)" || note 1 "abort_session idle no-op (HTTP $AC)"
   curl -s -o /dev/null -u "opencode:$PW" -X DELETE "$OC/session/$S2"
 fi
+
+echo "---"
+echo "liveprobe: $PASS pass, $FAIL fail"
+[ "$FAIL" = 0 ] && exit 0
+exit 1

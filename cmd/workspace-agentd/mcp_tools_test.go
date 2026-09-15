@@ -38,15 +38,17 @@ func withAgentServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
 type fakeAgent struct {
 	mu sync.Mutex
 
-	nextID     int
-	titles     map[string]string // id -> title
-	renamed    map[string]string
-	deleted    []string
-	aborted    []string
-	sentBodies map[string][]map[string]any // id -> decoded message bodies
-	summaries  map[string]map[string]string
-	busySet    map[string]bool
-	models     map[string]string // session -> "prov/model"
+	nextID       int
+	titles       map[string]string // id -> title
+	renamed      map[string]string
+	deleted      []string
+	aborted      []string
+	msgArrived   map[string][]map[string]any
+	abortDropped map[string]bool
+	sentBodies   map[string][]map[string]any // id -> decoded message bodies
+	summaries    map[string]map[string]string
+	busySet      map[string]bool
+	models       map[string]string // session -> "prov/model"
 
 	catalogImage map[string]bool // "prov/model" -> image input
 
@@ -64,6 +66,8 @@ func newFakeAgent() *fakeAgent {
 		sentBodies:   map[string][]map[string]any{},
 		summaries:    map[string]map[string]string{},
 		busySet:      map[string]bool{},
+		msgArrived:   map[string][]map[string]any{},
+		abortDropped: map[string]bool{},
 		models:       map[string]string{},
 		catalogImage: map[string]bool{"p/vision": true, "p/text": false},
 	}
@@ -125,15 +129,29 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 					w.WriteHeader(http.StatusBadGateway)
 					return
 				}
+				// Arrival sentinel: visible to tests BEFORE the busy wait,
+				// so a test can prove the detached POST actually arrived
+				// (and was held) rather than passing vacuously.
+				f.msgArrived[id] = append(f.msgArrived[id], body)
 				// Real wire shape: a BUSY session blocks the POST until
 				// the turn ends, then delivers as the next turn (L2-proven
-				// boundary delivery). The fake honors busySet the same
-				// way so L1 pins the same semantics — bounded wait, the
-				// test clears the busy flag to stand in for turn end.
+				// boundary delivery). ABORT during the wait drops the
+				// queued message (V1 abort is destructive to queued input
+				// — pinned by TestMCPSendMessage_AbortDropsQueued). Wait
+				// exhaustion while still busy refuses rather than
+				// delivering late.
+				dropped := false
 				for i := 0; i < 200 && f.busySet[id]; i++ {
 					f.mu.Unlock()
 					time.Sleep(25 * time.Millisecond)
 					f.mu.Lock()
+					if f.abortDropped[id] {
+						dropped = true
+					}
+				}
+				if dropped || f.busySet[id] {
+					w.WriteHeader(http.StatusConflict)
+					return
 				}
 				f.sentBodies[id] = append(f.sentBodies[id], body)
 				if m, ok := body["model"].(map[string]any); ok {
@@ -156,6 +174,7 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 				// whole request (locked at entry); re-locking deadlocks.
 				f.aborted = append(f.aborted, id)
 				f.busySet[id] = false
+				f.abortDropped[id] = true // queued input is dropped (real V1 semantics)
 				w.WriteHeader(http.StatusOK)
 			default: // rename
 				f.renamed[id], _ = body["title"].(string)
@@ -185,8 +204,10 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(list)
 		case r.Method == http.MethodGet && path == "/session/status":
 			out := map[string]map[string]string{}
-			for id := range f.busySet {
-				out[id] = map[string]string{"type": "busy"}
+			for id, busy := range f.busySet {
+				if busy {
+					out[id] = map[string]string{"type": "busy"}
+				}
 			}
 			_ = json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodGet && strings.Contains(path, "/context"):
@@ -1086,8 +1107,13 @@ func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	assert.Contains(t, out, "delivering_after_current_turn")
 
 	// While the target stays busy, the detached POST blocks server-side
-	// — no delivery may land (the L2 test proves this shape on the real
-	// binary; the L1 fake mirrors it).
+	// — it must ARRIVE (sentinel) but never DELIVER (the L2 test proves
+	// this shape on the real binary; the L1 fake mirrors it).
+	require.Eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(f.msgArrived[s1]) == 1
+	}, 2*time.Second, 25*time.Millisecond, "the detached POST must arrive and be held")
 	require.Never(t, func() bool { return len(f.sentFor(s1)) > 0 }, 300*time.Millisecond, 50*time.Millisecond,
 		"no delivery while the target is busy")
 
@@ -1226,4 +1252,48 @@ func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
 	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please")
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
+}
+
+// The tools' one interaction: a message queued mid-turn is DROPPED when
+// the target is aborted (V1 abort is destructive to queued input — the
+// description tells the agent to re-send). The fake models the drop;
+// the pin keeps the warning honest.
+func TestMCPSendMessage_AbortDropsQueued(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("busy-abort")
+	f.busySet[s1] = true
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "will be dropped")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(f.msgArrived[s1]) == 1
+	}, 2*time.Second, 25*time.Millisecond, "message must be queued (held)")
+
+	_, err = mcpAbortSession(context.Background(), mcpTestPassword, s1)
+	require.NoError(t, err)
+
+	require.Never(t, func() bool { return len(f.sentFor(s1)) > 0 }, 500*time.Millisecond, 50*time.Millisecond,
+		"the queued message must NOT deliver after abort — it was dropped")
+}
+
+// compact with omitted session_id resolves the single running session;
+// a RETRYING session counts as running (retry-as-busy convention).
+func TestMCPCompact_OmittedID_ResolvesRetryingSession(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("backing-off")
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session/status" {
+			fmt.Fprintf(w, `{"%s":{"type":"retry","attempt":3}}`, s1)
+			return
+		}
+		f.handler(t)(w, r)
+	})
+
+	out, err := mcpCompact(context.Background(), mcpTestPassword, "", "")
+	require.NoError(t, err)
+	assert.Contains(t, out, "scheduled", "retrying target takes the busy path (detached summarize)")
+	assert.Contains(t, out, s1)
 }

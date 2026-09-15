@@ -500,7 +500,7 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 		return "", fmt.Errorf("failed to read session status: %w", err)
 	}
 
-	if busy[sessionID] == "busy" {
+	if busy[sessionID] == "busy" || busy[sessionID] == "retry" {
 		// Detached: completes at the turn boundary; the tool must not
 		// wait (the waiting turn may be the caller's own).
 		go func() {
@@ -535,9 +535,11 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 	if err != nil {
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
 	}
+	// retry-as-busy, matching mcpSendMessage/session_metadata: a session
+	// in backoff is definitionally running.
 	var busyIDs []string
 	for id, st := range busy {
-		if st == "busy" {
+		if st == "busy" || st == "retry" {
 			busyIDs = append(busyIDs, id)
 		}
 	}
@@ -629,8 +631,9 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 
 // mcpAbortSession stops a session's current turn via the consolidated
 // V1 abort (Client.Abort — the same method the API proxy's interrupt
-// path uses). Non-destructive to history and the delivery ledger;
-// aborting an idle session is a server-side no-op.
+// path uses). History survives; the in-flight turn is cut DESTRUCTIVELY
+// — any queued-but-undelivered message may be dropped (the description
+// tells the agent to re-send). Aborting an idle session is a no-op.
 func mcpAbortSession(ctx context.Context, password, sessionID string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

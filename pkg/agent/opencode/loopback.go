@@ -32,7 +32,7 @@ package opencode
 //       "not available yet"). On a BUSY session it queues server-side
 //       and completes at the turn boundary (live-proven: 200 after the
 //       generation finished).
-//   - GET  /session/status              → {sesID: {type:"busy"|"idle"}}
+//   - GET  /session/status              → {sesID: {type:"busy"|"idle"|"retry"}} (retry = backing off after stream errors; treat as busy)
 //   - GET  /session/{id}/message?limit= → page + X-Next-Cursor header
 //   - GET  /api/session/{id}/context    → {data: [{id,time,text,type}]}
 //   - GET  /config/providers            → per-model limit.context +

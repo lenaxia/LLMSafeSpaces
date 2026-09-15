@@ -23,11 +23,14 @@ managed by another session."
   see the detached goroutine's error). No model override, no images —
   text only; the target runs its own configured default.
 - **`abort_session`** `{session_id}` — stops the target's current turn
-  via the V1 abort route (the only interrupt route on pinned agents
-  >= 1.18.10; the actor already pins it for ACTION_TYPE_INTERRUPT).
-  Non-destructive: history and the delivery ledger are untouched; idle
-  targets are a no-op. Own-session excluded by description (you cannot
-  abort your way out of your own turn).
+  via the ONE consolidated V1 abort (`Client.Abort`, now sessionID-
+  validated — hardening the API-proxy interrupt path that shares it).
+  History survives; the in-flight turn is cut DESTRUCTIVELY: queued-but-
+  undelivered messages (e.g. a send_message waiting at the boundary) may
+  be DROPPED — disclosed in the description, pinned by
+  `TestMCPSendMessage_AbortDropsQueued`; idle targets are a no-op.
+  Own-session excluded by description (you cannot abort your way out of
+  your own turn).
 
 ## Assumptions stated, then validated (review round 1 corrected the record)
 
@@ -59,11 +62,22 @@ managed by another session."
   and body-bearing errors; the tool uses it; seam pins retargeted.
 - Finding 4: test plan scope corrected to NINE tools; §2 busy-row
   reconciled with the L2 proof.
-- L3: liveprobe gained send_message/abort probes (9 checks green).
+- L3: liveprobe gained a REAL send_message probe (idle POST /message
+  200) + abort no-op; the exit gate moved AFTER all probes (the round-3
+  append had left the tally before them, breaking the exit contract) —
+  10/10 green, exit code correct.
+- Retry-as-busy: mcpSendMessage, session_metadata, mcpCompact, AND
+  resolveSingleBusySession all treat "retry" as running (the resolver was
+  the round-4 straggler); pinned by RetryStatusTreatedAsBusy and
+  OmittedID_ResolvesRetryingSession.
+- L1 fake: arrival sentinel + abort-drops-queued + refuse-on-wait-
+  exhaustion (no vacuous passes); busy test asserts arrive-then-held.
+- L2 boundary test: count/order assertions replace the tautological
+  MOCK-REPLY contains.
 
 ## Tests
 
-- Seam: `TestSeam_SessionAbort_{ExactWire,Non2xx,InvalidID}`.
+- Seam: `TestSeam_Abort_{ExactWire,Non2xx,InvalidID}`.
 - Tools: `TestMCPSendMessage_{IdleTarget,BusyTargetQueues,UnknownSession,MissingArgs}`,
   `TestMCPAbortSession_{HappyPath,MissingID,Non2xx}`.
 - L1 full-stack JSON-RPC: `TestMCPHandler_{SendMessage,AbortSession}FullStack`.

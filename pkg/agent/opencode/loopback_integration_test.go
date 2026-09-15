@@ -437,10 +437,30 @@ func TestLoopbackL2_BusyMessageDeliversAtBoundary(t *testing.T) {
 		t.Fatal("message POST never completed — the /message route does NOT deliver at the boundary; send_message's busy semantics must be redesigned")
 	}
 
-	// The queued message actually became the next turn: its text is the
-	// last user message and an assistant reply exists.
+	// The queued message actually became the next turn: count user and
+	// assistant messages (every mock completion replies identically, so
+	// reply TEXT is tautological — ordering and counts are the real
+	// assertion: 2 user turns, 2 completed assistant turns).
 	body, _, err := client.SessionMessagesRaw(ctx, id, 10, "")
 	require.NoError(t, err)
-	assert.Contains(t, string(body), "queued message: reply QUEUED-OK", "the queued message must be persisted as the next user turn")
-	assert.Contains(t, string(body), "MOCK-REPLY", "the target session must have answered the queued message")
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+		} `json:"info"`
+	}
+	require.NoError(t, json.Unmarshal(body, &msgs))
+	userTurns, assistantTurns := 0, 0
+	sawQueued := false
+	for _, m := range msgs {
+		switch m.Info.Role {
+		case "user":
+			userTurns++
+		case "assistant":
+			assistantTurns++
+		}
+	}
+	sawQueued = strings.Contains(string(body), "queued message: reply QUEUED-OK")
+	assert.Equal(t, 2, userTurns, "two user turns: the original + the queued message")
+	assert.Equal(t, 2, assistantTurns, "the queued message was ANSWERED as its own turn")
+	assert.True(t, sawQueued, "the queued message must be persisted as the next user turn")
 }
