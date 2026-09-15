@@ -37,9 +37,10 @@ interface ChatHistoryErrorBannerProps {
  *   1. `extractAgentErrorMessage(body)` — the top-level allowlisted
  *      `message` the API promotes via EnrichChatErrorBody on the
  *      POST-prompt path, and the API's own structured `message`
- *      (e.g. 503 recovery bodies).
+ *      (e.g. the 507 disk-full body from proxy_handlers.go).
  *   2. `body.error` — the API's own error responses (e.g. the GET
- *      history 502 "failed to fetch history" from proxy_handlers.go).
+ *      history 502 "failed to fetch history" and the 503
+ *      "workspace not ready" from proxy_adapter_crosscutting.go).
  *   3. `err.message` from the Error base class — network-layer failures
  *      where there is no body at all (fetch threw). Note: for an
  *      ApiClientError this equals `body.error` because the constructor
@@ -63,7 +64,8 @@ export function ChatHistoryErrorBanner({
   const isRecovering = status === 503 && (reason === "agent_unreachable" || reason === "agent_restarting");
 
   if (error instanceof ApiClientError) {
-    // Prefer the API's structured `message` field (always present on 503s).
+    // Prefer the API's structured `message` field (e.g. the 507
+    // disk-full body) when present; absent on the {error}-only bodies.
     if (typeof error.body?.message === "string" && error.body.message.length > 0) {
       message = error.body.message;
     } else {

@@ -79,3 +79,8 @@ Findings validated against source before fixing:
 - **r1-f3 (reason-keyed `isRecovering` branch has no API producer)** — noted by the second-pass reviewer. Branch KEPT (frontend display logic, outside #1303's four locations); its two coverage rows relabeled as defensive-branch-only with the no-producer fact and the #796 cross-reference, matching the `"retry"` flag treatment. Also flagged for #796: `useChatStream.ts`'s 503 `err.body?.message` read (same no-producer family).
 
 Gates re-run post-remediation: vitest **1835/1835** (168 files), tsc **0**, Playwright `history-error-banner.spec.ts` **2/2**.
+
+## Review r2 remediation (PR #1378, round-2 REQUEST_CHANGES → fixed)
+
+- **r2-F1 (phantom shapes in freshly written source docs)** — REAL. `ChatHistoryErrorBanner.tsx` hierarchy doc said "e.g. 503 recovery bodies" for the structured `message` (no 503 body carries `message`; the only structured-`message` body is the 507 disk-full at `proxy_handlers.go:916-924` — verified) and its inline comment claimed `message` "always present on 503s" (false); `agentErrorRef.ts` carried the same phantom plus the dead `workspace connection failed` example (zero Go producers — verified by grep). Fixed: docs now cite only real bodies (507 disk-full for structured `message`; GET-history 502 `failed to fetch history` and the 503 `workspace not ready` for `body.error`); inline comment corrected.
+- **Seam gate extended per the review's suggestion**: `ChatHistoryErrorBanner.tsx` added to the guarded files; new forbidden pattern `workspace connection failed` (the string that demonstrably resurfaced). Mutation-verified again: injecting the string into the banner → gate fails 1/5; reverted → green. Suite: vitest **1836/1836** (168 files), tsc **0**.

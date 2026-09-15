@@ -8,9 +8,11 @@ import { fileURLToPath } from "node:url";
  * and must not come back. The API authors every error body on the
  * message routes (#828 deleted the raw passthrough; #1302 finished the
  * REST migration), so no client code may parse a nested `data.*`
- * envelope, revive the old helper name, or re-document the dead
- * passthrough as live behavior. The repolint-side lexicon guard is #1305's
- * lane; this pins the frontend seam until then.
+ * envelope, revive the old helper name, re-document the dead
+ * passthrough as live behavior, or cite the dead 503 body string in
+ * source docs (it resurfaced once — r1 review finding). The
+ * repolint-side lexicon guard is #1305's lane; this pins the frontend
+ * seam until then.
  *
  * The gate reads the real files and fails if one is missing — a renamed
  * or moved file cannot pass silently.
@@ -21,6 +23,7 @@ const guardedFiles = [
   "../../api/agentErrorRef.ts",
   "../../api/types.ts",
   "../../hooks/useSessionTitle.ts",
+  "../chat/ChatHistoryErrorBanner.tsx",
 ] as const;
 
 // Patterns whose presence means the nested-envelope coupling returned.
@@ -40,6 +43,13 @@ const forbiddenPatterns: Array<{ pattern: RegExp; why: string }> = [
   {
     pattern: /proxied through|passed through verbatim/,
     why: "documenting the deleted raw passthrough as live",
+  },
+  {
+    // r1 review finding: this string resurfaced in freshly written doc
+    // comments after deletion — no Go handler authors it (the real 503
+    // body is {"error":"workspace not ready",...}).
+    pattern: /workspace connection failed/,
+    why: "the dead 503 body string (zero API producers)",
   },
 ];
 

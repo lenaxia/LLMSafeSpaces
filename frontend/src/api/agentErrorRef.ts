@@ -27,11 +27,11 @@ export function extractAgentErrorRef(body: unknown): string | undefined {
  * the top level of an API error body (same extraction as
  * extractAgentErrorRef): the allowlisted `message` the API promotes via
  * EnrichChatErrorBody, or the API's own structured `message` field
- * (e.g. 503 recovery bodies).
+ * (e.g. the 507 disk-full body, proxy_handlers.go).
  *
- * The API's own error responses like `{ error: "workspace connection
- * failed" }` use the `error` field — callers should fall back to
- * `body.error` or `err.message` (Error base class) when this helper
+ * The API's own error responses like `{"error": "workspace not ready"}`
+ * use the `error` field — callers should fall back to `body.error`
+ * or `err.message` (Error base class) when this helper
  * returns undefined.
  */
 export function extractAgentErrorMessage(body: unknown): string | undefined {
