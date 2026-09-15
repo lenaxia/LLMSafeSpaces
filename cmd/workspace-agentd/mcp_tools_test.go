@@ -125,6 +125,16 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 					w.WriteHeader(http.StatusBadGateway)
 					return
 				}
+				// Real wire shape: a BUSY session blocks the POST until
+				// the turn ends, then delivers as the next turn (L2-proven
+				// boundary delivery). The fake honors busySet the same
+				// way so L1 pins the same semantics — bounded wait, the
+				// test clears the busy flag to stand in for turn end.
+				for i := 0; i < 200 && f.busySet[id]; i++ {
+					f.mu.Unlock()
+					time.Sleep(25 * time.Millisecond)
+					f.mu.Lock()
+				}
 				f.sentBodies[id] = append(f.sentBodies[id], body)
 				if m, ok := body["model"].(map[string]any); ok {
 					if pid, ok := m["providerID"].(string); ok {
@@ -1074,9 +1084,24 @@ func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests")
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
+
+	// While the target stays busy, the detached POST blocks server-side
+	// — no delivery may land (the L2 test proves this shape on the real
+	// binary; the L1 fake mirrors it).
+	require.Never(t, func() bool { return len(f.sentFor(s1)) > 0 }, 300*time.Millisecond, 50*time.Millisecond,
+		"no delivery while the target is busy")
+
+	// Stand in for the busy turn ending: the blocked POST then delivers
+	// at the boundary.
+	f.mu.Lock()
+	f.busySet[s1] = false
+	f.mu.Unlock()
+
 	require.Eventually(t, func() bool {
 		return len(f.sentFor(s1)) == 1
-	}, 5*time.Second, 50*time.Millisecond, "delivery POST fires detached")
+	}, 7*time.Second, 50*time.Millisecond, "delivery lands once the turn ends (boundary)")
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	assert.Equal(t, "next: run the tests", parts[0].(map[string]any)["text"])
 }
 
 func TestMCPSendMessage_UnknownSession(t *testing.T) {
@@ -1123,9 +1148,15 @@ func TestMCPHandler_SendMessageFullStack(t *testing.T) {
 	assert.Nil(t, result["isError"], "%v", result)
 	content := result["content"].([]any)
 	assert.Contains(t, content[0].(map[string]any)["text"], "delivering_after_current_turn")
+	// End the fake busy turn so the blocked POST delivers at the boundary.
+	f.mu.Lock()
+	f.busySet[s1] = false
+	f.mu.Unlock()
 	require.Eventually(t, func() bool {
 		return len(f.sentFor(s1)) == 1
-	}, 5*time.Second, 50*time.Millisecond)
+	}, 7*time.Second, 50*time.Millisecond)
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	assert.Equal(t, "pivot to the fallback design", parts[0].(map[string]any)["text"])
 }
 
 // --- abort_session --------------------------------------------------------

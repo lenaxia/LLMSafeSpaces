@@ -21,9 +21,12 @@ package opencode
 //     · model: the OBJECT {modelID, providerID} — the string form 400s
 //       (#909). Overrides the session default for THIS prompt only.
 //     · Synchronous: returns the completed assistant message. A BUSY
-//       session BLOCKS the call until its turn ends (live-proven, no
-//       409/queue) — callers must never target a session whose turn is
-//       waiting on them (deadlock by construction).
+//       session BLOCKS the call until its turn ends, then the message
+//       delivers as the next turn (no 409; queue-at-boundary — proven
+//       by TestLoopbackL2_BusyMessageDeliversAtBoundary). Callers must
+//       never AWAIT a call to a session whose turn is waiting on them
+//       (deadlock by construction); detached delivery is safe and is
+//       how send_message works.
 //   - POST /session/{id}/summarize      {providerID, modelID} → 200 "true"
 //     · The working compact on 1.18.x (the V2 /api/.../compact is 503
 //       "not available yet"). On a BUSY session it queues server-side

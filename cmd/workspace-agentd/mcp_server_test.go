@@ -880,9 +880,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "abort_session in tools/list")
 		for _, want := range []string{
 			"Stop a session's current turn",      // the verb and scope
-			"history and recorded work are kept", // non-destructive
+			"history and recorded work are kept", // non-destructive to history
 			"runaway",                            // trigger: runaway session
-			"freeing a busy session",             // pairing with send_message queueing
+			"queued for the target",              // abort x queued-message interaction named
+			"may be dropped",                     // destructive-to-queue disclosed
+			"re-send anything that mattered",     // the remediation path
 			"idle session is a harmless no-op",   // idempotence
 			"cannot abort your way out",          // own-session exclusion
 			"create_session / send_message",      // management family pointers
