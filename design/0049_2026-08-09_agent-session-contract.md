@@ -166,7 +166,7 @@ The `pkg/agent.Adapter` interface folds the existing `Dialect` + `AgentRuntime` 
 
 - **Sessions (5):** Create, Get, List, Rename, Delete
 - **Messaging (4):** Send, SendAsync, Abort, GetHistory
-- **Streaming/Input (3):** Stream, ListPending, Resolve
+- **Streaming/Input (3):** Stream, ListPending, RejectInput (the legacy generic `Resolve` was deleted with the S1 migration — #1371; question/permission replies are typed (`AnswerQuestion`/`ReplyPermission`) and the API writes through agentd `Act`)
 - **Config/Credentials (3):** ApplyConfig (returns `restartRequired bool`), FormatProviderConfig, ValidateCredentials
 - **Models (2):** ListModels, SetModel
 - **Capabilities + pass-through (3):** Capabilities, Rewind, Fork
@@ -202,7 +202,7 @@ The 20s stale window, the one-shot injector, the `annotateModels` guard — all 
 | Hack | Fate |
 |---|---|
 | `api/internal/handlers/proxy_filter*.go` (patch-part stripping, `?verbose`) | **Deleted** — `FileChange` is structured; snapshot.files dropped |
-| `proxy_input.go`, `proxy_permissions.go` translation logic | **Folded into adapter** `ListPending`/`Resolve` |
+| `proxy_input.go`, `proxy_permissions.go` translation logic | **Folded into adapter** `ListPending`; replies go through agentd `Act` (`AnswerInputAction`) — `Adapter.Resolve` deleted (#1371) |
 | `proxy_handlers.go:205-483` (history fetch + paginate + opencode-shape parse) | **Replaced by `adapter.GetHistory`** returning `[]Message` |
 | `pkg/agent/dialect.go` path/classification methods | **Private to opencode adapter** |
 | opencode-specific doc comments on `SessionListItem.ParentID` / `ContextUsed` (`pkg/types/session.go:60`) | **Genericized** |

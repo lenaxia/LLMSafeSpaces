@@ -1396,6 +1396,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "502":
+          description: Reject failed at the harness (flag-off adapter regime)
+        "503":
+          description: Input pending set unknown (non-authoritative; Retry-After present)
   /workspaces/{id}/permission:
     get:
       tags: [sessions]
@@ -1419,6 +1423,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "503":
+          description: Pending set unknown (non-authoritative; Retry-After present)
   /workspaces/{id}/permission/{requestID}/reply:
     post:
       tags: [sessions]

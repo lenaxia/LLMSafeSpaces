@@ -356,6 +356,7 @@ func TestRequestInputSnapshot_FiresFlight(t *testing.T) {
 
 	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/input-snapshot", nil)
 	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Empty(t, w.Body.String(), "snapshot 202 must carry no body (the published contract — same pin family as the reply/reject rows)")
 
 	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
 	assert.NotEmpty(t, begin.SnapshotID, "begin marker must carry the flight ID")

@@ -97,7 +97,7 @@ async function setupAPIMocks(page: Page, opts?: { sessionEventsFirstBody?: strin
     await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
   });
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/input-snapshot`, async (route: Route) => {
-    await route.fulfill({ status: 202, contentType: "application/json", body: JSON.stringify({ status: "snapshot requested" }) });
+    await route.fulfill({ status: 202 });
   });
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/models`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], currentModel: "" }) });

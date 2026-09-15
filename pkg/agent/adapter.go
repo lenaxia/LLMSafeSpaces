@@ -144,11 +144,6 @@ type Adapter interface {
 	// non-authoritative so they cannot wipe live pending prompts.
 	ListPending(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 
-	// Resolve settles a pending InputRequest with the user's reply.
-	// For questions, reply carries the selected option(s) or custom
-	// text. For permissions, reply carries "allow" / "deny" (the
-	// adapter translates to the agent's accept/reject endpoints).
-
 	// RejectInput dismisses a pending InputRequest without an answer
 	// (#1313): questions go to the agent's reject endpoint, permissions
 	// reply "reject". The harness terminates the tool call with its
@@ -157,9 +152,7 @@ type Adapter interface {
 
 	// AnswerQuestion answers a pending question with the user's option
 	// selections / custom text in the question-reply schema
-	// ({answers: string[][]}). Distinct from Resolve: the question reply
-	// endpoint is additionalProperties:false — a {reply: string} body is
-	// schema-rejected, so question answers cannot ride Resolve.
+	// ({answers: string[][]}).
 	AnswerQuestion(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error
 
 	// ReplyPermission answers a pending permission with the decision

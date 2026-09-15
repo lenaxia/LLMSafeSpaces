@@ -147,3 +147,18 @@ None.
 
 - `go test -timeout 300s -race ./pkg/agent/... ./api/internal/handlers/` — ok
 - `go vet ./api/... ./pkg/...` clean; `go build ./...` ok; Python 124 passed; TS/Java/Go SDK suites unchanged-and-green from r1
+
+## Review r3 remediation
+
+**f1 (RequestInputSnapshot 202-with-body — the third divergence-class endpoint):** `c.Status(http.StatusAccepted)` replaces the `{"status":"snapshot requested"}` body; the Playwright stub that mimicked the body simplified to a bare 202. Pinned: `TestRequestInputSnapshot_FiresFlight` asserts the empty body (red-first observed).
+
+**f2 (spec completeness, landed here):** the reject row documents its real 503 (unknown pending set, non-authoritative) and 502 (flag-off adapter failure); the permission-list row documents its 503 — matching the question-list row's existing documentation. `make -C sdks validate` green.
+
+**Style residues (Rule 5):** the orphaned `Resolve` doc comment removed from `pkg/agent/adapter.go`; `AnswerQuestion`'s "Distinct from Resolve" rationale dropped; the dead `fakeAdapter.Resolve` stub deleted from `pkg/agent/adapter_test.go`.
+
+**Stale design docs (the seam cleanup landed here, so they're corrected here):** `design/0049` (Streaming/Input surface list + the translation-fold table) and the epic-65 README adapter-call row now state the `Resolve` deletion and the Act write path.
+
+## Tests run (r3)
+
+- `go test -timeout 600s -race` on `./api/internal/handlers/ ./pkg/agent/... ./pkg/types/ ./pkg/mcp/` — ok
+- `make -C sdks validate` valid; `make repolint` all checks passed; `golangci-lint` 0 issues; frontend api/provider suites 218/218

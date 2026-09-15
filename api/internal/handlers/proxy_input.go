@@ -493,7 +493,7 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 	// returns immediately. The flight's events reach the caller via the
 	// user-event stream, not this response.
 	go h.emitPendingInputRequests(context.WithoutCancel(c.Request.Context()), workspaceID) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
-	c.JSON(http.StatusAccepted, gin.H{"status": "snapshot requested"})
+	c.Status(http.StatusAccepted)
 }
 
 // emitPendingViaAdapter uses the Adapter's ListPending to fetch pending
