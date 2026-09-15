@@ -21,6 +21,10 @@ export interface SSEConnectionConfig {
   onEvent: (data: unknown, eventName?: string) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
+  /** Fired on heartbeat comment frames (":\n\n") — byte-level liveness
+   * without a data event. #1365: consumers track last-alive time to detect
+   * a semantically dead stream (connection open, no events flowing). */
+  onKeepalive?: () => void;
   /** Label for wsLog (e.g. "sse" or "user_stream") */
   logPrefix?: string;
   /** Workspace ID for logging */
@@ -46,6 +50,7 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
     onEvent,
     onConnect,
     onDisconnect,
+    onKeepalive,
     logPrefix = "sse",
     logId = "",
     readTimeoutMs = DEFAULT_READ_TIMEOUT_MS,
@@ -138,8 +143,11 @@ export function createSSEConnection(config: SSEConnectionConfig): SSEConnection 
             const block = buf.slice(0, idx);
             buf = buf.slice(idx + 2);
 
-            // Skip heartbeat comments (bare ":")
-            if (block.trim() === ":") continue;
+            // Heartbeat comment frames (bare ":") — keepalive evidence, not data.
+            if (block.trim() === ":") {
+              onKeepalive?.();
+              continue;
+            }
 
             // Collect the block's event name (if named) and its data
             // payload — a named event applies only within its block.

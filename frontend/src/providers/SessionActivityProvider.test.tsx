@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
+import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useDropPendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
 import type { InputRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
@@ -2381,5 +2381,249 @@ describe("whileAway inbox prompts (#1313)", () => {
       });
     });
     expect(screen.queryByTestId("q-que_w1")).not.toBeInTheDocument();
+  });
+});
+
+// --- #1365: pill lifecycle — tombstones, flight-commit races, stack order ---
+
+describe("resolved pill lifecycle (#1365)", () => {
+  function PillIndicator({ sessionId }: { sessionId: string }) {
+    const pending = useIsSessionPendingAction(sessionId);
+    return <span data-testid="pending">{pending ? "yes" : "no"}</span>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedOnEvent = undefined;
+    capturedOnReconnect = undefined;
+  });
+
+  it("a resolved ask is not resurrected by a re-presented live event (tombstone)", () => {
+    renderProvider(<PillIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.question.resolved", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+
+    // A stale re-presentation of the same ask (e.g. an in-flight snapshot
+    // event racing the resolution) must not bring the pill back.
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+  });
+
+  it("a whileAway re-presentation of a resolved ask is ignored", () => {
+    function QuestionListView() {
+      const pending = usePendingQuestionsForSession("ses-1");
+      return (
+        <ul>
+          {pending.map((q) => (
+            <li key={q.id} data-testid={`q-${q.id}`}>{q.id}</li>
+          ))}
+        </ul>
+      );
+    }
+    renderProvider(<QuestionListView />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_w1",
+        whileAway: true,
+        data: { id: "que_w1", sessionId: "ses-1", rootSessionId: "ses-1", kind: "question", question: "Again?", options: [] },
+      });
+    });
+    expect(screen.getByTestId("q-que_w1")).toBeDefined();
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.question.resolved", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_w1" });
+    });
+    expect(screen.queryByTestId("q-que_w1")).toBeNull();
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_w1",
+        whileAway: true,
+        data: { id: "que_w1", sessionId: "ses-1", rootSessionId: "ses-1", kind: "question", question: "Again?", options: [] },
+      });
+    });
+    expect(screen.queryByTestId("q-que_w1")).toBeNull();
+  });
+
+  it("an optimistic 2xx clear survives a racing snapshot flight commit", () => {
+    // The incident race: the flight fetched the pending set BEFORE the user's
+    // click, and commits AFTER the optimistic clear. The optimistic clear (the
+    // reply path's onResolved) does not unstage flight entries — only the
+    // tombstone keeps the pill gone.
+    function Harness() {
+      const remove = useRemovePendingAction();
+      return (
+        <>
+          <PillIndicator sessionId="ses-1" />
+          <button data-testid="click-reply" onClick={() => remove("que_race")}>reply 2xx</button>
+        </>
+      );
+    }
+    renderProvider(<Harness />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "f1" });
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_race", snapshot_id: "f1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => {
+      screen.getByTestId("click-reply").click();
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_id: "f1", snapshot_ok: true });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no"); // the flight committed the pre-click staged set; the tombstone must hold
+  });
+
+  it("absence evidence does not tombstone: a flight-doomed ask re-adds when a later flight re-carries it", () => {
+    // Review r1 robustness 1: a successful-but-stale flight can omit a LIVE
+    // ask (the incident's own failure mode). The doom must remove the pill
+    // but never tombstone — the next flight that re-carries the id re-adds it.
+    renderProvider(<PillIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_live" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Flight 1 commits ok WITHOUT staging que_live (the stale flight's
+    // pending set omitted it) — the id is doomed.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "f1" });
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_id: "f1", snapshot_ok: true });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("no"); // the flight's authority removed the omitted ask
+
+    // Flight 2 carries the ask again — it was live all along.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "f2" });
+      capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_live", snapshot_id: "f2" });
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_id: "f2", snapshot_ok: true });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes"); // absence evidence must not permanently hide a live ask
+  });
+
+  it("dropPendingAction (fold-sync absence) re-adds on re-presentation; removePendingAction (resolution) does not", () => {
+    function Harness() {
+      const drop = useDropPendingAction();
+      const remove = useRemovePendingAction();
+      return (
+        <>
+          <PillIndicator sessionId="ses-1" />
+          <button data-testid="drop" onClick={() => drop("que_fold")}>drop</button>
+          <button data-testid="resolve" onClick={() => remove("que_fold")}>resolve</button>
+        </>
+      );
+    }
+    renderProvider(<Harness />);
+
+    const present = () => {
+      act(() => {
+        capturedOnEvent!({ type: "agent.question", workspace_id: "ws-1", session_id: "ses-1", request_id: "que_fold" });
+      });
+    };
+    present();
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => { screen.getByTestId("drop").click(); });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+    present();
+    expect(screen.getByTestId("pending").textContent).toBe("yes"); // fold-absence removal must not tombstone
+
+    act(() => { screen.getByTestId("resolve").click(); });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+    present();
+    expect(screen.getByTestId("pending").textContent).toBe("no"); // resolution removal tombstones — the pill stays cleared
+  });
+
+  it("bulk session clear is lifecycle, not resolution: whileAway re-presentation re-adds", () => {
+    function Harness() {
+      const clear = useClearSessionPendingPrompts();
+      return (
+        <>
+          <PillIndicator sessionId="ses-1" />
+          <button data-testid="clear" onClick={() => clear("ses-1")}>clear</button>
+        </>
+      );
+    }
+    const awayEvent = (id: string) => ({
+      type: "agent.question",
+      workspace_id: "ws-1",
+      session_id: "ses-1",
+      request_id: id,
+      whileAway: true,
+      data: { id, sessionId: "ses-1", rootSessionId: "ses-1", kind: "question", question: "Bulk?", options: [] },
+    });
+    renderProvider(<Harness />);
+
+    act(() => { capturedOnEvent!(awayEvent("que_bulk")); });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    act(() => { screen.getByTestId("clear").click(); });
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+
+    act(() => { capturedOnEvent!(awayEvent("que_bulk")); });
+    expect(screen.getByTestId("pending").textContent).toBe("yes"); // a lifecycle clear is not resolution — the inbox may legitimately re-present
+  });
+
+  it("pending questions render newest-activity-first", () => {
+    function QuestionListView() {
+      const pending = usePendingQuestionsForSession("ses-1");
+      return (
+        <ul>
+          {pending.map((q) => (
+            <li key={q.id} data-testid={`q-${q.id}`}>{q.id}</li>
+          ))}
+        </ul>
+      );
+    }
+    function AddButtons() {
+      const addQ = useAddPendingQuestion();
+      return (
+        <>
+          <button data-testid="add-1" onClick={() => addQ("ws-1", makeQuestion("q1", "ses-1"))}>1</button>
+          <button data-testid="add-2" onClick={() => addQ("ws-1", makeQuestion("q2", "ses-1"))}>2</button>
+          <button data-testid="add-3" onClick={() => addQ("ws-1", makeQuestion("q3", "ses-1"))}>3</button>
+        </>
+      );
+    }
+    renderProvider(
+      <>
+        <AddButtons />
+        <QuestionListView />
+      </>,
+    );
+
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      act(() => { vi.setSystemTime(1_000_000); screen.getByTestId("add-1").click(); });
+      act(() => { vi.setSystemTime(1_001_000); screen.getByTestId("add-2").click(); });
+      act(() => { vi.setSystemTime(1_002_000); screen.getByTestId("add-3").click(); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const items = screen.getAllByTestId(/^q-/).map((el) => el.getAttribute("data-testid"));
+    expect(items).toEqual(["q-q3", "q-q2", "q-q1"]); // the live ask (newest) leads the stack
   });
 });

@@ -246,7 +246,7 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 		var dup *outbox.Duplicate
 		if errors.As(err, &dup) {
 			h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusAnswered)
-			h.publishInboxResolved(workspaceID, rec, "answered")
+			h.publishInputResolved(c, workspaceID, rec.SessionID, rec.ID, rec.Kind, "answered")
 			c.JSON(http.StatusAccepted, gin.H{
 				"status":          "queued",
 				"clientMessageID": cmid,
@@ -259,7 +259,7 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 		return
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusAnswered)
-	h.publishInboxResolved(workspaceID, rec, "answered")
+	h.publishInputResolved(c, workspaceID, rec.SessionID, rec.ID, rec.Kind, "answered")
 	c.JSON(http.StatusAccepted, gin.H{
 		"status":          "queued",
 		"clientMessageID": cmid,
@@ -267,31 +267,54 @@ func (h *ProxyHandler) lateAnswerInboxAsk(c *gin.Context, workspaceID string, re
 	})
 }
 
-// publishInboxResolved clears the prompt in every connected tab — the
-// answered and dismissed exits share this event shape.
-func (h *ProxyHandler) publishInboxResolved(workspaceID string, rec inbox.Record, reason string) {
-	if h.userBroker == nil {
-		return
-	}
-	userID := h.userBroker.WorkspaceOwner(workspaceID)
-	if userID == "" {
+// publishInputResolved is the single publish seam for API-originated
+// input resolutions (#1365): live replies, resolve-by-absence
+// completions, inbox late answers, typed actions, and dismiss all
+// report through here so every connected browser clears its pill — S6's
+// completion invariant says a resolution exists only when every browser
+// knows it; the event leg is part of the path, not an optional extra.
+// Targets the workspace owner AND the authenticated clicker (deduped):
+// a stale owner map on a fresh replica must never silently drop the
+// event. kind picks the wire type; without a record callers derive it
+// from the validated request ID prefix.
+func (h *ProxyHandler) publishInputResolved(c *gin.Context, workspaceID, sessionID, requestID string, kind string, reason string) {
+	if h.userBroker == nil || workspaceID == "" || requestID == "" {
 		return
 	}
 	resolvedType := "agent.question.resolved"
-	if rec.Kind == inbox.KindPermission {
+	if kind == inbox.KindPermission {
 		resolvedType = "agent.permission.resolved"
 	}
-	h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+	evt := apitypes.WorkspaceSSEEvent{
 		Type:        resolvedType,
 		WorkspaceID: workspaceID,
-		SessionID:   rec.SessionID,
-		RequestID:   rec.ID,
+		SessionID:   sessionID,
+		RequestID:   requestID,
 		Data: map[string]string{
-			"request_id": rec.ID,
-			"session_id": rec.SessionID,
+			"request_id": requestID,
+			"session_id": sessionID,
 			"reason":     reason,
 		},
-	})
+	}
+	targets := make([]string, 0, 2)
+	if owner := h.userBroker.WorkspaceOwner(workspaceID); owner != "" {
+		targets = append(targets, owner)
+	}
+	if uid, _ := c.Get("userID"); uid != nil {
+		if s, ok := uid.(string); ok && s != "" && (len(targets) == 0 || targets[0] != s) {
+			targets = append(targets, s)
+		}
+	}
+	if len(targets) == 0 {
+		h.logger.Warn("input resolved event dropped: no publish target",
+			"workspaceID", workspaceID, "requestID", requestID)
+		return
+	}
+	for _, uid := range targets {
+		h.userBroker.PublishToUser(uid, evt)
+	}
+	h.logger.Debug("input resolved event published",
+		"type", resolvedType, "workspaceID", workspaceID, "requestID", requestID, "reason", reason)
 }
 
 func (h *ProxyHandler) resolveInboxRecord(ctx context.Context, workspaceID string, rec inbox.Record, status string) {
@@ -352,7 +375,7 @@ func (h *ProxyHandler) DismissInboxRecord(c *gin.Context) {
 	case askDead:
 	}
 	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, inbox.StatusDismissed)
-	h.publishInboxResolved(workspaceID, rec, "dismissed")
+	h.publishInputResolved(c, workspaceID, rec.SessionID, rec.ID, rec.Kind, "dismissed")
 	c.Status(http.StatusNoContent)
 }
 

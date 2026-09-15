@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
 	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -73,17 +74,17 @@ func (h *ProxyHandler) SessionAction(c *gin.Context) {
 	// 4a (3a's deferral landed): a successful answer through the typed
 	// actions route terminalizes the ask's inbox record — the MCP/SDK
 	// reply path now clears whileAway re-presentations like the REST one.
-	h.dispositionInboxOnAction(c, workspaceID, payload)
+	// The route's :sessionId is authoritative (same as the Act payload).
+	h.dispositionInboxOnAction(c, workspaceID, sessionID, payload)
 	c.Data(http.StatusOK, "application/json", out)
 }
 
 // dispositionInboxOnAction extracts the answerQuestion arm from a
 // successfully forwarded action payload and terminalizes its record:
-// reply=reject → dismissed; any other answer → answered.
-func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID string, payload map[string]json.RawMessage) {
-	if h.inbox == nil {
-		return
-	}
+// reply=reject → dismissed; any other answer → answered. The resolved
+// event publishes unconditionally (#1365) — the MCP/SDK reply path
+// clears every tab exactly like the REST one, record or no record.
+func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID, sessionID string, payload map[string]json.RawMessage) {
 	raw, ok := payload["answerQuestion"]
 	if !ok || len(raw) == 0 {
 		return
@@ -95,18 +96,16 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID stri
 	if json.Unmarshal(raw, &ans) != nil || ans.InputID == "" {
 		return
 	}
-	rec, found, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, ans.InputID)
-	if err != nil || !found {
-		return
-	}
-	disposition := "answered"
+	disposition := inbox.StatusAnswered
 	if ans.Reply == "reject" {
-		disposition = "dismissed"
+		disposition = inbox.StatusDismissed
 	}
-	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, disposition)
-	// r1 f2: the resolved event is the client's ONLY clear for a dead
-	// ask — publish on every disposition (idempotent by request ID).
-	h.publishInboxResolved(workspaceID, rec, disposition)
+	// #1302 item 3: the que_/per_ prefixes live behind the dialect seam —
+	// the API does not know them. Without a record the kind degrades to
+	// question (the usageBridge's documented cross-replica degrade; the
+	// frontend removes by request id either way); a pending record's kind
+	// wins when one exists.
+	h.resolveInboxOnProxySuccess(c, workspaceID, sessionID, ans.InputID, inbox.KindQuestion, disposition)
 }
 
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the

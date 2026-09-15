@@ -39,6 +39,7 @@ type inputActEnv struct {
 	router  *gin.Engine
 	handler *ProxyHandler
 	inbox   *inbox.Service
+	mr      *miniredis.Miniredis
 }
 
 // answerActStubPod records answerQuestion actions; success envelope
@@ -158,7 +159,7 @@ func newInputActEnv(t *testing.T, opts inputActOpts) *inputActEnv {
 	g.POST("/permission/:requestID/reply", handler.PermissionReply)
 	g.POST("/sessions/:sessionId/actions", handler.SessionAction)
 	g.DELETE("/sessions/:sessionId/inbox/:requestID", handler.DismissInboxRecord)
-	return &inputActEnv{router: router, handler: handler, inbox: in}
+	return &inputActEnv{router: router, handler: handler, inbox: in, mr: mr}
 }
 
 func lastIndexColon(s string) int {

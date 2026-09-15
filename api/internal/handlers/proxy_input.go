@@ -117,7 +117,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		if !h.actAnswerInput(c, wid, sessionID, requestID, action) {
 			return
 		}
-		h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindQuestion, inbox.StatusAnswered)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
 		c.JSON(http.StatusOK, gin.H{"status": "answered"})
 		return
@@ -127,7 +127,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer question"})
 		return
 	}
-	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindQuestion, inbox.StatusAnswered)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
@@ -166,7 +166,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		if !h.actAnswerInput(c, wid, sessionID, requestID, map[string]any{"reply": "reject"}) {
 			return
 		}
-		h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
+		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindQuestion, inbox.StatusDismissed)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
 		c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 		return
@@ -176,7 +176,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reject question"})
 		return
 	}
-	h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
+	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindQuestion, inbox.StatusDismissed)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
 }
@@ -264,11 +264,11 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		if !h.actAnswerInput(c, wid, sessionID, requestID, action) {
 			return
 		}
-		disposition := "answered"
+		disposition := inbox.StatusAnswered
 		if payload.Reply == "reject" {
-			disposition = "dismissed"
+			disposition = inbox.StatusDismissed
 		}
-		h.resolveInboxOnProxySuccess(c, wid, requestID, disposition)
+		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindPermission, disposition)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
 		c.JSON(http.StatusOK, gin.H{"status": "answered"})
 		return
@@ -278,7 +278,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to answer permission"})
 		return
 	}
-	h.resolveInboxOnProxySuccess(c, wid, requestID, "answered")
+	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindPermission, inbox.StatusAnswered)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
 	c.JSON(http.StatusOK, gin.H{"status": "answered"})
 }
@@ -377,27 +377,35 @@ func (h *ProxyHandler) inputRequestSession(ctx context.Context, workspaceID, req
 	return "", false, unknownSet
 }
 
-// resolveInboxOnProxySuccess terminalizes the ask's inbox record when the
-// live reply/reject succeeded and publishes the resolved event — the
-// client lifecycle clears on exactly that event, and a DEAD ask (the
-// #1313 walk-away class) has no harness INPUT_RESOLVED coming, so the
-// API-side publish is the only clear (r1 f2). A duplicate publish for a
-// live ask (the bridge's InputResolved follows) is idempotent
-// client-side: removal keys on the request ID.
-func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, requestID, status string) {
-	if h.inbox == nil || workspaceID == "" || c.Writer.Status() >= 400 {
+// resolveInboxOnProxySuccess terminalizes the ask's inbox record when one
+// is pending and publishes the resolved event UNCONDITIONALLY (#1365):
+// the clicker's 2xx is not the signal other tabs clear on, and the
+// incident's dead pill carried NO pending record — a record-gated
+// publish is exactly how a resolved ask stays on screen forever. The
+// record's kind and session win over the caller's derivation when
+// present; a duplicate publish for a live ask (the bridge's
+// InputResolved follows) is idempotent client-side: removal keys on the
+// request ID.
+func (h *ProxyHandler) resolveInboxOnProxySuccess(c *gin.Context, workspaceID, sessionID, requestID string, kind string, status string) {
+	if workspaceID == "" || requestID == "" {
 		return
 	}
-	rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, requestID)
-	if err != nil || !ok {
-		return
+	if h.inbox != nil {
+		if rec, ok, err := h.inbox.LookupPending(c.Request.Context(), workspaceID, requestID); err == nil && ok {
+			if rec.Kind != "" {
+				kind = rec.Kind
+			}
+			if sessionID == "" {
+				sessionID = rec.SessionID
+			}
+			h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, status)
+		}
 	}
-	h.resolveInboxRecord(c.Request.Context(), workspaceID, rec, status)
 	reason := "answered"
-	if status == "dismissed" {
+	if status == inbox.StatusDismissed {
 		reason = "dismissed"
 	}
-	h.publishInboxResolved(workspaceID, rec, reason)
+	h.publishInputResolved(c, workspaceID, sessionID, requestID, kind, reason)
 }
 
 // emitPendingInputRequests fetches pending questions and permissions from the pod

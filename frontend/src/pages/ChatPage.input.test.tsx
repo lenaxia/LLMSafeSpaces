@@ -58,6 +58,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useSessionPendingActions: () => new Set<string>(),
   useAddPendingAction: () => () => {},
   useRemovePendingAction: () => promptStore.removeAction,
+  useDropPendingAction: () => promptStore.removeAction,
   useAddPendingQuestion: () => promptStore.addQuestion,
   useAddPendingPermission: () => promptStore.addPermission,
   // 4a-2: contract tags are camelCase.

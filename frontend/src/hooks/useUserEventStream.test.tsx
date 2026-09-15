@@ -276,3 +276,77 @@ describe("useUserEventStream — read timeout & abort", () => {
     expect(connectCount).toBe(2);
   });
 });
+
+// --- #1365: liveness watchdog — a semantically dead stream (bytes flowing,
+// no events, no heartbeats) must be reconnected so snapshot flights re-run. ---
+
+describe("useUserEventStream — liveness watchdog (#1365)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const encoder = new TextEncoder();
+
+  // A reader that resolves one chunk every intervalMs — simulates a
+  // proxy/keepalive cadence that keeps the read timeout fed without ever
+  // carrying a data event or heartbeat comment.
+  function periodicReader(intervalMs: number, chunk: string) {
+    return {
+      read: () =>
+        new Promise<{ done: boolean; value: Uint8Array }>((resolve) => {
+          setTimeout(() => resolve({ done: false, value: encoder.encode(chunk) }), intervalMs);
+        }),
+      cancel: () => Promise.resolve(),
+    };
+  }
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    global.fetch = fetchMock;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("reconnects when the stream carries bytes but no events or heartbeats past the silence window", async () => {
+    let connects = 0;
+    fetchMock.mockImplementation(() => {
+      connects++;
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => periodicReader(20_000, "x\n\n") },
+      });
+    });
+
+    const { wrapper } = createWrapper();
+    renderHook(() => useUserEventStream(), { wrapper });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connects).toBe(1);
+
+    // 70s of garbage bytes: read timeout never fires (bytes flow every 20s),
+    // but the watchdog sees 60s+ of event silence and forces a reconnect.
+    await vi.advanceTimersByTimeAsync(70_000);
+    expect(connects).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not reconnect while heartbeat comment frames flow", async () => {
+    let connects = 0;
+    fetchMock.mockImplementation(() => {
+      connects++;
+      return Promise.resolve({
+        ok: true,
+        body: { getReader: () => periodicReader(25_000, ":\n\n") },
+      });
+    });
+
+    const { wrapper } = createWrapper();
+    renderHook(() => useUserEventStream(), { wrapper });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connects).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(connects).toBe(1); // heartbeats are liveness — a healthy idle stream must not flap
+  });
+});

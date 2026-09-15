@@ -137,6 +137,17 @@ func TestE2E_QuestionFlow_FullRoundTrip(t *testing.T) {
 	assert.JSONEq(t, replyPayload, gotBody, "reply body must reach the pod with the answers schema")
 	assert.Equal(t, "application/json", gotCT)
 
+	// 3.5 (#1365): the successful reply publishes the API-side resolved
+	// event on the user stream — the clear-every-tab leg rides the reply
+	// path itself, before and independent of the harness event. This env
+	// carries no inbox record, so the session fields defer to the
+	// harness-side event below.
+	apiResolvedEvt := recvWithTimeout(t, userSub, "agent.question.resolved")
+	apiResolvedData, ok := apiResolvedEvt.Data.(map[string]string)
+	require.True(t, ok, "API-side resolved event data must be a map")
+	assert.Equal(t, "que_e2e", apiResolvedData["request_id"])
+	assert.Equal(t, "answered", apiResolvedData["reason"])
+
 	// 5. The pod resolves the input; the user stream gets agent.question.resolved.
 	(&usageBridge{h: env.handler}).InputResolved("ws-1", "ses_e2e", "que_e2e")
 
