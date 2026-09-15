@@ -443,9 +443,10 @@ fi
 # Design 0051's open item: nested RO image volumes under runsc. Install
 # runsc into the kind node, register the runtime handler, boot a workspace
 # on RuntimeClass gvisor. Best-effort INSTALL: a node that cannot host
-# runsc is an environment failure (SKIP with a loud marker — the flip
-# decision needs a real run, not a skip, so this still reports red in CI
-# unless explicitly env-gated).
+# runsc is an environment failure. There is deliberately no green skip:
+# S5_SKIP_GVISOR=1 records the skip in the summary via fail() but the run
+# still exits red — the flip decision requires a real runsc run, not a
+# skip (the env gate only makes the deliberate skip visible in the log).
 if [ "${S5_SKIP_GVISOR:-0}" = "1" ]; then
   fail S5.6 "SKIPPED via S5_SKIP_GVISOR=1 — the flip decision requires a real runsc run"
 else

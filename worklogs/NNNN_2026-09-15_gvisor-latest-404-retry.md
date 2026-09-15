@@ -62,3 +62,11 @@ The retry wrapper (#1373) was the wrong diagnosis carried one step too far: pool
 ## Tests run (r3)
 
 - `go test -timeout 300s ./local/` — ok; `golangci-lint` 0; mutation checks (above)
+
+## Review r4 remediation (#1375)
+
+- The S5_SKIP_GVISOR gate comment corrected: there is deliberately NO green skip — `fail()` records the skip in the summary and the run still exits red; the env gate only makes the deliberate skip visible. (The old "unless explicitly env-gated" clause promised an outcome the code never delivered — Rule 4 comment correction.)
+
+## Tests run (r4)
+
+- `bash -n` clean; `go test -timeout 300s ./local/` — ok
