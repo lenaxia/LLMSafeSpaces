@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -357,7 +358,9 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 	if err != nil {
 		return "", fmt.Errorf("failed to read session: %w", err)
 	}
-	return string(body), nil
+	// #1307: image data URLs never cross this surface either — strip
+	// them to metadata + omission markers (the seam owns the wire rule).
+	return string(opencode.StripImageDataURLs(body)), nil
 }
 
 func mcpDevPreviewURL(port int, path string) (string, error) {

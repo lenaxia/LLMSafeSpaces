@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tansta
 import { workspacesApi } from "../api/workspaces";
 import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { ApiClientError } from "../api/client";
+import { fileNoticeText } from "../api/fileNotices";
 import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
 import { useMessageHistory } from "../hooks/useMessageHistory";
@@ -36,7 +37,7 @@ import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
 
-type StreamPart = { type: "text" | "thinking" | "tool"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
+type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
 // Dwell before the stuck-session auto-abort fires once all evidence
 // conditions hold. Guards the sub-second race where a question registers
@@ -67,8 +68,9 @@ function messageIdentityKey(m: Message): string {
 }
 
 // partToStreamPart maps an ABI Part (contract 5-type union) onto the chat
-// renderer's streaming bubble shape. file-change and custom parts render
-// from history only (Epic 65 has no live renderer branch for them yet).
+// renderer's streaming bubble shape. file-change parts render from
+// history only; custom parts render only in their file-part form (#1307:
+// the image-omission notice must be visible on the live path too).
 function partToStreamPart(part: Part, messageID: string | undefined): StreamPart | null {
   switch (part.payload.case) {
     case "text":
@@ -88,6 +90,12 @@ function partToStreamPart(part: Part, messageID: string | undefined): StreamPart
         toolStartedAt: timestampToISO(tool.state?.startedAt),
         messageID,
       };
+    }
+    case "custom": {
+      if (part.payload.value.kind !== "file") return null;
+      const text = fileNoticeText(part.payload.value.data);
+      if (!text) return null;
+      return { type: "file_notice", text, partID: part.id, messageID };
     }
     default:
       return null;
@@ -152,6 +160,11 @@ function sessionErrorText(code: string, rawMessage: string): string {
   }
   if (code === "ProviderRateLimitError" || /rate limit/i.test(rawMessage)) {
     return "The provider rate-limited this workspace — retrying shortly";
+  }
+  // Issue #1307: a text-only model wedged on an image-bearing history —
+  // every turn replays the same fatal 400 until the model is switched.
+  if (code === "text_only_model_image_history" || rawMessage.includes("messages.content.type is invalid")) {
+    return "This session's history contains an image, and the current model only accepts text. Switch to a vision-capable model in the model picker to continue, or start a new session.";
   }
   return rawMessage || code || "The agent hit an unexpected error";
 }

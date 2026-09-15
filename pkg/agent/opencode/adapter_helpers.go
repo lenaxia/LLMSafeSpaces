@@ -60,10 +60,16 @@ func readBody(resp *http.Response, limit int64) ([]byte, error) {
 // httpError reads a small portion of resp.Body and returns an error
 // that includes the status code and body excerpt, wrapped with the
 // platform's agent.ErrHTTPStatus sentinel (definitive-rejection
-// classification for at-least-once callers, #987). Caller has already
+// classification for at-least-once callers, #987). When the body
+// carries the live-verified text-only wedge signature (#1307), the
+// error additionally wraps agent.ErrImageInTextOnlyHistory so callers
+// can surface the targeted remediation. Caller has already
 // deferred-Close'd the body.
 func (a *Adapter) httpError(path string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if wedgeErr := textOnlyWedgeError(path, resp.StatusCode, string(body)); wedgeErr != nil {
+		return wedgeErr
+	}
 	return fmt.Errorf("%w: %s returned %d: %s", agent.ErrHTTPStatus, path, resp.StatusCode, string(body))
 }
 

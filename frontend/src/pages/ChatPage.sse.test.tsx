@@ -196,6 +196,22 @@ function toolPartEnd(partId: string, tool: { name: string; callId?: string; stat
   });
 }
 
+// #1307 r2: custom file parts on the LIVE path — CustomPart.data is
+// `bytes` on the wire (contract.proto:141), so this is the ONLY decode
+// branch the live surface can execute.
+function fileNoticePartEnd(partId: string, data: object, messageId?: string): Event {
+  return abiEvent({
+    type: 7,
+    partId,
+    messageId,
+    part: create(PartSchema, {
+      id: partId,
+      type: 5,
+      payload: { case: "custom", value: { kind: "file", data: new TextEncoder().encode(JSON.stringify(data)) } },
+    }),
+  });
+}
+
 function makeSessionSnapshot(sessionId: string, init: Record<string, unknown> = {}): SessionSnapshot {
   return create(SessionSnapshotSchema, { sessionId, ...init } as Parameters<typeof create>[1]);
 }
@@ -379,6 +395,41 @@ describe("ChatPage event dispatch (contract stream + platform stream)", () => {
       expect(tool.toolCallID).toBe("call-1");
     });
 
+    // #1307 r2 gating finding: the live-SSE notice branch — a custom
+    // file part whose data arrives as protobuf BYTES (Uint8Array) must
+    // decode and render as a file_notice. A broken bytes decode silently
+    // vanishes the notice on the exact surface a user watching a wedged
+    // session sees.
+    it("custom file parts render as file_notice (Uint8Array data, the live wire form)", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      sendContractEvent(fileNoticePartEnd("fp1", {
+        type: "file", mime: "image/png", filename: "shot.png",
+        omitted: true, notice: "[image omitted] switch to a vision-capable model to continue.",
+      }, "msg_f1"));
+      await waitFor(() => expect(getStreamParts()).toHaveLength(1));
+      const notice = getStreamParts()[0]!;
+      expect(notice.type).toBe("file_notice");
+      expect(notice.text).toContain("[image omitted]");
+      expect(notice.text).toContain("shot.png");
+    });
+
+    it("custom parts of other kinds stay filtered on the live path", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      sendContractEvent(abiEvent({
+        type: 7,
+        partId: "cp1",
+        part: create(PartSchema, {
+          id: "cp1",
+          type: 5,
+          payload: { case: "custom", value: { kind: "other", data: new TextEncoder().encode("{\"x\":1}") } },
+        }),
+      }));
+      await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+      expect(getStreamParts()).toHaveLength(0);
+    });
+
     it("handleSend clears the parts array", async () => {
       const qc = makeQueryClient();
       await renderReady(qc);
@@ -404,6 +455,28 @@ describe("ChatPage event dispatch (contract stream + platform stream)", () => {
         const rendered = JSON.parse(el.getAttribute("data-messages") || "[]");
         expect(rendered.some((m: { parts: Array<{ text?: string }> }) =>
           m.parts.some((p) => (p.text ?? "").includes("/compact")))).toBe(true);
+      });
+    });
+
+    // Issue #1307: the wedged-session 400 surfaces as a session.error
+    // event whose message is the raw provider body — the user must get
+    // the cause and the escape (switch model), not the litellm error.
+    it("maps the text-only image-history wedge body to the switch-model guidance", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      sendContractEvent(abiEvent({
+        type: 10,
+        error: {
+          code: "",
+          message: "Provider request failed with HTTP 400: litellm.BadRequestError: ZaiException - messages.content.type is invalid, allowed values: ['text']",
+        } as never,
+      }));
+      const el = await screen.findByTestId("chat-view");
+      await waitFor(() => {
+        const rendered = JSON.parse(el.getAttribute("data-messages") || "[]");
+        expect(rendered.some((m: { parts: Array<{ text?: string }> }) =>
+          m.parts.some((p) => (p.text ?? "").includes("vision-capable model")))).toBe(true);
+        expect(JSON.stringify(rendered)).not.toContain("litellm.BadRequestError");
       });
     });
 

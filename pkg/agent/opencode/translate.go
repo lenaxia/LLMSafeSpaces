@@ -180,6 +180,14 @@ type ocPart struct {
 	// tool (populated by UnmarshalJSON from either wire shape):
 	Tool *ocTool `json:"tool,omitempty"`
 
+	// file (metadata only — the data URL itself NEVER rides the
+	// platform contract; #1307: image bytes in served history are both
+	// a bloat and a wedge-class leak):
+	MIME     string `json:"mime,omitempty"`
+	Filename string `json:"filename,omitempty"`
+	FileURL  string `json:"url,omitempty"`
+	FileURI  string `json:"uri,omitempty"`
+
 	// patch (file paths only — diff text comes from filediff):
 	Files []string `json:"files,omitempty"`
 
@@ -213,6 +221,10 @@ func (p *ocPart) UnmarshalJSON(data []byte) error {
 		Text      string              `json:"text,omitempty"`
 		Reasoning string              `json:"reasoning,omitempty"`
 		Tool      json.RawMessage     `json:"tool,omitempty"`
+		MIME      string              `json:"mime,omitempty"`
+		Filename  string              `json:"filename,omitempty"`
+		FileURL   string              `json:"url,omitempty"`
+		FileURI   string              `json:"uri,omitempty"`
 		Files     []string            `json:"files,omitempty"`
 		Custom    *session.CustomPart `json:"custom,omitempty"`
 		CallID    string              `json:"callID,omitempty"`
@@ -228,6 +240,10 @@ func (p *ocPart) UnmarshalJSON(data []byte) error {
 	p.MessageID = intermediate.MessageID
 	p.Text = intermediate.Text
 	p.Reasoning = intermediate.Reasoning
+	p.MIME = intermediate.MIME
+	p.Filename = intermediate.Filename
+	p.FileURL = intermediate.FileURL
+	p.FileURI = intermediate.FileURI
 	p.Files = intermediate.Files
 	p.Custom = intermediate.Custom
 
@@ -377,6 +393,27 @@ func translatePart(p ocPart) (session.Part, []string) {
 	case "step-start", "step-finish":
 		// dropped — turn boundaries carry no renderable content
 		return session.Part{}, nil
+	case "file":
+		// File parts (the read tool's image carrier, #1307) become
+		// Custom parts carrying metadata ONLY — mime and filename for
+		// an honest render; the data URL never crosses the seam. The
+		// incident's minimal shape carries only a uri (no mime), so the
+		// image mime is derived from the data URL when absent. The
+		// repair pass (vision_gate.go) may later add an explicit
+		// omission notice when the session's model is text-only.
+		if m := deriveImageMIME(p.MIME, p.FileURL); m != "" {
+			p.MIME = m
+		} else if m := deriveImageMIME("", p.FileURI); m != "" {
+			p.MIME = m
+		}
+		return session.Part{
+			Type: session.PartCustom,
+			ID:   p.ID,
+			Custom: &session.CustomPart{
+				Kind: "file",
+				Data: filePartData(p.MIME, p.Filename, false, ""),
+			},
+		}, nil
 	default:
 		// Unknown part type — preserve as Custom with the kind set to
 		// the opencode type string so future extensions surface in the
@@ -862,6 +899,28 @@ func translateV2Message(m V2Message) session.Message {
 			if tp := translateV2Tool(cp); tp != nil {
 				sm.Parts = append(sm.Parts, session.Part{Type: session.PartTool, ID: cp.ID, Tool: tp})
 			}
+		case "file":
+			// The V2 store's file content part — same metadata-only
+			// rule as the V1 shape (#1307): the raw part previously
+			// rode Custom.Data verbatim, leaking the full base64 data
+			// URL into every served history page.
+			var fp struct {
+				MIME     string `json:"mime"`
+				Filename string `json:"filename"`
+				URL      string `json:"url"`
+				URI      string `json:"uri"`
+			}
+			_ = json.Unmarshal(cp.Raw, &fp)
+			if m := deriveImageMIME(fp.MIME, fp.URL); m != "" {
+				fp.MIME = m
+			} else if m := deriveImageMIME("", fp.URI); m != "" {
+				fp.MIME = m
+			}
+			sm.Parts = append(sm.Parts, session.Part{
+				Type:   session.PartCustom,
+				ID:     cp.ID,
+				Custom: &session.CustomPart{Kind: "file", Data: filePartData(fp.MIME, fp.Filename, false, "")},
+			})
 		case "step-start", "step-finish":
 			// dropped — turn boundaries carry no renderable content
 			// (mirrors translatePart's treatment of the V1 shapes)
@@ -904,7 +963,13 @@ func translateV2Tool(cp V2ContentPart) *session.ToolPart {
 				}
 			}
 		} else if len(cp.State.Structured) > 0 {
-			tp.Output = cp.State.Structured
+			// Image bytes never cross the seam: embedded image dicts
+			// (the #1307 structured copy) reduce to metadata markers.
+			// (V1 asymmetry, documented: the V1 flat tool shape carries
+			// tool output as a plain string with no evidenced
+			// image-dict embedding — only V2's structured copy rides
+			// dicts, per the #1307 runbook's dual-write.)
+			tp.Output = stripEmbeddedImageData(cp.State.Structured)
 		}
 		tp.State.Status = translateToolStatus(cp.State.Status)
 		if cp.State.Time != nil {

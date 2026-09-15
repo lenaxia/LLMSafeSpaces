@@ -16,10 +16,14 @@ type ProviderModelCost struct {
 }
 
 // CatalogModel is a single model entry in a parsed agent catalog.
+// SupportsVision is tri-state: nil means the catalog carried no capability
+// metadata (unknown — callers must not treat unknown as text-only, issue
+// #1307: a false "text-only" strips user images from vision models).
 type CatalogModel struct {
-	ID   string            `json:"id"`
-	Name string            `json:"name"`
-	Cost ProviderModelCost `json:"cost"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Cost           ProviderModelCost `json:"cost"`
+	SupportsVision *bool             `json:"supportsVision,omitempty"`
 }
 
 // CatalogProvider groups models under a provider. Models is keyed by the
@@ -62,6 +66,49 @@ func NewOpencodeProviderParser() ModelCatalogParser {
 	return opencodeProviderParser{}
 }
 
+// modelVisionMeta is the optional per-model metadata the provider catalog
+// may carry about image input (issue #1307). All three shapes are optional
+// and independently evidenced: capabilities.input.image is the resolved
+// /config/providers shape (live-validated 2026-09-13), attachment is the
+// models.dev/config-schema flag (testdata/opencode-config.schema.json),
+// modalities.input is the registry list the #1307 incident quoted.
+type modelVisionMeta struct {
+	Attachment   *bool `json:"attachment"`
+	Capabilities *struct {
+		Input *struct {
+			Image *bool `json:"image"`
+		} `json:"input"`
+	} `json:"capabilities"`
+	Modalities *struct {
+		Input []string `json:"input"`
+	} `json:"modalities"`
+}
+
+// supportsVision resolves the tri-state capability. Precedence: explicit
+// resolved capabilities, then the attachment flag, then the modalities
+// list. nil when no shape is present — unknown, never a silent false (the
+// #1307 fail-safe direction: a false "text-only" would strip user images
+// from vision models).
+func (m modelVisionMeta) supportsVision() *bool {
+	if m.Capabilities != nil && m.Capabilities.Input != nil && m.Capabilities.Input.Image != nil {
+		return m.Capabilities.Input.Image
+	}
+	if m.Attachment != nil {
+		return m.Attachment
+	}
+	if m.Modalities != nil {
+		v := false
+		for _, mod := range m.Modalities.Input {
+			if mod == "image" {
+				v = true
+				break
+			}
+		}
+		return &v
+	}
+	return nil
+}
+
 func (opencodeProviderParser) Parse(raw []byte) (*Catalog, error) {
 	if len(raw) == 0 {
 		return &Catalog{}, nil
@@ -74,6 +121,7 @@ func (opencodeProviderParser) Parse(raw []byte) (*Catalog, error) {
 				ID   string            `json:"id"`
 				Name string            `json:"name"`
 				Cost ProviderModelCost `json:"cost"`
+				modelVisionMeta
 			} `json:"models"`
 		} `json:"all"`
 	}
@@ -84,7 +132,12 @@ func (opencodeProviderParser) Parse(raw []byte) (*Catalog, error) {
 	for _, p := range provResp.All {
 		cp := CatalogProvider{ID: p.ID, Models: make(map[string]CatalogModel, len(p.Models))}
 		for k, m := range p.Models {
-			cp.Models[k] = CatalogModel{ID: m.ID, Name: m.Name, Cost: m.Cost}
+			cp.Models[k] = CatalogModel{
+				ID:             m.ID,
+				Name:           m.Name,
+				Cost:           m.Cost,
+				SupportsVision: m.supportsVision(),
+			}
 		}
 		catalog.Providers = append(catalog.Providers, cp)
 	}

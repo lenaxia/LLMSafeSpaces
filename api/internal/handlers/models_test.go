@@ -612,6 +612,40 @@ func TestAnnotateModels_FullResponse(t *testing.T) {
 	require.False(t, byID["paid-model"].ProxyRequired, "paid model must have proxyRequired=false")
 }
 
+// TestAnnotateModels_SupportsVisionThreadsThrough pins that the parsed
+// tri-state vision capability reaches the API surface verbatim: known
+// true/false serialize, unknown stays absent (issue #1307 — clients warn
+// only on an explicit false; absent must never read as text-only).
+func TestAnnotateModels_SupportsVisionThreadsThrough(t *testing.T) {
+	raw := `{
+		"connected": ["p"],
+		"all": [{"id":"p","models":{
+			"vision":  {"id":"vision","name":"Vision","attachment":true},
+			"textonly":{"id":"textonly","name":"TextOnly","capabilities":{"input":{"image":false}}},
+			"unknown":{"id":"unknown","name":"Unknown"}
+		}}]
+	}`
+	result := parseAndAnnotate(t, raw, false, false)
+	require.Len(t, result, 3)
+	byID := make(map[string]annotatedModel)
+	for _, m := range result {
+		byID[m.ID] = m
+	}
+	require.NotNil(t, byID["vision"].SupportsVision)
+	require.True(t, *byID["vision"].SupportsVision)
+	require.NotNil(t, byID["textonly"].SupportsVision)
+	require.False(t, *byID["textonly"].SupportsVision)
+	require.Nil(t, byID["unknown"].SupportsVision, "absent capability metadata must surface as unknown, not false")
+
+	// Wire form: unknown omits the field entirely.
+	encoded, err := json.Marshal(byID["unknown"])
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "supportsVision")
+	encodedTextOnly, err := json.Marshal(byID["textonly"])
+	require.NoError(t, err)
+	require.Contains(t, string(encodedTextOnly), `"supportsVision":false`)
+}
+
 func TestAnnotateModels_NilCatalog(t *testing.T) {
 	// annotateModels on a nil catalog returns nil (defensive — the parser
 	// returns &Catalog{} for empty input, but nil guards the path).
@@ -687,6 +721,65 @@ func TestListModels_ResponseAnnotated(t *testing.T) {
 	require.True(t, resp.Models[0].ProxyRequired, "free-tier models must have proxyRequired=true (Epic 26)")
 	require.Equal(t, "test", resp.Models[0].ID)
 	require.Equal(t, "", resp.CurrentModel) // no updater set = empty
+}
+
+// fakeCatalogClient is a ModelClient returning a canned /provider body —
+// lets the ListModels e2e run without binding the opencode port.
+type fakeCatalogClient struct{ body string }
+
+func (f fakeCatalogClient) ListModels(_ context.Context, _, _ string) ([]byte, error) {
+	return []byte(f.body), nil
+}
+func (f fakeCatalogClient) PatchConfig(_ context.Context, _, _ string, _ map[string]any) error {
+	return nil
+}
+
+// TestListModels_SupportsVisionSurfaced is the e2e pin for issue #1307's
+// catalog gap: a provider catalog carrying capability metadata must reach
+// the API response (known true/false serialized, unknown absent) so model
+// pickers can warn on text-only models.
+func TestListModels_SupportsVisionSurfaced(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	models := `{"connected":["p"],"all":[{"id":"p","models":{
+		"glm-5.3":{"id":"glm-5.3","name":"GLM 5.3","cost":{"input":0,"output":0},"capabilities":{"input":{"image":false}}},
+		"claude":{"id":"claude","name":"Claude","cost":{"input":3,"output":15},"attachment":true},
+		"custom":{"id":"custom","name":"Custom Gateway Model","cost":{"input":1,"output":2}}
+	}}]}`
+
+	handler := NewModelsHandler(fakeCatalogClient{body: models})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set("userID", "user-1")
+		c.Next()
+	})
+	router.GET("/api/v1/workspaces/:id/models", handler.ListModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-vision/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp struct {
+		Models []annotatedModel `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Models, 3)
+	byID := make(map[string]annotatedModel)
+	for _, m := range resp.Models {
+		byID[m.ID] = m
+	}
+	require.NotNil(t, byID["glm-5.3"].SupportsVision)
+	require.False(t, *byID["glm-5.3"].SupportsVision, "text-only model must surface supportsVision=false")
+	require.NotNil(t, byID["claude"].SupportsVision)
+	require.True(t, *byID["claude"].SupportsVision)
+	require.Nil(t, byID["custom"].SupportsVision, "no capability metadata must stay unknown")
+
+	// Raw wire check: unknown omits the key entirely.
+	require.Contains(t, w.Body.String(), `"supportsVision":false`)
 }
 
 // TestAnnotateModels_RelayActive_RemapsProviderID verifies that when the relay

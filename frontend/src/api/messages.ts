@@ -1,4 +1,5 @@
 import { api, getRaw } from "./client";
+import { fileNoticeText } from "./fileNotices";
 import type { Message, SendMessageRequest } from "./types";
 
 // ContractMessage is the wire shape from the API's GetHistory endpoint
@@ -28,6 +29,10 @@ interface ContractMessage {
       patch?: string;
       status?: string;
     };
+    custom?: {
+      kind?: string;
+      data?: unknown;
+    };
   }>;
   model?: { id?: string; provider?: string };
 }
@@ -43,6 +48,10 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
         if (p.type === "text" && p.text) return true;
         if (p.type === "reasoning" && p.reasoning) return true;
         if (p.type === "file_change") return true;
+        // #1307: file parts ride the Custom valve (kind "file") — keep
+        // them so the omission notice is user-visible instead of a
+        // silent gap.
+        if (p.type === "custom" && p.custom?.kind === "file") return true;
         return false;
       }).map((p) => {
         if (p.type === "tool" && p.tool) {
@@ -60,6 +69,9 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
         }
         if (p.type === "reasoning") {
           return { type: "reasoning", text: p.reasoning ?? "" };
+        }
+        if (p.type === "custom" && p.custom?.kind === "file") {
+          return { type: "file_notice", id: p.id, text: fileNoticeText(p.custom.data) ?? "" };
         }
         return p;
       }),

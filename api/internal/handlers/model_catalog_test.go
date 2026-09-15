@@ -80,6 +80,88 @@ func TestOpencodeProviderParser_Parse(t *testing.T) {
 	}
 }
 
+// TestOpencodeProviderParser_ParseVisionCapability pins the three wire
+// shapes vision capability arrives in (issue #1307): the /config/providers
+// shape (capabilities.input.image — live-validated 2026-09-13, docs/testing/
+// agentd-mcp-tools-test-plan.md), the config-schema shape (attachment —
+// testdata/opencode-config.schema.json ProviderConfig.models), and the
+// registry shape the incident quoted (modalities.input containing "image").
+// Absent metadata must decode to nil (unknown), never a silent false.
+func TestOpencodeProviderParser_ParseVisionCapability(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want map[string]*bool // provider-local model key -> expected SupportsVision
+	}{
+		{
+			name: "capabilities input image true",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m1":{"id":"m1","name":"M1","capabilities":{"input":{"image":true}}},
+				"m2":{"id":"m2","name":"M2","capabilities":{"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m1": ptrBool(true), "m2": ptrBool(false)},
+		},
+		{
+			name: "attachment flag",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"vision":{"id":"vision","attachment":true},
+				"text":{"id":"text","attachment":false}
+			}}]}`,
+			want: map[string]*bool{"vision": ptrBool(true), "text": ptrBool(false)},
+		},
+		{
+			name: "modalities input array",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","modalities":{"input":["text","image"],"output":["text"]}},
+				"t":{"id":"t","modalities":{"input":["text"],"output":["text"]}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(true), "t": ptrBool(false)},
+		},
+		{
+			name: "no capability metadata stays unknown",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","name":"M","cost":{"input":0,"output":0}}
+			}}]}`,
+			want: map[string]*bool{"m": nil},
+		},
+		{
+			name: "empty capabilities object stays unknown",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","capabilities":{}}
+			}}]}`,
+			want: map[string]*bool{"m": nil},
+		},
+		{
+			name: "capabilities wins over conflicting attachment",
+			raw: `{"connected":["p"],"all":[{"id":"p","models":{
+				"m":{"id":"m","attachment":true,"capabilities":{"input":{"image":false}}}
+			}}]}`,
+			want: map[string]*bool{"m": ptrBool(false)},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NewOpencodeProviderParser().Parse([]byte(tt.raw))
+			require.NoError(t, err)
+			require.Len(t, got.Providers, 1)
+			models := got.Providers[0].Models
+			require.Len(t, models, len(tt.want))
+			for key, want := range tt.want {
+				m, ok := models[key]
+				require.True(t, ok, "model %s missing", key)
+				if want == nil {
+					assert.Nil(t, m.SupportsVision, "model %s: capability must be unknown, got %v", key, m.SupportsVision)
+				} else {
+					require.NotNil(t, m.SupportsVision, "model %s: capability must be known", key)
+					assert.Equal(t, *want, *m.SupportsVision, "model %s", key)
+				}
+			}
+		})
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
+
 func TestCatalog_ModelExists(t *testing.T) {
 	cat := &Catalog{
 		Connected: []string{"anthropic"},

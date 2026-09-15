@@ -20,6 +20,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -145,6 +146,10 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			"workspaceID", wid, "sessionID", sid)
 		if sid != "" {
 			h.removeActiveSession(c.Request.Context(), wid, sid)
+		}
+		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+			writeTextOnlyWedgeBody(c)
+			return
 		}
 		errBody := []byte(`{"error":"failed to send message"}`)
 		if h.agentStateChecker != nil {
@@ -913,6 +918,10 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		// incident's generic 502 rendered as a bare "Failed to fetch"
 		// with no cause. Below critical, unrelated provider/pod errors
 		// keep the generic 502.
+		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+			writeTextOnlyWedgeBody(c)
+			return
+		}
 		if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {
 			c.JSON(http.StatusInsufficientStorage, gin.H{
 				"code":           "disk_full",

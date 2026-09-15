@@ -127,6 +127,9 @@ func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, 
 	}
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if wedgeErr := textOnlyWedgeError("POST /api/session/"+sessionID+"/prompt", resp.StatusCode, string(errBody)); wedgeErr != nil {
+			return nil, wedgeErr
+		}
 		return nil, fmt.Errorf("%w: POST /api/session/%s/prompt returned %d: %s", agent.ErrHTTPStatus, sessionID, resp.StatusCode, string(errBody))
 	}
 

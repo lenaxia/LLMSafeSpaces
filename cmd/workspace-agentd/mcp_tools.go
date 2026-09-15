@@ -259,14 +259,17 @@ func mcpCallWithModel(ctx context.Context, password, prompt, model string, image
 	client := seamClientWithPassword(password)
 
 	// Vision pre-check: when images ride the call, refuse early (and
-	// helpfully) if the target model's catalog entry lacks image input.
+	// helpfully) when the target model's catalog entry is KNOWN to lack
+	// image input (#1307 fail-safe direction: absent capability metadata
+	// is unknown, not text-only — refusing on unknown would break image
+	// calls on custom vision gateways that carry no metadata).
 	if len(imgs) > 0 {
 		info, err := client.ModelInfo(ctx, providerID, modelID)
-		if err == nil && !info.ImageInput {
+		if err == nil && info.ImageInputKnown && !info.ImageInput {
 			return "", fmt.Errorf("model %s does not accept image input per the workspace catalog — pick a vision-capable model", model)
 		}
-		// Catalog lookup failure is not fatal: the send itself will
-		// surface any real incompatibility.
+		// Catalog lookup failure / unknown capability is not fatal: the
+		// send itself will surface any real incompatibility.
 	}
 
 	sessionID, err := client.SessionCreate(ctx, "call_with_model")

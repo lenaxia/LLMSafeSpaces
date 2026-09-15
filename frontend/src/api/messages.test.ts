@@ -264,3 +264,54 @@ describe("queueMessage files (Epic 68 U1.6.8)", () => {
     expect(body).toEqual({ text: "with file", files });
   });
 });
+
+// Issue #1307 (review r1 finding 2): the omission notice must be
+// USER-VISIBLE — custom file parts previously vanished in transformHistory.
+describe("transformHistory file notices", () => {
+  it("keeps a downgraded image file part as a file_notice carrying the notice text", () => {
+    const raw = [
+      {
+        id: "msg_img",
+        type: "user",
+        parts: [
+          { type: "custom", id: "p1", custom: { kind: "file", data: { type: "file", mime: "image/png", filename: "shot.png", omitted: true, notice: "[image omitted] switch to a vision-capable model to continue." } } },
+        ],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.parts[0]!.type).toBe("file_notice");
+    expect(result[0]!.parts[0]!.text).toContain("[image omitted]");
+    expect(result[0]!.parts[0]!.text).toContain("shot.png");
+  });
+
+  it("renders a plain file metadata part as a file_notice line", () => {
+    const raw = [
+      {
+        id: "msg_img2",
+        type: "assistant",
+        parts: [
+          { type: "custom", id: "p2", custom: { kind: "file", data: { type: "file", mime: "image/png", filename: "chart.png" } } },
+        ],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result[0]!.parts[0]!.type).toBe("file_notice");
+    expect(result[0]!.parts[0]!.text).toContain("chart.png");
+    expect(result[0]!.parts[0]!.text).toContain("image/png");
+  });
+
+  it("still drops custom parts of other kinds", () => {
+    const raw = [
+      {
+        id: "msg_c",
+        type: "assistant",
+        parts: [
+          { type: "custom", id: "p3", custom: { kind: "other", data: { x: 1 } } },
+        ],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result).toHaveLength(0);
+  });
+});

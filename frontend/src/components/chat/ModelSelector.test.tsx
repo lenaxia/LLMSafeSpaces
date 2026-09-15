@@ -112,6 +112,24 @@ describe("ModelSelector", () => {
     expect(badges.length).toBeGreaterThan(0);
   });
 
+  // Issue #1307: a catalog-declared text-only model must warn in the
+  // picker; unknown capability (absent) must NOT warn.
+  it("shows text-only badge on supportsVision===false and not on unknown", async () => {
+    vi.mocked(workspacesApi.listModels).mockResolvedValue({
+      models: [
+        { id: "glm-5.3", providerID: "opencode", name: "GLM 5.3", tier: "paid", freeTier: false, selected: true, enabled: true, supportsVision: false },
+        { id: "claude", providerID: "anthropic", name: "Claude", tier: "paid", freeTier: false, selected: false, enabled: true, supportsVision: true },
+        { id: "custom", providerID: "gw", name: "Custom", tier: "paid", freeTier: false, selected: false, enabled: true },
+      ],
+      currentModel: "glm-5.3",
+    });
+    render(<ModelSelector workspaceId="ws-1" />, { wrapper });
+    await waitFor(() => screen.getByText("GLM 5.3"));
+    fireEvent.click(screen.getByText("GLM 5.3"));
+    expect(screen.getByText("text-only")).toBeInTheDocument();
+    expect(screen.queryByText("vision")).toBeNull();
+  });
+
   it("shows error indicator when listModels fails", async () => {
     vi.mocked(workspacesApi.listModels).mockRejectedValue(new Error("503"));
     render(<ModelSelector workspaceId="ws-1" />, { wrapper });

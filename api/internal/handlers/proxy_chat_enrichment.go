@@ -7,7 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // opencode error field allowlist — safe to surface to workspace owners.
@@ -59,4 +62,17 @@ func EnrichChatErrorBody(
 // AgentStateChecker is the interface for checking workspace agent state.
 type AgentStateChecker interface {
 	GetLastCredentialChangedAt(ctx context.Context, workspaceID string) (time.Time, error)
+}
+
+// writeTextOnlyWedgeBody is the #1307 targeted send-failure surface: the
+// adapter classified the provider 400 as image-content-in-history on a
+// text-only model — a permanently wedged session while that model stays
+// selected. The raw provider body is deliberately NOT echoed; the user
+// gets the cause and both escapes (switch model works immediately — the
+// wedge is only fatal while pinned to the text-only model).
+func writeTextOnlyWedgeBody(c *gin.Context) {
+	c.JSON(http.StatusUnprocessableEntity, gin.H{
+		"code":  "text_only_model_image_history",
+		"error": "This session's history contains an image, and the current model only accepts text. Switch to a vision-capable model in the model picker to continue this session, or start a new session.",
+	})
 }

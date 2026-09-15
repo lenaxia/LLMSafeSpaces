@@ -142,10 +142,20 @@ export function ModelSelector({ workspaceId, disabled }: Props) {
                   }`}
                 >
                   <span className="truncate">{m.name || m.id}</span>
-                  <span className={`ml-2 shrink-0 rounded px-1 py-0.5 text-[10px] ${
-                    m.freeTier ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-                  }`}>
-                    {m.tier}
+                  <span className="ml-2 flex shrink-0 items-center gap-1">
+                    {m.supportsVision === false && (
+                      <span
+                        className="rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-800 dark:bg-amber-900 dark:text-amber-200"
+                        title="Text-only model — image-bearing tool results (e.g. reading a screenshot) can wedge this session"
+                      >
+                        text-only
+                      </span>
+                    )}
+                    <span className={`rounded px-1 py-0.5 text-[10px] ${
+                      m.freeTier ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
+                    }`}>
+                      {m.tier}
+                    </span>
                   </span>
                 </button>
               ))}
