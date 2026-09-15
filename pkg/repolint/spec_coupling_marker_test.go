@@ -201,6 +201,66 @@ tags:
 	}
 }
 
+func TestSpecCouplingMarkerCheck_InfoSubBlockDescriptionsNotExempt(t *testing.T) {
+	// The allowlist is the info.description KEY itself — not the whole
+	// info: block. Phrases under info.license/contact/etc. fail.
+	dir := t.TempDir()
+	spec := `openapi: "3.0.3"
+info:
+  title: T
+  version: "1.0.0"
+  description: |
+    Platform overview mentioning opencode serve; even prose like
+    "mirrored from opencode" stays allowlisted at this one site.
+  license:
+    name: AGPL
+    description: Schema tracks upstream opencode and is mirrored from opencode.
+  contact:
+    name: x
+    description: Mirrored from opencode's payloads.
+paths: {}
+`
+	writeSpecFile(t, dir, spec)
+	rep, err := SpecCouplingMarkerCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Violations) != 3 {
+		t.Fatalf("license (2 phrases) + contact description phrases must be flagged (only info.description is allowlisted); got %+v", rep.Violations)
+	}
+	lines := map[int]bool{}
+	for _, v := range rep.Violations {
+		if v.IsLeaked {
+			t.Fatalf("violations must not be tolerated; got %+v", rep.Violations)
+		}
+		lines[v.Line] = true
+	}
+	if !lines[10] || !lines[13] {
+		t.Fatalf("violations must cover license (10) and contact (13) lines; got %+v", rep.Violations)
+	}
+}
+
+func TestSpecCouplingMarkerCheck_RequiredSpecFieldsNotExempt(t *testing.T) {
+	// info.description itself carries a coupling phrase: still the
+	// anchored allowlisted site (documented in #1305's note).
+	dir := t.TempDir()
+	spec := `openapi: "3.0.3"
+info:
+  title: T
+  description: Overview; the session schema tracks upstream opencode.
+  version: "1.0.0"
+paths: {}
+`
+	writeSpecFile(t, dir, spec)
+	rep, err := SpecCouplingMarkerCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Fatalf("info.description is the anchored allowlist; got %+v", rep.Violations)
+	}
+}
+
 func TestSpecCouplingMarkerCheck_KnownLeakTolerated(t *testing.T) {
 	restore := specCouplingKnownLeaks
 	specCouplingKnownLeaks = map[string]string{

@@ -319,6 +319,67 @@ func TestAgentIDPrefixKnownLeaks_MetaValidation(t *testing.T) {
 	}
 }
 
+func TestAgentIDPrefixCheck_ConstAndRegexLaundering(t *testing.T) {
+	// #1305 scopes the rule to "string literals / regex patterns":
+	// declaring a prefix constant or compiling a prefix regex outside
+	// the seam is dispatch knowledge, whatever the indirection.
+	dir := t.TempDir()
+	writeGoFile(t, dir, "api/internal/handlers/laundry.go", `package handlers
+
+import (
+	"regexp"
+	"strings"
+)
+
+const quePrefix = "que_"
+
+var perPrefix = "per_"
+
+var sesRe = regexp.MustCompile("^ses_")
+
+var idRe = regexp.MustCompile(`+"`"+`^(que|msg)_[a-z]+$`+"`"+`)
+
+func f(id string) bool {
+	return strings.HasPrefix(id, quePrefix) || sesRe.MatchString(id) || idRe.MatchString(id)
+}
+`)
+	rep, err := AgentIDPrefixCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, v := range rep.Violations {
+		got[v.Prefix]++
+	}
+	for _, want := range []string{"que_", "per_", "ses_", "msg_"} {
+		if got[want] == 0 {
+			t.Errorf("laundered %q (const/var declaration or regex pattern) must be flagged; got %+v", want, rep.Violations)
+		}
+	}
+}
+
+func TestAgentIDPrefixCheck_TrailingAndBlockCommentsNotFlagged(t *testing.T) {
+	dir := t.TempDir()
+	writeGoFile(t, dir, "api/internal/handlers/prose.go", `package handlers
+
+func f(i int) int {
+	// legacy: if id == "ses_abc" { ... } — removed with the seam migration
+	i := 0 // trailing prose: old code did id == "ses_abc" here
+	/*
+	 * block prose mentioning que_ and per_ dispatch
+	 */
+	return i
+}
+`)
+	rep, err := AgentIDPrefixCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Fatalf("full-line, trailing, and block prose comments are out of scope; got %+v", rep.Violations)
+	}
+}
+
 func TestAgentIDPrefixCheck_ReportOrdering(t *testing.T) {
 	dir := t.TempDir()
 	writeGoFile(t, dir, "api/x/b.go", `package x

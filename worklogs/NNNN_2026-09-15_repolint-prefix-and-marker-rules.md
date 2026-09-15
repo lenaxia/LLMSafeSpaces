@@ -40,7 +40,7 @@ Both registered in `cmd/repolint/main.go` (CI wiring: `.github/workflows/ci.yml`
 
 ## Key Decisions
 
-1. **`pkg/mcp/server.go` is allowlisted PER-FILE — the flagged conflict.** #1305's issue text lists four allowed paths and does NOT cover `pkg/mcp/server.go:325,341`, which carries `case strings.HasPrefix(requestID, "que_"/"per_")` — the MCP `run_resolve` dispatch fast-path explicitly sanctioned at the #1302 4a-2 r3 review (PR #1371; `pkg/agent/opencode/dialect.go:42-45` documents "the MCP server's dispatch is a prefix FAST-PATH … dispatch, never validation"). A known-leaks entry would violate the zero-at-birth mandate, and failing the real tree violates the birth-state assertion. Resolution: a per-file entry in `agentIDPrefixAllowedPaths` with dated rationale + issue pointers — narrow by construction (`pkg/mcp/other.go` still fails; dedicated test `TestAgentIDPrefixCheck_SiblingDirStillFlagged`), NOT a directory widen. **Conflict flagged here, in the PR description, and in the final report.** Retire when the dispatch moves behind the dialect seam.
+1. **`pkg/mcp/server.go` is allowlisted PER-FILE — the flagged conflict.** #1305's issue text lists four allowed paths and does NOT cover `pkg/mcp/server.go:325,341`, which carries `case strings.HasPrefix(requestID, "que_"/"per_")` — the MCP `run_resolve` dispatch fast-path explicitly sanctioned at the #1302 4a-2 r3 review (PR #1363; `pkg/agent/opencode/dialect.go:42-45` documents "the MCP server's dispatch is a prefix FAST-PATH … dispatch, never validation"). A known-leaks entry would violate the zero-at-birth mandate, and failing the real tree violates the birth-state assertion. Resolution: a per-file entry in `agentIDPrefixAllowedPaths` with dated rationale + issue pointers — narrow by construction (`pkg/mcp/other.go` still fails; dedicated test `TestAgentIDPrefixCheck_SiblingDirStillFlagged`), NOT a directory widen. **Conflict flagged here, in the PR description, and in the final report.** Retire when the dispatch moves behind the dialect seam.
 2. **Emission exemption for argument-position literals.** `sdks/canary/go/scenarios/d-session-msg/main.go:97` passes `"ses_nonexistent00000000000000"` (a negative probe) — not a match/mint context; exempt per `event_literal`'s `TestEventLiteralCheck_EmissionNotFlagged` precedent. Validated: birth-state real-tree test green without firing on it.
 3. **Concatenation minting IS flagged** (event_literal has no such context): minting agent-format IDs platform-side is design/0049 discipline rule 2's leak class; on the real tree the only concat sites are inside `cmd/workspace-agentd/` (ledger `"msg_" + entryID`, faultmatrix fixture IDs) — zero birth violations.
 4. **Phrase scope: ALL descriptions outside `info:`, not only response/component ones.** Property/tag/operation descriptions are the same client-facing admission surface; stricter is safer and green on the real tree. Factual agent mentions that match NO phrase (e.g. openapi.yaml:439 "Disposes the current opencode process…") are not flagged — the banned content is the coupling ADMISSION (three phrases), not the agent's name.
@@ -53,7 +53,7 @@ Both registered in `cmd/repolint/main.go` (CI wiring: `.github/workflows/ci.yml`
 | # | Assumption | Validation |
 |---|---|---|
 | A1 | Comparison-context scoping catches exactly `pkg/mcp/server.go:325,341` outside allowed paths on the real tree | Grep inventory (`"que_"/"per_"/"ses_"/"msg_"` quoted-literal search, non-test, all dirs) + `TestAgentIDPrefixCheck_RealRepo_BirthStateClean` green with the per-file allowlist |
-| A2 | The `pkg/mcp/server.go` dispatch is reviewer-sanctioned | `pkg/agent/opencode/dialect.go:42-45` header comment; PR #1371 (#1302 4a-2 r3) |
+| A2 | The `pkg/mcp/server.go` dispatch is reviewer-sanctioned | `pkg/agent/opencode/dialect.go:42-45` header comment; PR #1363 (#1302 4a-2 review chain; r1 review corrected the pointer from #1371) |
 | A3 | Canary's probe literal is not a matching context | Emission-precedent test; birth-state test green |
 | A4 | `pkg/agent/opencode/testdata/` fixtures are non-Go (the explicit entry is documentation-only) | `find testdata -name "*.go"` → 0 |
 | A5 | Line-based YAML scan suffices (key regex line-local; phrases line-local; block scalars indentation-tracked) | Fixture tests incl. multi-line block scalars, quoted keys, info-block boundary, blank-line neutrality |
@@ -81,7 +81,17 @@ None. (Pre-existing: two sibling NNNN_ worklog sentinels on origin/main tripped 
 
 ---
 
-## Next Steps
+## Review round 1 (CHANGES_REQUESTED) — corrections
+
+All four findings reproduced, fixed red-first (failing tests written before each behavior change):
+
+1. **`info:` exemption was block-wide** → narrowed to the `info.description` KEY itself (direct child of `info:`); `info.license`/`info.contact` descriptions now held to the phrase bans (`TestSpecCouplingMarkerCheck_InfoSubBlockDescriptionsNotExempt` — red before the fix). Plain multi-line (folded, non-block) scalars checked on first line only — documented as a known boundary.
+2. **Const/regex laundering escaped** → added declaration/assignment (`const quePrefix = "que_"`), assignment-carried alternation (`= "^(que|per)_"`), compile-anchored (`MustCompile("^que_")`), and compile-alternation (`(que|msg)_`) contexts (`TestAgentIDPrefixCheck_ConstAndRegexLaundering` — red before the fix). Real-tree birth-state test still green (zero false positives with the widened scope).
+3. **Trailing/`/* */` prose false-positives** → `isCommentLine` skips `//`, `/*`, `*`-prefixed lines; `stripTrailingComment` cuts at the earliest `//`/`/*` (documented trade: a `//` inside a URL string can suppress matches on the remainder — a rare miss, never a false positive) (`TestAgentIDPrefixCheck_TrailingAndBlockCommentsNotFlagged` — red before the fix).
+4. **Integration legs were manual-only** → automated in `pkg/repolint/binary_integration_test.go`: `TestRepolintMain_RegistersNewRules` (static wiring pin — silent deregistration fails), `TestCIWorkflow_RunsRepolintLint` (ci.yml + release.yml `make repolint` step pin), `TestRepolintBinary_InvokesNewRules` (builds the binary; scratch tree → exit non-zero with file:line for BOTH rules; real tree → exit 0 with both ok-lines; skipped under `-short`).
+5. **Provenance miscitation** → the #1302 4a-2 review that sanctioned the `pkg/mcp/server.go` dispatch is PR **#1363** (verified: its r2 review discusses `pkg/mcp/server.go:315,331` prefix routing), not #1371 (the 4b SDK-sync PR). Corrected in `agent_id_prefix.go`, `cmd/repolint/main.go`, this worklog, and the PR description.
+
+
 
 - Reviewer rounds on the PR; retire the `pkg/mcp/server.go` per-file allowlist when the MCP dispatch moves behind the dialect seam (post-epic-71; tracked in the allowlist comment).
 

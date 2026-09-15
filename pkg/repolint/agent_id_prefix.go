@@ -28,7 +28,7 @@ var agentIDPrefixes = []string{"que_", "per_", "ses_", "msg_"}
 //
 // pkg/mcp/server.go is a FILE entry (not a directory): the MCP
 // run_resolve tool's prefix dispatch fast-path was sanctioned at the
-// #1302 4a-2 r3 review (PR #1371) — "dispatch, never validation" (see
+// #1302 4a-2 review chain (PR #1363) — "dispatch, never validation" (see
 // pkg/agent/opencode/dialect.go's header comment). The entry is
 // per-file so any OTHER file under pkg/mcp/ introducing a prefix match
 // still fails. Conflict flagged in worklogs/NNNN_2026-09-15_repolint-
@@ -47,7 +47,7 @@ var agentIDPrefixAllowedPaths = []string{
 // reason and issue pointer (validateKnownLeaksEntries enforces the
 // shape); the rule fails on any NEW match. Empty at birth (#1305) —
 // the input surface's prefix literals were confined to the seams by
-// #1302 / PR #1371, and pkg/mcp/server.go's dispatch is allowlisted
+// #1302 (PR #1363), and pkg/mcp/server.go's dispatch is allowlisted
 // above, not leaked here.
 var agentIDPrefixKnownLeaks = map[string]string{}
 
@@ -77,15 +77,19 @@ func (r AgentIDPrefixReport) HasNew() bool {
 }
 
 // AgentIDPrefixCheck scans every non-test .go file outside the allowed
-// paths for matching or minting contexts on the agent's ID prefixes:
-// equality, case clauses, map-key lookups, the strings.Contains/
-// HasPrefix/TrimPrefix family, and concatenation minting ("msg_" + x).
-// The literal must START with the prefix (anchored immediately after
-// the opening quote) — "question_" is not "que_", and "per_user" as a
-// mid-literal substring is not a permission ID. Prose comments and
-// argument-position literals (emission, per event_literal's precedent)
-// are out of scope; the boundary protected is production dispatch
-// shape, so _test.go files are excluded as in event_literal.
+// paths for matching, minting, or laundering contexts on the agent's
+// ID prefixes: equality, case clauses, map-key lookups, the
+// strings.Contains/HasPrefix/TrimPrefix family, concatenation minting
+// ("msg_" + x), declaration/assignment of prefix literals (const
+// quePrefix = "que_"), and regex-pattern dispatch
+// (regexp.MustCompile("^que_") / ("^(que|per)_")). The literal must
+// START with the prefix (anchored immediately after the opening quote)
+// — "question_" is not "que_", and "per_user" as a mid-literal
+// substring is not a permission ID. Prose (full-line, trailing, and
+// block comments) and argument-position literals (emission, per
+// event_literal's precedent) are out of scope; the boundary protected
+// is production dispatch shape, so _test.go files are excluded as in
+// event_literal.
 func AgentIDPrefixCheck(root string) (AgentIDPrefixReport, error) {
 	var report AgentIDPrefixReport
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -116,12 +120,14 @@ func AgentIDPrefixCheck(root string) (AgentIDPrefixReport, error) {
 		}
 		for i, line := range strings.Split(string(data), "\n") {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") {
+			if isCommentLine(trimmed) {
 				continue
 			}
+			code := stripTrailingComment(line)
+			trimmedCode := strings.TrimSpace(code)
 			seen := map[string]bool{}
 			for _, p := range agentIDPrefixIndex {
-				if seen[p.prefix] || !p.match.MatchString(line) {
+				if seen[p.prefix] || !p.match.MatchString(code) {
 					continue
 				}
 				seen[p.prefix] = true
@@ -129,7 +135,7 @@ func AgentIDPrefixCheck(root string) (AgentIDPrefixReport, error) {
 					File:     norm,
 					Line:     i + 1,
 					Prefix:   p.prefix,
-					Excerpt:  truncateFor(trimmed, 100),
+					Excerpt:  truncateFor(trimmedCode, 100),
 					IsLeaked: leaked,
 				})
 			}
@@ -157,7 +163,11 @@ type idPrefixPattern struct {
 // agentIDPrefixIndex is the per-prefix match-context table. All
 // contexts anchor the prefix immediately after an opening quote ("
 // or `) so the literal must START with the prefix — the `question_` ≠
-// `que_` anchoring #1305 requires.
+// `que_` anchoring #1305 requires. Declaration and regex-pattern
+// laundering (const x = "que_"; regexp.MustCompile("^que_")) is in
+// scope per #1305's "string literals / regex patterns"; the bare
+// alternation forms additionally match `que` inside a regex group
+// (`(que|per)_`), where no underscore follows the prefix.
 var agentIDPrefixIndex = buildAgentIDPrefixIndex()
 
 func buildAgentIDPrefixIndex() []idPrefixPattern {
@@ -165,8 +175,10 @@ func buildAgentIDPrefixIndex() []idPrefixPattern {
 	for _, lit := range agentIDPrefixes {
 		// q is the quote-anchored prefix: an opening quote immediately
 		// followed by the prefix, and (where the literal continues)
-		// non-quote content until the closing quote.
+		// non-quote content until the closing quote. bare is the prefix
+		// without its trailing underscore, for regex-alternation groups.
 		q := `["` + "`" + `]` + regexp.QuoteMeta(lit)
+		bare := regexp.QuoteMeta(strings.TrimSuffix(lit, "_"))
 		idx = append(idx, idPrefixPattern{
 			prefix: lit,
 			match: regexp.MustCompile(
@@ -180,11 +192,46 @@ func buildAgentIDPrefixIndex() []idPrefixPattern {
 					// match family needles: strings.Contains(x, "que_…")
 					`|(?:Contains|HasPrefix|HasSuffix|TrimPrefix|TrimSuffix)\([^,)]+\s*,\s*` + q +
 					// concatenation minting: "msg_" + x
-					`|` + q + `[^"` + "`" + `]*"` + `\s*\+`,
+					`|` + q + `[^"` + "`" + `]*"` + `\s*\+` +
+					// declaration/assignment minting: const quePrefix = "que_"
+					// (laundering the literal through an identifier is
+					// still dispatch knowledge)
+					`|=\s*` + q +
+					// assignment laundering of a regex alternation:
+					// const pat = "^(que|per)_"
+					`|=\s*["` + "`" + `][^"` + "`" + `]*[(|:]` + bare + `[|)]` +
+					// regex-pattern dispatch: regexp.MustCompile("^que_…")
+					`|(?:MustCompile|Compile)\(\s*["` + "`" + `](?:\^|\(|\|)?` + regexp.QuoteMeta(lit) +
+					// regex alternation groups: (que|per)_ / (?:que|msg)_
+					`|(?:MustCompile|Compile)\([^)]*[(|:]` + bare + `[|)]`,
 			),
 		})
 	}
 	return idx
+}
+
+// isCommentLine reports whether a trimmed line is prose only: a
+// full-line //, block-comment opener /*, or block-comment continuation
+// starting with *.
+func isCommentLine(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "//") ||
+		strings.HasPrefix(trimmed, "/*") ||
+		strings.HasPrefix(trimmed, "*")
+}
+
+// stripTrailingComment cuts a line at the earliest // or /* so trailing
+// prose ("i := 0 // old code did id == \"ses_abc\"") is not matched.
+// The cut is textual: a // inside a string literal (URLs) also cuts,
+// which can only suppress matches on the remainder (a rare miss,
+// never a false positive).
+func stripTrailingComment(line string) string {
+	if i := strings.Index(line, "//"); i >= 0 {
+		line = line[:i]
+	}
+	if i := strings.Index(line, "/*"); i >= 0 {
+		line = line[:i]
+	}
+	return line
 }
 
 // validateKnownLeaksEntries enforces the knownLeaks contract shared by

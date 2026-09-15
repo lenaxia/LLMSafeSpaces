@@ -30,9 +30,13 @@ const (
 // specCouplingPhrases are the description phrases that admit the spec
 // tracks the agent's shapes. Matched case-insensitively on word
 // boundaries inside description values (block-scalar continuation
-// lines included) EXCEPT under the top-level info: block — the spec's
-// platform-overview description legitimately mentions opencode, and
-// that one anchored site is allowlisted, nothing else (#1305).
+// lines included) EXCEPT in the top-level info.description — the
+// spec's platform overview legitimately mentions opencode, and that
+// one anchored KEY (a direct child of info:) is allowlisted, nothing
+// else: info.license/contact/… descriptions are held to the bans
+// (#1305). Known boundary: folded PLAIN multi-line scalars (no |/>)
+// are only checked on their first line — the spec uses block scalars
+// for multi-line descriptions.
 var specCouplingPhrases = []string{
 	`tracks upstream`,
 	`from opencode`,
@@ -79,13 +83,14 @@ func (r SpecCouplingReport) HasNew() bool {
 
 // SpecCouplingMarkerCheck lints sdks/openapi.yaml for spec-to-agent
 // coupling markers: any x-opencode-proxy key, and any description
-// matching the coupling phrases. The top-level info: block's
-// description is the single anchored allowlist — it may mention
-// opencode (platform overview); every other description is held to the
-// phrase bans. A missing spec is an error, never a silent pass.
-// Line-based by design: markers and phrases are line-local, and
-// description block scalars are tracked by indentation relative to
-// their description: key (blank lines inside a scalar are neutral).
+// matching the coupling phrases. The top-level info.description key is
+// the single anchored allowlist — it may mention opencode (platform
+// overview); every other description, including info's own sub-blocks
+// (license, contact), is held to the phrase bans. A missing spec is an
+// error, never a silent pass. Line-based by design: markers and
+// phrases are line-local, and description block scalars are tracked by
+// indentation relative to their description: key (blank lines inside a
+// scalar are neutral).
 func SpecCouplingMarkerCheck(root string) (SpecCouplingReport, error) {
 	path := filepath.Join(root, filepath.FromSlash(SpecPath))
 	data, err := os.ReadFile(path) //nolint:gosec // G122: repo-rooted lint scan
@@ -100,7 +105,9 @@ func SpecCouplingMarkerCheck(root string) (SpecCouplingReport, error) {
 
 	var report SpecCouplingReport
 	inInfo := false
-	descIndent := -1 // indentation of the open description: key; -1 = none
+	infoChildIndent := -1 // indent of info:'s direct children; -1 until seen
+	descIndent := -1      // indentation of the open description: key; -1 = none
+	descExempt := false   // the open description is the allowlisted info.description
 	for i, line := range strings.Split(string(data), "\n") {
 		trimmedLine := strings.TrimSpace(line)
 		if trimmedLine == "" {
@@ -110,12 +117,16 @@ func SpecCouplingMarkerCheck(root string) (SpecCouplingReport, error) {
 
 		if indent == 0 {
 			inInfo = trimmedLine == "info:"
+			infoChildIndent = -1
 			descIndent = -1 // any non-blank top-level line closes open blocks
+		}
+		if inInfo && infoChildIndent == -1 && indent > 0 {
+			infoChildIndent = indent
 		}
 
 		// Continuation of a description block scalar.
 		if descIndent >= 0 && indent > descIndent {
-			if !inInfo {
+			if !descExempt {
 				checkPhrases(&report, phraseRes, i+1, trimmedLine)
 			}
 			continue
@@ -123,12 +134,16 @@ func SpecCouplingMarkerCheck(root string) (SpecCouplingReport, error) {
 		descIndent = -1
 
 		if m := specDescRe.FindStringSubmatch(line); m != nil {
+			// The anchored allowlist is the info.description KEY itself —
+			// a direct child of info: — not the whole info: block:
+			// info.license/contact/… descriptions are held to the bans.
+			descExempt = inInfo && indent == infoChildIndent
 			value := strings.TrimSpace(m[2])
 			if strings.HasPrefix(value, "|") || strings.HasPrefix(value, ">") {
 				// Block scalar: content starts on the following, more-
 				// indented lines.
 				descIndent = indent
-			} else if !inInfo {
+			} else if !descExempt {
 				checkPhrases(&report, phraseRes, i+1, trimmedLine)
 			}
 			continue

@@ -422,7 +422,7 @@ func runEventLiteral(root string) int {
 // runAgentIDPrefix enforces the agent ID-prefix lexicon rule (#1305):
 // matching or minting que_/per_/ses_/msg_ identifiers outside the seam
 // is agent knowledge (design/0049 discipline rule 2). The input
-// surface's literals were confined to the seams by #1302/PR #1371;
+// surface's literals were confined to the seams by #1302/PR #1363;
 // pkg/mcp/server.go's dispatch fast-path is a per-file allowlist entry
 // (reviewer-sanctioned, see agent_id_prefix.go). New matches fail.
 func runAgentIDPrefix(root string) int {
