@@ -61,3 +61,19 @@ The five sites in `api/internal/handlers/proxy_handlers.go` make direct adapter-
 - Regime-coverage pins: every route has terminus + flag-off + transport-error rows; the parity row asserts both regimes emit deep-equal REST JSON for the same fixture bytes (it caught two stub-builder gaps during development — the pin class works).
 - No narrative claims without execution: every "validated" above names its proof.
 
+
+## CI round 1 remediation — the MCP router fixture gap
+
+The first CI run failed 4 `TestMCPClientSessionMessage_*` rows in `api/internal/server` (red on this branch, green on clean main — reproduced locally). Root cause: `newMCPRouterFixture` arms the agentd terminus for the contract-stream route, and the fixture's outbox is unset — so its `/prompt` flows hit `syncSend`, which now writes through Act against a stub pod that served only the adapter's V1 surface (locally the Act POST hit an unrelated listener: `act: status 401`; on CI it would be connection-refused). My handler-level rows could not catch this — it is ROUTER-level integration (real router + real MCP client + real proxy handler).
+
+Fix (the fixture models the pod, and the pod now serves Act in the authority regime):
+- `SetAgentdPortForTest` seam (the established *ForTest family) — the fixture points the ABI surface at its stub pod.
+- The stub serves the Act op: the send arm answers with the same completed assistant message in ActionResult protojson (recorded into `promptGot`); the other verbs echo empty results.
+- The promptGot assertion updated to the Act payload (`body["send"]["text"]` == the user's text) — the invariant (the text reaches the pod) is unchanged; the wire it rides is the new truth.
+
+The passkey/uploads panics in the same CI run passed locally on both branches under `-short -cover` — runner flakes, not this change; re-verified by the rerun below.
+
+## Tests run (CI round 1 remediation)
+
+- `go test -timeout 600s ./api/internal/server/` — ok (4 rows red pre-fix → green post-fix; full package green)
+- `go test -timeout 600s -short -cover ./api/internal/server/` — ok
