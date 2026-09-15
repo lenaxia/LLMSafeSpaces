@@ -3,7 +3,10 @@
 
 package agent
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // ErrHTTPStatus marks adapter errors where the agent PROCESSED the
 // request and answered with a status >= 400: the outcome is definitive
@@ -23,3 +26,19 @@ var ErrHTTPStatus = errors.New("agent http status")
 // classification of a provider failure body; wraps ErrHTTPStatus so the
 // at-least-once semantics (definitive rejection) are preserved.
 var ErrImageInTextOnlyHistory = errors.New("session history contains an image the active text-only model cannot process")
+
+// TextOnlyWedgeMarker is the live-verified #1307 wedge signature: a
+// text-only provider answers any replay carrying a non-text content part
+// with a 400 whose body names the invalid messages.content.type. Defined
+// here (not the opencode seam) so BOTH regimes classify from one source:
+// the adapter wraps ErrImageInTextOnlyHistory around it, and the
+// authority regime's Act path surfaces the harness body inside a connect
+// error message (IsImageInTextOnlyHistoryMessage probes that text).
+const TextOnlyWedgeMarker = "messages.content.type is invalid"
+
+// IsImageInTextOnlyHistoryMessage reports whether a raw error message
+// carries the wedge signature — the authority-regime probe (agentd's
+// actor embeds the harness body verbatim in its typed connect error).
+func IsImageInTextOnlyHistoryMessage(msg string) bool {
+	return strings.Contains(msg, TextOnlyWedgeMarker)
+}

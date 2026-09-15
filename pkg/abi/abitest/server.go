@@ -4,8 +4,8 @@
 // Package abitest is the reference in-memory implementation of the harness
 // ABI. It exists so the generated contract tests run against a real connect
 // server over real HTTP (issue #1135: "generated contract tests run in CI
-// against a reference in-memory implementation") and to seed the shape of the
-// production sessionstate implementation (US-69.2). It is test scaffolding:
+// against a reference in-memory implementation") and to seed the shape of
+// the production sessionstate implementation (US-69.2). It is test scaffolding:
 // production code must not import it.
 package abitest
 
@@ -14,10 +14,12 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	abiconnect "github.com/lenaxia/llmsafespaces/pkg/abi/v1/abiconnect"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Server is an in-memory HarnessABI service. Its capability report declares
@@ -160,6 +162,12 @@ func (s *Server) Capabilities() *abiv1.CapabilityReport {
 			abiv1.ActionType_ACTION_TYPE_SWITCH_MODEL,
 			abiv1.ActionType_ACTION_TYPE_SWITCH_AGENT,
 			abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION,
+			// #1372: the sessions-cluster verbs (compact stays the
+			// NotSupported fixture).
+			abiv1.ActionType_ACTION_TYPE_CREATE_SESSION,
+			abiv1.ActionType_ACTION_TYPE_SEND,
+			abiv1.ActionType_ACTION_TYPE_DELETE_SESSION,
+			abiv1.ActionType_ACTION_TYPE_RENAME_SESSION,
 		},
 		SupportedDeliveryParts: []abiv1.DeliveryPartKind{
 			abiv1.DeliveryPartKind_DELIVERY_PART_KIND_TEXT,
@@ -268,7 +276,9 @@ func (s *Server) GetDeliveryStatus(ctx context.Context, req *connect.Request[abi
 }
 
 func (s *Server) Act(ctx context.Context, req *connect.Request[abiv1.ActionRequest]) (*connect.Response[abiv1.ActionResult], error) {
-	if req.Msg.GetSessionId() == "" {
+	// create_session is the one verb without a session yet (opencode
+	// mints the id); every other verb targets the request's session.
+	if req.Msg.GetSessionId() == "" && req.Msg.GetCreateSession() == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errString("session_id is required"))
 	}
 	switch a := req.Msg.GetAction().(type) {
@@ -331,6 +341,64 @@ func (s *Server) Act(ctx context.Context, req *connect.Request[abiv1.ActionReque
 		}
 		err.AddDetail(detail)
 		return nil, err
+	case *abiv1.ActionRequest_CreateSession:
+		// The sessions-cluster verbs (#1372): create may carry an empty
+		// session_id (the session does not exist yet).
+		ca := a.CreateSession
+		return connect.NewResponse(&abiv1.ActionResult{
+			Result: &abiv1.ActionResult_CreateSession{CreateSession: &abiv1.CreateSessionResult{
+				Session: &abiv1.Session{
+					Id:     "ses_new",
+					Title:  ca.GetTitle(),
+					Status: abiv1.SessionStatus_SESSION_STATUS_IDLE,
+				},
+			}},
+		}), nil
+	case *abiv1.ActionRequest_Send:
+		sa := a.Send
+		if req.Msg.GetSessionId() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errString("session_id is required"))
+		}
+		if sa.GetText() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errString("send requires text"))
+		}
+		msg := &abiv1.Message{
+			Id:        "msg_1",
+			SessionId: req.Msg.GetSessionId(),
+			Type:      abiv1.MessageType_MESSAGE_TYPE_ASSISTANT,
+			CreatedAt: timestamppb.New(time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)),
+			Parts: []*abiv1.Part{{
+				Id:      "prt_1",
+				Type:    abiv1.PartType_PART_TYPE_TEXT,
+				Payload: &abiv1.Part_Text{Text: "hi there"},
+			}},
+		}
+		if m := sa.GetModel(); m != nil {
+			msg.Model = &abiv1.ModelRef{Id: m.GetId(), Provider: m.GetProvider()}
+		}
+		return connect.NewResponse(&abiv1.ActionResult{
+			SessionId: req.Msg.GetSessionId(),
+			Result:    &abiv1.ActionResult_Send{Send: &abiv1.SendResult{Message: msg}},
+		}), nil
+	case *abiv1.ActionRequest_DeleteSession:
+		if req.Msg.GetSessionId() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errString("session_id is required"))
+		}
+		return connect.NewResponse(&abiv1.ActionResult{
+			SessionId: req.Msg.GetSessionId(),
+			Result:    &abiv1.ActionResult_DeleteSession{DeleteSession: &abiv1.DeleteSessionResult{}},
+		}), nil
+	case *abiv1.ActionRequest_RenameSession:
+		if req.Msg.GetSessionId() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errString("session_id is required"))
+		}
+		if a.RenameSession.GetTitle() == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errString("rename_session requires title"))
+		}
+		return connect.NewResponse(&abiv1.ActionResult{
+			SessionId: req.Msg.GetSessionId(),
+			Result:    &abiv1.ActionResult_RenameSession{RenameSession: &abiv1.RenameSessionResult{}},
+		}), nil
 	default:
 		err := connect.NewError(connect.CodeUnimplemented, errString("action not declared in the capability report"))
 		detail, derr := connect.NewErrorDetail(&abiv1.NotSupported{Capability: "action.unknown"})

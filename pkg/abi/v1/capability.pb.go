@@ -95,6 +95,10 @@ const (
 	ActionType_ACTION_TYPE_SWITCH_AGENT    ActionType = 3
 	ActionType_ACTION_TYPE_ANSWER_QUESTION ActionType = 4
 	ActionType_ACTION_TYPE_COMPACT         ActionType = 5
+	ActionType_ACTION_TYPE_CREATE_SESSION  ActionType = 6
+	ActionType_ACTION_TYPE_SEND            ActionType = 7
+	ActionType_ACTION_TYPE_DELETE_SESSION  ActionType = 8
+	ActionType_ACTION_TYPE_RENAME_SESSION  ActionType = 9
 )
 
 // Enum value maps for ActionType.
@@ -106,6 +110,10 @@ var (
 		3: "ACTION_TYPE_SWITCH_AGENT",
 		4: "ACTION_TYPE_ANSWER_QUESTION",
 		5: "ACTION_TYPE_COMPACT",
+		6: "ACTION_TYPE_CREATE_SESSION",
+		7: "ACTION_TYPE_SEND",
+		8: "ACTION_TYPE_DELETE_SESSION",
+		9: "ACTION_TYPE_RENAME_SESSION",
 	}
 	ActionType_value = map[string]int32{
 		"ACTION_TYPE_UNSPECIFIED":     0,
@@ -114,6 +122,10 @@ var (
 		"ACTION_TYPE_SWITCH_AGENT":    3,
 		"ACTION_TYPE_ANSWER_QUESTION": 4,
 		"ACTION_TYPE_COMPACT":         5,
+		"ACTION_TYPE_CREATE_SESSION":  6,
+		"ACTION_TYPE_SEND":            7,
+		"ACTION_TYPE_DELETE_SESSION":  8,
+		"ACTION_TYPE_RENAME_SESSION":  9,
 	}
 )
 
@@ -380,7 +392,7 @@ const file_llmsafespaces_abi_v1_capability_proto_rawDesc = "" +
 	"\x16PROVENANCE_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aPROVENANCE_PLATFORM_PINNED\x10\x01\x12\x17\n" +
 	"\x13PROVENANCE_UNPINNED\x10\x02\x12\x12\n" +
-	"\x0ePROVENANCE_BYO\x10\x03*\xba\x01\n" +
+	"\x0ePROVENANCE_BYO\x10\x03*\xb0\x02\n" +
 	"\n" +
 	"ActionType\x12\x1b\n" +
 	"\x17ACTION_TYPE_UNSPECIFIED\x10\x00\x12\x19\n" +
@@ -388,7 +400,11 @@ const file_llmsafespaces_abi_v1_capability_proto_rawDesc = "" +
 	"\x18ACTION_TYPE_SWITCH_MODEL\x10\x02\x12\x1c\n" +
 	"\x18ACTION_TYPE_SWITCH_AGENT\x10\x03\x12\x1f\n" +
 	"\x1bACTION_TYPE_ANSWER_QUESTION\x10\x04\x12\x17\n" +
-	"\x13ACTION_TYPE_COMPACT\x10\x05*p\n" +
+	"\x13ACTION_TYPE_COMPACT\x10\x05\x12\x1e\n" +
+	"\x1aACTION_TYPE_CREATE_SESSION\x10\x06\x12\x14\n" +
+	"\x10ACTION_TYPE_SEND\x10\a\x12\x1e\n" +
+	"\x1aACTION_TYPE_DELETE_SESSION\x10\b\x12\x1e\n" +
+	"\x1aACTION_TYPE_RENAME_SESSION\x10\t*p\n" +
 	"\x10DeliveryPartKind\x12\"\n" +
 	"\x1eDELIVERY_PART_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17DELIVERY_PART_KIND_TEXT\x10\x01\x12\x1b\n" +

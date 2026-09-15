@@ -317,6 +317,19 @@ func modelOverride(m *session.ModelRef) (modelID, providerID string, ok bool) {
 	return "", "", false // bare flat
 }
 
+// MessageModelOverrideWire returns the per-prompt model OBJECT wire form
+// for the message route ({"modelID","providerID"}), or ok=false when the
+// ref is unexpressible there (the field must be omitted so the session
+// default applies — same rules as modelOverride). Exported for the agentd
+// actor seam (#1372): the Act send path builds the identical body.
+func MessageModelOverrideWire(m *session.ModelRef) (wire map[string]string, ok bool) {
+	mid, prov, expressible := modelOverride(m)
+	if !expressible {
+		return nil, false
+	}
+	return map[string]string{"modelID": mid, "providerID": prov}, true
+}
+
 func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {
 	// Send is synchronous: deliver via /session/:id/message (the V1
 	// endpoint opencode uses for synchronous send). The response is
@@ -330,13 +343,10 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 			{"type": "text", "text": text},
 		},
 	}
-	if mid, prov, ok := modelOverride(opts.Model); ok {
+	if wire, ok := MessageModelOverrideWire(opts.Model); ok {
 		// Object wire form (see modelOverride): a string here 400s every
 		// per-prompt override on opencode 1.18.10.
-		body["model"] = map[string]string{
-			"modelID":    mid,
-			"providerID": prov,
-		}
+		body["model"] = wire
 	}
 	resp, err := a.doPost(ctx, c, "/session/"+sessionID+"/message", body)
 	if err != nil {
@@ -355,11 +365,14 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 	// while still bounding a malicious upstream. Use streaming decode via
 	// json.NewDecoder instead of buffering+Unmarshal for consistency with
 	// GetHistory's streaming path.
-	var om ocMessage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&om); err != nil {
-		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
+	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if rerr != nil {
+		return nil, fmt.Errorf("POST /session/%s/message: read: %w", sessionID, rerr)
 	}
-	msg, files := translateMessage(om)
+	msg, files, perr := ParseMessageWire(raw)
+	if perr != nil {
+		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, perr)
+	}
 	if len(files) > 0 && a.differ != nil {
 		msg.Parts = append(msg.Parts, a.fileChangeParts(ctx, files)...)
 	}

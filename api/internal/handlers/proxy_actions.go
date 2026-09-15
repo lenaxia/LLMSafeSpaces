@@ -13,6 +13,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/inbox"
@@ -108,26 +110,65 @@ func (h *ProxyHandler) dispositionInboxOnAction(c *gin.Context, workspaceID, ses
 	h.resolveInboxOnProxySuccess(c, workspaceID, sessionID, ans.InputID, inbox.KindQuestion, disposition)
 }
 
+// sessionActHTTPClient is the sessions-cluster Act transport (#1372 r1):
+// a synchronous send is a FULL LLM TURN, so the client carries NO hard
+// timeout — the request context is the boundary, exactly like the adapter
+// path's client (TestHTTPClient_NoHardTimeout pins that class; the outbox
+// deliverer's 3m30s agentdHTTPClient would false-502 long turns while the
+// pod-side turn keeps running — the retry-duplicates-the-turn ambiguity).
+var sessionActHTTPClient = &http.Client{}
+
+// sessionActBodyCap bounds the Act response body for the sessions verbs:
+// the adapter's own Send bound — a tool-output-bearing assistant message
+// can exceed the input verbs' 1 MiB (bytes fields base64-inflate ~33%).
+const sessionActBodyCap = 64 << 20
+
 // abiAct POSTs the union to the pod's Act op (Connect JSON envelope — the
 // terminus transport discipline: zero generated-code coupling in the API
-// binary path).
+// binary path). The input-verb transport: the shared agentdHTTPClient and
+// the 1 MiB bound (answers and forward-actions return tiny results).
 func abiAct(ctx context.Context, base, pw string, payload any, out any) error {
-	body, err := json.Marshal(payload)
+	data, err := abiActRaw(ctx, agentdHTTPClient, base, pw, payload, 1<<20)
 	if err != nil {
 		return err
+	}
+	// Connect unary success: the body IS the message (bare JSON).
+	return json.Unmarshal(data, out)
+}
+
+// abiActProto is abiAct on the sessions transport — no hard client
+// timeout, the adapter's 64 MiB body bound — with a protojson decode for
+// callers consuming the result as a generated message (the #1372 sessions
+// verbs). DiscardUnknown keeps mixed-generation windows
+// forward-compatible: a newer agentd may emit fields this API's schema
+// does not carry yet.
+func abiActProto(ctx context.Context, base, pw string, payload any, out proto.Message) error {
+	data, err := abiActRaw(ctx, sessionActHTTPClient, base, pw, payload, sessionActBodyCap)
+	if err != nil {
+		return err
+	}
+	return protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(data, out)
+}
+
+// abiActRaw performs the Act POST and returns the success body (with the
+// connect-error mapping applied on failure).
+func abiActRaw(ctx context.Context, hc *http.Client, base, pw string, payload any, bodyCap int64) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+abiActPath, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.SetBasicAuth("opencode", pw)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := agentdHTTPClient.Do(req)
+	resp, err := hc.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, bodyCap))
 	if resp.StatusCode >= 400 {
 		// Connect unary error: bare {"code","message"} body (same wire
 		// shape the real generated handler emits — pinned in
@@ -137,12 +178,11 @@ func abiAct(ctx context.Context, base, pw string, payload any, out any) error {
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(data, &e) == nil && e.Code != "" {
-			return &connectCodeError{code: e.Code, msg: e.Message}
+			return nil, &connectCodeError{code: e.Code, msg: e.Message}
 		}
-		return fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
+		return nil, fmt.Errorf("act: status %d: %s", resp.StatusCode, string(data))
 	}
-	// Connect unary success: the body IS the message (bare JSON).
-	return json.Unmarshal(data, out)
+	return data, nil
 }
 
 // connectCodeError carries the connect error code string off the wire.
