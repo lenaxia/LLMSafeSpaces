@@ -316,7 +316,7 @@ func TestOpencodeBootLayersWiring(t *testing.T) {
 		{"supervise_opencode.go", "ensureOpencodeBootLayers(log)", "supervise-opencode boot layers"},
 		{"main.go", "go watchAgentConfigForChanges(bgCtx", "single-container watcher started"},
 		{"supervise_opencode.go", "go watchAgentConfigForChanges(rootCtx", "supervisor watcher started"},
-		{"main.go", "relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions))", "session-aware restart in single-container watcher (unconditional, outside maybeStartRelayInjector)"},
+		{"main.go", "relayKillFunc(bgCtx, &bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter))", "session-aware restart in single-container watcher (unconditional, outside maybeStartRelayInjector)"},
 		{"supervise_opencode.go", "proc.restartWithGrace(5 * time.Second)", "grace restart in supervisor watcher"},
 	} {
 		body, err := os.ReadFile(tc.file)

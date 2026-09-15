@@ -122,6 +122,22 @@ type HealthzResponse struct {
 	// (single-container mode, or before the first status poll) — no
 	// evidence is not a degrade. Observability only, like Warnings.
 	SpawnEnv *SpawnEnvHealth `json:"spawnEnv,omitempty"`
+	// PendingApply (#1342, L11) is the deferred-credential-apply state:
+	// a restart-worthy credential change is staged on the pod but its
+	// applying restart is riding a maintenance window behind busy
+	// sessions. Nil when nothing is pending (the credential applied, or
+	// no restart-worthy change arrived). The controller mirrors it into
+	// the Workspace CRD's CredentialsApplyPending condition.
+	PendingApply *PendingApplyHealth `json:"pendingApply,omitempty"`
+}
+
+// PendingApplyHealth is the deferred-apply slice of HealthzResponse.
+// Reason is the closed reason set's first value ("credential_change");
+// WaitingSeconds/BusySessions tell the operator how long and why.
+type PendingApplyHealth struct {
+	Reason         string `json:"reason,omitempty"`
+	WaitingSeconds int    `json:"waitingSeconds"`
+	BusySessions   int    `json:"busySessions"`
 }
 
 // SpawnEnvHealth is the spawn-env delivery slice of HealthzResponse.

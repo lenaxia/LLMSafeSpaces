@@ -40,6 +40,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -70,20 +71,65 @@ type restartableProcess interface {
 // the US-44.2 design.
 const restartIdleCheckInterval = 5 * time.Second
 
-// defaultMaxDefer bounds how long a deferred restart waits for busy sessions
-// to idle before force-restarting (worklog 371 H1). Without it, a stuck
-// session (infinite loop, hung MCP, deadlocked tool) defers the restart
-// forever and the credential change never applies — silent non-application.
-//
-// Design 0045 Change 5: reduced from 2h to 15m. Rationale: with Change 4's
-// tracker-empty semantic fix, the defer path is now reached only when the
-// tracker has SSE-observed busy state — i.e., a session is *genuinely*
-// running work. 15 minutes covers legitimate long-running agentic turns
-// (reasoning models, slow tool calls, multi-step workflows) with generous
-// headroom. Longer just wastes credential freshness for a stuck session;
-// the force-restart at expiry logs a warning so operators can correlate
-// the interruption.
-const defaultMaxDefer = 15 * time.Minute
+// restartStallBound is the #1342 progress-keyed force bound: a busy
+// session with no harness activity for longer than this is stalled
+// (force-eligible). It is DERIVED from the #1312 lease-clock family
+// (sessionstate.LeaseConvergenceBound — the epic-71 coherence-pinned
+// budget table), not a new constant: the same bound that governs lease
+// and busy-clear convergence governs restart stall detection. The fixed
+// 15-minute maxDefer this replaces force-killed legitimately long turns
+// (the 2026-09-11 incident: 30+ minute bash commands killed mid-flight
+// by a credential refresh because wall-clock, not progress, decided).
+// Owner direction 2026-09-11: a turn silent past this bound has likely
+// already wedged — and the force path is interrupt-first, so a false
+// stall still lands as a graceful abort, not a kill.
+const restartStallBound = sessionstate.LeaseConvergenceBound
+
+// defaultInterruptGrace is the grace window between the force path's
+// interrupts and the restart (#1342 S12): the harness gets this long to
+// write terminal part state for the interrupted turns before the
+// process dies. Matches the supervisor's SIGTERM→SIGKILL window
+// (defaultRestartGrace) — same class of controlled-death timing.
+const defaultInterruptGrace = 5 * time.Second
+
+// interruptCallTimeout bounds one Act-interrupt call against a wedged
+// harness (the force path fires precisely when the harness may be
+// unresponsive — each call must fail fast, never block the restart).
+const interruptCallTimeout = 3 * time.Second
+
+// sessionInterrupter issues the Act interrupt for one session (#1342
+// item 1: the force path's graceful half). Implemented by the actor
+// seam (sessionstate_wiring.go newSessionInterrupter); nil disables
+// interrupts (the force path degrades to the pre-1342 direct restart).
+type sessionInterrupter func(ctx context.Context, sessionID string) error
+
+// restartDecisionConfig carries the session-aware restart decision's
+// collaborators and tunables. StallBound/GraceWindow/PollInterval <= 0
+// fall back to their defaults (restartStallBound /
+// defaultInterruptGrace / restartIdleCheckInterval).
+type restartDecisionConfig struct {
+	PollInterval time.Duration
+	// StallBound: busy sessions with no harness activity newer than
+	// this are stalled; the force path fires only when NO busy session
+	// is progressing (#1342: defer is unbounded while any session
+	// streams — the 40-min build rule).
+	StallBound time.Duration
+	// GraceWindow bounds the wait between the force path's interrupts
+	// and the restart (S12: terminal part state before death).
+	GraceWindow time.Duration
+	// Lister probes opencode's live session list for stale-busy pruning
+	// (C2a). May be nil.
+	Lister sessionLister
+	// Interrupter issues the Act interrupt per busy session on the
+	// force path. May be nil (degrades to direct restart).
+	Interrupter sessionInterrupter
+	// PendingApply, when non-nil, surfaces the deferred apply on
+	// healthz (item 4). Nil on the relay path (not a credential apply).
+	PendingApply *pendingApplyTracker
+	// BgWg tracks the deferred goroutine for clean shutdown (H1c). May
+	// be nil (tests only).
+	BgWg *sync.WaitGroup
+}
 
 // sessionListerProbeTimeout bounds the cost of probing opencode's /session
 // endpoint from the restart decision path. If opencode is unreachable the
@@ -160,43 +206,46 @@ func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 // (immediately or via a deferred goroutine that has since fired), false if
 // the restart was deferred to a background goroutine.
 //
-// Behavior:
+// Behavior (#1342 — progress-keyed, interrupt-first):
 //
 //   - If proc is nil, returns true without doing anything (test/no-op path).
 //   - If the tracker shows all sessions idle OR the tracker is empty
 //     (design 0045 Change 4 — empty tracker = no busy signal observed via
 //     SSE, so restart immediately), restarts immediately.
 //   - If sessions are busy per the SSE tracker, defers the restart until
-//     they idle or maxDefer elapses.
+//     they idle — UNBOUNDED while any busy session is progressing
+//     (harness activity fresher than StallBound; the 40-min build rule).
 //
 // The deferred goroutine:
 //
-//   - Polls every pollInterval, pruning stale entries via lister (C2a) and
+//   - Polls every PollInterval, pruning stale entries via lister (C2a) and
 //     re-checking busy state.
+//   - Restarts as soon as all sessions are idle (the maintenance window).
+//   - Takes the FORCE path only when NO busy session is progressing (all
+//     stalled past StallBound): issues the Act interrupt for each busy
+//     session, waits GraceWindow for the harness to write terminal part
+//     state, THEN restarts (S12: a controlled death is graceful — never a
+//     kill wearing a controlled costume). The sessionstate orphan sweep is
+//     the backstop when the harness ignores the interrupt.
 //   - Selects on ctx.Done() so it is canceled at agentd shutdown (H1a).
-//   - Force-restarts after maxDefer (H1b) so credentials eventually apply
-//     even if sessions stay busy forever (stuck tool, infinite loop).
 //   - Is tracked by bgWg (H1c) so shutdown waits for it before proc.stop().
-//
-// maxDefer <= 0 falls back to defaultMaxDefer. pollInterval <= 0 falls back
-// to restartIdleCheckInterval.
 func makeSessionAwareRestartDecision(
 	ctx context.Context,
 	proc restartableProcess,
 	tracker *sessionStatusTracker,
-	pollInterval time.Duration,
-	maxDefer time.Duration,
-	lister sessionLister,
-	bgWg *sync.WaitGroup,
+	cfg restartDecisionConfig,
 ) bool {
 	if proc == nil {
 		return true
 	}
-	if maxDefer <= 0 {
-		maxDefer = defaultMaxDefer
+	if cfg.StallBound <= 0 {
+		cfg.StallBound = restartStallBound
 	}
-	if pollInterval <= 0 {
-		pollInterval = restartIdleCheckInterval
+	if cfg.PollInterval <= 0 {
+		cfg.PollInterval = restartIdleCheckInterval
+	}
+	if cfg.GraceWindow <= 0 {
+		cfg.GraceWindow = defaultInterruptGrace
 	}
 	// ctx is the agentd background lifecycle context (outlives any single HTTP
 	// request). When nil (tests, or deps.BgCtx unset), fall back to
@@ -209,7 +258,7 @@ func makeSessionAwareRestartDecision(
 	}
 
 	// Prune stale entries before deciding (C2a).
-	pruneFromLister(ctx, tracker, lister)
+	pruneFromLister(ctx, tracker, cfg.Lister)
 
 	if !trackerHasBusyOrUnknown(tracker) {
 		proc.restart()
@@ -231,55 +280,56 @@ func makeSessionAwareRestartDecision(
 		busy = tracker.listBusy()
 	}
 	if len(busy) > 0 {
-		log.Info("session-aware restart: deferring restart, sessions are busy",
+		log.Info("session-aware restart: deferring restart until idle (maintenance window), sessions are busy",
 			zap.Strings("busySessions", busy),
-			zap.Duration("maxDefer", maxDefer))
+			zap.Duration("stallBound", cfg.StallBound))
+		cfg.PendingApply.begin(len(busy))
 	} else {
 		// TOCTOU race: hasAnyBusy → true was observed, but by the time we
 		// called listBusy the last busy session transitioned to idle. The
 		// deferred goroutine will observe this on its next poll tick and
 		// restart within pollInterval.
 		log.Info("session-aware restart: deferring restart, tracker raced to idle between check and log (will restart on next poll tick)",
-			zap.Duration("maxDefer", maxDefer),
-			zap.Duration("pollInterval", pollInterval))
+			zap.Duration("pollInterval", cfg.PollInterval))
 	}
 
 	runDeferred := func() {
-		deadline := time.NewTimer(maxDefer)
-		defer deadline.Stop()
-		ticker := time.NewTicker(pollInterval)
+		defer cfg.PendingApply.clear()
+		ticker := time.NewTicker(cfg.PollInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				log.Info("session-aware restart: deferred restart canceled by shutdown")
 				return
-			case <-deadline.C:
-				log.Warn("session-aware restart: max-defer elapsed, force-restarting to apply credential change",
-					zap.Duration("maxDefer", maxDefer),
-					zap.Strings("busySessions", func() []string {
-						if tracker != nil {
-							return tracker.listBusy()
-						}
-						return nil
-					}()))
-				proc.restart()
-				return
 			case <-ticker.C:
-				pruneFromLister(ctx, tracker, lister)
+				pruneFromLister(ctx, tracker, cfg.Lister)
 				if !trackerHasBusyOrUnknown(tracker) {
 					log.Info("session-aware restart: all sessions now idle, applying deferred restart")
 					proc.restart()
 					return
 				}
+				progressing, stalled := tracker.busyPartitions(cfg.StallBound)
+				cfg.PendingApply.refreshBusy(len(progressing) + len(stalled))
+				if len(progressing) > 0 {
+					// Progress-keyed defer (#1342): a session streaming
+					// part output is never a restart candidate, no
+					// matter how long the turn runs.
+					log.Debug("session-aware restart: deferring, busy sessions progressing",
+						zap.Int("progressing", len(progressing)),
+						zap.Int("stalled", len(stalled)))
+					continue
+				}
+				forceInterruptRestart(ctx, proc, stalled, cfg)
+				return
 			}
 		}
 	}
 
-	if bgWg != nil {
-		bgWg.Add(1)
+	if cfg.BgWg != nil {
+		cfg.BgWg.Add(1)
 		go func() {
-			defer bgWg.Done()
+			defer cfg.BgWg.Done()
 			runDeferred()
 		}()
 	} else {
@@ -287,6 +337,38 @@ func makeSessionAwareRestartDecision(
 	}
 
 	return false
+}
+
+// forceInterruptRestart is the #1342 force path: interrupt every busy
+// (all stalled — no session progressing) session, give the harness the
+// grace window to write terminal part state, then restart (S12:
+// interrupt-then-restart; the sessionstate orphan sweep is the backstop
+// when the harness ignores the interrupt). Interrupt errors are logged
+// and the restart proceeds — a wedged harness must not wedge the
+// credential apply with it.
+func forceInterruptRestart(ctx context.Context, proc restartableProcess, stalled []string, cfg restartDecisionConfig) {
+	log.Warn("session-aware restart: all busy sessions stalled — interrupting turns before force restart",
+		zap.Strings("stalledSessions", stalled),
+		zap.Duration("graceWindow", cfg.GraceWindow))
+	if cfg.Interrupter != nil {
+		for _, sid := range stalled {
+			callCtx, cancel := context.WithTimeout(ctx, interruptCallTimeout)
+			if err := cfg.Interrupter(callCtx, sid); err != nil {
+				log.Warn("session-aware restart: interrupt failed (grace expires, restart proceeds)",
+					zap.String("session", sid), zap.Error(err))
+			}
+			cancel()
+		}
+	}
+	grace := time.NewTimer(cfg.GraceWindow)
+	defer grace.Stop()
+	select {
+	case <-ctx.Done():
+		log.Info("session-aware restart: force restart canceled by shutdown during grace window")
+		return
+	case <-grace.C:
+	}
+	proc.restart()
 }
 
 // materializeConfig is the resolved set of filesystem paths used by the
@@ -879,7 +961,7 @@ type applySecretsDeps struct {
 	// BgCtx is the agentd background-goroutine context. The deferred-restart
 	// goroutine selects on it so it is canceled at shutdown (H1a). When
 	// nil, context.Background() is used (goroutine lives until restart fires
-	// or maxDefer elapses — tests only).
+	// or the stall-bound force path elapses — tests only).
 	BgCtx context.Context
 
 	// BgWg tracks background goroutines for clean shutdown. The deferred-
@@ -893,6 +975,16 @@ type applySecretsDeps struct {
 	// a stale busy entry for a session that no longer exists. May be nil
 	// (pruneFromLister is a no-op in that case).
 	Lister sessionLister
+
+	// Interrupter issues the Act interrupt per busy session on the force
+	// path (#1342 S12: interrupt-then-restart, never a raw kill). May be
+	// nil (force path degrades to direct restart).
+	Interrupter sessionInterrupter
+
+	// PendingApply, when non-nil, surfaces the deferred credential apply
+	// on healthz → the Workspace CredentialsApplyPending condition
+	// (#1342 item 4). May be nil.
+	PendingApply *pendingApplyTracker
 
 	// AgentConfigWriter is the seam platform code holds after
 	// construction. It only knows the agent.AgentConfigWriter
@@ -1101,7 +1193,16 @@ func applySecretsBatch(ctx context.Context, cfg materializeConfig, deps applySec
 			// the crash/oom reasons.
 			pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), metricRestartReason(reason))
 		}
-		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, deps.BgWg) //nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
+		//nolint:contextcheck // deps.BgCtx is the agentd lifecycle context (not the request context) — the deferred goroutine must outlive the HTTP request
+		restarted = makeSessionAwareRestartDecision(deps.BgCtx, proc, tracker, restartDecisionConfig{
+			PollInterval: restartIdleCheckInterval,
+			StallBound:   restartStallBound,
+			GraceWindow:  defaultInterruptGrace,
+			Lister:       lister,
+			Interrupter:  deps.Interrupter,
+			PendingApply: deps.PendingApply,
+			BgWg:         deps.BgWg,
+		})
 	}
 
 	// File-class live reload (#1244): the files half of delivery only ran

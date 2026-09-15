@@ -286,6 +286,12 @@ const (
 	// crash-looping on a boot-phase failure — the pod will never become
 	// Ready and pod deletion cannot fix it (code or input bug).
 	WorkspaceConditionBootReady WorkspaceConditionType = "BootReady"
+	// WorkspaceConditionCredentialsApplyPending reports that a
+	// restart-worthy credential change is staged on the pod but its
+	// applying restart is deferred behind busy sessions (#1342, L11):
+	// it applies on the next idle transition or a stalled-session
+	// interrupt — never a fixed wall clock.
+	WorkspaceConditionCredentialsApplyPending WorkspaceConditionType = "CredentialsApplyPending"
 )
 
 const (
@@ -295,6 +301,10 @@ const (
 	ReasonCredentialInvalid         = "CredentialInvalid"
 	ReasonCredentialCheckError      = "CredentialCheckError"
 	ReasonCredentialValidationError = "CredentialValidationError"
+	// ReasonCredentialsApplyDeferred is the CredentialsApplyPending
+	// condition's reason (#1342): the restart that would apply the
+	// staged credential change is waiting for busy sessions.
+	ReasonCredentialsApplyDeferred = "CredentialsApplyDeferred"
 )
 
 const (

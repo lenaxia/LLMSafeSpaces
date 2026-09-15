@@ -84,6 +84,15 @@ type serverDeps struct {
 	// by the sidecar's status poller (US-70.1). Nil in single-container
 	// mode (no split supervisor to poll) — healthz then omits the field.
 	spawnEnvSnapshot func() *agentd.SpawnEnvHealth
+	// pendingApply surfaces the deferred credential apply on healthz →
+	// the controller's CredentialsApplyPending condition (#1342 item 4).
+	// Nil-safe by construction (every method tolerates the nil
+	// receiver); nil only in tests that never exercise the defer path.
+	pendingApply *pendingApplyTracker
+	// interrupter issues the Act interrupt per busy session on the
+	// session-aware restart force path (#1342 S12). Built from the
+	// opencode actor seam; nil only in tests.
+	interrupter sessionInterrupter
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -408,6 +417,8 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 		BgCtx:                bgCtx,
 		BgWg:                 bgWg,
 		Lister:               liveSessions,
+		Interrupter:          deps.interrupter,
+		PendingApply:         deps.pendingApply,
 		AgentConfigWriter:    deps.agentConfigWriter,
 	}
 	// US-70.3 (design 0057 law 1): the notify-pull target. Bind/rotate
@@ -466,7 +477,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// here (TOCTOU closed, review note on #934).
 	adminToken := deps.resolvedAdminToken
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, modelWarnPathFromEnv(), deps.spawnEnvSnapshot, deps.pendingApply.snapshot))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 

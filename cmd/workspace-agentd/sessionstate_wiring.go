@@ -456,6 +456,23 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text,
 	return out.Info.ID, nil
 }
 
+// newSessionInterrupter builds the #1342 force-path interrupt: the Act
+// interrupt verb through the opencode actor seam (V1 abort — the only
+// interrupt route on pinned versions ≥ 1.18.10, regression-pinned by
+// the US-69.9 surface). The restart path holds this seam and learns
+// nothing about opencode wire shapes (Rule 12). I7 by construction:
+// the abort mutates turn state only, never ledger/entry state.
+func newSessionInterrupter(password string) sessionInterrupter {
+	actor := opencodeActor{password: password}
+	return func(ctx context.Context, sessionID string) error {
+		_, err := actor.Act(ctx, sessionID, &abiv1.ActionRequest{
+			SessionId: sessionID,
+			Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+		})
+		return err
+	}
+}
+
 // --- US-69.9: the typed-actions seam (design 0055 M1 op 5) ---------------
 //
 // isQuestionID / isPermissionID discriminate the harness's prefixed

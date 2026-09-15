@@ -41,6 +41,7 @@ var sessionStateMetrics = struct {
 	reconciled             *prometheus.CounterVec
 	reconcileEvidenceFails prometheus.Counter
 	leaseGatherFails       prometheus.Counter
+	orphanPartsAborted     prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -108,6 +109,10 @@ var sessionStateMetrics = struct {
 	reconcileEvidenceFails: promauto.NewCounter(prometheus.CounterOpts{
 		Name: "llmsafespaces_reconcile_evidence_failures_total",
 		Help: "Store-evidence reads that errored during ledger reconciliation (#1311) — rows untouched, retried next pass; never an authoritative empty.",
+	}),
+	orphanPartsAborted: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_orphan_parts_aborted_total",
+		Help: "In-flight tool parts folded as aborted by the harness-restart sweep (#1342 S12 backstop) — every count is a turn that died without terminal part state.",
 	}),
 }
 
@@ -230,6 +235,28 @@ func customValveDelta(workspaceID string, cumulative int64) int64 {
 	return cumulative - prev
 }
 
+// orphanPartsLast carries the last cumulative #1342 orphan-sweep count
+// per workspace — same delta convention as customValveLast.
+var orphanPartsLast = struct {
+	mu sync.Mutex
+	m  map[string]int64
+}{m: map[string]int64{}}
+
+func orphanPartsDelta(workspaceID string, cumulative int64) int64 {
+	orphanPartsLast.mu.Lock()
+	defer orphanPartsLast.mu.Unlock()
+	prev, seen := orphanPartsLast.m[workspaceID]
+	if !seen || cumulative < prev {
+		orphanPartsLast.m[workspaceID] = cumulative
+		if !seen {
+			return cumulative
+		}
+		return 0
+	}
+	orphanPartsLast.m[workspaceID] = cumulative
+	return cumulative - prev
+}
+
 // recordSessionStateMetrics pulls one Metrics() snapshot into the gauges.
 func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	if a == nil {
@@ -248,6 +275,12 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	sessionStateMetrics.subscribers.Set(float64(m.Subscribers))
 	if d := customValveDelta(workspaceID, m.CustomValveEvents); d > 0 {
 		sessionStateMetrics.customValveEvents.Add(float64(d))
+	}
+	// #1342 S12: harness-restart orphan sweeps — delta of the cumulative
+	// counter (customValveDelta's convention; the sweep can also run from
+	// the generation-change reseed outside this loop's own pass).
+	if d := orphanPartsDelta(workspaceID, m.OrphanPartsAborted); d > 0 {
+		sessionStateMetrics.orphanPartsAborted.Add(float64(d))
 	}
 	// r2-2: the single Prometheus export for reconcile outcomes — deltas
 	// of the cumulative counters, so reseed-embedded sweeps (which never
