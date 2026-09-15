@@ -169,7 +169,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		}
 		h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
 		h.postAdapterSuccess(c, workspace, wid, "", true)
-		c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
+		c.Status(http.StatusOK)
 		return
 	}
 	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
@@ -179,7 +179,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	}
 	h.resolveInboxOnProxySuccess(c, wid, requestID, "dismissed")
 	h.postAdapterSuccess(c, workspace, wid, "", true)
-	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
+	c.Status(http.StatusOK)
 }
 
 // ListPermissions returns the pending permissions as the contract

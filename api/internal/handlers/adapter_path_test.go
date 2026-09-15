@@ -160,7 +160,6 @@ func TestRunParentBackfill_Adapter_Error_ClearsBackfillGate(t *testing.T) {
 
 func TestAutoApprovePermission_Adapter_HappyPath(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	resolveCalled := false
 	replied := false
 	h.adapter = &mockAdapter{
 		replyPermissionFn: func(_ context.Context, _, _, rid, reply, message string) error {
@@ -170,15 +169,13 @@ func TestAutoApprovePermission_Adapter_HappyPath(t *testing.T) {
 			assert.Equal(t, "", message)
 			return nil
 		},
-		resolveFn: func(_ context.Context, _, _, _, _ string) error {
-			resolveCalled = true
-			return nil
-		},
 	}
 
 	h.autoApprovePermission("ws-1", "per_1")
 	assert.True(t, replied, "adapter.ReplyPermission must be called (the typed PermissionReply path)")
-	assert.False(t, resolveCalled, "the legacy adapter.Resolve probe must not be called (S1)")
+	// The never-Resolve half of the pin is structural: Adapter.Resolve is
+	// DELETED from the interface (zero production callers after the S1
+	// migration) — no caller can reach a legacy probe.
 }
 
 func TestAutoApprovePermission_Adapter_Error_NoPanic(t *testing.T) {

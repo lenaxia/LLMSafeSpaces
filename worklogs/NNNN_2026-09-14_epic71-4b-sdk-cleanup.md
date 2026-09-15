@@ -132,3 +132,18 @@ None.
 
 - `go test -timeout 600s -race ./api/internal/handlers/` — ok (incl. the three new auto-approve rows + bodyless-200 pins)
 - Go SDK `-race` ok (new `LiveAnswerWithBodyIsNotLate`); TS 74/74 + tsc clean (with-body row + Retry-After header row); Python 123 passed (with-body row); Java 40/40 (with-body row); `golangci-lint` 0 issues
+
+## Review r2 remediation
+
+**f1 (QuestionReject 200-with-body — the same divergence class, unpinned):** both regime sites (`proxy_input.go`) now emit a bodyless 200 per the spec's reject row; `TestInputAct_QuestionRejectIsTheDismissExit` pins the empty body (red-first observed against the `c.JSON` sites). Consumers verified safe: the script's `"dismissed"` greps read the inbox record status, not the response body.
+
+**S1 closure honesty:** #1302's S1 bullet is absolute but the epic's wave table scopes the issue to the input cluster — reconciled by (a) the [amendment comment on #1302](https://github.com/lenaxia/LLMSafeSpaces/issues/1302#issuecomment-5673500760) recording the input-surface S1 completion + the scoping, and (b) **#1372** (filed) owning the sessions-cluster remainder (`CreateSession`/`Send`/`Abort`/`DeleteSession`/`RenameSession` — direct adapter-mediated harness calls, no terminus gate). The PR no longer claims auto-close; #1302 closes manually with the AC evidence table post-merge.
+
+**`Adapter.Resolve` deleted** (style note → Rule 5): production-dead after the auto-approve migration — removed from the `agent.Adapter` interface, the opencode implementation, the handler mock, the systemnotices fake, and their tests (`TestAdapter_Resolve_*`; the prefix-awareness pin survives via `TestAdapter_RejectInput_PrefixAware`). The flag-off never-Resolve assertion is now structural: the method no longer exists to call.
+
+**Missing rows:** `TestAutoApprovePermission_ActAbsentAskSkips` (readable set, absent ask, no record → no Act, no panic); async-Python 200-with-body regression row.
+
+## Tests run (r2)
+
+- `go test -timeout 300s -race ./pkg/agent/... ./api/internal/handlers/` — ok
+- `go vet ./api/... ./pkg/...` clean; `go build ./...` ok; Python 124 passed; TS/Java/Go SDK suites unchanged-and-green from r1

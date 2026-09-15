@@ -148,7 +148,6 @@ type Adapter interface {
 	// For questions, reply carries the selected option(s) or custom
 	// text. For permissions, reply carries "allow" / "deny" (the
 	// adapter translates to the agent's accept/reject endpoints).
-	Resolve(ctx context.Context, userID, workspaceID, requestID, reply string) error
 
 	// RejectInput dismisses a pending InputRequest without an answer
 	// (#1313): questions go to the agent's reject endpoint, permissions

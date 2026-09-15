@@ -288,6 +288,7 @@ func TestInputAct_QuestionRejectIsTheDismissExit(t *testing.T) {
 
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_abc123/reject", `{}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "reject 200 must carry no body (the published contract — same row as the reply pins)")
 
 	select {
 	case got := <-stub.got:
@@ -724,5 +725,24 @@ func TestAutoApprovePermission_ActErrorNoPanic(t *testing.T) {
 	case <-stub.got:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
+	}
+}
+
+// Readable pending set but the ask is absent (no inbox record either):
+// the skip is non-authoritative — no Act call, no panic.
+func TestAutoApprovePermission_ActAbsentAskSkips(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{}, nil
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_absent") })
+	select {
+	case got := <-stub.got:
+		t.Fatalf("Act must not fire for an absent ask, got %v", got)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

@@ -541,6 +541,18 @@ async def test_async_list_questions_typed_contract(client: AsyncLLMSafeSpaces):
 
 @respx.mock
 @pytest.mark.asyncio
+async def test_async_reply_question_live_answer_with_body_is_not_late(client: AsyncLLMSafeSpaces):
+    # A server regression answering 200 WITH a body must still classify
+    # as a live answer (r1 review; the shared _late_answer_only).
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=200, json={"status": "answered"}
+    )
+    late = await client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is None
+
+
+@respx.mock
+@pytest.mark.asyncio
 async def test_async_reply_question_late_answer_202_body(client: AsyncLLMSafeSpaces):
     respx.post(f"{BASE}/api/v1/workspaces/ws-1/question/que_1/reply").respond(
         status_code=202, json=LATE_ANSWER_BODY
