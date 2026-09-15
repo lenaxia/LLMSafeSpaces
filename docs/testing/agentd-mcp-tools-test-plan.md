@@ -1,8 +1,8 @@
 # agentd MCP Tool Expansion — Test Plan
 
-**Status:** L0/L1/L2 implemented and green; L3 scripted (`scripts/mcp-tools-liveprobe.sh`, 7/7 on the live pod 2026-09-13). The L2/L3 legs found and fixed two real defects: the silent no-op rename (POST vs PATCH — §2) and the unbounded health probe.
+**Status:** L0/L1/L2 implemented and green; L3 scripted (`scripts/mcp-tools-liveprobe.sh`, 10/10 on the live pod) — counts updated with PR #1382 (send_message, abort_session). The L2/L3 legs found and fixed two real defects: the silent no-op rename (POST vs PATCH — §2) and the unbounded health probe.
 **Date:** 2026-09-13
-**Scope:** The SEVEN NEW agent-side MCP tools on `/v1/mcp` (`rename_session`, `rename_workspace`, `call_with_model`, `create_session`, `get_datetime`, `session_metadata`, `compact`), the two PRE-EXISTING tools rerouted through the new seam (`session_list`, `session_read`), the seam itself (`pkg/agent/opencode` loopback methods), and the API-side `POST /internal/v1/workspace-rename`.
+**Scope:** The NINE NEW agent-side MCP tools on `/v1/mcp` (`rename_session`, `rename_workspace`, `call_with_model`, `create_session`, `send_message`, `abort_session`, `get_datetime`, `session_metadata`, `compact`), the two PRE-EXISTING tools rerouted through the new seam (`session_list`, `session_read`), the seam itself (`pkg/agent/opencode` loopback methods), and the API-side `POST /internal/v1/workspace-rename`.
 **Related:** worklog `worklogs/0923_2026-09-13_agentd-mcp-five-tools.md` (initial five) and `worklogs/0924_2026-09-13_agentd-mcp-tools-v2.md` (this revision)
 
 ---
@@ -28,7 +28,7 @@ Every shape below was exercised against the real binary in the live workspace po
 | Delete: `DELETE /session/{id}` | V1 | adapter `DeleteSession` |
 | Message send: `POST /session/{id}/message` `{messageID?, parts, model?}` — synchronous, returns `{info, parts}` | V1 | live 200 in 2.7s with model override `{modelID, providerID}` — response `info.modelID` echoes the override |
 | **Image parts ARE accepted**: `{"type":"file","mime":"image/png","filename":...,"url":"data:image/png;base64,..."}` rides `parts` | V1 | live 200; input tokens grew ~100 for a 1px PNG; the (non-vision) model replied "this model does not support image input" — bytes reached the model |
-| **Busy sessions BLOCK incoming messages** (no 409, no queue on V1) | V1 | `GET /session/status` → `{ses: {type:"busy"}}`; second POST hung → HTTP 000 at 20s |
+| **Busy sessions BLOCK incoming messages** — the POST does not 409; it WAITS, then **delivers at the turn boundary** (queue-at-boundary) | V1 | liveprobe showed the block (HTTP 000 at 20s); boundary DELIVERY proven by `TestLoopbackL2_BusyMessageDeliversAtBoundary` (PR #1382): message POSTed mid-turn completed once the turn ended, persisted as the next user turn, and was answered |
 | Busy-block implies: a synchronous message to the CURRENTLY RUNNING session deadlocks by construction | — | structural consequence, pinned by `TestSeam_SessionSend_BusyBlocks` at the fake level + documented in tool descriptions |
 | Compact: `POST /api/session/{id}/compact` → **503 "not available yet"** on 1.18.15 | V2 | live 503 (the actor's boot probe correctly treats it as absent) |
 | **Compact (working): `POST /session/{id}/summarize` `{providerID, modelID}` → 200 `true`**; context collapses to the summary | V1 | live 200 in 6s (idle); `GET /api/session/{id}/context` → 1 in-context message after |
@@ -54,8 +54,8 @@ Every shape below was exercised against the real binary in the live workspace po
 |---|---|---|---|
 | **L0 — unit** | Seam methods vs httptest fakes; tool funcs vs httptest fakes; API handler vs fakes | `pkg/agent/opencode/loopback_test.go`, `cmd/workspace-agentd/mcp_tools_test.go`, `api/internal/handlers/pod_workspace_rename_test.go` | ✅ green (CI) |
 | **L1 — integration** | Full `mcpHandler` JSON-RPC path (auth → dispatch → seam → stateful fake opencode); rename_workspace full-stack vs live httptest API | `cmd/workspace-agentd/mcp_tools_test.go` (integration section), `TestMCPHandler_RenameWorkspaceFullStack` | ✅ green (CI) |
-| **L2 — binary integration** | Seam + tools against a REAL opencode instance (spawned binary, temp project dir, offline mock OpenAI-compatible provider on a pinned port) | `pkg/agent/opencode/loopback_integration_test.go` (`-tags integration`, `OPENCODE_BINARY` override; 7/7 green 2026-09-13 on the live 1.18.15 binary) | ✅ green |
-| **L3 — live-pod e2e** | The §2 evidence table, re-runnable as a script against any active workspace pod | `scripts/mcp-tools-liveprobe.sh` | ✅ 7/7 (2026-09-13; `LIVEPROBE_BUSY=1` enables the busy-block probe) |
+| **L2 — binary integration** | Seam + tools against a REAL opencode instance (spawned binary, temp project dir, offline mock OpenAI-compatible provider on a pinned port) | `pkg/agent/opencode/loopback_integration_test.go` (`-tags integration`, `OPENCODE_BINARY` override; 8/8 green on the live 1.18.x binary incl. the busy-boundary-delivery proof) | ✅ green |
+| **L3 — live-pod e2e** | The §2 evidence table, re-runnable as a script against any active workspace pod | `scripts/mcp-tools-liveprobe.sh` | ✅ 10/10 (send_message idle delivery + abort no-op probes added by PR #1382; `LIVEPROBE_BUSY=1` enables the busy-block probe) |
 
 ## 5. L0 — unit matrix
 
@@ -101,7 +101,7 @@ A stateful fake opencode (in-memory sessions map, busy set, message log, image-p
 
 | Test | Flow |
 |---|---|
-| `tools/list` | all 9 tools present with input schemas |
+| `tools/list` | all 13 tools present with input schemas |
 | `session_list`/`session_read` | JSON-RPC → seam → fake; non-200 mapping |
 | `rename_session` full-stack | JSON-RPC → fake state mutated |
 | `rename_workspace` full-stack | JSON-RPC → agentd tool → live httptest API (route/bearer/body pinned) |

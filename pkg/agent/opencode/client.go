@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,9 +161,17 @@ func (c *Client) DisposeInstance(ctx context.Context) error {
 // nothing (verified live: a long V1 turn keeps running after V2
 // interrupt). The V1 /abort path returns 200 and actually stops the
 // in-flight turn (verified live: session transitions to idle).
+// Abort stops a session's current turn (V1 abort — the only interrupt
+// route on pinned agents >= 1.18.10). The ONE abort method for every
+// consumer (adapter/proxy interrupt path, agentd tools); the sessionID
+// is validated before URL interpolation — this method is reachable with
+// caller-supplied IDs from the API proxy path.
 func (c *Client) Abort(ctx context.Context, sessionID string) error {
-	url := c.baseURL + "/session/" + sessionID + "/abort"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err := validateSessionID(sessionID); err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/session/"+sessionID+"/abort", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return fmt.Errorf("POST /session/%s/abort: build request: %w", sessionID, err)
 	}
@@ -176,7 +185,8 @@ func (c *Client) Abort(ctx context.Context, sessionID string) error {
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("POST /session/%s/abort returned %d", sessionID, resp.StatusCode)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("POST /session/%s/abort returned %d: %s", sessionID, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return nil
 }
