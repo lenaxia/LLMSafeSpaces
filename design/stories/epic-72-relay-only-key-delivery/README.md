@@ -189,8 +189,9 @@ Secrets + `get` on `llm-relay-hpke-pub`).
   overrunning the retention interval degrades to `CredentialStale`, never
   silently; the private-then-pub update ordering makes torn rotations
   un-confirmable; prior keys drop uniformly after the retention interval;
-  DR (keypair Secret loss *or* corruption) regenerates with an honest
-  `CredentialStale` window until re-seal.
+  DR (keypair Secret loss *or* corruption — corruption detected by the
+  watch-time fingerprint assert, not first-boot-only) regenerates with an
+  honest `CredentialStale` window until re-seal.
 
 **Test plan (TDD):** red-first table-driven `token_scope_matrix` (wrong workspace /
 wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
@@ -206,7 +207,9 @@ key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bo
 to `CredentialStale`, not silent), `rotation_torn_update_unconfirmable`
 (private-then-pub ordering; a pub read predating the rotate return never
 confirms), `prior_key_retention_expiry`, `dr_keypair_loss_failclosed_recovery`
-(including the corrupted-Secret overwrite path), `envelope_keyid_aad_bound`
+(including the corrupted-Secret overwrite path, detected by the watch-time
+fingerprint assert with no restart — a running fleet converges on the bounded
+recovery), `envelope_keyid_aad_bound`
 (design §7 rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
 unit); informer-drop test (Secret deleted → cache evicted → next request 401).
 

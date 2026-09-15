@@ -57,6 +57,10 @@ Two blocking + three minors, all validated real, fixed in commit 5: (1) §4.2 HP
 
 Six one-clause amendments, all validated real, fixed in commit 6: (1) rotation availability claim falsified by a replica restart mid-re-seal (prior key is memory-only) → failure mode stated explicitly in §4.2 + US-72.2 AC; (2) DR "corrupted" path had no mechanism → fingerprint-assert failure triggers in-place regeneration via the existing update grant (no delete needed); (3) retention-vs-re-seal inequality unpinned → violation behavior stated (CredentialStale, never silent) + `reseal_completes_before_retention_expiry` AC/test; (4) torn two-Secret update could pass completion vacuously → private-then-pub ordering pinned + controller reads pub only after rotate returns + `rotation_torn_update_unconfirmable` test; (5) controller envelope read-back ungranted → confirmation rephrased to sole-writer write-acks (no read-back, no RBAC change); (6) self-referential §4.2 cite reworded. Reviewer's second pass self-discarded five below-bar/false-alarm candidates (retire endpoint, US-72.1 vs 72.2 test home, K-invariant naming, §10.3 phrasing, story-table summary granularity).
 
+### Review iteration 6 (AI reviewer, CHANGES_REQUESTED → one minor → fixed)
+
+Single finding, validated real, fixed in commit 7: the corrupted-DR recovery trigger was stated only for first-boot create-or-adopt, leaving a corrupted keypair Secret in a never-restarting fleet without a bounded recovery path → §4.2: the fingerprint assert re-runs on EVERY watch-delivered key load (corruption detected without a restart); §7 + US-72.2 test descriptions extended with the no-restart pin. Reviewer's second pass self-discarded seven candidates (including the lead-clause "contradiction", informer-vs-get transport choice, crash-between-updates — all derivable from stated machinery or implementation-grade).
+
 ### Files
 
 - `design/0058_2026-09-15_relay-only-key-delivery.md` — the design doc (house style per 0055/0057: status header, depends/composes, numbered sections, threat model, assumptions table, rejected alternatives, open items)
