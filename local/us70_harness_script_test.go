@@ -1349,3 +1349,117 @@ func TestUS70FaultsScript_ProbeSettlePins(t *testing.T) {
 		t.Fatalf("F1 and F6 must both detect the seam through probe_seam")
 	}
 }
+
+// extractUS70Fetch pulls the release-flip retry wrapper from
+// lib/gvisor.sh (the `latest` alias briefly 404s while gVisor flips a
+// release — two pool runs died in provisioning on 2026-09-15; curl's
+// --retry does not cover 404). Extract-and-execute, same pattern as the
+// checksum guard above.
+func extractUS70Fetch(t *testing.T) string {
+	t.Helper()
+	src := mustRead(t, us70GvisorScript)
+	const marker = "fetch_retry()"
+	start := strings.Index(src, marker)
+	if start < 0 {
+		t.Fatalf("fetch_retry() wrapper not found in %s — the moving-alias 404 window must be retried, not fatal", us70GvisorScript)
+	}
+	end := strings.Index(src[start:], "\n      }")
+	if end < 0 {
+		t.Fatalf("fetch_retry() body terminator not found in %s", us70GvisorScript)
+	}
+	return src[start : start+end+len("\n      }")]
+}
+
+func TestUS70GvisorFetchRetry_RetriesThroughTransient404(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fetch(t)
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "runsc")
+	count := filepath.Join(dir, "fails")
+	stubPath := filepath.Join(dir, "curlstub")
+	// A stub CURL failing exactly twice (the release-flip window), then
+	// succeeding — the wrapper must ride through to the good fetch.
+	stub := "#!/bin/bash\n" +
+		"printf x >> " + count + "\n" +
+		"if [ $(wc -c < " + count + ") -ge 3 ]; then\n" +
+		"  printf payload > " + out + "\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exit 22\n"
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// CURL must be a VARIABLE (the real script word-expands $CURL);
+	// point it at the stub.
+	script := "CURL=" + shQuote(stubPath) + "\n" +
+		"sleep() { :; }\n" +
+		body + "\n" +
+		"fetch_retry http://flip/latest/runsc " + out + "\n" +
+		"[ -s " + out + " ] || { echo output-missing; exit 1; }\n" +
+		"echo survived\n"
+	got, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("fetch_retry did not survive the transient-failure window: %v: %s", err, got)
+	}
+	if !strings.Contains(string(got), "survived") {
+		t.Fatalf("fetch_retry must complete after transient failures, got: %s", got)
+	}
+}
+
+func TestUS70GvisorFetch_AllFetchSitesRideTheWrapper(t *testing.T) {
+	src := mustRead(t, us70GvisorScript)
+	for _, artifact := range []string{"runsc", "runsc.sha512", "containerd-shim-runsc-v1", "containerd-shim-runsc-v1.sha512"} {
+		if !strings.Contains(src, "fetch_retry \"$BASE/"+artifact+"\"") {
+			t.Fatalf("artifact %s must be fetched via fetch_retry (the moving-alias 404 window)", artifact)
+		}
+	}
+	if strings.Contains(src, "$CURL \"$BASE/") || strings.Contains(src, "curl -fsSL \"$BASE/") {
+		t.Fatal("a bare fetch of the latest alias survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+	}
+}
+
+// TestUS70GvisorFetch_BoundPins pins the bounded-retry property (the
+// repo's ProbeSettlePins pattern): the wrapper must be a 5-attempt,
+// 15s-backoff loop — an unbounded-refactor regression would otherwise
+// hang provisioning until the job timeout (mutation-verified invisible
+// to the ride-through row alone).
+func TestUS70GvisorFetch_BoundPins(t *testing.T) {
+	body := extractUS70Fetch(t)
+	for _, pin := range []string{"for i in 1 2 3 4 5", "sleep 15", "return 1"} {
+		if !strings.Contains(body, pin) {
+			t.Fatalf("fetch_retry must pin %q — the bounded give-up is the property (got body: %s)", pin, body)
+		}
+	}
+}
+
+// TestUS70GvisorFetch_GivesUpLoudly: an always-failing fetch must drive
+// the wrapper to a non-zero exit — the loud failure the fix preserves.
+func TestUS70GvisorFetch_GivesUpLoudly(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fetch(t)
+
+	dir := t.TempDir()
+	stubPath := filepath.Join(dir, "curlstub")
+	if err := os.WriteFile(stubPath, []byte("#!/bin/bash\nexit 22\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// set -e mirrors the real caller (the script block runs under
+	// errexit) — the give-up return must abort provisioning.
+	script := "set -e\n" +
+		"CURL=" + shQuote(stubPath) + "\n" +
+		"sleep() { :; }\n" +
+		body + "\n" +
+		"fetch_retry http://flip/latest/runsc " + shQuote(filepath.Join(dir, "out")) + "\n" +
+		"echo should-not-reach\n"
+	got, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err == nil {
+		t.Fatalf("an always-failing fetch must exit non-zero, got success: %s", got)
+	}
+	if strings.Contains(string(got), "should-not-reach") {
+		t.Fatalf("the give-up must abort the caller, got: %s", got)
+	}
+	if !strings.Contains(string(got), "failed after 5 attempts") {
+		t.Fatalf("exhaustion must be loud (5-attempt message), got: %s", got)
+	}
+}

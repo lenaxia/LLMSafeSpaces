@@ -30,8 +30,22 @@ gvisor_install_on_node() { # node
       apt-get install -y -qq curl ca-certificates >/dev/null
       BASE=https://storage.googleapis.com/gvisor/releases/release/latest/x86_64
       CURL="curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-delay 3"
-      $CURL "$BASE/runsc" -o /tmp/runsc
-      $CURL "$BASE/runsc.sha512" -o /tmp/runsc.sha512
+      # The `latest` alias briefly 404s while gVisor flips a release
+      # (2026-09-15: two pool runs died in provisioning on it) and
+      # plain curl --retry does not cover 404 — retry the whole fetch
+      # with backoff so the release window rides through.
+      fetch_retry() {
+        local url=$1 dest=$2 i
+        for i in 1 2 3 4 5; do
+          if $CURL "$url" -o "$dest"; then return 0; fi
+          echo "fetch: $url attempt $i failed — retrying in 15s (release flip?)" >&2
+          sleep 15
+        done
+        echo "fetch: $url failed after 5 attempts" >&2
+        return 1
+      }
+      fetch_retry "$BASE/runsc" /tmp/runsc
+      fetch_retry "$BASE/runsc.sha512" /tmp/runsc.sha512
       # gVisor publishes "<sha512>  runsc" — verify the download against it.
       # An empty/short EXPECTED means the checksum FORMAT changed upstream
       # (fail with that diagnosis instead of a bare mismatch).
@@ -47,8 +61,8 @@ gvisor_install_on_node() { # node
       /usr/local/bin/runsc --version >/dev/null
       # containerd also needs the SHIM binary (run 10: "runtime
       # io.containerd.runsc.v1 binary not installed containerd-shim-runsc-v1").
-      $CURL "$BASE/containerd-shim-runsc-v1" -o /tmp/shim
-      $CURL "$BASE/containerd-shim-runsc-v1.sha512" -o /tmp/shim.sha512
+      fetch_retry "$BASE/containerd-shim-runsc-v1" /tmp/shim
+      fetch_retry "$BASE/containerd-shim-runsc-v1.sha512" /tmp/shim.sha512
       EXPECTED=$(cut -d" " -f1 /tmp/shim.sha512)
       [[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]] \
         || { echo "shim.sha512 format changed upstream (got: $(cat /tmp/shim.sha512))"; exit 1; }
