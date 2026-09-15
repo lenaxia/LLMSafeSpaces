@@ -511,6 +511,7 @@ func (a *Adapter) getHistoryV1(ctx context.Context, userID, workspaceID, session
 		}
 	}
 	repairOrphanedRunningTools(ctx, c, sessionID, msgs)
+	repairTextOnlyHistoryImages(ctx, c, sessionID, msgs)
 	return msgs, nil
 }
 
@@ -603,8 +604,10 @@ func (a *Adapter) getHistoryV2Store(ctx context.Context, userID, workspaceID, se
 		msgs = msgs[len(msgs)-limit:]
 	}
 	// Same #1342 transcript repair as the V1 store path (one shared
-	// rule; see repairOrphanedRunningTools).
+	// rule; see repairOrphanedRunningTools). The #1307 image repair
+	// rides the same shared rule.
 	repairOrphanedRunningTools(ctx, c, sessionID, msgs)
+	repairTextOnlyHistoryImages(ctx, c, sessionID, msgs)
 	return msgs, nil
 }
 

@@ -33,6 +33,10 @@ export interface ModelInfo {
   selected: boolean;
   enabled: boolean;
   details?: unknown;
+  // Tri-state image-input capability (issue #1307): false = known
+  // text-only (warn: image-bearing tool flows wedge sessions); absent =
+  // unknown (do not warn).
+  supportsVision?: boolean | null;
 }
 
 export interface ListModelsResponse {

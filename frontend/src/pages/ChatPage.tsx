@@ -153,6 +153,11 @@ function sessionErrorText(code: string, rawMessage: string): string {
   if (code === "ProviderRateLimitError" || /rate limit/i.test(rawMessage)) {
     return "The provider rate-limited this workspace — retrying shortly";
   }
+  // Issue #1307: a text-only model wedged on an image-bearing history —
+  // every turn replays the same fatal 400 until the model is switched.
+  if (code === "text_only_model_image_history" || rawMessage.includes("messages.content.type is invalid")) {
+    return "This session's history contains an image, and the current model only accepts text. Switch to a vision-capable model in the model picker to continue, or start a new session.";
+  }
   return rawMessage || code || "The agent hit an unexpected error";
 }
 

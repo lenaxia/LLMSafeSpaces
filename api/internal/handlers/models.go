@@ -116,6 +116,10 @@ type annotatedModel struct {
 	ProxyRequired bool              `json:"proxyRequired"`
 	Selected      bool              `json:"selected"`
 	Details       json.RawMessage   `json:"details"`
+	// SupportsVision is tri-state (issue #1307): nil/absent = the catalog
+	// carried no capability metadata (unknown); false = known text-only —
+	// clients warn that image-bearing tool flows wedge sessions on it.
+	SupportsVision *bool `json:"supportsVision,omitempty"`
 }
 
 type ModelAvailability string
@@ -153,14 +157,15 @@ func annotateModels(cat *Catalog, relayGloballyEnabled, relayInjected bool) []an
 				providerID = "opencode-relay"
 			}
 			result = append(result, annotatedModel{
-				ID:            id,
-				ProviderID:    providerID,
-				Name:          m.Name,
-				Enabled:       true,
-				Availability:  avail,
-				Tier:          tierFromAvailability(avail),
-				FreeTier:      avail == ModelFreeTier,
-				ProxyRequired: avail == ModelFreeTier,
+				ID:             id,
+				ProviderID:     providerID,
+				Name:           m.Name,
+				Enabled:        true,
+				Availability:   avail,
+				Tier:           tierFromAvailability(avail),
+				FreeTier:       avail == ModelFreeTier,
+				ProxyRequired:  avail == ModelFreeTier,
+				SupportsVision: m.SupportsVision,
 			})
 		}
 	}

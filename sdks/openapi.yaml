@@ -787,6 +787,18 @@ paths:
           description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
+        "422":
+          description: |
+            The session's history contains an image and the active model
+            only accepts text (issue #1307) — every turn replays the same
+            fatal provider 400 until the model is switched. Body:
+            `{"code":"text_only_model_image_history","error":"..."}` naming
+            the recovery (switch to a vision-capable model or start a new
+            session).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     get:
       tags: [sessions]
       summary: Get message history for a session
@@ -8857,6 +8869,14 @@ components:
           type: boolean
         selected:
           type: boolean
+        supportsVision:
+          type: boolean
+          nullable: true
+          description: >
+            Tri-state image-input capability. false = the model is known
+            text-only (image-bearing tool results wedge sessions on it,
+            issue #1307 — clients should warn). Absent/null = the catalog
+            carried no capability metadata (unknown — do not warn).
     AgentRole:
       type: object
       properties:

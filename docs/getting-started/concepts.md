@@ -113,6 +113,14 @@ A session can be in one of these states relative to the agent:
 
 The API overlays the live active-session set (from the pod) onto the persisted session list so callers see which sessions are currently running.
 
+### Text-only models and image-bearing history (issue #1307)
+
+Some models (e.g. GLM 4.x/5.x via the free tier) only accept text input. When a tool result carries an image into the session history (reading a PNG screenshot with the `read` tool, playwright flows, attached screenshots), a text-only model rejects the replayed history with a 400 on **every** subsequent turn — the session is wedged until the model is switched.
+
+- The model catalog (`GET /workspaces/:id/models`) surfaces `supportsVision` per model: `false` = known text-only (the picker shows a "text-only" badge), absent = unknown.
+- A wedged send returns `422 {"code":"text_only_model_image_history"}` naming the recovery instead of the raw provider error.
+- **Recovery:** switch the session to a vision-capable model (the model picker / `PUT /workspaces/:id/model`) — the wedge is only fatal while the text-only model stays selected — or start a new session.
+
 ---
 
 ## Secret

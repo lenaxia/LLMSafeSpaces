@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 // SessionSummary is the typed V1 session-list entry (validated live on
@@ -98,9 +99,15 @@ type SendResult struct {
 }
 
 // ModelInfo is the catalog view of one model (GET /config/providers).
+// ImageInput is only meaningful when ImageInputKnown is true — the
+// catalog entry carried no capabilities block when it is false, and
+// callers must treat that as UNKNOWN, never as text-only (#1307
+// fail-safe direction: a false "text-only" strips user images from
+// vision-capable models).
 type ModelInfo struct {
-	ContextLimit int64
-	ImageInput   bool
+	ContextLimit    int64
+	ImageInput      bool
+	ImageInputKnown bool
 }
 
 // sessionIDPattern pins what may be interpolated into a seam URL path:
@@ -485,6 +492,40 @@ func (c *Client) SessionPromptTokens(ctx context.Context, sessionID string) int6
 	return 0
 }
 
+// SessionModelRef resolves a session's current model (GET /session/{id}
+// → model{id, providerID}; shape pinned by testdata/session_get_1_18_10.json).
+// Returns nil when the session carries no model.
+func (c *Client) SessionModelRef(ctx context.Context, sessionID string) (*session.ModelRef, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/session/"+sessionID, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort drain
+	if resp.StatusCode >= 400 {
+		return nil, c.statusError("GET /session/"+sessionID, resp)
+	}
+	var s struct {
+		Model *struct {
+			ID         string `json:"id"`
+			ProviderID string `json:"providerID"`
+		} `json:"model"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&s); err != nil {
+		return nil, fmt.Errorf("GET /session/%s: decode: %w", sessionID, err)
+	}
+	if s.Model == nil || s.Model.ID == "" {
+		return nil, nil
+	}
+	return &session.ModelRef{ID: s.Model.ID, Provider: s.Model.ProviderID}, nil
+}
+
 // ModelInfo resolves one model's catalog entry (GET /config/providers):
 // its context-window limit and whether it accepts image input.
 func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*ModelInfo, error) {
@@ -527,6 +568,7 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 			info := &ModelInfo{ContextLimit: m.Limit.Context}
 			if m.Capabilities != nil {
 				info.ImageInput = m.Capabilities.Input.Image
+				info.ImageInputKnown = true
 			}
 			return info, nil
 		}

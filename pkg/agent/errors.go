@@ -14,3 +14,12 @@ import "errors"
 // not agent-specific: any HTTP-speaking adapter wraps its status
 // errors with this sentinel.
 var ErrHTTPStatus = errors.New("agent http status")
+
+// ErrImageInTextOnlyHistory marks the #1307 wedge class: the session's
+// replayed history carries an image part and the active model is
+// text-only, so the provider rejects EVERY turn until the user switches
+// to a vision-capable model or the image is removed from the history.
+// Retrying the same payload can never succeed. Adapter-level
+// classification of a provider failure body; wraps ErrHTTPStatus so the
+// at-least-once semantics (definitive rejection) are preserved.
+var ErrImageInTextOnlyHistory = errors.New("session history contains an image the active text-only model cannot process")

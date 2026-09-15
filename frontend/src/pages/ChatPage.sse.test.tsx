@@ -407,6 +407,28 @@ describe("ChatPage event dispatch (contract stream + platform stream)", () => {
       });
     });
 
+    // Issue #1307: the wedged-session 400 surfaces as a session.error
+    // event whose message is the raw provider body — the user must get
+    // the cause and the escape (switch model), not the litellm error.
+    it("maps the text-only image-history wedge body to the switch-model guidance", async () => {
+      const qc = makeQueryClient();
+      await renderReady(qc);
+      sendContractEvent(abiEvent({
+        type: 10,
+        error: {
+          code: "",
+          message: "Provider request failed with HTTP 400: litellm.BadRequestError: ZaiException - messages.content.type is invalid, allowed values: ['text']",
+        } as never,
+      }));
+      const el = await screen.findByTestId("chat-view");
+      await waitFor(() => {
+        const rendered = JSON.parse(el.getAttribute("data-messages") || "[]");
+        expect(rendered.some((m: { parts: Array<{ text?: string }> }) =>
+          m.parts.some((p) => (p.text ?? "").includes("vision-capable model")))).toBe(true);
+        expect(JSON.stringify(rendered)).not.toContain("litellm.BadRequestError");
+      });
+    });
+
     it("ignores errors from a different session", async () => {
       const qc = makeQueryClient();
       await renderReady(qc);
