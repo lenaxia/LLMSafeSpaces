@@ -92,22 +92,18 @@ describe("ChatPage — message history error banner (#490)", () => {
   });
 
   it("renders the diagnostic banner when message history returns 5xx", async () => {
-    // The exact shape #486 hit: opencode's raw envelope pass-through
-    // via proxy_handlers.go:154-157. `body.error` DOES NOT exist at
-    // the top level — the message is at `body.data.message`, the ref
-    // at `body.data.ref`. useInfiniteQuery.error captures the thrown
-    // ApiClientError. This test asserts on the RAW production shape,
-    // NOT a synthetic top-level `error`-augmented one; a synthetic
-    // fixture would let banner-message-extraction bugs pass silently
-    // (see the initial #491 review finding).
-    const body = {
-      name: "UnknownError",
-      data: {
-        message: "Unexpected server error. Check server logs for details.",
-        ref: "err_b8d02ae9",
-      },
-    } as unknown as ConstructorParameters<typeof ApiClientError>[1];
-    getHistoryPageMock.mockRejectedValue(new ApiClientError(500, body));
+    // The API-authored GET history failure body (proxy_handlers.go
+    // GetHistory since #828): {"error":"failed to fetch history"} with
+    // a 502 — no nested envelope reaches the client anymore (#1303).
+    // useInfiniteQuery.error captures the thrown ApiClientError. This
+    // test asserts on the RAW production shape, NOT a synthetic
+    // augmented one; a synthetic fixture would let banner-message-
+    // extraction bugs pass silently (see the initial #491 review
+    // finding).
+    const body = { error: "failed to fetch history" } as unknown as ConstructorParameters<
+      typeof ApiClientError
+    >[1];
+    getHistoryPageMock.mockRejectedValue(new ApiClientError(502, body));
 
     renderChat("/chat/ws-1/sess-1");
 
@@ -115,15 +111,14 @@ describe("ChatPage — message history error banner (#490)", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
     expect(screen.getByText("Chat history unavailable")).toBeInTheDocument();
 
-    // Details expandable — clicking reveals HTTP status, message, and
-    // ref for operators. The message specifically must come from
-    // opencode's body.data.message (NOT the literal string "undefined"
-    // that ApiClientError.super(body.error) would produce for a body
+    // Details expandable — clicking reveals HTTP status and message
+    // for operators. The message must come from the API's body.error
+    // (NOT the literal string "undefined" that
+    // ApiClientError.super(body.error) would produce for a body
     // without a top-level `error`).
     fireEvent.click(screen.getByText("Details"));
-    expect(screen.getByText("HTTP 500")).toBeInTheDocument();
-    expect(screen.getByText(/Unexpected server error/)).toBeInTheDocument();
-    expect(screen.getByText("Ref: err_b8d02ae9")).toBeInTheDocument();
+    expect(screen.getByText("HTTP 502")).toBeInTheDocument();
+    expect(screen.getByText(/failed to fetch history/)).toBeInTheDocument();
     // Regression guard for the first #491 review finding — the literal
     // word "undefined" must never appear.
     expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();

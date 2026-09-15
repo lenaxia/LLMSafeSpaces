@@ -1,0 +1,71 @@
+# Worklog NNNN — 2026-09-15 — epic-71 / 4b-c1: delete legacy opencode nested-error-envelope extractors (#1303)
+
+Stream: epic-71 / 4b-c1 · Issue #1303 · Branch `fix/epic71-4b-frontend-error-extractors` (from origin/main @ 2e839cd6).
+Constraints honored: frontend/ + its tests + docs only. No sdks/openapi.yaml (#1304's), no api/ Go, no pkg/ (the repolint lexicon gate is #1305's lane).
+
+## Evidence re-verification (the code moved since the 2026-09-08 leak review)
+
+All four evidence pointers re-checked against current main before any edit:
+
+| Issue pointer | Verified at | Drift since 2026-09-08 |
+|---|---|---|
+| `agentErrorRef.ts` shape-2 docs + nested fallback | lines 9-11 (docs), 46-73 (`extractOpencodeField`), nested read at 64-70 | none — intact as described |
+| `ChatHistoryErrorBanner.test.tsx` raw-envelope fixtures | lines 10-19 header, 25-28 `OpencodeErrorEnvelope`, 46-76 the "#486 EXACT shape" row | none — intact |
+| `types.ts:94` `AgentSession` "Shape returned by the opencode agent GET /session/:id (proxied through)" | line 94 | none — intact; also found dead `parentID`/`share` fields (opencode casing / opencode share; contract has `parentId`, no `share`) and stale `"retry"` status value (contract Status has none) |
+| `useSessionTitle.ts` opencode/proxy comments | lines 7, 12, 29, 35 | none — intact |
+
+Blockers: #828 merged — `fetchUpstreamHistory` and the raw ≥400 `c.Data` passthrough are gone from `proxy_handlers.go` (grep-verified, zero hits). Question/permission REST migration merged via #1302 (#1363 + #1371, landed 2026-09-14 — these also touched the four frontend files, InputRequest contract work only; the extractor leak survived them, which is why #1303 exists).
+
+Live error-body shapes on the message routes (read from current `proxy_handlers.go` + `proxy_chat_enrichment.go`):
+- GET history failure → API-authored 502 `{"error":"failed to fetch history"}` (GetHistory).
+- POST prompt/async failures → fixed `{"error":"failed to send message"}`, optionally enriched by `EnrichChatErrorBody` (allowlist `_tag, message, kind, field, resource, service, status, operation, ref, providerID, modelID, suggestions, sessionID` + refresh hints). Both call sites feed the fixed body today, but the allowlist promotion path is the surviving mechanism the issue keeps extracted (top-level `ref`/`message`).
+- No nested `{name, data:{...}}` envelope can reach the client anywhere.
+
+## Assumptions (Rule 7) + validation
+
+1. **Only `ChatHistoryErrorBanner.tsx` consumes the extractors.** Validated: repo-wide grep — the only non-test import.
+2. **Nothing else parses nested error envelopes** (`body.data`/`body?.data`). Validated: grep across frontend/src — zero hits (the SSE event-envelope `.data` in ChatPage.tsx:863 is a different, live seam).
+3. **`parentID`/`share` on `AgentSession` are dead.** Validated: grep — declared, never read; contract `session.Session` (contract_gen.go) uses `parentId`, has no `share`.
+4. **Making `AgentSession.status` required + contract-valued breaks no consumer.** Validated: only reads are `session?.status === "busy"` (useChatStream) and title reads; `tsc --noEmit` clean.
+5. **Issue's "ChatPage.historyError.test.tsx … unchanged and green" is impossible verbatim**: its row-1 fixture IS the dead envelope. Validated by execution: post-deletion the row fails (`Unable to find /Unexpected server error/`). Resolution: row-1 fixture rewritten to the API-authored 502 body preserving the #490/#491 intent (message renders, no "undefined"); rows 2-4 byte-identical; `ChatPage.autorename.test.tsx` untouched and green. Disclosed here and in the PR.
+6. **The vitest rows themselves pin the dead shape** (nested → undefined), and the triage's requested grep-gate adds a source-scan pin (mutation-verified below).
+
+## TDD record (red-first)
+
+1. RED: `agentErrorRef.test.ts` rewritten — nested rows now expect `undefined` + new `extractAgentErrorMessage` block (0 rows before). Run: **3 failed** (nested ref, nested message, `data.message` in empty/non-string row) — exactly the deleted behavior.
+2. GREEN: `agentErrorRef.ts` — nested `data.*` fallback deleted; helper renamed `extractOpencodeField` → `extractErrorField`; docs rewritten to the two live shapes (top-level allowlisted, API's own `{error}` with caller fallback). Run: 11/11.
+3. `ChatHistory.historyError` row-1 failed against the dead fixture (see A5), then green on the API-authored body.
+
+## Changes
+
+1. `frontend/src/api/agentErrorRef.ts` — nested fallback deleted; docs rewritten (no "raw opencode envelope", no stale `proxy_handlers.go:155` reference). Exported names kept (`extractAgentErrorRef`/`extractAgentErrorMessage` — the #488 regression intent).
+2. `frontend/src/api/agentErrorRef.test.ts` — nested → `undefined` rows; full `extractAgentErrorMessage` coverage (top-level, nested-undefined, `{error}`-undefined, non-objects never throw).
+3. `frontend/src/components/chat/ChatHistoryErrorBanner.test.tsx` — fixtures to API-authored shapes only: GET-history 502 `{error}` row carries the #486 regression intent; NEW graceful-fallback row pins that a stray legacy envelope extracts nothing and falls through to the placeholder; flat-allowlisted, 503 recovery, placeholder, and #491 empty-message rows kept; `OpencodeErrorEnvelope` type deleted; stale header rewritten.
+4. `frontend/src/components/chat/ChatHistoryErrorBanner.tsx` — doc comment only (extraction hierarchy now: top-level allowlisted → `body.error` → `err.message` → placeholder). Component logic unchanged.
+5. `frontend/src/pages/ChatPage.historyError.test.tsx` — row-1 fixture to the API-authored 502 body (see A5); rows 2-4 unchanged.
+6. `frontend/src/api/types.ts` — `AgentSession` documents the contract `Session` (pkg/session contract_gen.go): `workspaceId`/`parentId` (contract casing), dead `parentID`/`share` deleted, `status` required with contract values (`unknown|idle|busy|error|compacting|archived`; `"retry"` never existed in the contract). #796 cross-link: #796 is OPEN and not in flight (no PR references it), so `AgentSession` was fixed here per the issue's "fold … if in flight" conditional.
+7. `frontend/src/hooks/useSessionTitle.ts` — comments de-opencoded ("session contract endpoint", "the agent generates a title", "may not exist on the agent yet"). Behavior unchanged.
+8. NEW `frontend/src/components/chat/ChatHistoryErrorBanner.wiring.test.tsx` — integration leg: REAL client (`getRaw` → fetch stub → `ApiClientError`) with the EXACT API-authored 502/503 bodies → REAL banner; asserts URL construction, status/body propagation, message render, no invented ref.
+9. NEW `frontend/src/components/chat/chatErrorSeamGate.test.ts` — grep-gate (2026-09-15 triage ask): guards `agentErrorRef.ts`, `types.ts`, `useSessionTitle.ts` against `record.data|body.data`, `extractOpencodeField`, `OpencodeErrorEnvelope`, `proxied through|passed through verbatim`; fails loudly if a guarded file moves (anti-vacuous row). **Mutation-verified**: appending `record.data` to agentErrorRef.ts → gate fails; reverted → 4/4 green.
+10. NEW `frontend/tests/e2e/history-error-banner.spec.ts` — Playwright leg: mocked 502 `{error}` and 503 recovery bodies → banner renders API fields only, zero `Ref:` rows, no "undefined".
+
+## Test gates (executed)
+
+- `npx vitest run` (frontend/): baseline 1823 passed (166 files) → **1835 passed** (net +12: +5 extractor rows, +1 banner row, +2 wiring, +4 gate). Zero failures.
+- `npx tsc --noEmit` (frontend/): **0 errors** (baseline 0).
+- `npx playwright test`: **147 passed / 1 failed / 13 skipped**; the 1 failure (`attachments.spec.ts` E3 oversize) passes 7/7 in isolation — pre-existing contention flake in the 9-minute full run, untouched by this diff (no attachments-path change). New spec: 2/2.
+- Go pin tests: grepped `pkg/repolint` + `local/` for source pins on the touched files — none exist (only `AgentSessionStatus`, an unrelated CRD Go type). No Go gate applies.
+
+## Deferred (disclosed, not silent)
+
+- **Kind-cluster e2e leg** (kill/suspend the agent pod mid-session → load history → assert the API-authored banner against the real API): NOT runnable here — no `kind`, no `docker`, no `kubectl` in this environment. Closest runnable form on a provisioned cluster: `./local/test.sh` (kind bootstrap + smoke), then suspend the e2e workspace and open `/chat/<ws>/<session>` expecting the rows asserted in `history-error-banner.spec.ts`. The mocked Playwright leg + the wiring test cover the same seam assertion (API fields only, no nested fallback) short of a live pod.
+- **Live-router integration against `dev_preview.go`**: the issue's phrasing targets the API dev-preview router; no live API is runnable here (stateless deps need DB/Redis/K8s). Adapted to the repo's established real-client wiring pattern (`workspaces.getSession.test.ts` lineage) with the exact API-authored bodies quoted from `proxy_handlers.go`. 
+- **repolint lexicon lint** for the deleted shape: #1305's scope (its two rules cover the guardrail class); the frontend grep-gate above holds the seam until then.
+
+## Adversarial self-review (Rule 11)
+
+- f1 "Issue said ChatPage.historyError unchanged" — real, resolved by A5 disclosure + minimal rewrite (1 row, intent preserved).
+- f2 "grep-gate could be vacuous" — real risk; disproved by mutation run (gate fails on injected `record.data`).
+- f3 "AgentSession status required could break mocks" — false alarm: tsc 0 errors; runtime reads are optional-chained.
+- f4 "wiring test isn't the dev_preview router" — real limitation; disclosed above, not worked around silently.
+- f5 "`SessionStatusEvent.status` still has `"retry"`" — inspected: backend-emitted SSE tracker event (types.ts:260), one of the four issue locations is not it; out of scope, noted for #796's sweep.

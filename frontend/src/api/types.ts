@@ -91,16 +91,20 @@ export interface ActiveSessionsResponse {
   maxActive: number;
 }
 
-// Shape returned by the opencode agent GET /session/:id (proxied through)
+// The platform session contract's Session object (pkg/session
+// contract_gen.go) as returned by GET /workspaces/:id/sessions/:sessionId —
+// the adapter seam translates the agent's native shape into this
+// contract; no agent-native fields leak through.
 export interface AgentSession {
   id: string;
+  workspaceId?: string;
+  parentId?: string;
   title?: string;
-  parentID?: string;
-  share?: string;
-  // Ground-truth busy/idle from the adapter's /v1/statusz sync (#792
-  // Pattern 1) — the timeout-recheck in useChatStream reads it before
-  // declaring an interrupted stream (2026-08-26 false-positive incident).
-  status?: "idle" | "busy" | "retry";
+  // Contract Status values (session.Status). Ground-truth busy/idle
+  // comes from the adapter's /v1/statusz sync (#792 Pattern 1) — the
+  // timeout-recheck in useChatStream reads it before declaring an
+  // interrupted stream (2026-08-26 false-positive incident).
+  status: "unknown" | "idle" | "busy" | "error" | "compacting" | "archived";
 }
 
 export interface WorkspaceStatus {
