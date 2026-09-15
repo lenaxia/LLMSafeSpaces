@@ -698,63 +698,6 @@ func TestAdapter_ListPending_UnifiesQuestionsAndPermissions(t *testing.T) {
 	assert.Contains(t, p1.Always, "/workspace")
 }
 
-// --- Resolve (PR #714 review follow-up: was untested) ---
-
-func TestAdapter_Resolve_QuestionReply_HappyPath(t *testing.T) {
-	srv := newFakeOpencode(t)
-	srv.register("POST", "/question/que_1/reply", `{}`, 0)
-
-	a := newTestAdapter(t, srv.Server)
-	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "option-a")
-	require.NoError(t, err)
-	require.Contains(t, srv.requests, "POST /question/que_1/reply")
-	require.NotContains(t, srv.requests, "POST /permission",
-		"question reply succeeded → must NOT fall through to permission")
-}
-
-func TestAdapter_Resolve_FallsBackToPermissionOn404(t *testing.T) {
-	// When /question/:id/reply returns 404 for an UNPREFIXED id, the
-	// adapter must try /permission/:id/reply (agent-agnostic callers).
-	// 4a r6/r7: prefixed ids never probe cross-kind — the harness
-	// prefix-validates (cross-kind posts are 400 Params, never 404).
-	srv := newFakeOpencode(t)
-	srv.register("POST", "/question/req_1/reply", `not found`, http.StatusNotFound)
-	srv.register("POST", "/permission/req_1/reply", `{}`, 0)
-
-	a := newTestAdapter(t, srv.Server)
-	err := a.Resolve(context.Background(), "u-1", "ws-1", "req_1", "allow")
-	require.NoError(t, err)
-	require.Contains(t, srv.requests, "POST /permission/req_1/reply",
-		"404 on question → must fall through to permission reply")
-}
-
-func TestAdapter_Resolve_QueIDDoesNotFallThroughOn404(t *testing.T) {
-	// 4a r6/r7: a que_ id's 404 is the absence signal — surfacing it
-	// beats converting it into a guaranteed 400 cross-kind post.
-	srv := newFakeOpencode(t)
-	srv.register("POST", "/question/que_1/reply", `not found`, http.StatusNotFound)
-
-	a := newTestAdapter(t, srv.Server)
-	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "allow")
-	require.Error(t, err)
-	require.NotContains(t, srv.requests, "POST /permission",
-		"a prefixed id must never post cross-kind (the harness 400s it)")
-}
-
-func TestAdapter_Resolve_QuestionReply5xx_ReturnsError(t *testing.T) {
-	// A 5xx on question-reply must surface as an error (not fall
-	// through to permission — that would mask a server failure).
-	srv := newFakeOpencode(t)
-	srv.register("POST", "/question/que_1/reply", `internal`, http.StatusInternalServerError)
-
-	a := newTestAdapter(t, srv.Server)
-	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "x")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "500")
-	require.NotContains(t, srv.requests, "POST /permission",
-		"5xx on question must NOT fall through to permission")
-}
-
 // --- AnswerQuestion / ReplyPermission (#828 batch 3) ---
 
 // The Epic-25 G1 bounded-read invariant, re-pinned at the adapter seam
@@ -1463,38 +1406,6 @@ func TestGetHistory_V2StoreBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, paged, 2)
 	assert.Equal(t, session.MessageAssistant, paged[0].Type, "oldest-first within the newest-2 page")
-}
-
-// 4a r7: the harness prefix-validates request IDs (cross-kind posts are
-// 400 Params, never 404 — captured in ask_terminal_states_1_18_15.json).
-// Resolve/RejectInput route prefixed ids to their own kind only.
-func TestAdapter_Resolve_PrefixAware(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case strings.HasPrefix(r.URL.Path, "/permission/") && strings.Contains(r.URL.Path, "que_"):
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected a string starting with \"per\""},"kind":"Params"}`))
-		case strings.HasPrefix(r.URL.Path, "/question/") && strings.Contains(r.URL.Path, "per_"):
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected a string starting with \"que\""},"kind":"Params"}`))
-		default:
-			_, _ = w.Write([]byte(`true`))
-		}
-	}))
-	t.Cleanup(srv.Close)
-
-	a := newTestAdapter(t, srv)
-
-	// A que_ id must NEVER touch the permission endpoint (the stub 400s
-	// exactly as the real harness does) — the question reply resolves.
-	if err := a.Resolve(context.Background(), "", "ws", "que_prefix1", "reject"); err != nil {
-		t.Fatalf("que-prefixed resolve must stay question-only: %v", err)
-	}
-	// A per_ id must go straight to the permission endpoint.
-	if err := a.Resolve(context.Background(), "", "ws", "per_prefix1", "once"); err != nil {
-		t.Fatalf("per-prefixed resolve must be permission-direct: %v", err)
-	}
 }
 
 func TestAdapter_RejectInput_PrefixAware(t *testing.T) {

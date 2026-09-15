@@ -15,6 +15,8 @@ from llmsafespaces import (
     Message,
     ProviderCredential,
 )
+from llmsafespaces.types import InboxLateAnswerAccepted, InputRequest
+from tests.input_contract_fixtures import LATE_ANSWER_BODY, PERMISSION_ROW, QUESTION_ROW
 
 
 BASE = "http://localhost:8080/api/v1"
@@ -894,3 +896,129 @@ def test_enqueue_files():
 
     body = _json.loads(route.calls[0].request.content)
     assert body == {"text": "later", "files": [UPLOAD_PATH]}
+
+
+# --- input requests: the contract InputRequest surface (#1302 / 4b) ---
+
+
+@respx.mock
+def test_list_questions_typed_contract():
+    respx.get(f"{BASE}/workspaces/ws-1/question").respond(json=[QUESTION_ROW])
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result: list[InputRequest] = client.input_requests.list_questions("ws-1")
+    assert len(result) == 1
+    row = result[0]
+    assert row["kind"] == "question"
+    assert row["question"] == "What language?"
+    assert row["options"][0]["label"] == "Go"
+    assert row["custom"] is True
+    assert row["tool"]["callId"] == "call_xyz"
+
+
+@respx.mock
+def test_list_permissions_typed_contract():
+    respx.get(f"{BASE}/workspaces/ws-1/permission").respond(json=[PERMISSION_ROW])
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result: list[InputRequest] = client.input_requests.list_permissions("ws-1")
+    assert len(result) == 1
+    row = result[0]
+    assert row["kind"] == "permission"
+    assert row["permission"] == "bash"
+    assert row["patterns"] == ["/workspace/src/main.go"]
+    assert row["metadata"]["command"] == "go build"
+
+
+@respx.mock
+def test_reply_question_live_answer_returns_none():
+    route = respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    late = client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is None
+    assert route.calls.last.request.content == b'{"answers":[["Go"]]}'
+
+
+@respx.mock
+def test_reply_question_live_answer_with_body_is_not_late():
+    # A server regression answering 200 WITH a body must still classify
+    # as a live answer (r1 review).
+    respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=200, json={"status": "answered"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    late = client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is None
+
+
+@respx.mock
+def test_reply_question_late_answer_202_body():
+    respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=202, json=LATE_ANSWER_BODY
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    late: InboxLateAnswerAccepted | None = client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+    assert late is not None
+    assert late["status"] == "queued"
+    assert late["clientMessageID"] == "inbox-que_1-answer"
+    assert late["messageID"] == "msg_out_1"
+    assert late["duplicate"] is True
+
+
+@respx.mock
+def test_reply_permission_vocabulary_and_message():
+    route = respx.post(f"{BASE}/workspaces/ws-1/permission/per_1/reply").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    late = client.input_requests.reply_permission("ws-1", "per_1", "always", "context note")
+    assert late is None
+    assert route.calls.last.request.content == b'{"reply":"always","message":"context note"}'
+
+
+@respx.mock
+def test_reply_permission_reject_omits_empty_message():
+    route = respx.post(f"{BASE}/workspaces/ws-1/permission/per_1/reply").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.input_requests.reply_permission("ws-1", "per_1", "reject")
+    assert route.calls.last.request.content == b'{"reply":"reject"}'
+
+
+@respx.mock
+def test_reply_conflict_maps_to_conflict_error():
+    respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reply").respond(
+        status_code=409, json={"error": "record dismissed"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(ConflictError):
+        client.input_requests.reply_question("ws-1", "que_1", [["Go"]])
+
+
+@respx.mock
+def test_reply_unavailable_maps_to_service_unavailable():
+    respx.post(f"{BASE}/workspaces/ws-1/permission/per_1/reply").respond(
+        status_code=503, json={"error": "pending set unknown"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(ServiceUnavailableError):
+        client.input_requests.reply_permission("ws-1", "per_1", "reject")
+
+
+@respx.mock
+def test_reject_question():
+    route = respx.post(f"{BASE}/workspaces/ws-1/question/que_1/reject").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.input_requests.reject_question("ws-1", "que_1")
+    assert route.called
+
+
+@respx.mock
+def test_dismiss_inbox_record():
+    route = respx.delete(f"{BASE}/workspaces/ws-1/sessions/ses_1/inbox/que_1").respond(status_code=204)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.input_requests.dismiss_inbox_record("ws-1", "ses_1", "que_1")
+    assert route.called
+
+
+@respx.mock
+def test_request_input_snapshot():
+    route = respx.post(f"{BASE}/workspaces/ws-1/input-snapshot").respond(status_code=202)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.input_requests.request_input_snapshot("ws-1")
+    assert route.called

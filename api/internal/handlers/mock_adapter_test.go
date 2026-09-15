@@ -29,7 +29,6 @@ type mockAdapter struct {
 	sendAsyncFn         func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (string, error)
 	abortFn             func(ctx context.Context, userID, workspaceID, sessionID string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
-	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
 	rejectInputFn       func(ctx context.Context, userID, workspaceID, requestID string) error
 	answerQuestionFn    func(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error
 	replyPermissionFn   func(ctx context.Context, userID, workspaceID, requestID, reply, message string) error
@@ -117,12 +116,6 @@ func (m *mockAdapter) ListPending(ctx context.Context, uid, wid, sid string) ([]
 	}
 	panic("mockAdapter.ListPending not configured")
 }
-func (m *mockAdapter) Resolve(ctx context.Context, uid, wid, rid, reply string) error {
-	if m.resolveFn != nil {
-		return m.resolveFn(ctx, uid, wid, rid, reply)
-	}
-	panic("mockAdapter.Resolve not configured")
-}
 func (m *mockAdapter) RejectInput(ctx context.Context, uid, wid, rid string) error {
 	if m.rejectInputFn != nil {
 		return m.rejectInputFn(ctx, uid, wid, rid)
@@ -203,7 +196,6 @@ func newLenientMockAdapter() *mockAdapter {
 		},
 		abortFn:           func(context.Context, string, string, string) error { return nil },
 		listPendingFn:     func(context.Context, string, string, string) ([]session.InputRequest, error) { return nil, nil },
-		resolveFn:         func(context.Context, string, string, string, string) error { return nil },
 		rejectInputFn:     func(context.Context, string, string, string) error { return nil },
 		answerQuestionFn:  func(context.Context, string, string, string, [][]string) error { return nil },
 		replyPermissionFn: func(context.Context, string, string, string, string, string) error { return nil },

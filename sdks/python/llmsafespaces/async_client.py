@@ -21,6 +21,7 @@ from .errors import (
     ServiceUnavailableError,
     TimeoutError,
 )
+from .client import _late_answer_only
 from .types import (
     APIKey,
     AuthResponse,
@@ -28,6 +29,8 @@ from .types import (
     EnsureSessionResponse,
     FileUpload,
     HistoryPage,
+    InboxLateAnswerAccepted,
+    InputRequest,
     McpAutoApplyRule,
     McpServer,
     CreateMcpServerRequest,
@@ -785,23 +788,76 @@ class _AsyncUsageAPI:
 
 
 class _AsyncInputRequestsAPI:
+    """Agent question/permission requests — the whole surface speaks the
+    platform contract shape (InputRequest, #1302): typed list returns,
+    the late-answer 202 body on replies, and the inbox dismiss exit
+    (#1313)."""
+
     def __init__(self, client: AsyncLLMSafeSpaces):
         self._c = client
 
-    async def list_questions(self, workspace_id: str) -> list[dict[str, Any]]:
+    async def list_questions(self, workspace_id: str) -> list[InputRequest]:
+        """Pending questions as contract InputRequest values
+        (kind=question)."""
         return await self._c._request("GET", f"/workspaces/{workspace_id}/question")
 
-    async def reply_question(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
-        await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reply", json=body)
+    async def reply_question(
+        self, workspace_id: str, request_id: str, answers: list[list[str]]
+    ) -> InboxLateAnswerAccepted | None:
+        """Answer a live question. When the ask is no longer live but its
+        unanswered-question inbox record is pending (#1313), the answer is
+        accepted as a late answer through the delivery outbox (202) and
+        the outbox entry is returned; a live answer (200) returns None."""
+        return _late_answer_only(
+            await self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/question/{request_id}/reply",
+                json={"answers": answers},
+            )
+        )
 
     async def reject_question(self, workspace_id: str, request_id: str) -> None:
+        """Reject (dismiss) a pending question."""
         await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reject")
 
-    async def list_permissions(self, workspace_id: str) -> list[dict[str, Any]]:
+    async def list_permissions(self, workspace_id: str) -> list[InputRequest]:
+        """Pending permissions as contract InputRequest values
+        (kind=permission)."""
         return await self._c._request("GET", f"/workspaces/{workspace_id}/permission")
 
-    async def reply_permission(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
-        await self._c._request("POST", f"/workspaces/{workspace_id}/permission/{request_id}/reply", json=body)
+    async def reply_permission(
+        self, workspace_id: str, request_id: str, reply: str, message: str = ""
+    ) -> InboxLateAnswerAccepted | None:
+        """Answer a live permission with the reply vocabulary
+        ("once" | "always" | "reject") and an optional message. A late
+        decision (ask no longer live, inbox record pending) returns the
+        202 outbox entry; a live answer (200) returns None."""
+        body: dict[str, Any] = {"reply": reply}
+        if message:
+            body["message"] = message
+        return _late_answer_only(
+            await self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/permission/{request_id}/reply",
+                json=body,
+            )
+        )
+
+    async def dismiss_inbox_record(
+        self, workspace_id: str, session_id: str, request_id: str
+    ) -> None:
+        """Terminalize an unanswered-question inbox record (#1313): the
+        record becomes dismissed; a still-live ask is rejected first
+        server-side."""
+        await self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/inbox/{request_id}",
+        )
+
+    async def request_input_snapshot(self, workspace_id: str) -> None:
+        """Trigger an input-snapshot flight (202): the pending-input
+        events arrive on the workspace/user event streams."""
+        await self._c._request("POST", f"/workspaces/{workspace_id}/input-snapshot")
 
 
 class _AsyncProbeAPI:

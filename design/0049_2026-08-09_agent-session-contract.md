@@ -160,13 +160,13 @@ The authoritative Go types live in `pkg/session/` (created by US-65.2). The shap
 - **`Cost`** / **`Usage`** — display-only token/cost fields.
 - **`ModelRef`** / **`ModelInfo`** — identity + context/output limits (limits needed for "context: 45% used" display).
 
-### 4.6 The Adapter interface (~18 methods)
+### 4.6 The Adapter interface (~22 methods)
 
 The `pkg/agent.Adapter` interface folds the existing `Dialect` + `AgentRuntime` into one seam:
 
 - **Sessions (5):** Create, Get, List, Rename, Delete
 - **Messaging (4):** Send, SendAsync, Abort, GetHistory
-- **Streaming/Input (3):** Stream, ListPending, Resolve
+- **Streaming/Input (5):** Stream, ListPending, RejectInput, AnswerQuestion, ReplyPermission (the legacy generic `Resolve` was deleted with the S1 migration — #1371; the API writes through agentd `Act`)
 - **Config/Credentials (3):** ApplyConfig (returns `restartRequired bool`), FormatProviderConfig, ValidateCredentials
 - **Models (2):** ListModels, SetModel
 - **Capabilities + pass-through (3):** Capabilities, Rewind, Fork
@@ -202,7 +202,7 @@ The 20s stale window, the one-shot injector, the `annotateModels` guard — all 
 | Hack | Fate |
 |---|---|
 | `api/internal/handlers/proxy_filter*.go` (patch-part stripping, `?verbose`) | **Deleted** — `FileChange` is structured; snapshot.files dropped |
-| `proxy_input.go`, `proxy_permissions.go` translation logic | **Folded into adapter** `ListPending`/`Resolve` |
+| `proxy_input.go`, `proxy_permissions.go` translation logic | **Folded into adapter** `ListPending`; replies go through agentd `Act` (`AnswerInputAction`) — `Adapter.Resolve` deleted (#1371) |
 | `proxy_handlers.go:205-483` (history fetch + paginate + opencode-shape parse) | **Replaced by `adapter.GetHistory`** returning `[]Message` |
 | `pkg/agent/dialect.go` path/classification methods | **Private to opencode adapter** |
 | opencode-specific doc comments on `SessionListItem.ParentID` / `ContextUsed` (`pkg/types/session.go:60`) | **Genericized** |

@@ -97,10 +97,6 @@ func (f *fakeAdapter) ListPending(ctx context.Context, userID, workspaceID, sess
 	f.otherCalled["ListPending"]++
 	return nil, nil
 }
-func (f *fakeAdapter) Resolve(ctx context.Context, userID, workspaceID, requestID, reply string) error {
-	f.otherCalled["Resolve"]++
-	return nil
-}
 func (f *fakeAdapter) RejectInput(ctx context.Context, userID, workspaceID, requestID string) error {
 	f.otherCalled["RejectInput"]++
 	return nil
@@ -238,10 +234,9 @@ func TestWrap_NonMessageMethods_Untouched(t *testing.T) {
 	_, _ = decorated.GetHistoryPage(ctx, "u1", "ws-1", "ses_1", 50)
 	_, _ = decorated.Stream(ctx, "u1", "ws-1", "ses_1")
 	_, _ = decorated.ListPending(ctx, "u1", "ws-1", "ses_1")
-	_ = decorated.Resolve(ctx, "u1", "ws-1", "que_1", "yes")
 
 	assert.Equal(t, 0, usage.calls, "non-message methods must not read disk usage")
-	for _, m := range []string{"CreateSession", "GetSession", "ListSessions", "RenameSession", "DeleteSession", "Abort", "GetHistory", "GetHistoryPage", "Stream", "ListPending", "Resolve"} {
+	for _, m := range []string{"CreateSession", "GetSession", "ListSessions", "RenameSession", "DeleteSession", "Abort", "GetHistory", "GetHistoryPage", "Stream", "ListPending"} {
 		assert.Equal(t, 1, inner.otherCalled[m], "%s must delegate exactly once", m)
 	}
 }

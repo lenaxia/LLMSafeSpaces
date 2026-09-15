@@ -112,7 +112,7 @@ func TestInbox_InputRequested_AutoApproveDoesNotRecord(t *testing.T) {
 	h, in, _, _ := newInboxBackend(t)
 	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{AutoApprovePermissions: true})
 	h.adapter = &mockAdapter{
-		resolveFn: func(_ context.Context, _, _, _, _ string) error { return nil },
+		replyPermissionFn: func(_ context.Context, _, _, _, _, _ string) error { return nil },
 	}
 
 	(&usageBridge{h: h}).InputRequested("ws-1", inboxAbiPermission("per_1", "ses_1"))

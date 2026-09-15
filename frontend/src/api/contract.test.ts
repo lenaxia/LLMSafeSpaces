@@ -7,8 +7,7 @@ import type {
   SessionListItem,
   WorkspaceListItem,
   AuthResponse,
-  QuestionRequest,
-  PermissionRequest,
+  InputRequest,
 } from "./types";
 
 /**
@@ -78,34 +77,41 @@ describe("Go↔TS contract", () => {
     const testedKeys = [
       "AuthConfig", "ActivateWorkspaceResponse", "ActiveSessionsResponse",
       "SessionListItem", "WorkspaceListItem", "AuthResponse",
-      "QuestionRequest", "PermissionRequest",
+      "InputRequestQuestion", "InputRequestPermission",
     ];
     const fixtureKeys = Object.keys(fixtures);
     expect(fixtureKeys.sort()).toEqual(testedKeys.sort());
   });
 
-  it("QuestionRequest matches Go shape", () => {
-    const data: QuestionRequest = fixtures.QuestionRequest;
+  it("InputRequest (kind=question) matches Go shape", () => {
+    // JSON-module inference widens the kind literal to string; the cast
+    // keeps shape-overlap checking, the runtime asserts below carry the
+    // value-level drift detection.
+    const data = fixtures.InputRequestQuestion as InputRequest;
     expect(data.id).toBe("que_18b28260affeoxXrX1iwPH8wFg");
-    expect(data.session_id).toBe("ses_18b28260affeoxXrX1iwPH8wFg");
-    expect(data.questions).toHaveLength(1);
-    const q = data.questions[0]!;
-    expect(q.header).toBe("Choose language");
-    expect(q.options).toHaveLength(2);
-    expect(q.options[0]!.label).toBe("Go");
-    expect(q.multiple).toBe(false);
-    expect(data.tool?.message_id).toBe("msg_abc");
-    expect(data.tool?.call_id).toBe("call_xyz");
+    expect(data.kind).toBe("question");
+    expect(data.sessionId).toBe("ses_18b28260affeoxXrX1iwPH8wFg");
+    expect(data.rootSessionId).toBe("ses_18b28260affeoxXrX1iwPH8wFg");
+    expect(data.question).toBe("What programming language do you want to use?");
+    expect(data.header).toBe("Choose language");
+    expect(data.multiple).toBeUndefined(); // omitempty: false is key-absent
+    expect(data.custom).toBe(true);
+    expect(data.options).toHaveLength(2);
+    expect(data.options?.[0]?.label).toBe("Go");
+    expect(data.options?.[0]?.description).toBe("Fast compiled language");
+    expect(data.tool?.messageId).toBe("msg_abc");
+    expect(data.tool?.callId).toBe("call_xyz");
   });
 
-  it("PermissionRequest matches Go shape", () => {
-    const data: PermissionRequest = fixtures.PermissionRequest;
+  it("InputRequest (kind=permission) matches Go shape", () => {
+    const data = fixtures.InputRequestPermission as InputRequest;
     expect(data.id).toBe("per_18b28260affeoxXrX1iwPH8wFg");
-    expect(data.session_id).toBe("ses_18b28260affeoxXrX1iwPH8wFg");
+    expect(data.kind).toBe("permission");
+    expect(data.sessionId).toBe("ses_18b28260affeoxXrX1iwPH8wFg");
     expect(data.permission).toBe("shell");
     expect(data.patterns).toEqual(["/workspace/src/main.go"]);
     expect(data.metadata).toEqual({ command: "go build" });
     expect(data.always).toEqual(["/workspace/*"]);
-    expect(data.tool?.message_id).toBe("msg_abc");
+    expect(data.tool?.messageId).toBe("msg_abc");
   });
 });

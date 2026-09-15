@@ -931,57 +931,6 @@ func (a *Adapter) parsePendingPermissions(resp *http.Response) []session.InputRe
 	return out
 }
 
-func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, reply string) error {
-	c, err := a.resolve(ctx, userID, workspaceID)
-	if err != nil {
-		return err
-	}
-	d := &Dialect{}
-	// Prefix-aware (4a r6/r7): the harness prefix-validates request IDs
-	// — a cross-kind post is a 400 Params error, never a 404 (captured
-	// in ask_terminal_states_1_18_15.json). Prefixed ids route to their
-	// own kind only (the dialect owns the prefix convention); unprefixed
-	// ids keep the legacy probe order.
-	if d.KindByPrefix(requestID) == "permission" {
-		pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
-		if pErr != nil {
-			return pErr
-		}
-		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
-		if pResp.StatusCode >= 400 {
-			return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
-		}
-		return nil
-	}
-	qResp, qErr := a.doPost(ctx, c, d.QuestionReplyPath(requestID), map[string]any{"reply": reply})
-	if qErr == nil && d.KindByPrefix(requestID) != "question" {
-		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-		if qResp.StatusCode < 400 {
-			return nil
-		}
-		if qResp.StatusCode != http.StatusNotFound {
-			return a.httpError("POST "+d.QuestionReplyPath(requestID), qResp)
-		}
-		pResp, pErr := a.doPost(ctx, c, d.PermissionReplyPath(requestID), map[string]any{"reply": reply})
-		if pErr != nil {
-			return pErr
-		}
-		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
-		if pResp.StatusCode >= 400 {
-			return a.httpError("POST "+d.PermissionReplyPath(requestID), pResp)
-		}
-		return nil
-	}
-	if qErr != nil {
-		return qErr
-	}
-	defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-	if qResp.StatusCode >= 400 {
-		return a.httpError("POST "+d.QuestionReplyPath(requestID), qResp)
-	}
-	return nil
-}
-
 // AnswerQuestion posts the question-reply schema verbatim
 // ({answers: string[][]}) — the endpoint is additionalProperties:false.
 func (a *Adapter) AnswerQuestion(ctx context.Context, userID, workspaceID, requestID string, answers [][]string) error {

@@ -239,7 +239,11 @@ func TestInputAct_QuestionReplyForwardsAnswerAction(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
 	}
-	assert.JSONEq(t, `{"status":"answered"}`, w.Body.String())
+	// The reply 200 is bodyless (the published contract —
+	// sdks/openapi.yaml replyQuestion "200": no content schema): the
+	// status code IS the accept signal; a body here would misclassify
+	// live answers as late answers in the body-parsing SDKs (r1 f1).
+	assert.Empty(t, w.Body.String(), "reply 200 must carry no body")
 }
 
 func TestInputAct_PermissionReplyCarriesReplyAndMessage(t *testing.T) {
@@ -267,6 +271,7 @@ func TestInputAct_PermissionReplyCarriesReplyAndMessage(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
 	}
+	assert.Empty(t, w.Body.String(), "reply 200 must carry no body (the published contract)")
 }
 
 func TestInputAct_QuestionRejectIsTheDismissExit(t *testing.T) {
@@ -284,6 +289,7 @@ func TestInputAct_QuestionRejectIsTheDismissExit(t *testing.T) {
 
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_abc123/reject", `{}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "reject 200 must carry no body (the published contract — same row as the reply pins)")
 
 	select {
 	case got := <-stub.got:
@@ -356,6 +362,7 @@ func TestInputAct_AdapterPathSurvivesFlagOff(t *testing.T) {
 
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_abc123/reply", `{"answers":[["Go"]]}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "flag-off reply 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, answered, "flag-off regime keeps the batch-3 adapter path (D4 single regime per flag)")
 }
 
@@ -551,6 +558,7 @@ func TestInputAct_QuestionRejectConnectErrorAndFlagOff(t *testing.T) {
 	})
 	w2 := env2.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/question/que_ce2/reject", `{}`)
 	require.Equal(t, http.StatusOK, w2.Code, w2.Body.String())
+	assert.Empty(t, w2.Body.String(), "flag-off reject 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, rejected, "flag-off keeps the adapter reject (r1 minor)")
 }
 
@@ -579,6 +587,7 @@ func TestInputAct_PermissionReplyFlagOff(t *testing.T) {
 	})
 	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-act/permission/per_fo/reply", `{"reply":"once"}`)
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.Empty(t, w.Body.String(), "flag-off permission reply 200 must carry no body (same pin family as the terminus rows)")
 	assert.True(t, replied, "flag-off keeps the adapter permission reply (r1 minor)")
 }
 
@@ -648,5 +657,96 @@ func TestInputAct_QuestionReplyFlattensAllAnswerGroups(t *testing.T) {
 		assert.Equal(t, []any{"Go", "and", "custom", "second"}, ans["optionIds"], "ALL answer groups ride the action (no silent drop)")
 	case <-time.After(2 * time.Second):
 		t.Fatal("Act was never called")
+	}
+}
+
+// --- auto-approve rides the same Act path (S1, #1302 r1-f2) ---------
+
+// The headless auto-approve must not make direct mutating harness calls:
+// in the authority regime it goes through agentd Act with
+// AnswerInputAction reply="always" — exactly the PermissionReply path.
+func TestAutoApprovePermission_ActRegime(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "per_auto1", SessionID: "ses_live", Kind: session.InputPermission,
+				Permission: "bash", Patterns: []string{"ls"},
+			}}, nil
+		},
+	})
+
+	env.handler.autoApprovePermission("ws-act", "per_auto1")
+
+	select {
+	case got := <-stub.got:
+		ans, ok := got["answerQuestion"].(map[string]any)
+		require.True(t, ok, "payload: %v", got)
+		assert.Equal(t, "per_auto1", ans["inputId"])
+		assert.Equal(t, "always", ans["reply"], "auto-approve rides the permission vocabulary through Act")
+		assert.Equal(t, "ses_live", got["sessionId"], "the ask's live session addresses Act")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called — auto-approve bypassed the Act path")
+	}
+}
+
+// Unknown pending set (unreadable live set, no identifying record):
+// auto-approve skips non-authoritatively — no Act call, no panic.
+func TestAutoApprovePermission_ActUnknownPendingSetSkips(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, assert.AnError
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_gone") })
+	select {
+	case got := <-stub.got:
+		t.Fatalf("Act must not fire on an unknown pending set, got %v", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// Act transport failure: warn-and-return — never a panic.
+func TestAutoApprovePermission_ActErrorNoPanic(t *testing.T) {
+	stub := newAnswerActStubPod(t, "not_found")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{{
+				ID: "per_dead1", SessionID: "ses_live", Kind: session.InputPermission,
+				Permission: "bash",
+			}}, nil
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_dead1") })
+	// The stub pod answered; the drain keeps the channel empty for the next reader.
+	select {
+	case <-stub.got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Act was never called")
+	}
+}
+
+// Readable pending set but the ask is absent (no inbox record either):
+// the skip is non-authoritative — no Act call, no panic.
+func TestAutoApprovePermission_ActAbsentAskSkips(t *testing.T) {
+	stub := newAnswerActStubPod(t, "")
+	env := newInputActEnv(t, inputActOpts{
+		terminus: true, podURL: stub.server.URL,
+		listFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return []session.InputRequest{}, nil
+		},
+	})
+
+	require.NotPanics(t, func() { env.handler.autoApprovePermission("ws-act", "per_absent") })
+	select {
+	case got := <-stub.got:
+		t.Fatalf("Act must not fire for an absent ask, got %v", got)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

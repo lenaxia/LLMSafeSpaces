@@ -154,6 +154,16 @@ type ToolRef struct {
 	CallID    string `json:"callId,omitempty"`
 }
 
+// InboxLateAnswerAccepted is the 202 body for a reply that landed as a
+// late answer through the delivery outbox (#1313): the ask was no longer
+// live, so the answer rides a Q&A user message instead of the live ask.
+type InboxLateAnswerAccepted struct {
+	Status          string `json:"status"`
+	ClientMessageID string `json:"clientMessageID"`
+	MessageID       string `json:"messageID"`
+	Duplicate       bool   `json:"duplicate,omitempty"`
+}
+
 // CustomPart is the extension valve; Kind discriminates.
 type CustomPart struct {
 	Kind string          `json:"kind"`

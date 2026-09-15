@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,7 +120,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 		}
 		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindQuestion, inbox.StatusAnswered)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
-		c.JSON(http.StatusOK, gin.H{"status": "answered"})
+		c.Status(http.StatusOK)
 		return
 	}
 	if err := h.adapter.AnswerQuestion(c.Request.Context(), "", wid, requestID, payload.Answers); err != nil {
@@ -129,7 +130,7 @@ func (h *ProxyHandler) QuestionReply(c *gin.Context) {
 	}
 	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindQuestion, inbox.StatusAnswered)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
-	c.JSON(http.StatusOK, gin.H{"status": "answered"})
+	c.Status(http.StatusOK)
 }
 
 // QuestionReject dismisses a live ask. Rejecting a live ask is the
@@ -168,7 +169,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 		}
 		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindQuestion, inbox.StatusDismissed)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
-		c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
+		c.Status(http.StatusOK)
 		return
 	}
 	if err := h.adapter.RejectInput(c.Request.Context(), "", wid, requestID); err != nil {
@@ -178,7 +179,7 @@ func (h *ProxyHandler) QuestionReject(c *gin.Context) {
 	}
 	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindQuestion, inbox.StatusDismissed)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
-	c.JSON(http.StatusOK, gin.H{"status": "dismissed"})
+	c.Status(http.StatusOK)
 }
 
 // ListPermissions returns the pending permissions as the contract
@@ -270,7 +271,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 		}
 		h.resolveInboxOnProxySuccess(c, wid, sessionID, requestID, inbox.KindPermission, disposition)
 		h.postAdapterSuccess(c, workspace, wid, "", true)
-		c.JSON(http.StatusOK, gin.H{"status": "answered"})
+		c.Status(http.StatusOK)
 		return
 	}
 	if err := h.adapter.ReplyPermission(c.Request.Context(), "", wid, requestID, payload.Reply, payload.Message); err != nil {
@@ -280,7 +281,7 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 	}
 	h.resolveInboxOnProxySuccess(c, wid, "", requestID, inbox.KindPermission, inbox.StatusAnswered)
 	h.postAdapterSuccess(c, workspace, wid, "", true)
-	c.JSON(http.StatusOK, gin.H{"status": "answered"})
+	c.Status(http.StatusOK)
 }
 
 // tryLateAnswer serves the walk-away flow: the ask is dead in the
@@ -331,11 +332,31 @@ func (h *ProxyHandler) tryLateAnswer(c *gin.Context, workspaceID, requestID stri
 // the authority regime; agentd is the sole writer. Payload keys are
 // protojson camelCase over the bare Connect-JSON body (abiAct).
 func (h *ProxyHandler) actAnswerInput(c *gin.Context, workspace, sessionID, requestID string, action map[string]any) bool {
-	base, pw, err := h.agentdEndpoint(c.Request.Context(), workspace)
-	if err != nil {
-		h.logger.Error("input Act: endpoint unresolved", err, "workspaceID", workspace, "requestID", requestID)
-		c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "unresolved", "detail": "agentd endpoint unavailable"}})
+	if err := h.actAnswerInputCtx(c.Request.Context(), workspace, sessionID, requestID, action); err != nil {
+		if errors.Is(err, errAgentdEndpointUnresolved) {
+			h.logger.Error("input Act: endpoint unresolved", err, "workspaceID", workspace, "requestID", requestID)
+			c.JSON(http.StatusConflict, gin.H{"error": gin.H{"code": "unresolved", "detail": "agentd endpoint unavailable"}})
+			return false
+		}
+		status, code := mapConnectError(err)
+		h.logger.Error("input Act failed", err, "workspaceID", workspace, "requestID", requestID)
+		c.JSON(status, gin.H{"error": gin.H{"code": code, "detail": "failed to answer input"}})
 		return false
+	}
+	return true
+}
+
+// errAgentdEndpointUnresolved marks an Act that never left the API
+// because the pod's ABI endpoint could not be resolved.
+var errAgentdEndpointUnresolved = errors.New("agentd endpoint unavailable")
+
+// actAnswerInputCtx is the context-level AnswerInputAction Act — the
+// HTTP-free core shared by the reply routes and the headless
+// auto-approve goroutine.
+func (h *ProxyHandler) actAnswerInputCtx(ctx context.Context, workspace, sessionID, requestID string, action map[string]any) error {
+	base, pw, err := h.agentdEndpoint(ctx, workspace)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errAgentdEndpointUnresolved, err)
 	}
 	action["inputId"] = requestID
 	payload := map[string]any{
@@ -343,13 +364,7 @@ func (h *ProxyHandler) actAnswerInput(c *gin.Context, workspace, sessionID, requ
 		"answerQuestion": action,
 	}
 	var out json.RawMessage
-	if err := abiAct(c.Request.Context(), base, pw, payload, &out); err != nil {
-		status, code := mapConnectError(err)
-		h.logger.Error("input Act failed", err, "workspaceID", workspace, "requestID", requestID)
-		c.JSON(status, gin.H{"error": gin.H{"code": code, "detail": "failed to answer input"}})
-		return false
-	}
-	return true
+	return abiAct(ctx, base, pw, payload, &out)
 }
 
 // inputRequestSession resolves the session an ask belongs to: live
@@ -486,7 +501,7 @@ func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
 	// returns immediately. The flight's events reach the caller via the
 	// user-event stream, not this response.
 	go h.emitPendingInputRequests(context.WithoutCancel(c.Request.Context()), workspaceID) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
-	c.JSON(http.StatusAccepted, gin.H{"status": "snapshot requested"})
+	c.Status(http.StatusAccepted)
 }
 
 // emitPendingViaAdapter uses the Adapter's ListPending to fetch pending

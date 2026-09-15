@@ -20,6 +20,8 @@ import type {
   CreateMcpServerRequest,
   FetchFn,
   FileUpload,
+  InboxLateAnswerAccepted,
+  InputRequest,
   McpAutoApplyRule,
   McpServer,
   Message,
@@ -156,7 +158,12 @@ export class LLMSafeSpaces {
           throw new RateLimitError(msg);
         case 503: {
           const reason = (errBody as { reason?: string }).reason;
-          const retryAfter = (errBody as { retryAfter?: number }).retryAfter;
+          // The retry hint rides the body (reason-bearing 503s) or the
+          // Retry-After header (the input surface's non-authoritative
+          // 503s carry only {"error"} + the header).
+          const headerAfter = Number(res.headers.get("Retry-After"));
+          const retryAfter = (errBody as { retryAfter?: number }).retryAfter
+            ?? (Number.isFinite(headerAfter) && headerAfter > 0 ? headerAfter : undefined);
           const apiMessage = (errBody as { message?: string }).message ?? msg;
           throw new ServiceUnavailableError(apiMessage, reason, retryAfter);
         }
@@ -579,13 +586,65 @@ class UsageAPI {
   getQuota() { return this.client.request<Record<string, unknown>>("GET", "/usage/quota"); }
 }
 
+/**
+ * Agent question/permission requests — the whole surface speaks the
+ * platform contract shape (InputRequest, #1302): typed list returns,
+ * the late-answer 202 body on replies, and the inbox dismiss exit (#1313).
+ */
+
+/**
+ * Live-vs-late classification for input replies: only the outbox's
+ * accepted-entry body (status "queued") is a late answer. A live answer
+ * is bodyless per the published contract — and if a server ever answers
+ * 200 with a body anyway, it must still classify as live (r1 review).
+ */
+function lateAnswerOnly(late: InboxLateAnswerAccepted | undefined): InboxLateAnswerAccepted | undefined {
+  return late?.status === "queued" ? late : undefined;
+}
+
 class InputRequestsAPI {
   constructor(private client: LLMSafeSpaces) {}
-  listQuestions(workspaceId: string) { return this.client.request<unknown[]>("GET", `/workspaces/${workspaceId}/question`); }
-  replyQuestion(workspaceId: string, requestId: string, body: Record<string, unknown>) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/question/${requestId}/reply`, body); }
+
+  /** Pending questions as contract InputRequest values (kind=question). */
+  listQuestions(workspaceId: string) { return this.client.request<InputRequest[]>("GET", `/workspaces/${workspaceId}/question`); }
+
+  /**
+   * Answers a live question. When the ask is no longer live but its
+   * unanswered-question inbox record is pending (#1313), the server
+   * accepts the answer as a late answer through the delivery outbox
+   * (202) and the resolved value carries the outbox entry; a live
+   * answer (200) resolves to undefined.
+   */
+  replyQuestion(workspaceId: string, requestId: string, answers: string[][]) {
+    return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/question/${requestId}/reply`, { answers }).then(lateAnswerOnly);
+  }
+
+  /** Rejects (dismisses) a pending question. */
   rejectQuestion(workspaceId: string, requestId: string) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/question/${requestId}/reject`); }
-  listPermissions(workspaceId: string) { return this.client.request<unknown[]>("GET", `/workspaces/${workspaceId}/permission`); }
-  replyPermission(workspaceId: string, requestId: string, body: Record<string, unknown>) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/permission/${requestId}/reply`, body); }
+
+  /** Pending permissions as contract InputRequest values (kind=permission). */
+  listPermissions(workspaceId: string) { return this.client.request<InputRequest[]>("GET", `/workspaces/${workspaceId}/permission`); }
+
+  /**
+   * Answers a live permission with the reply vocabulary
+   * ("once" | "always" | "reject") and an optional message. A late
+   * decision (ask no longer live, inbox record pending) resolves to the
+   * 202 outbox entry; a live answer (200) resolves to undefined.
+   */
+  replyPermission(workspaceId: string, requestId: string, reply: "once" | "always" | "reject", message?: string) {
+    const body: Record<string, unknown> = { reply };
+    if (message !== undefined && message !== "") body.message = message;
+    return this.client.request<InboxLateAnswerAccepted | undefined>("POST", `/workspaces/${workspaceId}/permission/${requestId}/reply`, body).then(lateAnswerOnly);
+  }
+
+  /**
+   * Dismisses an unanswered-question inbox record (#1313): the record
+   * becomes dismissed; a still-live ask is rejected first server-side.
+   */
+  dismissInboxRecord(workspaceId: string, sessionId: string, requestId: string) { return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}/inbox/${requestId}`); }
+
+  /** Triggers an input-snapshot flight (202; events arrive on the event streams). */
+  requestInputSnapshot(workspaceId: string) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/input-snapshot`); }
 }
 
 class ProbeAPI {

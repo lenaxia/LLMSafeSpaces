@@ -152,28 +152,36 @@ func TestRunParentBackfill_Adapter_Error_ClearsBackfillGate(t *testing.T) {
 		"adapter error must clear the backfill gate so a retry can fire")
 }
 
-// --- autoApprovePermission via adapter ---
+// --- autoApprovePermission via adapter (flag-off regime) ---
+//
+// S1 (#1302): under flag-off the headless auto-approve uses the typed
+// adapter method (ReplyPermission, the PermissionReply path) — never the
+// legacy Resolve probe.
 
 func TestAutoApprovePermission_Adapter_HappyPath(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	called := false
+	replied := false
 	h.adapter = &mockAdapter{
-		resolveFn: func(_ context.Context, _, _, rid, reply string) error {
-			called = true
+		replyPermissionFn: func(_ context.Context, _, _, rid, reply, message string) error {
+			replied = true
 			assert.Equal(t, "per_1", rid)
 			assert.Equal(t, "always", reply)
+			assert.Equal(t, "", message)
 			return nil
 		},
 	}
 
 	h.autoApprovePermission("ws-1", "per_1")
-	assert.True(t, called, "adapter.Resolve must be called")
+	assert.True(t, replied, "adapter.ReplyPermission must be called (the typed PermissionReply path)")
+	// The never-Resolve half of the pin is structural: Adapter.Resolve is
+	// DELETED from the interface (zero production callers after the S1
+	// migration) — no caller can reach a legacy probe.
 }
 
 func TestAutoApprovePermission_Adapter_Error_NoPanic(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	h.adapter = &mockAdapter{
-		resolveFn: func(_ context.Context, _, _, _, _ string) error {
+		replyPermissionFn: func(_ context.Context, _, _, _, _, _ string) error {
 			return fmt.Errorf("network error")
 		},
 	}
@@ -348,6 +356,7 @@ func TestRequestInputSnapshot_FiresFlight(t *testing.T) {
 
 	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/input-snapshot", nil)
 	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Empty(t, w.Body.String(), "snapshot 202 must carry no body (the published contract — same pin family as the reply/reject rows)")
 
 	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
 	assert.NotEmpty(t, begin.SnapshotID, "begin marker must carry the flight ID")

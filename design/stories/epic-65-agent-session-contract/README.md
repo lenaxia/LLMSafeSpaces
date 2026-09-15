@@ -168,7 +168,7 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 **Done when:**
 - `ProxyHandler` holds an `agent.Adapter`, not an `agent.Dialect` + raw HTTP client.
 - `proxy_handlers.go` history fetch returns `[]session.Message`, not opencode-shaped JSON.
-- `proxy_input.go`/`proxy_permissions.go` call `adapter.ListPending`/`Resolve`, not inline translation.
+- `proxy_input.go`/`proxy_permissions.go` read via `adapter.ListPending` and write through agentd `Act` (`AnswerInputAction`); the generic `adapter.Resolve` is deleted (#1371) — not inline translation.
 - The 3 current `Dialect` consumers (`proxy.go`, `proxy_events.go`, `proxy_input.go`) call `Adapter` methods.
 
 ---

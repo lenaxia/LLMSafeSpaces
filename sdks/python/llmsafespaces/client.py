@@ -25,6 +25,8 @@ from .types import (
     FileDiff,
     FileUpload,
     HistoryPage,
+    InboxLateAnswerAccepted,
+    InputRequest,
     McpAutoApplyRule,
     McpServer,
     CreateMcpServerRequest,
@@ -948,38 +950,89 @@ class _UsageAPI:
         return self._c._request("GET", "/usage/quota")
 
 
+def _late_answer_only(late: Any) -> InboxLateAnswerAccepted | None:
+    """Live-vs-late classification for input replies: only the outbox's
+    accepted-entry body (status "queued") is a late answer. A live answer
+    is bodyless per the published contract — and if a server ever answers
+    200 with a body anyway, it must still classify as live (r1 review)."""
+    if isinstance(late, dict) and late.get("status") == "queued":
+        return late
+    return None
+
+
 class _InputRequestsAPI:
+    """Agent question/permission requests — the whole surface speaks the
+    platform contract shape (InputRequest, #1302): typed list returns,
+    the late-answer 202 body on replies, and the inbox dismiss exit
+    (#1313)."""
+
     def __init__(self, client: LLMSafeSpaces):
         self._c = client
 
-    def list_questions(self, workspace_id: str) -> list[dict[str, Any]]:
+    def list_questions(self, workspace_id: str) -> list[InputRequest]:
+        """Pending questions as contract InputRequest values
+        (kind=question)."""
         return self._c._request("GET", f"/workspaces/{workspace_id}/question")
 
     def reply_question(
-        self, workspace_id: str, request_id: str, body: dict[str, Any]
-    ) -> None:
-        self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/question/{request_id}/reply",
-            json=body,
+        self, workspace_id: str, request_id: str, answers: list[list[str]]
+    ) -> InboxLateAnswerAccepted | None:
+        """Answer a live question. When the ask is no longer live but its
+        unanswered-question inbox record is pending (#1313), the answer is
+        accepted as a late answer through the delivery outbox (202) and
+        the outbox entry is returned; a live answer (200) returns None."""
+        return _late_answer_only(
+            self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/question/{request_id}/reply",
+                json={"answers": answers},
+            )
         )
 
     def reject_question(self, workspace_id: str, request_id: str) -> None:
+        """Reject (dismiss) a pending question."""
         self._c._request(
             "POST", f"/workspaces/{workspace_id}/question/{request_id}/reject"
         )
 
-    def list_permissions(self, workspace_id: str) -> list[dict[str, Any]]:
+    def list_permissions(self, workspace_id: str) -> list[InputRequest]:
+        """Pending permissions as contract InputRequest values
+        (kind=permission)."""
         return self._c._request("GET", f"/workspaces/{workspace_id}/permission")
 
     def reply_permission(
-        self, workspace_id: str, request_id: str, body: dict[str, Any]
-    ) -> None:
-        self._c._request(
-            "POST",
-            f"/workspaces/{workspace_id}/permission/{request_id}/reply",
-            json=body,
+        self, workspace_id: str, request_id: str, reply: str, message: str = ""
+    ) -> InboxLateAnswerAccepted | None:
+        """Answer a live permission with the reply vocabulary
+        ("once" | "always" | "reject") and an optional message. A late
+        decision (ask no longer live, inbox record pending) returns the
+        202 outbox entry; a live answer (200) returns None."""
+        body: dict[str, Any] = {"reply": reply}
+        if message:
+            body["message"] = message
+        return _late_answer_only(
+            self._c._request(
+                "POST",
+                f"/workspaces/{workspace_id}/permission/{request_id}/reply",
+                json=body,
+            )
         )
+
+    def dismiss_inbox_record(
+        self, workspace_id: str, session_id: str, request_id: str
+    ) -> None:
+        """Terminalize an unanswered-question inbox record (#1313): the
+        record becomes dismissed; a still-live ask is rejected first
+        server-side."""
+        self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/inbox/{request_id}",
+        )
+
+    def request_input_snapshot(self, workspace_id: str) -> None:
+        """Trigger an input-snapshot flight (202): the pending-input
+        events arrive on the workspace/user event streams."""
+        self._c._request("POST", f"/workspaces/{workspace_id}/input-snapshot")
 
 
 class _ProbeAPI:
