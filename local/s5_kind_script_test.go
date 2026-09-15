@@ -37,24 +37,6 @@ func requireBash(t *testing.T) string {
 	return bash
 }
 
-// extractGuard pulls the checksum-validation block from the script. The
-// guard is located by its unique markers and re-exposed as a function of
-// $EXPECTED so the test exercises the script's OWN regex, not a copy.
-func extractGuard(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("s5-overlay-validation.sh"))
-	if err != nil {
-		t.Fatalf("read script: %v", err)
-	}
-	src := string(raw)
-	const marker = `[[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]]`
-	i := strings.Index(src, marker)
-	if i < 0 {
-		t.Fatalf("checksum guard not found in script — it must keep the regex form")
-	}
-	return marker
-}
-
 func TestS5Script_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	out, err := exec.Command(bash, "-n", s5Script).CombinedOutput()
@@ -63,47 +45,82 @@ func TestS5Script_BashSyntax(t *testing.T) {
 	}
 }
 
-func TestS5Script_RunscChecksumGuardAcceptsRealShape(t *testing.T) {
-	bash := requireBash(t)
-	guard := extractGuard(t)
-
-	// The real gVisor publication shape: 128 lowercase hex + "  runsc"
-	// (captured from run 8's diagnosis output).
-	const realChecksumFile = "84936438d583ec976800f464e75a83e1515f0890b451b9b4db219c4472b54ca9b106a6772ee683f1e64cce2128871d7637b14d800591f8451b8137f6c39fb2ef  runsc"
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "runsc.sha512"), []byte(realChecksumFile+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+func TestS5Gvisor_DelegatesToLib(t *testing.T) {
+	src := mustRead(t, s5Script)
+	if strings.Contains(src, "storage.googleapis.com/gvisor/releases") {
+		t.Fatal("s5 still carries the dead GCS gVisor fetch inline — S5.6 must delegate to lib/gvisor.sh")
 	}
-	script := "cd " + dir + "\nEXPECTED=$(cut -d\" \" -f1 runsc.sha512)\n" + guard + " || exit 1\nexit 0\n"
-	out, err := exec.Command(bash, "-c", script).CombinedOutput()
-	if err != nil {
-		t.Fatalf("guard REJECTED a valid 128-hex checksum (the run-8 regression): %s", out)
-	}
-}
-
-func TestS5Script_RunscChecksumGuardRejectsMalformed(t *testing.T) {
-	bash := requireBash(t)
-	guard := extractGuard(t)
-
-	cases := map[string]string{
-		"empty":            "",
-		"short-but-hex":    strings.Repeat("a", 66), // the miscounted-glob length itself
-		"too-long-hex":     strings.Repeat("a", 129),
-		"non-hex-128chars": strings.Repeat("z", 128),
-	}
-	for name, expected := range cases {
-		t.Run(name, func(t *testing.T) {
-			script := "EXPECTED=" + shQuote(expected) + "\n" + guard + " && exit 1\nexit 0\n"
-			out, err := exec.Command(bash, "-c", script).CombinedOutput()
-			if err != nil {
-				t.Fatalf("harness failed: %s", out)
-			}
-			// exit 0 == the guard rejected (the && branch did not run)
-		})
+	for _, pin := range []string{
+		"lib/gvisor.sh\" install",
+		"lib/gvisor.sh\" runtimeclass",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("S5.6 must call %q — one provisioning flow, not two", pin)
+		}
 	}
 }
 
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// The S5.6 delegation must carry the s5 cluster identity across the
+// process boundary: CLUSTER_NAME/CTX are plain vars in the s5 script,
+// and gvisor.sh's own default targets a context that does not exist on
+// the s5 runner. Executes the delegation lines with a stub gvisor.sh
+// that records what it inherited.
+func TestS5Gvisor_DelegationCarriesClusterEnv(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, s5Script)
+
+	start := strings.Index(src, `if CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME"`)
+	end := strings.Index(src, `bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then`)
+	if start < 0 || end < 0 || end < start {
+		t.Fatal("S5.6 delegation lines not found in the expected explicit-env form")
+	}
+	delegation := src[start : end+len(`bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then`)]
+
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "local", "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(libDir, "gvisor.sh")
+	rec := filepath.Join(dir, "env-record")
+	stubBody := "#!/bin/bash\n" +
+		"echo \"CLUSTER_NAME=$CLUSTER_NAME CTX=$CTX args=$*\" >> " + rec + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(stub, []byte(stubBody), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "REPO_ROOT=" + shQuote(dir) + "\n" +
+		"CLUSTER_NAME=s5-ovl\n" +
+		delegation + "\n: \nfi\n" +
+		"echo delegated-ok\n"
+	got, err := exec.Command(bash, "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("delegation failed: %v: %s", err, got)
+	}
+	if !strings.Contains(string(got), "delegated-ok") {
+		t.Fatalf("delegation chain must succeed, got: %s", got)
+	}
+	recorded, err := os.ReadFile(rec)
+	if err != nil {
+		t.Fatal("stub gvisor.sh was never invoked")
+	}
+	// BOTH invocations carry the identity — the runtimeclass call is the
+	// one whose env is load-bearing (CTX names the kubectl context; the
+	// install call never evaluates it).
+	lines := strings.Split(strings.TrimSpace(string(recorded)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("both delegation calls must run, got %d: %s", len(lines), recorded)
+	}
+	for i, ln := range lines {
+		if !strings.Contains(ln, "CLUSTER_NAME=s5-ovl CTX=kind-s5-ovl") {
+			t.Fatalf("call %d must inherit the s5 cluster identity, got: %s", i+1, ln)
+		}
+	}
+	if !strings.Contains(lines[1], "runtimeclass") {
+		t.Fatalf("the runtimeclass invocation is the CTX consumer — it must carry the env (record: %s)", recorded)
+	}
 }

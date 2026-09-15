@@ -1409,13 +1409,31 @@ func TestUS70GvisorFetchRetry_RetriesThroughTransient404(t *testing.T) {
 
 func TestUS70GvisorFetch_AllFetchSitesRideTheWrapper(t *testing.T) {
 	src := mustRead(t, us70GvisorScript)
-	for _, artifact := range []string{"runsc", "runsc.sha512", "containerd-shim-runsc-v1", "containerd-shim-runsc-v1.sha512"} {
-		if !strings.Contains(src, "fetch_retry \"$BASE/"+artifact+"\"") {
-			t.Fatalf("artifact %s must be fetched via fetch_retry (the moving-alias 404 window)", artifact)
+	// 2026-09-15: gVisor stopped publishing standalone runsc/shim
+	// binaries to GCS release/latest (the shim 404s permanently); the
+	// artifacts ship only inside the GitHub release tarball. Both
+	// bundle artifacts must ride fetch_retry from ONE resolved tag —
+	// a straddled release flip must fail the checksum, not install a
+	// mixed pair.
+	for _, pin := range []string{
+		"fetch_retry \"$BASE/$BUNDLE\"",
+		"fetch_retry \"$BASE/SHA512SUMS\"",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("bundle fetch missing fetch_retry site %q", pin)
 		}
 	}
+	if strings.Contains(src, "storage.googleapis.com/gvisor/releases") {
+		t.Fatal("the GCS standalone-binary path is dead upstream (shim 404s permanently) — the bundle flow replaced it")
+	}
 	if strings.Contains(src, "$CURL \"$BASE/") || strings.Contains(src, "curl -fsSL \"$BASE/") {
-		t.Fatal("a bare fetch of the latest alias survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+		t.Fatal("a bare fetch of the release assets survives ($CURL or direct curl) — every artifact fetch must ride fetch_retry")
+	}
+	// The tag resolution must precede the fetches (pair coherence).
+	resolve := strings.Index(src, "releases/latest)")
+	bundle := strings.Index(src, "fetch_retry \"$BASE/$BUNDLE\"")
+	if resolve < 0 || bundle < 0 || resolve > bundle {
+		t.Fatal("the release tag must be resolved BEFORE the artifact fetches (pair coherence across flips)")
 	}
 }
 
@@ -1461,5 +1479,217 @@ func TestUS70GvisorFetch_GivesUpLoudly(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "failed after 5 attempts") {
 		t.Fatalf("exhaustion must be loud (5-attempt message), got: %s", got)
+	}
+}
+
+// extractUS70Fn pulls a named shell function body from lib/gvisor.sh by
+// its `name() {` marker and closing `      }` line (the established
+// extract-and-execute idiom — the test runs the script's OWN function).
+func extractUS70Fn(t *testing.T, name string) string {
+	t.Helper()
+	src := mustRead(t, us70GvisorScript)
+	start := strings.Index(src, name+"() {")
+	if start < 0 {
+		t.Fatalf("function %s() not found in %s", name, us70GvisorScript)
+	}
+	end := strings.Index(src[start:], "\n      }")
+	if end < 0 {
+		t.Fatalf("function %s() terminator not found in %s", name, us70GvisorScript)
+	}
+	return src[start : start+end+len("\n      }")]
+}
+
+// The tag resolution is the documented no-L footgun: the tag must ride
+// the FIRST redirect. Happy path: a stub curl printing the redirect URL
+// on stdout yields the tag; the -L regression (empty redirect_url) and
+// a non-release tag shape must both fail closed.
+func TestUS70GvisorResolveTag_HappyAndFailClosed(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "resolve_tag")
+
+	dir := t.TempDir()
+	stub := func(redirect string) string {
+		p := filepath.Join(dir, "curl-"+strings.ReplaceAll(redirect, "/", "_"))
+		script := "#!/bin/bash\nif [ -n \"" + redirect + "\" ]; then printf '%s\\n' \"" + redirect + "\"; fi\nexit 0\n"
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	cases := []struct {
+		name     string
+		redirect string
+		want     string // expected stdout tag, "" = must fail
+	}{
+		{"happy", "https://github.com/google/gvisor/releases/tag/release-20260907.0", "release-20260907.0"},
+		{"followed-redirect (empty)", "", ""},
+		{"non-release shape", "https://github.com/google/gvisor/releases/tag/v1.2.3", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "curl() { " + shQuote(stub(tc.redirect)) + " ; }\n" +
+				"sleep() { :; }\n" +
+				body + "\n" +
+				"resolve_tag\n"
+			out, err := exec.Command(bash, "-c", script).CombinedOutput()
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("must fail closed, got success: %s", out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("happy path failed: %v: %s", err, out)
+			}
+			if !strings.Contains(string(out), tc.want) {
+				t.Fatalf("tag %q not extracted, got: %s", tc.want, out)
+			}
+		})
+	}
+}
+
+// verify_bundle executes the script's own function against fabricated
+// fixtures: a matching hash passes; a missing bundle line fires the
+// format guard; a hash mismatch aborts. The function installs nothing —
+// the abort-BEFORE-install property is structural and pinned here.
+func TestUS70GvisorVerifyBundle_Executes(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "verify_bundle")
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "bundle.tar.zstd")
+	payload := "fake-bundle-bytes"
+	if err := os.WriteFile(bundle, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	good := func() string {
+		sum := exec.Command(bash, "-c", "printf %s "+shQuote(payload)+" | sha512sum | cut -d' ' -f1")
+		out, err := sum.CombinedOutput()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}()
+	sumsGood := filepath.Join(dir, "SHA512SUMS-good")
+	os.WriteFile(sumsGood, []byte(good+"  gvisor-x86_64.tar.zstd\n"+strings.Repeat("a", 128)+"  other-artifact\n"), 0o644)
+	sumsMissing := filepath.Join(dir, "SHA512SUMS-missing")
+	os.WriteFile(sumsMissing, []byte(strings.Repeat("a", 128)+"  some-other-artifact\n"), 0o644)
+	sumsWrong := filepath.Join(dir, "SHA512SUMS-wrong")
+	os.WriteFile(sumsWrong, []byte(strings.Repeat("b", 128)+"  gvisor-x86_64.tar.zstd\n"), 0o644)
+
+	run := func(sums string) (string, error) {
+		script := body + "\n" +
+			"verify_bundle " + shQuote(bundle) + " " + shQuote(sums) + " gvisor-x86_64.tar.zstd\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	if out, err := run(sumsGood); err != nil {
+		t.Fatalf("matching hash must pass: %v: %s", err, out)
+	}
+	if out, err := run(sumsMissing); err == nil {
+		t.Fatalf("missing bundle line must fail the guard, got success: %s", out)
+	} else if !strings.Contains(out, "format changed") {
+		t.Fatalf("guard diagnostic expected, got: %s", out)
+	}
+	if out, err := run(sumsWrong); err == nil {
+		t.Fatalf("hash mismatch must abort, got success: %s", out)
+	} else if !strings.Contains(out, "mismatch") {
+		t.Fatalf("mismatch diagnostic expected, got: %s", out)
+	}
+	if strings.Contains(body, "install ") {
+		t.Fatal("verify_bundle must not install — verification strictly precedes installation")
+	}
+}
+
+// resolve_tag's retry loop must ride through transient failures and
+// give up loudly - the same rows fetch_retry carries. The stub is
+// -L-AWARE: if the caller follows redirects (-L), GitHub lands on the
+// release page and redirect_url comes back EMPTY (the documented
+// footgun) - so the happy row also proves the script does not pass -L.
+func TestUS70GvisorResolveTag_RetriesRideThroughAndGiveUp(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "resolve_tag")
+
+	dir := t.TempDir()
+	fails := filepath.Join(dir, "fails")
+	sawL := filepath.Join(dir, "saw-L")
+	stubPath := filepath.Join(dir, "curl")
+	stubTmpl := `#!/bin/bash
+for a in "$@"; do
+  # -L exact OR any short-flag cluster containing L (e.g. -fsSL) —
+  # following the redirect lands on the release page and redirect_url
+  # comes back empty.
+  case "$a" in -L|--location|-*L*) echo followed >> SAWL; printf '
+'; exit 0;; esac
+done
+printf x >> FAILS
+if [ "$(wc -c < FAILS)" -gt 2 ]; then
+  printf 'https://github.com/google/gvisor/releases/tag/release-20260907.0
+'
+  exit 0
+fi
+exit 7
+`
+	stub := strings.NewReplacer("SAWL", sawL, "FAILS", fails).Replace(stubTmpl)
+	if err := os.WriteFile(stubPath, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("ride-through two transient failures", func(t *testing.T) {
+		os.Remove(fails)
+		os.Remove(sawL)
+		script := "PATH=" + shQuote(dir) + ":$PATH\nsleep() { :; }\n" + body + "\nresolve_tag\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("must ride through: %v: %s", err, out)
+		}
+		if !strings.Contains(string(out), "release-20260907.0") {
+			t.Fatalf("tag not resolved, got: %s", out)
+		}
+		if _, err := os.Stat(sawL); err == nil {
+			t.Fatal("resolve_tag must not follow redirects (-L empties redirect_url)")
+		}
+	})
+
+	t.Run("all attempts empty - gives up loudly", func(t *testing.T) {
+		os.Remove(fails)
+		os.Remove(sawL)
+		// A curl that always FAILS non-zero — the retry loop must
+		// exhaust (the empty-redirect shape is covered separately by
+		// TestUS70GvisorResolveTag_HappyAndFailClosed's followed-redirect
+		// row).
+		emptyStub := "#!/bin/bash\nexit 7\n"
+		if err := os.WriteFile(stubPath, []byte(emptyStub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		script := "set -e\nPATH=" + shQuote(dir) + ":$PATH\nsleep() { :; }\n" + body + "\nresolve_tag\necho should-not-reach\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		if err == nil {
+			t.Fatalf("exhaustion must fail, got success: %s", out)
+		}
+		if strings.Contains(string(out), "should-not-reach") {
+			t.Fatalf("must abort the caller, got: %s", out)
+		}
+		if !strings.Contains(string(out), "could not resolve") {
+			t.Fatalf("loud diagnosis expected, got: %s", out)
+		}
+	})
+}
+
+// Verification strictly precedes installation at the call site (the
+// structural pin's ordering half — the body-level pin lives in
+// TestUS70GvisorVerifyBundle_Executes).
+func TestUS70Gvisor_VerifyBeforeExtractAndInstall(t *testing.T) {
+	src := mustRead(t, us70GvisorScript)
+	verify := strings.Index(src, "verify_bundle /tmp/gvisor.tar.zstd")
+	extract := strings.Index(src, "tar --zstd -xf")
+	install := strings.Index(src, "install -m 0755 /tmp/runsc")
+	if verify < 0 || extract < 0 || install < 0 {
+		t.Fatal("bundle flow sites not found")
+	}
+	if verify >= extract || extract >= install {
+		t.Fatalf("ordering violated: verify=%d extract=%d install=%d — verification must precede extraction and installation", verify, extract, install)
 	}
 }
