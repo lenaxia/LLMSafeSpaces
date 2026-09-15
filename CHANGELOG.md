@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-09-15
+
+### Fixes — agentd
+
+- **`session_metadata` context usage mid-turn**: busy sessions reported no
+  `context_tokens`/`context_limit`/`context_fill` — opencode zeroes the
+  in-flight assistant message's token stamp until step completion, and
+  both prompt-token scans (the wire seam's `SessionPromptTokens` and
+  agentd's `fetchSessionPromptTokens`, which feeds fillGaps and statusz
+  `ContextUsed`) stopped at the placeholder. Both scans now skip
+  zero-total stamps and report the last COMPLETED step; post-#1342
+  interrupt-first restarts had made the twin's blindspot permanent.
+  Live-proven against a busy 0.30.0 session (0 vs the real 559,623).
+- **`create_session` guidance contract**: the description now encodes the
+  decision rule — use ONLY for independent fire-and-forget work the
+  caller will not depend on, or tasks requiring human input / intended
+  for human consumption; the result never returns to the caller; for
+  outcome-needed autonomous work use the task tool (blocking, returns
+  the result). Prompt InputSchema description carries the no-return
+  line too, pinned alongside the 11 tool-description assertions.
+
 ## [0.30.0] - 2026-09-14
 
 ### Features — agent self-management (PR #1364)
