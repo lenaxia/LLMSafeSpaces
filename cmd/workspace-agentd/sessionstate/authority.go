@@ -59,7 +59,13 @@ func (r ReseedReason) proto() abiv1.ReseedReason {
 // in-flight tool parts orphaned by a harness restart (#1342 S12
 // backstop): the part never received terminal state because the process
 // died mid-turn; the restored projection reports it aborted so the UI
-// renders honestly and the agent's next turn sees the tool died.
+// renders honestly and the agent's next turn sees the tool died. The
+// value equals the contract constant session.ToolAbortReasonHarnessRestart
+// (the adapter's transcript repair closes already-orphaned parts with the
+// same reason) — the equality is pinned by TestOrphanSweepReasonMatches-
+// ContractConstant so the two repair sites never fork. The constant is
+// duplicated rather than imported: the module seal (seal_test.go) admits
+// only the ABI schema into this package.
 const OrphanSweepReason = "harness restart"
 
 // EventParser translates one raw harness SSE payload into a contract
@@ -466,15 +472,21 @@ func (a *Authority) Reseed(ctx context.Context, reason ReseedReason) error {
 	// Fold the synthetic aborts into the restored projection (seq-assigned,
 	// fanned out — subscribers see reseeded → aborted PART_ENDs). Runs
 	// before the buffered flush so new-generation events land after the
-	// aborts in seq order.
+	// aborts in seq order. The counter advances only when the fold actually
+	// published: applyLocked drops the event on a cursor-persist failure,
+	// and the metric must not overcount in exactly the disk-failure case it
+	// exists to surface.
 	for sid, parts := range orphans {
 		for _, p := range parts {
+			seqBefore := a.seq
 			a.applyLocked(&abiv1.Event{
 				SessionId: sid,
 				Type:      abiv1.EventType_EVENT_TYPE_PART_END,
 				Part:      p,
 			})
-			a.orphanPartsAborted++
+			if a.seq > seqBefore {
+				a.orphanPartsAborted++
+			}
 		}
 	}
 	a.mu.Unlock()

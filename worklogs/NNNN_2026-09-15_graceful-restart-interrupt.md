@@ -50,6 +50,15 @@ Close the 2026-09-11 incident class: a fleet-wide credential delivery force-rest
 - `healthz_pending_apply_test.go` (3), `pkg/agentd/types_test.go` (+2), `controller/internal/workspace/health_pending_apply_test.go` (3).
 - Updated pre-existing pins to the new contract: `session_aware_restart_test.go` (H1b re-expressed as the stall-bound force path), `healthz_test.go`/`supervisor_status_test.go` (handler arity), `xdg_config_layer_test.go` (relayKillFunc wiring pin).
 
+### Review round 1 (AI reviewer CHANGES_REQUESTED — all findings remediated)
+
+- **Owner triage front 3 — transcript repair for ALREADY-orphaned running parts** (real, blocking): the incident's eternal spinners render from opencode's DURABLE store via GetHistory. Implemented read-time repair at the adapter seam (`pkg/agent/opencode/adapter.go repairOrphanedRunningTools`, both V1 and V2 store paths): when a served page carries a running tool part and the live `/session/status` registry (the same truth agentd's drain gate trusts) says the session has no running turn, the part is closed as `error`/`"harness restart"`. STRICT failure semantics — a status-fetch error or unknown status value never repairs (never false-aborts a live tool). Repairs the existing fleet damage on first read; no harness-store writes. The reason constant lives in `pkg/session` (`ToolAbortReasonHarnessRestart`); sessionstate's `OrphanSweepReason` is value-duplicated (module seal forbids the import) with the equality pinned by `orphan_reason_pin_test.go`. 8 adapter tests (`transcript_repair_test.go`).
+- **E2E row missing** (real, blocking): added `local/issue-1342-graceful-restart-e2e.sh` (R1 incident replay happy path: streaming defer + `CredentialsApplyPending` + interrupt-first apply + no eternal spinner; R2 kill-9 backstop: sweep + transcript repair + the orphan metric), registered in `e2e-nightly.yml`, with structural pin tests (`local/issue_1342_e2e_script_test.go`) so rows cannot be silently dropped. Runs on the pool/nightly cluster like its us-70 siblings — not executable in this dev sandbox (no kind cluster).
+- **Unasserted dead-pod condition clears** (real): `TestCheckAgentHealth_DeadPodScrapes_ClearPendingCondition` covers all three branches (unreachable / undecodable / unhealthy).
+- **Metric overcount on cursor-persist failure** (real, trivial): the orphan counter advances only when the fold actually published (seq advanced).
+- **Concurrent deferred applies sharing one pending surface** (real): the tracker is now reference-counted — one goroutine's clear cannot erase a sibling deferral's pending state (pinned by `TestPendingApplyTracker_ConcurrentDefers_Refcounted`).
+- **Integration gaps** (real): `TestIntegration1342_HarnessHonorsInterrupt_TurnEndsTerminalNoSweep` (projection-level terminal state via the REAL SSE ingestion path when the harness honors the interrupt — sweep count stays 0), `TestIntegration1342_HarnessIgnoresInterrupt_KillThenSweepRestoresHonesty` (force-kill → generation reseed → sweep chain through the real authority + store reader), `TestIntegration1342_GenerationReseedRetriesUntilStoreAnswers` (the retrying driver), `TestGenerationChangeReseedWiredToRetryingDriver` (source pin against regression to the one-shot reseed).
+
 ---
 
 ## Key Decisions
@@ -82,8 +91,8 @@ None. (The #1312 budget-table freeze is pending with the owner; `LeaseConvergenc
 ## Tests Run
 
 - `go test -race ./cmd/workspace-agentd/... -count=1` — pass (incl. faultmatrix + sessionstate soak).
-- `go test ./controller/internal/workspace/ ./pkg/agentd/ ./pkg/agent/opencode/wire/ -count=1` — pass.
-- `make test` (full `go test -v ./...`) — 0 failures.
+- `go test ./controller/internal/workspace/ ./pkg/agentd/ ./pkg/agent/opencode/... ./pkg/session/... ./local/ -count=1` — pass.
+- `make test` (full `go test -v ./...`) — 0 failures (re-run after review round 1: 0 failures).
 - `make lint` (golangci-lint full repo) — 0 issues.
 - `go build ./...` — pass; `gofmt -l` clean.
 
@@ -91,7 +100,7 @@ None. (The #1312 budget-table freeze is pending with the owner; `LeaseConvergenc
 
 ## Next Steps
 
-- E2E on a live cluster (the issue's E2E row): replay the incident with a real 30-min tool command + credential push; assert no phantom spinners in the UI and `CredentialsApplyPending` condition lifecycle. The pipeline-level integration test covers the mechanics; the live-cluster row needs a kind environment.
+- Run `local/issue-1342-graceful-restart-e2e.sh` on the pool/nightly cluster (this dev sandbox has no kind cluster; the script + workflow row + structural pins land with this PR).
 - When the #1312 budget table freezes, re-point `restartStallBound` at the frozen table entry (single-line change; pinned by `TestRestart1342_ZeroStallBoundFallsBackToDefault`).
 - Consider an early-exit from the grace window when all interrupted sessions observe idle (optimization only; the fixed window is correct).
 
@@ -101,17 +110,20 @@ None. (The #1312 budget-table freeze is pending with the owner; `LeaseConvergenc
 
 - `cmd/workspace-agentd/secrets.go` — decision rewrite, force path, stall bound, interrupter/deps plumbing
 - `cmd/workspace-agentd/session_tracker.go` — `lastEventAt`, `noteActivity`, `busyPartitions`, prune, processEvent wiring
-- `cmd/workspace-agentd/pending_apply.go` (new) — pending-apply tracker
+- `cmd/workspace-agentd/pending_apply.go` (new) — pending-apply tracker (refcounted post-r1)
 - `cmd/workspace-agentd/sessionstate_wiring.go` — `newSessionInterrupter`
 - `cmd/workspace-agentd/main.go` — deps wiring, relayKillFunc arity, retrying generation-change reseed
 - `cmd/workspace-agentd/server.go` — serverDeps fields, applyDeps wiring, healthz call
 - `cmd/workspace-agentd/sidecar_mode.go` — sidecar deps wiring
 - `cmd/workspace-agentd/healthz.go` — pendingApply snapshot param
 - `cmd/workspace-agentd/sessionstate_metrics.go` — orphan-parts counter bridge
-- `cmd/workspace-agentd/sessionstate/authority.go` — orphan sweep + capture + counter
+- `cmd/workspace-agentd/sessionstate/authority.go` — orphan sweep + capture + counter (publish-gated post-r1)
 - `pkg/agentd/types.go` — `PendingApplyHealth`, `HealthzResponse.PendingApply`
 - `pkg/agent/opencode/wire/wire.go` — `SessionIDFromProps`
+- `pkg/agent/opencode/adapter.go` — `repairOrphanedRunningTools` (V1+V2 store paths, r1)
+- `pkg/session/session.go` — `ToolAbortReasonHarnessRestart` (r1)
 - `pkg/apis/llmsafespaces/v1/workspace_types.go` — `CredentialsApplyPending` condition + reason
 - `controller/internal/workspace/health.go` — condition mirror + clears
-- Tests (new): `session_tracker_activity_test.go`, `session_aware_restart_1342_test.go`, `pending_apply_test.go`, `session_interrupter_test.go`, `restart_interrupt_integration_test.go`, `healthz_pending_apply_test.go`, `sessionstate/authority_orphan_sweep_test.go`, `sessionstate/authority_orphan_sweep_internal_test.go`, `controller/internal/workspace/health_pending_apply_test.go`
+- `local/issue-1342-graceful-restart-e2e.sh` (new, r1) + `e2e-nightly.yml` row (r1)
+- Tests (new): `session_tracker_activity_test.go`, `session_aware_restart_1342_test.go`, `pending_apply_test.go`, `session_interrupter_test.go`, `restart_interrupt_integration_test.go`, `healthz_pending_apply_test.go`, `sessionstate/authority_orphan_sweep_test.go`, `sessionstate/authority_orphan_sweep_internal_test.go`, `controller/internal/workspace/health_pending_apply_test.go`, `pkg/agent/opencode/transcript_repair_test.go` (r1), `cmd/workspace-agentd/orphan_reason_pin_test.go` (r1), `local/issue_1342_e2e_script_test.go` (r1)
 - Tests (updated): `session_aware_restart_test.go`, `healthz_test.go`, `supervisor_status_test.go`, `xdg_config_layer_test.go`, `opencode_overlay_test.go`, `pkg/agentd/types_test.go`

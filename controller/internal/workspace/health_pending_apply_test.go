@@ -131,3 +131,101 @@ func TestCheckAgentHealth_NoPendingApply_NoCondition(t *testing.T) {
 	assert.Nil(t, credentialsApplyPendingCondition(t, ws),
 		"nothing pending — no condition")
 }
+
+// TestCheckAgentHealth_DeadPodScrapes_ClearPendingCondition pins the
+// three dead-pod branches (unreachable, undecodable, unhealthy): no
+// evidence from a dead pod beats stale evidence — a previously-set
+// CredentialsApplyPending condition must be REMOVED, not left as a
+// stale "pending" claim on a pod that cannot report.
+func TestCheckAgentHealth_DeadPodScrapes_ClearPendingCondition(t *testing.T) {
+	pendingResp := &agentd.HealthzResponse{
+		Healthy:       true,
+		PendingApply:  &agentd.PendingApplyHealth{Reason: "credential_change", BusySessions: 1},
+		UptimeSeconds: 42,
+	}
+	r, ws := setupPendingApplyHealthTest(t, pendingResp)
+	origInterval := healthCheckInterval
+	healthCheckInterval = 0
+	t.Cleanup(func() { healthCheckInterval = origInterval })
+
+	// Baseline: the condition exists.
+	r.checkAgentHealth(context.Background(), ws)
+	require.NotNil(t, credentialsApplyPendingCondition(t, ws))
+
+	// Sub-case: transport unreachable — a port with nothing listening.
+	deadPort := freeTCPPortHealthy(t)
+	agentdAdminPort = deadPort
+	ws.Status.LastHealthCheckAt = nil
+	r.checkAgentHealth(context.Background(), ws)
+	assert.Nil(t, credentialsApplyPendingCondition(t, ws),
+		"unreachable pod — condition cleared (no evidence)")
+
+	// Sub-case: undecodable body (200 with garbage). Re-seed the
+	// condition first so each branch is proven on its own.
+	require.NotNil(t, seedConditionAgain(t, r, ws, pendingResp))
+	badSrv := serveRaw(t, "not-json{")
+	t.Cleanup(badSrv.Close)
+	retargetHealthCheck(t, ws, badSrv)
+	r.checkAgentHealth(context.Background(), ws)
+	assert.Nil(t, credentialsApplyPendingCondition(t, ws),
+		"undecodable response — condition cleared")
+
+	// Sub-case: agent reports unhealthy.
+	require.NotNil(t, seedConditionAgain(t, r, ws, pendingResp))
+	sickSrv := serveRaw(t, `{"healthy":false}`)
+	t.Cleanup(sickSrv.Close)
+	retargetHealthCheck(t, ws, sickSrv)
+	r.checkAgentHealth(context.Background(), ws)
+	assert.Nil(t, credentialsApplyPendingCondition(t, ws),
+		"unhealthy agent — condition cleared")
+}
+
+// freeTCPPortHealthy reserves then releases a local port so connections
+// to it are refused (the unreachable-pod shape) without racing a rebind.
+func freeTCPPortHealthy(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+	return port
+}
+
+func serveRaw(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// retargetHealthCheck points the workspace's next health check at srv.
+func retargetHealthCheck(t *testing.T, ws *v1.Workspace, srv *httptest.Server) {
+	t.Helper()
+	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+	agentdAdminPort = port
+	ws.Status.PodIP = "127.0.0.1"
+	ws.Status.LastHealthCheckAt = nil
+}
+
+// seedConditionAgain re-establishes the pending condition via one good
+// scrape (and resets the failure counter) so the next dead-pod branch
+// is proven from a standing start.
+func seedConditionAgain(t *testing.T, r *WorkspaceReconciler, ws *v1.Workspace, resp *agentd.HealthzResponse) *v1.WorkspaceCondition {
+	t.Helper()
+	good := serveJSON(t, resp)
+	t.Cleanup(good.Close)
+	retargetHealthCheck(t, ws, good)
+	r.checkAgentHealth(context.Background(), ws)
+	return credentialsApplyPendingCondition(t, ws)
+}
+
+func serveJSON(t *testing.T, v any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(v)
+	}))
+}

@@ -34,6 +34,30 @@ func TestPendingApplyTracker_BeginSnapshotClear(t *testing.T) {
 	assert.Nil(t, p.snapshot(), "cleared tracker surfaces nothing")
 }
 
+func TestPendingApplyTracker_ConcurrentDefers_Refcounted(t *testing.T) {
+	p := newPendingApplyTracker()
+
+	// Two resyncs defer while sessions stay busy (two goroutines share
+	// the tracker — applyMu is released before the decision).
+	p.begin(2)
+	p.begin(1)
+
+	snap := p.snapshot()
+	require.NotNil(t, snap)
+	assert.Equal(t, 2, snap.BusySessions, "first begin's count stands until refreshed")
+
+	// First restart fires — the second deferral is STILL outstanding.
+	p.clear()
+	snap = p.snapshot()
+	require.NotNil(t, snap, "one clear must not erase a sibling deferral's pending state")
+	p.refreshBusy(1)
+	assert.Equal(t, 1, p.snapshot().BusySessions)
+
+	// Second fires — the surface drops.
+	p.clear()
+	assert.Nil(t, p.snapshot())
+}
+
 func TestPendingApplyTracker_ConcurrentSafe(t *testing.T) {
 	p := newPendingApplyTracker()
 	done := make(chan struct{})

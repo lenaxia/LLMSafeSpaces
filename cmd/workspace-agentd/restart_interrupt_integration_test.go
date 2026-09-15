@@ -25,11 +25,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/cmd/workspace-agentd/sessionstate"
+	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
 
-// fakeHarnessOpencode serves the two routes the restart path touches:
-// GET /session (live session list for the prune lister) and POST
+// fakeHarnessOpencode serves the routes the restart path touches:
+// GET /session (live session list for the prune lister and the store
+// reader), GET /session/status (live turn registry), and POST
 // /session/:id/abort (the Act interrupt). Records abort calls.
 type fakeHarnessOpencode struct {
 	mu       sync.Mutex
@@ -38,7 +41,10 @@ type fakeHarnessOpencode struct {
 	// abortStatus lets a test simulate a harness that rejects/ignores
 	// interrupts (non-2xx).
 	abortStatus int
-	srv         *httptest.Server
+	// sessionFailures makes GET /session fail this many times before
+	// answering (a harness still booting after a restart).
+	sessionFailures int
+	srv             *httptest.Server
 }
 
 func newFakeHarnessOpencode(t *testing.T, sessions ...string) *fakeHarnessOpencode {
@@ -50,7 +56,15 @@ func newFakeHarnessOpencode(t *testing.T, sessions ...string) *fakeHarnessOpenco
 		case r.Method == http.MethodGet && r.URL.Path == "/session":
 			f.mu.Lock()
 			ids := append([]string{}, f.sessions...)
+			failures := f.sessionFailures
+			if failures > 0 {
+				f.sessionFailures--
+			}
 			f.mu.Unlock()
+			if failures > 0 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			out := make([]map[string]any, len(ids))
 			for i, id := range ids {
 				out[i] = map[string]any{"id": id}
@@ -272,4 +286,172 @@ func TestIntegration1342_PendingApplySurfacesOnHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler(rec, httptest.NewRequest(http.MethodGet, "/v1/healthz", nil))
 	assert.Contains(t, rec.Body.String(), "pendingApply")
+}
+
+// ---------------------------------------------------------------------------
+// The S12 chain, projection-level: interrupt honored → harness-written
+// terminal state (no sweep needed); interrupt ignored → kill →
+// generation-change reseed → orphan sweep restores honesty.
+// ---------------------------------------------------------------------------
+
+const (
+	toolCalledEvt  = `{"id":"evt_tc","type":"session.next.tool.called","properties":{"sessionID":"ses_build","assistantMessageID":"msg_1","callID":"call_1","tool":"bash","input":{"command":"make build"}}}`
+	toolFailureEvt = `{"id":"evt_tf","type":"session.next.tool.failure","properties":{"sessionID":"ses_build","assistantMessageID":"msg_1","callID":"call_1","error":{"message":"aborted"}}}`
+	sessionBusyEvt = `{"type":"session.status","properties":{"sessionID":"ses_build","status":{"type":"busy"}}}`
+	sessionIdleEvt = `{"type":"session.status","properties":{"sessionID":"ses_build","status":{"type":"idle"}}}`
+)
+
+// integrationAuthority builds the REAL authority (real ABITranslator,
+// real opencode store reader against the fake harness) and wires the
+// production SSE ingestion path: the tracker forwards every raw event
+// to the authority before dialect parsing (main.go's wiring).
+func integrationAuthority(t *testing.T, tracker *sessionStatusTracker) *sessionstate.Authority {
+	t.Helper()
+	t.Setenv("LLMSAFESPACES_PLATFORM_DIR", t.TempDir())
+	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 2 * time.Second}}
+	a := newStateAuthority(client, "pw", "")
+	require.NotNil(t, a)
+	tracker.onRawEvent = a.Ingest
+	t.Cleanup(func() { _ = a.Close() })
+	return a
+}
+
+func projectionToolState(a *sessionstate.Authority, sessionID string) *abiv1.ToolState {
+	snap := a.State()
+	rec, ok := snap.Sessions[sessionID]
+	if !ok {
+		return nil
+	}
+	for _, p := range rec.InFlightParts {
+		if tool, ok := p.GetPayload().(*abiv1.Part_Tool); ok {
+			return tool.Tool.GetState()
+		}
+	}
+	return nil
+}
+
+// TestIntegration1342_HarnessHonorsInterrupt_TurnEndsTerminalNoSweep: the
+// S12 primary path end-to-end — the force path's interrupt lands, the
+// harness (as a healthy one does) writes terminal part state and goes
+// idle, the restart applies, and the orphan sweep has NOTHING to do.
+func TestIntegration1342_HarnessHonorsInterrupt_TurnEndsTerminalNoSweep(t *testing.T) {
+	harness := newFakeHarnessOpencode(t, "ses_build")
+	proc := &mockManagedProcess{}
+	pending := newPendingApplyTracker()
+	cfg, deps := integrationApplyDeps(t, proc, pending)
+	authority := integrationAuthority(t, deps.Tracker)
+
+	// A live turn: busy + a running tool part in the projection (through
+	// the REAL SSE ingestion path — tracker → authority).
+	deps.Tracker.processEvent(sessionBusyEvt)
+	deps.Tracker.processEvent(toolCalledEvt)
+	require.Eventually(t, func() bool {
+		st := projectionToolState(authority, "ses_build")
+		return st != nil && st.GetStatus() == abiv1.ToolStatus_TOOL_STATUS_RUNNING
+	}, 2*time.Second, 10*time.Millisecond, "the running tool part must reach the projection")
+
+	// A restart-worthy credential change arrives while the turn runs.
+	batch := []secrets.Secret{{Type: "env-secret", Name: "tok", Metadata: map[string]string{"var_name": "TOK"}, Plaintext: "v"}}
+	_, aErr := applySecretsBatch(context.Background(), cfg, deps, batch, nil)
+	require.Nil(t, aErr)
+
+	// The turn goes silent past the stall bound → force path → interrupt.
+	silencePastStallBound(deps.Tracker, "ses_build")
+	require.Eventually(t, func() bool { return len(harness.abortCalls()) == 1 },
+		20*time.Second, 10*time.Millisecond, "the interrupt must land")
+
+	// The harness HONORS it: terminal part state + idle (its own events,
+	// not synthetic). Assert the projection holds the harness-written
+	// terminal state — S12's "terminal part state before death".
+	deps.Tracker.processEvent(toolFailureEvt)
+	require.Eventually(t, func() bool {
+		st := projectionToolState(authority, "ses_build")
+		return st != nil && st.GetStatus() == abiv1.ToolStatus_TOOL_STATUS_ERROR
+	}, 2*time.Second, 10*time.Millisecond, "the honored interrupt must leave TERMINAL part state in the projection")
+	deps.Tracker.processEvent(sessionIdleEvt)
+
+	// Grace expires, the restart applies, and the generation-change
+	// reseed (what onChildStarted fires) sweeps nothing — the turn ended
+	// with harness-written terminal state.
+	require.Eventually(t, func() bool { return proc.restartCount() == 1 },
+		15*time.Second, 20*time.Millisecond, "grace expired — restart applies")
+	require.NoError(t, authority.Reseed(context.Background(), sessionstate.ReseedReasonGenerationChange))
+	assert.Equal(t, int64(0), authority.Metrics().OrphanPartsAborted,
+		"a turn that ended with harness-written terminal state must need NO sweep")
+}
+
+// TestIntegration1342_HarnessIgnoresInterrupt_KillThenSweepRestoresHonesty:
+// the S12 backstop chain — interrupt fails, grace expires, the restart
+// kills the turn, and the generation-change reseed (the retrying driver
+// the child-started hook fires) folds the orphaned running part as
+// aborted in the restored projection.
+func TestIntegration1342_HarnessIgnoresInterrupt_KillThenSweepRestoresHonesty(t *testing.T) {
+	harness := newFakeHarnessOpencode(t, "ses_build")
+	harness.mu.Lock()
+	harness.abortStatus = http.StatusInternalServerError
+	harness.mu.Unlock()
+
+	proc := &mockManagedProcess{}
+	pending := newPendingApplyTracker()
+	cfg, deps := integrationApplyDeps(t, proc, pending)
+	authority := integrationAuthority(t, deps.Tracker)
+
+	deps.Tracker.processEvent(sessionBusyEvt)
+	deps.Tracker.processEvent(toolCalledEvt)
+	require.Eventually(t, func() bool {
+		return projectionToolState(authority, "ses_build") != nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// A restart-worthy credential change arrives while the turn runs.
+	batch := []secrets.Secret{{Type: "env-secret", Name: "tok", Metadata: map[string]string{"var_name": "TOK"}, Plaintext: "v"}}
+	_, aErr := applySecretsBatch(context.Background(), cfg, deps, batch, nil)
+	require.Nil(t, aErr)
+
+	// Stall → force path attempts the interrupt (fails) → grace → kill.
+	silencePastStallBound(deps.Tracker, "ses_build")
+	require.Eventually(t, func() bool { return proc.restartCount() == 1 },
+		20*time.Second, 20*time.Millisecond, "grace expires despite the ignored interrupt")
+
+	// The new generation's child-started hook fires the RETRYING reseed
+	// driver (startManagedProcess wiring) against the store — the sweep
+	// folds the orphan as aborted.
+	go startStateAuthorityReseed(context.Background(), authority, sessionstate.ReseedReasonGenerationChange)
+	require.Eventually(t, func() bool {
+		return authority.Metrics().OrphanPartsAborted == 1
+	}, 8*time.Second, 20*time.Millisecond, "the generation-change reseed must sweep the orphaned running part")
+
+	st := projectionToolState(authority, "ses_build")
+	require.NotNil(t, st)
+	assert.Equal(t, abiv1.ToolStatus_TOOL_STATUS_ERROR, st.GetStatus())
+	assert.Equal(t, sessionstate.OrphanSweepReason, st.GetError())
+}
+
+// TestIntegration1342_GenerationReseedRetriesUntilStoreAnswers: the
+// generation-change reseed rides the retrying driver — a harness still
+// booting after the restart (failing /session twice) must not leave the
+// backstop unfired.
+func TestIntegration1342_GenerationReseedRetriesUntilStoreAnswers(t *testing.T) {
+	harness := newFakeHarnessOpencode(t, "ses_build")
+	harness.mu.Lock()
+	harness.sessionFailures = 2 // /session 500s twice, then answers
+	harness.mu.Unlock()
+
+	proc := &mockManagedProcess{}
+	pending := newPendingApplyTracker()
+	_, deps := integrationApplyDeps(t, proc, pending)
+	authority := integrationAuthority(t, deps.Tracker)
+
+	deps.Tracker.processEvent(sessionBusyEvt)
+	deps.Tracker.processEvent(toolCalledEvt)
+	require.Eventually(t, func() bool {
+		return projectionToolState(authority, "ses_build") != nil
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// The store is unreachable twice (a freshly restarted harness); the
+	// driver retries with backoff until the sweep lands.
+	go startStateAuthorityReseed(context.Background(), authority, sessionstate.ReseedReasonGenerationChange)
+	require.Eventually(t, func() bool {
+		return authority.Metrics().OrphanPartsAborted == 1
+	}, 15*time.Second, 50*time.Millisecond,
+		"the retrying driver must reseed (and sweep) once the harness answers")
 }

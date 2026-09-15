@@ -22,30 +22,41 @@ import (
 // value: a credential change whose restart is deferred.
 const pendingApplyReasonCredentialChange = "credential_change"
 
-// pendingApplyTracker is the healthz-side state of one deferred apply.
-// The restart goroutine is the sole writer (begin/refreshBusy/clear);
-// the healthz handler reads snapshot(). All methods are nil-safe — the
+// pendingApplyTracker is the healthz-side state of the deferred apply.
+// The restart goroutines are the writers (begin/refreshBusy/clear); the
+// healthz handler reads snapshot(). All methods are nil-safe — the
 // relay path wires no tracker.
+//
+// CONCURRENT DEFERS: two resyncs can land while sessions stay busy,
+// each spawning its own deferred-restart goroutine (pre-existing
+// behavior — applyMu is released before the decision). The tracker is
+// REFERENCE-COUNTED: the surface stays up while ANY deferral is
+// outstanding, so the first goroutine's exit must not erase the
+// second's pending state.
 type pendingApplyTracker struct {
-	mu    sync.Mutex
-	since time.Time
-	busy  int
+	mu          sync.Mutex
+	since       time.Time
+	busy        int
+	outstanding int
 }
 
 func newPendingApplyTracker() *pendingApplyTracker {
 	return &pendingApplyTracker{}
 }
 
-// begin marks a deferred apply as pending (busy = sessions blocking the
-// restart at defer time).
+// begin marks one deferred apply as outstanding (busy = sessions
+// blocking that restart at defer time).
 func (p *pendingApplyTracker) begin(busy int) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.since = time.Now()
-	p.busy = busy
+	if p.outstanding == 0 {
+		p.since = time.Now()
+		p.busy = busy
+	}
+	p.outstanding++
 }
 
 // refreshBusy keeps the surfaced busy count honest across defer ticks.
@@ -55,22 +66,27 @@ func (p *pendingApplyTracker) refreshBusy(busy int) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.since.IsZero() {
+	if p.outstanding == 0 {
 		return
 	}
 	p.busy = busy
 }
 
-// clear drops the pending state (the restart fired, or the defer was
-// canceled at shutdown).
+// clear retires ONE deferred apply (its restart fired, or its defer was
+// canceled at shutdown). The surface drops only when none remain.
 func (p *pendingApplyTracker) clear() {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.since = time.Time{}
-	p.busy = 0
+	if p.outstanding > 0 {
+		p.outstanding--
+	}
+	if p.outstanding == 0 {
+		p.since = time.Time{}
+		p.busy = 0
+	}
 }
 
 // snapshot renders the healthz payload; nil when nothing is pending.
@@ -80,7 +96,7 @@ func (p *pendingApplyTracker) snapshot() *agentd.PendingApplyHealth {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.since.IsZero() {
+	if p.outstanding == 0 {
 		return nil
 	}
 	return &agentd.PendingApplyHealth{

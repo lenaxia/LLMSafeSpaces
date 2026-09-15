@@ -510,7 +510,73 @@ func (a *Adapter) getHistoryV1(ctx context.Context, userID, workspaceID, session
 			}
 		}
 	}
+	repairOrphanedRunningTools(ctx, c, sessionID, msgs)
 	return msgs, nil
+}
+
+// repairOrphanedRunningTools is the #1342 transcript-repair path (owner
+// triage front 3): a tool part stuck "running" in the harness's DURABLE
+// store renders as an eternal spinner on every session load — the
+// 2026-09-11 incident's user-visible symptom. A running part is live
+// state; the only honest way one can exist in the durable transcript of
+// a session with NO running turn is that the process which ran it died
+// (harness restart, kill, crash) before writing terminal state. When the
+// live session-status registry says this session has no running turn,
+// every running tool part in the served page is closed as
+// error/`ToolAbortReasonHarnessRestart` — repairing already-orphaned
+// parts at read time without writing the harness's store.
+//
+// Failure semantics are STRICT (the #1310 lesson): any status-fetch
+// error leaves the transcript untouched — a transport failure must
+// never read as "idle" and falsely abort a live tool. Unknown status
+// values are treated as possibly-busy (no repair) for the same reason.
+// The registry is `GET /session/status` — the same live-truth source
+// agentd's drain gate trusts.
+func repairOrphanedRunningTools(ctx context.Context, c *Client, sessionID string, msgs []session.Message) {
+	hasRunning := false
+	for i := range msgs {
+		for _, p := range msgs[i].Parts {
+			if p.Tool != nil && p.Tool.State.Status == session.ToolStatusRunning {
+				hasRunning = true
+				break
+			}
+		}
+		if hasRunning {
+			break
+		}
+	}
+	if !hasRunning {
+		return // the common page carries no running part — no status call
+	}
+	statuses, err := c.GetSessionStatuses(ctx)
+	if err != nil {
+		return // indeterminate — render as-is, never false-abort
+	}
+	if liveTurnStatus(statuses[sessionID]) {
+		return
+	}
+	for i := range msgs {
+		for j := range msgs[i].Parts {
+			if tool := msgs[i].Parts[j].Tool; tool != nil && tool.State.Status == session.ToolStatusRunning {
+				tool.State.Status = session.ToolStatusError
+				tool.State.Error = session.ToolAbortReasonHarnessRestart
+			}
+		}
+	}
+}
+
+// liveTurnStatus reports whether a /session/status value means a turn is
+// running RIGHT NOW (the part may legitimately be "running"). Mirrors the
+// tracker's busy mapping: busy/retry/compacting are live activity;
+// idle/error/absent mean no turn runs. Unknown values are conservatively
+// live (wire drift must not manufacture false aborts).
+func liveTurnStatus(s string) bool {
+	switch s {
+	case "", "idle", "error":
+		return false
+	default:
+		return true
+	}
 }
 
 // getHistoryV2 serves history from the V2 store (design 0052). The
@@ -536,6 +602,9 @@ func (a *Adapter) getHistoryV2Store(ctx context.Context, userID, workspaceID, se
 	if limit > 0 && len(msgs) > limit {
 		msgs = msgs[len(msgs)-limit:]
 	}
+	// Same #1342 transcript repair as the V1 store path (one shared
+	// rule; see repairOrphanedRunningTools).
+	repairOrphanedRunningTools(ctx, c, sessionID, msgs)
 	return msgs, nil
 }
 

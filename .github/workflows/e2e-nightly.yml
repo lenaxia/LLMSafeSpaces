@@ -328,6 +328,23 @@ jobs:
           RECONCILE_INTERVAL_S: 5
         run: bash local/us-70-secret-delivery-e2e.sh
 
+      - name: Run graceful-restart e2e rows (#1342 incident replay + kill-9 backstop)
+        # The 2026-09-11 incident at cluster scale: a credential change
+        # landing mid-streaming-turn must defer (never force-kill), surface
+        # CredentialsApplyPending, and apply via the interrupt-first force
+        # path once the stream stalls (R1); a kill -9 mid-tool must leave
+        # NO eternal spinner — the generation-change sweep + transcript
+        # repair close the part as aborted (R2). LLM_MODEL must name the
+        # cluster's free-tier relay model (same one the us-63 suite uses).
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18085
+          LLM_MODEL: ${{ vars.E2E_LLM_MODEL || 'litellm/glm-4.7' }}
+          R1_STREAM_S: 40
+        run: bash local/issue-1342-graceful-restart-e2e.sh
+
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
         # Two-tier-revision acceptance rows: v2 contract feature-detect
         # (REV-0 — loud-skips ALL rows when the deployed API predates the
