@@ -29,7 +29,8 @@ const guardedFiles = [
 // Patterns whose presence means the nested-envelope coupling returned.
 const forbiddenPatterns: Array<{ pattern: RegExp; why: string }> = [
   {
-    pattern: /record\.data|body\.data/,
+    // Matches both `body.data` and the optional-chained `body?.data`.
+    pattern: /record\??\.data|body\??\.data/,
     why: "nested data.* envelope extraction",
   },
   {

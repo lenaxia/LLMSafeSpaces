@@ -178,7 +178,7 @@ describe("ChatHistoryErrorBanner", () => {
     // producer, tracked with #796's parity sweep). Rows keep the
     // branch covered until then.
     const err = new ApiClientError(503, {
-      error: "workspace connection failed",
+      error: "agent did not respond",
       message: "The agent is not responding. Please try again in a moment.",
       reason: "agent_unreachable",
       retryAfter: 10,

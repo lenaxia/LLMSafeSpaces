@@ -223,22 +223,25 @@ export interface ApiError {
   details?: Record<string, string>;
   /**
    * Seconds to wait before retrying. Sent by the proxy on 429 (active-
-   * session cap / rate limit) and 503 (workspace restarting — in-place
-   * opencode restart for credential reload, OOM, crash, relay injection).
+   * session cap / rate limit) and 503 (workspace not ready — booting,
+   * resuming, or otherwise lacking an active pod; see
+   * proxy_adapter_crosscutting.go).
    * Mirrors the HTTP `Retry-After` header value.
    */
   retryAfter?: number;
   /**
-   * Structured reason for 503 responses. One of:
-   * - "not_ready" — workspace is booting/resuming
-   * - "agent_unreachable" — opencode hung or crashed
-   * - "agent_restarting" — watchdog or credential reload in progress
-   * Used by the frontend to show contextual recovery messaging.
+   * Structured recovery reason for 503 responses. NO API producer
+   * emits it on the message routes today (the real 503 body is
+   * `{"error":"workspace not ready","phase","retryAfter"}` —
+   * proxy_adapter_crosscutting.go); the banner's reason-keyed
+   * "Reconnecting…" branch is defensive display logic awaiting a
+   * producer (#796 parity sweep).
    */
   reason?: string;
   /**
-   * Human-readable explanation of the error. Always present on 503s
-   * from the proxy; may be absent on other error types.
+   * Human-readable explanation of the error. Carried by the 507
+   * disk-full body (proxy_handlers.go); the {error}-only bodies
+   * (502/503) do not set it — read `error` for those.
    */
   message?: string;
 }
