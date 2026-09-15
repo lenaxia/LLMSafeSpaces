@@ -114,7 +114,10 @@ this story** (version pin, license, govulncheck/Trivy evidence recorded in the
 worklog; no stdlib HPKE exists and `go.mod` carries no HPKE dependency today);
 HPKE key distribution per design §4.2 (router-generated keypair, private key in a
 router-SA-writable Secret, public key published for the controller —
-RBAC-authenticated, not trust-on-first-use; rotation = reconcile-driven re-seal).
+RBAC-authenticated, not trust-on-first-use; rotation is controller-driven:
+same-name in-place update + router-side in-memory prior-key retention with
+dual-key resolve, completion confirmed by envelope `keyID` metadata alone —
+the controller never gains decrypt capability).
 
 **Acceptance criteria:**
 - Seal→resolve roundtrip both algorithms; envelope versioning discriminates.
