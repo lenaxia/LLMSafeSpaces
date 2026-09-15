@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# gvisor.sh — runsc provisioning for the US-70.0 delivery pool.
-# Extracted from local/s5-overlay-validation.sh S5.6 (which keeps its own
-# inline copy; do not modify the s5 script). Installs runsc + its
-# containerd shim from the gVisor latest release with sha512 verification,
+# gvisor.sh — runsc provisioning for the US-70.0 delivery pool and the
+# s5-overlay-validation S5.6 leg (both call this one flow — the s5
+# script's former inline copy was the same permanently-dead GCS fetch
+# and was removed 2026-09-15). Installs runsc + its containerd shim
+# from the gVisor GitHub release bundle with sha512 verification,
 # registers the containerd runtime handler, restarts containerd, and
 # applies the gvisor RuntimeClass (handler runsc).
 #
@@ -35,14 +36,37 @@ gvisor_install_on_node() { # node
       apt-get update -qq >/dev/null
       apt-get install -y -qq curl ca-certificates zstd >/dev/null
       CURL="curl -fsSL --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 3"
-      # No -L here: the tag rides the FIRST redirect — following it
-      # lands on the release page and %{redirect_url} comes back empty.
-      TAG_URL=$(curl -fsS --connect-timeout 15 --max-time 60 -o /dev/null -w "%{redirect_url}" https://github.com/google/gvisor/releases/latest)
-      TAG=${TAG_URL#*/tag/}
-      case "$TAG" in
-        release-*) : ;;
-        *) echo "gvisor: could not resolve latest release tag (got: $TAG_URL)"; exit 1 ;;
-      esac
+      resolve_tag() {
+        # No -L here: the tag rides the FIRST redirect — following it
+        # lands on the release page and %{redirect_url} comes back
+        # empty. Retried: releases/latest is itself a moving alias (the
+        # flip window this whole block defends against).
+        local i url tag=""
+        for i in 1 2 3; do
+          url=$(curl -fsS --connect-timeout 15 --max-time 60 -o /dev/null -w "%{redirect_url}" https://github.com/google/gvisor/releases/latest) && break
+          echo "tag resolve: attempt $i failed — retrying in 10s" >&2
+          sleep 10
+        done
+        tag=${url#*/tag/}
+        case "$tag" in
+          release-*) printf "%s\n" "$tag" ;;
+          *) echo "gvisor: could not resolve latest release tag (got: ${url:-empty})" >&2; return 1 ;;
+        esac
+      }
+      # verify_bundle <bundle-path> <sums-path> <bundle-name>: verify the
+      # downloaded SHA512SUMS line against the bundle hash — the install
+      # only happens after this passes.
+      verify_bundle() {
+        local bundle=$1 sums=$2 name=$3 EXPECTED ACTUAL
+        EXPECTED=$(grep " $name\$" "$sums" | cut -d" " -f1)
+        # sha512 hex is exactly 128 chars — a regex, not a glob (a
+        # miscounted ? glob false-positived on a good checksum in run 8).
+        [[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]] \
+          || { echo "SHA512SUMS format changed upstream (got: $(cat "$sums"))"; return 1; }
+        ACTUAL=$(sha512sum "$bundle" | cut -d" " -f1)
+        [ "$EXPECTED" = "$ACTUAL" ] || { echo "gvisor bundle sha512 mismatch"; return 1; }
+      }
+      TAG=$(resolve_tag) || exit 1
       BASE=https://github.com/google/gvisor/releases/download/$TAG
       BUNDLE=gvisor-x86_64.tar.zstd
       # Release flips briefly 404 the moving alias and plain curl
@@ -61,16 +85,8 @@ gvisor_install_on_node() { # node
       fetch_retry "$BASE/$BUNDLE" /tmp/gvisor.tar.zstd
       fetch_retry "$BASE/SHA512SUMS" /tmp/gvisor.SHA512SUMS
       # gVisor publishes "<sha512>  <file>" per artifact — verify the
-      # bundle against its line. An empty/short EXPECTED means the
-      # checksum FORMAT changed upstream (fail with that diagnosis
-      # instead of a bare mismatch).
-      EXPECTED=$(grep " $BUNDLE\$" /tmp/gvisor.SHA512SUMS | cut -d" " -f1)
-      # sha512 hex is exactly 128 chars — a regex, not a glob (a miscounted
-      # ? glob pattern false-positived on a perfectly good checksum in run 8).
-      [[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]] \
-        || { echo "SHA512SUMS format changed upstream (got: $(cat /tmp/gvisor.SHA512SUMS))"; exit 1; }
-      ACTUAL=$(sha512sum /tmp/gvisor.tar.zstd | cut -d" " -f1)
-      [ "$EXPECTED" = "$ACTUAL" ] || { echo "gvisor bundle sha512 mismatch ($TAG)"; exit 1; }
+      # bundle against its line BEFORE anything is installed.
+      verify_bundle /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS "$BUNDLE" || exit 1
       # The bundle carries BOTH binaries at its root (verified against
       # release-20260907.0); runsc also needs the SHIM (run 10: "runtime
       # io.containerd.runsc.v1 binary not installed containerd-shim-runsc-v1").

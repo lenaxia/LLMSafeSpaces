@@ -23,9 +23,9 @@ workflows set them): `CLUSTER_NAME`, `CTX`, `NS`, `PORTFWD_PORT`, `API_KEY`,
 
 ## gvisor.sh
 
-runsc provisioning for kind nodes, extracted from the proven S5.6 recipe in
-`../s5-overlay-validation.sh` (which keeps its own inline copy deliberately —
-do not refactor the weekly-validated script). CLI:
+runsc provisioning for kind nodes (the US-70 pool and the S5.6 leg both call
+this one flow; the s5 script's former inline copy was the same dead GCS
+fetch and was removed 2026-09-15). CLI:
 
 ```bash
 bash local/lib/gvisor.sh install [node-name]   # default: first node

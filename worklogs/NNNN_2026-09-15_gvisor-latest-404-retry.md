@@ -26,3 +26,16 @@ The retry wrapper (#1373) was the wrong diagnosis carried one step too far: pool
 ## Files modified (this addendum's PR)
 
 - `local/lib/gvisor.sh`, `local/us70_harness_script_test.go`, this worklog
+
+## Review r1 remediation (this PR, #1375)
+
+**f1 (the S5 copy — same dead flow, weekly):** `s5-overlay-validation.sh` S5.6 now DELEGATES — `lib/gvisor.sh install "$NODE"` + `runtimeclass` — replacing the inline GCS block (a verbatim copy of the pre-fix flow) and its duplicate RuntimeClass heredoc. The two orphaned S5 guard rows (their subject moved to the lib; the US70 rows pin it there, the delegation test pins the wiring) removed with `shQuote` restored to the package. The stale "keeps its own inline copy deliberately / do not modify" rationale corrected in the gvisor.sh header and `local/lib/README.md` — that rationale was written when the copy still worked.
+
+**f2 (the tag resolve was the only un-retried moving-alias fetch):** `resolve_tag()` — 3 attempts / 10s backoff, printed-tag contract, fail-closed on empty redirect (the `-L` footgun) and non-`release-*` shapes.
+
+**The executable-coverage gap (mutation-verified blind spots):** `resolve_tag` and `verify_bundle` extracted as named functions and pinned extract-and-execute: tag happy/followed-redirect-empty/non-release-shape (all three mutations from the review now fail the suite); verify happy / missing-line→guard diagnostic / hash-mismatch→abort, plus a structural no-install-in-verify pin (abort strictly precedes install). The 128-hex guard marker keeps its historical `"$EXPECTED"` form so the existing guard rows extract unchanged.
+
+## Tests run (r1)
+
+- `go test -timeout 300s ./local/` — ok; `bash -n` both scripts; `golangci-lint` 0 issues
+- Live: `resolve_tag` executed against the real redirect → `release-20260907.0`

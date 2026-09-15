@@ -1481,3 +1481,124 @@ func TestUS70GvisorFetch_GivesUpLoudly(t *testing.T) {
 		t.Fatalf("exhaustion must be loud (5-attempt message), got: %s", got)
 	}
 }
+
+// extractUS70Fn pulls a named shell function body from lib/gvisor.sh by
+// its `name() {` marker and closing `      }` line (the established
+// extract-and-execute idiom — the test runs the script's OWN function).
+func extractUS70Fn(t *testing.T, name string) string {
+	t.Helper()
+	src := mustRead(t, us70GvisorScript)
+	start := strings.Index(src, name+"() {")
+	if start < 0 {
+		t.Fatalf("function %s() not found in %s", name, us70GvisorScript)
+	}
+	end := strings.Index(src[start:], "\n      }")
+	if end < 0 {
+		t.Fatalf("function %s() terminator not found in %s", name, us70GvisorScript)
+	}
+	return src[start : start+end+len("\n      }")]
+}
+
+// The tag resolution is the documented no-L footgun: the tag must ride
+// the FIRST redirect. Happy path: a stub curl printing the redirect URL
+// on stdout yields the tag; the -L regression (empty redirect_url) and
+// a non-release tag shape must both fail closed.
+func TestUS70GvisorResolveTag_HappyAndFailClosed(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "resolve_tag")
+
+	dir := t.TempDir()
+	stub := func(redirect string) string {
+		p := filepath.Join(dir, "curl-"+strings.ReplaceAll(redirect, "/", "_"))
+		script := "#!/bin/bash\nif [ -n \"" + redirect + "\" ]; then printf '%s\\n' \"" + redirect + "\"; fi\nexit 0\n"
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	cases := []struct {
+		name     string
+		redirect string
+		want     string // expected stdout tag, "" = must fail
+	}{
+		{"happy", "https://github.com/google/gvisor/releases/tag/release-20260907.0", "release-20260907.0"},
+		{"followed-redirect (empty)", "", ""},
+		{"non-release shape", "https://github.com/google/gvisor/releases/tag/v1.2.3", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "curl() { " + shQuote(stub(tc.redirect)) + " ; }\n" +
+				"sleep() { :; }\n" +
+				body + "\n" +
+				"resolve_tag\n"
+			out, err := exec.Command(bash, "-c", script).CombinedOutput()
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("must fail closed, got success: %s", out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("happy path failed: %v: %s", err, out)
+			}
+			if !strings.Contains(string(out), tc.want) {
+				t.Fatalf("tag %q not extracted, got: %s", tc.want, out)
+			}
+		})
+	}
+}
+
+// verify_bundle executes the script's own function against fabricated
+// fixtures: a matching hash passes; a missing bundle line fires the
+// format guard; a hash mismatch aborts. The function installs nothing —
+// the abort-BEFORE-install property is structural and pinned here.
+func TestUS70GvisorVerifyBundle_Executes(t *testing.T) {
+	bash := requireBash(t)
+	body := extractUS70Fn(t, "verify_bundle")
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "bundle.tar.zstd")
+	payload := "fake-bundle-bytes"
+	if err := os.WriteFile(bundle, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	good := func() string {
+		sum := exec.Command(bash, "-c", "printf %s "+shQuote(payload)+" | sha512sum | cut -d' ' -f1")
+		out, err := sum.CombinedOutput()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}()
+	sumsGood := filepath.Join(dir, "SHA512SUMS-good")
+	os.WriteFile(sumsGood, []byte(good+"  gvisor-x86_64.tar.zstd\n"+strings.Repeat("a", 128)+"  other-artifact\n"), 0o644)
+	sumsMissing := filepath.Join(dir, "SHA512SUMS-missing")
+	os.WriteFile(sumsMissing, []byte(strings.Repeat("a", 128)+"  some-other-artifact\n"), 0o644)
+	sumsWrong := filepath.Join(dir, "SHA512SUMS-wrong")
+	os.WriteFile(sumsWrong, []byte(strings.Repeat("b", 128)+"  gvisor-x86_64.tar.zstd\n"), 0o644)
+
+	run := func(sums string) (string, error) {
+		script := body + "\n" +
+			"verify_bundle " + shQuote(bundle) + " " + shQuote(sums) + " gvisor-x86_64.tar.zstd\n"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	if out, err := run(sumsGood); err != nil {
+		t.Fatalf("matching hash must pass: %v: %s", err, out)
+	}
+	if out, err := run(sumsMissing); err == nil {
+		t.Fatalf("missing bundle line must fail the guard, got success: %s", out)
+	} else if !strings.Contains(out, "format changed") {
+		t.Fatalf("guard diagnostic expected, got: %s", out)
+	}
+	if out, err := run(sumsWrong); err == nil {
+		t.Fatalf("hash mismatch must abort, got success: %s", out)
+	} else if !strings.Contains(out, "mismatch") {
+		t.Fatalf("mismatch diagnostic expected, got: %s", out)
+	}
+	if strings.Contains(body, "install ") {
+		t.Fatal("verify_bundle must not install — verification strictly precedes installation")
+	}
+}

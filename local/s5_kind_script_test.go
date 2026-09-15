@@ -19,9 +19,7 @@ package local_test
 // wrong-length, non-hex) that must be rejected.
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -37,24 +35,6 @@ func requireBash(t *testing.T) string {
 	return bash
 }
 
-// extractGuard pulls the checksum-validation block from the script. The
-// guard is located by its unique markers and re-exposed as a function of
-// $EXPECTED so the test exercises the script's OWN regex, not a copy.
-func extractGuard(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("s5-overlay-validation.sh"))
-	if err != nil {
-		t.Fatalf("read script: %v", err)
-	}
-	src := string(raw)
-	const marker = `[[ "$EXPECTED" =~ ^[0-9a-f]{128}$ ]]`
-	i := strings.Index(src, marker)
-	if i < 0 {
-		t.Fatalf("checksum guard not found in script — it must keep the regex form")
-	}
-	return marker
-}
-
 func TestS5Script_BashSyntax(t *testing.T) {
 	bash := requireBash(t)
 	out, err := exec.Command(bash, "-n", s5Script).CombinedOutput()
@@ -63,44 +43,18 @@ func TestS5Script_BashSyntax(t *testing.T) {
 	}
 }
 
-func TestS5Script_RunscChecksumGuardAcceptsRealShape(t *testing.T) {
-	bash := requireBash(t)
-	guard := extractGuard(t)
-
-	// The real gVisor publication shape: 128 lowercase hex + "  runsc"
-	// (captured from run 8's diagnosis output).
-	const realChecksumFile = "84936438d583ec976800f464e75a83e1515f0890b451b9b4db219c4472b54ca9b106a6772ee683f1e64cce2128871d7637b14d800591f8451b8137f6c39fb2ef  runsc"
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "runsc.sha512"), []byte(realChecksumFile+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+func TestS5Gvisor_DelegatesToLib(t *testing.T) {
+	src := mustRead(t, s5Script)
+	if strings.Contains(src, "storage.googleapis.com/gvisor/releases") {
+		t.Fatal("s5 still carries the dead GCS gVisor fetch inline — S5.6 must delegate to lib/gvisor.sh")
 	}
-	script := "cd " + dir + "\nEXPECTED=$(cut -d\" \" -f1 runsc.sha512)\n" + guard + " || exit 1\nexit 0\n"
-	out, err := exec.Command(bash, "-c", script).CombinedOutput()
-	if err != nil {
-		t.Fatalf("guard REJECTED a valid 128-hex checksum (the run-8 regression): %s", out)
-	}
-}
-
-func TestS5Script_RunscChecksumGuardRejectsMalformed(t *testing.T) {
-	bash := requireBash(t)
-	guard := extractGuard(t)
-
-	cases := map[string]string{
-		"empty":            "",
-		"short-but-hex":    strings.Repeat("a", 66), // the miscounted-glob length itself
-		"too-long-hex":     strings.Repeat("a", 129),
-		"non-hex-128chars": strings.Repeat("z", 128),
-	}
-	for name, expected := range cases {
-		t.Run(name, func(t *testing.T) {
-			script := "EXPECTED=" + shQuote(expected) + "\n" + guard + " && exit 1\nexit 0\n"
-			out, err := exec.Command(bash, "-c", script).CombinedOutput()
-			if err != nil {
-				t.Fatalf("harness failed: %s", out)
-			}
-			// exit 0 == the guard rejected (the && branch did not run)
-		})
+	for _, pin := range []string{
+		"lib/gvisor.sh\" install",
+		"lib/gvisor.sh\" runtimeclass",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("S5.6 must call %q — one provisioning flow, not two", pin)
+		}
 	}
 }
 
