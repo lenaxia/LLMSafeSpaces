@@ -107,7 +107,7 @@ None.
 - `frontend/src/hooks/useUserEventStream.ts` (liveness watchdog)
 - `frontend/src/hooks/useUserEventStream.test.tsx` (2 new tests)
 - `frontend/tests/e2e/input-requests.spec.ts` (3 new Playwright tests)
-- `worklogs/NNNN_2026-09-14_permission-pill-resolution-events.md` (this file)
+- `worklogs/0940_2026-09-14_permission-pill-resolution-events.md` (this file)
 
 ---
 
