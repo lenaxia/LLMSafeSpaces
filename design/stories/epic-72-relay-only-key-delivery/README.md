@@ -190,8 +190,9 @@ Secrets + `get` on `llm-relay-hpke-pub`).
   silently; the private-then-pub update ordering makes torn rotations
   un-confirmable; prior keys drop uniformly after the retention interval;
   DR (keypair Secret loss *or* corruption — corruption detected by the
-  watch-time fingerprint assert, not first-boot-only) regenerates with an
-  honest `CredentialStale` window until re-seal.
+  watch-time **self-contained** assert on private-key loads, not
+  first-boot-only, never cross-Secret) regenerates with an honest
+  `CredentialStale` window until re-seal.
 
 **Test plan (TDD):** red-first table-driven `token_scope_matrix` (wrong workspace /
 wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
@@ -201,7 +202,12 @@ propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
 tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
 request/response, capture every log/metric emission, assert zero body bytes);
 key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
-(window ≤ watch bound, both replicas), `rotation_replica_restart_mid_reseal`
+(window ≤ watch bound, both replicas), `rotation_assert_quiesced_in_torn_window`
+(peer private-key load during the private-then-pub window never fires DR — the
+assert is self-contained, generation-tagged; cross-Secret generation checks
+live only at controller seal time), `pub_sealtime_generation_validated`
+(pub generation ≠ rotate response → rejected, never sealed against; shape-valid
+wrong-pub residual surfaces as CredentialStale), `rotation_replica_restart_mid_reseal`
 (old-keyID fails on the restarted replica only until re-seal completes),
 `reseal_completes_before_retention_expiry` (default settings; overrun degrades
 to `CredentialStale`, not silent), `rotation_torn_update_unconfirmable`
