@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -501,4 +502,101 @@ func TestOpencodeActionSurface_SessionVerbsDeclared(t *testing.T) {
 	for at, seen := range want {
 		assert.True(t, seen, "action %s must be declared", at)
 	}
+}
+
+// --- r1 f3: the disk-pressure notice rides the agentd send seams -------
+//
+// #944's injector moved seams twice and was orphaned twice; the Act
+// migration would orphan it a third time (the API-side Wrap decorates the
+// ADAPTER, which the authority regime's sends bypass). The authority
+// regime's message writes both funnel through agentd — the actor's send
+// (sync Act) and the admitter's Admit (outbox Deliver) — so the notice is
+// injected there, pod-local (statfs of the workspace volume — fresher
+// than the CRD status the API-side reader consumes), fail-open by
+// construction, same systemnotices text as the API-side injector.
+
+func withStubbedPodDiskUsage(t *testing.T, used, total uint64, err error) {
+	t.Helper()
+	orig := podDiskUsage
+	t.Cleanup(func() { podDiskUsage = orig })
+	podDiskUsage = func() (uint64, uint64, error) { return used, total, err }
+}
+
+// TestWithDiskNotice mirrors systemnotices' tiers with the pod-local reader.
+func TestWithDiskNotice(t *testing.T) {
+	t.Run("warning injects the platform notice", func(t *testing.T) {
+		withStubbedPodDiskUsage(t, 92, 100, nil) // 92%: the warning tier (0.90 ≤ r < 0.95)
+		got := withDiskNotice("hello")
+		assert.Contains(t, got, "hello", "the user text survives")
+		assert.NotEqual(t, "hello", got, "the notice is prepended at/above the warning tier")
+		assert.True(t, strings.HasPrefix(got, "System notice:"), "platform-authored notice prefix (systemnotices.Notice)")
+	})
+	t.Run("below threshold is unchanged", func(t *testing.T) {
+		withStubbedPodDiskUsage(t, 10, 100, nil)
+		assert.Equal(t, "hello", withDiskNotice("hello"))
+	})
+	t.Run("usage read error fails open", func(t *testing.T) {
+		withStubbedPodDiskUsage(t, 0, 0, errors.New("statfs: no such volume"))
+		assert.Equal(t, "hello", withDiskNotice("hello"), "a usage read failure must never block the send")
+	})
+	t.Run("unknown total fails open", func(t *testing.T) {
+		withStubbedPodDiskUsage(t, 10, 0, nil)
+		assert.Equal(t, "hello", withDiskNotice("hello"))
+	})
+}
+
+// TestOpencodeActor_Send_InjectsDiskNotice: the sync Act send carries the
+// notice on the wire.
+func TestOpencodeActor_Send_InjectsDiskNotice(t *testing.T) {
+	stub := withStubHarness(t, nil)
+	actor := opencodeActor{password: "pw", agentKey: "agentID"}
+	withStubbedPodDiskUsage(t, 96, 100, nil)
+
+	_, err := actor.Act(context.Background(), "s1", &abiv1.ActionRequest{Action: &abiv1.ActionRequest_Send{
+		Send: &abiv1.SendAction{Text: "hello"},
+	}})
+	require.NoError(t, err)
+
+	reqs := stub.recorded()
+	require.Len(t, reqs, 1)
+	var body struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(reqs[0].Body), &body))
+	require.Len(t, body.Parts, 1)
+	assert.True(t, strings.HasPrefix(body.Parts[0].Text, "System notice:"),
+		"the disk notice rides the Act send text: %q", body.Parts[0].Text)
+	assert.Contains(t, body.Parts[0].Text, "hello")
+}
+
+// TestOpencodeAdmitter_Admit_InjectsDiskNotice: the outbox Deliver path
+// carries the same notice.
+func TestOpencodeAdmitter_Admit_InjectsDiskNotice(t *testing.T) {
+	var gotText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if len(body.Parts) > 0 {
+			gotText = body.Parts[0].Text
+		}
+		_, _ = w.Write([]byte(`{"info":{"id":"msg_x"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(srv.URL)
+	withStubbedPodDiskUsage(t, 96, 100, nil)
+
+	a := opencodeAdmitter{password: "pw"}
+	_, err := a.Admit(context.Background(), "ses_1", "msg_ob_1", "hello", "")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(gotText, "System notice:"),
+		"the disk notice rides the delivered text: %q", gotText)
+	assert.Contains(t, gotText, "hello")
 }

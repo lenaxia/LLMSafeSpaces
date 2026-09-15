@@ -590,3 +590,57 @@ func messageTypeName(t session.MessageType) string {
 	}
 	return "MESSAGE_TYPE_UNSPECIFIED"
 }
+
+// --- r1 review findings: the send transport's parity with the adapter ---
+
+// TestSessionsAct_SendMessage_LargeResult (r1 f2): a tool-output-bearing
+// assistant message can exceed the input-verbs' 1 MiB Act cap (bytes
+// fields base64-inflate ~33%) — the send path must carry the adapter's
+// 64 MiB bound or large turns 502 despite pod-side success.
+func TestSessionsAct_SendMessage_LargeResult(t *testing.T) {
+	msg := sendFixture(t)
+	msg.Parts[0].Text = strings.Repeat("x", (1<<20)+4096) // > 1 MiB in one text part
+	env := newSessionsActEnv(t, sessionsActOpts{
+		terminus: true,
+		result:   sendResultFor(t, msg),
+	})
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-s1/sessions/ses_1/message",
+		`{"parts":[{"type":"text","text":"hello"}]}`)
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+
+	var got session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.NotEmpty(t, got.Parts)
+	assert.Len(t, got.Parts[0].Text, (1<<20)+4096, "the large result body survives the Act round trip")
+}
+
+// TestSessionActHTTPClient_NoHardTimeout (r1 f1): a synchronous send is a
+// full LLM turn — the sessions Act transport must not carry the outbox
+// deliverer's 3m30s hard client timeout (the same pin the adapter path
+// holds, TestHTTPClient_NoHardTimeout; the request context is the correct
+// boundary).
+func TestSessionActHTTPClient_NoHardTimeout(t *testing.T) {
+	assert.Equal(t, time.Duration(0), sessionActHTTPClient.Timeout,
+		"sessions Act transport must not have a hard timeout — context deadline is the correct boundary")
+}
+
+// TestSessionsAct_SessionIdIsAuthoritative (r1 minor): the caller's
+// sessionID wins over any stray key an action map carries.
+func TestSessionsAct_SessionIdIsAuthoritative(t *testing.T) {
+	env := newSessionsActEnv(t, sessionsActOpts{
+		terminus: true,
+		result: map[string]any{
+			"sessionId":     "ses_authoritative",
+			"deleteSession": map[string]any{},
+		},
+	})
+
+	_, err := env.handler.actSessionAction(context.Background(), "ws-s1", "ses_authoritative",
+		map[string]any{"deleteSession": map[string]any{}, "sessionId": "ses_stray"})
+	require.NoError(t, err)
+
+	payload := env.captured(t)
+	assert.Equal(t, "ses_authoritative", payload["sessionId"],
+		"the injected session id must be authoritative — a stray action-map key must never override it")
+}

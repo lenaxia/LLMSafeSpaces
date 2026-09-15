@@ -77,3 +77,20 @@ The passkey/uploads panics in the same CI run passed locally on both branches un
 
 - `go test -timeout 600s ./api/internal/server/` — ok (4 rows red pre-fix → green post-fix; full package green)
 - `go test -timeout 600s -short -cover ./api/internal/server/` — ok
+
+## Review r1 remediation
+
+**f1 (HIGH — the Act send rode the outbox's 3m30s-capped client):** `abiActRaw` used `agentdHTTPClient` (`Timeout: agentdDeliverInlineWindow`). A sync send is a full LLM turn; the adapter path deliberately has NO hard client timeout (pinned by `TestHTTPClient_NoHardTimeout` — the reviewer traced the intent). Fix: `sessionActHTTPClient = &http.Client{}` (request-context-bounded, the adapter's boundary semantics) + `sessionActBodyCap = 64 MiB` (f2 — the adapter's own Send bound; the input verbs keep their 1 MiB shared transport). Pinned red-first: `TestSessionActHTTPClient_NoHardTimeout` (the adapter pin's mirror) and `TestSessionsAct_SendMessage_LargeResult` (>1 MiB text part through the Act round trip — red: 502 on truncation).
+
+**f3 (HIGH — #944's disk-pressure notice orphaned a third time):** the injector lives in `systemnotices.Wrap` around the ADAPTER; authority-regime sends bypass it (and the terminus OUTBOX path already did — pre-existing, same class). Fix at the funnels every authority-regime message write shares: the actor's send and the admitter's Admit prepend `systemnotices.Notice` (same tier/ratio/notice text — one source) from a pod-local `statfs` of the workspace volume (fresher than the API's CRD-status reader; `LLMSAFESPACES_WORKSPACE_DIR` override). Fail-open by construction; regimes disjoint → no double injection. `TestMain` pins the package's default disk posture so exact-body tests stay runner-independent; the notice rows stub the tiers.
+
+**Minor (sessionId merge order):** the action map now merges BEFORE the `sessionId` injection — the caller's id is authoritative. Pinned red-first (`TestSessionsAct_SessionIdIsAuthoritative`, stray key overridden).
+
+**f4 (overstated claim):** the PR description's headline now scopes S1 to the sessions cluster and names the `createSessionOnWorkspace` remainder; the first commit's "(S1 completion)" subject is corrected in the record here (history left intact for the reviewer's SHA stamping — squashing happens post-APPROVE per protocol).
+
+**E2E:** the US-70 delivery pool dispatched on the branch (run 35031471918) — the pool arms `AGENTD_STATE_AUTHORITY`, so the delivery/walk-away legs exercise the Act-routed write path end-to-end.
+
+## Tests run (r1)
+
+- `go test -race` on handlers (900s), server, agentd + sessionstate, pkg/agent/..., pkg/abi — ok
+- golangci-lint 0 issues; make repolint passed

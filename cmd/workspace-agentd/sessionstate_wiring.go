@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -29,6 +30,7 @@ import (
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	agentd "github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
@@ -338,6 +340,52 @@ func bootCapabilityReport(client *OpenCodeClient, supportedActions []abiv1.Actio
 	}
 }
 
+// --- #944 (r1 f3): the disk-pressure notice at the agentd send seams ----
+//
+// The injector moved seams twice and was orphaned twice (the package's
+// own doc); the #1372 Act migration routes the authority regime's message
+// writes AROUND the API-side adapter Wrap — so the notice is injected
+// HERE, where every authority-regime message write funnels regardless of
+// entrypoint: the actor's send (sync Act) and the admitter's Admit
+// (outbox Deliver). Pod-local statfs of the workspace volume — fresher
+// than the CRD status the API-side reader consumes — with the SAME
+// systemnotices tier/notice text (one source of truth). Fail-open by
+// construction: a read error, unknown total, or below-threshold ratio
+// return the text unchanged. Flag-off keeps the API-side Wrap — no
+// double injection (the regimes are disjoint).
+
+// podDiskUsage reports (used, total) bytes of the workspace volume. Var
+// for tests (the agentAddrAtomic seam convention).
+var podDiskUsage = func() (used, total uint64, err error) {
+	dir := os.Getenv("LLMSAFESPACES_WORKSPACE_DIR")
+	if dir == "" {
+		dir = "/workspace"
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, 0, err
+	}
+	bs := uint64(st.Bsize)
+	return (st.Blocks - st.Bfree - st.Bavail) * bs, st.Blocks * bs, nil
+}
+
+// withDiskNotice prepends the disk-pressure notice to an agent-bound
+// message text when the workspace volume is at/above the warning tier
+// (systemnotices' tiers, notice text, and ratio math — identical to the
+// API-side injector).
+func withDiskNotice(text string) string {
+	used, total, err := podDiskUsage()
+	if err != nil || total == 0 {
+		return text
+	}
+	ratio := systemnotices.Ratio(int64(used), int64(total)) //nolint:gosec // statfs block counts bounded by the volume size (≤ EiB-class halves)
+	notice := systemnotices.Notice(systemnotices.LevelForRatio(ratio), ratio)
+	if notice == "" {
+		return text
+	}
+	return notice + "\n\n" + text
+}
+
 // opencodeAdmitter is the US-69.7 admission seam implementation: POST the
 // V2 prompt endpoint on the pod's opencode (localhost :4096, §D1 Basic
 // credential). Delivery mode "steer" — the TUI's send semantics (#1288):
@@ -388,6 +436,7 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text,
 	if text == "" {
 		return "", fmt.Errorf("admit: empty text")
 	}
+	text = withDiskNotice(text)
 	// #1292b: the V2 prompt endpoint STRIPS per-prompt model overrides
 	// (verified live: a steer body carrying glm-5.3 ran the session
 	// default muse-spark). The model must be applied to the SESSION
@@ -735,7 +784,7 @@ func (o opencodeActor) Act(ctx context.Context, sessionID string, req *abiv1.Act
 		// zero production callers).
 		sa := a.Send
 		body := map[string]any{
-			"parts": []map[string]any{{"type": "text", "text": sa.GetText()}},
+			"parts": []map[string]any{{"type": "text", "text": withDiskNotice(sa.GetText())}},
 		}
 		if wire, ok := opencode.MessageModelOverrideWire(modelRefFromABI(sa.GetModel())); ok {
 			body["model"] = wire

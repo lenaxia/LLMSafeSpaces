@@ -36,10 +36,13 @@ func (h *ProxyHandler) actSessionAction(ctx context.Context, workspaceID, sessio
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errAgentdEndpointUnresolved, err)
 	}
-	payload := map[string]any{"sessionId": sessionID}
+	payload := map[string]any{}
 	for k, v := range action {
 		payload[k] = v
 	}
+	// Injected LAST: the caller's sessionID is authoritative — a stray
+	// "sessionId" key riding an action map must never override it (r1).
+	payload["sessionId"] = sessionID
 	var out abi.ActionResult
 	if err := abiActProto(ctx, base, pw, payload, &out); err != nil {
 		return nil, err
