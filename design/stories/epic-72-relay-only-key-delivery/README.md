@@ -201,7 +201,10 @@ wrong baseURL / off-allowlist model / expired / forged HMAC / deleted-Secret →
 propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
 tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
 request/response, capture every log/metric emission, assert zero body bytes);
-key-machinery tests: `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
+key-machinery tests (this story owns the ROUTER side — rotate receipt,
+preconditioned updates, adopt/watch/assert/resolve/retention; the
+controller-side reconcile predicate that terminates DR windows is owned and
+tested by US-72.3): `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
 (window ≤ watch bound, both replicas), `rotation_assert_quiesced_in_torn_window`
 (peer private-key load during the private-then-pub window never fires DR — the
 assert is self-contained, generation-tagged; generation checks against the pub
@@ -218,8 +221,7 @@ confirms), `prior_key_retention_expiry`, `dr_keypair_loss_failclosed_recovery`
 fingerprint assert with no restart — a running fleet converges on the bounded
 recovery), `dr_dual_replica_recovery_single_keypair` (simultaneous failures →
 generation-preconditioned single lineage, pub-write loser adopts the winner),
-`dr_window_reconcile_terminates` (generation-change re-seal; persistent stale
-→ anti-storm-bounded rotate escalation), `envelope_keyid_aad_bound`
+`envelope_keyid_aad_bound`
 (design §7 rows); `deploy_drain_two_replica` e2e; quota-alert firing test (prometheus rule
 unit); informer-drop test (Secret deleted → cache evicted → next request 401).
 
@@ -256,8 +258,16 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
 - Token renewal: a pod alive past TTL/2 receives a fresh token via resync batch
   and applies it behind the session-aware restart decision (#852), no manual
   intervention.
+- **DR/residual window terminator (design §4.2 reconcile predicate):** at each
+  pass the staging reconcile re-gets `llm-relay-hpke-pub` and compares its
+  `generation` against the last-sealed generation (persisted with the staging
+  state) — changed → re-seal every envelope; unchanged while `CredentialStale`
+  persists → rotate escalation, anti-storm-bounded (≥10m floor).
 
-**Test plan (TDD):** red-first controller reconcile tests (stage/unbind/rotate —
+**Test plan (TDD):** `dr_window_reconcile_terminates` (pub-generation change →
+re-seal; persistent stale with unchanged generation → anti-storm-bounded rotate
+escalation — the controller-side predicate, homed HERE per design §4.2);
+red-first controller reconcile tests (stage/unbind/rotate —
 rotate leg: trigger `POST /internal/v1/keys/rotate`, re-seal every envelope,
 confirm completion by envelope `keyID` metadata alone, never decrypt —
 confirmation reads the controller's own write-acks, no envelope read-back);
