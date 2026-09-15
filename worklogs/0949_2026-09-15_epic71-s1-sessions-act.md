@@ -106,3 +106,8 @@ Main's #1376/#1379 train landed the #1307 text-only-wedge classification (`agent
 
 - `-race` full: handlers, server, pkg/agent/..., agentd + sessionstate, pkg/abi — ok
 - golangci-lint 0 issues; repolint passed
+
+> History note: the mid-r2 push was `--force-with-lease` after rebasing
+> onto origin/main (README Rule 10 scenario 3: this branch is mine alone,
+> never pulled by others; the rebase replayed my three commits unchanged
+> plus the new fix). No shared history was rewritten.
