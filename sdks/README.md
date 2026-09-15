@@ -118,6 +118,11 @@ and the session-surface truth-up (#1304):
 - `getHistory` pages are oldest-first (chronological) within a page —
   the previously documented "newest-first ordering within a page" was
   wrong.
+- `Part.type` discriminator for file-change parts is `file_change` on
+  the wire (pkg/session contract) — the spec enum and the TS/Java SDK
+  types previously said `file-change`, which the server never emits
+  (caught by the new live-router conformance test,
+  `api/internal/server/router_session_contract_test.go`).
 - Question/permission surfaces speak the contract `InputRequest`
   vocabulary (#1302): typed lists, contract reply bodies, bodyless 200s
   on live replies/rejects, `202` late-answer bodies

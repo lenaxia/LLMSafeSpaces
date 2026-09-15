@@ -818,6 +818,11 @@ paths:
           description: The agent adapter failed to complete the send
         "503":
           description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: |
+            Rate limited — connection, active-session, or quota limit. A
+            `retryAfter` hint rides the body; Retry-After is set as a
+            header.
     get:
       tags: [sessions]
       summary: Get message history for a session
@@ -877,6 +882,8 @@ paths:
           description: The agent adapter failed to fetch the transcript
         "503":
           description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
   /workspaces/{id}/sessions/{sessionId}/prompt:
     post:
       tags: [sessions]
@@ -962,8 +969,9 @@ paths:
         "429":
           description: |
             Rate limited — the session queue is full or an
-            active-session/quota limit was hit. A `retryAfter` seconds
-            hint rides the body; Retry-After is also set as a header.
+            active-session/quota/connection limit was hit. A `retryAfter`
+            seconds hint always rides the body; the Retry-After header is
+            set by the limit arms (the queue-full arm is body-only).
         "503":
           description: Workspace is not active (suspended or transitioning)
   /workspaces/{id}/sessions/{sessionId}:
@@ -998,6 +1006,8 @@ paths:
           description: The agent adapter failed to load the session
         "503":
           description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
     delete:
       tags: [sessions]
       summary: Delete a session and its children
@@ -1031,6 +1041,8 @@ paths:
           description: The agent adapter failed to delete the session
         "503":
           description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
   /workspaces/{id}/sessions/{sessionId}/abort:
     post:
       tags: [sessions]
@@ -1063,6 +1075,8 @@ paths:
           description: The agent adapter failed to abort the session
         "503":
           description: Workspace is not active (suspended or transitioning)
+        "429":
+          description: Per-workspace connection limit reached (Retry-After header set)
   /workspaces/{id}/contract-events:
     get:
       tags: [sessions]
@@ -1202,6 +1216,12 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          description: |
+            Rate limited — the session queue is full or an
+            active-session/quota/connection limit was hit. A `retryAfter`
+            hint always rides the body; the Retry-After header is set by
+            the limit arms (the queue-full arm is body-only).
     get:
       tags: [sessions]
       summary: List queued messages for a session
@@ -8533,13 +8553,13 @@ components:
       description: |
         One renderable part of a message (pkg/session contract). The 5-type
         union is closed forever (design 0049 discipline rule 1): text,
-        reasoning, tool, file-change, custom. Tools are discriminated by
+        reasoning, tool, file_change, custom. Tools are discriminated by
         tool.name, not by part type.
       required: [type]
       properties:
         type:
           type: string
-          enum: [text, reasoning, tool, file-change, custom]
+          enum: [text, reasoning, tool, file_change, custom]
         id:
           type: string
         text:

@@ -113,3 +113,20 @@ None.
 - `sdks/canary/go/scenarios/{d-agent-input,d-prompt-async,d-session-ensure,d-session-get,d-session-limit,d-session-subtask}/main.go`
 - `sdks/tests/contract/sessions_contract.hurl` (new), `sessions.hurl`, `sessions_delete_seen.hurl`, `sessions_queue.hurl`
 - `worklogs/NNNN_2026-09-15_openapi-session-contract-truthup.md` (this file)
+
+## Review r1 remediation
+
+**f1 (HIGH — the issue's mandatory live-router conformance test):** built as `api/internal/server/router_session_contract_test.go` — production `NewRouter` + REAL `ProxyHandler` over a fake `agent.Adapter` returning canned values built from the pkg/session CONTRACT types; every captured body is validated (jsonschema v6, `santhosh-tekuri/jsonschema/v6` — already a direct dep) against the exact response-row schema compiled by pointer out of `sdks/openapi.yaml`. Covers the issue's set (getSession/listQuestions/listPermissions/getHistory/sendMessage) plus this PR's rows (prompt 202 + 200-duplicate receipt, bodyless abort/delete 204s). A missing spec row fails the compile-by-pointer (no vacuous pass), and `TestSessionContractConformance_HarnessDiscriminates` is the harness's own red-check (unknown enum value and missing required `id` both rejected).
+- **The harness caught a real pre-existing spec bug on its first run:** the wire discriminator for file-change parts is `file_change` (`contract_gen.go:34`) but the spec's `Part.type` enum — and the TS/Java SDK types copying it — said `file-change`, a value the server never emits. Fixed in spec + TS + Java; added to the 1.0.0 breaking note.
+- Wiring note: `NewRouter` without a variadic config applies `DefaultRouterConfig` (production `RequireHTTPS` → 301 on plain-http test URLs); the orgs/mcp wire tests pass an explicit config that replaces it — this test follows that pattern (`RouterConfig{}`).
+
+**f2 (the prompt 429 row claimed "Retry-After is also set as a header"):** falsified against the handler — the queue-full arm (`proxy_handlers.go:263-266`) is body-only; only the connection/session-limit arms (`proxy_adapter_crosscutting.go:66-99`) set the header. Row reworded to say exactly that.
+
+**f3 (429 truth-up stopped mid-family; duplicate-receipt body unpinned):**
+- 429 rows added to all six reachable siblings: sendMessage (connection/session/quota), getHistory, getSession, deleteSession, abortSession (connection limit), enqueueMessage (queue-full body-only + the limit arms). sendPromptAsync's row reworded per f2.
+- `TestOutbox_DedupeReturnsOriginal` now pins the 200-duplicate BODY at the handler level: same `messageID` as the 202 accept, `clientMessageID` echo, `status: "duplicate"` — the spec's 200 row can no longer drift from the wire.
+
+## Tests run (r1)
+
+- `go test -timeout 600s ./api/internal/server/ ./api/internal/handlers/` — ok (incl. the conformance suite + extended dedupe pin)
+- `make -C sdks validate` + `make sdk-check` — green; TS `tsc` + vitest 78/78 (+ test-file compile check); Java `mvn test` BUILD SUCCESS; all 13 hurl files green against Prism

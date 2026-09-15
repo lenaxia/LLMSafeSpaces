@@ -175,7 +175,7 @@ export interface Message {
 
 /** One renderable part of a message — the closed 5-type union. */
 export interface Part {
-  type: "text" | "reasoning" | "tool" | "file-change" | "custom";
+  type: "text" | "reasoning" | "tool" | "file_change" | "custom";
   id?: string;
   text?: string;
   reasoning?: string;

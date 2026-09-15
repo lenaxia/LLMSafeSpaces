@@ -26,7 +26,7 @@ public class Message {
         @SerializedName("text") TEXT,
         @SerializedName("reasoning") REASONING,
         @SerializedName("tool") TOOL,
-        @SerializedName("file-change") FILE_CHANGE,
+        @SerializedName("file_change") FILE_CHANGE,
         @SerializedName("custom") CUSTOM
     }
 
