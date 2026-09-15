@@ -183,6 +183,9 @@ func silencePastStallBound(tracker *sessionStatusTracker, sessionID string) {
 // streams → NO restart, NO interrupt, pending surfaced; when the stream
 // stalls → interrupt lands → grace → restart applies → pending clears.
 func TestIntegration1342_CredentialChangeDuringStreamingTurn_Defers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock integration row: exercises the production 5s poll + 5s grace timers (runs in the full suite)")
+	}
 	harness := newFakeHarnessOpencode(t, "ses_build")
 	proc := &mockManagedProcess{}
 	pending := newPendingApplyTracker()
@@ -237,32 +240,6 @@ func TestIntegration1342_IdleCredentialChange_AppliesImmediately(t *testing.T) {
 	assert.Equal(t, 1, proc.restartCount())
 	assert.Nil(t, pending.snapshot(), "nothing deferred — nothing surfaces")
 	assert.Empty(t, harness.abortCalls(), "no busy session — no interrupt")
-}
-
-// TestIntegration1342_HarnessIgnoresInterrupt_GraceExpires: a harness
-// that 500s the interrupt still gets the restart after grace — the
-// orphan sweep (authority-side) is the honesty backstop.
-func TestIntegration1342_HarnessIgnoresInterrupt_GraceExpires(t *testing.T) {
-	harness := newFakeHarnessOpencode(t, "ses_wedged")
-	harness.mu.Lock()
-	harness.abortStatus = http.StatusInternalServerError
-	harness.mu.Unlock()
-
-	proc := &mockManagedProcess{}
-	pending := newPendingApplyTracker()
-	cfg, deps := integrationApplyDeps(t, proc, pending)
-	deps.Tracker.set("ses_wedged", "busy")
-	silencePastStallBound(deps.Tracker, "ses_wedged")
-
-	batch := []secrets.Secret{{Type: "env-secret", Name: "tok", Metadata: map[string]string{"var_name": "TOK"}, Plaintext: "v"}}
-	_, aErr := applySecretsBatch(context.Background(), cfg, deps, batch, nil)
-	require.Nil(t, aErr)
-
-	require.Eventually(t, func() bool { return len(harness.abortCalls()) == 1 },
-		20*time.Second, 10*time.Millisecond, "the force path must still ATTEMPT the interrupt")
-	require.Eventually(t, func() bool { return proc.restartCount() == 1 },
-		15*time.Second, 20*time.Millisecond,
-		"a harness that ignores the interrupt must not wedge the credential apply — grace expires, restart fires")
 }
 
 // TestIntegration1342_PendingApplySurfacesOnHealthz wires the tracker
@@ -335,6 +312,9 @@ func projectionToolState(a *sessionstate.Authority, sessionID string) *abiv1.Too
 // harness (as a healthy one does) writes terminal part state and goes
 // idle, the restart applies, and the orphan sweep has NOTHING to do.
 func TestIntegration1342_HarnessHonorsInterrupt_TurnEndsTerminalNoSweep(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock integration row: exercises the production 5s poll + 5s grace timers (runs in the full suite)")
+	}
 	harness := newFakeHarnessOpencode(t, "ses_build")
 	proc := &mockManagedProcess{}
 	pending := newPendingApplyTracker()
@@ -386,6 +366,9 @@ func TestIntegration1342_HarnessHonorsInterrupt_TurnEndsTerminalNoSweep(t *testi
 // the child-started hook fires) folds the orphaned running part as
 // aborted in the restored projection.
 func TestIntegration1342_HarnessIgnoresInterrupt_KillThenSweepRestoresHonesty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("wall-clock integration row: exercises the production 5s poll + 5s grace timers (runs in the full suite)")
+	}
 	harness := newFakeHarnessOpencode(t, "ses_build")
 	harness.mu.Lock()
 	harness.abortStatus = http.StatusInternalServerError
