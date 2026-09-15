@@ -130,3 +130,12 @@ None.
 
 - `go test -timeout 600s ./api/internal/server/ ./api/internal/handlers/` — ok (incl. the conformance suite + extended dedupe pin)
 - `make -C sdks validate` + `make sdk-check` — green; TS `tsc` + vitest 78/78 (+ test-file compile check); Java `mvn test` BUILD SUCCESS; all 13 hurl files green against Prism
+
+## Review r2 remediation
+
+**f1 (the quota arm's 429 shape — last divergence class):** verified against `proxy.go:355,365`: the quota arm emits `{"error": "quota exceeded", "event_type": ...}` with NEITHER a `retryAfter` body hint NOR the Retry-After header (only the connection/session-limit arms set both, `proxy_adapter_crosscutting.go:66-99`; the queue-full arm is body-only). The three write-path 429 rows (sendMessage, sendPromptAsync, enqueueMessage) now spell out all causes and their exact shapes. The quota gate's fail-closed 503 (`quotaCheckFailed`, proxy.go:372-378) is folded into the 503 row descriptions of the three quota-gated routes — same class, closed with it.
+**streamEvents 429:** the broker's per-workspace SSE connection cap (`proxy_stream.go:53`) now documented (plus its 503 broker-uninitialized row).
+
+## Tests run (r2)
+
+- `make -C sdks validate` + `make sdk-check` — green; `go test ./api/internal/server/` (conformance suite) — ok; all 13 hurl files green against Prism.

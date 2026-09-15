@@ -817,12 +817,15 @@ paths:
         "502":
           description: The agent adapter failed to complete the send
         "503":
-          description: Workspace is not active (suspended or transitioning)
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
         "429":
           description: |
-            Rate limited — connection, active-session, or quota limit. A
-            `retryAfter` hint rides the body; Retry-After is set as a
-            header.
+            Rate limited — connection, active-session, or quota limit.
+            The connection/session-limit arms set a `retryAfter` body
+            hint and the Retry-After header; the quota arm carries
+            `{"error", "event_type"}` with neither.
     get:
       tags: [sessions]
       summary: Get message history for a session
@@ -969,11 +972,14 @@ paths:
         "429":
           description: |
             Rate limited — the session queue is full or an
-            active-session/quota/connection limit was hit. A `retryAfter`
-            seconds hint always rides the body; the Retry-After header is
-            set by the limit arms (the queue-full arm is body-only).
+            active-session/quota/connection limit. The queue-full arm
+            carries a body `retryAfter` hint (no header); the
+            connection/session-limit arms set both; the quota arm carries
+            `{"error", "event_type"}` with neither.
         "503":
-          description: Workspace is not active (suspended or transitioning)
+          description: |
+            Workspace is not active (suspended or transitioning), or
+            quota enforcement is unavailable (fail-closed).
   /workspaces/{id}/sessions/{sessionId}:
     get:
       tags: [sessions]
@@ -1219,9 +1225,10 @@ paths:
         "429":
           description: |
             Rate limited — the session queue is full or an
-            active-session/quota/connection limit was hit. A `retryAfter`
-            hint always rides the body; the Retry-After header is set by
-            the limit arms (the queue-full arm is body-only).
+            active-session/quota/connection limit. The queue-full arm
+            carries a body `retryAfter` hint (no header); the
+            connection/session-limit arms set both; the quota arm carries
+            `{"error", "event_type"}` with neither.
     get:
       tags: [sessions]
       summary: List queued messages for a session
@@ -1309,6 +1316,10 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          description: Too many SSE connections for this workspace
+        "503":
+          description: Event broker not initialized
   # --- Agent Input Requests (Epic 16) ---
   /workspaces/{id}/question:
     get:
