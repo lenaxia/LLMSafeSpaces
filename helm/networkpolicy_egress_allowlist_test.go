@@ -461,6 +461,63 @@ networkPolicy:
           - 100.64.0.0/10
 `,
 		},
+		{
+			name: "ipv6 ula in llmCIDRs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - fd00::/8
+`,
+		},
+		{
+			name: "ipv6 link-local in tooling.cidrs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      tooling:
+        cidrs:
+          - fe80::/10
+`,
+		},
+		{
+			name: "ipv6 ula fc00 in llmCIDRs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - fc00::/7
+`,
+		},
+		{
+			name: "ipv6 multicast in tooling.cidrs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      tooling:
+        cidrs:
+          - ff02::/16
+`,
+		},
+		{
+			name: "ipv6 loopback in llmCIDRs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - ::1/128
+`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -496,8 +553,8 @@ networkPolicy:
 
 // TestEgress_Allowlist_PublicGroupCIDRsStillRender guards the guard:
 // ordinary public CIDRs (including ones adjacent to private space,
-// e.g. 172.15/12-adjacent, 100.63, 100.128) must keep rendering — the
-// lexical check must not over-match.
+// e.g. 172.15/12-adjacent, 100.63, 100.128, and public IPv6) must keep
+// rendering — the lexical check must not over-match.
 func TestEgress_Allowlist_PublicGroupCIDRsStillRender(t *testing.T) {
 	values := `
 networkPolicy:
@@ -509,11 +566,13 @@ networkPolicy:
         - 100.63.0.0/16
         - 100.128.0.0/16
         - 203.0.113.0/24
+        - 2001:db8::/32
+        - 2606:4700::/32
 `
 	docs := helmTemplate(t, values)
 	policy := findWorkspaceEgressPolicy(t, docs)
 	got := allIPBlockCIDRs(t, policy)
-	for _, cidr := range []string{"172.15.0.0/16", "100.63.0.0/16", "100.128.0.0/16", "203.0.113.0/24"} {
+	for _, cidr := range []string{"172.15.0.0/16", "100.63.0.0/16", "100.128.0.0/16", "203.0.113.0/24", "2001:db8::/32", "2606:4700::/32"} {
 		assert.Contains(t, got, cidr, "public CIDR %s must render in the llm group", cidr)
 	}
 }

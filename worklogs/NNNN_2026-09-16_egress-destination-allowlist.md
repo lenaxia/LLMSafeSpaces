@@ -123,3 +123,12 @@ None. Live-cluster enforcement validation of `allowlist` mode is deferred with r
 3. **#1388 decision frame should name the per-workspace open-egress dimension** (minor, issue text) — done: appended the option-3 per-workspace dimension to #1388's body.
 
 Tests: +1 (`TestEgress_Allowlist_NullToolingDegradesStrictest`); 15 egress tests total; full ./helm/ suite + lint + helm-render pass.
+
+---
+
+## Iteration 4 — AI review round 3 finding (2026-09-16, PR #1386)
+
+1. **IPv6-internal group CIDRs silently admitted** — REAL (reviewer reproduced; verified red locally before the fix). Well-formed IPv6-internal CIDRs (fd00::/8, fe80::/10, fc00::/7, ff00::/8, ::1) are API-valid ipBlocks, so neither the IPv4-lexical render guard nor the documented apply-time backstop caught them. Fix: extended the helper to IPv6 (lowercased prefix checks: fc/fd = ULA, fe8–feb = link-local, ff = multicast, ::1 = loopback) and renamed it `llmsafespaces.isPrivateInternalCIDR` (v4+v6 scope). Private-table +5 IPv6 subtests; over-match guard + public IPv6 (2001:db8::/32, 2606:4700::/32 — Cloudflare's v6, which the default surface may legitimately need). Guard-scope docs updated across the three surfaces; `::/0`-style v6 aggregates remain the documented residual.
+2. Non-blocking PR-body phrasing ("now enforced", superseded) — patched; iteration-3/4 sections appended.
+
+Tests: 15 top-level egress tests (8-subtest private table); full ./helm/ suite + lint + helm-render pass.

@@ -224,7 +224,7 @@ spec:
     {{- if $allowlist.llmCIDRs }}
     # Data-plane: LLM inference endpoints (direct-to-Zen, provider APIs).
     {{- range $cidr := $allowlist.llmCIDRs }}
-    {{- if eq (include "llmsafespaces.isPrivateIPv4CIDR" $cidr) "true" }}
+    {{- if eq (include "llmsafespaces.isPrivateInternalCIDR" $cidr) "true" }}
     {{- fail (printf "networkPolicy.workspaceEgress.allowlist.llmCIDRs entry %q is a private/internal range (#821): group rules render without the blockedEgressCIDRs subtraction and would silently reopen it — use networkPolicy.extraEgressCIDRs for operator-accepted internal destinations" $cidr) }}
     {{- end }}
     {{- end }}
@@ -244,7 +244,7 @@ spec:
     # the data-plane group — the #821 data-plane/tooling split. Disabling
     # tooling egress yields the LLM/relay-only posture.
     {{- range $cidr := $tooling.cidrs }}
-    {{- if eq (include "llmsafespaces.isPrivateIPv4CIDR" $cidr) "true" }}
+    {{- if eq (include "llmsafespaces.isPrivateInternalCIDR" $cidr) "true" }}
     {{- fail (printf "networkPolicy.workspaceEgress.allowlist.tooling.cidrs entry %q is a private/internal range (#821): group rules render without the blockedEgressCIDRs subtraction and would silently reopen it — use networkPolicy.extraEgressCIDRs for operator-accepted internal destinations" $cidr) }}
     {{- end }}
     {{- end }}
@@ -268,7 +268,7 @@ spec:
     # below fails the render instead (use extraEgressCIDRs for internal
     # destinations).
     {{- range $cidr := .Values.networkPolicy.allowedEgressCIDRs }}
-    {{- if and (ne $cidr "0.0.0.0/0") (eq (include "llmsafespaces.isPrivateIPv4CIDR" $cidr) "true") }}
+    {{- if and (ne $cidr "0.0.0.0/0") (eq (include "llmsafespaces.isPrivateInternalCIDR" $cidr) "true") }}
     {{- fail (printf "networkPolicy.allowedEgressCIDRs entry %q is a private/internal range (#821): the blockedEgressCIDRs subtraction only applies to the 0.0.0.0/0 catch-all, so this entry would render as an unconditional private allow — use networkPolicy.extraEgressCIDRs for operator-accepted internal destinations" $cidr) }}
     {{- end }}
     {{- end }}

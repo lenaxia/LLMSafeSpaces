@@ -171,12 +171,14 @@ repo@digest (ignoring tag); otherwise repo:tag with AppVersion fallback.
 {{- end }}
 
 {{/*
-#821: report whether an IPv4 CIDR string falls inside the private /
-internal ranges covered by the blockedEgressCIDRs defaults (RFC1918,
-CGNAT, link-local/metadata, loopback, multicast). Lexical first/second-
-octet check — IPv4 only; anything that does not parse as a dotted quad
-(IPv6, typos) reports false and is left to the API server's own
-ipBlock validation at apply time.
+#821: report whether an IPv4 or IPv6 CIDR string falls inside the
+private / internal ranges covered by the blockedEgressCIDRs defaults
+(IPv4: RFC1918, CGNAT, link-local/metadata, loopback, multicast;
+IPv6: ULA fc00::/7, link-local fe80::/10, multicast ff00::/8, loopback
+::1). Lexical first/second-octet (v4) / prefix (v6, lowercased) check —
+anything that does not parse as a dotted quad or IPv6 literal reports
+false and is left to the API server's own ipBlock validation at apply
+time.
 
 Used as a render-time footgun guard: allowlist group entries and narrow
 allowedEgressCIDRs entries render WITHOUT the blockedEgressCIDRs
@@ -186,18 +188,21 @@ in-cluster or metadata ranges. Callers fail the render instead and
 direct the operator to networkPolicy.extraEgressCIDRs, which is the
 deliberate no-subtraction escape hatch for internal destinations.
 
-Guard scope (documented honestly): catches well-formed private dotted-
-quad CIDRs — the realistic footgun class. Malformed spellings report
-false here but are rejected loudly at apply time by the API server's
-ipBlock validation; an aggregate CIDR spanning private space (e.g.
-0.0.0.0/1) is a residual silent case (contrived input).
+Guard scope (documented honestly): catches well-formed private entries —
+the realistic footgun class, IPv4 AND IPv6 (well-formed IPv6-internal
+CIDRs are API-valid, so no apply-time backstop exists for them — the
+round-3 review finding). Malformed spellings report false here but are
+rejected loudly at apply time by the API server's ipBlock validation;
+an aggregate CIDR spanning private space (e.g. 0.0.0.0/1, ::/0) is a
+residual silent case (contrived input).
 
 Pinned by TestEgress_Allowlist_PrivateGroupCIDRFailsRender,
 TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender, and
 TestEgress_Allowlist_PublicGroupCIDRsStillRender (over-match guard).
 */}}
-{{- define "llmsafespaces.isPrivateIPv4CIDR" -}}
-{{- $octets := splitList "." (index (splitList "/" .) 0) -}}
+{{- define "llmsafespaces.isPrivateInternalCIDR" -}}
+{{- $parts := splitList "/" . -}}
+{{- $octets := splitList "." (index $parts 0) -}}
 {{- if eq (len $octets) 4 -}}
 {{- $a := index $octets 0 | int -}}
 {{- $b := index $octets 1 | int -}}
@@ -212,6 +217,13 @@ true
 {{- else if and (eq $a 100) (ge $b 64) (le $b 127) -}}
 true
 {{- else if and (ge $a 224) (le $a 239) -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- else if contains ":" (index $parts 0) -}}
+{{- $ip := lower (index $parts 0) -}}
+{{- if or (hasPrefix "fc" $ip) (hasPrefix "fd" $ip) (hasPrefix "ff" $ip) (hasPrefix "fe8" $ip) (hasPrefix "fe9" $ip) (hasPrefix "fea" $ip) (hasPrefix "feb" $ip) (eq $ip "::1") -}}
 true
 {{- else -}}
 false

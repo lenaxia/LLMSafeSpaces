@@ -960,14 +960,16 @@ networkPolicy:
     #     to /32s at reconcile time) and composes with this policy.
     #
     #     Entries in the groups must be PUBLIC CIDRs — guarded at
-    #     render time for well-formed dotted-quad input (a private
+    #     render time for well-formed input, IPv4 and IPv6 (a private
     #     entry fails helm template with an error naming the entry;
     #     Kubernetes rejects ipBlock except: entries that are not
     #     subnets of the cidr, so the shared blockedEgressCIDRs
-    #     subtraction cannot be attached here). Malformed spellings
-    #     pass the render but are rejected loudly at apply time by the
-    #     API server's ipBlock validation. For in-cluster destinations
-    #     use networkPolicy.extraEgressCIDRs.
+    #     subtraction cannot be attached here — and well-formed
+    #     IPv6-internal CIDRs are API-valid, so no apply-time backstop
+    #     exists for them). Malformed spellings pass the render but
+    #     are rejected loudly at apply time by the API server's
+    #     ipBlock validation. For in-cluster destinations use
+    #     networkPolicy.extraEgressCIDRs.
     mode: public
 
     allowlist:
