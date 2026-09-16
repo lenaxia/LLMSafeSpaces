@@ -128,6 +128,45 @@ Counters/histograms only emit a series after their first observation. On a healt
 
 ---
 
+## Canary alerts & loop liveness (Epic 71 / 0c-alerts)
+
+The #1312 production canary and the shared loop-liveness family (`pkg/obs`) got their alerting and dashboard layer in the 0c-alerts wave. What exists and what flips:
+
+### What is live right now (canary knob OFF)
+
+With `api.canary.enabled=false` (the default and current prod state) the API constructs no canary service, emits **zero** `llmsafespaces_canary_probe_*` series, and never stamps the `canary_probe` loop gauge. Every canary alert is **structurally silent on absent series** — no `absent()` arms exist on canary metrics — so the dark canary pages nobody. This is pinned per-alert in `helm/tests/alerts_promtool_test.yaml`.
+
+Two loop-liveness alerts are armed **regardless of the canary knob**, because their loops run unconditionally:
+
+| Alert | Loop | Sev | Meaning |
+|---|---|---|---|
+| `LLMSafeSpacesLoopParkedSweeperStale` | `outbox_parked_sweeper` (API, 60s cadence) | critical | Parked user-visible errors stop re-arming (S3-adjacent strand path silent). Includes the `absent()` arm: a fleet that never stamped is dead since boot. |
+| `LLMSafeSpacesLoopReconcileWatchdogStale` | `reconcile_watchdog` (agentd, 15s cadence) | critical | S5/S7 convergence and the L4/L5 lease bounds are dark for one pod. No `absent()` arm — agentd pods are ephemeral (suspend/resume); only a live-but-not-stamping pod pages. |
+
+### What flips when `api.canary.enabled=true`
+
+The API starts probing each configured class once per interval (GetSnapshot round-trip + resolve-by-absence Act; zero model spend). Four alert arms light up on the new series, plus the loop-liveness arm for the runner itself:
+
+| Alert | Sev | Trigger |
+|---|---|---|
+| `LLMSafeSpacesCanaryS6Violation` | critical, immediate | any `resolve/not_found_error` outcome in 10m — absence surfaced as an error instead of resolving (safety invariant; every occurrence is a bug) |
+| `LLMSafeSpacesCanaryProbeTimeouts` | warning, 10m hold | ≥3 `timeout` outcomes per class/leg in 10m — the wedge signal |
+| `LLMSafeSpacesCanaryResolveL2Burn` | warning, 15m hold | resolve-leg p99 > 2s (the L2 resolve bound) over 10m — burn-rate, not per-sample: the 15m hold exceeds the 10m window, so one slow probe structurally cannot fire |
+| `LLMSafeSpacesCanaryNoTarget` | info, 1h hold | a configured class records `no_target` every pass — the knob is on but the class asserts nothing (false coverage; point `classes` at a runtime environment with an Active workspace) |
+| `LLMSafeSpacesLoopCanaryProbeStale` | warning, 5m hold | the `canary_probe` gauge goes > 5m stale — the runner is wedged |
+
+### Threshold scaling
+
+- `LoopCanaryProbeStale` budget (5m) = 5× the default 60s `api.canary.interval` — scale it if you raise the interval. A pass is `classes × ~4s` worst-case sequential, so large class lists also warrant headroom.
+- `LoopParkedSweeperStale` (3m) = 3× `ParkedSweepInterval` (60s, code constant). `LoopReconcileWatchdogStale` (90s) = 6× `ReconcileCadence` (15s, code constant).
+- `CanaryResolveL2Burn` compares against the 2s L2 bound (#1312's budget table), which equals `DefaultTimeout`; a different `api.canary.timeout` changes what timeouts mean — keep them aligned.
+
+L3/L4 (convergence bounds) are **not** canary-measurable — synthetic probe ids never diverge, so there is no convergence to time. Their enforcement lives in the fault-matrix harness (`cmd/workspace-agentd/faultmatrix`); the token-spend probes that could assert L1/the real-ask path remain gated on the owner budget decision.
+
+The "Canary & Loop Liveness (Epic 71)" dashboard row (operational.json) carries the probe rate by class/leg/outcome, the S6 violation stat, the resolve-leg p50/p99 against the 2s budget, and the loop-liveness grid (seconds since last completed pass per loop/instance, red over 300s).
+
+---
+
 ## Future improvements (not blocking)
 
 - Helm hook for automatic stale-dashboard purge (declined for now — see "Why we don't auto-fix this" above)
