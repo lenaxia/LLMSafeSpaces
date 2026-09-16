@@ -181,6 +181,76 @@ func TestEnterRecovery_NoDoubleFire_OnClassSwitch(t *testing.T) {
 		"class switch mid-episode must not re-fire the counter for the new class")
 }
 
+// TestEnterRecovery_ClassSwitch_ConditionKeepsCrossingClass pins the
+// message-accuracy choice for a mid-episode class switch: the persisted
+// condition is the episode's original crossing — its message names the
+// class that crossed, not the latest failure's class, and no re-fire
+// happens (that's TestEnterRecovery_NoDoubleFire_OnClassSwitch).
+func TestEnterRecovery_ClassSwitch_ConditionKeepsCrossingClass(t *testing.T) {
+	ws := makeWorkspace("ws-exhaust-msg", "default", v1.WorkspacePhaseCreating)
+	seedExhaustedEpisode(ws, FailureClassProcess)
+	r := reconcilerFor(t, ws)
+
+	_, err := r.enterRecovery(context.Background(), ws, FailureClassProcess)
+	require.NoError(t, err)
+
+	// Mid-episode switch: the next failure classifies as Configuration.
+	_, err = r.enterRecovery(context.Background(), ws, FailureClassConfiguration)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
+	cond := recoveryExhaustedCondition(updated)
+	require.NotNil(t, cond)
+	assert.Contains(t, cond.Message, string(FailureClassProcess),
+		"condition message must name the class that crossed (the episode's crossing), not the latest failure's class")
+	assert.NotContains(t, cond.Message, string(FailureClassConfiguration),
+		"condition message must not claim the class that did not cross")
+}
+
+// TestEnterRecovery_ReExhaustionAfterClear_FiresAgain: exhaustion is an
+// episode property. After a full recovery-state reset (stability window,
+// restartGeneration, suspend), a NEW episode that crosses its threshold
+// must re-fire the condition, Event, and counter — once per episode,
+// including the second one.
+func TestEnterRecovery_ReExhaustionAfterClear_FiresAgain(t *testing.T) {
+	ws := makeWorkspace("ws-exhaust-again", "default", v1.WorkspacePhaseCreating)
+	seedExhaustedEpisode(ws, FailureClassProcess)
+	r := reconcilerFor(t, ws)
+	rec := record.NewFakeRecorder(8)
+	r.Recorder = rec
+
+	// Episode 1: crossing fires.
+	_, err := r.enterRecovery(context.Background(), ws, FailureClassProcess)
+	require.NoError(t, err)
+	require.True(t, hasEvent(eventsFrom(rec), v1.ReasonRecoveryExhausted))
+	afterFirst := exhaustedCounterValue(t, FailureClassProcess)
+
+	// Full recovery: stability window clears the counters + condition.
+	latest := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, latest))
+	stableAgo := metav1.NewTime(time.Now().Add(-3 * time.Minute))
+	latest.Status.LastStableAt = &stableAgo
+	require.NoError(t, r.Status().Update(context.Background(), latest))
+	maybeResetConsecutiveFailures(latest)
+	require.Nil(t, recoveryExhaustedCondition(latest), "precondition: episode 1 cleared")
+	require.NoError(t, r.Status().Update(context.Background(), latest))
+
+	// Episode 2: a fresh failure run crosses again — must re-fire.
+	latest.Status.ConsecutiveFailures = recoveryPolicies[FailureClassProcess].ExhaustionAfter - 1
+	require.NoError(t, r.Status().Update(context.Background(), latest))
+	_, err = r.enterRecovery(context.Background(), latest, FailureClassProcess)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
+	require.NotNil(t, recoveryExhaustedCondition(updated), "second episode's crossing must re-set the condition")
+	assert.Equal(t, float64(1), exhaustedCounterValue(t, FailureClassProcess)-afterFirst,
+		"second episode's crossing must increment the counter again (once per episode)")
+	assert.True(t, hasEvent(eventsFrom(rec), v1.ReasonRecoveryExhausted),
+		"second episode's crossing must emit the Event again")
+}
+
 func TestEnterRecovery_ExhaustionEvent_ReasonAndRemedy(t *testing.T) {
 	ws := makeWorkspace("ws-exhaust-event", "default", v1.WorkspacePhaseCreating)
 	seedExhaustedEpisode(ws, FailureClassConfiguration)

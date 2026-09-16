@@ -2428,6 +2428,19 @@ func TestMonitoring_DashboardConfigMap_ContainsJSON(t *testing.T) {
 	data, _ := cm["data"].(map[string]any)
 	require.Contains(t, data, "operational.json", "ConfigMap must contain operational.json")
 	require.Contains(t, data, "billing.json", "ConfigMap must contain billing.json")
+
+	// #760: the retired SafeMode/failed_total panels were repointed at
+	// recovery_exhausted_total — the retired metric names must stay gone.
+	for _, gone := range []string{
+		"llmsafespaces_workspace_safe_mode_active",
+		"llmsafespaces_workspaces_failed_total",
+	} {
+		for name, v := range data {
+			s, _ := v.(string)
+			require.NotContains(t, s, gone,
+				"dashboard %q must not query retired metric %q (#760)", name, gone)
+		}
+	}
 }
 
 // TestMonitoring_DashboardConfigMap_HasGrafanaLabel verifies the
@@ -2545,7 +2558,6 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesWorkspaceFailures",
 		"LLMSafeSpacesWorkspaceCreationSlow",
 		"LLMSafeSpacesRecoveryBackoffHigh",
-		"LLMSafeSpacesHighConsecutiveFailures",
 		"LLMSafeSpacesStatusUpdateConflicts",
 		"LLMSafeSpacesInitContainerSlow",
 		"LLMSafeSpacesAgentReloadFailures",
@@ -2596,6 +2608,29 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 	} {
 		require.False(t, alertNames[gone],
 			"retired tracker alert %q must not render (tracker deleted, US-69.11)", gone)
+	}
+
+	// #760: the retired SafeMode alert and the writerless
+	// HighConsecutiveFailures alert (queried a metric with no producer)
+	// must stay gone. Successor: LLMSafeSpacesWorkspaceFailures on the
+	// recovery_exhausted_total counter.
+	require.False(t, alertNames["LLMSafeSpacesSafeModeActive"],
+		"retired SafeMode gauge alert must not render (SafeMode deleted, #760)")
+	require.False(t, alertNames["LLMSafeSpacesHighConsecutiveFailures"],
+		"writerless consecutive_failures_max alert must not render (deleted with #760; metric never had a producer)")
+
+	// #760: the retired metric names must not reappear in any rule expr.
+	rendered, err := yaml.Marshal(rule)
+	require.NoError(t, err)
+	for _, gone := range []string{
+		"llmsafespaces_workspace_safe_mode_active",
+		"llmsafespaces_workspace_safe_mode_entries_total",
+		"llmsafespaces_workspace_safe_mode_exits_total",
+		"llmsafespaces_workspaces_failed_total",
+		"llmsafespaces_workspace_consecutive_failures_max",
+	} {
+		require.NotContains(t, string(rendered), gone,
+			"retired metric %q must not appear in any PrometheusRule (#760)", gone)
 	}
 }
 

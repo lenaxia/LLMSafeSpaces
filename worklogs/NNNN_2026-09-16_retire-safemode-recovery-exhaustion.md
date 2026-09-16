@@ -150,6 +150,34 @@ server + the shipped CRD schema.
 
 ---
 
+## Review Round 1 (AI reviewer, CHANGES_REQUESTED → addressed)
+
+All three findings validated REAL (independently re-verified before fixing):
+
+1. **Must-stay-gone pins** — the repo's chart_test convention (retired
+   alerts `require.False`d) wasn't applied to `LLMSafeSpacesSafeModeActive`.
+   Added: absence pins for that alert and for the five retired metric names
+   in the rendered PrometheusRule + dashboard ConfigMap data.
+2. **Writerless alert** — `LLMSafeSpacesHighConsecutiveFailures` queried
+   `llmsafespaces_workspace_consecutive_failures_max`, which has no producer
+   anywhere in the tree (dead since introduction; the "Next Steps" note in
+   the first commit deferred it — the reviewer correctly refused the deferral
+   for a file this PR edits). Deleted the alert with a supersession comment;
+   its intent is served by the exhaustion counter. Chart test pins its
+   absence.
+3. **Stale story contracts** — epic-24 story docs still prescribed SafeMode
+   entry as live contract. Added #760 supersession/amendment notes to the
+   epic README, US-24.7 (AC 3), US-24.13, and TESTPLAN.md.
+
+Missing test cases from the review, added:
+
+- `TestEnterRecovery_ReExhaustionAfterClear_FiresAgain` — episode semantics:
+  after a full clear, a second crossing re-fires condition + Event + counter.
+- `TestEnterRecovery_ClassSwitch_ConditionKeepsCrossingClass` — the persisted
+  condition message names the class that crossed, not the latest failure's.
+
+---
+
 ## Blockers
 
 None.
@@ -179,7 +207,6 @@ None.
 ## Next Steps
 
 - AI review loop on the PR; address validated findings with regression tests.
-- Successor metric note: `llmsafespaces_workspace_consecutive_failures_max`
-  (queried by `LLMSafeSpacesHighConsecutiveFailures`) has no writer anywhere
-  in the tree — pre-existing dormant query, out of #760 scope, worth its own
-  issue.
+- Successor issue candidates noted during review: FailedMount container-reason
+  classification (still falls to Process — descoped by the owner reframe);
+  these are recorded in the PR thread, not blocking #760.
