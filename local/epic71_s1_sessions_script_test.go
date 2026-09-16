@@ -53,12 +53,17 @@ func TestEpic71S1Script_RowPins(t *testing.T) {
 	if !strings.Contains(src, "agent_get_session_code") || !strings.Contains(src, `.title`) {
 		t.Fatalf("s1 script must assert delete/rename outcomes agent-side")
 	}
-	// The unhappy rows pin the byte-exact 502 bodies (the wire contract
-	// does not move — only the write path).
-	for _, pinned := range []string{"failed to send message", "failed to abort session", "failed to delete session"} {
-		if !strings.Contains(src, pinned) {
-			t.Fatalf("s1 script must pin the 502 body %q", pinned)
-		}
+	// The unhappy rows pin the definitive-failure 502 codes with raw-body
+	// diagnostics, and the abort no-op's 204 (harness parity — the V1
+	// abort route 200s unknown sessions, so flag-off answers 204 for the
+	// same bytes).
+	if !strings.Contains(src, `"${S1E_SEND}" == "502"`) || !strings.Contains(src, `"${S1E_ABORT}" == "204"`) {
+		t.Fatalf("s1 script must pin the dead-session codes (send/delete 502, abort 204)")
+	}
+	// S1b's settle row must assert the not-wedged property via the
+	// platform's own session read (never the raw harness shape).
+	if !strings.Contains(src, "wedged") || !strings.Contains(src, ".status // empty") {
+		t.Fatalf("s1 script must assert the post-abort settle as not-wedged via the platform session read")
 	}
 	// The happy send row asserts the round-tripped contract message, not
 	// just a status code.
