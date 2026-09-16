@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-09-16
+
+### Features — agentd automation tools (trigger_* / workflow_*)
+
+- **Automation CRUD + debugging over pod identity** (PR #1402, 2 review
+  rounds): eleven MCP tools on `/v1/mcp` — `trigger_list/create/update/
+  delete/fires` and `workflow_list/create/update/delete/run/runs` —
+  backed by `/internal/v1/automation` (13 routes) and a contained
+  opencode seam. The surface authenticates the pod (TokenReview → SA
+  principal → namespace+workspace match), resolves the owner
+  server-side, and delegates to the EXISTING user handlers — auth +
+  scoping only, zero duplicated domain logic. Trigger-create forces the
+  routine target to this pod's workspace (a pod cannot schedule work
+  into other workspaces). Bodies pass through verbatim (schema-decoupled:
+  platform schema evolution needs zero agentd changes; agents learn
+  shapes from live `*_list` output, and platform validation errors
+  surface verbatim); patches carry caller fields only (id rides the
+  URL, workspaceID the query); IDs are UUID-validated before any dial.
+  `trigger_fires` (per-fire status, input envelope, error payloads) +
+  `workflow_runs` (statuses, error codes) are the debugging reads;
+  `workflow_run` is the manual fire button. The first review round
+  caught three body-path defects (drained-body replay, query-clobber in
+  the resolver guard, un-unwrapped tool wrapper keys) — all fixed with
+  delegated-handler integration coverage against the REAL handlers,
+  plus an exact-key workspaceID sniff (case-insensitive JSON folding
+  could otherwise mix the DTO spelling into the identity check).
+
 ## [0.31.0] - 2026-09-16
 
 ### Features — cross-session management + user timezone
