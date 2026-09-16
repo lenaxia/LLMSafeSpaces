@@ -44,6 +44,7 @@ type fakeAgent struct {
 	deleted      []string
 	aborted      []string
 	msgArrived   map[string][]map[string]any
+	msgDone      map[string]int // POST completions (deliveries AND refusals) — joins detached goroutines
 	abortDropped map[string]bool
 	sentBodies   map[string][]map[string]any // id -> decoded message bodies
 	summaries    map[string]map[string]string
@@ -67,6 +68,7 @@ func newFakeAgent() *fakeAgent {
 		summaries:    map[string]map[string]string{},
 		busySet:      map[string]bool{},
 		msgArrived:   map[string][]map[string]any{},
+		msgDone:      map[string]int{},
 		abortDropped: map[string]bool{},
 		models:       map[string]string{},
 		catalogImage: map[string]bool{"p/vision": true, "p/text": false},
@@ -151,9 +153,11 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 				}
 				if dropped || f.busySet[id] {
 					w.WriteHeader(http.StatusConflict)
+					f.msgDone[id]++
 					return
 				}
 				f.sentBodies[id] = append(f.sentBodies[id], body)
+				f.msgDone[id]++
 				if m, ok := body["model"].(map[string]any); ok {
 					if pid, ok := m["providerID"].(string); ok {
 						if mid, ok := m["modelID"].(string); ok {
@@ -236,6 +240,20 @@ func splitSessionPath(path string) (id, action string) {
 		return rest[:i], rest[i:]
 	}
 	return rest, ""
+}
+
+// awaitMsgDone blocks until n /message POSTs have COMPLETED (delivered
+// or refused) for the session — the join point for mcpSendMessage's
+// detached goroutine, so no goroutine outlives the test (the package
+// swaps the global log between tests; a live goroutine logging after
+// test end is the cross-test race).
+func (f *fakeAgent) awaitMsgDone(t *testing.T, id string, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.msgDone[id] >= n
+	}, 7*time.Second, 25*time.Millisecond, "detached delivery goroutine must complete before test end")
 }
 
 func (f *fakeAgent) sentFor(id string) []map[string]any {
@@ -1126,6 +1144,7 @@ func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(f.sentFor(s1)) == 1
 	}, 7*time.Second, 50*time.Millisecond, "delivery lands once the turn ends (boundary)")
+	f.awaitMsgDone(t, s1, 1)
 	parts := f.sentFor(s1)[0]["parts"].([]any)
 	assert.Equal(t, "next: run the tests", parts[0].(map[string]any)["text"])
 }
@@ -1181,6 +1200,7 @@ func TestMCPHandler_SendMessageFullStack(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(f.sentFor(s1)) == 1
 	}, 7*time.Second, 50*time.Millisecond)
+	f.awaitMsgDone(t, s1, 1)
 	parts := f.sentFor(s1)[0]["parts"].([]any)
 	assert.Equal(t, "pivot to the fallback design", parts[0].(map[string]any)["text"])
 }
@@ -1252,6 +1272,8 @@ func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
 	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please")
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
+	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 7*time.Second, 25*time.Millisecond)
+	f.awaitMsgDone(t, s1, 1)
 }
 
 // The tools' one interaction: a message queued mid-turn is DROPPED when
@@ -1277,6 +1299,7 @@ func TestMCPSendMessage_AbortDropsQueued(t *testing.T) {
 
 	require.Never(t, func() bool { return len(f.sentFor(s1)) > 0 }, 500*time.Millisecond, 50*time.Millisecond,
 		"the queued message must NOT deliver after abort — it was dropped")
+	f.awaitMsgDone(t, s1, 1) // the refusal completed the goroutine
 }
 
 // compact with omitted session_id resolves the single running session;
@@ -1296,4 +1319,6 @@ func TestMCPCompact_OmittedID_ResolvesRetryingSession(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "scheduled", "retrying target takes the busy path (detached summarize)")
 	assert.Contains(t, out, s1)
+	require.Eventually(t, func() bool { return f.lastSummary(s1) != nil }, 7*time.Second, 25*time.Millisecond,
+		"the detached summarize goroutine must complete before test end")
 }

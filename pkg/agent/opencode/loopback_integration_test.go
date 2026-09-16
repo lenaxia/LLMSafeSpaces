@@ -450,7 +450,6 @@ func TestLoopbackL2_BusyMessageDeliversAtBoundary(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(body, &msgs))
 	userTurns, assistantTurns := 0, 0
-	sawQueued := false
 	for _, m := range msgs {
 		switch m.Info.Role {
 		case "user":
@@ -459,7 +458,7 @@ func TestLoopbackL2_BusyMessageDeliversAtBoundary(t *testing.T) {
 			assistantTurns++
 		}
 	}
-	sawQueued = strings.Contains(string(body), "queued message: reply QUEUED-OK")
+	sawQueued := strings.Contains(string(body), "queued message: reply QUEUED-OK")
 	assert.Equal(t, 2, userTurns, "two user turns: the original + the queued message")
 	assert.Equal(t, 2, assistantTurns, "the queued message was ANSWERED as its own turn")
 	assert.True(t, sawQueued, "the queued message must be persisted as the next user turn")
