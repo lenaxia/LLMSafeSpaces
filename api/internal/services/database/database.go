@@ -731,7 +731,7 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
 	if total == 0 {
 		return []*types.WorkspaceMetadata{}, pagination, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `
+	listQuery := /* #nosec G202 -- membershipCondition is a package-internal constant, never user input */ `
         SELECT w.id, w.user_id, w.name, w.runtime, w.storage_size, w.image_tag, w.agent_version, w.created_at, w.updated_at,
                COALESCE(w.default_model, '') AS default_model,
                COALESCE(s.pending_refresh, FALSE) AS agent_needs_refresh,
@@ -739,10 +739,11 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
                w.org_id
         FROM workspaces w
         LEFT JOIN workspace_agent_state s ON s.workspace_id = w.id
-        WHERE w.deleted_at IS NULL AND w.user_id = $1`+membershipCondition+`
+        WHERE w.deleted_at IS NULL AND w.user_id = $1` + membershipCondition + `
         ORDER BY w.created_at DESC
         LIMIT $2 OFFSET $3
-    `, userID, limit, offset)
+    `
+	rows, err := s.DB.QueryContext(ctx, listQuery, userID, limit, offset)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list workspaces: %w", err)
 	}

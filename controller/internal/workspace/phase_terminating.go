@@ -65,6 +65,7 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 	r.lastDeepStatusMu.Lock()
 	delete(r.lastDeepStatus, workspace.Name)
 	r.lastDeepStatusMu.Unlock()
+	r.clearDrainState(drainKey(workspace))
 	workspace.Status.PodName = ""
 	workspace.Status.PodIP = ""
 	workspace.Status.Endpoint = ""
