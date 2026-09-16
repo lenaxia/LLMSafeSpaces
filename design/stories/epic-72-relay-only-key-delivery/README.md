@@ -261,11 +261,14 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
   pass the staging reconcile re-gets `llm-relay-hpke-pub` and compares its
   `generation` against the last-sealed generation (persisted with the staging
   state) — changed → re-seal every envelope; unchanged while `CredentialStale`
-  persists **and the staleness is resolve-failure-class under an intact
-  lineage** (envelope Secrets present, batch applying the staged revision) →
-  rotate escalation, anti-storm-bounded (≥10m floor); **never** for
-  revocation-class (envelope deleted — D2 terminal state) or delivery-class
-  (batch not applying) staleness.
+  persists **and the staleness is corruption/wrong-pub-class** (the one cause
+  rotation repairs) **under an intact spawn-layer lineage** (envelope Secrets
+  present AND the child spawned with the staged revision — the `spawned_rev`
+  terminal signal, not the batch-apply anchor, so the #852 deferral window
+  never escalates) → rotate escalation, anti-storm-bounded (≥10m floor);
+  **never** for revocation-class (envelope deleted — D2 terminal state),
+  delivery-class (batch not applying OR #852-deferred restart), or
+  token-expiry-class (renewal owns it) staleness.
 - **Seal-time generation validation (design §4.2):** the pub payload's
   `generation` is validated against the rotate response before any envelope
   is sealed against it (shape-invalid pub bytes fail parsing outright).
