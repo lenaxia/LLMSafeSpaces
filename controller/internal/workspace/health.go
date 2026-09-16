@@ -114,7 +114,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		ws.Status.SecretsDelivery = nil
 		// Same evidence rule for the deferred-apply surface (#1342): a
 		// dead pod's deferral state is unknown, not pending.
-		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
+		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, err.Error())
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -133,7 +133,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		// Response undecodable: same reasoning as unreachable — we
 		// can't trust any prior value, clear to nil.
 		ws.Status.SecretsDelivery = nil
-		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
+		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
 		return
@@ -143,7 +143,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		ws.Status.ConsecutiveHealthFailures++
 		// Agent reports unhealthy: don't trust its delivery signal.
 		ws.Status.SecretsDelivery = nil
-		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
+		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
 			v1.ReasonAgentUnhealthy, "agent process not responding")
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -185,7 +185,7 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 			fmt.Sprintf("credential change deferred behind %d busy session(s) for %ds (applies on idle or stalled-session interrupt)",
 				healthResp.PendingApply.BusySessions, healthResp.PendingApply.WaitingSeconds))
 	} else {
-		r.removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
+		removeCondition(ws, v1.WorkspaceConditionCredentialsApplyPending)
 	}
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
 		v1.ReasonAgentHealthy, appendAgentWarnings(
@@ -206,18 +206,10 @@ func appendAgentWarnings(msg string, warnings []string) string {
 	return msg + "; warnings: " + strings.Join(warnings, "; ")
 }
 
-// controllerRestartSafeModeThreshold is the ControllerRestartCount above
-// which the workspace enters SafeMode without a stability window between
-// restarts (US-24.7 AC 3 / US-24.13 entry trigger 2 — the A13 fix for
-// persistent unreachability). ControllerRestartCount is reset to 0 on
-// stability (maybeResetConsecutiveFailures) and on restartGeneration bump,
-// so exceeding this threshold implies relentless health-check cycling.
-const controllerRestartSafeModeThreshold = 5
-
 // restartAgentPod performs the controller-initiated pod restart shared by
 // the unreachable and unhealthy health-check paths: deletes the pod,
-// decrements WorkspacesRunning, transitions to Creating, bumps the restart
-// counters, and evaluates the persistent-unreachability SafeMode trigger.
+// decrements WorkspacesRunning, transitions to Creating, and bumps the
+// restart counters.
 func (r *WorkspaceReconciler) restartAgentPod(ctx context.Context, ws *v1.Workspace) {
 	r.deletePodByName(ctx, podName(ws.Name, string(ws.UID)), ws.Namespace)
 	metrics.WorkspacesRunning.WithLabelValues(ws.Spec.Runtime, string(ws.Spec.SecurityLevel)).Dec()
@@ -228,25 +220,6 @@ func (r *WorkspaceReconciler) restartAgentPod(ctx context.Context, ws *v1.Worksp
 	ws.Status.ControllerRestartCount++
 	metrics.WorkspaceControllerRestartsTotal.Inc()
 	ws.Status.ConsecutiveHealthFailures = 0
-	r.maybeEnterSafeModeFromRestarts(ctx, ws)
-}
-
-// maybeEnterSafeModeFromRestarts trips SafeMode when ControllerRestartCount
-// exceeds the persistent-unreachability threshold. Idempotent: no-op when
-// already in SafeMode. Emitted metrics use the "controller_restart" trigger
-// label so operators can distinguish this entry from recovery-exhaustion
-// (ConsecutiveFailures) entries labeled by failure class.
-func (r *WorkspaceReconciler) maybeEnterSafeModeFromRestarts(ctx context.Context, ws *v1.Workspace) {
-	if ws.Status.SafeMode || ws.Status.ControllerRestartCount <= controllerRestartSafeModeThreshold {
-		return
-	}
-	ws.Status.SafeMode = true
-	r.setCondition(ws, v1.WorkspaceConditionType("SafeMode"), "True", "PersistentUnreachability",
-		fmt.Sprintf("Entering safe mode after %d controller-initiated restarts", ws.Status.ControllerRestartCount))
-	log.FromContext(ctx).Info("Entering safe mode (controller restart threshold)",
-		"controllerRestartCount", ws.Status.ControllerRestartCount)
-	metrics.WorkspaceSafeModeActive.Inc()
-	metrics.WorkspaceSafeModeEntriesTotal.WithLabelValues("controller_restart").Inc()
 }
 
 // maybeEnrichAgentStatus calls enrichAgentStatus at most once per
@@ -403,7 +376,7 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 					fmt.Sprintf("disk %.0f%% full (%d/%d bytes)",
 						ratio*100, status.Disk.UsedBytes, status.Disk.TotalBytes))
 			} else {
-				r.removeCondition(ws, v1.WorkspaceConditionDiskPressure)
+				removeCondition(ws, v1.WorkspaceConditionDiskPressure)
 			}
 		}
 	}
@@ -428,7 +401,7 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 			v1.ReasonMemoryPressure,
 			fmt.Sprintf("memory usage high (%.0f%%). Consider reducing concurrent sessions or increasing workspace memory limit.", usedPct))
 	} else {
-		r.removeCondition(ws, v1.WorkspaceConditionMemoryPressure)
+		removeCondition(ws, v1.WorkspaceConditionMemoryPressure)
 	}
 	if status.CPU != nil && status.CPU.UsageMicros > 0 {
 		if ws.Status.CpuUsageMicros > 0 && status.CPU.UsageMicros >= ws.Status.CpuUsageMicros {
@@ -466,7 +439,7 @@ func ptrQuantity(s string) *resource.Quantity {
 	return &q
 }
 
-func (r *WorkspaceReconciler) removeCondition(ws *v1.Workspace, condType v1.WorkspaceConditionType) {
+func removeCondition(ws *v1.Workspace, condType v1.WorkspaceConditionType) {
 	filtered := ws.Status.Conditions[:0]
 	for _, c := range ws.Status.Conditions {
 		if c.Type != condType {

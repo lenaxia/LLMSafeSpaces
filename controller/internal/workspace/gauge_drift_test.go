@@ -292,19 +292,6 @@ func TestGaugeDrift_Failed_SelfHealToActive_Increments(t *testing.T) {
 	assert.Equal(t, 1.0, delta, "WorkspacesRunning must increment by 1 when Failed self-heals to Active")
 }
 
-func TestSafeModeActive_IsAggregateGauge(t *testing.T) {
-	// US-24.11: WorkspaceSafeModeActive is a plain Gauge (no workspace_id label)
-	// per F18 cardinality finding. Two Inc calls → value 2.
-	ctrMetrics.WorkspaceSafeModeActive.Set(0)
-	ctrMetrics.WorkspaceSafeModeActive.Inc()
-	ctrMetrics.WorkspaceSafeModeActive.Inc()
-
-	v := readPlainGaugeValue(t, ctrMetrics.WorkspaceSafeModeActive)
-	assert.Equal(t, 2.0, v, "aggregate safe mode gauge must count total entries")
-
-	ctrMetrics.WorkspaceSafeModeActive.Set(0) // cleanup
-}
-
 func TestCreatingActiveCycle_MultiReconcile_NoGaugeDrift(t *testing.T) {
 	scheme := testScheme(t)
 	ws := makeWorkspace("ws-cycle", "default", v1.WorkspacePhaseCreating)
@@ -427,41 +414,4 @@ func TestReconcile_RecoverySuccess_DecrementsInRecoveryGauge(t *testing.T) {
 
 	assert.Equal(t, 0.0, readPlainGaugeValue(t, ctrMetrics.WorkspacesInRecovery),
 		"WorkspacesInRecovery must Dec to 0 after recovery success")
-}
-
-func TestReconcile_SafeModeClearOnRestartGen_DecrementsGauge(t *testing.T) {
-	ws := makeWorkspace("ws-sm-clear", "default", v1.WorkspacePhaseCreating)
-	ws.UID = "ws-sm-clear-uid"
-	ws.Status.PVCName = "workspace-ws-sm-clear"
-	ws.Status.SafeMode = true
-	ws.Spec.RestartGeneration = 2
-	ws.Status.ObservedRestartGeneration = 1
-
-	r := reconcilerFor(t, ws)
-
-	ctrMetrics.WorkspaceSafeModeActive.Set(1)
-
-	_, err := r.Reconcile(context.Background(), reqFor("ws-sm-clear", "default"))
-	require.NoError(t, err)
-
-	assert.Equal(t, 0.0, readPlainGaugeValue(t, ctrMetrics.WorkspaceSafeModeActive),
-		"WorkspaceSafeModeActive must Dec when SafeMode cleared by restartGeneration bump")
-}
-
-func TestReconcile_Terminating_SafeModeWorkspace_DecrementsGauge(t *testing.T) {
-	ws := makeWorkspace("ws-sm-term", "default", v1.WorkspacePhaseTerminating)
-	ws.Finalizers = []string{WorkspaceFinalizer}
-	ws.Status.PVCName = "workspace-ws-sm-term"
-	ws.Status.SafeMode = true
-
-	pvc := makeBoundPVC("workspace-ws-sm-term", "default", ws.UID)
-	r := reconcilerFor(t, ws, pvc)
-
-	ctrMetrics.WorkspaceSafeModeActive.Set(1)
-
-	_, err := r.Reconcile(context.Background(), reqFor("ws-sm-term", "default"))
-	require.NoError(t, err)
-
-	assert.Equal(t, 0.0, readPlainGaugeValue(t, ctrMetrics.WorkspaceSafeModeActive),
-		"WorkspaceSafeModeActive must Dec when a SafeMode workspace terminates")
 }

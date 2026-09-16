@@ -96,11 +96,6 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 		metrics.WorkspacesRunning.WithLabelValues(runtime, secLevel).Dec()
 	}
 
-	if workspace.Status.SafeMode {
-		metrics.WorkspaceSafeModeActive.Dec()
-		metrics.WorkspaceSafeModeExitsTotal.WithLabelValues("termination").Inc()
-	}
-
 	common.RemoveFinalizer(workspace, WorkspaceFinalizer)
 	return ctrl.Result{}, r.Update(ctx, workspace)
 }

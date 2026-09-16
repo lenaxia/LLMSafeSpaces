@@ -2545,7 +2545,6 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesWorkspaceFailures",
 		"LLMSafeSpacesWorkspaceCreationSlow",
 		"LLMSafeSpacesRecoveryBackoffHigh",
-		"LLMSafeSpacesSafeModeActive",
 		"LLMSafeSpacesHighConsecutiveFailures",
 		"LLMSafeSpacesStatusUpdateConflicts",
 		"LLMSafeSpacesInitContainerSlow",

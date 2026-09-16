@@ -539,18 +539,23 @@ spec:
               Reconciliation errors are occurring at {{ `{{ $value | humanize }}` }}/s.
               Check controller logs for error_type breakdown.
 
+        # #760: replaces LLMSafeSpacesWorkspaceFailures, which queried the
+        # retired llmsafespaces_workspaces_failed_total — a counter whose
+        # only writer was SafeMode entry (worklog 0377 H7), i.e. it
+        # already measured recovery exhaustion, mislabeled. The new
+        # counter is the same signal under its honest name.
         - alert: LLMSafeSpacesWorkspaceFailures
           expr: |
-            sum(increase(llmsafespaces_workspaces_failed_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
+            sum(increase(llmsafespaces_workspace_recovery_exhausted_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
           for: 1m
           labels:
             severity: warning
             component: controller
           annotations:
-            summary: "LLMSafeSpaces workspaces entering Failed state"
+            summary: "LLMSafeSpaces recovery exhausted"
             description: >-
-              {{ `{{ $value }}` }} workspaces entered Failed state in the last hour.
-              Check reason label for root cause.
+              {{ `{{ $value }}` }} recovery episode(s) crossed their exhaustion threshold in the last hour.
+              Check failure_class label for root cause; suspend the workspace (spec.suspend=true) to halt the loop.
 
         - alert: LLMSafeSpacesWorkspaceCreationSlow
           expr: |
@@ -581,19 +586,6 @@ spec:
             description: >-
               Recovery backoff p99 is {{ `{{ $value | humanizeDuration }}` }}. Workspaces
               are taking a long time to recover from failures.
-
-        - alert: LLMSafeSpacesSafeModeActive
-          expr: |
-            llmsafespaces_workspace_safe_mode_active{job=~"{{ $ctrlJob }}"} > 0
-          for: 5m
-          labels:
-            severity: warning
-            component: controller
-          annotations:
-            summary: "LLMSafeSpaces safe mode is active"
-            description: >-
-              {{ `{{ $value }}` }} workspace(s) are currently in safe mode. This indicates
-              repeated failures triggering the safety threshold.
 
         - alert: LLMSafeSpacesHighConsecutiveFailures
           expr: |
