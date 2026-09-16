@@ -17,7 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
-| opencode (epic-71 / 0c-alerts) | #1312 alerts wave: canary S/L alert rules + loop-liveness consumers + dashboard panels + promtool scenarios | `helm/templates/prometheus-rules.yaml`, `helm/tests/alerts_promtool_test.yaml`, `helm/promtool_rules_test.go`, `helm/dashboards/operational.json`, `helm/chart_test.go` (alert-inventory/dashboard pins only), `helm/values.yaml` (canary comment), `helm/MONITORING-OPERATIONAL.md` | In Progress | 2026-09-15 |
+| opencode (epic-71 / 0c-alerts) | #1312 alerts wave: canary S/L alert rules + loop-liveness consumers + dashboard panels + promtool scenarios | `helm/templates/prometheus-rules.yaml`, `helm/tests/alerts_promtool_test.yaml`, `helm/dashboards/operational.json`, `helm/chart_test.go` (alert-inventory/dashboard pins only), `helm/values.yaml` (canary comment), `helm/MONITORING-OPERATIONAL.md` | In Progress | 2026-09-15 |
 | opencode (g13) | G13 — account lockout IP+email keying | `api/internal/services/auth/auth.go`, `api/internal/server/router.go`, `api/internal/services/auth/*_test.go` | In Progress | 2026-07-12 |
 | opencode (g-batch) | Code-fixable batch: G6/G41, G21, G42, G44, G46, G47 | `api/internal/server/router.go`, `controller/internal/workspace/pod_builder.go`, `api/internal/handlers/stream_user_events.go`, `cmd/workspace-agentd/main.go`, `helm/templates/controller-deployment.yaml` (+ tests) | In Progress | 2026-07-11 |
 | opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |

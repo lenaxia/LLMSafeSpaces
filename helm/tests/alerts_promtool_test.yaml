@@ -716,3 +716,85 @@ tests:
       - eval_time: 6m
         alertname: LLMSafeSpacesLoopReconcileWatchdogStale
         exp_alerts: []
+
+  # ── r1 review additions (mutation-confirmed gaps): anti-masking,
+  #    any-leg, and the L2Burn dark row ────────────────────────────────
+
+  # Canary loop stale on ONE replica while its sibling stays healthy:
+  # only the frozen instance fires — the per-instance anti-masking
+  # guarantee (a `min by`/fleet-level rewrite must fail this row).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",instance="10.42.1.1:8080",loop="canary_probe"}'
+        values: '0+60x30'
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",instance="10.42.1.2:8080",loop="canary_probe"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesLoopCanaryProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+              job: test-release-llmsafespaces-api
+              instance: 10.42.1.2:8080
+              loop: canary_probe
+            exp_annotations:
+              summary: "Canary probe loop stale (12m 0s since last pass)"
+              description: 'The canary_probe loop has not completed a pass in 12m 0s (budget 5m = 5x the default 60s interval — scale with LLMSAFESPACES_CANARY_INTERVAL). The probe runner is wedged or the API replica lost its ticker; canary coverage is dark until it recovers.'
+
+  # Parked sweeper stale on ONE replica while its sibling stays healthy:
+  # only the frozen instance fires with its labels (same anti-masking
+  # pin; the absent() arm is inactive while a sibling stamps).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",instance="10.42.1.1:8080",loop="outbox_parked_sweeper"}'
+        values: '0+60x30'
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",instance="10.42.1.2:8080",loop="outbox_parked_sweeper"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesLoopParkedSweeperStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              job: test-release-llmsafespaces-api
+              instance: 10.42.1.2:8080
+              loop: outbox_parked_sweeper
+            exp_annotations:
+              summary: "Outbox parked-error sweeper loop stale or absent"
+              description: 'The outbox_parked_sweeper loop has not completed a pass in over 3m (3x the 60s ParkedSweepInterval) — or never stamped at all (dead since boot; the absent arm). Parked user-visible errors will not re-arm or resolve until the API outbox Run loop recovers.'
+
+  # Wedge on the SNAPSHOT leg (GetSnapshot hang → snapshot/timeout):
+  # must fire — the alert is any-leg by design; a `leg="resolve"`
+  # restriction must fail this row.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="node:22",leg="snapshot",outcome="timeout"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMSafeSpacesCanaryProbeTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+              class: node:22
+              leg: snapshot
+            exp_annotations:
+              summary: "Canary probe timeouts sustained (class node:22, snapshot leg)"
+              description: 'The canary recorded 3+ timeout outcomes in the last 10m (class node:22, snapshot leg) — the wedge signal: probe attempts repeatedly exceeded the 2s per-leg budget. Check the class''s target pod for a hung agent/harness; correlate with the seq-stall and watchdog alerts.'
+
+  # DARK canary for the L2 burn: outcome series flowing (probes skipped
+  # pre-observation — the real no_target shape) but ZERO duration
+  # buckets → histogram_quantile has nothing to interpolate → must NOT
+  # fire. Catches an added absent() arm (would page the knob-off fleet).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="no_target"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMSafeSpacesCanaryResolveL2Burn
+        exp_alerts: []

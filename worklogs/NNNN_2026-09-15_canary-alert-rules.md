@@ -100,3 +100,20 @@ None. Local env: promtool 3.4.1 + helm 3.22 installed to `/tmp/opencode/bin` (he
 - `helm/MONITORING-OPERATIONAL.md` (new section)
 - `COORDINATE.md` (claim row)
 - `worklogs/NNNN_2026-09-15_canary-alert-rules.md` (new)
+
+---
+
+## Review round 1 (CHANGES_REQUESTED) — corrections
+
+Three findings, all mutation-confirmed test gaps against the PR's own stated invariants; fixed as scenario additions, each proven red against its mutant BEFORE being trusted green:
+
+1. **Per-instance anti-masking unpinned for both API loop alerts** → added two-instance scenarios (healthy sibling + frozen instance) for `LoopCanaryProbeStale` and `LoopParkedSweeperStale`. Mutation drills: `min by (job, loop)` fleet-masking on each expr → both rows FAIL (observed), restored.
+2. **Any-leg semantics unpinned for `CanaryProbeTimeouts`** → added a sustained `snapshot/timeout` firing row (class node:22). Mutation drill: adding `leg="resolve"` to the matcher → row FAILS (observed), restored.
+3. **No dark row for `CanaryResolveL2Burn`** → added the zero-buckets scenario with outcome series flowing (the real `no_target` shape — probes skipped before duration observation). Mutation drill: adding an `absent()` arm on the bucket selector → row FAILS (observed), restored.
+
+Non-blocking corrections also taken:
+
+- Sweeper comment overstatement fixed: the loop is wired wherever the Redis-backed cache service is active (`app.go` `SetOutbox` sits inside the `*cache.Service` assertion); the InMemoryStore dev fallback never wires the outbox and would trip the absent arm — dev-only false page, disclosed in the comment (verified at app.go:274-299).
+- `CanaryProbeTimeouts` comment reworded: the blip-proofness claim now states the per-replica nuance (≥3 replicas, one fleet-wide bad pass reaches 3 — correct paging there).
+- Count corrections (this worklog + PR body): the file goes **34 → 41 alerts** (api +6, agentd +1), not "24 → 31" — the assessment's "24 rules" figure undercounted the pre-existing set (14 api + 10 controller + 7 agentd + 3 billing = 34, verified by `grep -c "alert: LLMSafeSpaces"` on origin/main).
+- COORDINATE.md claim no longer lists `helm/promtool_rules_test.go` (the runner needed no change — r1 nit).
