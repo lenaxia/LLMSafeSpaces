@@ -7,6 +7,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/lenaxia/llmsafespaces/controller/internal/common"
 	"github.com/lenaxia/llmsafespaces/controller/internal/metrics"
@@ -27,13 +28,24 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 	// Delete pod.
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
-	// Delete PVC.
+	// Delete PVC — best-effort (#772). The PVC carries a controller owner
+	// reference to the Workspace (SetControllerReference in handlePending),
+	// so Kubernetes GC deletes it once the Workspace object is removed.
+	// Propagating a persistent delete error (RBAC denial, or a PVC whose
+	// own CSI finalizer returns conflicts on every attempt — the Longhorn
+	// node-loss case) used to wedge the workspace in Terminating forever:
+	// the early return meant the finalizer below was never removed. On
+	// error we surface the delegated cleanup (warning log + Event +
+	// metric) and continue — the finalizer removal unblocks GC, which owns
+	// the residual. A PVC with a stuck finalizer still blocks PHYSICAL
+	// volume reclaim until that finalizer clears; the Event makes that
+	// residual explicit. NotFound stays silent (already gone = done).
 	if workspace.Status.PVCName != "" {
 		pvc := &corev1.PersistentVolumeClaim{}
 		pvc.Name = workspace.Status.PVCName
 		pvc.Namespace = workspace.Namespace
 		if err := r.Delete(ctx, pvc); err != nil && !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
+			r.reportPVCCleanupDelegated(ctx, workspace, err)
 		}
 	}
 
@@ -100,6 +112,24 @@ func (r *WorkspaceReconciler) handleDeletion(ctx context.Context, workspace *v1.
 	// Reuse terminating logic.
 	workspace.Status.Phase = v1.WorkspacePhaseTerminating
 	return r.handleTerminating(ctx, workspace)
+}
+
+// reportPVCCleanupDelegated surfaces a failed explicit PVC delete during
+// termination (#772). The workspace still finalizes — the PVC's controller
+// owner reference means GC owns the residual cleanup — but the operator
+// must know: until the PVC's own finalizers clear (stuck CSI finalizer,
+// RBAC-denied delete), the physical volume is NOT reclaimed.
+func (r *WorkspaceReconciler) reportPVCCleanupDelegated(ctx context.Context, workspace *v1.Workspace, deleteErr error) {
+	pvcName := workspace.Status.PVCName
+	log.FromContext(ctx).Error(deleteErr, "PVC delete failed during termination — removal delegated to owner-reference garbage collection; "+
+		"physical volume reclaim can stay blocked if the PVC's own finalizers are stuck",
+		"pvc", pvcName)
+	incrementPVCCleanupDelegated(deleteErr)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(workspace, corev1.EventTypeWarning, string(v1.ReasonPVCCleanupDelegated),
+			"PVC %s delete failed (%v); removal delegated to owner-reference garbage collection — "+
+				"physical volume reclaim can stay blocked if the PVC's own finalizers are stuck", pvcName, deleteErr)
+	}
 }
 
 // --- Transient recovery ---

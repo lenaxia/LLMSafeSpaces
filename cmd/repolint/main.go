@@ -100,6 +100,7 @@ func main() {
 	failures += runAgentIDPrefix(root)
 	failures += runSpecCouplingMarker(root)
 	failures += runReleaseArtifacts(root)
+	failures += runVersionScheme(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -110,6 +111,18 @@ func main() {
 	}
 	fmt.Println("repolint: all checks passed")
 	os.Exit(exitOK)
+}
+
+// runVersionScheme enforces the coordinated-bump version-scheme
+// invariants (issue #1237): base CalVer single-sourcing from the catalog
+// seed, and delivery pins never reusing a platform component digest.
+// See pkg/repolint/version_scheme.go.
+func runVersionScheme(root string) int {
+	fails := repolint.RunVersionSchemeCheck(root)
+	for _, f := range fails {
+		fmt.Fprintf(os.Stderr, "FAIL %s\n", f)
+	}
+	return len(fails)
 }
 
 // runReleaseArtifacts enforces the release workflow's artifact-completeness

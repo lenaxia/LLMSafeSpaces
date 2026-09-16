@@ -731,18 +731,17 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, limit, offs
 	if total == 0 {
 		return []*types.WorkspaceMetadata{}, pagination, nil
 	}
-	listQuery := /* #nosec G202 -- membershipCondition is a package-internal constant, never user input */ `
-        SELECT w.id, w.user_id, w.name, w.runtime, w.storage_size, w.image_tag, w.agent_version, w.created_at, w.updated_at,
+	listQuery := fmt.Sprintf( //nolint:gosec // G202: membershipCondition is a static SQL fragment — no user input, placeholder binds only
+		`SELECT w.id, w.user_id, w.name, w.runtime, w.storage_size, w.image_tag, w.agent_version, w.created_at, w.updated_at,
                COALESCE(w.default_model, '') AS default_model,
                COALESCE(s.pending_refresh, FALSE) AS agent_needs_refresh,
                s.last_credential_changed_at AS credentials_pending_since,
                w.org_id
         FROM workspaces w
         LEFT JOIN workspace_agent_state s ON s.workspace_id = w.id
-        WHERE w.deleted_at IS NULL AND w.user_id = $1` + membershipCondition + `
+        WHERE w.deleted_at IS NULL AND w.user_id = $1%s
         ORDER BY w.created_at DESC
-        LIMIT $2 OFFSET $3
-    `
+        LIMIT $2 OFFSET $3`, membershipCondition)
 	rows, err := s.DB.QueryContext(ctx, listQuery, userID, limit, offset)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to list workspaces: %w", err)

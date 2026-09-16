@@ -45,6 +45,22 @@ func incrementWorkspacesDeleted(ws *v1.Workspace) {
 	incrementWorkspacesDeletedInto(metrics.WorkspacesDeletedTotal, ws)
 }
 
+// incrementPVCCleanupDelegatedInto increments the delegated-PVC-cleanup
+// counter (#772), labeled by the API error reason (conflict, forbidden, …).
+// Non-status errors map to "unknown".
+func incrementPVCCleanupDelegatedInto(ctr *prometheus.CounterVec, err error) {
+	reason := string(apierrors.ReasonForError(err))
+	if reason == "" {
+		reason = "unknown"
+	}
+	ctr.WithLabelValues(reason).Inc()
+}
+
+// incrementPVCCleanupDelegated increments into the package-level metric.
+func incrementPVCCleanupDelegated(err error) {
+	incrementPVCCleanupDelegatedInto(metrics.WorkspacePVCCleanupDelegatedTotal, err)
+}
+
 // recordRecoveryMetricsInto records recovery-related metrics after enterRecovery
 // updates workspace status. Called with the post-increment ConsecutiveFailures and
 // the resolved NextRetryAt / SafeMode values.
