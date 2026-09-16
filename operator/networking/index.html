@@ -973,6 +973,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#destination-allowlist-mode-821" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Destination allowlist mode (#821)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fqdn-based-egress" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2459,6 +2470,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#destination-allowlist-mode-821" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Destination allowlist mode (#821)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#fqdn-based-egress" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2883,7 +2905,67 @@
 </div>
 <hr />
 <h2 id="egress-allowlisting">Egress allowlisting<a class="headerlink" href="#egress-allowlisting" title="Permanent link">&para;</a></h2>
-<p>The default <code>allowedEgressCIDRs: ["0.0.0.0/0"]</code> with RFC1918/CGNAT/metadata blocking is the "allow public internet, block internal" baseline. For tighter deployments, replace it with a strict allowlist of the CIDRs your agents need (LLM provider IPs, package registry mirrors, internal artifact stores reachable from the workspace network).</p>
+<p>The default <code>allowedEgressCIDRs: ["0.0.0.0/0"]</code> with RFC1918/CGNAT/metadata blocking is the "allow public internet, block internal" baseline (the <code>public</code> posture). For tighter deployments, switch to the destination-allowlist posture (<strong>#821</strong>) instead of narrowing <code>allowedEgressCIDRs</code>:</p>
+<h3 id="destination-allowlist-mode-821">Destination allowlist mode (#821)<a class="headerlink" href="#destination-allowlist-mode-821" title="Permanent link">&para;</a></h3>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">networkPolicy</span><span class="p">:</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">workspaceEgress</span><span class="p">:</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">mode</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">allowlist</span><span class="w">          </span><span class="c1"># public (default) | allowlist</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="nt">allowlist</span><span class="p">:</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">      </span><span class="c1"># Data-plane: LLM inference endpoints (direct-to-Zen, provider APIs)</span>
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">      </span><span class="nt">llmCIDRs</span><span class="p">:</span>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">203.0.113.0/24</span><span class="w">     </span><span class="c1"># example — resolve your real endpoints</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="w">      </span><span class="c1"># Tooling: package registries + git hosts (the #821 data-plane/tooling</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="w">      </span><span class="c1"># split; enabled=false yields an LLM/relay-only posture)</span>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="w">      </span><span class="nt">tooling</span><span class="p">:</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a><span class="w">        </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-9-12"><a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="w">        </span><span class="nt">cidrs</span><span class="p">:</span>
+</span><span id="__span-9-13"><a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="w">          </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">198.51.100.0/24</span><span class="w">  </span><span class="c1"># example</span>
+</span></code></pre></div>
+<p>In <code>allowlist</code> mode the general public-internet rule is <strong>not rendered</strong>. Egress is limited to:</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Mechanism</th>
+<th>Ports</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DNS</td>
+<td>pod selector (<code>dnsNamespace</code> / <code>dnsPodLabelSelector</code>)</td>
+<td>UDP+TCP 53</td>
+</tr>
+<tr>
+<td>API relay WebSocket</td>
+<td>in-namespace API pod selector</td>
+<td>TCP <code>.Values.api.service.port</code> (8080 by default)</td>
+</tr>
+<tr>
+<td>Relay-router (fleet-enabled clusters)</td>
+<td>pod selector</td>
+<td>TCP 8080</td>
+</tr>
+<tr>
+<td><code>allowlist.llmCIDRs</code></td>
+<td>ipBlock (data-plane group)</td>
+<td>TCP 443/80</td>
+</tr>
+<tr>
+<td><code>allowlist.tooling.cidrs</code></td>
+<td>ipBlock (tooling group)</td>
+<td>TCP 443/80</td>
+</tr>
+<tr>
+<td><code>networkPolicy.extraEgressCIDRs</code></td>
+<td>plain ipBlock — all-ports escape hatch for operator-accepted <strong>internal</strong> destinations</td>
+<td>all</td>
+</tr>
+</tbody>
+</table>
+<p>With every group empty, <code>allowlist</code> mode is the strictest posture: DNS plus the in-cluster platform paths only. That posture is forward-compatible with the relay-only data-plane planned in #820 — an <code>llm-relay</code> namespace/router slots in as another selector rule without redesign.</p>
+<p><strong>Why the mode default stays <code>public</code> (staged rollout):</strong> the default product surface — direct-to-Zen inference plus agents installing arbitrary packages — is served from CDN-fronted endpoints (opencode.ai resolves into Cloudflare space; pypi.org into Fastly; registry.npmjs.org into Cloudflare; verified 2026-09). Chart-shipped CIDR defaults would either rot as CDNs rebalance, or — if whole CDN ranges are shipped — re-admit the exfiltration channel via free attacker-usable hosting on those CDNs (GitHub Pages/gists, Cloudflare-proxied sites). Resolve your destinations at deploy time (<code>dig +short pypi.org registry.npmjs.org opencode.ai</code>) and pin them in the groups.</p>
+<p><strong>Group entries must be public CIDRs — guarded at render time for well-formed input (IPv4 and IPv6).</strong> The groups render as plain <code>ipBlock</code> rules: Kubernetes rejects <code>except:</code> entries that are not subnets of the <code>cidr</code>, so the shared <code>blockedEgressCIDRs</code> subtraction cannot be attached to narrow CIDRs (it is attached only to the <code>0.0.0.0/0</code> catch-all in <code>public</code> mode). A well-formed private/internal entry in a group (or a narrow private <code>allowedEgressCIDRs</code> entry) <strong>fails the render</strong> with an error naming the entry — covering the IPv4 private ranges (RFC1918, CGNAT, link-local/metadata, loopback, multicast) <strong>and</strong> the IPv6 internal ranges (ULA <code>fc00::/7</code>, link-local <code>fe80::/10</code>, multicast <code>ff00::/8</code>, loopback <code>::1</code>) — the latter matter because well-formed IPv6-internal CIDRs are API-valid, so no apply-time backstop exists for them. Scope of the guard, honestly: malformed spellings and hostnames pass the render but yield API-invalid ipBlocks that are rejected <strong>loudly at apply time</strong>; an aggregate CIDR spanning private space (e.g. <code>0.0.0.0/1</code>, <code>::/0</code>) is a residual silent case — contrived, not a plausible footgun; <code>extraEgressCIDRs</code> is unguarded by design (it exists to admit internal destinations). For in-cluster destinations, use <code>extraEgressCIDRs</code>.</p>
 <h3 id="fqdn-based-egress">FQDN-based egress<a class="headerlink" href="#fqdn-based-egress" title="Permanent link">&para;</a></h3>
 <p>Kubernetes <code>NetworkPolicy</code> does not support FQDN natively. To restrict egress by domain name, use a CNI that supports it:</p>
 <ul>
@@ -2892,27 +2974,27 @@
 </ul>
 <p>When you do this, <strong>disable the chart's workspaceEgress NP</strong> (see the danger callout above) so the union doesn't defeat your FQDN policy.</p>
 <h3 id="per-workspace-egress">Per-workspace egress<a class="headerlink" href="#per-workspace-egress" title="Permanent link">&para;</a></h3>
-<p>The platform supports per-workspace egress configuration via the <code>securityPolicy.network</code> field on the Workspace CRD (see <a href="../security/">Security Hardening</a>). This lets individual workspaces declare additional allowed domains beyond the platform baseline.</p>
+<p>The platform supports per-workspace egress widening via the <code>spec.networkAccess.egress</code> field on the Workspace CRD: each declared domain is resolved to /32 ipBlocks by the controller at reconcile time (private/internal results are filtered) and emitted as a per-workspace NetworkPolicy. Because Kubernetes NetworkPolicy unions allow rules across all policies selecting a pod, these per-workspace destinations are added <strong>on top of</strong> whatever the chart-level posture permits — including <code>allowlist</code> mode, where workspaces can declare the registry/host set they need beyond the operator-pinned groups.</p>
 <hr />
 <h2 id="datastore-networkpolicies">Datastore NetworkPolicies<a class="headerlink" href="#datastore-networkpolicies" title="Permanent link">&para;</a></h2>
 <p>The chart ships NetworkPolicies blocking ingress to Postgres and Valkey except from the API deployment and the migration Job. Workspace pods (selectable by <code>component=workspace</code>) <strong>cannot</strong> reach the datastores directly. This is gated by <code>networkPolicy.enabled</code> and <code>datastore.networkPolicy.enabled</code>.</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">datastore</span><span class="p">:</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">networkPolicy</span><span class="p">:</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span><span class="nt">postgresPodSelectorLabels</span><span class="p">:</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">postgres</span><span class="w">       </span><span class="c1"># match your Postgres pods</span>
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="nt">valkeyPodSelectorLabels</span><span class="p">:</span>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">valkey</span><span class="w">         </span><span class="c1"># match your Valkey/Redis pods</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">datastore</span><span class="p">:</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">networkPolicy</span><span class="p">:</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">postgresPodSelectorLabels</span><span class="p">:</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">postgres</span><span class="w">       </span><span class="c1"># match your Postgres pods</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">    </span><span class="nt">valkeyPodSelectorLabels</span><span class="p">:</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">      </span><span class="nt">app</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">valkey</span><span class="w">         </span><span class="c1"># match your Valkey/Redis pods</span>
 </span></code></pre></div>
 <p>The defaults match <code>local/postgres-redis.yaml</code>. If you deploy Postgres via the Bitnami chart, override with <code>{ app.kubernetes.io/name: postgresql }</code>.</p>
 <hr />
 <h2 id="api-ingress-restriction">API ingress restriction<a class="headerlink" href="#api-ingress-restriction" title="Permanent link">&para;</a></h2>
 <p>By default the API pod admits traffic from any source (the ingress controller + any in-cluster pod). There is an opt-in default-deny ingress policy for the API itself:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">networkPolicy</span><span class="p">:</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">apiIngressRestricted</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">   </span><span class="c1"># opt-in</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">apiIngressSourcePodSelector</span><span class="p">:</span><span class="w">  </span><span class="c1"># allowed user-traffic source</span>
-</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span><span class="nt">app.kubernetes.io/name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llmsafespaces</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span><span class="nt">app.kubernetes.io/component</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">frontend</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">networkPolicy</span><span class="p">:</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">apiIngressRestricted</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">   </span><span class="c1"># opt-in</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">apiIngressSourcePodSelector</span><span class="p">:</span><span class="w">  </span><span class="c1"># allowed user-traffic source</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="nt">app.kubernetes.io/name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">llmsafespaces</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="w">    </span><span class="nt">app.kubernetes.io/component</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">frontend</span>
 </span></code></pre></div>
 <p>When <code>true</code>, the policy admits only:</p>
 <ul>
@@ -3014,8 +3096,8 @@
 </div>
 <h3 id="the-cilium-migration-gotcha">The Cilium migration gotcha<a class="headerlink" href="#the-cilium-migration-gotcha" title="Permanent link">&para;</a></h3>
 <p>When migrating to Cilium with FQDN-based egress, you <strong>must</strong> disable the chart's <code>workspaceEgress</code> NP:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">networkPolicy</span><span class="p">:</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">workspaceEgress</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">   </span><span class="c1"># let Cilium CNP own egress</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">networkPolicy</span><span class="p">:</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">workspaceEgress</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">   </span><span class="c1"># let Cilium CNP own egress</span>
 </span></code></pre></div>
 <p>Kubernetes NetworkPolicy unions allow rules across ALL policies attached to a pod. The chart's NP allows <code>0.0.0.0/0</code> (minus RFC1918), which would union with your Cilium FQDN allowlist to produce "allow everything public" — defeating the FQDN policy. This was discovered during the 2026-07-02 Cilium migration (documented in <code>ops-prod/docs/runbooks/cilium-migration.md</code> gotcha #10).</p>
 <hr />
@@ -3091,7 +3173,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 18, 2026 09:28:51 UTC"><span class="timeago" datetime="2026-07-18T09:28:51+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 18, 2026 09:28:51 UTC">2026-07-18</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 16, 2026 05:37:00 UTC"><span class="timeago" datetime="2026-09-16T05:37:00+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 16, 2026 05:37:00 UTC">2026-09-16</span>
   </span>
 
     
