@@ -250,7 +250,8 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
   delete → Secret deleted (revocation = Secret deletion, D2) → `CredentialStale`
   flips on next resolve.
 - Conditions observable end-to-end: staged (True/revision), stale (token expiry /
-  missing envelope / batch not applying staged revision), rejected (router
+  missing envelope / batch not applying staged revision / corruption-class
+  resolve failure — §4.2's one escalating cause), rejected (router
   rejection telemetry → controller event).
 - Flag off: zero behavior change (raw-key path, byte-identical batches); flag on
   without router: controller startup refuses, loud.
