@@ -55,6 +55,7 @@ import (
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	apisv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	emailpkg "github.com/lenaxia/llmsafespaces/pkg/email"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
@@ -397,15 +398,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if pusher == nil {
 			return
 		}
+		// Limit 50 mirrors the sidebar's page size; users beyond it are
+		// covered by the SSE-connect push (fires per browser session).
 		list, err := svc.Workspace.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
 		if err != nil {
+			log.Warn("timezone push: list workspaces failed", "userID", userID, "error", err.Error())
 			return
 		}
 		for _, ws := range list.Items {
-			if ws.Phase != "Active" && ws.Phase != "Creating" && ws.Phase != "Resuming" {
+			switch apisv1.WorkspacePhase(ws.Phase) {
+			case apisv1.WorkspacePhaseActive, apisv1.WorkspacePhaseCreating, apisv1.WorkspacePhaseResuming:
+			default:
 				continue
 			}
-			_ = pusher.PushUserTimezone(ctx, userID, ws.ID, tz)
+			if err := pusher.PushUserTimezone(ctx, userID, ws.ID, tz); err != nil {
+				// Latency-only per contract; log for observability (the
+				// Notify sibling logs its failures).
+				log.Warn("timezone push: pod push failed", "userID", userID, "workspaceID", ws.ID, "error", err.Error())
+			}
 		}
 	})
 	var modelsHandler *handlers.ModelsHandler

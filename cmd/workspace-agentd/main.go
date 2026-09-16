@@ -4,6 +4,11 @@
 package main
 
 import (
+	// Embedded tzdata: agentd runs in a FROM-scratch delivery image (no
+	// /usr/share/zoneinfo); /v1/user-timezone and get_datetime must
+	// resolve arbitrary IANA zones (PR #1389 review finding 1 — the
+	// feature's correctness may not rest on undocumented base-image
+	// inheritance).
 	"context"
 	"flag"
 	"fmt"
@@ -17,6 +22,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"go.uber.org/zap"
 

@@ -353,21 +353,17 @@ func mcpGetDatetime(timezoneArg string) (string, error) {
 	source := "pod"
 	name := ""
 
-	if timezoneArg != "" {
-		canonical, ok := validateTimezone(timezoneArg)
-		if !ok {
+	switch {
+	case timezoneArg != "":
+		loc, err := time.LoadLocation(timezoneArg)
+		if err != nil {
 			return "", fmt.Errorf("unknown timezone %q (IANA names like \"America/Los_Angeles\"; the tool cannot guess)", timezoneArg)
 		}
-		if loc, err := time.LoadLocation(canonical); err == nil {
-			location = loc
-			source = "argument"
-			name = canonical
-		}
-	} else if tz := userTimezone(); tz != "" {
+		location, source, name = loc, "argument", timezoneArg
+	case userTimezone() != "":
+		tz := userTimezone() // already validated at the endpoint
 		if loc, err := time.LoadLocation(tz); err == nil {
-			location = loc
-			source = "browser"
-			name = tz
+			location, source, name = loc, "browser", tz
 		}
 	}
 

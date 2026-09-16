@@ -49,9 +49,9 @@ func validateTimezone(name string) (string, bool) {
 // push when a browser session (re)connects. Control-plane gated: the
 // §D1 carve-out pair (control-plane OR workspace password), identical
 // to every other user-mux route the API drives.
-func userTimezoneHandler(controlPlanePassword, opencodePassword string) http.HandlerFunc {
+func userTimezoneHandler(workspacePassword, agentdPassword string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuthAny(r, controlPlanePassword, opencodePassword) {
+		if !checkBasicAuthAny(r, agentdPassword, workspacePassword) {
 			rejectUnauthorized(w)
 			return
 		}

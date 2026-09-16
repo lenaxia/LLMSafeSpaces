@@ -20,3 +20,22 @@ describe("useTimezoneReporter", () => {
     expect(putSpy).toHaveBeenCalledWith("timezone", expect.any(String));
   });
 });
+
+describe("useTimezoneReporter retry", () => {
+  it("re-reports after a failed PUT (reported ref is cleared)", async () => {
+    const failSpy = vi
+      .spyOn(settingsApi, "setUserSetting")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({} as never);
+
+    vi.useFakeTimers();
+    const { rerender } = renderHook(() => useTimezoneReporter());
+    // First report fails async; the interval (60s) is faked forward.
+    await vi.advanceTimersByTimeAsync(61_000);
+    rerender();
+    await vi.advanceTimersByTimeAsync(61_000);
+    vi.useRealTimers();
+
+    await waitFor(() => expect(failSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+  });
+});

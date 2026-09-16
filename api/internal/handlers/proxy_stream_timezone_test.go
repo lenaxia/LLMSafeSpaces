@@ -9,7 +9,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 func tzGinContext(t *testing.T, userID string) *gin.Context {
@@ -95,4 +100,39 @@ func TestPushUserTimezoneOnConnect_Unwired(t *testing.T) {
 	require.NotPanics(t, func() {
 		h.pushUserTimezoneOnConnect(tzGinContext(t, "u"), "ws-1")
 	})
+}
+
+// Call-site pin (the TestStreamEvents_ArmsUsageGateOnOpen precedent):
+// opening the workspace stream must fire the timezone push — deleting
+// the StreamEvents call site fails this test.
+func TestStreamEvents_FiresTimezonePushOnOpen(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+
+	pusher := newFakeTimezonePusher()
+	env.handler.SetTimezonePush(pusher, fakeTimezoneReader{tz: "America/New_York"})
+
+	// The push reads the authenticated userID from the gin context; the
+	// bare test router has no auth middleware. Build the router with the
+	// middleware BEFORE route registration (gin only applies Use to
+	// routes registered after it).
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "u-1"); c.Next() })
+	r.GET("/api/v1/workspaces/:id/events", env.handler.StreamEvents)
+
+	cancel, body, _, _ := doStreamingRequest(r, "/api/v1/workspaces/ws-1/events")
+	defer body.Close()
+
+	select {
+	case got := <-pusher.got:
+		assert.Equal(t, "ws-1", got.workspaceID)
+		assert.Equal(t, "America/New_York", got.tz)
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream open never fired the timezone push")
+	}
+	cancel()
 }
