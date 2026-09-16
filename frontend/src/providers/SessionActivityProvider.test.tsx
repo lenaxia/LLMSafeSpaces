@@ -2627,3 +2627,55 @@ describe("resolved pill lifecycle (#1365)", () => {
     expect(items).toEqual(["q-q3", "q-q2", "q-q1"]); // the live ask (newest) leads the stack
   });
 });
+
+// #1365: the whileAway staleness backstop keys off a client receivedAt
+// stamp — stamped on store entry, preserved across replays (a replay must
+// not extend the lease).
+describe("receivedAt stamping (#1365)", () => {
+  function QuestionContentProbe({ requestId }: { requestId: string }) {
+    const questions = usePendingQuestionsForSession("ses-stamp");
+    const q = questions.find((x) => x.id === requestId);
+    return <span data-testid="stamp">{q ? String(q.receivedAt ?? "none") : "gone"}</span>;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedOnEvent = undefined;
+    capturedOnReconnect = undefined;
+  });
+
+  it("stamps receivedAt on entry and preserves the ORIGINAL stamp across a re-presented event", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      renderProvider(<QuestionContentProbe requestId="que_stamp" />);
+      // whileAway-tagged re-presentation carries content
+      act(() => {
+        capturedOnEvent!({
+          type: "agent.question",
+          workspace_id: "ws-1",
+          session_id: "ses-stamp",
+          request_id: "que_stamp",
+          whileAway: true,
+          data: { id: "que_stamp", sessionId: "ses-stamp", kind: "question", question: "q", options: [{ label: "a", description: "d" }] },
+        });
+      });
+      expect(screen.getByTestId("stamp").textContent).toBe("1000000");
+      // A replay an hour later: the ORIGINAL stamp is preserved (the pill
+      // stays droppable by the staleness bound; replay never extends it)
+      act(() => {
+        vi.setSystemTime(1_000_000 + 3_600_000);
+        capturedOnEvent!({
+          type: "agent.question",
+          workspace_id: "ws-1",
+          session_id: "ses-stamp",
+          request_id: "que_stamp",
+          whileAway: true,
+          data: { id: "que_stamp", sessionId: "ses-stamp", kind: "question", question: "q", options: [{ label: "a", description: "d" }] },
+        });
+      });
+      expect(screen.getByTestId("stamp").textContent).toBe("1000000");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -120,3 +120,39 @@ describe("PermissionPrompt", () => {
     });
   });
 });
+
+// #1365 regression set: the pill must stay clickable when the instance
+// survives a completed reply, and re-clickable after an API failure.
+describe("PermissionPrompt clickability (#1365)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("re-enables buttons after a SUCCESSFUL reply on a surviving instance (root cause)", async () => {
+    // The incident shape: onResolved's removal MISSES (store race, whileAway
+    // re-presentation, fold lag) so the component stays mounted. Pre-fix,
+    // submitting was only reset on error — the pill was button-dead forever.
+    const onResolved = vi.fn(); // does NOT unmount the component
+    render(<PermissionPrompt workspaceId="ws-1" request={shellPermission} onResolved={onResolved} />);
+    const always = screen.getByRole("button", { name: /always/i });
+    fireEvent.click(always);
+    await waitFor(() => expect(mockReply).toHaveBeenCalledTimes(1));
+    // Instance survived: buttons must be enabled again, not disabled
+    await waitFor(() => expect(always).not.toBeDisabled());
+    // And a second click issues a second API call (re-clickable, not dead)
+    fireEvent.click(always);
+    await waitFor(() => expect(mockReply).toHaveBeenCalledTimes(2));
+    expect(onResolved).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders the error AND re-enables buttons when the reply API rejects", async () => {
+    mockReply.mockRejectedValueOnce(new Error("boom"));
+    const onResolved = vi.fn();
+    render(<PermissionPrompt workspaceId="ws-1" request={shellPermission} onResolved={onResolved} />);
+    const once = screen.getByRole("button", { name: /once/i });
+    fireEvent.click(once);
+    await waitFor(() => expect(screen.getByText(/boom/i)).toBeInTheDocument());
+    expect(once).not.toBeDisabled();
+    // Retry works
+    fireEvent.click(once);
+    await waitFor(() => expect(mockReply).toHaveBeenCalledTimes(2));
+  });
+});
