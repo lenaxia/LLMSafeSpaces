@@ -455,6 +455,21 @@ func TestReconcile_Leg5HarnessDeadMidTurn(t *testing.T) {
 		return st != nil && st.State == LedgerStateAdmitted
 	}, "row admitted")
 
+	// The admission reads ADMITTED while attemptAdmission still holds the
+	// session's single-flight lock (it releases on return, after
+	// markAdmitted). A pass sampling that window is correctly SKIPPED —
+	// mid-admission sessions are never resolved on possibly-stale evidence
+	// (reconcile.go's TryLock discipline). Leg 5 models the harness dying
+	// AFTER the admission landed, so the asserted pass must observe the
+	// post-admission world: block on the lock for the admission's release
+	// (µs — Admit already returned) instead of racing the epilogue.
+	gate := a.sessionLock("s1")
+	gate.Lock()
+	//nolint:staticcheck // SA2001: the empty critical section IS the
+	// synchronization — acquiring after the admission's release is the
+	// happens-after edge; nothing is protected because nothing is raced.
+	gate.Unlock()
+
 	// Store truth says the turn ended and the message landed.
 	store.mu.Lock()
 	store.msgs = map[string]map[string]bool{"s1": {"msg-1": true}}
