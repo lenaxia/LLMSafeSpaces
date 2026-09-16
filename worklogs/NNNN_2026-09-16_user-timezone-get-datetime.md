@@ -24,7 +24,9 @@ which source won:
    setting-PUT hook (catches mid-session changes for already-active
    pods). Failures are latency-only by design.
 3. **`pod`** — TZ env or UTC; the honest fallback, `timezone` name
-   ABSENT (not faked) when unknown.
+   ABSENT (omitempty on the typed result struct — verified by
+   `assert.NotContains` pins; an earlier draft emitted `""`, fixed in
+   review round 2).
 
 The agentd delivery image is FROM scratch — `time/tzdata` is embedded
 so arbitrary IANA zones resolve without a filesystem copy.
@@ -66,6 +68,21 @@ secondary for pod-wide surfaces (log timestamps) and is NOT built.
 3. SSE connect is the right push trigger — every browser chat session
    opens one; SDK/MCP callers do not (by design — they get
    argument/pod).
+
+## Review round 2 remediations
+
+- tzdata import actually placed in `main.go` (round 1's was
+  accidentally absent — the reviewer's scratch-context repro caught the
+  feature resting on undocumented base-image inheritance).
+- Route-level pin (`/v1/user-timezone` through `buildUserMux`) and
+  StreamEvents call-site pin (`TestStreamEvents_FiresTimezonePushOnOpen`,
+  the ArmsUsageGateOnOpen precedent).
+- `fanOutTimezonePush` extracted to a testable function — phase filter,
+  per-pod-failure continuation, list-failure and nil-collaborator pins.
+- Typed result struct with omitempty timezone; `assert.NotContains`
+  pins the absent-key contract. Handler param names aligned with deps.
+- L3 liveprobe: 6 timezone probes (auto-skip on pre-#1389 agentd).
+- Frontend retry-on-failure test (verified discriminator).
 
 ## Tests
 

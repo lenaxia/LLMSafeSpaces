@@ -665,7 +665,7 @@ func TestMCPGetDatetime(t *testing.T) {
 		require.NotEmpty(t, res[k], "%s must be non-empty", k)
 	}
 	assert.Equal(t, "pod", res["source"])
-	assert.Empty(t, res["timezone"], "pod fallback carries no IANA name — absent, not faked")
+	assert.NotContains(t, res, "timezone", "pod fallback emits NO zone name — the key is absent, not empty-string faked")
 	utc, err := time.Parse(time.RFC3339, res["utc"].(string))
 	require.NoError(t, err, "utc must be RFC3339")
 	assert.Equal(t, time.UTC.String(), utc.Location().String())

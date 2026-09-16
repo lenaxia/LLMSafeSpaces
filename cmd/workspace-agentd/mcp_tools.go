@@ -368,14 +368,26 @@ func mcpGetDatetime(timezoneArg string) (string, error) {
 	}
 
 	local := now.In(location)
-	out, _ := json.Marshal(map[string]string{
-		"utc":        now.UTC().Format(time.RFC3339),
-		"local":      local.Format(time.RFC3339),
-		"timezone":   name,
-		"utc_offset": local.Format("-07:00"),
-		"source":     source,
+	out, _ := json.Marshal(getDatetimeResult{
+		UTC:       now.UTC().Format(time.RFC3339),
+		Local:     local.Format(time.RFC3339),
+		Timezone:  name, // omitempty: ABSENT when unknown, never faked
+		UTCOffset: local.Format("-07:00"),
+		Source:    source,
 	})
 	return string(out), nil
+}
+
+// getDatetimeResult is the typed tool output. Timezone is omitempty by
+// contract: the pod fallback emits NO zone name rather than an empty
+// string (review finding — the shipped claims and the emission must
+// agree; a typed struct also satisfies the no-map-shapes rule).
+type getDatetimeResult struct {
+	UTC       string `json:"utc"`
+	Local     string `json:"local"`
+	Timezone  string `json:"timezone,omitempty"`
+	UTCOffset string `json:"utc_offset"`
+	Source    string `json:"source"`
 }
 
 // --- session_metadata -----------------------------------------------------

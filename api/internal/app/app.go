@@ -58,6 +58,7 @@ import (
 	apisv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	emailpkg "github.com/lenaxia/llmsafespaces/pkg/email"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -394,29 +395,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// catches mid-session changes). agentPusherSvc is populated later in
 	// startup — the closure reads it at call time.
 	settingsHandler.SetTimezonePushHook(func(ctx context.Context, userID, tz string) {
-		pusher := agentPusherSvc
-		if pusher == nil {
-			return
-		}
-		// Limit 50 mirrors the sidebar's page size; users beyond it are
-		// covered by the SSE-connect push (fires per browser session).
-		list, err := svc.Workspace.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
-		if err != nil {
-			log.Warn("timezone push: list workspaces failed", "userID", userID, "error", err.Error())
-			return
-		}
-		for _, ws := range list.Items {
-			switch apisv1.WorkspacePhase(ws.Phase) {
-			case apisv1.WorkspacePhaseActive, apisv1.WorkspacePhaseCreating, apisv1.WorkspacePhaseResuming:
-			default:
-				continue
-			}
-			if err := pusher.PushUserTimezone(ctx, userID, ws.ID, tz); err != nil {
-				// Latency-only per contract; log for observability (the
-				// Notify sibling logs its failures).
-				log.Warn("timezone push: pod push failed", "userID", userID, "workspaceID", ws.ID, "error", err.Error())
-			}
-		}
+		fanOutTimezonePush(ctx, agentPusherSvc, svc.Workspace, log, userID, tz)
 	})
 	var modelsHandler *handlers.ModelsHandler
 	var workspaceEnvHandler *handlers.WorkspaceEnvHandler
@@ -2063,4 +2042,43 @@ func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, o
 		return "", fmt.Errorf("pin workspace %s on workflow %s: %w", wsID, workflowID, err)
 	}
 	return wsID, nil
+}
+
+// timezonePushTarget is the ListWorkspaces surface fanOutTimezonePush
+// needs (satisfied by the workspace service; narrow for testability).
+type timezonePushTarget interface {
+	ListWorkspaces(ctx context.Context, userID string, opts types.ListOptions) (*types.WorkspaceListResult, error)
+}
+
+// fanOutTimezonePush pushes the user's zone to every Active/Creating/
+// Resuming workspace pod. Best-effort by contract: list failures and
+// per-pod failures log and continue — the SSE-connect push is the
+// reliable re-delivery path.
+func fanOutTimezonePush(ctx context.Context, pusher handlers.TimezonePusher, lister timezonePushTarget, log pkginterfaces.LoggerInterface, userID, tz string) {
+	if pusher == nil || lister == nil {
+		return
+	}
+	// Limit 50 mirrors the sidebar's page size; users beyond it are
+	// covered by the SSE-connect push (fires per browser session).
+	list, err := lister.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
+	if err != nil {
+		if log != nil {
+			log.Warn("timezone push: list workspaces failed", "userID", userID, "error", err.Error())
+		}
+		return
+	}
+	for _, ws := range list.Items {
+		switch apisv1.WorkspacePhase(ws.Phase) {
+		case apisv1.WorkspacePhaseActive, apisv1.WorkspacePhaseCreating, apisv1.WorkspacePhaseResuming:
+		default:
+			continue
+		}
+		if err := pusher.PushUserTimezone(ctx, userID, ws.ID, tz); err != nil {
+			// Latency-only per contract; log for observability (the
+			// Notify sibling logs its failures).
+			if log != nil {
+				log.Warn("timezone push: pod push failed", "userID", userID, "workspaceID", ws.ID, "error", err.Error())
+			}
+		}
+	}
 }

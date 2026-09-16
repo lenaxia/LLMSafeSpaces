@@ -114,6 +114,34 @@ if [ -n "$S2" ]; then
 fi
 
 echo "---"
+
+# --- user-timezone probes (PR #1389) ---
+# The live browser-zone channel end to end on a real pod: push a zone to
+# this agentd, then get_datetime must report source:browser with the
+# zone and a matching offset. Restores nothing — the zone persists
+# until the next browser push overwrites it (harmless: this workspace's
+# browser re-pushes on reconnect).
+# SKIPPED on agentd builds without the endpoint (pre-#1389 deployments):
+# a 404 on the feature-detect probe skips the leg rather than failing.
+PW2=$PW
+TZR=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
+if [ "$TZR" = 404 ]; then
+  echo "SKIP: user-timezone probes (agentd predates PR #1389)"
+else
+[ "$TZR" = 200 ] && note 0 "user-timezone push accepted (200)" || note 1 "user-timezone push (HTTP $TZR)"
+TZD=$(curl -s -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}}')
+echo "$TZD" | grep -q '"source":"browser"' && note 0 "get_datetime source=browser after push" || note 1 "get_datetime source=browser"
+echo "$TZD" | grep -q '"timezone":"Asia/Tokyo"' && note 0 "get_datetime reports pushed IANA zone" || note 1 "get_datetime IANA zone"
+echo "$TZD" | grep -q '"utc_offset":"+09:00"' && note 0 "get_datetime Tokyo offset (+09:00)" || note 1 "Tokyo offset"
+# Invalid zone rejected end to end.
+TZB=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Mars/Olympus_Mons"}' --max-time 5)
+[ "$TZB" = 400 ] && note 0 "invalid zone rejected (400)" || note 1 "invalid zone rejection (HTTP $TZB)"
+# Unauthenticated push rejected.
+TZU=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
+[ "$TZU" = 401 ] && note 0 "unauthenticated push rejected (401)" || note 1 "unauth rejection (HTTP $TZU)"
+fi
+
+echo "---"
 echo "liveprobe: $PASS pass, $FAIL fail"
 [ "$FAIL" = 0 ] && exit 0
 exit 1

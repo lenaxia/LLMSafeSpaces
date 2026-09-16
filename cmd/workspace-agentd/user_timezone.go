@@ -29,8 +29,10 @@ func userTimezone() string {
 	return userTimezoneAtomic.Load().(string)
 }
 
-// validateTimezone loads the IANA zone (tzdata is embedded in the
-// binary — time/tzdata import in main) and returns the canonical name.
+// validateTimezone reports whether name loads as an IANA zone against
+// the embedded tzdata (the time/tzdata import in main — the delivery
+// image is FROM scratch). It returns the input verbatim; callers that
+// need a *time.Location call time.LoadLocation themselves.
 func validateTimezone(name string) (string, bool) {
 	if name == "" {
 		return "", false
