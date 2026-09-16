@@ -674,3 +674,23 @@ func TestSessionsAct_SendMessage_TextOnlyWedge422(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "vision")
 	assert.NotContains(t, w.Body.String(), "litellm.BadRequestError", "raw provider body must not be the user surface")
 }
+
+// TestSessionsAct_SendMessage_WedgeRequiresInvalidArgumentCode (r2 f3):
+// main's gate classifies only harness-400 bodies; the Act-path probe must
+// match that strictness — a non-invalid_argument connect error whose
+// embedded body happens to carry the marker stays the generic 502 (parity
+// with flag-off for identical harness bytes).
+func TestSessionsAct_SendMessage_WedgeRequiresInvalidArgumentCode(t *testing.T) {
+	env := newSessionsActEnv(t, sessionsActOpts{
+		terminus: true,
+		fail:     "internal",
+		failMessage: "POST /session/ses_1/message: status 500: " +
+			`{"data":{"message":"... messages.content.type is invalid ..."}}`,
+	})
+
+	w := env.do(t, http.MethodPost, "/api/v1/workspaces/ws-s1/sessions/ses_1/message",
+		`{"parts":[{"type":"text","text":"continue"}]}`)
+	require.Equal(t, http.StatusBadGateway, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "failed to send message",
+		"a non-400-class failure never renders the wedge surface")
+}

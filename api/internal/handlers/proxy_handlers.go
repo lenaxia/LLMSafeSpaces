@@ -327,7 +327,10 @@ func isTextOnlyWedgeSendErr(err error) bool {
 	}
 	var cce *connectCodeError
 	if errors.As(err, &cce) {
-		return agent.IsImageInTextOnlyHistoryMessage(cce.msg)
+		// Strict parity with main's gate (harness 400 only): the Act path
+		// classifies solely invalid_argument — the connect mapping of the
+		// wedge's harness 400 — never a marker that rides another code.
+		return cce.code == "invalid_argument" && agent.IsImageInTextOnlyHistoryMessage(cce.msg)
 	}
 	return false
 }

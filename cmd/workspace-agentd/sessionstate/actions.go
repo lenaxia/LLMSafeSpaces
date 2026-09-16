@@ -81,10 +81,21 @@ func (a *Authority) act(ctx context.Context, m *abiv1.ActionRequest) (*abiv1.Act
 	// Sole-writer serialization (M1/W4 + the no-exceptions matrix): the
 	// action holds the session's single-flight lock across execution —
 	// the SAME lock admissions take, so a delivery in flight and an
-	// action can never interleave.
-	lock := a.sessionLock(m.GetSessionId())
-	lock.Lock()
-	defer lock.Unlock()
+	// action can never interleave. ONE carve-out (#1372 r2): interrupt
+	// is exempt. It mutates no projected records (I7), so the
+	// sole-writer rationale does not apply to it — and its entire
+	// purpose is to preempt the lock HOLDER's in-flight turn (the send
+	// action executes a blocking full-turn POST under this lock);
+	// queueing it behind that turn would make abort a delayed no-op,
+	// regressing the flag-off adapter abort (live-verified: stops the
+	// running turn within seconds). The harness serializes the abort
+	// POST against its own turn state; the projected fold needs no lock
+	// here (resolve-by-absence takes a.mu, whose ordering is documented).
+	if m.GetInterrupt() == nil {
+		lock := a.sessionLock(m.GetSessionId())
+		lock.Lock()
+		defer lock.Unlock()
+	}
 
 	res, err := a.cfg.Actor.Act(ctx, m.GetSessionId(), m)
 	if err != nil {

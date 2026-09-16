@@ -290,9 +290,12 @@ func TestActOp_Validation(t *testing.T) {
 	actor.mu.Unlock()
 }
 
-// TestActOp_SerializesAgainstDelivery (golden): actions and admissions
-// share the per-session single-flight — no interleave, in BOTH directions,
-// and no lost interrupt while an admission holds the lock.
+// TestActOp_SerializesAgainstDelivery (golden): mutating actions and
+// admissions share the per-session single-flight — no interleave, in BOTH
+// directions. (Interrupt is the #1372-r2 carve-out — it PREEMPTS rather
+// than queues, pinned by TestActOp_InterruptPreemptsInFlightSend; the
+// admission-completing-during-interrupt preservation stays pinned by
+// TestActOp_InterruptAdmissionRace.)
 func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 	t.Run("action waits for in-flight admission", func(t *testing.T) {
 		admitter := newBlockingAdmitter()
@@ -316,7 +319,7 @@ func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 		go func() {
 			_, err := c.Act(context.Background(), connect.NewRequest(&abiv1.ActionRequest{
 				SessionId: "s1",
-				Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+				Action:    &abiv1.ActionRequest_Compact{Compact: &abiv1.CompactAction{}},
 			}))
 			resCh <- err
 		}()
@@ -329,9 +332,9 @@ func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 
 		close(admitter.release) // admission completes, lock frees
 		select {
-		case <-actor.enter: // the interrupt was NOT lost
+		case <-actor.enter: // the queued action was NOT lost
 		case <-time.After(2 * time.Second):
-			t.Fatal("interrupt never executed after admission released")
+			t.Fatal("action never executed after admission released")
 		}
 		close(actor.relead)
 		require.NoError(t, <-resCh)
@@ -435,4 +438,87 @@ func TestActOp_InterruptAdmissionRace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_ADMITTED, st.Msg.GetState(),
 		"admission completing during the interrupt is preserved — no superseded-by-interrupt state exists")
+}
+
+// TestActOp_InterruptPreemptsInFlightSend (#1372 r2): the send action
+// executes a BLOCKING full-turn harness POST under the session lock — an
+// interrupt fired mid-turn must preempt (return while the turn still
+// runs), not queue behind it. Flag-off parity: adapter.Abort stops the
+// live turn within seconds (live-verified). Red pre-fix: the interrupt
+// blocked on the single-flight until the parked send released.
+func TestActOp_InterruptPreemptsInFlightSend(t *testing.T) {
+	actor := &parkingSendActor{entered: make(chan struct{}), release: make(chan struct{})}
+	a := actionsAuthority(t, actor, allActions(), &recordingAdmitter{})
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "long turn"}},
+		}))
+		sendDone <- err
+	}()
+	select {
+	case <-actor.entered: // the send holds the session single-flight
+	case <-time.After(2 * time.Second):
+		t.Fatal("send never started")
+	}
+
+	// The parked goroutine must never outlive the test (a fatal verdict
+	// before release would hang the suite's cleanup on the parked actor).
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(actor.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		require.NotNil(t, res.GetInterrupt(), "the interrupt preempts the in-flight turn")
+	case err := <-errCh:
+		t.Fatalf("interrupt failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupt queued behind the in-flight send — abort must preempt the turn it exists to stop")
+	}
+
+	select {
+	case err := <-sendDone:
+		t.Fatalf("the send finished before release — the park did not hold: %v", err)
+	default:
+	}
+	releaseOnce.Do(func() { close(actor.release) })
+	require.NoError(t, <-sendDone)
+}
+
+// parkingSendActor parks inside the send verb (the full-turn POST) and
+// answers every other verb immediately.
+type parkingSendActor struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *parkingSendActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	if req.GetInterrupt() != nil {
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Interrupt{Interrupt: &abiv1.InterruptResult{}}}, nil
+	}
+	if req.GetSend() == nil {
+		return &abiv1.ActionResult{}, nil
+	}
+	close(p.entered)
+	<-p.release
+	return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}, nil
 }

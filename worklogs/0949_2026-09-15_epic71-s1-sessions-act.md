@@ -111,3 +111,21 @@ Main's #1376/#1379 train landed the #1307 text-only-wedge classification (`agent
 > onto origin/main (README Rule 10 scenario 3: this branch is mine alone,
 > never pulled by others; the rebase replayed my three commits unchanged
 > plus the new fix). No shared history was rewritten.
+
+## Review r2 remediation
+
+**f2 (HIGH — abort queued behind the in-flight turn):** the r2 review traced that `act` held the session single-flight across the actor's full execution while send performs a blocking full-turn POST — a mid-turn interrupt queued for minutes and aborted an already-finished turn. Fix: interrupt is EXEMPT from the session lock (`actions.go`, documented in place: it mutates no projected records — I7 — so the sole-writer rationale does not apply, and its purpose is to preempt the lock HOLDER's turn; the harness serializes the abort against its own turn state). Pinned red-first: `TestActOp_InterruptPreemptsInFlightSend` (RED proof: "interrupt queued behind the in-flight send", 2.1s fail pre-fix; green post-fix; the parked goroutine is cleanup-safe). The golden serialization row now uses compact (interrupt's queueing was never the property under test there — the matrix row is about MUTATING actions); `TestActOp_InterruptAdmissionRace` (the I7 preservation property) is unchanged and green.
+
+**f3 (wedge over-classification):** the Act-path probe now requires `cce.code == "invalid_argument"` (the connect mapping of the harness 400 main gates on) — strict parity with flag-off for identical harness bytes. Pinned red-first: `TestSessionsAct_SendMessage_WedgeRequiresInvalidArgumentCode` (an internal-coded error carrying the marker stays 502; RED pre-fix).
+
+**E2E gate (the required level):**
+- `local/epic71-s1-sessions-act-e2e.sh` — cluster rows on the pool (which arms AGENTD_STATE_AUTHORITY, so the platform routes ARE the Act path): S1a happy sync send with the marker round trip; S1b abort PREEMPTS a slow mock turn (budget 10s < turn 45s — the cluster-level r2-f2 pin) and the session settles idle; S1c rename verified AGENT-side (non-circular truth); S1d delete verified by agent-side 404; S1e send/abort/delete on a dead session pin the byte-exact 502 bodies. Distinct WS_BASE (e2e71100-…), distinct mock (mock-llm-s1) so the AC-1d mock is untouched.
+- Wired into `us-70-delivery-pool.yml` as a seam-inert leg AFTER the 3a walkaway rows and BEFORE the fault seam arms (the established ordering discipline); dispatched on the final head for the merge-gate evidence.
+- `local/epic71_s1_sessions_script_test.go` pins the structure (bash syntax, lib sourcing, distinct base, the preempt-budget discriminator, agent-side truth asserts, the pinned bodies, the pool wiring + ordering).
+
+**Reviewer's noted non-blocking items:** the create-session HANDLER has no cluster row (the route is not registered in the router — sessions/new is the unmigrated service path, disclosed; the Act create arm is pinned by agentd rows + handler rows); the E4 attachments Playwright flake is the documented known-flaky (0893) — the `--failed` rerun cleared it on this branch.
+
+## Tests run (r2)
+
+- `go test -race`: sessionstate (200s), handlers (900s) — ok; `./local/` — ok (new pin rows)
+- golangci-lint 0 issues; make repolint passed; bash -n clean
