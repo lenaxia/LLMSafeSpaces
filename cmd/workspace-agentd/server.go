@@ -437,6 +437,11 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
+	// Live browser timezone: the API pushes the user's IANA zone here on
+	// browser (re)connect; get_datetime renders user-local time from it.
+	// Same §D1 carve-out credential pair as every API-driven route.
+	userMux.HandleFunc("/v1/user-timezone", userTimezoneHandler(deps.password, deps.controlPlanePassword))
+
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
 	// user mux, symmetric with the control-plane routes (design epic-68 D1) — the
 	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.

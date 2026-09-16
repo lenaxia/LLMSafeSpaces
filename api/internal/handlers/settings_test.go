@@ -4,6 +4,12 @@
 package handlers
 
 import (
+	"strings"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -518,3 +524,59 @@ func TestAdminSettings_PUT_DevPreview_BoundsRejected(t *testing.T) {
 }
 
 func ptr(i int) *int { return &i }
+
+// Timezone setting updates fire the push hook (async, best-effort —
+// the PUT succeeds regardless); non-timezone keys never do.
+func TestSetUserSetting_TimezoneFiresPushHook(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMockSettingsStore()
+	var logger pkginterfaces.LoggerInterface = &mockSettingsLogger{}
+	h := NewSettingsHandler(settings.NewInstanceService(store, logger), settings.NewUserService(store, logger))
+	called := make(chan string, 1)
+	h.SetTimezonePushHook(func(_ context.Context, userID, tz string) {
+		if userID == "test-user-1" {
+			called <- tz
+		}
+	})
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "test-user-1"); c.Next() })
+	r.PUT("/api/v1/users/me/settings/:key", h.SetUserSetting)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/me/settings/timezone", strings.NewReader(`{"value":"America/Los_Angeles"}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "PUT must succeed: %s", w.Body.String())
+
+	select {
+	case tz := <-called:
+		assert.Equal(t, "America/Los_Angeles", tz)
+	case <-time.After(2 * time.Second):
+		t.Fatal("push hook never fired")
+	}
+}
+
+func TestSetUserSetting_OtherKeyNoHook(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newMockSettingsStore()
+	var logger pkginterfaces.LoggerInterface = &mockSettingsLogger{}
+	h := NewSettingsHandler(settings.NewInstanceService(store, logger), settings.NewUserService(store, logger))
+	fired := make(chan struct{}, 1)
+	h.SetTimezonePushHook(func(_ context.Context, _, _ string) { fired <- struct{}{} })
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "test-user-1"); c.Next() })
+	r.PUT("/api/v1/users/me/settings/:key", h.SetUserSetting)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/me/settings/sendOnEnter", strings.NewReader(`{"value":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	select {
+	case <-fired:
+		t.Fatal("hook must not fire for non-timezone keys")
+	case <-time.After(300 * time.Millisecond):
+	}
+}

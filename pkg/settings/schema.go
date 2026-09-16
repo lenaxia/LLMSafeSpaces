@@ -58,7 +58,9 @@ package settings
 // Epic 68 D12) — the composer options-drawer preference. New key; frontend and
 // admin schema caches must refresh. Canary twins updated in lockstep
 // (TestCanary_SchemaVersion_TwinParity).
-const SchemaVersion = 14
+// Bumped to 15 (2026-09-16): added the user `timezone` key (IANA name
+// from the browser; pushed live to workspace pods for user-local time).
+const SchemaVersion = 15
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -203,6 +205,9 @@ func UserSettings() []SettingDef {
 		{Key: "codeBlockWordWrap", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Code Word Wrap", Description: "Wrap long lines in code blocks"},
 		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)"},
 		{Key: "preferredModel", Tier: 3, Type: TypeString, Default: "", Category: "Chat", Label: "Preferred Model", Description: "Default model ID"},
+		// Locale — pushed live to the user's workspace pods so agents
+		// report user-local time (get_datetime source: browser).
+		{Key: "timezone", Tier: 3, Type: TypeString, Default: "", Pattern: `^[A-Za-z_]+(/[A-Za-z0-9_+-]+)+$|^UTC$|^$`, Category: "Locale", Label: "Timezone", Description: "IANA timezone name from the browser (e.g. America/Los_Angeles); used by workspace agents to report user-local times"},
 		// Epic 68 D12: composer options-drawer state. "auto" is the
 		// media-query-aware default (open on desktop, collapsed on mobile);
 		// "open"/"collapsed" are the persisted explicit overrides. The enum

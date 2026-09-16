@@ -33,6 +33,7 @@
 package agentpush
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -398,4 +399,51 @@ func (s *Service) info(msg string, fields ...interface{}) {
 	if s.logger != nil {
 		s.logger.Info(msg, fields...)
 	}
+}
+
+// PushUserTimezone delivers the user's browser-reported IANA zone to a
+// workspace pod's agentd (POST /v1/user-timezone) so get_datetime can
+// render user-local time. Fire-and-forget by design: failures are
+// latency-only — the next browser (re)connect re-pushes, and the pod
+// keeps its last-known zone meanwhile.
+func (s *Service) PushUserTimezone(ctx context.Context, userID, workspaceID, timezone string) error {
+	if timezone == "" {
+		return nil
+	}
+	if s.podResolver == nil {
+		return ErrNoPodIPResolver
+	}
+	podIP, err := s.podResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
+	if err != nil || podIP == "" {
+		return ErrNoRunningPod
+	}
+	if s.passwords == nil {
+		return ErrNoPasswordProvider
+	}
+	password, err := s.passwords.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("resolve workspace password: %w", err)
+	}
+
+	body, err := json.Marshal(map[string]string{"timezone": timezone})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://%s:%d/v1/user-timezone", podIP, agentd.AgentdPort), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("push user timezone: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("push user timezone: pod returned %d", resp.StatusCode)
+	}
+	return nil
 }
