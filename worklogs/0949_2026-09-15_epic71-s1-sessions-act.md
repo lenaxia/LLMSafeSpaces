@@ -129,3 +129,9 @@ Main's #1376/#1379 train landed the #1307 text-only-wedge classification (`agent
 
 - `go test -race`: sessionstate (200s), handlers (900s) — ok; `./local/` — ok (new pin rows)
 - golangci-lint 0 issues; make repolint passed; bash -n clean
+
+### Pool dispatch history (the e2e gate's own record)
+
+- Run 35031471918 (pre-rebase head c85f14e3): **success** — the delivery/walk-away legs green on the pre-remediation code (the s1 leg did not exist yet).
+- Run 35042070419 (final head, dispatched concurrently with the prev-head run): **failure — cluster collision.** Both dispatches shared the fixed `llmsafespaces-ci` kind cluster/runner set; the newer run's legs died on apiserver/etcd health (`kc apply failed after 5 attempts` across every leg from 01:24). Re-dispatched serially.
+- Run 35045727054 (serial, final head): the s1 leg ran for the first time. **S1a ✓ (Act send round trip), S1b abort-preempt ✓ (204 in 0s — the r2-f2 cluster pin held), S1c ✓ (agent-side rename), then two script defects:** the idle-settle assert was budgeted (30s) below the slow turn's own duration (45s — the abort stops the TURN, but the in-flight provider HTTP call runs to completion before the harness reaps it; the settle is turn-bounded, now S1B_SLOW_TURN_S + 60), and `http_code_of`'s third positional was unbound under `set -u` on the two-arg DELETE call (killed the script at S1d). Both fixed; re-dispatched.
