@@ -81,3 +81,26 @@ func TestEpic71S1Script_PoolWiring(t *testing.T) {
 		t.Fatalf("the s1 rows must be wired before the fault seam arms in the pool")
 	}
 }
+
+func TestEpic71S1Script_BudgetDefaultsEvaluate(t *testing.T) {
+	// Pool r2 on this leg died at script START: the idle budget's
+	// arithmetic default referenced S1B_SLOW_TURN_S before its
+	// declaration (unbound under set -u). bash -n cannot see that class;
+	// evaluate the extracted default block under set -euo pipefail.
+	bash := requireBash(t)
+	src := mustRead(t, epic71S1Script)
+	start := strings.Index(src, `S1B_ABORT_BUDGET_S=`)
+	end := strings.Index(src[start:], `WS_BASE="`)
+	if start < 0 || end < 0 {
+		t.Fatalf("could not locate the S1B budget-default block in %s", epic71S1Script)
+	}
+	block := src[start : start+end]
+	cmd := exec.Command(bash, "-c", "set -euo pipefail\n"+block+"\necho ok=${S1B_IDLE_BUDGET_S}")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("budget defaults fail under set -euo pipefail: %v: %s", err, out)
+	}
+	if !strings.Contains(string(out), "ok=") {
+		t.Fatalf("budget defaults did not evaluate: %s", out)
+	}
+}

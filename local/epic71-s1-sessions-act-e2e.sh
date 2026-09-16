@@ -34,13 +34,13 @@ source "${SCRIPT_DIR}/lib/us70-common.sh"
 WS_BASE="${WS_BASE:-e2e71100-0000-4000-8000-000000000000}"
 
 S1B_ABORT_BUDGET_S="${S1B_ABORT_BUDGET_S:-10}"
+S1B_SLOW_TURN_S="${S1B_SLOW_TURN_S:-45}"
 # The idle settle is bounded by the slow turn's OWN end, not the abort:
 # the abort stops the TURN (the preempt row), but the in-flight provider
 # HTTP call runs to its completion before the harness reaps the turn —
 # the first pool run pinned this (idle unobserved inside 30s of a 45s
 # turn). Budget = turn duration + reaping margin.
 S1B_IDLE_BUDGET_S="${S1B_IDLE_BUDGET_S:-$(( S1B_SLOW_TURN_S + 60 ))}"
-S1B_SLOW_TURN_S="${S1B_SLOW_TURN_S:-45}"
 
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
