@@ -5,6 +5,7 @@ package sessionstate_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -45,6 +46,15 @@ func (p parkingActor) Act(ctx context.Context, sessionID string, req *abiv1.Acti
 		return nil, ctx.Err()
 	}
 	return verbResult(verbOf(req), req), nil
+}
+
+// harnessDeadlineActor returns a DeadlineExceeded-WRAPPING error
+// immediately — a harness-internal deadline that raced (and lost to)
+// nothing: the agentd budget has NOT fired when it arrives.
+type harnessDeadlineActor struct{}
+
+func (harnessDeadlineActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	return nil, fmt.Errorf("harness route deadline: %w", context.DeadlineExceeded)
 }
 
 // answerBudget returns the injected-answer-timeout mutator (150ms —
@@ -244,6 +254,18 @@ func TestAct_AnswerBudget_TypedDeadlineError(t *testing.T) {
 		require.ErrorAs(t, err, &cerr)
 		assert.Equal(t, connect.CodeCanceled, cerr.Code(), "the CALLER's cancel surfaces — distinct from the budget deadline")
 		assert.Equal(t, int64(0), a.Metrics().AnswerBudgetExceeded, "a caller cancel is not a budget expiry")
+	})
+
+	t.Run("harness-internal deadlines are not the budget", func(t *testing.T) {
+		// An actor error WRAPPING DeadlineExceeded but produced before
+		// the budget fired (a harness-internal deadline) must not count
+		// as a budget expiry — the budget context is the classifier,
+		// not the actor's error shape (exact counter semantics).
+		a := actionsAuthority(t, harnessDeadlineActor{}, allActions(), nil, answerBudget(150*time.Millisecond))
+		_, err := a.Act(context.Background(), connect.NewRequest(answerRequest("s1", "per_hd")))
+		require.Error(t, err)
+		assert.Equal(t, int64(0), a.Metrics().AnswerBudgetExceeded,
+			"a harness-internal deadline is not OUR budget — the canary counter stays exact")
 	})
 
 	t.Run("non-answer verbs keep the unbounded sole-writer wait", func(t *testing.T) {

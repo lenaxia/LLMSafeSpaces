@@ -141,14 +141,19 @@ func (a *Authority) actAnswer(ctx context.Context, m *abiv1.ActionRequest) (*abi
 	if err != nil {
 		// The caller's own cancellation surfaces as Canceled — never
 		// masked as the budget's deadline (the UI must tell "I gave up"
-		// from "the harness is busy").
+		// from "the harness is busy"). Checked before the 404 fold: a
+		// NotFound racing the cancel skips resolveByAbsence and the
+		// lease diff's next tick converges the projected ask (bounded).
 		if ctx.Err() != nil {
 			return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
 		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			// The budget fired: fast, typed, retryable — never the 125s
-			// silent hang this path used to inherit from the caller's
-			// context. Counted so the canary class stays visible.
+		if fctx.Err() == context.DeadlineExceeded {
+			// The budget context — not the actor's error shape —
+			// classifies the expiry: a harness-INTERNAL deadline that
+			// merely wraps DeadlineExceeded keeps its own error below
+			// and the canary counter exact. The budget fired: fast,
+			// typed, retryable — never the 125s silent hang this path
+			// used to inherit from the caller's context.
 			a.mu.Lock()
 			a.answerBudgetExceeded++
 			a.mu.Unlock()

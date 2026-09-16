@@ -42,6 +42,17 @@ New `act_answer_test.go` (+ helper variadic on `actionsAuthority`):
 
 `L12 — answer latency ≤ 2s under a busy session (L2's missing half)`; fault leg: answer racing an in-flight admission. Posted as a comment on #1312 referencing this PR.
 
+### Review iteration 1 (AI reviewer: REQUEST CHANGES → fixed)
+
+The reviewer verified the root cause, the leaf-lock claim (read every `sessionLock` taker), and empirically reproduced the TDD RED state (backported compile prerequisites onto merge-base, ran the new tests: FAIL pre-fix, PASS at HEAD with `-race`). Findings + dispositions:
+
+1. **[REAL, fixed] Prometheus delta bridge unpinned.** `answerBudgetDelta` + `llmsafespaces_answer_budget_exceeded_total` landed without the two pins the #1342 sibling convention carries. Fixed: `TestAnswerBudgetMetric_FunnelAdvances` (advance-by-1, no double-count on re-record, authority-recreation reset, +1 delta after recreation — deleting the bridge block fails it) + the name added to `TestMetricsScrape_Completeness`'s required list.
+2. **[REAL, fixed] Exact counter semantics.** `errors.Is(err, context.DeadlineExceeded)` attributed ANY DeadlineExceeded-wrapping error to the budget (a harness-internal deadline would overcount the canary). Fixed: classification gates on `fctx.Err() == context.DeadlineExceeded` — the budget context, not the actor's error shape. New RED-then-GREEN leg: `harness-internal deadlines are not the budget` (counter stays 0; the error keeps its own shape through the passthrough paths).
+3. **[REAL, fixed] One-line comment** at the caller-cancel-before-404-fold ordering (a NotFound racing the cancel skips resolveByAbsence; the lease diff's next tick converges — bounded, no user impact).
+4. **[DONE] Tracking issue #1399** for the browser e2e follow-up (live-cluster tier — the Playwright tier is route-mocked and cannot exercise this lock), per the reviewer's "would make it airtight" note.
+
+Reviewer's audit note recorded: the stale github-actions "Fixed" comment on #1396 references a branch that doesn't exist on the remote and artifacts that don't match this PR — closure rests on this PR's diff.
+
 ---
 
 ## Key Decisions
