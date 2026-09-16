@@ -85,6 +85,17 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 	uid := string(workspace.UID)
 	name := podName(workspace.Name, uid)
 
+	// #761: drain in-flight sessions before the pod deletion. This gate
+	// covers every path that funnels into Suspending — user suspend,
+	// org-level suspension, idle auto-suspend, and the spec timeout. While
+	// sessions are busy AND making progress the deletion is deferred; the
+	// phase stays Suspending (established SSE streams keep flowing — the
+	// proxy only 503s NEW requests while not Active). Terminating a
+	// wedged turn is bounded by the drain's stall window.
+	if r.drainBeforePodDeletion(ctx, workspace, drainReasonSuspend) == drainDefer {
+		return ctrl.Result{RequeueAfter: drainPollInterval}, nil
+	}
+
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
 	// US-24.8 F22: suspend clears recovery state for a fresh start on resume.

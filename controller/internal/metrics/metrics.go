@@ -56,6 +56,23 @@ var (
 	WorkspaceControllerRestartsTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_controller_restarts_total", Help: "Pod restarts initiated by the controller's health-check loop (distinct from user-initiated RestartGeneration bumps)"},
 	)
+	// #761 session-aware drain before controller-initiated pod deletion.
+	// Deferred: a deletion was postponed because sessions were busy (once
+	// per drain window, not per poll). Forced: deletion proceeded despite
+	// busy sessions stalled beyond the drain bound. FailedOpen: statusz was
+	// unreachable, so busy state was unknown and deletion proceeded.
+	WorkspaceDrainDeferredTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_deferred_total", Help: "Pod-deletion drains deferred behind busy sessions (#761), by deletion path. Once per drain window"},
+		[]string{"reason"},
+	)
+	WorkspaceDrainForcedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_forced_total", Help: "Pod deletions forced despite busy sessions stalled beyond the drain bound (#761), by deletion path"},
+		[]string{"reason"},
+	)
+	WorkspaceDrainFailedOpenTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_failed_open_total", Help: "Pod-deletion drains that failed open because agentd statusz was unreachable (#761), by deletion path"},
+		[]string{"reason"},
+	)
 	WorkspacesInRecovery = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "llmsafespaces_workspaces_in_recovery", Help: "Workspaces currently in recovery backoff (ConsecutiveFailures > 0 and not Active)"},
 	)
@@ -227,6 +244,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceRecoveryBackoffDurationSeconds,
 		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
+		WorkspaceDrainDeferredTotal, WorkspaceDrainForcedTotal, WorkspaceDrainFailedOpenTotal,
 		WorkspaceAgentdVerifyFailuresTotal,
 		WorkspaceOpencodeVerifyFailuresTotal,
 		WorkspacePlatformBootFailuresTotal,

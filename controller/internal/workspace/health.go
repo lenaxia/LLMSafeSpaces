@@ -316,19 +316,15 @@ func statuszWithBearers(ctx context.Context, client *http.Client, url string, be
 	return nil, fmt.Errorf("all %d bearer candidates rejected (401) for %s", len(bearers), url)
 }
 
-func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Workspace, elapsed time.Duration) {
-	if ws.Status.PodIP == "" {
-		return
-	}
-
-	endpoint := fmt.Sprintf("http://%s:%d/v1/statusz", ws.Status.PodIP, agentdAdminPort)
-
-	// F1.4.2 (Epic 17) + #887 D5.1: /v1/statusz requires a Bearer token.
-	// Candidates in try-order: the DISTINCT admin token (file-delivery
-	// pods), then the workspace password (legacy pods whose agentd still
-	// authenticates with it). Read best-effort — a missing Secret means
-	// failed auth, logged at V(1) like any other deep-status failure
-	// (informational only).
+// agentStatuszBearers assembles the Bearer try-order for the admin-mux
+// /v1/statusz scrape (#887 D5.1): the DISTINCT admin token (file-delivery
+// pods) first, then the workspace password (legacy pods whose agentd still
+// authenticates with it). Read best-effort — a missing Secret yields an
+// empty candidate list, which statuszWithBearers degrades to a single
+// unauthenticated attempt (matching the pre-#887 behavior for Secret-less
+// environments; the #761 drain relies on the resulting failure to fail
+// open on the password-secret-missing path).
+func (r *WorkspaceReconciler) agentStatuszBearers(ctx context.Context, ws *v1.Workspace) []string {
 	bearers := []string{}
 	pwSec := &corev1.Secret{}
 	if pwErr := r.Get(ctx, types.NamespacedName{Name: passwordSecretName(ws.Name), Namespace: ws.Namespace}, pwSec); pwErr == nil {
@@ -339,17 +335,18 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 			bearers = append(bearers, string(v))
 		}
 	}
+	return bearers
+}
 
-	resp, err := statuszWithBearers(ctx, deepStatusHTTPClient, endpoint, bearers)
+func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Workspace, elapsed time.Duration) {
+	if ws.Status.PodIP == "" {
+		return
+	}
+
+	status, err := r.fetchAgentStatusz(ctx, deepStatusHTTPClient, ws)
 	if err != nil {
 		// Deep-status failure is informational only. Log at debug level.
 		log.FromContext(ctx).V(1).Info("deep-status poll failed (informational only)", "error", err.Error())
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var status agentd.StatuszResponse
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 		return
 	}
 
