@@ -202,9 +202,10 @@ propagation latency, design §4.4) — plus a token `exp` clock-skew test (skew
 tolerance bound pinned); `router_logs_metadata_only` (K7: drive a full
 request/response, capture every log/metric emission, assert zero body bytes);
 key-machinery tests (this story owns the ROUTER side — rotate receipt,
-preconditioned updates, adopt/watch/assert/resolve/retention; the
-controller-side reconcile predicate that terminates DR windows is owned and
-tested by US-72.3): `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
+preconditioned updates, adopt/watch/assert/resolve/retention; BOTH
+controller-side behaviors — the reconcile predicate that terminates DR
+windows AND seal-time pub-generation validation — are owned and tested by
+US-72.3): `firstboot_two_replica_adopt`, `rotation_dual_key_window_bounded`
 (window ≤ watch bound, both replicas), `rotation_assert_quiesced_in_torn_window`
 (peer private-key load during the private-then-pub window never fires DR — the
 assert is self-contained, generation-tagged; generation checks against the pub
@@ -270,10 +271,11 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
   is sealed against it (shape-invalid pub bytes fail parsing outright).
 
 **Test plan (TDD):** `dr_window_reconcile_terminates` (pub-generation change →
-re-seal; persistent *resolve-failure-class* stale with intact lineage and
+re-seal; corruption/wrong-pub-class stale with intact spawn-layer lineage and
 unchanged generation → anti-storm-bounded rotate escalation; escalation
-SUPPRESSED for revocation-class and delivery-class staleness — the
-controller-side predicate, homed HERE per design §4.2);
+SUPPRESSED for revocation-class, delivery-class (incl. the #852 deferral
+window), and token-expiry-class staleness — the controller-side predicate,
+homed HERE per design §4.2);
 `pub_sealtime_generation_validated` (pub generation ≠ rotate response →
 rejected, never sealed against; shape-valid wrong-pub residual surfaces as
 `CredentialStale` — also homed HERE: the seal-time check is controller-side,
