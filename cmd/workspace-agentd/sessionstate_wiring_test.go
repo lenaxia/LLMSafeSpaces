@@ -269,3 +269,45 @@ func TestOpencodeAdmitter_WireDriftCorruption(t *testing.T) {
 		})
 	}
 }
+
+// TestOpencodeStoreReader_SessionStates_WireDriftCorruption (leg-10,
+// epic-71 / leg10-pins, #1312 — r3 review reproduced this on HEAD: a
+// corrupted 200 on /question or /permission rode silently into
+// SessionStates as err=nil, PendingInputs empty — phantom-empty
+// pending inputs on the authority/reseed path). The documented
+// authoritative-empty contract covers 404/conn-refused ONLY (opencode
+// versions without the endpoints never had questions); a 200 carrying
+// drift is indeterminate and must error.
+func TestOpencodeStoreReader_SessionStates_WireDriftCorruption(t *testing.T) {
+	corrupt := map[string]string{
+		"invalid_json":     `[{"id":"que_1","sessionID":"ses_1","ti`,
+		"trailing_garbage": `[]garbage-bytes`,
+		"empty_body":       ``,
+		"html_error_page":  `<html><body>502 Bad Gateway</body></html>`,
+	}
+	for name, questionBody := range corrupt {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/session":
+					_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+				case "/question":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(questionBody))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[]`))
+				}
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+			seeds, err := r.SessionStates(context.Background())
+			require.Error(t, err, "a corrupted pending-inputs 200 must never read as authoritative-empty (drift is indeterminate)")
+			assert.Empty(t, seeds)
+		})
+	}
+}

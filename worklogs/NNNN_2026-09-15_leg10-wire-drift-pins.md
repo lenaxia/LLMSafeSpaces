@@ -133,11 +133,13 @@ Out-of-class remainder (enumerated, NOT opencode wire — left lenient deliberat
 
 RED evidence pre-fix (r2 sites): trailing_garbage failures at IsHealthy, ConnectedProviders, ConfiguredProviderCount, MessagePresence, Admit, post, fetchFreeModels, agentMessage parse, FailOpenDisplayValues log assert.
 
-| Mutation | Result |
-|---|---|
-| M6a/M6b: adapter.go / verifydelivery.go reverted to lenient Decode | trailing_garbage red at each (2 red) |
-| M7: agentd `ListSessions` decode swallowed | 4 red (all modes) |
-| M8: `fetchSessionTitle` reverted to the swallowed decode | `DriftStaysBestEffort` red via the observer (the log assert is load-bearing) |
+### 11. Review round 3 — fetchList + cosmetics (r3 findings)
+
+The r3 review reproduced one more live in-class defect on HEAD and two cosmetics; all closed:
+
+- **`sessionstate_wiring.go` `fetchList` (the `SessionStates` boot-reseed path)** — a corrupted 200 on `/question`//`/permission` rode silently in as `err=nil` with empty PendingInputs (phantom-empty pending inputs on the authority/reseed path; reproduced by the reviewer with the identical `[]garbage` body). Fix: the corrupted-200 decode now ERRORS (`gather %s: malformed body`); the documented 404/conn-refused → authoritative-empty boot contract is unchanged (opencode versions without the endpoints never had questions). `SessionStates` propagates the error. 4-mode pin: `TestOpencodeStoreReader_SessionStates_WireDriftCorruption`. Mutation M10 (swallow reverted) → 4 subtests red.
+- Cosmetic: duplicated Admit comment block removed (introduced by the r2 scripted edit); duplicated §8 table in this worklog removed (edit error).
+- Enumerated drift-safe loud sites (error-propagating `Unmarshal` on the same wires — NOT in the phantom-success class, no pin needed): `sessionstate_wiring.go:737` `opencodeActor.post`, `pkg/agent/opencode/adapter_helpers.go:110` `parseProviderCatalogForContract`.
 
 ---
 
@@ -163,7 +165,8 @@ None.
 - RED (pre-fix, round 3): 10 FAIL (trailing_garbage × IsHealthy, ConnectedProviders, ConfiguredProviderCount, MessagePresence, Admit, post, fetchFreeModels, agentMessage/createdSessionID parses + FailOpenDisplayValues log assert)
 - GREEN (post-fix): all pins ok
 - Full gates: `go test -race -timeout 300s ./pkg/agent/opencode/` → **ok ~20s**; `go test -race -timeout 600s -count=1 ./cmd/workspace-agentd/` → **ok ~309s**
-- Mutation red-checks: r1 M1 (5), M2b (20), M3 (4), M4 (1), M5a/M5b (4+4); r2 M6a/b (2), M7 (4), M8 (1); r3 M9a-f (one trailing red per site, incl. `post`) — all restored
+- Mutation red-checks: r1 M1 (5), M2b (20), M3 (4), M4 (1), M5a/M5b (4+4); r2 M6a/b (2), M7 (4), M8 (1); r3 M9a-f (one trailing red per site, incl. `post`); r4 M10 (4) — all restored
+- RED (pre-fix, round 4): `SessionStates_WireDrift` 4 FAIL (corrupted /question → phantom-empty pending inputs)
 - `golangci-lint run ./pkg/agent/opencode/... ./cmd/workspace-agentd/...` → 0 issues
 - `gofmt -l` → clean; `make repolint` → all checks passed
 - faultmatrix NOT touched (no harness change) — CI runs it
@@ -174,7 +177,7 @@ None.
 
 1. (Deferred, needs live pod) Capture real 1.18.x fixtures for the seam's decode sites (POST /session response, /session/:id/message response, /api/session/:id/context, /config/providers catalog) into `pkg/agent/opencode/testdata/` — the #730 REFRESH.md discipline; closes the renamed-field blind spot that corruption pins cannot see (except `SessionCreate`'s id and the workflow created-session id).
 2. (Deferred) The L2 real-binary integration leg (`loopback_integration_test.go`, build-tagged) is the strongest seam drift guard — consider scheduling it in CI on the pinned binary.
-3. Reviewer-verified merge of this PR updates #1312 §1 row 10 to "green at 3+9+11 sites".
+3. Reviewer-verified merge of this PR updates #1312 §1 row 10 to "green at 3+9+11+1 sites".
 4. (Note) The workflow agent-node path dials the fixed `127.0.0.1:AgentPort` with no override seam — the r2 pins therefore target the extracted parse helpers; a future addr-override seam would allow socket-level pins.
 
 ---
@@ -194,8 +197,8 @@ None.
 - `pkg/agent/opencode/client_v2_test.go` — `TestPromptV2_WireDriftCorruption`, `TestMessagesV2_WireDriftCorruption` (r1)
 - `cmd/workspace-agentd/client.go` — local `decodeStrict`; all wire decodes strict (ListSessions, fetchSessionTitle, IsHealthy, ConnectedProviders, ConfiguredProviderCount, ModelContextLimit+log, fetchSessionPromptTokens) (r1+r2; #1379-touched file)
 - `cmd/workspace-agentd/client_drift_test.go` — agentd client drift pins (r1+r2)
-- `cmd/workspace-agentd/sessionstate_wiring.go` — MessagePresence / Admit / post decodes strict (r2)
-- `cmd/workspace-agentd/sessionstate_wiring_test.go` — MessagePresence + Admitter drift pins (r2)
+- `cmd/workspace-agentd/sessionstate_wiring.go` — MessagePresence / Admit / post decodes strict (r2); fetchList corrupted-200 → error, boot 404 contract unchanged (r3); duplicate comment removed
+- `cmd/workspace-agentd/sessionstate_wiring_test.go` — MessagePresence + Admitter drift pins (r2); SessionStates drift pin (r3)
 - `cmd/workspace-agentd/workflow_execute.go` — `parseAgentNodeResponse` / `parseCreatedSessionID` extracted + strict (r2)
 - `cmd/workspace-agentd/workflow_execute_test.go` — workflow parse drift pins (r2)
 - `cmd/workspace-agentd/relay_injector.go` — fetchFreeModels strict (r2)
