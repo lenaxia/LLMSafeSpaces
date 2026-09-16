@@ -122,3 +122,15 @@ None.
 **PR-body counts refreshed** (14/11 → 21 in both places, per the round-5 review).
 
 **Tests run this round:** `go test ./local/ -run TestReleasePreflight` — PASS (4/21, red-first); `go build ./...`, `make test`, `make lint` — green.
+
+---
+
+## Session 2, round 6 — 2026-09-16 (P4 digest-only honesty)
+
+**Round-6 finding (validated, fixed test-first):** P4's `else` printed "opencode coordinate aligned with the repo pin" for digest-only refs with no comparison performed — and digest-only is the mainline shape (`release.yml` merge-opencode emits `@digest`, no tag), so an index-valid but version-unvalidated digest passed exit 0 claiming alignment. Fix: the branch is split; digest-only refs now get an accurate message — the ref carries no upstream version to compare (verified against `release.yml`: the index annotations stamp `dev.llmsafespaces/version` = the PLATFORM version, so no mechanical ref↔pin binding exists), what IS verified mechanically (P1 membership, P2 annotations), and the procedural binding (copy the digest from the merge-opencode values block of the release that built the pin, checklist §2). Tag-carrying refs keep the real comparison and the "aligned" ok only when it was actually performed.
+
+**Checklist minor:** the third-party row now documents `mcp.image` as optional and skipped by the pre-flight when unset.
+
+**Regression test (red-first):** new leg "digest-only opencode ref claims no repo-pin alignment" — mainline digest-only candidate passes but the output must NOT contain "aligned with the repo pin" and must name the merge-opencode procedural binding; StructurePins gained the `P4 opencode ref is digest-only` row. Preflight suite: 4 funcs / 22 subtests.
+
+**Tests run this round:** `go test ./local/ -run TestReleasePreflight` — PASS (4/22, red-first); `go build ./...`, `make test`, `make lint` — green.

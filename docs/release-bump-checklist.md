@@ -34,7 +34,7 @@
 | per-arch binary sha256 (`binarySHA256Amd64/Arm64`) | break-glass overrides | stamped on each artifact's OCI index as annotations by CI; controller resolves them at startup | leave empty (image-only) in the normal form; if the index lacks annotations, set BOTH from the artifact's own build output — never from a platform image digest |
 | relay-proxy binaries (VM fleet) | release assets + sha256 | `controller.inferenceRelay.artifact.{urls,sha256Arm64,sha256Amd64}`; built by `make relay-bin`, published on the release (`publish-relay-binaries.yml` for ad-hoc builds) | recompute `sha256sum` per arch from the assets this release attached |
 | image-factory catalog seeds (extensions) | content pins (mise/apt versions) | `api/internal/imagefactory/catalog.seed.yaml` `extensions:` | ride the base's cadence, not the platform train |
-| third-party images (`migrations`, `dbInit`) | upstream tags (Renovate domain) | `helm/values.yaml` (`migrations.image`, `dbInit.image`) | Renovate PRs; not part of a coordinated bump |
+| third-party images (`migrations`, `dbInit`) | upstream tags (Renovate domain) | `helm/values.yaml` (`migrations.image`, `dbInit.image`) | Renovate PRs; not part of a coordinated bump. `mcp.image` is likewise optional and skipped by the pre-flight when unset (no workflow builds that image) |
 
 > *Forward reference:* design 0058 / epic-72 (relay-only key delivery) adds
 > a BYO-resolve router Deployment in the `llm-relay` namespace built from the

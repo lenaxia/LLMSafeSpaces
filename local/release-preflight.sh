@@ -189,6 +189,14 @@ elif [ -z "${OPENCODE_REF}" ]; then
   die "P4 controller.opencodeDelivery.image is empty — the delivery pin is mandatory (design 0053 §4.5)"
 elif [ -n "${OPENCODE_TAG}" ] && [ "${OPENCODE_TAG}" != "${PINNED_OPENCODE}" ]; then
   die "P4 candidate opencode '${OPENCODE_TAG}' != repo-validated pin '${PINNED_OPENCODE}' — the platform-validated coordinate is runtimes/opencode/Dockerfile; shipping an unvalidated opencode is the 2026-08-29 incident class"
+elif [ -z "${OPENCODE_TAG}" ]; then
+  # Digest-only is the mainline shape (release.yml merge-opencode emits
+  # @digest with no tag) and the index annotations carry the PLATFORM
+  # version, not the opencode version — so no ref↔pin comparison is
+  # possible here. Report exactly what is and is not verified; the
+  # version↔digest binding is procedural: paste the digest from the
+  # merge-opencode values block of the release that built this pin.
+  ok "P4 opencode ref is digest-only — the ref carries no upstream version to compare against the repo pin (${PINNED_OPENCODE}); verified mechanically: P1 index membership (+ P2 annotations when pinned); the version binding is procedural: copy the digest from the merge-opencode values block of the release that built pin ${PINNED_OPENCODE} (checklist §2)"
 else
   ok "P4 opencode coordinate aligned with the repo pin (${PINNED_OPENCODE}); contract gates: goldens + REFRESH.md + ci fixture-freshness + local/opencode-binary-contract.sh must be green for this pin"
 fi

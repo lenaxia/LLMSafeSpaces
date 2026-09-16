@@ -146,6 +146,7 @@ func TestReleasePreflightScript_StructurePins(t *testing.T) {
 		{`never use as a merge gate`, "offline degradation must carry its warning"},
 		{`agentdDelivery.image is empty`, "P2: the absent-agentd-ref detector (mandatory delivery pin)"},
 		{`the delivery pin is mandatory`, "delivery refs are mandatory, not skippable"},
+		{`P4 opencode ref is digest-only`, "P4: honest digest-only message — never claim an unperformed comparison"},
 		{`RESULT: FAIL`, "fail-loud exit contract"},
 	}
 	for _, r := range rows {
@@ -554,6 +555,40 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "RESULT: FAIL") {
 			t.Errorf("a P1 failure must still print the RESULT verdict:\n%s", out.String())
+		}
+	})
+
+	// Round-6 finding: digest-only opencode refs (the mainline shape —
+	// release.yml's merge-opencode block emits @digest with no tag) must
+	// not claim "aligned with the repo pin": no comparison is possible
+	// (the index annotations carry no opencode version), so the message
+	// must say what IS verified and where the binding actually lives.
+	t.Run("digest-only opencode ref claims no repo-pin alignment", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			// no ocTagRef: the mainline ref carries no tag at all
+			opencodeDg: idx2222,
+		}, nil)
+		values := strings.Replace(preflightHappyValues(t),
+			"opencode:"+repoPinnedOpencode(t)+"@", "opencode@", 1)
+		cmd := exec.Command("bash", "./"+preflightScript, onlineValues(t, srv.URL, values))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("digest-only is the mainline shape and must pass, got %v:\n%s", err, out.String())
+		}
+		if strings.Contains(out.String(), "aligned with the repo pin") {
+			t.Errorf("a digest-only ref carries no version to compare — alignment must not be claimed:\n%s", out.String())
+		}
+		for _, want := range []string{
+			"P4 opencode ref is digest-only",
+			"merge-opencode", // the procedural binding
+			"RESULT: PASS",   // mainline shape still passes
+		} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output missing %q:\n%s", want, out.String())
+			}
 		}
 	})
 
