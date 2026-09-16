@@ -83,39 +83,32 @@ tzdata-delivery break or full-channel regression shipped green.
   This is the only leg that exercises the FROM-scratch tzdata embed on
   real cluster delivery; the static `go list` tripwire cannot.
 - Liveprobe get_datetime probes rewritten to the double-layer parse
-  (round-5 finding: three probes were permanent false negatives matching
-  escaped quote forms); all error classes fail closed. NOTE: Test 5b's
-  parse is a deliberate DUPLICATE of the liveprobe's inline python3, not
-  a shared helper — the two scripts live in different run contexts
-  (kubectl-exec vs local curl) and were reviewed independently; a shared
-  helper is a non-blocking follow-up if a third consumer appears.
-- Test-plan rows corrected (10/10 on pre-#1389 agentd; +6 timezone
-  probes engage post-deploy; the CI-gated leg now has its own row).
-- Frontend: dedup-half pinned (121s constant zone → still 1 call);
-  retry test scoped to interval-only fake timers; test order
-  documented as load-bearing.
+  (envelope → content[0].text → fields): the raw-body greps were
+  permanent false negatives (escaped quote forms); all error classes
+  fail closed. Test 5b's parse is a deliberate DUPLICATE of the
+  liveprobe's inline python3, not a shared helper — different run
+  contexts (kubectl-exec vs local curl); a shared helper is a
+  follow-up if a third consumer appears.
+- Test-plan corrections: the L3 rows were fixed across rounds 7–8
+  (manual row regained its Status cell; the kind row's dangling cell
+  removed; both rows 4 cells, matching the table).
+- Frontend dedup/retry pins: once-per-session dedup-half pinned (121s
+  constant zone → still 1 call); retry test scoped to interval-only
+  fake timers (full-fake broke React's mount scheduler).
 
-## Review round 5 remediations
+## Review round 4 remediations
 
 - The round-3 `PW2` alias removal left three usages unbound — 5 of 6
   timezone probes were silently dead (`set -u` made each `$PW2` curl
   exit without executing; the parent `|| note 1` then failed them).
   Repaired to `$PW` throughout; reviewer stub-repro confirmed 6/6.
-- Three get_datetime probes grepped the RAW /v1/mcp body for
-  `"source":"browser"` — but the tool result is a JSON string nested
-  in content[0].text (escaped quotes on the wire): all three were
-  permanent false negatives. Replaced with a double-layer parse
-  (envelope → content[0].text → fields).
-- Test-plan "10/10" rows corrected: 10 pass on pre-#1389 agentd; the 6
-  timezone probes auto-skip until this PR's agentd deploys.
-- Frontend: zone-change re-report pinned (injectable `browserTimezone`
-  seam, scoped fake interval timers — full-fake broke React's mount
-  scheduler, order documented as load-bearing); once-per-session
-  dedup-half pin added.
+- Frontend zone-change re-report pinned (injectable `browserTimezone`
+  seam, scoped fake interval timers); test order documented as
+  load-bearing.
 - `(nil,nil)` lister pin added (real discriminator: dropping the guard
   panics); `got.userID` in the StreamEvents pin.
 
-## Review round 4 remediations
+## Review round 3 remediations
 
 - Liveprobe header corrected: the script is NOT read-only (the timezone
   leg persistently overwrites the pod's last-known zone; an
@@ -134,7 +127,7 @@ tzdata-delivery break or full-channel regression shipped green.
   (browser→setting→push→pod on CI hardware) remains a documented
   follow-up.
 
-## Review round 3 remediations
+## Review rounds 1–2 remediations
 
 - tzdata import actually placed in `main.go` (round 1's was
   accidentally absent — the reviewer's scratch-context repro caught the
@@ -146,8 +139,6 @@ tzdata-delivery break or full-channel regression shipped green.
   per-pod-failure continuation, list-failure and nil-collaborator pins.
 - Typed result struct with omitempty timezone; `assert.NotContains`
   pins the absent-key contract. Handler param names aligned with deps.
-- L3 liveprobe: 6 timezone probes (auto-skip on pre-#1389 agentd).
-- Frontend retry-on-failure test (verified discriminator).
 
 ## Tests
 
