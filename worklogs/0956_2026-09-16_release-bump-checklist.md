@@ -84,7 +84,7 @@ None.
 - `helm/runtimeenvironment_base_test.go` (new — render-gate failure paths)
 - `docs/operator/runtime-environments.md`, `docs/reference/helm-values.md`, `helm/README.md` (stale fallback docs corrected)
 - `api/internal/services/database/database.go` + 7 `*_integration_test.go` files (pre-existing lint failures fixed, Rule 5)
-- `worklogs/NNNN_2026-09-16_release-bump-checklist.md` (this file)
+- `worklogs/0956_2026-09-16_release-bump-checklist.md` (this file)
 
 ---
 
