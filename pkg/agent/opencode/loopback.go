@@ -153,7 +153,7 @@ func (c *Client) SessionCreate(ctx context.Context, title string) (string, error
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &out); err != nil {
 		return "", fmt.Errorf("POST /session: decode: %w", err)
 	}
 	if out.ID == "" {
@@ -287,7 +287,7 @@ func (c *Client) SessionSend(ctx context.Context, sessionID, text, model string,
 			Text string `json:"text"`
 		} `json:"parts"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64<<20), &out); err != nil {
 		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
 	}
 	var texts []string
@@ -450,7 +450,7 @@ func (c *Client) SessionContextCount(ctx context.Context, sessionID string) (int
 	var out struct {
 		Data []json.RawMessage `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 16<<20), &out); err != nil {
 		return 0, fmt.Errorf("GET /api/session/%s/context: decode: %w", sessionID, err)
 	}
 	return len(out.Data), nil
@@ -527,7 +527,7 @@ func (c *Client) SessionModelRef(ctx context.Context, sessionID string) (*sessio
 			ProviderID string `json:"providerID"`
 		} `json:"model"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&s); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &s); err != nil {
 		return nil, fmt.Errorf("GET /session/%s: decode: %w", sessionID, err)
 	}
 	if s.Model == nil || s.Model.ID == "" {
@@ -567,7 +567,7 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 			} `json:"models"`
 		} `json:"providers"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&result); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 32<<20), &result); err != nil {
 		return nil, fmt.Errorf("GET /config/providers: decode: %w", err)
 	}
 	for _, p := range result.Providers {
@@ -597,6 +597,23 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	req.SetBasicAuth(agentd.AuthUsername, c.password)
 	req.Header.Set("Content-Type", "application/json")
 	return c.httpClient.Do(req)
+}
+
+// decodeStrict decodes exactly ONE JSON value from r and requires the
+// stream to end there. A plain Decode silently accepts trailing bytes
+// after the first value — the leg-10 wire-drift class (#1308: drifted
+// or proxy-corrupted bytes riding a valid HTTP 200 parsing as a
+// phantom success). Trailing whitespace (a final newline) stays
+// acceptable.
+func decodeStrict(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("trailing bytes after JSON value")
+	}
+	return nil
 }
 
 // statusError renders a non-2xx into an error carrying the route, status,
