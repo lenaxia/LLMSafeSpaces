@@ -41,6 +41,26 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("useTimezoneReporter dedup", () => {
+  it("does not re-report when the zone is unchanged across ticks", async () => {
+    const getZone = (): string => "Europe/Berlin";
+    const calls: string[] = [];
+    putSpy.mockImplementation((_k: string, v: unknown) => {
+      calls.push(v as string);
+      return Promise.resolve({} as { key: string; value: unknown });
+    });
+
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    renderHook(() => useTimezoneReporter(getZone));
+    await vi.waitFor(() => expect(calls).toEqual(["Europe/Berlin"]));
+    await vi.advanceTimersByTimeAsync(121_000); // two ticks, same zone
+    vi.useRealTimers();
+
+    // unchanged zone re-reports nothing
+    expect(calls).toEqual(["Europe/Berlin"]);
+  });
+});
+
 describe("useTimezoneReporter", () => {
   beforeEach(() => {
     putSpy.mockClear();
@@ -60,11 +80,10 @@ describe("useTimezoneReporter retry", () => {
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({} as never);
 
-    vi.useFakeTimers();
-    const { rerender } = renderHook(() => useTimezoneReporter());
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    renderHook(() => useTimezoneReporter());
     // First report fails async; the interval (60s) is faked forward.
     await vi.advanceTimersByTimeAsync(61_000);
-    rerender();
     await vi.advanceTimersByTimeAsync(61_000);
     vi.useRealTimers();
 

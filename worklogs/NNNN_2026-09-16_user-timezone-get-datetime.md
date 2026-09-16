@@ -69,6 +69,26 @@ secondary for pod-wide surfaces (log timestamps) and is NOT built.
    opens one; SDK/MCP callers do not (by design — they get
    argument/pod).
 
+## Review round 4 remediations
+
+- The round-3 `PW2` alias removal left three usages unbound — 5 of 6
+  timezone probes were silently dead (`set -u` made each `$PW2` curl
+  exit without executing; the parent `|| note 1` then failed them).
+  Repaired to `$PW` throughout; reviewer stub-repro confirmed 6/6.
+- Three get_datetime probes grepped the RAW /v1/mcp body for
+  `"source":"browser"` — but the tool result is a JSON string nested
+  in content[0].text (escaped quotes on the wire): all three were
+  permanent false negatives. Replaced with a double-layer parse
+  (envelope → content[0].text → fields).
+- Test-plan "10/10" rows corrected: 10 pass on pre-#1389 agentd; the 6
+  timezone probes auto-skip until this PR's agentd deploys.
+- Frontend: zone-change re-report pinned (injectable `browserTimezone`
+  seam, scoped fake interval timers — full-fake broke React's mount
+  scheduler, order documented as load-bearing); once-per-session
+  dedup-half pin added.
+- `(nil,nil)` lister pin added (real discriminator: dropping the guard
+  panics); `got.userID` in the StreamEvents pin.
+
 ## Review round 3 remediations
 
 - Liveprobe header corrected: the script is NOT read-only (the timezone
