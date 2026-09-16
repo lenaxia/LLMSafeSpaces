@@ -349,19 +349,19 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 func mcpGetDatetime(timezoneArg string) (string, error) {
 	now := time.Now()
 
-	location := now.Location()
+	location := time.Local
 	source := "pod"
 	name := ""
 
-	switch {
+	switch tz := userTimezone(); {
 	case timezoneArg != "":
 		loc, err := time.LoadLocation(timezoneArg)
 		if err != nil {
 			return "", fmt.Errorf("unknown timezone %q (IANA names like \"America/Los_Angeles\"; the tool cannot guess)", timezoneArg)
 		}
 		location, source, name = loc, "argument", timezoneArg
-	case userTimezone() != "":
-		tz := userTimezone() // already validated at the endpoint
+	case tz != "":
+		// already validated at the endpoint
 		if loc, err := time.LoadLocation(tz); err == nil {
 			location, source, name = loc, "browser", tz
 		}

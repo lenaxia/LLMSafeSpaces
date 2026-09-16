@@ -1357,7 +1357,7 @@ func TestMCPGetDatetime_FallbackPodZone(t *testing.T) {
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
 	assert.Equal(t, "pod", res["source"])
-	assert.Empty(t, res["timezone"], "no zone known — the name is absent, not faked")
+	assert.NotContains(t, res, "timezone", "no zone known — the key is absent, not empty-string faked")
 }
 
 func TestMCPGetDatetime_BrowserZoneWinsWhenNoArg(t *testing.T) {

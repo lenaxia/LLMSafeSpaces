@@ -2061,7 +2061,10 @@ func fanOutTimezonePush(ctx context.Context, pusher handlers.TimezonePusher, lis
 	// Limit 50 mirrors the sidebar's page size; users beyond it are
 	// covered by the SSE-connect push (fires per browser session).
 	list, err := lister.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
-	if err != nil {
+	if err != nil || list == nil {
+		if err == nil {
+			err = fmt.Errorf("lister returned nil result")
+		}
 		if log != nil {
 			log.Warn("timezone push: list workspaces failed", "userID", userID, "error", err.Error())
 		}

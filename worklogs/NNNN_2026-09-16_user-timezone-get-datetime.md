@@ -69,6 +69,25 @@ secondary for pod-wide surfaces (log timestamps) and is NOT built.
    opens one; SDK/MCP callers do not (by design — they get
    argument/pod).
 
+## Review round 3 remediations
+
+- Liveprobe header corrected: the script is NOT read-only (the timezone
+  leg persistently overwrites the pod's last-known zone; an
+  already-connected browser will not re-push until its next connect —
+  the "harmless" rationale was wrong for active sessions).
+- `fanOutTimezonePush` nil-result guard (lister returning (nil, nil)
+  no longer panics; logged as a list failure).
+- Weak duplicate `assert.Empty` pod-fallback pin replaced with the
+  binding `assert.NotContains`.
+- `userTimezone()` loaded once (`switch tz := userTimezone();`).
+- **CI-gated tzdata tripwire**: `TestTimeTzdataImported` runs
+  `go list -deps` in the agentd package and fails if `time/tzdata`
+  leaves the graph — the removal was invisible to every automated gate
+  (runners carry system tzdata; the live-pod leg is manual). This is
+  the static gate for the named invisible failure; a full kind e2e
+  (browser→setting→push→pod on CI hardware) remains a documented
+  follow-up.
+
 ## Review round 2 remediations
 
 - tzdata import actually placed in `main.go` (round 1's was

@@ -10,8 +10,12 @@
 # Usage (inside a workspace pod):
 #   scripts/mcp-tools-liveprobe.sh
 #
-# Exits 0 when all probes pass, 1 otherwise. Read-only except for the
-# scratch session it creates and deletes.
+# Exits 0 when all probes pass, 1 otherwise. NOT read-only: besides the
+# scratch sessions it creates and deletes, the user-timezone leg
+# PERSISTENTLY overwrites the pod's last-known browser zone (no reset
+# endpoint exists). Run it on a pod whose user is not mid-session, or
+# accept that the pod reports the probe's zone until the next browser
+# (re)connect re-pushes the real one.
 
 set -u
 PW=$(cat /sandbox-cfg/password 2>/dev/null) || { echo "FAIL: cannot read /sandbox-cfg/password"; exit 1; }
@@ -119,11 +123,11 @@ echo "---"
 # The live browser-zone channel end to end on a real pod: push a zone to
 # this agentd, then get_datetime must report source:browser with the
 # zone and a matching offset. Restores nothing — the zone persists
-# until the next browser push overwrites it (harmless: this workspace's
-# browser re-pushes on reconnect).
+# until the next browser (re)connect re-pushes the real one; an
+# already-connected session keeps reporting the probe's zone (see the
+# header's NOT-read-only note).
 # SKIPPED on agentd builds without the endpoint (pre-#1389 deployments):
 # a 404 on the feature-detect probe skips the leg rather than failing.
-PW2=$PW
 TZR=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
 if [ "$TZR" = 404 ]; then
   echo "SKIP: user-timezone probes (agentd predates PR #1389)"
