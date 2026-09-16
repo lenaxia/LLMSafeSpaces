@@ -290,6 +290,10 @@ Disabled by default. Enable on green-field Postgres where the role+DB don't exis
 |---|---|---|---|
 | `networkPolicy.enabled` | bool | `true` | Master toggle. Ships `workspace-default-deny-ingress` and `workspace-egress`. **Threat model A2 requires SOME default-deny** — if you disable this, document the equivalent control. |
 | `networkPolicy.workspaceEgress.enabled` | bool | `true` | Workspace egress NetworkPolicy. Disable **only** when a CNI-native policy (Cilium CNP, Calico GNP) enforces a strict FQDN allowlist — otherwise pods have no egress restriction. The K8s NP allows `0.0.0.0/0` which would union-defeat a Cilium CNP. |
+| `networkPolicy.workspaceEgress.mode` | string | `public` | Egress posture (#821): `public` = legacy 0.0.0.0/0-minus-blocked-CIDRs deny-list (staged default); `allowlist` = explicit destination allowlist (no general public rule; DNS + API relay + optional relay-router + the CIDR groups below). Invalid values fail the render. |
+| `networkPolicy.workspaceEgress.allowlist.llmCIDRs` | list | `[]` | Data-plane group: LLM inference endpoint CIDRs (direct-to-Zen, provider APIs), rendered on TCP 443/80 in `allowlist` mode. Resolve CDN-fronted endpoints at deploy time. |
+| `networkPolicy.workspaceEgress.allowlist.tooling.enabled` | bool | `true` | Tooling group toggle — the #821 data-plane/tooling split. `false` yields an LLM/relay-only egress posture. |
+| `networkPolicy.workspaceEgress.allowlist.tooling.cidrs` | list | `[]` | Tooling group: package-registry + git-host CIDRs, rendered on TCP 443/80 in `allowlist` mode when `tooling.enabled=true`. |
 | `networkPolicy.apiPodLabelSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: api}` | Selector for the API pods allowed to reach workspaces on agentd port 4097. |
 | `networkPolicy.controllerPodLabelSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: controller}` | Selector for controller pods (health polling on admin port 4098). |
 | `networkPolicy.prometheusPodLabelSelector` | object | `{app.kubernetes.io/name: prometheus}` | Selector for Prometheus (scraping :4098/metrics). Only effective when `monitoring.serviceMonitors.agentdPodMonitor.enabled` is true. |
@@ -298,7 +302,7 @@ Disabled by default. Enable on green-field Postgres where the role+DB don't exis
 | `networkPolicy.apiIngressSourcePodSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: frontend}` | Pod selector allowed to send user traffic to the API when `apiIngressRestricted=true`. Override to your ingress controller. |
 | `networkPolicy.dnsNamespace` | string | `kube-system` | Namespace for the DNS service. |
 | `networkPolicy.dnsPodLabelSelector` | object | `{k8s-app: kube-dns}` | DNS pod selector. |
-| `networkPolicy.allowedEgressCIDRs` | list | `[0.0.0.0/0]` | CIDR allowlist for sandbox egress. Default allows all public internet. |
+| `networkPolicy.allowedEgressCIDRs` | list | `[0.0.0.0/0]` | CIDR allowlist for sandbox egress in the legacy `public` posture. Default allows all public internet. The `blockedEgressCIDRs` subtraction (`except:`) is attached only to the `0.0.0.0/0` entry — Kubernetes rejects `except` entries that are not subnets of the `cidr`. For a real destination allowlist use `workspaceEgress.mode=allowlist`. |
 | `networkPolicy.blockedEgressCIDRs` | list | see below | Block egress to RFC1918 + CGNAT + cloud-metadata. **Keep in sync with `controller/internal/workspace/network_policy.go`** — the chart-test `TestG16_DefaultRender_BlockedEgressIncludesAllControllerSideCIDRs` pins parity. |
 
 Default `blockedEgressCIDRs`:
