@@ -82,9 +82,13 @@ tzdata-delivery break or full-channel regression shipped green.
   raw grep matches escaped quotes only) → invalid zone rejected 400.
   This is the only leg that exercises the FROM-scratch tzdata embed on
   real cluster delivery; the static `go list` tripwire cannot.
-- Liveprobe get_datetime probes rewritten to the same double-layer
-  parse (round-5 finding: three probes were permanent false negatives
-  matching escaped quote forms); all error classes fail closed.
+- Liveprobe get_datetime probes rewritten to the double-layer parse
+  (round-5 finding: three probes were permanent false negatives matching
+  escaped quote forms); all error classes fail closed. NOTE: Test 5b's
+  parse is a deliberate DUPLICATE of the liveprobe's inline python3, not
+  a shared helper — the two scripts live in different run contexts
+  (kubectl-exec vs local curl) and were reviewed independently; a shared
+  helper is a non-blocking follow-up if a third consumer appears.
 - Test-plan rows corrected (10/10 on pre-#1389 agentd; +6 timezone
   probes engage post-deploy; the CI-gated leg now has its own row).
 - Frontend: dedup-half pinned (121s constant zone → still 1 call);
