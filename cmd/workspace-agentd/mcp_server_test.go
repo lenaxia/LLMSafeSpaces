@@ -856,6 +856,43 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, schemaDescs["create_session/prompt"], "will NOT return to you")
 	})
 
+	t.Run("send_message guidance", func(t *testing.T) {
+		d, ok := descs["send_message"]
+		require.True(t, ok, "send_message in tools/list")
+		for _, want := range []string{
+			"fire-and-forget",                    // delivery semantics
+			"stays in THAT session",              // reply never returns to the caller
+			"session_read",                       // follow-up path for the response
+			"delivering_after_current_turn",      // busy-target queueing named
+			"the moment their current turn ends", // run-at-boundary semantics
+			"your OWN current session",           // self-send = scheduled next turn
+			"use the task tool",                  // blocking alternative for answers needed here
+			"create_session",                     // pointer: new sessions go there
+			"self-contained",                     // target inherits no context
+			"Delivery is not retried",            // loss semantics disclosed (finding 2)
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("abort_session guidance", func(t *testing.T) {
+		d, ok := descs["abort_session"]
+		require.True(t, ok, "abort_session in tools/list")
+		for _, want := range []string{
+			"Stop a session's current turn",      // the verb and scope
+			"history and recorded work are kept", // non-destructive to history
+			"runaway",                            // trigger: runaway session
+			"queued for the target",              // abort x queued-message interaction named
+			"may be dropped",                     // destructive-to-queue disclosed
+			"re-send anything that mattered",     // the remediation path
+			"idle session is a harmless no-op",   // idempotence
+			"cannot abort your way out",          // own-session exclusion
+			"create_session / send_message",      // management family pointers
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("get_datetime guidance", func(t *testing.T) {
 		d, ok := descs["get_datetime"]
 		require.True(t, ok, "get_datetime in tools/list")
