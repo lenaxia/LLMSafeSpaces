@@ -17,7 +17,8 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
-| opencode (epic-71 / leg10-pins) | #1312 leg-10 wire-drift pin audit — corruption pins + strict decode across the opencode seam and every hand-adjacent opencode-wire parse site (r1+r2 review sweeps) | `pkg/agent/opencode/{loopback,adapter,verifydelivery,client,client_v2}.go` + `_test.go`, `cmd/workspace-agentd/{client,sessionstate_wiring,workflow_execute,relay_injector}.go` + drift `_test.go`s, `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` | DONE — PR #1384 APPROVED (5th round, 3adcb1c1), awaiting owner merge | 2026-09-15 |
+| opencode (epic-71 / leg10-pins) | #1312 leg-10 wire-drift pin audit — corruption pins + strict decode across the opencode seam and every hand-adjacent opencode-wire parse site (r1+r2 review sweeps) | `pkg/agent/opencode/{loopback,adapter,verifydelivery,client,client_v2}.go` + `_test.go`, `cmd/workspace-agentd/{client,sessionstate_wiring,workflow_execute,relay_injector}.go` + drift `_test.go`s, `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` | DONE — PR #1384 APPROVED; conflict-resolve merge with main 2026-09-16, re-verified | 2026-09-15 |
+| opencode (epic-71 / 0c-alerts) | #1312 alerts wave: canary S/L alert rules + loop-liveness consumers + dashboard panels + promtool scenarios | `helm/templates/prometheus-rules.yaml`, `helm/tests/alerts_promtool_test.yaml`, `helm/dashboards/operational.json`, `helm/chart_test.go` (alert-inventory/dashboard pins only), `helm/values.yaml` (canary comment), `helm/MONITORING-OPERATIONAL.md` | DONE — merged #1385 | 2026-09-15 |
 | opencode (g13) | G13 — account lockout IP+email keying | `api/internal/services/auth/auth.go`, `api/internal/server/router.go`, `api/internal/services/auth/*_test.go` | In Progress | 2026-07-12 |
 | opencode (g-batch) | Code-fixable batch: G6/G41, G21, G42, G44, G46, G47 | `api/internal/server/router.go`, `controller/internal/workspace/pod_builder.go`, `api/internal/handlers/stream_user_events.go`, `cmd/workspace-agentd/main.go`, `helm/templates/controller-deployment.yaml` (+ tests) | In Progress | 2026-07-11 |
 | opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |
@@ -82,3 +83,6 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 See `design/stories/README.md` for the authoritative epic/story status and
 recommended implementation order. High-value open items are tracked there with
 verified gaps per epic.
+
+
+

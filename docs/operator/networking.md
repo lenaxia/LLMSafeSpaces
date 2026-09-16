@@ -252,7 +252,42 @@ Override on clusters with non-standard DNS.
 
 ## Egress allowlisting
 
-The default `allowedEgressCIDRs: ["0.0.0.0/0"]` with RFC1918/CGNAT/metadata blocking is the "allow public internet, block internal" baseline. For tighter deployments, replace it with a strict allowlist of the CIDRs your agents need (LLM provider IPs, package registry mirrors, internal artifact stores reachable from the workspace network).
+The default `allowedEgressCIDRs: ["0.0.0.0/0"]` with RFC1918/CGNAT/metadata blocking is the "allow public internet, block internal" baseline (the `public` posture). For tighter deployments, switch to the destination-allowlist posture (**#821**) instead of narrowing `allowedEgressCIDRs`:
+
+### Destination allowlist mode (#821)
+
+```yaml
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist          # public (default) | allowlist
+    allowlist:
+      # Data-plane: LLM inference endpoints (direct-to-Zen, provider APIs)
+      llmCIDRs:
+        - 203.0.113.0/24     # example — resolve your real endpoints
+      # Tooling: package registries + git hosts (the #821 data-plane/tooling
+      # split; enabled=false yields an LLM/relay-only posture)
+      tooling:
+        enabled: true
+        cidrs:
+          - 198.51.100.0/24  # example
+```
+
+In `allowlist` mode the general public-internet rule is **not rendered**. Egress is limited to:
+
+| Path | Mechanism | Ports |
+|---|---|---|
+| DNS | pod selector (`dnsNamespace` / `dnsPodLabelSelector`) | UDP+TCP 53 |
+| API relay WebSocket | in-namespace API pod selector | TCP `.Values.api.service.port` (8080 by default) |
+| Relay-router (fleet-enabled clusters) | pod selector | TCP 8080 |
+| `allowlist.llmCIDRs` | ipBlock (data-plane group) | TCP 443/80 |
+| `allowlist.tooling.cidrs` | ipBlock (tooling group) | TCP 443/80 |
+| `networkPolicy.extraEgressCIDRs` | plain ipBlock — all-ports escape hatch for operator-accepted **internal** destinations | all |
+
+With every group empty, `allowlist` mode is the strictest posture: DNS plus the in-cluster platform paths only. That posture is forward-compatible with the relay-only data-plane planned in #820 — an `llm-relay` namespace/router slots in as another selector rule without redesign.
+
+**Why the mode default stays `public` (staged rollout):** the default product surface — direct-to-Zen inference plus agents installing arbitrary packages — is served from CDN-fronted endpoints (opencode.ai resolves into Cloudflare space; pypi.org into Fastly; registry.npmjs.org into Cloudflare; verified 2026-09). Chart-shipped CIDR defaults would either rot as CDNs rebalance, or — if whole CDN ranges are shipped — re-admit the exfiltration channel via free attacker-usable hosting on those CDNs (GitHub Pages/gists, Cloudflare-proxied sites). Resolve your destinations at deploy time (`dig +short pypi.org registry.npmjs.org opencode.ai`) and pin them in the groups.
+
+**Group entries must be public CIDRs — guarded at render time for well-formed input (IPv4 and IPv6).** The groups render as plain `ipBlock` rules: Kubernetes rejects `except:` entries that are not subnets of the `cidr`, so the shared `blockedEgressCIDRs` subtraction cannot be attached to narrow CIDRs (it is attached only to the `0.0.0.0/0` catch-all in `public` mode). A well-formed private/internal entry in a group (or a narrow private `allowedEgressCIDRs` entry) **fails the render** with an error naming the entry — covering the IPv4 private ranges (RFC1918, CGNAT, link-local/metadata, loopback, multicast) **and** the IPv6 internal ranges (ULA `fc00::/7`, link-local `fe80::/10`, multicast `ff00::/8`, loopback `::1`) — the latter matter because well-formed IPv6-internal CIDRs are API-valid, so no apply-time backstop exists for them. Scope of the guard, honestly: malformed spellings and hostnames pass the render but yield API-invalid ipBlocks that are rejected **loudly at apply time**; an aggregate CIDR spanning private space (e.g. `0.0.0.0/1`, `::/0`) is a residual silent case — contrived, not a plausible footgun; `extraEgressCIDRs` is unguarded by design (it exists to admit internal destinations). For in-cluster destinations, use `extraEgressCIDRs`.
 
 ### FQDN-based egress
 
@@ -265,7 +300,7 @@ When you do this, **disable the chart's workspaceEgress NP** (see the danger cal
 
 ### Per-workspace egress
 
-The platform supports per-workspace egress configuration via the `securityPolicy.network` field on the Workspace CRD (see [Security Hardening](security.md)). This lets individual workspaces declare additional allowed domains beyond the platform baseline.
+The platform supports per-workspace egress widening via the `spec.networkAccess.egress` field on the Workspace CRD: each declared domain is resolved to /32 ipBlocks by the controller at reconcile time (private/internal results are filtered) and emitted as a per-workspace NetworkPolicy. Because Kubernetes NetworkPolicy unions allow rules across all policies selecting a pod, these per-workspace destinations are added **on top of** whatever the chart-level posture permits — including `allowlist` mode, where workspaces can declare the registry/host set they need beyond the operator-pinned groups.
 
 ---
 

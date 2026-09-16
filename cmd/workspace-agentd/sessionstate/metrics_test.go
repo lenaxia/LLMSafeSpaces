@@ -69,9 +69,16 @@ func TestMetrics_LedgerFunnelAndPromotionStall(t *testing.T) {
 	deliverOne(t, a, "s1", "e-1")
 	deliverOne(t, a, "s1", "e-2")
 
-	m := a.Metrics()
-	require.NotNil(t, m.LedgerDepths)
-	assert.EqualValues(t, 2, m.LedgerDepths["admitted"], "funnel: both rows admitted")
+	// deliverOne's Eventually only proves depth > 0 — under a loaded
+	// runner (race detector) row e-2 may still be mid-admission when
+	// it returns, and a snapshot taken immediately reads depth 1. Wait
+	// for the full funnel depth before snapshotting (CI flake,
+	// 2026-09-16).
+	var m sessionstate.Metrics
+	assert.Eventually(t, func() bool {
+		m = a.Metrics()
+		return m.LedgerDepths != nil && m.LedgerDepths["admitted"] == 2
+	}, 3*time.Second, 10*time.Millisecond, "funnel: both rows admitted")
 	assert.Zero(t, m.StalledEntries, "nothing stalled before the deadline")
 	assert.Greater(t, m.OldestPromotionStallSeconds, 0.0, "promotion stall: admitted rows age")
 }

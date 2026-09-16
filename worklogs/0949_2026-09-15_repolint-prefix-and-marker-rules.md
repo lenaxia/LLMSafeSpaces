@@ -106,4 +106,4 @@ All four findings reproduced, fixed red-first (failing tests written before each
 - `cmd/repolint/main.go` (register both checks)
 - `design/0049_2026-08-09_agent-session-contract.md` (§7 rules 7-8)
 - `README-LLM.md` (Agent Session Contract discipline rules 2 + 6)
-- `worklogs/NNNN_2026-09-15_repolint-prefix-and-marker-rules.md` (new)
+- `worklogs/0949_2026-09-15_repolint-prefix-and-marker-rules.md` (new)

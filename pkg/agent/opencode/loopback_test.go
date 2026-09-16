@@ -545,3 +545,33 @@ func TestSeam_SessionCreate_IDDriftLoud(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no id")
 }
+func TestSeam_Abort_ExactWire(t *testing.T) {
+	var method, path, body string
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		body = string(buf)
+		w.WriteHeader(http.StatusOK)
+	})
+	require.NoError(t, c.Abort(context.Background(), "ses_1"))
+	assert.Equal(t, http.MethodPost, method)
+	assert.Equal(t, "/session/ses_1/abort", path)
+	assert.Equal(t, "{}", body, "V1 abort takes an empty JSON body")
+}
+
+func TestSeam_Abort_Non2xx(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	err := c.Abort(context.Background(), "ses_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
+}
+
+func TestSeam_Abort_InvalidID(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no wire call for an invalid id")
+	})
+	assert.Error(t, c.Abort(context.Background(), "../x"))
+}

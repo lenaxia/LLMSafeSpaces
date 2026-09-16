@@ -481,7 +481,7 @@ Multi-tenant isolation rests on layered controls in a **shared namespace** (no p
 
 | Control | Status | Mechanism |
 |---------|--------|-----------|
-| Network isolation | Shipped | Chart-level default-deny ingress + RFC1918/CGNAT-filtered egress NetworkPolicies |
+| Network isolation | Shipped | Chart-level default-deny ingress + RFC1918/CGNAT-filtered egress NetworkPolicies (default posture), with an opt-in destination-allowlist egress mode — data-plane/tooling split — via `networkPolicy.workspaceEgress.mode=allowlist` (#821, Epic 67) |
 | Secret scoping | Shipped | `rbac.scope=namespace` default; namespace-scoped Secrets Role |
 | Tenant identity | Shipped | `WorkspaceOwner{UserID, OrgID}` on the CRD; `llmsafespaces.dev/tenant` pod label |
 | Container-runtime isolation | Opt-in (Epic 51 S51.1) | gVisor (`runsc`) RuntimeClass — the primary control against kernel-exploitation container escape; `--default-runtime-class=gvisor` + `gvisor.defaultRuntimeClass`; per-workspace opt-out via `spec.runtimeClass: "runc"` |
