@@ -216,10 +216,12 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "get_datetime",
-						Description: "Get the current date and time — in UTC and in this workspace's local timezone (with the zone name and UTC offset). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\"), file timestamps, or when the user asks for the time. Workspace pods default to UTC — do not assume the user's local timezone matches; report both.",
+						Description: "Get the current date and time — in UTC and in the USER's timezone (IANA zone name and UTC offset included). The user's zone comes live from their browser when connected (source: browser); pass an explicit `timezone` argument (IANA name like \"America/Los_Angeles\") to convert for any other zone or when no browser is connected (source: argument); without either you get the pod's zone (source: pod — usually UTC). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\", \"this afternoon\"), file timestamps, or when the user asks for the time. Do not assume the user's zone matches the pod's. When source is not browser and the user's zone matters, ask or infer from context and pass it explicitly.",
 						InputSchema: map[string]any{
-							"type":       "object",
-							"properties": map[string]any{},
+							"type": "object",
+							"properties": map[string]any{
+								"timezone": map[string]any{"type": "string", "description": "Optional IANA timezone name (e.g. \"America/Los_Angeles\") to convert for; default = the user's browser zone when known, else the pod's zone"},
+							},
 						},
 					},
 					{
@@ -333,7 +335,8 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		sessionID, _ := args["session_id"].(string)
 		return mcpAbortSession(ctx, password, sessionID)
 	case "get_datetime":
-		return mcpGetDatetime()
+		timezoneArg, _ := args["timezone"].(string)
+		return mcpGetDatetime(timezoneArg)
 	case "session_metadata":
 		sessionID, _ := args["session_id"].(string)
 		return mcpSessionMetadata(ctx, password, sessionID)

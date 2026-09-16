@@ -55,6 +55,11 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 	}
 	defer h.userBroker.UnsubscribeWorkspace(workspaceID, sub)
 
+	// A browser just connected: deliver the user's stored timezone to
+	// this pod so get_datetime reports user-local time (best-effort,
+	// async — the stream below starts regardless).
+	h.pushUserTimezoneOnConnect(c, workspaceID)
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -150,4 +155,44 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 			_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineWindow))
 		}
 	}
+}
+
+// TimezonePusher is the narrow seam the SSE-connect timezone push rides
+// (backed by agentpush.Service in production). Failures are latency-only:
+// the pod keeps its last-known zone and the next reconnect re-pushes.
+type TimezonePusher interface {
+	PushUserTimezone(ctx context.Context, userID, workspaceID, timezone string) error
+}
+
+// UserTimezoneReader reads the user's stored browser timezone (backed
+// by the user settings service).
+type UserTimezoneReader interface {
+	GetString(ctx context.Context, userID, key string) (string, error)
+}
+
+// pushUserTimezoneOnConnect fires the best-effort live push: read the
+// user's stored zone and deliver it to the pod their browser just
+// connected to. Async by design — the SSE stream must not wait on it.
+func (h *ProxyHandler) pushUserTimezoneOnConnect(c *gin.Context, workspaceID string) {
+	if h.timezonePusher == nil || h.userTimezones == nil {
+		return
+	}
+	userID, _ := extractAuth(c)
+	if userID == "" {
+		return
+	}
+	pusher, reader := h.timezonePusher, h.userTimezones
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 10*time.Second)
+		defer cancel()
+		tz, err := reader.GetString(ctx, userID, "timezone")
+		if err != nil || tz == "" {
+			return
+		}
+		if err := pusher.PushUserTimezone(ctx, userID, workspaceID, tz); err != nil {
+			// Latency-only: the pod keeps its last-known zone; the next
+			// browser (re)connect retries.
+			return
+		}
+	}()
 }

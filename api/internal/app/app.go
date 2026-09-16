@@ -388,6 +388,26 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var secretsHandler *handlers.SecretsHandler
 	var secretsReconcileSvc *secretsreconcile.Service
 	var agentPusherSvc *agentpush.Service
+	// Timezone setting updates push the user's zone to the user's active
+	// workspace pods (the SSE-connect push is the re-delivery path; this
+	// catches mid-session changes). agentPusherSvc is populated later in
+	// startup — the closure reads it at call time.
+	settingsHandler.SetTimezonePushHook(func(ctx context.Context, userID, tz string) {
+		pusher := agentPusherSvc
+		if pusher == nil {
+			return
+		}
+		list, err := svc.Workspace.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
+		if err != nil {
+			return
+		}
+		for _, ws := range list.Items {
+			if ws.Phase != "Active" && ws.Phase != "Creating" && ws.Phase != "Resuming" {
+				continue
+			}
+			_ = pusher.PushUserTimezone(ctx, userID, ws.ID, tz)
+		}
+	})
 	var modelsHandler *handlers.ModelsHandler
 	var workspaceEnvHandler *handlers.WorkspaceEnvHandler
 	var unlockDEKHandler *handlers.UnlockDEKHandler
@@ -676,6 +696,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentpush.WithLogger(log),
 			agentpush.WithNotifyMetricsHook(metrics.RecordSecretNotify),
 		)
+
+		// Live browser-timezone push (get_datetime source: browser): the
+		// proxy pushes the user's stored IANA zone to the pod on every SSE
+		// connect. Failures are latency-only by design.
+		proxyHandler.SetTimezonePush(agentPusher, userSettings)
 		agentPusherSvc = agentPusher
 		secretsHandler.SetAgentPusher(agentPusher)
 

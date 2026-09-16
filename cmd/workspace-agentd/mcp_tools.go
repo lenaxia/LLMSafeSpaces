@@ -340,15 +340,44 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 
 // --- get_datetime ---------------------------------------------------------
 
-// mcpGetDatetime reports the current instant in UTC and the pod's local
-// timezone. Pods default to UTC; TZ may pin otherwise.
-func mcpGetDatetime() (string, error) {
+// mcpGetDatetime reports the current instant in UTC and the USER's
+// timezone when known. Resolution order: an explicit `timezone`
+// argument (IANA name — use when the zone is known from conversation
+// context), then the platform's live browser-reported zone (pushed by
+// the API when the user's browser connects), then the pod's local zone
+// (TZ env or UTC). The `source` field says which won.
+func mcpGetDatetime(timezoneArg string) (string, error) {
 	now := time.Now()
+
+	location := now.Location()
+	source := "pod"
+	name := ""
+
+	if timezoneArg != "" {
+		canonical, ok := validateTimezone(timezoneArg)
+		if !ok {
+			return "", fmt.Errorf("unknown timezone %q (IANA names like \"America/Los_Angeles\"; the tool cannot guess)", timezoneArg)
+		}
+		if loc, err := time.LoadLocation(canonical); err == nil {
+			location = loc
+			source = "argument"
+			name = canonical
+		}
+	} else if tz := userTimezone(); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			location = loc
+			source = "browser"
+			name = tz
+		}
+	}
+
+	local := now.In(location)
 	out, _ := json.Marshal(map[string]string{
 		"utc":        now.UTC().Format(time.RFC3339),
-		"local":      now.Format(time.RFC3339),
-		"timezone":   now.Location().String(),
-		"utc_offset": now.Format("-07:00"),
+		"local":      local.Format(time.RFC3339),
+		"timezone":   name,
+		"utc_offset": local.Format("-07:00"),
+		"source":     source,
 	})
 	return string(out), nil
 }
