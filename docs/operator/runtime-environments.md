@@ -40,10 +40,10 @@ runtimeEnvironments:
   base:
     image:
       repository: ghcr.io/lenaxia/llmsafespaces/base
-      tag: ""   # falls back to Chart.AppVersion
+      tag: "2026.09.0"   # CalVer YYYY.MM.x — mirrors the catalog seed row (see below)
 ```
 
-This resolves to `ghcr.io/lenaxia/llmsafespaces/base:<appVersion>`. The `base` runtime is what the smoke-test workspace uses (`"runtime": "base"`).
+The base tag is **CalVer `YYYY.MM.x`**, content-versioned on its own cadence and **never the platform version** (design 0053 D5/S4): the platform release train does not build base tags. The single source of truth is the image-factory catalog seed (`api/internal/imagefactory/catalog.seed.yaml` → `bases[bookworm]`); the chart value mirrors it, and repolint's version-scheme check (issue #1237) fails on CalVer violations or drift from the seed. This resolves to `ghcr.io/lenaxia/llmsafespaces/base:2026.09.0`. The `base` runtime is what the smoke-test workspace uses (`"runtime": "base"`). See the [release bump checklist](../release-bump-checklist.md) before touching any image tag in a coordinated bump.
 
 ---
 
