@@ -186,6 +186,12 @@ in-cluster or metadata ranges. Callers fail the render instead and
 direct the operator to networkPolicy.extraEgressCIDRs, which is the
 deliberate no-subtraction escape hatch for internal destinations.
 
+Guard scope (documented honestly): catches well-formed private dotted-
+quad CIDRs — the realistic footgun class. Malformed spellings report
+false here but are rejected loudly at apply time by the API server's
+ipBlock validation; an aggregate CIDR spanning private space (e.g.
+0.0.0.0/1) is a residual silent case (contrived input).
+
 Pinned by TestEgress_Allowlist_PrivateGroupCIDRFailsRender,
 TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender, and
 TestEgress_Allowlist_PublicGroupCIDRsStillRender (over-match guard).

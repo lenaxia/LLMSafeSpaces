@@ -214,6 +214,7 @@ spec:
     {{- end }}
     {{- if eq $egressMode "allowlist" }}
     {{- $allowlist := .Values.networkPolicy.workspaceEgress.allowlist }}
+    {{- $tooling := $allowlist.tooling | default dict }}
     # Destination allowlist groups (#821). Plain ipBlock entries WITHOUT
     # an except: list — Kubernetes rejects ipBlock rules whose except
     # entries are not subnets of the cidr, and the blockedEgressCIDRs
@@ -238,17 +239,17 @@ spec:
         - protocol: TCP
           port: 80
     {{- end }}
-    {{- if and $allowlist.tooling.enabled $allowlist.tooling.cidrs }}
+    {{- if and $tooling.enabled $tooling.cidrs }}
     # Tooling: package registries + git hosts. Toggled separately from
     # the data-plane group — the #821 data-plane/tooling split. Disabling
     # tooling egress yields the LLM/relay-only posture.
-    {{- range $cidr := $allowlist.tooling.cidrs }}
+    {{- range $cidr := $tooling.cidrs }}
     {{- if eq (include "llmsafespaces.isPrivateIPv4CIDR" $cidr) "true" }}
     {{- fail (printf "networkPolicy.workspaceEgress.allowlist.tooling.cidrs entry %q is a private/internal range (#821): group rules render without the blockedEgressCIDRs subtraction and would silently reopen it — use networkPolicy.extraEgressCIDRs for operator-accepted internal destinations" $cidr) }}
     {{- end }}
     {{- end }}
     - to:
-        {{- range $allowlist.tooling.cidrs }}
+        {{- range $tooling.cidrs }}
         - ipBlock:
             cidr: {{ . }}
         {{- end }}

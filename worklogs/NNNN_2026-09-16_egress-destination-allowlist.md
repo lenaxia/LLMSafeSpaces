@@ -113,3 +113,13 @@ None. Live-cluster enforcement validation of `allowlist` mode is deferred with r
 ### Files modified this iteration
 
 `helm/templates/_helpers.tpl`, `helm/templates/workspace-network-policy.yaml`, `helm/networkpolicy_egress_allowlist_test.go`, `helm/values.yaml`, `docs/operator/networking.md`, PR #1386 body; issues #1387 + #1388 filed.
+
+---
+
+## Iteration 3 — AI review round 2 findings (2026-09-16, PR #1386)
+
+1. **`allowlist.tooling: null` nil-pointer crash** — REAL (reproduced red first: `TestEgress_Allowlist_NullToolingDegradesStrictest` failed with the reviewer's exact error, then fixed). Helm null-deletes the key so `$allowlist.tooling.enabled` crashed. Fix: `$tooling := $allowlist.tooling | default dict`; tooling:null now degrades fail-closed (no tooling rules, llm group intact), mirroring the shallow `allowlist: null` pin.
+2. **"Enforced at render time" overstated the guard's scope** — REAL (doc precision). values.yaml / networking.md / _helpers.tpl wording now states: well-formed private dotted-quads fail the render; malformed spellings/hostnames pass the render but are rejected loudly at apply time by ipBlock validation; aggregate CIDRs spanning private space (0.0.0.0/1) are the residual silent case (contrived); extraEgressCIDRs unguarded by design.
+3. **#1388 decision frame should name the per-workspace open-egress dimension** (minor, issue text) — done: appended the option-3 per-workspace dimension to #1388's body.
+
+Tests: +1 (`TestEgress_Allowlist_NullToolingDegradesStrictest`); 15 egress tests total; full ./helm/ suite + lint + helm-render pass.

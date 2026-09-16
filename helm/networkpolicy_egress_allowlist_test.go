@@ -534,3 +534,29 @@ networkPolicy:
 	assert.Empty(t, allIPBlockCIDRs(t, policy),
 		"allowlist: null must degrade to zero ipBlock destinations, not error or widen")
 }
+
+// TestEgress_Allowlist_NullToolingDegradesStrictest pins the deeper
+// null edge: Helm null-deletes the tooling key, so the two-level chain
+// ($allowlist.tooling.enabled) must not crash the render with a nil-
+// pointer template error. tooling: null degrades fail-closed (no
+// tooling rules) while the llm group still renders — mirroring the
+// shallow allowlist: null pin. (Round-2 review finding: this shape
+// previously crashed with an opaque nil-pointer error.)
+func TestEgress_Allowlist_NullToolingDegradesStrictest(t *testing.T) {
+	values := `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - 203.0.113.0/24
+      tooling: null
+`
+	docs := helmTemplate(t, values)
+	policy := findWorkspaceEgressPolicy(t, docs)
+	got := allIPBlockCIDRs(t, policy)
+	assert.Contains(t, got, "203.0.113.0/24",
+		"llm group must still render when tooling is nulled")
+	assert.Len(t, got, 1,
+		"tooling: null must degrade to no tooling rules (fail-closed), not error or widen")
+}
