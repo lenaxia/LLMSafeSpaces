@@ -945,6 +945,9 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 		"rename_session", "rename_workspace", "call_with_model",
 		"create_session", "send_message", "get_datetime", "session_metadata",
 		"compact", "abort_session",
+		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
+		"trigger_fires", "workflow_list", "workflow_create", "workflow_update",
+		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		assert.True(t, names[want], "%s must be in tools/list", want)
 	}
@@ -956,6 +959,9 @@ func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 		"session_list", "session_read", "rename_session", "rename_workspace",
 		"call_with_model", "create_session", "send_message", "abort_session", "get_datetime",
 		"session_metadata", "compact", "secrets_resync", "dev_preview_url",
+		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
+		"trigger_fires", "workflow_list", "workflow_create", "workflow_update",
+		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		params, _ := json.Marshal(map[string]any{"name": tool, "arguments": map[string]any{}})
 		req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: params}
@@ -1431,4 +1437,206 @@ func TestUserTimezoneHandler_AuthAndValidation(t *testing.T) {
 	h(rr, req)
 	assert.Equal(t, http.StatusOK, rr.Code)
 	assert.Equal(t, "Europe/Berlin", userTimezone())
+}
+
+// --- automation tools (trigger_* / workflow_*) ------------------------------
+
+// automationCallRecord captures one wire request to the fake automation API.
+type automationCallRecord struct {
+	method string
+	path   string
+	query  string
+	auth   string
+	body   string
+}
+
+// newAutomationAPI spins up a fake /internal/v1/automation backend that
+// records the last request and replies with the given status+body.
+func newAutomationAPI(t *testing.T, status int, reply string) (*httptest.Server, *automationCallRecord) {
+	t.Helper()
+	rec := &automationCallRecord{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.method, rec.path, rec.query, rec.auth = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		if r.Body != nil && r.ContentLength > 0 {
+			buf := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(buf)
+			rec.body = string(buf)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	t.Cleanup(api.Close)
+	return api, rec
+}
+
+func TestMCPAutomation_ListWire(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"triggers":[]}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{"triggers":[]}`, out, "platform body passes through verbatim")
+	assert.Equal(t, http.MethodGet, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers", rec.path)
+	assert.Equal(t, "workspaceID=ws-1", rec.query)
+	assert.Equal(t, "Bearer sa-token", rec.auth)
+	assert.Empty(t, rec.body)
+}
+
+func TestMCPAutomation_CreateStampsWorkspace(t *testing.T) {
+	api, rec := newAutomationAPI(t, 201, `{"id":"t-1"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "workflow_create", map[string]any{"spec": map[string]any{"nodes": []any{}}})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"id":"t-1"`)
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/workflows", rec.path)
+	assert.Contains(t, rec.body, `"workspaceID":"ws-1"`, "create body carries the resolver-spelling stamp")
+	assert.Contains(t, rec.body, `"nodes"`)
+}
+
+func TestMCPAutomation_UpdatePatchPurity(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"id":"11111111-1111-1111-1111-111111111111"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "trigger_update", map[string]any{
+		"id":    "11111111-1111-1111-1111-111111111111",
+		"patch": map[string]any{"enabled": false},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPut, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111", rec.path)
+	assert.Equal(t, `{"enabled":false}`, rec.body, "patch carries caller fields only — no id, no workspaceID")
+}
+
+func TestMCPAutomation_DeleteAndFiresWire(t *testing.T) {
+	api, rec := newAutomationAPI(t, 204, "")
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_delete", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	require.NoError(t, err)
+	assert.Equal(t, `{"status":204}`, out, "empty platform body degrades to status-only")
+	assert.Equal(t, http.MethodDelete, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111", rec.path)
+	assert.Equal(t, "workspaceID=ws-1", rec.query)
+
+	_, err = mcpAutomation(context.Background(), "trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/fires", rec.path)
+}
+
+func TestMCPAutomation_WorkflowRunInputWrapped(t *testing.T) {
+	api, rec := newAutomationAPI(t, 202, `{"runId":"r-9"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "workflow_run", map[string]any{
+		"id":    "11111111-1111-1111-1111-111111111111",
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"runId":"r-9"`)
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/workflows/11111111-1111-1111-1111-111111111111/runs", rec.path)
+	assert.Contains(t, rec.body, `"input"`)
+	assert.Contains(t, rec.body, `"topic"`)
+}
+
+func TestMCPAutomation_ErrorPassthrough(t *testing.T) {
+	api, _ := newAutomationAPI(t, 400, `{"error":{"message":"name is required"}}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "trigger_create", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trigger_create failed")
+	assert.Contains(t, err.Error(), "name is required", "platform error text surfaces verbatim")
+}
+
+func TestMCPAutomation_InvalidIDNeverDials(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "workflow_runs", map[string]any{"id": "../../etc/passwd"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid automation id")
+	assert.Empty(t, rec.method, "hostile ID rejected before any dial")
+
+	_, err = mcpAutomation(context.Background(), "trigger_delete", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid automation id")
+	assert.Empty(t, rec.method)
+}
+
+func TestMCPAutomation_MissingDeps(t *testing.T) {
+	api, _ := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	t.Setenv("WORKSPACE_ID", "")
+	_, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WORKSPACE_ID")
+
+	t.Setenv("WORKSPACE_ID", "ws-1")
+	t.Setenv("LLMSAFESPACE_API_URL", "")
+	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_URL")
+
+	t.Setenv("LLMSAFESPACE_API_URL", api.URL)
+	t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", filepath.Join(t.TempDir(), "missing"))
+	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SA token unreadable")
+}
+
+func TestMCPAutomation_UnknownTool(t *testing.T) {
+	api, _ := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+	_, err := mcpAutomation(context.Background(), "trigger_deploy", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown automation tool")
+}
+
+// L1: full JSON-RPC through mcpHandler for a representative pair —
+// trigger_create then trigger_fires, the iterate-on-automation loop.
+func TestMCPHandler_AutomationFullStack(t *testing.T) {
+	var paths []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/triggers"):
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"11111111-1111-1111-1111-111111111111"}`))
+		case strings.HasSuffix(r.URL.Path, "/fires"):
+			_, _ = w.Write([]byte(`{"fires":[{"status":"delivered"}]}`))
+		}
+	}))
+	defer api.Close()
+	setupRenameWorkspaceEnv(t, api)
+
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"trigger_create", map[string]any{"trigger": map[string]any{"name": "cron", "schedule": "5 * * * *"}}},
+		{"trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"}},
+	} {
+		params, _ := json.Marshal(map[string]any{"name": call.name, "arguments": call.args})
+		req := mcpRequest{JSONRPC: "2.0", ID: 42, Method: "tools/call", Params: params}
+		body, _ := json.Marshal(req)
+		w := httptest.NewRecorder()
+		r := mcpAuthedRequest(body)
+		mcpHandler(mcpTestPassword)(w, r)
+
+		var resp mcpResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), "%s", call.name)
+		result := resp.Result.(map[string]any)
+		assert.Nil(t, result["isError"], "%s must succeed: %v", call.name, result)
+	}
+
+	assert.Equal(t, []string{
+		"POST /internal/v1/automation/triggers",
+		"GET /internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/fires",
+	}, paths)
 }

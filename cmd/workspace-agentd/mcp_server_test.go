@@ -909,4 +909,79 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			assert.Contains(t, d, want)
 		}
 	})
+
+	t.Run("trigger_list guidance", func(t *testing.T) {
+		d, ok := descs["trigger_list"]
+		require.True(t, ok, "trigger_list in tools/list")
+		for _, want := range []string{
+			"resolved from this pod's identity", // ownership is pod-identity derived, not an argument
+			"Start here before create/update",   // learn-shapes-first loop
+			"exact body shapes",                 // schema discovery from live entries
+			"consecutiveFailures",               // the auto-disable signal is named
+			"Pair with trigger_fires",           // the debugging read is pointed to
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("trigger_create guidance", func(t *testing.T) {
+		d, ok := descs["trigger_create"]
+		require.True(t, ok, "trigger_create in tools/list")
+		for _, want := range []string{
+			"cron or webhook",                                // source vocabulary
+			"the platform forces this workspace",             // scoping invariant surfaced to the agent
+			"you cannot schedule work into other workspaces", // the explicit cannot
+			"autoDisableAfter",                               // failure-policy field named
+			"trigger_fires",                                  // where failures show up
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("trigger_update guidance", func(t *testing.T) {
+		d, ok := descs["trigger_update"]
+		require.True(t, ok, "trigger_update in tools/list")
+		assert.Contains(t, d, "omitted = keep existing") // patch semantics
+		assert.Contains(t, d, "immutable after create")  // sourceType rule
+	})
+
+	t.Run("trigger_delete guidance", func(t *testing.T) {
+		d, ok := descs["trigger_delete"]
+		require.True(t, ok, "trigger_delete in tools/list")
+		assert.Contains(t, d, "trigger_update {enabled:false}") // disarm-first alternative
+	})
+
+	t.Run("trigger_fires guidance", func(t *testing.T) {
+		d, ok := descs["trigger_fires"]
+		require.True(t, ok, "trigger_fires in tools/list")
+		for _, want := range []string{
+			"fire audit",     // what it is
+			"input envelope", // what the trigger saw
+			"error payloads", // why it failed
+			"is not working", // the user-symptom it answers
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("workflow_create guidance", func(t *testing.T) {
+		d, ok := descs["workflow_create"]
+		require.True(t, ok, "workflow_create in tools/list")
+		assert.Contains(t, d, "passes through to the platform verbatim") // schema-decoupled contract
+		assert.Contains(t, d, "workflow_list")                           // where shapes are learned
+	})
+
+	t.Run("workflow_run guidance", func(t *testing.T) {
+		d, ok := descs["workflow_run"]
+		require.True(t, ok, "workflow_run in tools/list")
+		assert.Contains(t, d, "inputSchema")   // input is validated against the spec
+		assert.Contains(t, d, "workflow_runs") // the poll read is named
+	})
+
+	t.Run("workflow_runs guidance", func(t *testing.T) {
+		d, ok := descs["workflow_runs"]
+		require.True(t, ok, "workflow_runs in tools/list")
+		assert.Contains(t, d, "error codes")             // failures are diagnosable
+		assert.Contains(t, d, "pair with trigger_fires") // trigger-fired runs cross-read
+	})
 }

@@ -692,3 +692,115 @@ func mcpAbortSession(ctx context.Context, password, sessionID string) (string, e
 	})
 	return string(out), nil
 }
+
+// --- automation: triggers + workflows --------------------------------------
+
+// automationDeps resolves the SA token + workspace id from pod env (the
+// /internal/v1/automation surface's credentials — same bootstrap token
+// as rename_workspace).
+func automationDeps() (saToken, apiURL, workspaceID string, err error) {
+	workspaceID = strings.TrimSpace(os.Getenv("WORKSPACE_ID"))
+	if workspaceID == "" {
+		return "", "", "", fmt.Errorf("automation unavailable: WORKSPACE_ID is not set in this pod")
+	}
+	apiURL = strings.TrimSpace(os.Getenv("LLMSAFESPACE_API_URL"))
+	if apiURL == "" {
+		return "", "", "", fmt.Errorf("automation unavailable: LLMSAFESPACE_API_URL is not set in this pod")
+	}
+	raw, err := os.ReadFile(bootstrapTokenPathFromEnv())
+	if err != nil {
+		return "", "", "", fmt.Errorf("automation unavailable: pod SA token unreadable: %w", err)
+	}
+	return strings.TrimSpace(string(raw)), strings.TrimSuffix(apiURL, "/"), workspaceID, nil
+}
+
+// mcpAutomation executes one automation seam call and wraps the result
+// for the tool surface. Body/patch JSON is passed through verbatim —
+// the platform validates and its error text names invalid fields.
+func mcpAutomation(ctx context.Context, name string, body map[string]any) (string, error) {
+	saToken, apiURL, workspaceID, err := automationDeps()
+	if err != nil {
+		return "", err
+	}
+	client := opencode.NewLoopbackClient(apiURL, "")
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var res *opencode.AutomationResponse
+	switch name {
+	case "trigger_list":
+		res, err = client.TriggerList(ctx, saToken, workspaceID)
+	case "trigger_create":
+		res, err = client.TriggerCreate(ctx, saToken, workspaceID, mustMarshalBody(body))
+	case "trigger_update":
+		res, err = client.TriggerUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
+	case "trigger_delete":
+		res, err = client.TriggerDelete(ctx, saToken, workspaceID, toolArgID(body))
+	case "trigger_fires":
+		res, err = client.TriggerFires(ctx, saToken, workspaceID, toolArgID(body))
+	case "workflow_list":
+		res, err = client.WorkflowList(ctx, saToken, workspaceID)
+	case "workflow_create":
+		res, err = client.WorkflowCreate(ctx, saToken, workspaceID, mustMarshalBody(body))
+	case "workflow_update":
+		res, err = client.WorkflowUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
+	case "workflow_delete":
+		res, err = client.WorkflowDelete(ctx, saToken, workspaceID, toolArgID(body))
+	case "workflow_run":
+		var input json.RawMessage
+		if raw, ok := body["input"]; ok {
+			b, _ := json.Marshal(raw)
+			input = b
+		}
+		res, err = client.WorkflowRun(ctx, saToken, workspaceID, toolArgID(body), input)
+	case "workflow_runs":
+		res, err = client.WorkflowRuns(ctx, saToken, workspaceID, toolArgID(body))
+	default:
+		return "", fmt.Errorf("unknown automation tool: %s", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s failed: %w", name, err)
+	}
+	if res.Body == "" {
+		return fmt.Sprintf(`{"status":%d}`, res.Status), nil
+	}
+	return res.Body, nil
+}
+
+// mustMarshalBody serializes the tool's object argument; an empty map
+// stays an empty object.
+func mustMarshalBody(body map[string]any) json.RawMessage {
+	out, err := json.Marshal(body)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// toolArgID extracts the tool argument "id" as a validated string.
+func toolArgID(body map[string]any) string {
+	id, _ := body["id"].(string)
+	return id
+}
+
+// patchWithoutID unwraps the tool's "patch" argument (routing and scoping
+// fields stripped) — the id rides the URL, workspaceID the query, and the
+// wire body carries caller content only.
+func patchWithoutID(body map[string]any) json.RawMessage {
+	patch, ok := body["patch"].(map[string]any)
+	if !ok {
+		patch = body
+	}
+	clean := make(map[string]any, len(patch))
+	for k, v := range patch {
+		if k == "id" || k == "workspaceID" || k == "workspaceId" {
+			continue
+		}
+		clean[k] = v
+	}
+	out, err := json.Marshal(clean)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
