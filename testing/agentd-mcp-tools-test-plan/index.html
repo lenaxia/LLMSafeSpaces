@@ -2080,9 +2080,9 @@
 
 
 <h1 id="agentd-mcp-tool-expansion-test-plan">agentd MCP Tool Expansion — Test Plan<a class="headerlink" href="#agentd-mcp-tool-expansion-test-plan" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> L0/L1/L2 implemented and green; L3 scripted (<code>scripts/mcp-tools-liveprobe.sh</code>, 7/7 on the live pod 2026-09-13). The L2/L3 legs found and fixed two real defects: the silent no-op rename (POST vs PATCH — §2) and the unbounded health probe.
+<p><strong>Status:</strong> L0/L1/L2 implemented and green; L3 scripted (<code>scripts/mcp-tools-liveprobe.sh</code>, 10/10 on the live pod) — counts updated with PR #1382 (send_message, abort_session). The L2/L3 legs found and fixed two real defects: the silent no-op rename (POST vs PATCH — §2) and the unbounded health probe.
 <strong>Date:</strong> 2026-09-13
-<strong>Scope:</strong> The SEVEN NEW agent-side MCP tools on <code>/v1/mcp</code> (<code>rename_session</code>, <code>rename_workspace</code>, <code>call_with_model</code>, <code>create_session</code>, <code>get_datetime</code>, <code>session_metadata</code>, <code>compact</code>), the two PRE-EXISTING tools rerouted through the new seam (<code>session_list</code>, <code>session_read</code>), the seam itself (<code>pkg/agent/opencode</code> loopback methods), and the API-side <code>POST /internal/v1/workspace-rename</code>.
+<strong>Scope:</strong> The NINE NEW agent-side MCP tools on <code>/v1/mcp</code> (<code>rename_session</code>, <code>rename_workspace</code>, <code>call_with_model</code>, <code>create_session</code>, <code>send_message</code>, <code>abort_session</code>, <code>get_datetime</code>, <code>session_metadata</code>, <code>compact</code>), the two PRE-EXISTING tools rerouted through the new seam (<code>session_list</code>, <code>session_read</code>), the seam itself (<code>pkg/agent/opencode</code> loopback methods), and the API-side <code>POST /internal/v1/workspace-rename</code>.
 <strong>Related:</strong> worklog <code>worklogs/0923_2026-09-13_agentd-mcp-five-tools.md</code> (initial five) and <code>worklogs/0924_2026-09-13_agentd-mcp-tools-v2.md</code> (this revision)</p>
 <hr />
 <h2 id="1-what-is-being-integrated">1. What is being integrated<a class="headerlink" href="#1-what-is-being-integrated" title="Permanent link">&para;</a></h2>
@@ -2165,9 +2165,9 @@
 <td>live 200; input tokens grew ~100 for a 1px PNG; the (non-vision) model replied "this model does not support image input" — bytes reached the model</td>
 </tr>
 <tr>
-<td><strong>Busy sessions BLOCK incoming messages</strong> (no 409, no queue on V1)</td>
+<td><strong>Busy sessions BLOCK incoming messages</strong> — the POST does not 409; it WAITS, then <strong>delivers at the turn boundary</strong> (queue-at-boundary)</td>
 <td>V1</td>
-<td><code>GET /session/status</code> → <code>{ses: {type:"busy"}}</code>; second POST hung → HTTP 000 at 20s</td>
+<td>liveprobe showed the block (HTTP 000 at 20s); boundary DELIVERY proven by <code>TestLoopbackL2_BusyMessageDeliversAtBoundary</code> (PR #1382): message POSTed mid-turn completed once the turn ended, persisted as the next user turn, and was answered</td>
 </tr>
 <tr>
 <td>Busy-block implies: a synchronous message to the CURRENTLY RUNNING session deadlocks by construction</td>
@@ -2250,14 +2250,14 @@
 <tr>
 <td><strong>L2 — binary integration</strong></td>
 <td>Seam + tools against a REAL opencode instance (spawned binary, temp project dir, offline mock OpenAI-compatible provider on a pinned port)</td>
-<td><code>pkg/agent/opencode/loopback_integration_test.go</code> (<code>-tags integration</code>, <code>OPENCODE_BINARY</code> override; 7/7 green 2026-09-13 on the live 1.18.15 binary)</td>
+<td><code>pkg/agent/opencode/loopback_integration_test.go</code> (<code>-tags integration</code>, <code>OPENCODE_BINARY</code> override; 8/8 green on the live 1.18.x binary incl. the busy-boundary-delivery proof)</td>
 <td>✅ green</td>
 </tr>
 <tr>
 <td><strong>L3 — live-pod e2e</strong></td>
 <td>The §2 evidence table, re-runnable as a script against any active workspace pod</td>
 <td><code>scripts/mcp-tools-liveprobe.sh</code></td>
-<td>✅ 7/7 (2026-09-13; <code>LIVEPROBE_BUSY=1</code> enables the busy-block probe)</td>
+<td>✅ 10/10 (send_message idle delivery + abort no-op probes added by PR #1382; <code>LIVEPROBE_BUSY=1</code> enables the busy-block probe)</td>
 </tr>
 </tbody>
 </table>
@@ -2386,7 +2386,7 @@
 <tbody>
 <tr>
 <td><code>tools/list</code></td>
-<td>all 9 tools present with input schemas</td>
+<td>all 13 tools present with input schemas</td>
 </tr>
 <tr>
 <td><code>session_list</code>/<code>session_read</code></td>
@@ -2518,7 +2518,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 14, 2026 15:31:32 UTC"><span class="timeago" datetime="2026-09-14T15:31:32+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 14, 2026 15:31:32 UTC">2026-09-14</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 16, 2026 03:01:53 UTC"><span class="timeago" datetime="2026-09-16T03:01:53+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 16, 2026 03:01:53 UTC">2026-09-16</span>
   </span>
 
     
