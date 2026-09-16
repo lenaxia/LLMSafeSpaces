@@ -387,3 +387,332 @@ tests:
       - eval_time: 30m
         alertname: LLMSafeSpacesKeyRewrapUnwrappable
         exp_alerts: []
+
+  # ── Epic-71 / 0c-alerts (#1312 alerts wave): canary S/L + loop liveness ──
+  # Contract under test (from the 2026-09-15 assessment §3/§5.2):
+  #   - S-violation immediate: resolve/not_found_error = S6 violated.
+  #   - L-breach burn-rate (NOT per-sample): resolve-leg p99 vs the 2s L2
+  #     bound, with for > window so a single slow probe structurally
+  #     cannot fire.
+  #   - Dead-loop staleness on llmsafespaces_loop_last_run_timestamp_seconds
+  #     for all three registered loops (pkg/obs/loopliveness.go).
+  #   - A DARK canary (api.canary.enabled=false → no canary series at all)
+  #     must keep every canary alert silent — the flip arms them; absence
+  #     never pages.
+
+  # S6 violation: not_found_error on the resolve leg → fires immediately
+  # (page-on-any; safety invariant, for: 0m).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="not_found_error"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: LLMSafeSpacesCanaryS6Violation
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              class: python:3.11
+            exp_annotations:
+              summary: "Canary S6 violation — resolve-by-absence errored (class python:3.11)"
+              description: 'The canary''s resolve leg recorded not_found_error outcomes in the last 10m for class python:3.11 — absence surfaced as an error instead of resolving (S6 violated, the pre-1a baseline; every occurrence is a bug). Check the class''s target pod resolve path and the Canary & Loop Liveness dashboard row.'
+
+  # Healthy resolve leg (resolved flowing) + snapshot steady-state
+  # (not_found): must NOT fire. The flowing series also falsify a
+  # loosened outcome/leg matcher — drop either and these make it fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="resolved"}'
+        values: '0+1x20'
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="snapshot",outcome="not_found"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesCanaryS6Violation
+        exp_alerts: []
+
+  # DARK canary (disabled → zero canary series): must NOT fire. Guards
+  # against an absent()-style mutation that would page on the knob-off
+  # fleet.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_secrets_reconcile_last_pass_success_timestamp{job="test-release-llmsafespaces-api"}'
+        values: '0+60x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesCanaryS6Violation
+        exp_alerts: []
+
+  # Wedge signal: timeout every pass (1/min) → 10 in the 10m window ≥ 3,
+  # sustained → fires after for:10m.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="timeout"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMSafeSpacesCanaryProbeTimeouts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+              class: python:3.11
+              leg: resolve
+            exp_annotations:
+              summary: "Canary probe timeouts sustained (class python:3.11, resolve leg)"
+              description: 'The canary recorded 3+ timeout outcomes in the last 10m (class python:3.11, resolve leg) — the wedge signal: probe attempts repeatedly exceeded the 2s per-leg budget. Check the class''s target pod for a hung agent/harness; correlate with the seq-stall and watchdog alerts.'
+
+  # One timeout blip: increase never reaches 3 → must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="snapshot",outcome="timeout"}'
+        values: '0+0x5 1 1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMSafeSpacesCanaryProbeTimeouts
+        exp_alerts: []
+
+  # DARK canary but healthy non-timeout outcomes flowing: must NOT fire
+  # (falsifies a loosened outcome matcher).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="resolved"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LLMSafeSpacesCanaryProbeTimeouts
+        exp_alerts: []
+
+  # L2 burn: ALL resolve probes land in the (1, 2.5] bucket (the timeout
+  # bucket — DefaultTimeout 2s = the L2 bound): p99 interpolates to
+  # 1 + 0.99*(2.5-1) = 2.485s > 2, sustained → fires after for:15m.
+  # Buckets per canary/metrics.go Buckets(0.005..5).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="1"}'
+        values: '0+0x30'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="2.5"}'
+        values: '0+10x30'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="+Inf"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMSafeSpacesCanaryResolveL2Burn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+              class: python:3.11
+            exp_annotations:
+              summary: "Canary resolve-leg p99 above the L2 budget (class python:3.11)"
+              description: 'The canary resolve-leg p99 is 2.485s over the last 10m — above the 2s L2 resolve bound (#1312). Burn, not per-sample: a single slow probe cannot trip this (the 15m hold exceeds the 10m window). Check the class''s target pod and recent deploys.'
+
+  # Healthy latency: all probes ≤ 250ms → must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="0.25"}'
+        values: '0+10x30'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="1"}'
+        values: '0+10x30'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="+Inf"}'
+        values: '0+10x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMSafeSpacesCanaryResolveL2Burn
+        exp_alerts: []
+
+  # Single slow probe (one sample in (1, 2.5] at t=12m): p99 > 2 only
+  # while the blip sits inside the 10m window (t≈12–22m) — 10m of
+  # pending < for:15m → must NOT fire, checked at peak pending (21m)
+  # and after the window slides past (25m).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="1"}'
+        values: '0+1x10 10+0x1 11+1x18'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="2.5"}'
+        values: '0+1x29'
+      - series: 'llmsafespaces_canary_probe_duration_seconds_bucket{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",le="+Inf"}'
+        values: '0+1x29'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: LLMSafeSpacesCanaryResolveL2Burn
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: LLMSafeSpacesCanaryResolveL2Burn
+        exp_alerts: []
+
+  # No-target sustained (configured class with no Active workspace —
+  # false coverage): info-tier chronic-state, fires after for:1h.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="ghost:1.0",leg="snapshot",outcome="no_target"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: LLMSafeSpacesCanaryNoTarget
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              component: api
+              class: ghost:1.0
+            exp_annotations:
+              summary: "Canary class never finds a target workspace (class ghost:1.0)"
+              description: 'Every probe pass for class ghost:1.0 records no_target — the canary knob is on but this class has no Active workspace, so it asserts nothing (false coverage). Point api.canary.classes at a runtime environment with a live workspace, or drop the class.'
+
+  # Transient no-target (10m, then targets return): pending ~40m < 1h →
+  # must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="snapshot",outcome="no_target"}'
+        values: '0+1x10 10+0x70'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: LLMSafeSpacesCanaryNoTarget
+        exp_alerts: []
+
+  # DARK canary: no_target alert must stay silent with zero canary
+  # series (guards against absent()-style mutations).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_canary_probe_outcomes_total{job="test-release-llmsafespaces-api",class="python:3.11",leg="resolve",outcome="resolved"}'
+        values: '0+1x80'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: LLMSafeSpacesCanaryNoTarget
+        exp_alerts: []
+
+  # Canary loop stale: gauge frozen (constant 0; promtool's clock starts
+  # at epoch 0 → 12m stale by eval_time 12m) → fires after for:5m.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="canary_probe"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesLoopCanaryProbeStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: api
+              job: test-release-llmsafespaces-api
+              loop: canary_probe
+            exp_annotations:
+              summary: "Canary probe loop stale (12m 0s since last pass)"
+              description: 'The canary_probe loop has not completed a pass in 12m 0s (budget 5m = 5x the default 60s interval — scale with LLMSAFESPACES_CANARY_INTERVAL). The probe runner is wedged or the API replica lost its ticker; canary coverage is dark until it recovers.'
+
+  # Canary loop healthy (gauge advancing with real time): must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="canary_probe"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesLoopCanaryProbeStale
+        exp_alerts: []
+
+  # DARK canary: no canary_probe series at all, sibling loop healthy —
+  # the canary staleness alert must NOT fire (no absent() arm by
+  # design: a disabled canary must look dark, not stale).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="outbox_parked_sweeper"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesLoopCanaryProbeStale
+        exp_alerts: []
+
+  # Parked sweeper stale (frozen gauge): fires after for:5m (critical —
+  # the S3-adjacent parked-error resolution path).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="outbox_parked_sweeper"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesLoopParkedSweeperStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              job: test-release-llmsafespaces-api
+              loop: outbox_parked_sweeper
+            exp_annotations:
+              summary: "Outbox parked-error sweeper loop stale or absent"
+              description: 'The outbox_parked_sweeper loop has not completed a pass in over 3m (3x the 60s ParkedSweepInterval) — or never stamped at all (dead since boot; the absent arm). Parked user-visible errors will not re-arm or resolve until the API outbox Run loop recovers.'
+
+  # Parked sweeper dead since boot (sibling loop series present, sweeper
+  # series absent): the absent() arm fires after for:5m. absent() carries
+  # the selector's equality matchers as labels (loop survives; the job
+  # regex does not).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="canary_probe"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesLoopParkedSweeperStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              loop: outbox_parked_sweeper
+            exp_annotations:
+              summary: "Outbox parked-error sweeper loop stale or absent"
+              description: 'The outbox_parked_sweeper loop has not completed a pass in over 3m (3x the 60s ParkedSweepInterval) — or never stamped at all (dead since boot; the absent arm). Parked user-visible errors will not re-arm or resolve until the API outbox Run loop recovers.'
+
+  # Parked sweeper healthy: must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="outbox_parked_sweeper"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LLMSafeSpacesLoopParkedSweeperStale
+        exp_alerts: []
+
+  # Reconcile watchdog stale on ONE agentd instance while its sibling
+  # stays healthy: only the stale instance fires (per-instance
+  # semantics — a dead pod must not be masked by a live one).
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-agentd",instance="10.42.0.1:4098",loop="reconcile_watchdog"}'
+        values: '0+60x30'
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-agentd",instance="10.42.0.2:4098",loop="reconcile_watchdog"}'
+        values: '0+0x30'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesLoopReconcileWatchdogStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: agentd
+              job: test-release-llmsafespaces-agentd
+              instance: 10.42.0.2:4098
+              loop: reconcile_watchdog
+            exp_annotations:
+              summary: "Session-state reconcile watchdog stale on 10.42.0.2:4098 (6m 0s)"
+              description: 'The reconcile_watchdog loop on agentd instance 10.42.0.2:4098 has not completed a pass in 6m 0s (budget 90s = 6x the 15s cadence, ReconcileCadence = LeaseConvergenceBound/2) — S5/S7 convergence and the L4/L5 lease bounds are dark for this pod. No absent() arm by design: agentd pods are ephemeral (suspend/resume); only a live-but-not-stamping pod pages.'
+
+  # Watchdog healthy everywhere: must NOT fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-agentd",instance="10.42.0.1:4098",loop="reconcile_watchdog"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesLoopReconcileWatchdogStale
+        exp_alerts: []
+
+  # No agentd scrape at all (API loop series only): the watchdog alert
+  # has NO absent() arm and must stay silent — suspend/resume makes
+  # absent agentd targets a normal fleet state.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_loop_last_run_timestamp_seconds{job="test-release-llmsafespaces-api",loop="canary_probe"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: LLMSafeSpacesLoopReconcileWatchdogStale
+        exp_alerts: []
