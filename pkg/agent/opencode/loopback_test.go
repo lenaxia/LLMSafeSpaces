@@ -457,9 +457,9 @@ const (
 	driftHTMLErrorPage = `<html><body>502 Bad Gateway</body></html>` // proxy error page riding 200
 )
 
-// seamDriftModes enumerates the leg-10 corruption bodies by their
+// leg10DriftModes enumerates the leg-10 corruption bodies by their
 // abitest.CorruptMode name.
-var seamDriftModes = []struct {
+var leg10DriftModes = []struct {
 	name string
 	body string
 }{
@@ -517,7 +517,7 @@ func TestSeam_WireDriftCorruption(t *testing.T) {
 		},
 	}
 	for site, call := range sites {
-		for _, mode := range seamDriftModes {
+		for _, mode := range leg10DriftModes {
 			t.Run(site+"/"+mode.name, func(t *testing.T) {
 				c := seamDriftServer(t, mode.body)
 				err := call(c)

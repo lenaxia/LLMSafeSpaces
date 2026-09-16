@@ -407,3 +407,39 @@ func TestMessagesV2_ErrorStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "503")
 	assert.Contains(t, err.Error(), "agent starting")
 }
+
+// TestPromptV2_WireDriftCorruption + TestMessagesV2_WireDriftCorruption
+// (leg-10, epic-71 / leg10-pins, #1312 — review r1 extended sweep): the
+// four canonical corruption shapes riding a 200 on the V2 prompt and
+// message endpoints must fail AT THE PARSE — a lenient decode yields a
+// zero-value V2PromptResponse (admittedSeq 0, empty ID) that the outbox
+// path would treat as a real ack.
+func TestPromptV2_WireDriftCorruption(t *testing.T) {
+	for _, mode := range leg10DriftModes {
+		t.Run(mode.name, func(t *testing.T) {
+			ts := newV2TestServer(t, "pw")
+			ts.respStatus = http.StatusOK
+			ts.respBody = mode.body
+			c := NewClient(ts.server.URL, "pw", nil)
+
+			resp, err := c.PromptV2(context.Background(), "ses_1", "hi", V2DeliveryQueue)
+			require.Error(t, err, "a corrupted 200 must never parse as a prompt ack")
+			assert.Nil(t, resp, "no phantom ack (admittedSeq/ID) escapes the client")
+		})
+	}
+}
+
+func TestMessagesV2_WireDriftCorruption(t *testing.T) {
+	for _, mode := range leg10DriftModes {
+		t.Run(mode.name, func(t *testing.T) {
+			ts := newV2TestServer(t, "pw")
+			ts.respStatus = http.StatusOK
+			ts.respBody = mode.body
+			c := NewClient(ts.server.URL, "pw", nil)
+
+			msgs, err := c.MessagesV2(context.Background(), "ses_1")
+			require.Error(t, err, "a corrupted 200 must never parse as a message list")
+			assert.Empty(t, msgs, "no misparsed messages escape the client")
+		})
+	}
+}

@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -31,6 +33,25 @@ func (c *OpenCodeClient) doRequest(ctx context.Context, path string) (*http.Resp
 	}
 	req.SetBasicAuth(agentd.AuthUsername, c.password)
 	return c.client.Do(req)
+}
+
+// decodeStrict decodes exactly ONE JSON value and requires the stream
+// to end there. A plain Decode silently accepts trailing bytes — the
+// leg-10 wire-drift class (#1308: drifted or proxy-corrupted bytes
+// riding a valid HTTP 200 parsing as a phantom success). Local twin of
+// pkg/agent/opencode's helper (unexported, two owning packages).
+func decodeStrict(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return errors.New("trailing bytes after JSON value")
+	}
+	return nil
 }
 
 func (c *OpenCodeClient) IsHealthy(ctx context.Context) (bool, string, error) {
@@ -140,8 +161,8 @@ func (c *OpenCodeClient) ListSessions(ctx context.Context) ([]agentd.SessionInfo
 			ID string `json:"id"`
 		} `json:"model"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return nil, err
+	if err := decodeStrict(resp.Body, &sessions); err != nil {
+		return nil, fmt.Errorf("GET /session: decode: %w", err)
 	}
 	result := make([]agentd.SessionInfo, len(sessions))
 	for i, s := range sessions {
@@ -178,7 +199,12 @@ func (c *OpenCodeClient) fetchSessionTitle(ctx context.Context, sessionID string
 	var s struct {
 		Title string `json:"title"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&s)
+	// Best-effort by contract (a drifted title must never fail the
+	// listing) — but the decode is strict and the failure is logged,
+	// never silently swallowed (Rule 3; leg-10 drift visibility).
+	if err := decodeStrict(resp.Body, &s); err != nil {
+		log.Debug("fetchSessionTitle: decode failed", zap.Error(err), zap.String("sessionID", sessionID))
+	}
 	return s.Title
 }
 

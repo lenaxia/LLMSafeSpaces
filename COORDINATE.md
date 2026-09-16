@@ -17,7 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
-| opencode (epic-71 / leg10-pins) | #1312 leg-10 wire-drift pin audit at the #1379-era parse sites — corruption pins + strict decode in the opencode seam | `pkg/agent/opencode/loopback.go`, `pkg/agent/opencode/loopback_test.go`, `pkg/agent/opencode/translate_test.go`, `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` | In Progress | 2026-09-15 |
+| opencode (epic-71 / leg10-pins) | #1312 leg-10 wire-drift pin audit at the #1379-era parse sites — corruption pins + strict decode in the opencode seam and the r1-review extended sweep (adapter/verifydelivery/client/client_v2/agentd client) | `pkg/agent/opencode/{loopback,adapter,verifydelivery,client,client_v2}.go` + their `_test.go`, `cmd/workspace-agentd/client.go` + `client_drift_test.go`, `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` | In Progress (PR #1384, review loop) | 2026-09-15 |
 | opencode (g13) | G13 — account lockout IP+email keying | `api/internal/services/auth/auth.go`, `api/internal/server/router.go`, `api/internal/services/auth/*_test.go` | In Progress | 2026-07-12 |
 | opencode (g-batch) | Code-fixable batch: G6/G41, G21, G42, G44, G46, G47 | `api/internal/server/router.go`, `controller/internal/workspace/pod_builder.go`, `api/internal/handlers/stream_user_events.go`, `cmd/workspace-agentd/main.go`, `helm/templates/controller-deployment.yaml` (+ tests) | In Progress | 2026-07-11 |
 | opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |

@@ -73,6 +73,32 @@ Note: M2 as first attempted (swallow Decode error, keep Token check) only failed
 
 `cmd/workspace-agentd/faultmatrix/` contains NO leg-10 site registry/test list (grep for leg-10/wire-drift: zero hits) — the leg-10 site inventory lives in the #1312 assessment table (§1 row 10), which this PR's site list updates via the audit table above. No harness change made (pin-audit stream; minimal-footprint rule).
 
+### 7. Review round 1 — extended sweep (r1 finding: audit incomplete)
+
+The reviewer confirmed all round-1 claims by execution but ruled the audit incomplete: live same-class parse sites beyond the assessment's two files were unenumerated. Validated real, then pinned/fixed:
+
+| Site (r1 finding) | Before | After |
+|---|---|---|
+| `pkg/agent/opencode/adapter.go:359` (`Adapter.Send` — same POST /session/:id/message wire as the seam; its lenient twin) | lenient Decode, loud only on syntax errors | strict via `decodeStrict` + 4-mode pin (`TestAdapter_Send_WireDriftCorruption`) |
+| `pkg/agent/opencode/verifydelivery.go:87` (VerifyDelivery V1 page walk) | lenient Decode — a valid-empty-page + garbage tail could be read as PROVEN absence | strict + 4-mode pin asserting error AND `definitive=false` (never prove absence from drift) — the pin uses type-satisfying bodies (`[]garbage`), the phantom case itself |
+| `pkg/agent/opencode/client.go:219` (`GetSessionStatuses`) | lenient Decode | strict + 4-mode pin (type-satisfying prefix — phantom all-idle map) |
+| `pkg/agent/opencode/client_v2.go:139` (`PromptV2` envelope) | lenient Decode | strict + 4-mode pin — a phantom zero ack (admittedSeq 0) must never escape |
+| `pkg/agent/opencode/client_v2.go:292` (`MessagesV2` envelope) | lenient Decode | strict + 4-mode pin |
+| `cmd/workspace-agentd/client.go:143` (`ListSessions`, fillGaps path; #1379-touched file) | lenient Decode | strict (local `decodeStrict` twin, package main) + 4-mode pin |
+| `cmd/workspace-agentd/client.go:181` (`fetchSessionTitle`) | **fully swallowed decode** (`_ = json.NewDecoder(...).Decode(&s)`) | strict + `log.Debug` on failure (Rule 3); contract unchanged (best-effort title, never fails the listing) — pinned by `TestOpenCodeClient_FetchSessionTitle_DriftStaysBestEffort` with a zap observer asserting the drift is logged |
+
+Two r1 pins initially passed for the wrong reason (their target types rejected the generic corrupt body outright, so trailing-garbage was never exercised): fixed with type-satisfying bodies — `[]garbage` for the verify page walk (the real phantom-absence shape) and `{"ses_1":{"type":"idle"}}garbage` for the status map. RED before the strict switch at all six extended sites (trailing_garbage); GREEN after.
+
+Also applied r1 minors: `decodeStrict` uses `errors.New` for the constant case and wraps the underlying `dec.Token()` error (names the offending byte).
+
+### 8. Round-2 mutation red-checks
+
+| Mutation | Result |
+|---|---|
+| M6a/M6b: adapter.go / verifydelivery.go reverted to lenient Decode | trailing_garbage red at each (2 red) |
+| M7: agentd `ListSessions` decode swallowed | 4 red (all modes) |
+| M8: `fetchSessionTitle` reverted to the swallowed decode | `DriftStaysBestEffort` red via the observer (the log assert is load-bearing) |
+
 ---
 
 ## Key Decisions
@@ -92,12 +118,15 @@ None.
 
 ## Tests Run
 
-- RED (pre-fix): `go test -race -run 'TestSeam_WireDriftCorruption|...CorruptBody|...IDDriftLoud' ./pkg/agent/opencode/` → 5 FAIL (trailing_garbage × 5 Decode sites) — the true gap
-- GREEN (post-fix): same run → ok
-- Full package gate: `go test -race -timeout 300s ./pkg/agent/opencode/` → **ok 20.195s**
-- Mutation red-checks M1/M2b/M3/M4/M5a/M5b: 5/20/4/1/4/4 red respectively (all restored; final suite green)
-- `golangci-lint run pkg/agent/opencode/...` → 0 issues
-- `gofmt -l pkg/agent/opencode/` → clean
+- RED (pre-fix, round 1): `go test -race -run 'TestSeam_WireDriftCorruption|...CorruptBody|...IDDriftLoud' ./pkg/agent/opencode/` → 5 FAIL (trailing_garbage × 5 Decode sites)
+- RED (pre-fix, round 2): extended-sweep pins → 6 FAIL (trailing_garbage × Adapter.Send, VerifyDelivery, GetSessionStatuses, PromptV2, MessagesV2, agentd ListSessions)
+- GREEN (post-fix): all pins ok
+- Full package gates: `go test -race -timeout 300s ./pkg/agent/opencode/` → **ok 20.660s**; `go test -race -timeout 600s ./cmd/workspace-agentd/` → **ok 315.359s**
+- Mutation red-checks round 1: M1 (5 red), M2b (20 red), M3 (4 red), M4 (1 red), M5a/M5b (4 red each) — all restored
+- Mutation red-checks round 2: M6a/M6b (2 red), M7 (4 red), M8 (1 red) — all restored
+- `golangci-lint run ./pkg/agent/opencode/... ./cmd/workspace-agentd/...` → 0 issues
+- `gofmt -l` → clean
+- `make repolint` → all checks passed
 - faultmatrix NOT touched (no harness change) — not re-run; CI runs it
 
 ---
@@ -112,8 +141,18 @@ None.
 
 ## Files Modified
 
-- `pkg/agent/opencode/loopback.go` — `decodeStrict` helper + 5 Decode call sites switched
-- `pkg/agent/opencode/loopback_test.go` — `TestSeam_WireDriftCorruption` (28 subtests), `TestSeam_SessionCreate_IDDriftLoud`, drift fixtures/helpers
+- `pkg/agent/opencode/loopback.go` — `decodeStrict` helper + 5 seam Decode call sites switched
+- `pkg/agent/opencode/loopback_test.go` — `TestSeam_WireDriftCorruption` (28 subtests), `TestSeam_SessionCreate_IDDriftLoud`, shared `leg10DriftModes`/`seamDriftServer` helpers
 - `pkg/agent/opencode/translate_test.go` — `TestParseSessionListWire_CorruptBody`, `TestParseSessionWire_CorruptBody` (8 subtests)
+- `pkg/agent/opencode/adapter.go` — Send decode strict (r1)
+- `pkg/agent/opencode/adapter_test.go` — `TestAdapter_Send_WireDriftCorruption` (r1)
+- `pkg/agent/opencode/verifydelivery.go` — V1 page walk strict (r1)
+- `pkg/agent/opencode/verifydelivery_test.go` — `TestVerifyDelivery_WireDriftCorruption` (r1)
+- `pkg/agent/opencode/client.go` — `GetSessionStatuses` strict (r1)
+- `pkg/agent/opencode/client_test.go` — `TestGetSessionStatuses_WireDriftCorruption` (r1)
+- `pkg/agent/opencode/client_v2.go` — `PromptV2`/`MessagesV2` envelope decodes strict (r1)
+- `pkg/agent/opencode/client_v2_test.go` — `TestPromptV2_WireDriftCorruption`, `TestMessagesV2_WireDriftCorruption` (r1)
+- `cmd/workspace-agentd/client.go` — local `decodeStrict`, `ListSessions` strict, `fetchSessionTitle` strict + logged (r1; #1379-touched file)
+- `cmd/workspace-agentd/client_drift_test.go` — agentd drift pins (r1)
 - `COORDINATE.md` — claim row
 - `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` — this worklog

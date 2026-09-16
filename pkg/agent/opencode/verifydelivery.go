@@ -19,7 +19,6 @@ package opencode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -84,7 +83,7 @@ func (a *Adapter) verifyDeliveryV1Store(ctx context.Context, c *Client, sessionI
 			return false, false, a.httpError("GET "+path, resp)
 		}
 		var msgs []ocMessage
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&msgs); err != nil {
+		if err := decodeStrict(io.LimitReader(resp.Body, 64<<20), &msgs); err != nil {
 			resp.Body.Close() //nolint:errcheck // best-effort drain
 			return false, false, fmt.Errorf("GET %s: decode: %w", path, err)
 		}

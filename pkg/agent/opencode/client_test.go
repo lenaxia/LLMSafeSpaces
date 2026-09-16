@@ -165,3 +165,31 @@ func TestPushCredentials_ZenKindDeliveredToAuthStore(t *testing.T) {
 	assert.ElementsMatch(t, []string{"opencode-free-tier", "proxy"}, puts,
 		"zen-kind credentials must reach the auth store on the reload path (their only live delivery — the config render skips them per 2(a))")
 }
+
+// TestGetSessionStatuses_WireDriftCorruption (leg-10, epic-71 /
+// leg10-pins, #1312 — review r1 extended sweep): the four canonical
+// corruption shapes riding a 200 on GET /session/status must fail AT
+// THE PARSE — a lenient decode would hand the caller a phantom
+// all-idle map (every unknown session looks idle).
+func TestGetSessionStatuses_WireDriftCorruption(t *testing.T) {
+	// trailing_garbage carries a type-satisfying prefix (a valid status
+	// map) — a lenient decode would hand the caller a phantom map.
+	modes := []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"ses_1":{"ty`},
+		{"trailing_garbage", `{"ses_1":{"type":"idle"}}garbage-bytes`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := seamDriftServer(t, mode.body)
+			_, err := srv.GetSessionStatuses(context.Background())
+			require.Error(t, err, "a corrupted 200 must never parse as a status map")
+			assert.Contains(t, err.Error(), "decode",
+				"the corrupted 200 must fail AT THE PARSE")
+		})
+	}
+}

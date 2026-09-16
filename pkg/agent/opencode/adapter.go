@@ -356,7 +356,7 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 	// json.NewDecoder instead of buffering+Unmarshal for consistency with
 	// GetHistory's streaming path.
 	var om ocMessage
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&om); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64<<20), &om); err != nil {
 		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
 	}
 	msg, files := translateMessage(om)

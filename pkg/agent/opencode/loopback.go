@@ -40,6 +40,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -611,7 +612,10 @@ func decodeStrict(r io.Reader, v any) error {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("trailing bytes after JSON value")
+		if err != nil {
+			return fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return errors.New("trailing bytes after JSON value")
 	}
 	return nil
 }

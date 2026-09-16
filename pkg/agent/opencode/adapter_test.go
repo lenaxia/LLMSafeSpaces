@@ -1495,3 +1495,24 @@ func TestAdapter_RejectInput_TransportErrorSurfaces_QueID(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestAdapter_Send_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — review r1 finding: this site decodes the SAME
+// POST /session/:id/message wire as the now-strict loopback seam and
+// was its lenient twin): the four canonical corruption shapes riding a
+// 200 must fail AT THE PARSE — never a silent empty assistant message.
+func TestAdapter_Send_WireDriftCorruption(t *testing.T) {
+	for _, mode := range leg10DriftModes {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := newFakeOpencode(t)
+			srv.register("POST", "/session/ses_1/message", mode.body, 0)
+			a := newTestAdapter(t, srv.Server)
+
+			msg, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+			require.Error(t, err, "a corrupted 200 must never parse as a delivered message")
+			assert.Nil(t, msg, "no misparsed message escapes the adapter")
+			assert.Contains(t, err.Error(), "decode",
+				"the corrupted 200 must fail AT THE PARSE")
+		})
+	}
+}
