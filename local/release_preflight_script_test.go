@@ -144,6 +144,8 @@ func TestReleasePreflightScript_StructurePins(t *testing.T) {
 		{`opencode-binary-contract.sh`, "P4: the behavioral contract script invocation"},
 		{`--offline`, "explicit degraded mode must exist and be loud"},
 		{`never use as a merge gate`, "offline degradation must carry its warning"},
+		{`agentdDelivery.image is empty`, "P2: the absent-agentd-ref detector (mandatory delivery pin)"},
+		{`the delivery pin is mandatory`, "delivery refs are mandatory, not skippable"},
 		{`RESULT: FAIL`, "fail-loud exit contract"},
 	}
 	for _, r := range rows {
@@ -303,11 +305,14 @@ func stubRegistry(t *testing.T, indexDigests, indexBodies map[string]string) *ht
 				return
 			}
 			w.Header().Set("Docker-Content-Digest", digest)
-			if body, ok := indexBodies[ref]; ok {
+			body, hasBody := indexBodies[ref]
+			if hasBody {
 				w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
-				fmt.Fprint(w, body)
 			}
 			w.WriteHeader(http.StatusOK)
+			if hasBody {
+				fmt.Fprint(w, body)
+			}
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -390,6 +395,12 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "does not belong to this image") {
 			t.Errorf("output must name the foreign digest:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "membership verified by P1 resolution") {
+			t.Errorf("a digest P1 just refuted must NOT be reported as membership-verified:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a foreign-digest failure must still print the RESULT verdict:\n%s", out.String())
 		}
 	})
 
@@ -543,6 +554,61 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "RESULT: FAIL") {
 			t.Errorf("a P1 failure must still print the RESULT verdict:\n%s", out.String())
+		}
+	})
+
+	// Round-5 finding B: a candidate missing a mandatory delivery block
+	// must FAIL, not silently PASS — the chart render fails on an empty
+	// delivery ref, so a green pre-flight here would be skip=green on an
+	// undeployable candidate.
+	t.Run("candidate missing a delivery block fails (mandatory pin)", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, nil)
+		pin := repoPinnedOpencode(t)
+		scenarios := []struct {
+			name    string
+			block   string
+			wantDie string
+		}{
+			{
+				name: "agentd absent",
+				block: `  agentdDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+`,
+				wantDie: "agentdDelivery.image is empty",
+			},
+			{
+				name: "opencode absent",
+				block: `  opencodeDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/opencode:` + pin + `@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+`,
+				wantDie: "opencodeDelivery.image is empty",
+			},
+		}
+		for _, sc := range scenarios {
+			cmd := exec.Command("bash", "./"+preflightScript,
+				onlineValues(t, srv.URL, strings.Replace(preflightHappyValues(t), sc.block, "", 1)))
+			var out strings.Builder
+			cmd.Stdout, cmd.Stderr = &out, &out
+			if err := cmd.Run(); err == nil {
+				t.Errorf("%s: a missing mandatory delivery block must FAIL, got PASS:\n%s", sc.name, out.String())
+			}
+			if !strings.Contains(out.String(), sc.wantDie) {
+				t.Errorf("%s: output must name the empty mandatory ref (%q):\n%s", sc.name, sc.wantDie, out.String())
+			}
+			if !strings.Contains(out.String(), "RESULT: FAIL") {
+				t.Errorf("%s: output must print the RESULT verdict:\n%s", sc.name, out.String())
+			}
+			if strings.Contains(out.String(), "RESULT: PASS") {
+				t.Errorf("%s: an undeployable candidate must never PASS:\n%s", sc.name, out.String())
+			}
 		}
 	})
 

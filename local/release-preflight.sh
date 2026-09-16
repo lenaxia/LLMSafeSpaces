@@ -132,6 +132,12 @@ API_DIGEST="$(val api.image.digest)"
 FE_DIGEST="$(val frontend.image.digest)"
 ROUTER_DIGEST="$(val controller.inferenceRelay.router.image.digest)"
 
+# Both delivery refs are mandatory pins (design 0053 §4.5 — the chart
+# render fails on an empty one): a candidate missing them cannot deploy,
+# and skipping the ref here would be a silent PASS on an undeployable
+# candidate. opencode's empty-ref die lives in P4 below; agentd's is here.
+[ -z "${AGENTD_REF}" ] && die "P2 controller.agentdDelivery.image is empty — the delivery pin is mandatory (design 0053 §4.5)"
+
 ref_digest() { case "$1" in *@sha256:*) printf '%s' "${1##*@sha256:}" ;; *) printf '' ;; esac; }
 
 PLATFORM_DIGESTS=()
@@ -276,6 +282,9 @@ for entry in "${CHECK_REFS[@]}"; do
       die "P1 ${label} digest ${repo}@${digest} does not resolve (${code}) — the digest does not belong to this image's index (incident 2026-09-01 class)"
     else
       ok "P1 ${label} ${repo}@${digest} resolves"
+      # Record membership so the digest-only coherence branch below can
+      # report "verified by P1" ONLY when P1 actually resolved it.
+      RESOLVED_DIGEST["${label}"]="${digest}"
     fi
     if [ -n "${tag}" ]; then
       read -r tcode idx <<<"$(head_manifest "${repo}" "${tag}")"
@@ -310,21 +319,23 @@ done
 # of the named repo when a tag is also present (tag+digest coherence).
 verify_pin_coherence() {
   local label="$1" ref="$2" repo="$3" tag="$4" hex="$5"
+  # An absent ref is a mandatory-pin failure the P2/P4 offline dies already
+  # reported — never paper over it with an ok here.
+  [ -z "${ref}" ] && return 0
   [ -z "${hex}" ] && { ok "P2 ${label} carries no explicit digest — index annotations resolve at controller startup"; return; }
-  [ -z "${tag}" ] && { ok "P2 ${label} digest-only pin (${repo}@${hex}) — membership verified by P1 resolution"; return; }
-  local idx="${RESOLVED_DIGEST["${label}"]-}"
-  if [ -z "${idx}" ] || [ "${idx}" = "-" ]; then
-    # P1 already reported the tag/resolution failure above (or the
-    # registry returned no index digest) — there is no live index to
-    # compare against, and claiming a match would contradict the FAIL
-    # already on record. Stay silent; P1 owns that failure.
+  if [ -z "${tag}" ]; then
+    # digest-only pin: membership was proven only if P1 actually resolved
+    # the digest — never claim "verified by P1" right after P1 refuted it.
+    if [ "${RESOLVED_DIGEST["${label}"]-}" = "sha256:${hex}" ]; then
+      ok "P2 ${label} digest-only pin (${repo}@${hex}) — membership verified by P1 resolution"
+    fi
     return 0
   fi
-  if [ "sha256:${hex}" != "${idx}" ]; then
-    die "P2 ${label} pin sha256:${hex} is not the current index digest of ${repo}:${tag} (${idx}) — stale or foreign digest"
-  else
-    ok "P2 ${label} pin matches the live index digest of ${repo}:${tag}"
-  fi
+  # tag+digest pin: the P1 loop above already compared this exact pair
+  # against the live index and printed its verdict (the match ok, the
+  # stale/foreign die, or the tag-resolution failure) — repeating it here
+  # would double-report every coherent pin.
+  return 0
 }
 verify_pin_coherence "agentdDelivery" "${AGENTD_REF}" "$(delivery_repo "${AGENTD_REF}")" "$(delivery_tag "${AGENTD_REF}")" "${AGENTD_HEX}"
 verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OPENCODE_REF}")" "$(delivery_tag "${OPENCODE_REF}")" "${OPENCODE_HEX}"
@@ -340,8 +351,10 @@ verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OP
 # un-annotated images (values.yaml caveat) — noted, not failed.
 verify_binary_pins() {
   local label="$1" repo="$2" ref="$3" name="$4" amd64="$5" arm64="$6" out idx_amd64 idx_arm64 bad
+  # An absent ref is a mandatory-pin failure the P2/P4 offline dies already
+  # reported — the annotations line below would be false for an empty ref.
+  [ -z "${ref}" ] && return 0
   [ -z "${amd64}" ] && [ -z "${arm64}" ] && { ok "P2 ${label}: no explicit binarySHA256* pins — resolved from the index annotations at controller startup"; return; }
-  [ -z "${ref}" ] && { die "P2 ${label}: binary pins set but the delivery ref carries neither tag nor digest — cannot verify against the index"; return; }
   if ! out="$(index_annotations "${repo}" "${ref}" "${name}")"; then
     die "P2 ${label}: cannot read index annotations from ${repo}@${ref} — cannot verify the break-glass binary pins"
     return

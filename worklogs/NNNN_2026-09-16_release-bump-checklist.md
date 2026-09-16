@@ -105,3 +105,20 @@ None.
 - Merged `origin/main` (brings #1385 epic-71 canary alerts, #1390/#1391 flake fixes; `helm/values.yaml` merged clean — the alerting block and the base-tag default don't overlap).
 
 **Tests run this session:** `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 20 subtests, red-first); `go build ./...`, `make test`, `make lint` — green (post-merge).
+
+---
+
+## Session 2, round 5 — 2026-09-16 (preflight false-ok closure + mandatory delivery refs)
+
+**Round-5 findings (both validated, both fixed test-first):**
+
+- **A — false "membership verified by P1 resolution" in the digest-only branch.** `verify_pin_coherence` printed its digest-only ok without consulting P1's outcome — after a foreign-digest 404 the output self-contradicted. Fix: the P1 digest-resolution loop now records `RESOLVED_DIGEST[label]` on 200, and the digest-only ok prints only when that record equals the pin; otherwise silent (P1 owns the failure).
+- **B — skip=green on an absent mandatory delivery ref.** A candidate with no `controller.agentdDelivery.image` sailed to `RESULT: PASS` (P1's empty-repo skip + the no-digest/no-pins oks). Fix: P2 offline die on an empty agentd ref (mirrors P4's existing opencode die, design 0053 §4.5); `verify_pin_coherence`/`verify_binary_pins` silent-return on an empty ref (the mandatory die owns the report; the now-subsumed "binary pins set but the delivery ref carries neither tag nor digest" die was removed — it became unreachable); `mcp.image` stays optional.
+
+**Round-5 minor items taken in the same pass:** the duplicate match ok on a coherent tag+digest pin (P1 inline + `verify_pin_coherence`) — the tag+digest tail of `verify_pin_coherence` was fully redundant with the P1 loop's inline comparison (identical inputs, and its die was unreachable), so it now returns silently with a comment; the test stub's `WriteHeader`-after-body log noise. Skipped as fail-safe/non-blocking per the review: `flatten_values` inline-`#` handling (a trailing comment already fails P3 loud), `token_for` 000-attribution (exit 1, loud).
+
+**Regression tests (red-first):** the round-3 foreign-digest leg now also asserts NO "membership verified by P1 resolution" after the FAIL; new leg "candidate missing a delivery block fails (mandatory pin)" covering both agentd (P2 die) and opencode (P4 die) scenarios — on the pre-fix head the agentd scenario PASSed exit 0; StructurePins gained the `agentdDelivery.image is empty` + `the delivery pin is mandatory` rows. Preflight suite: 4 funcs / 21 subtests.
+
+**PR-body counts refreshed** (14/11 → 21 in both places, per the round-5 review).
+
+**Tests run this round:** `go test ./local/ -run TestReleasePreflight` — PASS (4/21, red-first); `go build ./...`, `make test`, `make lint` — green.
