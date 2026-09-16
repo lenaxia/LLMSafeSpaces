@@ -165,14 +165,19 @@ type ReadyzResponse struct {
 	ProvidersConfigured int      `json:"providers_configured"`
 	AgentVersion        string   `json:"agent_version"`
 	AgentType           string   `json:"agent_type"`
-	// RelayInjected is true when the relay injector successfully completed
-	// (wrote relay config and restarted opencode). False before the injector
-	// has run, if it was skipped (personal opencode key), or while it keeps
-	// failing. Evaluated live (writer HasRelay) per request: a boot-window
-	// fetch failure re-arms on a bounded backoff loop (#910), so the flip
-	// can land mid-pod-life, not only at boot. Included here (readyz)
-	// rather than statusz because: relay injection has readiness-like
-	// semantics, readyz
+	// RelayInjected is true when the writer holds relay state — i.e. the
+	// relay config block has been applied (via pre-boot injection, a
+	// successful injector run, or a successful #910 re-arm cycle
+	// mid-pod-life; evaluated live per request, not latched at boot).
+	// The opencode restart that LOADS the config may still be pending:
+	// session-aware deferral holds it until sessions idle, and the
+	// re-arm path skips its own kill entirely when another deferred
+	// restart is outstanding. False before any apply, when skipped
+	// (personal opencode key), or while every attempt keeps failing.
+	// Known corner (pre-existing, documented): a terminal auth.json
+	// write failure after a successful config apply leaves this true
+	// with the opencode-relay auth entry missing. Included here (readyz)
+	// rather than statusz because readyz
 	// is cache-based and lightweight (no synchronous opencode calls), and the
 	// API server needs this flag on every ListModels cache miss — using statusz
 	// (which has no latency upper bound) would be unsafe.

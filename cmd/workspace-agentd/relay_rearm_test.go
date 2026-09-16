@@ -650,10 +650,18 @@ func TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill(t *testing.T) {
 	t.Cleanup(cancel)
 	var kills atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		cancel() // dies mid-flight: the fetch may error (canceled) or
-		// succeed with the ctx already dead — both land canceled below.
+		// Write the FULL valid body first, then cancel: the small body
+		// is typically delivered and fully read before the cancel lands,
+		// so the fetch SUCCEEDS against a dead ctx and the post-fetch
+		// guard fires. If the transport loses the race (body read
+		// aborted by the cancel), the fetch errors and the attempt
+		// exits canceled via the retry loop's ctx select — the SAME
+		// terminal outcome, so the pin is race-proof either way, but
+		// the guard-discriminating path (fetch ok + ctx dead → no
+		// Apply, no kill) is the expected one.
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"connected":["opencode"],"all":[{"id":"opencode","models":{"free-model":{"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}}}]}`))
+		cancel()
 	}))
 	defer srv.Close()
 
