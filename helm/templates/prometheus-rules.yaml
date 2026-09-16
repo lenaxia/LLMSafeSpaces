@@ -309,6 +309,178 @@ spec:
               DEK against (never healed unverified, by design). Check
               secret_audit_log action=key_rewrap_unwrappable for the affected users.
 
+        {{- /* ── Epic-71 / 0c-alerts (#1312 alerts wave) ───────────────────
+              Metric contract (verified against the emitters — do not edit
+              names/labels from memory):
+                llmsafespaces_canary_probe_outcomes_total{class,leg,outcome}
+                  api/internal/services/canary/metrics.go:12 — legs
+                  snapshot|resolve (canary.go:70-71); outcomes per
+                  canary.go:86-101. resolve/not_found_error = S6 VIOLATED;
+                  timeout (any leg) = wedge; no_target/pick_error/unresolved_target
+                  = targeting failures, not pod verdicts; canceled =
+                  rolling-restart noise (never pages).
+                llmsafespaces_canary_probe_duration_seconds{class,leg}
+                  metrics.go:17 — buckets 0.005..5; the resolve leg is the
+                  L2 surface (DefaultTimeout 2s == the L2 bound, canary.go:63).
+                llmsafespaces_loop_last_run_timestamp_seconds{loop}
+                  pkg/obs/loopliveness.go:23 — loops reconcile_watchdog
+                  (agentd, 15s ReconcileCadence), outbox_parked_sweeper
+                  (API, 60s ParkedSweepInterval), canary_probe (API, 60s
+                  default interval, LLMSAFESPACES_CANARY_INTERVAL).
+
+              DARK-CANARY INVARIANT: prod runs api.canary.enabled=false —
+              zero canary series exist and every canary alert below is
+              structurally silent (no absent() arms on canary metrics;
+              increase/rate/histogram_quantile over absent series yield no
+              alertable vectors). The promtool suite pins this per alert.
+              L3/L4 bounds are NOT canary-measurable (synthetic ids never
+              diverge); their enforcement lives in the fault-matrix
+              harness — see the ops note in MONITORING-OPERATIONAL.md. */}}
+        {{- /* S6 immediate, page-on-any: absence surfaced as an error
+              instead of resolving (safety invariant — every occurrence
+              is a bug). for: 0m per #1312's "S- violation (immediate)";
+              the 10m increase window absorbs counter re-reads. */}}
+        - alert: LLMSafeSpacesCanaryS6Violation
+          expr: |
+            sum by (class) (
+              increase(llmsafespaces_canary_probe_outcomes_total{job=~"{{ $apiJob }}", leg="resolve", outcome="not_found_error"}[10m])
+            ) > 0
+          for: 0m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Canary S6 violation — resolve-by-absence errored (class {{ `{{ $labels.class }}` }})"
+            description: >-
+              The canary's resolve leg recorded not_found_error outcomes in the last 10m
+              for class {{ `{{ $labels.class }}` }} — absence surfaced as an error instead of
+              resolving (S6 violated, the pre-1a baseline; every occurrence is a bug). Check
+              the class's target pod resolve path and the Canary & Loop Liveness dashboard row.
+
+        {{- /* The wedge signal (the canary's primary quarry), ANY leg by
+              design (a hung GetSnapshot pages exactly like a hung
+              resolve): 3+ timeouts in 10m per class/leg, held 10m. At
+              the default cadence one probe per class/leg/PASS reaches 3
+              only after ≥3 failed passes on one replica (or one bad
+              fleet-wide pass on a ≥3-replica deployment — per-replica
+              counters; a fleet-wide wedge paging there is correct).
+              A single-replica blip never reaches the threshold. */}}
+        - alert: LLMSafeSpacesCanaryProbeTimeouts
+          expr: |
+            sum by (class, leg) (
+              increase(llmsafespaces_canary_probe_outcomes_total{job=~"{{ $apiJob }}", outcome="timeout"}[10m])
+            ) >= 3
+          for: 10m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Canary probe timeouts sustained (class {{ `{{ $labels.class }}` }}, {{ `{{ $labels.leg }}` }} leg)"
+            description: >-
+              The canary recorded 3+ timeout outcomes in the last 10m (class
+              {{ `{{ $labels.class }}` }}, {{ `{{ $labels.leg }}` }} leg) — the wedge signal: probe attempts
+              repeatedly exceeded the 2s per-leg budget. Check the class's target pod for a
+              hung agent/harness; correlate with the seq-stall and watchdog alerts.
+
+        {{- /* L2 breach, burn-rate NOT per-sample (#1312's rollout rule):
+              resolve-leg p99 against the 2s L2 resolve bound over a 10m
+              window, held 15m — for > window makes a single slow probe
+              structurally unable to fire. Timeouts land in the (1, 2.5]
+              bucket (DefaultTimeout 2s), so a wedged class interpolates
+              p99 ≈ 2.485s > 2. The snapshot leg keeps the I12 250ms
+              budget on the dashboard, not an alert (not an #1312 L bound). */}}
+        - alert: LLMSafeSpacesCanaryResolveL2Burn
+          expr: |
+            histogram_quantile(0.99,
+              sum by (class, le) (
+                rate(llmsafespaces_canary_probe_duration_seconds_bucket{job=~"{{ $apiJob }}", leg="resolve"}[10m])
+              )
+            ) > 2
+          for: 15m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Canary resolve-leg p99 above the L2 budget (class {{ `{{ $labels.class }}` }})"
+            description: >-
+              The canary resolve-leg p99 is {{ `{{ $value | humanizeDuration }}` }} over the last 10m — above
+              the 2s L2 resolve bound (#1312). Burn, not per-sample: a single slow probe
+              cannot trip this (the 15m hold exceeds the 10m window). Check the class's
+              target pod and recent deploys.
+
+        {{- /* False-coverage guard (chronic-state, info-tier): a configured
+              class that never finds a target workspace asserts nothing.
+              values.yaml promises one Active workspace per class at flip
+              time; sustained no_target means that promise broke (typo'd
+              class, fleet shape changed) — worth knowing, not a page.
+              Window 30m < for 1h: transient no-target stretches (mass
+              suspend) stay silent. */}}
+        - alert: LLMSafeSpacesCanaryNoTarget
+          expr: |
+            sum by (class) (
+              increase(llmsafespaces_canary_probe_outcomes_total{job=~"{{ $apiJob }}", outcome="no_target"}[30m])
+            ) > 0
+          for: 1h
+          labels:
+            severity: info
+            component: api
+          annotations:
+            summary: "Canary class never finds a target workspace (class {{ `{{ $labels.class }}` }})"
+            description: >-
+              Every probe pass for class {{ `{{ $labels.class }}` }} records no_target — the canary knob is
+              on but this class has no Active workspace, so it asserts nothing (false
+              coverage). Point api.canary.classes at a runtime environment with a live
+              workspace, or drop the class.
+
+        {{- /* Dead-loop detection (1/3): the canary runner itself. NO
+              absent() arm — a DISABLED canary exports no series and must
+              look dark, not stale (the flip arms this alert). Budget 5m =
+              5x the 60s default interval; scale with
+              LLMSAFESPACES_CANARY_INTERVAL (a pass is classes x ~4s
+              worst-case sequential). Per-instance: each API replica runs
+              the loop; one wedged replica must not be masked by a live
+              one. */}}
+        - alert: LLMSafeSpacesLoopCanaryProbeStale
+          expr: |
+            (time() - llmsafespaces_loop_last_run_timestamp_seconds{job=~"{{ $apiJob }}", loop="canary_probe"}) > 300
+          for: 5m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "Canary probe loop stale ({{ `{{ $value | humanizeDuration }}` }} since last pass)"
+            description: >-
+              The canary_probe loop has not completed a pass in {{ `{{ $value | humanizeDuration }}` }} (budget
+              5m = 5x the default 60s interval — scale with LLMSAFESPACES_CANARY_INTERVAL).
+              The probe runner is wedged or the API replica lost its ticker; canary
+              coverage is dark until it recovers.
+
+        {{- /* Dead-loop detection (2/3): the parked-error sweeper rides the
+              outbox Run loop (wired wherever the Redis-backed cache
+              service is active — app.go's SetOutbox sits inside the
+              *cache.Service assertion; the InMemoryStore dev fallback
+              never wires the outbox and would trip the absent arm, a
+              dev-only false page), so it HAS an absent() arm: a fleet
+              that never stamped once is dead since boot (the
+              SecretsReconcileStalled pattern). Budget 3m = 3x the 60s
+              ParkedSweepInterval. Parked entries not re-arming = the
+              S3-adjacent strand path going silent. */}}
+        - alert: LLMSafeSpacesLoopParkedSweeperStale
+          expr: |
+            (time() - llmsafespaces_loop_last_run_timestamp_seconds{job=~"{{ $apiJob }}", loop="outbox_parked_sweeper"}) > 180
+            or absent(llmsafespaces_loop_last_run_timestamp_seconds{job=~"{{ $apiJob }}", loop="outbox_parked_sweeper"})
+          for: 5m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "Outbox parked-error sweeper loop stale or absent"
+            description: >-
+              The outbox_parked_sweeper loop has not completed a pass in over 3m (3x the
+              60s ParkedSweepInterval) — or never stamped at all (dead since boot; the
+              absent arm). Parked user-visible errors will not re-arm or resolve until
+              the API outbox Run loop recovers.
+
     - name: llmsafespaces.controller
       rules:
         # #863: page-on-any. The counter increments once per failure
@@ -604,6 +776,32 @@ spec:
               The Deliver-ack (202-equivalent) p99 is {{ `{{ $value | humanizeDuration }}` }} (budget
               1s). Check platform-volume fsync latency and ledger WAL contention — sustained breach
               slows every send on this pod.
+
+        {{- /* Epic-71 / 0c-alerts — dead-loop detection (3/3): the
+              session-state reconcile watchdog (#1311), per agentd pod.
+              Budget 90s = 6x the 15s cadence (ReconcileCadence =
+              LeaseConvergenceBound/2 — at 90s stale the 30s L4/L5 lease
+              bound has been dark for three bounds). NO absent() arm,
+              unlike the API-side sweeper: agentd pods are ephemeral by
+              design (suspend deletes the pod; Prometheus staleness
+              marks the series gone) — absent targets are a normal
+              fleet state, and only a live-but-not-stamping pod pages.
+              Per-instance so a dead pod is never masked by a sibling. */}}
+        - alert: LLMSafeSpacesLoopReconcileWatchdogStale
+          expr: |
+            (time() - llmsafespaces_loop_last_run_timestamp_seconds{job=~"{{ $agentdJob }}", loop="reconcile_watchdog"}) > 90
+          for: 2m
+          labels:
+            severity: critical
+            component: agentd
+          annotations:
+            summary: "Session-state reconcile watchdog stale on {{ `{{ $labels.instance }}` }} ({{ `{{ $value | humanizeDuration }}` }})"
+            description: >-
+              The reconcile_watchdog loop on agentd instance {{ `{{ $labels.instance }}` }} has not completed
+              a pass in {{ `{{ $value | humanizeDuration }}` }} (budget 90s = 6x the 15s cadence, ReconcileCadence =
+              LeaseConvergenceBound/2) — S5/S7 convergence and the L4/L5 lease bounds are dark
+              for this pod. No absent() arm by design: agentd pods are ephemeral
+              (suspend/resume); only a live-but-not-stamping pod pages.
 
     - name: llmsafespaces.billing
       rules:
