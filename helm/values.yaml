@@ -959,10 +959,11 @@ networkPolicy:
     #     field spec.networkAccess.egress (controller resolves domains
     #     to /32s at reconcile time) and composes with this policy.
     #
-    #     Entries in the groups must be PUBLIC CIDRs. The groups render
-    #     as plain ipBlock rules: Kubernetes rejects ipBlock except:
+    #     Entries in the groups must be PUBLIC CIDRs — enforced at
+    #     render time (a private/internal entry fails helm template with
+    #     an error naming the entry; Kubernetes rejects ipBlock except:
     #     entries that are not subnets of the cidr, so the shared
-    #     blockedEgressCIDRs subtraction cannot be attached here. For
+    #     blockedEgressCIDRs subtraction cannot be attached here). For
     #     in-cluster destinations use networkPolicy.extraEgressCIDRs.
     mode: public
 

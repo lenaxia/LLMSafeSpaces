@@ -277,7 +277,7 @@ In `allowlist` mode the general public-internet rule is **not rendered**. Egress
 | Path | Mechanism | Ports |
 |---|---|---|
 | DNS | pod selector (`dnsNamespace` / `dnsPodLabelSelector`) | UDP+TCP 53 |
-| API relay WebSocket | in-namespace API pod selector | TCP 8080 (service port) |
+| API relay WebSocket | in-namespace API pod selector | TCP `.Values.api.service.port` (8080 by default) |
 | Relay-router (fleet-enabled clusters) | pod selector | TCP 8080 |
 | `allowlist.llmCIDRs` | ipBlock (data-plane group) | TCP 443/80 |
 | `allowlist.tooling.cidrs` | ipBlock (tooling group) | TCP 443/80 |
@@ -287,7 +287,7 @@ With every group empty, `allowlist` mode is the strictest posture: DNS plus the 
 
 **Why the mode default stays `public` (staged rollout):** the default product surface — direct-to-Zen inference plus agents installing arbitrary packages — is served from CDN-fronted endpoints (opencode.ai resolves into Cloudflare space; pypi.org into Fastly; registry.npmjs.org into Cloudflare; verified 2026-09). Chart-shipped CIDR defaults would either rot as CDNs rebalance, or — if whole CDN ranges are shipped — re-admit the exfiltration channel via free attacker-usable hosting on those CDNs (GitHub Pages/gists, Cloudflare-proxied sites). Resolve your destinations at deploy time (`dig +short pypi.org registry.npmjs.org opencode.ai`) and pin them in the groups.
 
-**Group entries must be public CIDRs.** The groups render as plain `ipBlock` rules: Kubernetes rejects `except:` entries that are not subnets of the `cidr`, so the shared `blockedEgressCIDRs` subtraction cannot be attached to narrow CIDRs (it is attached only to the `0.0.0.0/0` catch-all in `public` mode). For in-cluster destinations, use `extraEgressCIDRs`.
+**Group entries must be public CIDRs — enforced at render time.** The groups render as plain `ipBlock` rules: Kubernetes rejects `except:` entries that are not subnets of the `cidr`, so the shared `blockedEgressCIDRs` subtraction cannot be attached to narrow CIDRs (it is attached only to the `0.0.0.0/0` catch-all in `public` mode). A private/internal entry in a group (or a narrow private `allowedEgressCIDRs` entry) would silently reopen in-cluster or metadata ranges, so `helm template` **fails the render** with an error naming the entry. For in-cluster destinations, use `extraEgressCIDRs`.
 
 ### FQDN-based egress
 

@@ -93,3 +93,23 @@ None. Live-cluster enforcement validation of `allowlist` mode is deferred with r
 - `docs/reference/helm-values.md`
 - `docs/user/dev-preview.md`
 - `README-LLM.md`
+
+---
+
+## Iteration 2 — AI review findings (2026-09-16, PR #1386 round 1: CHANGES_REQUESTED)
+
+### Findings + dispositions (Rule 11 Phase 2)
+
+1. **Deferred scope untracked while `Closes #821` auto-closes** — REAL. Filed follow-ups: **#1387** (egress-audit / tier 3) and **#1388** (default-posture decision, reserved for the owner per the #821 design comment). PR body updated to reference them.
+2. **Silent-widening footgun: private CIDRs in groups render unconditionally** — REAL. Added `llmsafespaces.isPrivateIPv4CIDR` render-time guard (lexical IPv4 octet check vs the blockedEgressCIDRs defaults) failing the render for private entries in `llmCIDRs`/`tooling.cidrs` and narrow private `allowedEgressCIDRs` (restores the loud failure the pre-#821 API-rejection accidentally provided). 3 new tests incl. the over-match guard (172.15/16, 100.63/16, 100.128/16 render fine).
+3. **networking.md hardcoded 8080 for the API-relay port** — REAL (doc nit). Now `.Values.api.service.port (8080 by default)`.
+4. **`allowlist: null` degrade unpinned** — REAL (missing test). `TestEgress_Allowlist_NullAllowlistDegradesStrictest` added.
+5. **Flake-fix commit undisclosed in PR body** — REAL (process omission). Disclosed in the iteration-2 section with root cause + verification.
+
+### Tests added this iteration
+
+`TestEgress_Allowlist_PrivateGroupCIDRFailsRender` (+3 subtests), `TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender`, `TestEgress_Allowlist_PublicGroupCIDRsStillRender`, `TestEgress_Allowlist_NullAllowlistDegradesStrictest`. Suite now 14 egress tests; full `./helm/` suite + `make helm-render` pass.
+
+### Files modified this iteration
+
+`helm/templates/_helpers.tpl`, `helm/templates/workspace-network-policy.yaml`, `helm/networkpolicy_egress_allowlist_test.go`, `helm/values.yaml`, `docs/operator/networking.md`, PR #1386 body; issues #1387 + #1388 filed.

@@ -169,3 +169,48 @@ repo@digest (ignoring tag); otherwise repo:tag with AppVersion fallback.
 {{- printf "%s:%s" .Values.frontend.image.repository $tag -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+#821: report whether an IPv4 CIDR string falls inside the private /
+internal ranges covered by the blockedEgressCIDRs defaults (RFC1918,
+CGNAT, link-local/metadata, loopback, multicast). Lexical first/second-
+octet check — IPv4 only; anything that does not parse as a dotted quad
+(IPv6, typos) reports false and is left to the API server's own
+ipBlock validation at apply time.
+
+Used as a render-time footgun guard: allowlist group entries and narrow
+allowedEgressCIDRs entries render WITHOUT the blockedEgressCIDRs
+subtraction (Kubernetes rejects ipBlock except: entries that are not
+subnets of the cidr), so a private entry there would silently reopen
+in-cluster or metadata ranges. Callers fail the render instead and
+direct the operator to networkPolicy.extraEgressCIDRs, which is the
+deliberate no-subtraction escape hatch for internal destinations.
+
+Pinned by TestEgress_Allowlist_PrivateGroupCIDRFailsRender,
+TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender, and
+TestEgress_Allowlist_PublicGroupCIDRsStillRender (over-match guard).
+*/}}
+{{- define "llmsafespaces.isPrivateIPv4CIDR" -}}
+{{- $octets := splitList "." (index (splitList "/" .) 0) -}}
+{{- if eq (len $octets) 4 -}}
+{{- $a := index $octets 0 | int -}}
+{{- $b := index $octets 1 | int -}}
+{{- if or (eq $a 10) (eq $a 127) -}}
+true
+{{- else if and (eq $a 172) (ge $b 16) (le $b 31) -}}
+true
+{{- else if and (eq $a 192) (eq $b 168) -}}
+true
+{{- else if and (eq $a 169) (eq $b 254) -}}
+true
+{{- else if and (eq $a 100) (ge $b 64) (le $b 127) -}}
+true
+{{- else if and (ge $a 224) (le $a 239) -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}

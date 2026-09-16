@@ -32,6 +32,7 @@ package chart_test
 
 import (
 	"bytes"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -342,25 +343,35 @@ func containsStr(haystack []string, needle string) bool {
 // value fails the render loudly instead of silently falling back to
 // the permissive public posture (fail-closed on operator error).
 func TestEgress_Allowlist_InvalidModeFailsRender(t *testing.T) {
+	err := helmTemplateErr(t, "networkPolicy:\n  workspaceEgress:\n    mode: open-sesame\n")
+	require.Error(t, err, "helm template must fail on an unknown workspaceEgress.mode")
+	assert.Contains(t, err.Error(), "workspaceEgress.mode",
+		"error message must name the invalid value key")
+}
+
+// helmTemplateErr runs helm template expecting a render failure and
+// returns an error carrying the combined helm output for message
+// assertions.
+func helmTemplateErr(t *testing.T, valuesYAML string) error {
+	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
-	values := "networkPolicy:\n  workspaceEgress:\n    mode: open-sesame\n"
 	dir := t.TempDir()
 	valuesPath := filepath.Join(dir, "values.yaml")
-	require.NoError(t, writeFile(valuesPath, values))
+	require.NoError(t, writeFile(valuesPath, valuesYAML))
 
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns",
 		"--kube-version", testKubeVersion, "-f", valuesPath,
 		"--set", "controller.agentdDelivery.image="+testAgentdPin,
 		"--set", "controller.opencodeDelivery.image="+testOpencodePin)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-
-	require.Error(t, err, "helm template must fail on an unknown workspaceEgress.mode")
-	assert.Contains(t, stderr.String(), "workspaceEgress.mode",
-		"error message must name the invalid value key")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("helm template failed: %w\n%s", err, out.String())
+	}
+	return nil
 }
 
 // TestEgress_PublicMode_NarrowAllowedCIDRRendersWithoutExcept pins the
@@ -401,4 +412,125 @@ networkPolicy:
 		}
 	}
 	assert.True(t, sawNarrow, "custom allowedEgressCIDRs entry must render in public mode")
+}
+
+// TestEgress_Allowlist_PrivateGroupCIDRFailsRender pins the render-time
+// guard against the silent-widening footgun: allowlist group entries
+// render as plain ipBlock with no blockedEgressCIDRs subtraction (the
+// Kubernetes except-containment constraint makes a shared subtraction
+// impossible), so a private/internal entry would silently reopen
+// in-cluster or metadata ranges on TCP 443/80. The guard fails the
+// render loudly instead, directing the operator to extraEgressCIDRs.
+func TestEgress_Allowlist_PrivateGroupCIDRFailsRender(t *testing.T) {
+	tests := []struct {
+		name   string
+		values string
+	}{
+		{
+			name: "rfc1918 in llmCIDRs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - 10.0.0.0/8
+`,
+		},
+		{
+			name: "metadata endpoint in tooling.cidrs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      tooling:
+        cidrs:
+          - 169.254.169.254/32
+`,
+		},
+		{
+			name: "cgnat in tooling.cidrs",
+			values: `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      tooling:
+        cidrs:
+          - 100.64.0.0/10
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := helmTemplateErr(t, tt.values)
+			require.Error(t, err,
+				"private/internal CIDR in an allowlist group must fail the render")
+			assert.Contains(t, err.Error(), "private",
+				"error message must say the entry is a private/internal range")
+			assert.Contains(t, err.Error(), "extraEgressCIDRs",
+				"error message must point at the internal-destination escape hatch")
+		})
+	}
+}
+
+// TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender restores the
+// loud failure the pre-#821 template accidentally provided: a private
+// allowedEgressCIDRs entry used to make the whole NetworkPolicy
+// API-invalid (loud but catastrophic); after the except-containment fix
+// it would render as an unconditional private allow (silent widening).
+// The render-time guard makes it fail loudly at helm time instead.
+func TestEgress_PublicMode_PrivateNarrowAllowedCIDRFailsRender(t *testing.T) {
+	values := `
+networkPolicy:
+  allowedEgressCIDRs:
+    - 172.16.0.0/12
+`
+	err := helmTemplateErr(t, values)
+	require.Error(t, err,
+		"private allowedEgressCIDRs entry must fail the render (not silently allow)")
+	assert.Contains(t, err.Error(), "private",
+		"error message must say the entry is a private/internal range")
+}
+
+// TestEgress_Allowlist_PublicGroupCIDRsStillRender guards the guard:
+// ordinary public CIDRs (including ones adjacent to private space,
+// e.g. 172.15/12-adjacent, 100.63, 100.128) must keep rendering — the
+// lexical check must not over-match.
+func TestEgress_Allowlist_PublicGroupCIDRsStillRender(t *testing.T) {
+	values := `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist:
+      llmCIDRs:
+        - 172.15.0.0/16
+        - 100.63.0.0/16
+        - 100.128.0.0/16
+        - 203.0.113.0/24
+`
+	docs := helmTemplate(t, values)
+	policy := findWorkspaceEgressPolicy(t, docs)
+	got := allIPBlockCIDRs(t, policy)
+	for _, cidr := range []string{"172.15.0.0/16", "100.63.0.0/16", "100.128.0.0/16", "203.0.113.0/24"} {
+		assert.Contains(t, got, cidr, "public CIDR %s must render in the llm group", cidr)
+	}
+}
+
+// TestEgress_Allowlist_NullAllowlistDegradesStrictest pins the degrade
+// behavior when workspaceEgress.allowlist is explicitly nulled: the
+// mode still renders (no nil-pointer render error) and degrades to the
+// strictest posture — zero ipBlock destinations.
+func TestEgress_Allowlist_NullAllowlistDegradesStrictest(t *testing.T) {
+	values := `
+networkPolicy:
+  workspaceEgress:
+    mode: allowlist
+    allowlist: null
+`
+	docs := helmTemplate(t, values)
+	policy := findWorkspaceEgressPolicy(t, docs)
+	assert.Empty(t, allIPBlockCIDRs(t, policy),
+		"allowlist: null must degrade to zero ipBlock destinations, not error or widen")
 }
