@@ -165,6 +165,7 @@ func TestRelayRearm_BootFetchFailure_RearmsAndApplies(t *testing.T) {
 	h := newRelayRearmHarness(t, providerModeFail500)
 	bootFailed0 := promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues(relayOutcomeFetchFailed))
 	rearmFailed0 := rearmRelayTick(relayOutcomeFetchFailed)
+	success0 := rearmRelayTick(relayOutcomeSuccess)
 	h.start(t)
 
 	// Boot window exhausts → terminal → the re-arm loop's first cycle
@@ -196,7 +197,7 @@ func TestRelayRearm_BootFetchFailure_RearmsAndApplies(t *testing.T) {
 	// Exactly one in-flight attempt at any time, and the re-arm's
 	// applied cycle is observable.
 	assert.Equal(t, 1, h.fault.maxInFlight(), "re-arm attempts must be strictly sequential (one in-flight)")
-	require.Eventually(t, func() bool { return rearmRelayTick(relayOutcomeSuccess) >= 1 },
+	require.Eventually(t, func() bool { return rearmRelayTick(relayOutcomeSuccess)-success0 >= 1 },
 		2*time.Second, 5*time.Millisecond, "the applied cycle must tick its outcome")
 }
 
@@ -243,13 +244,14 @@ func TestRelayRearm_Incident20260816_Regression(t *testing.T) {
 // "no mid-turn SSE drops" gate.
 func TestRelayRearm_BusyGate_NoAttemptWhileBusy(t *testing.T) {
 	h := newRelayRearmHarness(t, providerModeFail500)
+	busy0 := rearmRelayTick(rearmOutcomeBusy) // delta discipline (vec accumulates across runs/tests)
 	var gateCalls atomic.Int32
 	h.busyGate = func() bool { return gateCalls.Add(1) <= 3 }
 	h.start(t)
 
 	// Boot terminal, then ≥2 busy-skipped cycles.
 	require.Eventually(t, func() bool {
-		return rearmRelayTick(rearmOutcomeBusy) >= 2
+		return rearmRelayTick(rearmOutcomeBusy)-busy0 >= 2
 	}, 5*time.Second, 5*time.Millisecond, "busy cycles must tick the busy outcome")
 
 	// While busy: zero re-arm fetches (boot-window hits only), zero kills.
@@ -285,13 +287,14 @@ func TestRelayRearm_NoStackBehindDeferredKill(t *testing.T) {
 		2*time.Second, 5*time.Millisecond, "the deferred goroutine must hold the gauge")
 
 	h := newRelayRearmHarness(t, providerModeFail500)
+	deferred0 := rearmRelayTick(rearmOutcomeRestartDeferred) // delta discipline
 	h.deferredGate = anyRestartDeferred
 	h.start(t)
 
 	// Boot terminal (source down), then re-arm cycles held at the
 	// restart_deferred gate — no fetches past the boot window.
 	require.Eventually(t, func() bool {
-		return rearmRelayTick(rearmOutcomeRestartDeferred) >= 1
+		return rearmRelayTick(rearmOutcomeRestartDeferred)-deferred0 >= 1
 	}, 5*time.Second, 5*time.Millisecond, "cycles behind a deferred restart must tick restart_deferred")
 	hitsWhileDeferred := h.fault.hitCount()
 	require.Greater(t, hitsWhileDeferred, 0, "boot window attempted")
@@ -601,6 +604,10 @@ func TestRelayRearm_PersonalKeyAddedMidLife_Disarms(t *testing.T) {
 func TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill(t *testing.T) {
 	h := newRelayRearmHarness(t, providerModeFail500)
 	deferred0 := rearmRelayTick(rearmOutcomeRestartDeferred)
+	// Delta discipline: the vec accumulates across the package's tests —
+	// without a baseline an Eventually on a raw value can pass on an
+	// earlier test's tick and race the in-flight attempt.
+	success0 := rearmRelayTick(relayOutcomeSuccess)
 	// Gate: call #1 is the cycle-entry check (passes); call #2 is the
 	// pre-kill check (deferred appeared mid-attempt) → skip the kill.
 	var gateCalls atomic.Int32
@@ -618,7 +625,7 @@ func TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill(t *testing.T) {
 	require.Eventually(t, func() bool { return h.writer.HasRelay() },
 		5*time.Second, 5*time.Millisecond, "the cycle must still apply the config")
 
-	require.Eventually(t, func() bool { return rearmRelayTick(relayOutcomeSuccess) >= 1 },
+	require.Eventually(t, func() bool { return rearmRelayTick(relayOutcomeSuccess)-success0 >= 1 },
 		2*time.Second, 5*time.Millisecond, "the skip-kill cycle is an applied success")
 	assert.Zero(t, h.kills.Load(), "the relay kill must be skipped behind the outstanding deferred restart")
 	assert.Equal(t, int32(1), RelayFreeModelsState(), "the config IS applied — state flips")

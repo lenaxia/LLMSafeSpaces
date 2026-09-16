@@ -89,6 +89,7 @@ func TestRearmLoop_TerminalFailure_BoundedBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	failed0 := rearmTick(t, loop, relayOutcomeFetchFailed) // delta discipline: the vec accumulates across runs
 	spy := &rearmSpy{}
 	startRearmLoop(ctx, rearmLoopConfig{
 		Loop:     loop,
@@ -104,7 +105,7 @@ func TestRearmLoop_TerminalFailure_BoundedBackoff(t *testing.T) {
 	assert.GreaterOrEqual(t, n, int32(4), "loop must keep re-arming after terminal failures")
 	assert.LessOrEqual(t, n, int32(5), "backoff must slow the cadence — a hot loop means the schedule is not applied")
 	assert.Equal(t, int32(1), spy.maxInFly.Load(), "exactly one in-flight re-arm attempt at any time")
-	assert.InDelta(t, float64(n), rearmTick(t, loop, relayOutcomeFetchFailed), 0,
+	assert.InDelta(t, float64(n), rearmTick(t, loop, relayOutcomeFetchFailed)-failed0, 0,
 		"one outcome tick per attempt cycle")
 }
 
@@ -115,6 +116,7 @@ func TestRearmLoop_SuccessDisarms(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	success0 := rearmTick(t, loop, relayOutcomeSuccess) // delta discipline
 	spy := &rearmSpy{resultFn: func(n int) rearmAttemptResult {
 		if n == 1 {
 			return rearmAttemptResult{outcome: relayOutcomeFetchFailed, retryable: true}
@@ -129,7 +131,7 @@ func TestRearmLoop_SuccessDisarms(t *testing.T) {
 	})
 
 	require.Eventually(t, func() bool { return spy.attempts.Load() >= 2 }, 2*time.Second, 5*time.Millisecond)
-	appliedTicks := rearmTick(t, loop, relayOutcomeSuccess)
+	appliedTicks := rearmTick(t, loop, relayOutcomeSuccess) - success0
 	require.InDelta(t, 1.0, appliedTicks, 0, "the applied cycle ticks exactly once")
 
 	// Quiescence: with base 15ms a live loop would attempt again within
@@ -137,7 +139,7 @@ func TestRearmLoop_SuccessDisarms(t *testing.T) {
 	n := spy.attempts.Load()
 	time.Sleep(150 * time.Millisecond)
 	assert.Equal(t, n, spy.attempts.Load(), "loop must disarm after a successful attempt")
-	assert.InDelta(t, appliedTicks, rearmTick(t, loop, relayOutcomeSuccess), 0, "no further ticks after disarm")
+	assert.InDelta(t, appliedTicks, rearmTick(t, loop, relayOutcomeSuccess)-success0, 0, "no further ticks after disarm")
 }
 
 // TestRearmLoop_CtxCancelStops: cancellation while waiting produces one
@@ -146,6 +148,7 @@ func TestRearmLoop_CtxCancelStops(t *testing.T) {
 	const loop = "test_cancel"
 	ctx, cancel := context.WithCancel(context.Background())
 
+	canceled0 := rearmTick(t, loop, rearmOutcomeCanceled) // delta discipline
 	spy := &rearmSpy{}
 	startRearmLoop(ctx, rearmLoopConfig{
 		Loop:     loop,
@@ -155,11 +158,11 @@ func TestRearmLoop_CtxCancelStops(t *testing.T) {
 	})
 	cancel()
 
-	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeCanceled) >= 1 },
+	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeCanceled)-canceled0 >= 1 },
 		2*time.Second, 5*time.Millisecond, "cancel must tick the canceled outcome")
 	time.Sleep(80 * time.Millisecond)
 	assert.Zero(t, spy.attempts.Load(), "no attempt may run after cancellation")
-	assert.InDelta(t, 1.0, rearmTick(t, loop, rearmOutcomeCanceled), 0, "exactly one canceled tick")
+	assert.InDelta(t, 1.0, rearmTick(t, loop, rearmOutcomeCanceled)-canceled0, 0, "exactly one canceled tick")
 }
 
 // TestRearmLoop_CtxCanceledAttemptExits: ctx dying DURING an attempt makes
@@ -194,6 +197,7 @@ func TestRearmLoop_AlreadyAppliedShortCircuit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	applied0 := rearmTick(t, loop, rearmOutcomeAlreadyApplied) // delta discipline
 	spy := &rearmSpy{}
 	startRearmLoop(ctx, rearmLoopConfig{
 		Loop:     loop,
@@ -203,11 +207,11 @@ func TestRearmLoop_AlreadyAppliedShortCircuit(t *testing.T) {
 		MaxDelay: 20 * time.Millisecond,
 	})
 
-	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeAlreadyApplied) >= 1 },
+	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeAlreadyApplied)-applied0 >= 1 },
 		2*time.Second, 5*time.Millisecond)
 	time.Sleep(80 * time.Millisecond)
 	assert.Zero(t, spy.attempts.Load(), "already-applied must skip the attempt entirely")
-	assert.InDelta(t, 1.0, rearmTick(t, loop, rearmOutcomeAlreadyApplied), 0)
+	assert.InDelta(t, 1.0, rearmTick(t, loop, rearmOutcomeAlreadyApplied)-applied0, 0)
 }
 
 // TestRearmLoop_BusyGateSkipsWithoutAttempt: while Busy() holds, cycles
@@ -218,6 +222,8 @@ func TestRearmLoop_BusyGateSkipsWithoutAttempt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	busy0 := rearmTick(t, loop, rearmOutcomeBusy)       // delta discipline
+	success0 := rearmTick(t, loop, relayOutcomeSuccess) // delta discipline
 	var gateCalls atomic.Int32
 	var attempts atomic.Int32
 	startRearmLoop(ctx, rearmLoopConfig{
@@ -236,13 +242,13 @@ func TestRearmLoop_BusyGateSkipsWithoutAttempt(t *testing.T) {
 
 	require.Eventually(t, func() bool { return attempts.Load() >= 1 }, 2*time.Second, 5*time.Millisecond,
 		"attempt must fire only after the busy gate opens")
-	busyTicks := rearmTick(t, loop, rearmOutcomeBusy)
+	busyTicks := rearmTick(t, loop, rearmOutcomeBusy) - busy0
 	assert.GreaterOrEqual(t, busyTicks, float64(2), "each busy cycle ticks the busy outcome")
 	// The gate's contract: zero attempts while busy — proven by
 	// attempts==0 until the gate opened (the Eventually above only
 	// passed once a cycle observed busy==false, so attempts could not
 	// have run during the busy window).
-	require.Eventually(t, func() bool { return rearmTick(t, loop, relayOutcomeSuccess) >= 1 },
+	require.Eventually(t, func() bool { return rearmTick(t, loop, relayOutcomeSuccess)-success0 >= 1 },
 		2*time.Second, 5*time.Millisecond)
 }
 
@@ -299,6 +305,7 @@ func TestRearmLoop_RestartDeferredGateSkips(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	deferred0 := rearmTick(t, loop, rearmOutcomeRestartDeferred) // delta discipline
 	var deferred atomic.Bool
 	deferred.Store(true)
 	var attempts atomic.Int32
@@ -313,7 +320,7 @@ func TestRearmLoop_RestartDeferredGateSkips(t *testing.T) {
 		MaxDelay: 30 * time.Millisecond,
 	})
 
-	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeRestartDeferred) >= 2 },
+	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeRestartDeferred)-deferred0 >= 2 },
 		2*time.Second, 5*time.Millisecond, "deferred cycles must tick restart_deferred")
 	assert.Zero(t, attempts.Load(), "no attempt may run behind a deferred restart")
 
@@ -329,6 +336,7 @@ func TestRearmLoop_NonRetryableDisarms(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	skipped0 := rearmTick(t, loop, relayOutcomeSkippedPersonalKey) // delta discipline
 	spy := &rearmSpy{resultFn: func(int) rearmAttemptResult {
 		return rearmAttemptResult{outcome: relayOutcomeSkippedPersonalKey}
 	}}
@@ -342,7 +350,7 @@ func TestRearmLoop_NonRetryableDisarms(t *testing.T) {
 	require.Eventually(t, func() bool { return spy.attempts.Load() == 1 }, 2*time.Second, 5*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 	assert.Equal(t, int32(1), spy.attempts.Load(), "non-retryable outcome must disarm the loop")
-	assert.InDelta(t, 1.0, rearmTick(t, loop, relayOutcomeSkippedPersonalKey), 0)
+	assert.InDelta(t, 1.0, rearmTick(t, loop, relayOutcomeSkippedPersonalKey)-skipped0, 0)
 }
 
 // TestRearmLoop_DefaultsFillWhenZero: zero delays resolve to the #910
@@ -353,6 +361,7 @@ func TestRearmLoop_DefaultsFillWhenZero(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	canceled0 := rearmTick(t, loop, rearmOutcomeCanceled) // delta discipline
 	spy := &rearmSpy{}
 	startRearmLoop(ctx, rearmLoopConfig{
 		Loop:    loop,
@@ -363,6 +372,6 @@ func TestRearmLoop_DefaultsFillWhenZero(t *testing.T) {
 	assert.Zero(t, spy.attempts.Load(),
 		"zero MinDelay must fall back to the 5m default — no attempt inside 100ms")
 	cancel()
-	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeCanceled) >= 1 },
+	require.Eventually(t, func() bool { return rearmTick(t, loop, rearmOutcomeCanceled)-canceled0 >= 1 },
 		2*time.Second, 5*time.Millisecond)
 }
