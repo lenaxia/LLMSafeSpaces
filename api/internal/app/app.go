@@ -1403,6 +1403,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	podWorkspaceRenameHandler.SetLogger(log)
 
+	// Pod-identity automation CRUD (agentd trigger_/workflow_ MCP
+	// tools). Delegates to the existing user handlers under the pod's
+	// resolved owner; constructed whenever the user handlers exist
+	// (always, today).
+	var podAutomationHandler *handlers.PodAutomationHandler
+	if userTriggersHandler != nil && userWorkflowsHandler != nil {
+		podAutomationHandler = handlers.NewPodAutomationHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, userTriggersHandler, userWorkflowsHandler, cfg.Kubernetes.Namespace,
+		)
+		podAutomationHandler.SetLogger(log)
+	}
+
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
@@ -1448,6 +1460,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
 		PodBootstrapHandler:             podBootstrapHandler,
 		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
+		PodAutomationHandler:            podAutomationHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,
