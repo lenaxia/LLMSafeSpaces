@@ -1299,7 +1299,14 @@ func TestMCPSendMessage_AbortDropsQueued(t *testing.T) {
 
 	require.Never(t, func() bool { return len(f.sentFor(s1)) > 0 }, 500*time.Millisecond, 50*time.Millisecond,
 		"the queued message must NOT deliver after abort — it was dropped")
-	f.awaitMsgDone(t, s1, 1) // the refusal completed the goroutine
+	f.awaitMsgDone(t, s1, 1) // the refusal completed the handler
+
+	// The detached goroutine captured its logger at spawn (mcp_tools.go),
+	// so it can no longer race the global log swap — but still join its
+	// completion window for cleanliness: the Warn is observable once the
+	// refusal's error propagates. Best-effort settle, not a correctness
+	// gate.
+	time.Sleep(50 * time.Millisecond)
 }
 
 // compact with omitted session_id resolves the single running session;

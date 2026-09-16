@@ -322,9 +322,10 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
 
+	logger := log
 	go func() {
 		if _, err := seamClientWithPassword(password).SessionSend(context.WithoutCancel(ctx), sessionID, prompt, "", nil); err != nil {
-			log.Warn("create_session: background prompt delivery failed",
+			logger.Warn("create_session: background prompt delivery failed",
 				zap.String("sessionID", sessionID), zap.Error(err))
 		}
 	}()
@@ -503,9 +504,10 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 	if busy[sessionID] == "busy" || busy[sessionID] == "retry" {
 		// Detached: completes at the turn boundary; the tool must not
 		// wait (the waiting turn may be the caller's own).
+		logger := log
 		go func() {
 			if err := client.SessionSummarize(context.WithoutCancel(ctx), sessionID, providerID, modelID); err != nil {
-				log.Warn("compact: background summarize failed",
+				logger.Warn("compact: background summarize failed",
 					zap.String("sessionID", sessionID), zap.Error(err))
 			}
 		}()
@@ -613,9 +615,14 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 	// Detached delivery: WithoutCancel so it survives the tool response;
 	// server-side queuing handles busy targets. Delivery is not retried
 	// (same loss semantics as create_session — stated in the description).
+	// The logger is captured at spawn: this goroutine routinely outlives
+	// the tool call, and reading the package global later races with
+	// tests that swap it (the withObservedLog guard's documented
+	// constraint — found by CI's race detector, PR #1382 r5).
+	logger := log
 	go func() {
 		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, message, "", nil); err != nil {
-			log.Warn("send_message: background delivery failed",
+			logger.Warn("send_message: background delivery failed",
 				zap.String("sessionID", sessionID), zap.Error(err))
 		}
 	}()
