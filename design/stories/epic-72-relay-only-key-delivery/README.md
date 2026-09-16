@@ -209,9 +209,7 @@ tested by US-72.3): `firstboot_two_replica_adopt`, `rotation_dual_key_window_bou
 (peer private-key load during the private-then-pub window never fires DR — the
 assert is self-contained, generation-tagged; generation checks against the pub
 Secret live only at the controller: vs the rotate response at seal time, vs
-last-sealed at reconcile), `pub_sealtime_generation_validated`
-(pub generation ≠ rotate response → rejected, never sealed against; shape-valid
-wrong-pub residual surfaces as CredentialStale), `rotation_replica_restart_mid_reseal`
+last-sealed at reconcile), `rotation_replica_restart_mid_reseal`
 (old-keyID fails on the restarted replica only until re-seal completes),
 `reseal_completes_before_retention_expiry` (default settings; overrun degrades
 to `CredentialStale`, not silent), `rotation_torn_update_unconfirmable`
@@ -262,11 +260,24 @@ US-70.2/70.3 conditional pull — no new delivery path); quota/size/alert defaul
   pass the staging reconcile re-gets `llm-relay-hpke-pub` and compares its
   `generation` against the last-sealed generation (persisted with the staging
   state) — changed → re-seal every envelope; unchanged while `CredentialStale`
-  persists → rotate escalation, anti-storm-bounded (≥10m floor).
+  persists **and the staleness is resolve-failure-class under an intact
+  lineage** (envelope Secrets present, batch applying the staged revision) →
+  rotate escalation, anti-storm-bounded (≥10m floor); **never** for
+  revocation-class (envelope deleted — D2 terminal state) or delivery-class
+  (batch not applying) staleness.
+- **Seal-time generation validation (design §4.2):** the pub payload's
+  `generation` is validated against the rotate response before any envelope
+  is sealed against it (shape-invalid pub bytes fail parsing outright).
 
 **Test plan (TDD):** `dr_window_reconcile_terminates` (pub-generation change →
-re-seal; persistent stale with unchanged generation → anti-storm-bounded rotate
-escalation — the controller-side predicate, homed HERE per design §4.2);
+re-seal; persistent *resolve-failure-class* stale with intact lineage and
+unchanged generation → anti-storm-bounded rotate escalation; escalation
+SUPPRESSED for revocation-class and delivery-class staleness — the
+controller-side predicate, homed HERE per design §4.2);
+`pub_sealtime_generation_validated` (pub generation ≠ rotate response →
+rejected, never sealed against; shape-valid wrong-pub residual surfaces as
+`CredentialStale` — also homed HERE: the seal-time check is controller-side,
+pairing with the rotate leg);
 red-first controller reconcile tests (stage/unbind/rotate —
 rotate leg: trigger `POST /internal/v1/keys/rotate`, re-seal every envelope,
 confirm completion by envelope `keyID` metadata alone, never decrypt —
