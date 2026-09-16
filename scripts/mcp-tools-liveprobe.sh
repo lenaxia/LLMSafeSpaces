@@ -128,17 +128,17 @@ echo "---"
 # header's NOT-read-only note).
 # SKIPPED on agentd builds without the endpoint (pre-#1389 deployments):
 # a 404 on the feature-detect probe skips the leg rather than failing.
-TZR=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
+TZR=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
 if [ "$TZR" = 404 ]; then
   echo "SKIP: user-timezone probes (agentd predates PR #1389)"
 else
 [ "$TZR" = 200 ] && note 0 "user-timezone push accepted (200)" || note 1 "user-timezone push (HTTP $TZR)"
-TZD=$(curl -s -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}}')
+TZD=$(curl -s -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}}')
 echo "$TZD" | grep -q '"source":"browser"' && note 0 "get_datetime source=browser after push" || note 1 "get_datetime source=browser"
 echo "$TZD" | grep -q '"timezone":"Asia/Tokyo"' && note 0 "get_datetime reports pushed IANA zone" || note 1 "get_datetime IANA zone"
 echo "$TZD" | grep -q '"utc_offset":"+09:00"' && note 0 "get_datetime Tokyo offset (+09:00)" || note 1 "Tokyo offset"
 # Invalid zone rejected end to end.
-TZB=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW2" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Mars/Olympus_Mons"}' --max-time 5)
+TZB=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Mars/Olympus_Mons"}' --max-time 5)
 [ "$TZB" = 400 ] && note 0 "invalid zone rejected (400)" || note 1 "invalid zone rejection (HTTP $TZB)"
 # Unauthenticated push rejected.
 TZU=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)

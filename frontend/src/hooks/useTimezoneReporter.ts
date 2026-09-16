@@ -12,7 +12,7 @@ import { settingsApi } from "../api/settings";
  * re-delivered on the next app load), and the effect never blocks the
  * UI — no state, no loading, no error surface.
  */
-export function useTimezoneReporter() {
+export function useTimezoneReporter(getZone: () => string = browserTimezone) {
   const { user } = useAuth();
   const reported = useRef<string | null>(null);
 
@@ -22,7 +22,7 @@ export function useTimezoneReporter() {
     const report = () => {
       let tz: string;
       try {
-        tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        tz = getZone();
       } catch {
         return; // environment without Intl timezone support
       }
@@ -39,5 +39,11 @@ export function useTimezoneReporter() {
     // human cadence — cheap (an Intl format + string compare).
     const timer = window.setInterval(report, 60_000);
     return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getZone is a stable default
   }, [user]);
+}
+
+/** The browser's IANA zone (Ecma-402); the injectable seam for tests. */
+export function browserTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
 }

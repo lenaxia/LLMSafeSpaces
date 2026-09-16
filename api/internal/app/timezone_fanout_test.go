@@ -88,3 +88,12 @@ func TestFanOutTimezonePush_NilCollaborators(t *testing.T) {
 // The handlers.TimezonePusher interface is satisfied by agentpush.Service
 // (compile-time pin — the app wiring passes the concrete service).
 var _ handlers.TimezonePusher = (*agentpush.Service)(nil)
+
+func TestFanOutTimezonePush_NilResultNoPanic(t *testing.T) {
+	lister := &fakeTZLister{result: nil}
+	pusher := &recordingTZPusher{}
+	require.NotPanics(t, func() {
+		fanOutTimezonePush(context.Background(), pusher, lister, nil, "u-1", "X")
+	})
+	assert.Empty(t, pusher.targets)
+}

@@ -129,6 +129,7 @@ func TestStreamEvents_FiresTimezonePushOnOpen(t *testing.T) {
 
 	select {
 	case got := <-pusher.got:
+		assert.Equal(t, "u-1", got.userID, "the push carries the authenticated user")
 		assert.Equal(t, "ws-1", got.workspaceID)
 		assert.Equal(t, "America/New_York", got.tz)
 	case <-time.After(3 * time.Second):
