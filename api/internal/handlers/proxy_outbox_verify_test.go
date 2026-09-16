@@ -625,6 +625,14 @@ func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
 		assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
 			"unknown-outcome transport cut must verify, never re-send blindly (#987)")
 
+		// The admission POST runs on a goroutine — under parallel package
+		// load it can land after DeliverOutboxOnceForTest returns. Wait for
+		// it (same pattern as the nudge assertion below) before counting.
+		require.Eventually(t, func() bool {
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			return backend.admits >= 1
+		}, 2*time.Second, 5*time.Millisecond, "the admission attempt must land")
 		backend.mu.Lock()
 		admits := backend.admits
 		backend.mu.Unlock()
