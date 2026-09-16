@@ -21,8 +21,11 @@ package main
 // defer, not a failure. Terminal exits: applied (disarm), non-retryable
 // outcome (permanent skip, e.g. a personal key), already applied at gate
 // time, ctx canceled. The loop is a single goroutine, so there is exactly
-// one in-flight re-arm by construction; combined with the RestartDeferred
-// gate, a re-arm attempt never stacks a restart behind a deferred kill.
+// one in-flight re-arm by construction. The no-stacking guarantee has TWO
+// checkpoints: the RestartDeferred gate at cycle entry, and (the
+// consumer's responsibility — see relayInjectorConfig.RestartDeferred)
+// a re-check immediately before the consumer triggers its restart, since
+// a deferral can appear during the attempt itself.
 
 import (
 	"context"
@@ -82,9 +85,10 @@ const (
 )
 
 // Loop-level cycle outcomes (attempt-level outcomes come from the
-// consumer's attempt taxonomy).
+// consumer's attempt taxonomy — an applied cycle ticks the consumer's
+// own success taxonomy, e.g. "success", which is why there is no
+// loop-level "applied" outcome string).
 const (
-	rearmOutcomeApplied         = "applied"
 	rearmOutcomeAlreadyApplied  = "already_applied"
 	rearmOutcomeBusy            = "busy"
 	rearmOutcomeRestartDeferred = "restart_deferred"

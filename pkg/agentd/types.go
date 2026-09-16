@@ -167,9 +167,12 @@ type ReadyzResponse struct {
 	AgentType           string   `json:"agent_type"`
 	// RelayInjected is true when the relay injector successfully completed
 	// (wrote relay config and restarted opencode). False before the injector
-	// has run, if it was skipped (personal opencode key), or if it failed.
-	// Included here (readyz) rather than statusz because: relay injection is
-	// a one-time boot event with the same semantics as pod readiness, readyz
+	// has run, if it was skipped (personal opencode key), or while it keeps
+	// failing. Evaluated live (writer HasRelay) per request: a boot-window
+	// fetch failure re-arms on a bounded backoff loop (#910), so the flip
+	// can land mid-pod-life, not only at boot. Included here (readyz)
+	// rather than statusz because: relay injection has readiness-like
+	// semantics, readyz
 	// is cache-based and lightweight (no synchronous opencode calls), and the
 	// API server needs this flag on every ListModels cache miss — using statusz
 	// (which has no latency upper bound) would be unsafe.
@@ -249,9 +252,9 @@ type StatuszResponse struct {
 	Disk                *DiskUsage    `json:"disk,omitempty"`
 	Memory              *MemoryUsage  `json:"memory,omitempty"`
 	CPU                 *CPUUsage     `json:"cpu,omitempty"`
-	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (injector deadline
-	// exhausted — free-tier routing unavailable until the next agent
-	// restart; #901 G8).
+	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (terminal fetch
+	// failure this attempt — free-tier routing degraded until a re-arm
+	// cycle applies, bounded by the 5m→30m backoff; #901 G8, #910).
 	RelayFreeModels int32 `json:"relay_free_models"`
 	// InFlightDeliveries: the ledger's unresolved delivery count pod-wide
 	// (ledgered + admitted + stalled — the flip gate's drain signal,

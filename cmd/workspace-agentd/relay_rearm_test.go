@@ -432,3 +432,239 @@ func TestRelayReadyz_RelayInjected_TruthfulPerCycle(t *testing.T) {
 	_, body = doReadyz(t, deps, ready)
 	assert.True(t, body.RelayInjected, "readyz must report RelayInjected=true the moment the re-arm applies")
 }
+
+// TestRelayAttempt_OutcomeRetryabilityMatrix pins attempt's full
+// decision table — every outcome's {retryable, applied} classification,
+// driven end-to-end through the real attempt body (review finding: the
+// mapping was only pinned for fetch_failed and success; a silent flip of
+// any retryable row back to non-retryable would reintroduce the
+// permanent-degrade class #910 exists to kill, and no test would catch
+// it).
+func TestRelayAttempt_OutcomeRetryabilityMatrix(t *testing.T) {
+	withTestLogger(t)
+	okSrv := newProviderFaultServer(providerModeOK)
+	defer okSrv.close()
+	failSrv := newProviderFaultServer(providerModeFail500)
+	defer failSrv.close()
+	emptySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`)) // clean fetch, empty catalog
+	}))
+	defer emptySrv.Close()
+
+	base := func(t *testing.T) relayInjectorConfig {
+		t.Helper()
+		dir := t.TempDir()
+		authPath := filepath.Join(dir, "auth.json")
+		require.NoError(t, os.WriteFile(authPath,
+			[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+		return relayInjectorConfig{
+			RelayURL:          "https://relay.example.test/path",
+			OpenCodeBaseURL:   okSrv.url(),
+			OpenCodePassword:  "pw",
+			AgentConfigPath:   filepath.Join(dir, "agent-config.json"),
+			AuthJSONPath:      authPath,
+			AgentConfigWriter: opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json")),
+			HealthCheck:       func() bool { return true },
+			KillOpenCode:      func() {},
+			FetchRetryDelay:   5 * time.Millisecond,
+			FetchDeadline:     30 * time.Millisecond,
+		}
+	}
+
+	cases := []struct {
+		name         string
+		mutate       func(t *testing.T, cfg *relayInjectorConfig)
+		wantOutcome  string
+		wantRetry    bool
+		wantApplied  bool
+		wantFreeStat int32
+	}{
+		{
+			name:         "unhealthy_timeout is retryable (K3: a >5m boot no longer loses relay forever)",
+			mutate:       func(_ *testing.T, cfg *relayInjectorConfig) { cfg.HealthCheck = func() bool { return false } },
+			wantOutcome:  relayOutcomeUnhealthyTimeout,
+			wantRetry:    true,
+			wantFreeStat: 2,
+		},
+		{
+			name:        "fetch_failed is retryable (the incident class)",
+			mutate:      func(_ *testing.T, cfg *relayInjectorConfig) { cfg.OpenCodeBaseURL = failSrv.url() },
+			wantOutcome: relayOutcomeFetchFailed,
+			wantRetry:   true,
+		},
+		{
+			name:        "no_free_models is retryable (clean fetch, empty catalog)",
+			mutate:      func(_ *testing.T, cfg *relayInjectorConfig) { cfg.OpenCodeBaseURL = emptySrv.URL },
+			wantOutcome: relayOutcomeNoFreeModels,
+			wantRetry:   true,
+		},
+		{
+			name: "config_write_failed is retryable",
+			mutate: func(t *testing.T, cfg *relayInjectorConfig) {
+				// Writer path inside a nonexistent parent dir: Apply's
+				// temp-file write fails (no root-skip needed, unlike the
+				// chmod-based failure fixture).
+				p := filepath.Join(t.TempDir(), "missing-parent", "agent-config.json")
+				cfg.AgentConfigPath = p
+				cfg.AgentConfigWriter = opencode.NewConfigWriter(p)
+			},
+			wantOutcome: relayOutcomeConfigWriteFailed,
+			wantRetry:   true,
+		},
+		{
+			name: "auth_write_failed is terminal (Apply already set relay state — a re-arm cycle would disarm via already_applied without retrying the auth write)",
+			mutate: func(t *testing.T, cfg *relayInjectorConfig) {
+				cfg.AuthJSONPath = filepath.Join(t.TempDir(), "missing-parent", "auth.json")
+			},
+			wantOutcome:  relayOutcomeAuthWriteFailed,
+			wantFreeStat: 2,
+		},
+		{
+			name: "writer_nil is terminal (defensive guard — a missing writer does not appear by retrying)",
+			mutate: func(_ *testing.T, cfg *relayInjectorConfig) {
+				cfg.AgentConfigWriter = nil
+			},
+			wantOutcome: relayOutcomeWriterNil,
+		},
+		{
+			name: "skipped_personal_key is terminal (relay correctly bypassed)",
+			mutate: func(t *testing.T, cfg *relayInjectorConfig) {
+				require.NoError(t, os.WriteFile(cfg.AuthJSONPath,
+					[]byte(`{"opencode":{"type":"api","key":"sk-personal"}}`), 0o600))
+			},
+			wantOutcome: relayOutcomeSkippedPersonalKey,
+		},
+		{
+			name:         "success applies",
+			wantOutcome:  relayOutcomeSuccess,
+			wantApplied:  true,
+			wantFreeStat: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetRelayState(t)
+			cfg := base(t)
+			if tc.mutate != nil {
+				tc.mutate(t, &cfg)
+			}
+			res := cfg.attempt(context.Background(), log, 0)
+			assert.Equal(t, tc.wantOutcome, res.outcome, "outcome")
+			assert.Equal(t, tc.wantRetry, res.retryable, "retryable")
+			assert.Equal(t, tc.wantApplied, res.applied, "applied")
+			if tc.wantFreeStat != 0 {
+				assert.Equal(t, tc.wantFreeStat, RelayFreeModelsState(), "relayFreeModelsState")
+			}
+			if tc.wantApplied {
+				assert.True(t, cfg.AgentConfigWriter.HasRelay())
+			}
+		})
+	}
+}
+
+// TestRelayRearm_PersonalKeyAddedMidLife_Disarms: the personal-key
+// bypass decision is re-evaluated per cycle from auth.json — a key
+// added mid-pod-life after a boot fetch failure disarms the loop on its
+// next cycle (skipped_personal_key, non-retryable) without ever
+// restarting.
+func TestRelayRearm_PersonalKeyAddedMidLife_Disarms(t *testing.T) {
+	h := newRelayRearmHarness(t, providerModeFail500)
+	skipped0 := rearmRelayTick(relayOutcomeSkippedPersonalKey)
+	h.start(t)
+
+	// Boot terminally fails against the down source.
+	require.Eventually(t, func() bool { return RelayFreeModelsState() == 2 },
+		5*time.Second, 5*time.Millisecond)
+
+	// The user binds a personal opencode key mid-pod-life.
+	require.NoError(t, os.WriteFile(h.authPath,
+		[]byte(`{"opencode":{"type":"api","key":"sk-_personal_midlife"}}`), 0o600))
+
+	require.Eventually(t, func() bool {
+		return rearmRelayTick(relayOutcomeSkippedPersonalKey)-skipped0 >= 1
+	}, 5*time.Second, 5*time.Millisecond, "the next cycle must re-read auth.json and disarm")
+
+	// Quiescence: the loop is gone, nothing was killed.
+	time.Sleep(150 * time.Millisecond)
+	assert.Zero(t, h.kills.Load(), "a personal-key disarm must never restart opencode")
+	assert.False(t, h.writer.HasRelay())
+}
+
+// TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill pins the SECOND
+// stacking checkpoint (#910 review finding): a deferred restart that
+// appears DURING an attempt (after the cycle-entry gate passed, before
+// the restart trigger) must skip the relay kill — the outstanding
+// deferred restart reads the just-written config — and the attempt
+// still counts as applied (loop disarms; state 1).
+func TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill(t *testing.T) {
+	h := newRelayRearmHarness(t, providerModeFail500)
+	deferred0 := rearmRelayTick(rearmOutcomeRestartDeferred)
+	// Gate: call #1 is the cycle-entry check (passes); call #2 is the
+	// pre-kill check (deferred appeared mid-attempt) → skip the kill.
+	var gateCalls atomic.Int32
+	h.deferredGate = func() bool { return gateCalls.Add(1) >= 2 }
+	h.start(t)
+
+	// Boot terminally fails (never reaches the pre-kill check).
+	require.Eventually(t, func() bool { return RelayFreeModelsState() == 2 },
+		5*time.Second, 5*time.Millisecond)
+
+	// Source heals; the next cycle passes its entry gate, fetches,
+	// applies config + auth — and then observes the deferral before
+	// the kill.
+	h.fault.heal()
+	require.Eventually(t, func() bool { return h.writer.HasRelay() },
+		5*time.Second, 5*time.Millisecond, "the cycle must still apply the config")
+
+	require.Eventually(t, func() bool { return rearmRelayTick(relayOutcomeSuccess) >= 1 },
+		2*time.Second, 5*time.Millisecond, "the skip-kill cycle is an applied success")
+	assert.Zero(t, h.kills.Load(), "the relay kill must be skipped behind the outstanding deferred restart")
+	assert.Equal(t, int32(1), RelayFreeModelsState(), "the config IS applied — state flips")
+	assert.InDelta(t, deferred0, rearmRelayTick(rearmOutcomeRestartDeferred), 0,
+		"the in-attempt skip is not a restart_deferred cycle tick")
+}
+
+// TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill pins the
+// shutdown-window guard: ctx dying while the fetch is in flight (or
+// right as it completes) must land canceled with NO config write and NO
+// restart trigger — the next agentd generation re-runs the injector.
+func TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill(t *testing.T) {
+	withTestLogger(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	authPath := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+	writer := opencode.NewConfigWriter(cfgPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var kills atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		cancel() // dies mid-flight: the fetch may error (canceled) or
+		// succeed with the ctx already dead — both land canceled below.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connected":["opencode"],"all":[{"id":"opencode","models":{"free-model":{"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}}}]}`))
+	}))
+	defer srv.Close()
+
+	res := relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		OpenCodePassword:  "pw",
+		AgentConfigPath:   cfgPath,
+		AuthJSONPath:      authPath,
+		AgentConfigWriter: writer,
+		HealthCheck:       func() bool { return true },
+		KillOpenCode:      func() { kills.Add(1) },
+		FetchRetryDelay:   5 * time.Millisecond,
+		FetchDeadline:     30 * time.Millisecond,
+	}.attempt(ctx, log, 0)
+
+	assert.Equal(t, rearmOutcomeCanceled, res.outcome, "a dead ctx must never proceed past the fetch")
+	assert.False(t, res.applied)
+	assert.False(t, writer.HasRelay(), "no config write in the shutdown window")
+	assert.Zero(t, kills.Load(), "no restart trigger in the shutdown window")
+}

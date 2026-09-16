@@ -337,7 +337,12 @@ type relayInjectorConfig struct {
 	// deferred restarts (anyRestartDeferred): a re-arm attempt must not
 	// stack a restart behind a deferred kill (#910's named constraint —
 	// the ≤restartIdleCheckInterval window between the last busy→idle
-	// transition and the deferred restart firing).
+	// transition and the deferred restart firing). Checked at TWO
+	// checkpoints: cycle entry (the loop's gate) AND immediately before
+	// the attempt's own restart trigger (a deferral can appear during
+	// the attempt's ≤FetchDeadline window — the pre-kill check skips
+	// the relay kill entirely; the outstanding deferred restart reads
+	// the config the attempt just wrote).
 	RestartDeferred func() bool
 	// RearmMinDelay/RearmMaxDelay bound the re-arm backoff after a
 	// terminal boot-window failure. Zero → 5m/30m (#910).
@@ -526,6 +531,14 @@ func (cfg relayInjectorConfig) attempt(ctx context.Context, lg *zap.Logger, heal
 	}
 	lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
 
+	// Shutdown-window guard: ctx may have died during the fetch (the
+	// fetch loop only re-checks between retries). Do not write config
+	// or trigger a restart while the pod is going down — the next
+	// agentd generation re-runs the injector from scratch.
+	if ctx.Err() != nil {
+		return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+	}
+
 	// Build and write the relay config via the AgentConfigWriter
 	// seam. Apply merges the relay provider block into the
 	// existing config (providers + model) and writes atomically
@@ -558,17 +571,45 @@ func (cfg relayInjectorConfig) attempt(ctx context.Context, lg *zap.Logger, heal
 		zap.Int("models", len(models)),
 		zap.String("relayHost", relayURLHost(cfg.RelayURL)))
 
-	// Update auth.json with the opencode-relay entry.
+	// Update auth.json with the opencode-relay entry. Non-retryable:
+	// Apply already set the writer's relay state, so a re-arm cycle
+	// would disarm via the HasRelay() short-circuit without ever
+	// retrying the auth write — retryable would buy one guaranteed
+	// wasted cycle and a misleading tick pair. Terminal for this
+	// generation, same as the one-shot injector; loud via the warn +
+	// degraded state.
 	if err := updateAuthJSONForRelay(cfg.AuthJSONPath); err != nil {
 		lg.Warn("relay injector: failed to update auth.json", zap.Error(err))
 		relayFreeModelsState.Store(2)
-		return rearmAttemptResult{outcome: relayOutcomeAuthWriteFailed, retryable: true}
+		return rearmAttemptResult{outcome: relayOutcomeAuthWriteFailed}
 	}
 	lg.Info("relay injector: updated auth.json with opencode-relay entry")
+
+	// Second shutdown-window guard: the auth write is the last step
+	// before the restart trigger.
+	if ctx.Err() != nil {
+		return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+	}
 
 	// Kill opencode — the supervisor restarts it and reads the new config.
 	// The relay state is already stored in the ConfigWriter (set above
 	// via SetRelay), so the secrets apply pipeline's Rebuild() will preserve it.
+	//
+	// Stacking guard (re-checked HERE, not just at cycle entry): if a
+	// session-aware deferred restart became outstanding while this
+	// attempt was fetching/writing (up to FetchDeadline of exposure),
+	// skip our own kill — the outstanding deferred restart will restart
+	// opencode at the idle transition and read the config we just
+	// wrote. Firing our kill anyway would stack a second deferred
+	// restart behind it (both firing on the same idle transition).
+	// Residual TOCTOU between this check and the kill decision's own
+	// defer spawn is microscopic and bounded the same way.
+	if cfg.RestartDeferred != nil && cfg.RestartDeferred() {
+		lg.Info("relay injector: deferred restart outstanding — skipping relay kill; the deferred restart will apply the new config",
+			zap.String("path", cfg.AgentConfigPath))
+		relayFreeModelsState.Store(1)
+		return rearmAttemptResult{outcome: relayOutcomeSuccess, applied: true}
+	}
 	//
 	// Metric note: "success" counts config APPLICATIONS (relay block
 	// written + auth.json updated). The actual process restart may be

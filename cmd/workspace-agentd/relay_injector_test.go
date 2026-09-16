@@ -255,7 +255,7 @@ func TestStartRelayInjector_FetchErrorDeadlineExhausted_Skips(t *testing.T) {
 
 	writer := opencode.NewConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		OpenCodePassword:  "testpw",
@@ -380,7 +380,7 @@ func TestStartRelayInjector_ConfigWriteFailure_DoesNotKill(t *testing.T) {
 
 	writer := opencode.NewConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		OpenCodePassword:  "testpw",
@@ -593,6 +593,18 @@ func resetRelayState(t *testing.T) {
 	t.Cleanup(func() { relayFreeModelsState.Store(0) })
 }
 
+// rearmTestCtx is the ctx failure-path tests pass to startRelayInjector:
+// since #910 a terminally failing boot spawns the re-arm loop, and this
+// ctx's t.Cleanup cancel tears that goroutine down with the test instead
+// of leaking it on context.Background() until the 5m default delay fires
+// past the test's already-torn-down server/tempdir.
+func rearmTestCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // TestStartRelayInjector_FetchFailedTerminal: a permanently erroring
 // /provider ends at the deadline-exhausted terminal — state 2 (degraded),
 // exactly ONE fetch_failed tick, and NO no_free_models tick (the double-Inc
@@ -607,7 +619,7 @@ func TestStartRelayInjector_FetchFailedTerminal(t *testing.T) {
 	defer srv.Close()
 	dir := t.TempDir()
 
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		AuthJSONPath:      filepath.Join(dir, "auth.json"), // absent → no personal-key skip
@@ -644,7 +656,7 @@ func TestStartRelayInjector_CatalogEmptyTerminal(t *testing.T) {
 	defer srv.Close()
 	dir := t.TempDir()
 
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		AuthJSONPath:      filepath.Join(dir, "auth.json"),
