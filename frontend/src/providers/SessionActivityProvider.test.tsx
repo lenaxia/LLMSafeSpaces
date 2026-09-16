@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { renderHook } from "@testing-library/react";
 import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useDropPendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
+import { useWhileAwayStalenessSweep, SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useDropPendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
 import type { InputRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
@@ -2677,5 +2678,40 @@ describe("receivedAt stamping (#1365)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// #1365 case 4 (review r2): the staleness bound must be TIMER-driven —
+// a lazy in-effect check never fires on a healthy-but-quiet stream whose
+// fold-sync deps don't tick. Pins: within-bound retained, past-bound
+// dropped WITH NO dep change (interval alone), non-whileAway untouched.
+describe("useWhileAwayStalenessSweep (#1365, timer-driven)", () => {
+  it("drops a stale whileAway pill via the interval with no list/dep changes", async () => {
+    vi.useFakeTimers({ now: 1_000_000, shouldAdvanceTime: false });
+    const drop = vi.fn();
+    const stale = [{ id: "que_stale", sessionId: "s", kind: "question" as const, whileAway: true, receivedAt: 1_000_000 }];
+    const fresh = [{ id: "que_fresh", sessionId: "s", kind: "question" as const, whileAway: true, receivedAt: 1_000_000 + 5 * 60 * 1000 }];
+    const live = [{ id: "que_live", sessionId: "s", kind: "question" as const }];
+    const { rerender } = renderHook(() => useWhileAwayStalenessSweep([...stale, ...fresh, ...live], [], drop));
+    // Within the bound: nothing dropped (fresh sweep at mount)
+    expect(drop).not.toHaveBeenCalledWith("que_stale");
+    // Time passes with NO list changes, NO rerenders — interval only
+    act(() => { vi.setSystemTime(1_000_000 + 11 * 60 * 1000); });
+    act(() => { vi.advanceTimersByTime(61_000); });
+    expect(drop).toHaveBeenCalledWith("que_stale");     // past bound → dropped
+    expect(drop).not.toHaveBeenCalledWith("que_fresh"); // within bound → kept
+    expect(drop).not.toHaveBeenCalledWith("que_live");  // non-whileAway → untouched
+    rerender();
+    vi.useRealTimers();
+  });
+
+  it("arms no timer when no whileAway pills are pending", () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const drop = vi.fn();
+    renderHook(() => useWhileAwayStalenessSweep([{ id: "que_live", sessionId: "s", kind: "question" as const }], [], drop));
+    act(() => { vi.setSystemTime(1_000_000 + 60 * 60 * 1000); });
+    act(() => { vi.advanceTimersByTime(60 * 60 * 1000); });
+    expect(drop).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });
