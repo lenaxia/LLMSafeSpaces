@@ -69,7 +69,7 @@ secondary for pod-wide surfaces (log timestamps) and is NOT built.
    opens one; SDK/MCP callers do not (by design — they get
    argument/pod).
 
-## Review round 5/6 remediations — the CI-gated e2e
+## Review rounds 5–8 remediations — the CI-gated e2e and doc corrections
 
 The carried blocker (four rounds): the timezone workflow had no
 CI-gated e2e — the liveprobe is manual-only and pod-half-only, so a
@@ -94,11 +94,8 @@ tzdata-delivery break or full-channel regression shipped green.
 - Frontend: dedup-half pinned (121s constant zone → still 1 call);
   retry test scoped to interval-only fake timers; test order
   documented as load-bearing.
-- Round-labeling corrected: the sections above now carry their true
-  round numbers (the "round 3/4" headers were off by one — their
-  content belongs to review rounds 4/5; this section covers 6-8).
 
-## Review round 4 remediations
+## Review round 5 remediations
 
 - The round-3 `PW2` alias removal left three usages unbound — 5 of 6
   timezone probes were silently dead (`set -u` made each `$PW2` curl
@@ -118,7 +115,7 @@ tzdata-delivery break or full-channel regression shipped green.
 - `(nil,nil)` lister pin added (real discriminator: dropping the guard
   panics); `got.userID` in the StreamEvents pin.
 
-## Review round 3 remediations
+## Review round 4 remediations
 
 - Liveprobe header corrected: the script is NOT read-only (the timezone
   leg persistently overwrites the pod's last-known zone; an
@@ -137,7 +134,7 @@ tzdata-delivery break or full-channel regression shipped green.
   (browser→setting→push→pod on CI hardware) remains a documented
   follow-up.
 
-## Review round 2 remediations
+## Review round 3 remediations
 
 - tzdata import actually placed in `main.go` (round 1's was
   accidentally absent — the reviewer's scratch-context repro caught the
