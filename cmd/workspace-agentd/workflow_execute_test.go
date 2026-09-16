@@ -9,6 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // authedReq builds a request carrying the agentd Basic-auth header, the
@@ -249,4 +252,34 @@ func TestNodeExecRegistry(t *testing.T) {
 		t.Error("cancel was not called")
 	}
 	r.stop("node1")
+}
+
+// TestWorkflowParse_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — r2 sweep): the workflow agent node's two opencode-wire parses
+// — the synchronous message response and the created-session ID — are
+// pinned at the extracted parse helpers (the workflow path dials the
+// fixed 127.0.0.1:AgentPort by design, so the deterministic pin
+// targets the decode, not the socket). The trailing_garbage bodies are
+// type-satisfying (a real answer followed by drift bytes): a lenient
+// decode would emit phantom output / a phantom session ID.
+func TestWorkflowParse_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"info":{"id":"msg_1","role":"assist`},
+		{"trailing_garbage", `{"info":{"id":"msg_1"},"parts":[{"type":"text","text":"the answer"}]}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run("agentMessage/"+mode.name, func(t *testing.T) {
+			_, err := parseAgentNodeResponse(strings.NewReader(mode.body))
+			require.Error(t, err, "a corrupted 200 must fail the agent node AT THE PARSE, never emit phantom output (the caller discards the partial decode on error)")
+		})
+		t.Run("createdSessionID/"+mode.name, func(t *testing.T) {
+			id, err := parseCreatedSessionID(strings.NewReader(mode.body))
+			require.Error(t, err)
+			assert.Empty(t, id, "a corrupted 200 must never yield a phantom session ID")
+		})
+	}
 }

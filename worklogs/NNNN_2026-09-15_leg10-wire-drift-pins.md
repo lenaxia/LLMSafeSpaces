@@ -99,6 +99,46 @@ Also applied r1 minors: `decodeStrict` uses `errors.New` for the constant case a
 | M7: agentd `ListSessions` decode swallowed | 4 red (all modes) |
 | M8: `fetchSessionTitle` reverted to the swallowed decode | `DriftStaysBestEffort` red via the observer (the log assert is load-bearing) |
 
+### 9. Review round 2 — the remaining 11 same-class sites (r2 finding)
+
+The reviewer reproduced a live defect on HEAD (`MessagePresence`: `[]garbage` page → `err=nil, present[msg_1]=false` — absence PROVEN from drift, flowing into definitive ledger transitions) and enumerated 10 further lenient opencode-wire decodes. All validated, all closed (commit r2):
+
+| Site (r2 finding) | Before | After |
+|---|---|---|
+| `sessionstate_wiring.go:156` `MessagePresence` page walk | **live defect: drift → proven absence** | strict + 4-mode pin (`err`, no presence map) — type-satisfying `[]garbage` body, the phantom case itself |
+| `sessionstate_wiring.go:453` `Admit` ack decode | lenient — phantom `info.id` keys promotion correlation | strict + 4-mode pin |
+| `sessionstate_wiring.go:379` `post(out)` | lenient (latent: live callers pass `out=nil`) | strict + 4-mode pin (direct `post` subtests) |
+| `client.go:67` `IsHealthy` | lenient — phantom healthy feeds readiness gate + watchdog | strict + 4-mode pin (type-satisfying `{"healthy":true,...}garbage`) |
+| `client.go:82/97` `ConnectedProviders`/`ConfiguredProviderCount` | lenient — phantom provider vitals | strict + 4-mode pins |
+| `client.go:122` `ModelContextLimit` | lenient + unlogged swallow → 0 | strict + logged (fail-open 0 by contract), observer-pinned |
+| `client.go:237` `fetchSessionPromptTokens` | lenient (`[]garbage` decodes cleanly, no log) → phantom token-absence | strict + logged, observer-pinned |
+| `workflow_execute.go:370` agent-node message decode | lenient — phantom output from valid prefix | extracted `parseAgentNodeResponse` (strict) + 4-mode pin |
+| `workflow_execute.go:470` `createOpencodeSession` | lenient — phantom session ID (delete path would target it) | extracted `parseCreatedSessionID` (strict) + 4-mode pin |
+| `relay_injector.go:182` `fetchFreeModels` | lenient — phantom empty free-model catalog | strict + 4-mode pin (slice-typed `all` — first body failed on type mismatch, corrected) |
+
+Harness note: the workflow path dials the fixed `127.0.0.1:AgentPort` by design (design 0053 containment); fixed-port listener pins SKIP wherever the real opencode occupies 4096 (this pod!). The decodes were therefore extracted into helpers (`parseAgentNodeResponse`/`parseCreatedSessionID`) and pinned deterministically at the parse seam.
+
+Out-of-class remainder (enumerated, NOT opencode wire — left lenient deliberately): `bootstrap.go:252` + `pre_boot_relay.go:194` (platform/API-side wire or staged files), `control_client.go`/`control_socket.go` (agentd control mux), `mcp_server.go:80`/`workflow_execute.go:91` (inbound request decodes), `model_enricher.go:166` (external provider model lists), `client.go:44` (decodeStrict itself).
+
+### 10. Round-3 mutation red-checks
+
+| Mutation | Result |
+|---|---|
+| M9a `MessagePresence` reverted | trailing red (the reproduced defect re-detected) |
+| M9b `IsHealthy` reverted | trailing red |
+| M9c `parseAgentNodeResponse` reverted | trailing red |
+| M9d `fetchFreeModels` reverted | trailing red |
+| M9e `Admit` decode reverted | trailing red |
+| M9f `post(out)` reverted | `post/trailing_garbage` red |
+
+RED evidence pre-fix (r2 sites): trailing_garbage failures at IsHealthy, ConnectedProviders, ConfiguredProviderCount, MessagePresence, Admit, post, fetchFreeModels, agentMessage parse, FailOpenDisplayValues log assert.
+
+| Mutation | Result |
+|---|---|
+| M6a/M6b: adapter.go / verifydelivery.go reverted to lenient Decode | trailing_garbage red at each (2 red) |
+| M7: agentd `ListSessions` decode swallowed | 4 red (all modes) |
+| M8: `fetchSessionTitle` reverted to the swallowed decode | `DriftStaysBestEffort` red via the observer (the log assert is load-bearing) |
+
 ---
 
 ## Key Decisions
@@ -118,24 +158,24 @@ None.
 
 ## Tests Run
 
-- RED (pre-fix, round 1): `go test -race -run 'TestSeam_WireDriftCorruption|...CorruptBody|...IDDriftLoud' ./pkg/agent/opencode/` → 5 FAIL (trailing_garbage × 5 Decode sites)
-- RED (pre-fix, round 2): extended-sweep pins → 6 FAIL (trailing_garbage × Adapter.Send, VerifyDelivery, GetSessionStatuses, PromptV2, MessagesV2, agentd ListSessions)
+- RED (pre-fix, round 1): 5 FAIL (trailing_garbage × 5 seam Decode sites)
+- RED (pre-fix, round 2): 6 FAIL (trailing_garbage × Adapter.Send, VerifyDelivery, GetSessionStatuses, PromptV2, MessagesV2, agentd ListSessions)
+- RED (pre-fix, round 3): 10 FAIL (trailing_garbage × IsHealthy, ConnectedProviders, ConfiguredProviderCount, MessagePresence, Admit, post, fetchFreeModels, agentMessage/createdSessionID parses + FailOpenDisplayValues log assert)
 - GREEN (post-fix): all pins ok
-- Full package gates: `go test -race -timeout 300s ./pkg/agent/opencode/` → **ok 20.660s**; `go test -race -timeout 600s ./cmd/workspace-agentd/` → **ok 315.359s**
-- Mutation red-checks round 1: M1 (5 red), M2b (20 red), M3 (4 red), M4 (1 red), M5a/M5b (4 red each) — all restored
-- Mutation red-checks round 2: M6a/M6b (2 red), M7 (4 red), M8 (1 red) — all restored
+- Full gates: `go test -race -timeout 300s ./pkg/agent/opencode/` → **ok ~20s**; `go test -race -timeout 600s -count=1 ./cmd/workspace-agentd/` → **ok ~309s**
+- Mutation red-checks: r1 M1 (5), M2b (20), M3 (4), M4 (1), M5a/M5b (4+4); r2 M6a/b (2), M7 (4), M8 (1); r3 M9a-f (one trailing red per site, incl. `post`) — all restored
 - `golangci-lint run ./pkg/agent/opencode/... ./cmd/workspace-agentd/...` → 0 issues
-- `gofmt -l` → clean
-- `make repolint` → all checks passed
-- faultmatrix NOT touched (no harness change) — not re-run; CI runs it
+- `gofmt -l` → clean; `make repolint` → all checks passed
+- faultmatrix NOT touched (no harness change) — CI runs it
 
 ---
 
 ## Next Steps
 
-1. (Deferred, needs live pod) Capture real 1.18.x fixtures for the seam's decode sites (POST /session response, /session/:id/message response, /api/session/:id/context, /config/providers catalog) into `pkg/agent/opencode/testdata/` — the #730 REFRESH.md discipline; closes the renamed-field blind spot that corruption pins cannot see (except `SessionCreate`'s id).
+1. (Deferred, needs live pod) Capture real 1.18.x fixtures for the seam's decode sites (POST /session response, /session/:id/message response, /api/session/:id/context, /config/providers catalog) into `pkg/agent/opencode/testdata/` — the #730 REFRESH.md discipline; closes the renamed-field blind spot that corruption pins cannot see (except `SessionCreate`'s id and the workflow created-session id).
 2. (Deferred) The L2 real-binary integration leg (`loopback_integration_test.go`, build-tagged) is the strongest seam drift guard — consider scheduling it in CI on the pinned binary.
-3. Reviewer-verified merge of this PR updates #1312 §1 row 10 to "green at 3+9 sites".
+3. Reviewer-verified merge of this PR updates #1312 §1 row 10 to "green at 3+9+11 sites".
+4. (Note) The workflow agent-node path dials the fixed `127.0.0.1:AgentPort` with no override seam — the r2 pins therefore target the extracted parse helpers; a future addr-override seam would allow socket-level pins.
 
 ---
 
@@ -152,7 +192,13 @@ None.
 - `pkg/agent/opencode/client_test.go` — `TestGetSessionStatuses_WireDriftCorruption` (r1)
 - `pkg/agent/opencode/client_v2.go` — `PromptV2`/`MessagesV2` envelope decodes strict (r1)
 - `pkg/agent/opencode/client_v2_test.go` — `TestPromptV2_WireDriftCorruption`, `TestMessagesV2_WireDriftCorruption` (r1)
-- `cmd/workspace-agentd/client.go` — local `decodeStrict`, `ListSessions` strict, `fetchSessionTitle` strict + logged (r1; #1379-touched file)
-- `cmd/workspace-agentd/client_drift_test.go` — agentd drift pins (r1)
+- `cmd/workspace-agentd/client.go` — local `decodeStrict`; all wire decodes strict (ListSessions, fetchSessionTitle, IsHealthy, ConnectedProviders, ConfiguredProviderCount, ModelContextLimit+log, fetchSessionPromptTokens) (r1+r2; #1379-touched file)
+- `cmd/workspace-agentd/client_drift_test.go` — agentd client drift pins (r1+r2)
+- `cmd/workspace-agentd/sessionstate_wiring.go` — MessagePresence / Admit / post decodes strict (r2)
+- `cmd/workspace-agentd/sessionstate_wiring_test.go` — MessagePresence + Admitter drift pins (r2)
+- `cmd/workspace-agentd/workflow_execute.go` — `parseAgentNodeResponse` / `parseCreatedSessionID` extracted + strict (r2)
+- `cmd/workspace-agentd/workflow_execute_test.go` — workflow parse drift pins (r2)
+- `cmd/workspace-agentd/relay_injector.go` — fetchFreeModels strict (r2)
+- `cmd/workspace-agentd/relay_injector_test.go` — fetchFreeModels drift pin (r2)
 - `COORDINATE.md` — claim row
 - `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` — this worklog

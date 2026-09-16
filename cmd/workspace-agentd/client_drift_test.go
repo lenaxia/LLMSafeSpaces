@@ -95,3 +95,98 @@ func TestOpenCodeClient_FetchSessionTitle_DriftStaysBestEffort(t *testing.T) {
 	}
 	assert.True(t, driftLogged, "the swallowed decode failure must surface in the log (Rule 3 — no silent swallows)")
 }
+
+// --- r2 extended sweep: the remaining OpenCodeClient wire parses ---
+
+// leg10DriftErrPins: one-decode sites where a corrupted 200 must
+// error loudly. Each body's trailing_garbage variant carries a
+// type-satisfying prefix — the phantom-success shape that matters.
+func leg10DriftErrPins(t *testing.T) map[string]struct {
+	body string
+	call func(c *OpenCodeClient) error
+} {
+	t.Helper()
+	ctx := context.Background()
+	return map[string]struct {
+		body string
+		call func(c *OpenCodeClient) error
+	}{
+		"IsHealthy": {
+			body: `{"healthy":true,"version":"1.18.15"}garbage`,
+			call: func(c *OpenCodeClient) error {
+				_, _, err := c.IsHealthy(ctx)
+				return err
+			},
+		},
+		"ConnectedProviders": {
+			body: `{"connected":["opencode"]}garbage`,
+			call: func(c *OpenCodeClient) error {
+				_, err := c.ConnectedProviders(ctx)
+				return err
+			},
+		},
+		"ConfiguredProviderCount": {
+			body: `{"providers":[{},{}]}garbage`,
+			call: func(c *OpenCodeClient) error {
+				_, err := c.ConfiguredProviderCount(ctx)
+				return err
+			},
+		},
+	}
+}
+
+func TestOpenCodeClient_WireDriftCorruption_r2(t *testing.T) {
+	for name, site := range leg10DriftErrPins(t) {
+		for _, mode := range leg10DriftBodies {
+			t.Run(name+"/"+mode.name, func(t *testing.T) {
+				body := mode.body
+				if mode.name == "trailing_garbage" {
+					body = site.body
+				}
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(body))
+				}))
+				t.Cleanup(srv.Close)
+				setAgentAddr(srv.URL)
+				client := &OpenCodeClient{password: "pw", client: srv.Client()}
+
+				err := site.call(client)
+				require.Error(t, err, "a corrupted 200 must never parse as success (a phantom healthy/provider verdict must never escape)")
+			})
+		}
+	}
+}
+
+// The fail-open display values (context limit, prompt tokens) degrade
+// to 0 on drift — by contract — but the decode failure must be LOGGED,
+// never silently swallowed.
+func TestOpenCodeClient_FailOpenDisplayValues_LogDrift(t *testing.T) {
+	observed, logs := observer.New(zapcore.DebugLevel)
+	catalog := `{"providers":[{"id":"p1","models":{"m1":{"id":"m1","limit":{"context":1000}}}}]}garbage`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(catalog))
+	}))
+	t.Cleanup(srv.Close)
+	setAgentAddr(srv.URL)
+	client := &OpenCodeClient{password: "pw", client: srv.Client()}
+
+	prev := log
+	log = zap.New(observed)
+	defer func() { log = prev }()
+
+	assert.Equal(t, int64(0), client.ModelContextLimit(context.Background(), "m1", "p1"),
+		"drifted catalog degrades to 0 (fail-open display contract)")
+	assert.Equal(t, int64(0), client.fetchSessionPromptTokens(context.Background(), "ses_1"),
+		"drifted history degrades to 0 (fail-open display contract)")
+
+	driftLogged := 0
+	for _, e := range logs.All() {
+		if e.Message == "ModelContextLimit: decode failed" || e.Message == "fetchSessionPromptTokens: decode failed" {
+			driftLogged++
+		}
+	}
+	assert.Equal(t, 2, driftLogged, "both fail-open drift decodes must surface in the log (Rule 3)")
+}

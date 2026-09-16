@@ -727,3 +727,31 @@ func TestUpdateAuthJSONForRelay_CrossUIDMode(t *testing.T) {
 		require.Contains(t, string(data), "opencode-relay")
 	})
 }
+
+// TestFetchFreeModels_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — r2 sweep): the four canonical corruption shapes riding a 200
+// on GET /provider must fail AT THE PARSE — a lenient decode would
+// hand the relay injector a phantom (empty) free-model catalog.
+func TestFetchFreeModels_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"connected":["opencode"],"al`},
+		{"trailing_garbage", `{"connected":["opencode"],"all":[{"id":"opencode","models":{}}]}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			models, err := fetchFreeModels(context.Background(), srv.URL, "pw")
+			require.Error(t, err, "a corrupted 200 must never parse as a model catalog")
+			assert.Empty(t, models, "no phantom free-model list escapes the injector")
+		})
+	}
+}

@@ -179,7 +179,7 @@ func fetchFreeModels(ctx context.Context, baseURL, password string) ([]opencode.
 			} `json:"models"`
 		} `json:"all"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4*1024*1024)).Decode(&providerResp); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 4*1024*1024), &providerResp); err != nil {
 		return nil, fmt.Errorf("decode /provider: %w", err)
 	}
 

@@ -64,7 +64,7 @@ func (c *OpenCodeClient) IsHealthy(ctx context.Context) (bool, string, error) {
 		Healthy bool   `json:"healthy"`
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return false, "", err
 	}
 	return result.Healthy, result.Version, nil
@@ -79,7 +79,7 @@ func (c *OpenCodeClient) ConnectedProviders(ctx context.Context) ([]string, erro
 	var result struct {
 		Connected []string `json:"connected"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return nil, err
 	}
 	return result.Connected, nil
@@ -94,7 +94,7 @@ func (c *OpenCodeClient) ConfiguredProviderCount(ctx context.Context) (int, erro
 	var result struct {
 		Providers []struct{} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return 0, err
 	}
 	return len(result.Providers), nil
@@ -119,7 +119,10 @@ func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, provide
 			} `json:"models"`
 		} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	// Fail-open 0 by contract (display value) — but strict and logged,
+	// never a silent swallow (Rule 3; leg-10 drift visibility).
+	if err := decodeStrict(resp.Body, &result); err != nil {
+		log.Debug("ModelContextLimit: decode failed", zap.Error(err), zap.String("modelID", modelID), zap.String("providerID", providerID))
 		return 0
 	}
 	for _, p := range result.Providers {
@@ -234,7 +237,7 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 			} `json:"tokens"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&messages); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 16<<20), &messages); err != nil {
 		log.Debug("fetchSessionPromptTokens: decode failed", zap.Error(err), zap.String("sessionID", sessionID))
 		return 0
 	}

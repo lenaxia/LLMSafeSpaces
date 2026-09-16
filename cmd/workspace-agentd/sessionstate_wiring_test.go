@@ -180,3 +180,92 @@ func TestOpencodeStoreReader_PendingInputsStrict(t *testing.T) {
 		})
 	}
 }
+
+// TestOpencodeStoreReader_MessagePresence_WireDriftCorruption (leg-10,
+// epic-71 / leg10-pins, #1312 — r2 review reproduced this defect on
+// HEAD: a valid-empty-page + garbage tail returned err=nil,
+// present=false — ABSENCE PROVEN FROM DRIFT, flowing into definitive
+// TurnEnded/Failed ledger transitions). The four canonical corruption
+// modes must error (inconclusive), never prove absence.
+func TestOpencodeStoreReader_MessagePresence_WireDriftCorruption(t *testing.T) {
+	modes := []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `[{"info":{"id":"msg_1","ti`},
+		{"trailing_garbage", `[]garbage-bytes`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+			present, err := r.MessagePresence(context.Background(), "ses_1", []string{"msg_1"})
+			require.Error(t, err, "a corrupted page must never resolve presence (drift is indeterminate, not absence)")
+			assert.Empty(t, present, "no presence map — let alone an all-false one — escapes from drift")
+		})
+	}
+}
+
+// TestOpencodeAdmitter_WireDriftCorruption (leg-10, r2 sweep): the
+// Admit ack decode (the promotion-correlation message ID) and the
+// generic post decode must fail loudly on corrupted 200s — a phantom
+// empty ack must never key the ledger's markAdmitted.
+func TestOpencodeAdmitter_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"info":{"id":"msg_1`},
+		{"trailing_garbage", `{"info":{"id":"msg_1"}}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run("Admit/"+mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The model-set call precedes the steer; both answer clean.
+				if strings.HasSuffix(r.URL.Path, "/model") {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			a := opencodeAdmitter{password: "pw"}
+			id, err := a.Admit(context.Background(), "ses_1", "msg_1", "hello", "")
+			require.Error(t, err, "a corrupted ack must never admit")
+			assert.Empty(t, id, "no phantom message ID escapes the admitter")
+		})
+		t.Run("post/"+mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			a := opencodeAdmitter{password: "pw"}
+			var out struct {
+				ID string `json:"id"`
+			}
+			err := a.post(context.Background(), "/session/ses_1", map[string]any{}, &out)
+			require.Error(t, err, "a corrupted 200 must never decode as a posted payload")
+		})
+	}
+}

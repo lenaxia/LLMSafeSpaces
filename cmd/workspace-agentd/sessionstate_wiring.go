@@ -153,7 +153,7 @@ func (r opencodeStoreReader) MessagePresence(ctx context.Context, sessionID stri
 				ID string `json:"id"`
 			} `json:"info"`
 		}
-		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&msgs)
+		decodeErr := decodeStrict(io.LimitReader(resp.Body, 8<<20), &msgs)
 		next := resp.Header.Get("X-Next-Cursor")
 		_ = resp.Body.Close()
 		if decodeErr != nil {
@@ -376,7 +376,7 @@ func (o opencodeAdmitter) post(ctx context.Context, path string, payload any, ou
 		return fmt.Errorf("status %d: %s", resp.StatusCode, string(errBody))
 	}
 	if out != nil {
-		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+		return decodeStrict(io.LimitReader(resp.Body, 1<<20), out)
 	}
 	return nil
 }
@@ -445,12 +445,14 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text,
 	}
 	// V1 returns the assistant message synchronously — the info.id is
 	// the message ID the ledger's promotion correlation needs.
+	// V1 returns the assistant message synchronously — the info.id is
+	// the message ID the ledger's promotion correlation needs.
 	var out struct {
 		Info struct {
 			ID string `json:"id"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &out); err != nil {
 		return "", err
 	}
 	return out.Info.ID, nil
