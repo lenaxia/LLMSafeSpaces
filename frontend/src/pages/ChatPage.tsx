@@ -35,7 +35,7 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, useDropPendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWhileAwayStalenessSweep } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool" | "file_notice"; text: string; partID?: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
@@ -417,6 +417,9 @@ export function ChatPage() {
   // navigation (#346). No session-local state — nothing to clear on switch.
   const pendingQuestions = usePendingQuestionsForSession(sessionId ?? "");
   const pendingPermissions = usePendingPermissionsForSession(sessionId ?? "");
+  // #1365: the whileAway staleness backstop — interval-driven, not lazy
+  // (see the hook doc). No-op when no whileAway pills are pending.
+  useWhileAwayStalenessSweep(pendingQuestions, pendingPermissions, dropPendingAction);
 
   const queue = useMessageQueue(activeWorkspaceId, sessionId);
 
@@ -602,6 +605,10 @@ export function ChatPage() {
     // resolution evidence for them. The provider carries the envelope
     // marker on the stored object (D3: the ABI schema itself stays
     // clean; this is a provider-local extension).
+    // #1365: whileAway pills stay fold-exempt (their lifecycle is the
+    // resolved-event path); their staleness bound is enforced by
+    // useWhileAwayStalenessSweep below — a TIMER, because this effect's
+    // deps do not tick on a healthy-but-quiet stream.
     for (const q of pendingQuestions) {
       if (q.whileAway) continue;
       if (isOwn(q.sessionId) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) dropPendingAction(q.id);
