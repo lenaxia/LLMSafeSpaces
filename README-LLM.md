@@ -392,10 +392,11 @@ The platform is decoupling from opencode via a **platform-owned session contract
 **Discipline rules (enforced by review + repolint):**
 
 1. 5 part types forever. No `PartTodo`, `PartEdit`, `PartSearch` — all tools are `ToolPart`.
-2. No agent identifier leaks (`ses_`/`msg_` IDs, `patch` part, `opencode-relay` naming stay in `pkg/agent/opencode/`).
+2. No agent identifier leaks. The agent's ID lexicon (`que_`/`per_`/`ses_`/`msg_` prefixes) and `patch` part / `opencode-relay` naming stay in `pkg/agent/opencode/`. Enforced by the repolint `agent_id_prefix_literal` rule (#1305): prefix matches/mints outside `pkg/agent/opencode/` (incl. `testdata/` fixtures), `cmd/workspace-agentd/`, `pkg/repolint/`, and the per-file reviewer-sanctioned dispatch fast-path `pkg/mcp/server.go` fail the lint; tolerated leaks carry a reason + issue pointer.
 3. Agent-specific operations (rewind, fork, stash) are capability-gated pass-through, not contract types.
 4. Cost/usage fields are display-only. Billing is cgroup-based.
 5. Diff text is authoritative (`Patch string`), not hunk structs.
+6. The client-facing spec (`sdks/openapi.yaml`) carries no agent-coupling markers: `x-opencode-proxy` keys and coupling-phrase descriptions ("tracks upstream", "from opencode", "opencode session object") fail the repolint `spec_coupling_marker` rule (#1305); the top-level `info.description` opencode mention is the single anchored allowlist.
 
 **The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) have moved behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
 
