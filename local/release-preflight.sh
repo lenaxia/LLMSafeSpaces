@@ -222,6 +222,30 @@ head_manifest() {
   echo "${code:-000} ${digest:--}"
 }
 
+# index_annotations <repo> <tag-or-digest> <artifact-name> -> "<amd64hex|-> <arm64hex|->"
+# Reads the CI-stamped per-arch binary sha256 annotations from the image
+# index (release.yml merge jobs stamp dev.llmsafespaces/<name>.sha256-{amd64,arm64};
+# the controller resolves UNSET pins from the same annotations at startup).
+index_annotations() {
+  local repo="$1" ref="$2" name="$3" tok body
+  tok="$(token_for "${repo}")"
+  [ -z "${tok}" ] && return 1
+  body="$(curl -sf -m 15 \
+    -H "Authorization: Bearer ${tok}" \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+    "${GHCR_API}/v2/${repo}/manifests/${ref}")" || return 1
+  printf '%s' "${body}" | PIN_NAME="${name}" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+a = d.get("annotations") or {}
+prefix = "dev.llmsafespaces/" + os.environ["PIN_NAME"] + ".sha256-"
+print(a.get(prefix + "amd64") or "-", a.get(prefix + "arm64") or "-")
+'
+}
+
 strip_registry() { case "$1" in ghcr.io/*) printf '%s' "${1#ghcr.io/}" ;; *) printf '%s' "$1" ;; esac; }
 
 # collect refs to resolve: repository + (tag | digest) per component.
@@ -289,6 +313,45 @@ verify_pin_coherence() {
 }
 verify_pin_coherence "agentdDelivery" "${AGENTD_REF}" "$(delivery_repo "${AGENTD_REF}")" "$(delivery_tag "${AGENTD_REF}")" "${AGENTD_HEX}"
 verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OPENCODE_REF}")" "$(delivery_tag "${OPENCODE_REF}")" "${OPENCODE_HEX}"
+
+# verify_binary_pins <label> <repo> <ref> <artifact-name> <amd64-pin> <arm64-pin>
+# Break-glass binarySHA256* pins are overrides the controller uses as-is
+# (it resolves only UNSET pins from the annotations) — so a stale or
+# foreign paste would reach every pod. The CI-stamped index annotations
+# are the ground truth: a pin that disagrees with them is wrong. An
+# index without annotations is the documented break-glass posture for
+# un-annotated images (values.yaml caveat) — noted, not failed.
+verify_binary_pins() {
+  local label="$1" repo="$2" ref="$3" name="$4" amd64="$5" arm64="$6" out idx_amd64 idx_arm64
+  [ -z "${amd64}" ] && [ -z "${arm64}" ] && { ok "P2 ${label}: no explicit binarySHA256* pins — resolved from the index annotations at controller startup"; return; }
+  [ -z "${ref}" ] && { die "P2 ${label}: binary pins set but the delivery ref carries neither tag nor digest — cannot verify against the index"; return; }
+  if ! out="$(index_annotations "${repo}" "${ref}" "${name}")"; then
+    die "P2 ${label}: cannot read index annotations from ${repo}@${ref} — cannot verify the break-glass binary pins"
+    return
+  fi
+  idx_amd64="$(printf '%s' "${out}" | awk '{print $1}')"
+  idx_arm64="$(printf '%s' "${out}" | awk '{print $2}')"
+  if [ "${idx_amd64}" = "-" ] && [ "${idx_arm64}" = "-" ]; then
+    ok "P2 ${label}: index carries no annotations — break-glass posture (values.yaml caveat); pins used as-is by the controller"
+    return
+  fi
+  if [ -n "${amd64}" ] && [ "${idx_amd64}" != "-" ] && [ "${amd64}" != "${idx_amd64}" ]; then
+    die "P2 ${label}.binarySHA256Amd64 (${amd64}) disagrees with the CI-stamped index annotation (${idx_amd64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+  fi
+  if [ -n "${arm64}" ] && [ "${idx_arm64}" != "-" ] && [ "${arm64}" != "${idx_arm64}" ]; then
+    die "P2 ${label}.binarySHA256Arm64 (${arm64}) disagrees with the CI-stamped index annotation (${idx_arm64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+  fi
+  ok "P2 ${label}: explicit binarySHA256* pins match the CI-stamped index annotations"
+}
+
+delivery_ref() { # the manifest ref to inspect: digest when pinned, else tag
+  local ref="$1" hex; hex="$(ref_digest "${ref}")"
+  if [ -n "${hex}" ]; then printf 'sha256:%s' "${hex}"; else delivery_tag "${ref}"; fi
+}
+verify_binary_pins "agentdDelivery" "$(strip_registry "$(delivery_repo "${AGENTD_REF}")")" "$(delivery_ref "${AGENTD_REF}")" "agentd" \
+  "$(val controller.agentdDelivery.binarySHA256Amd64)" "$(val controller.agentdDelivery.binarySHA256Arm64)"
+verify_binary_pins "opencodeDelivery" "$(strip_registry "$(delivery_repo "${OPENCODE_REF}")")" "$(delivery_ref "${OPENCODE_REF}")" "opencode" \
+  "$(val controller.opencodeDelivery.binarySHA256Amd64)" "$(val controller.opencodeDelivery.binarySHA256Arm64)"
 
 if [ "${FAIL}" -ne 0 ]; then
   printf '[preflight] RESULT: FAIL — do NOT merge; see failures above\n' >&2

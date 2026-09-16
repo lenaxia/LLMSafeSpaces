@@ -55,7 +55,7 @@
    ```
 
    - **P1** every `tag:`/`@sha256:` image+coordinate **resolves in the registry** (manifest HEAD 200) — catches the Incident-3 class at PR time;
-   - **P2** every digest belongs to the **named image's** index, no delivery pin reuses a platform component digest, and a tag+digest pair is coherent against the live index — catches Incident 2;
+   - **P2** every digest belongs to the **named image's** index, no delivery pin reuses a platform component digest, a tag+digest pair is coherent against the live index, and explicit `binarySHA256*` break-glass pins agree with the CI-stamped index annotations (`dev.llmsafespaces/<artifact>.sha256-{amd64,arm64}`) — catches Incident 2 (an un-annotated index with pins set is the documented break-glass posture, noted not failed);
    - **P3** the base tag is CalVer and equals the **catalog seed version** — drift is a red light (and in this repo, a repolint failure);
    - **P4** the opencode coordinate matches the repo-validated pin, and (with `--opencode-bin`) §3's behavioral contract script runs green against the runtime the bump ships — catches the Incident-1 class.
 
@@ -136,7 +136,7 @@ wrong-CalVer tag — the ghcr pre-flight in §2 catches that.
 | CI fixture-freshness gate | OPENCODE_VERSION bump ⇒ golden fixtures touched in the same PR | `.github/workflows/ci.yml` |
 | repolint `release_artifacts` check | every release image is signed/scanned/SBOM'd/tabled; merge jobs gate the release | `make repolint` |
 | delivery-pin render gates (design 0053 §4.5) | empty `agentdDelivery.image` / `opencodeDelivery.image` fail the render; one-sided `binarySHA256*` pairs fail | `helm/delivery_pins_gate_test.go`, controller startup |
-| pre-flight script (`local/release-preflight.sh`) | against a candidate config file: P1 registry resolution, P2 index membership + no platform-digest reuse + tag/digest coherence, P3 base CalVer + seed equality, P4 opencode pin alignment (+ behavioral contract via `--opencode-bin`) | operator-run on every config bump PR; pinned by `local/release_preflight_script_test.go` |
+| pre-flight script (`local/release-preflight.sh`) | against a candidate config file: P1 registry resolution, P2 index membership + no platform-digest reuse + tag/digest coherence + `binarySHA256*` agreement with the CI-stamped index annotations, P3 base CalVer + seed equality, P4 opencode pin alignment (+ behavioral contract via `--opencode-bin`) | operator-run on every config bump PR; pinned by `local/release_preflight_script_test.go` |
 
 **Known limit:** the repolint guard reads this repo's committed files; it
 cannot see the ops config repo's values — that is what the pre-flight script

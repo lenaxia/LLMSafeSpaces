@@ -25,8 +25,8 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 - Wired into `cmd/repolint/main.go` (`runVersionScheme`) — runs in pre-commit, CI (`ci.yml` make repolint), and release.yml's lint job.
 
 ### Pre-flight script (the issue's criterion 2, added in review round 1)
-- `local/release-preflight.sh` — run against a candidate config values file: P1 registry resolution of every tag/digest (ghcr v2 API, `GHCR_API` overridable), P2 index membership + no delivery pin reusing a platform digest + tag/digest coherence against the live index, P3 base CalVer + seed single-source equality, P4 opencode coordinate vs the repo pin + optional behavioral-contract execution via `--opencode-bin`. `--offline` is an explicitly loud degraded mode.
-- `local/release_preflight_script_test.go` — 4 test functions / 11 subtests: bash syntax, structure pins (each detector row must exist), offline behaviors (happy, both incident classes, drift, pin mismatch, empty tag, usage error), and online behaviors against an in-process ghcr-v2 stub (resolve pass, incident-3 404, incident-2 foreign digest, stale tag+digest pair).
+- `local/release-preflight.sh` — run against a candidate config values file: P1 registry resolution of every tag/digest (ghcr v2 API, `GHCR_API` overridable), P2 index membership + no delivery pin reusing a platform digest + tag/digest coherence against the live index + `binarySHA256*` break-glass pins verified against the CI-stamped index annotations (`dev.llmsafespaces/<artifact>.sha256-{amd64,arm64}`; un-annotated index + pins set = documented break-glass posture, noted not failed — round-2 review finding: the header claimed this verification before it existed), P3 base CalVer + seed single-source equality, P4 opencode coordinate vs the repo pin + optional behavioral-contract execution via `--opencode-bin`. `--offline` is an explicitly loud degraded mode.
+- `local/release_preflight_script_test.go` — 4 test functions / 14 subtests: bash syntax, structure pins (each detector row must exist), offline behaviors (happy, both incident classes, drift, pin mismatch, empty tag, usage error), and online behaviors against an in-process ghcr-v2 stub (resolve pass, incident-3 404, incident-2 foreign digest, stale tag+digest pair, annotation match / mismatch / un-annotated break-glass).
 
 ### Live defect the guard exposed (fixed)
 - The guard failed on main's own `helm/values.yaml`: `runtimeEnvironments.base.image.tag: ""` falls back to `.Chart.AppVersion` (`helm/templates/runtimeenvironment-base.yaml:9`) → `base:0.30.1`, a tag that has not existed since design 0053 moved the base to CalVer — the incident-3 mechanism, live in chart defaults.
@@ -56,7 +56,7 @@ None.
 ## Tests Run
 
 - `go test ./pkg/repolint/` — PASS (full package incl. TestVersionScheme: 22 funcs / 38 cases, test-first RED→GREEN).
-- `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 11 subtests incl. in-process registry stub legs).
+- `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 14 subtests incl. in-process registry-stub legs: resolve, both incident classes online, stale pin, annotation match/mismatch/break-glass).
 - `go test ./helm/...` — PASS (full package, helm on PATH — CI installs latest; validated locally across helm v3 and v4 lines), including `TestChart_DefaultBaseRTE_TagIsSeedCalVer`, `TestBaseTag_MandatoryRenderGate`, and the delivery-pin render gates.
 - `go run ./cmd/repolint` — all checks passed (after the values.yaml fix; failed as designed before it).
 - `go build ./...`, `make test`, `make lint` — green before the PR (see PR body).

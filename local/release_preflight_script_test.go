@@ -243,10 +243,11 @@ func TestReleasePreflightScript_OfflineChecks(t *testing.T) {
 }
 
 // stubRegistry serves the ghcr v2 API surface the script consumes:
-// /token (anonymous pull token) and /v2/<repo>/manifests/<ref> HEAD-able
-// with a Docker-Content-Digest. repoOK maps repo->ref->digest; any ref
-// not in the map 404s.
-func stubRegistry(t *testing.T, indexDigests map[string]string) *httptest.Server {
+// /token (anonymous pull token) and /v2/<repo>/manifests/<ref> with a
+// Docker-Content-Digest header and (for index-annotation reads) a JSON
+// index body. indexDigests maps ref->digest; indexBodies maps
+// ref->manifest body; any ref in neither map 404s.
+func stubRegistry(t *testing.T, indexDigests, indexBodies map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -261,6 +262,10 @@ func stubRegistry(t *testing.T, indexDigests map[string]string) *httptest.Server
 				return
 			}
 			w.Header().Set("Docker-Content-Digest", digest)
+			if body, ok := indexBodies[ref]; ok {
+				w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+				fmt.Fprint(w, body)
+			}
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -268,6 +273,13 @@ func stubRegistry(t *testing.T, indexDigests map[string]string) *httptest.Server
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// indexBodyWithAnnotations renders an OCI index carrying the CI-stamped
+// per-arch binary sha256 annotations for the named artifact.
+func indexBodyWithAnnotations(artifact, amd64, arm64 string) string {
+	return fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","annotations":{"dev.llmsafespaces/%s.sha256-amd64":"%s","dev.llmsafespaces/%s.sha256-arm64":"%s"}}`,
+		artifact, amd64, artifact, arm64)
 }
 
 func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
@@ -291,7 +303,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			baseRef: idxSomething, agentdDig: idx2222,
 			ocTagRef: idx2222, opencodeDg: idx2222,
-		})
+		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -310,7 +322,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
 			agentdDig: idx2222, ocTagRef: idx2222, opencodeDg: idx2222,
 			// baseRef deliberately absent → 404
-		})
+		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -328,7 +340,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			baseRef: idxSomething,
 			// agentdDig deliberately absent → the agentd repo has no such digest
 			ocTagRef: idx2222, opencodeDg: idx2222,
-		})
+		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -346,7 +358,7 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			baseRef: idxSomething, agentdDig: idx2222,
 			ocTagRef:   idxSomething, // the tag now resolves to a DIFFERENT index than the pin
 			opencodeDg: idx2222,
-		})
+		}, nil)
 		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
 		var out strings.Builder
 		cmd.Stdout, cmd.Stderr = &out, &out
@@ -357,13 +369,92 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 			t.Errorf("output must name the stale pin:\n%s", out.String())
 		}
 	})
+
+	// binaryPinCandidate: happy values with agentd break-glass per-arch
+	// pins set — the values.yaml caveat posture.
+	binaryPinCandidate := func(t *testing.T, amd64, arm64 string) string {
+		t.Helper()
+		return strings.Replace(preflightHappyValues(t),
+			`  agentdDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""`,
+			`  agentdDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/agentd@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    binarySHA256Amd64: "`+amd64+`"
+    binarySHA256Arm64: "`+arm64+`"`, 1)
+	}
+	amd64Hex := strings.Repeat("aaaa0000", 8)
+	arm64Hex := strings.Repeat("bbbb0000", 8)
+	annotatedIndex := map[string]string{
+		agentdDig: indexBodyWithAnnotations("agentd", amd64Hex, arm64Hex),
+	}
+
+	t.Run("binary pins matching the CI-stamped annotations pass", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, annotatedIndex)
+		cmd := exec.Command("bash", "./"+preflightScript,
+			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("expected pass, got %v:\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "match the CI-stamped index annotations") {
+			t.Errorf("output must confirm the annotation match:\n%s", out.String())
+		}
+	})
+
+	t.Run("binary pin disagreeing with the index annotation fails (incident 2 class)", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, annotatedIndex)
+		cmd := exec.Command("bash", "./"+preflightScript,
+			onlineValues(t, srv.URL, binaryPinCandidate(t, strings.Repeat("cccc1111", 8), arm64Hex))) // wrong amd64 pin
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "disagrees with the CI-stamped index annotation") {
+			t.Errorf("output must name the annotation mismatch:\n%s", out.String())
+		}
+	})
+
+	t.Run("binary pins on an un-annotated index are the documented break-glass posture", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, map[string]string{agentdDig: `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json"}`})
+		cmd := exec.Command("bash", "./"+preflightScript,
+			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("expected pass (break-glass posture), got %v:\n%s", err, out.String())
+		}
+		if !strings.Contains(out.String(), "break-glass posture") {
+			t.Errorf("output must note the break-glass posture:\n%s", out.String())
+		}
+	})
 }
 
 func onlineCandidate(t *testing.T, apiURL string) string {
 	t.Helper()
+	return onlineValues(t, apiURL, preflightHappyValues(t))
+}
+
+func onlineValues(t *testing.T, apiURL, valuesBody string) string {
+	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "candidate.yaml")
-	if err := os.WriteFile(path, []byte(preflightHappyValues(t)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(valuesBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GHCR_API", apiURL)
