@@ -127,4 +127,4 @@ None — design-only change (no code paths touched; `make lint`/repolint run via
 
 - `design/0058_2026-09-15_relay-only-key-delivery.md` (new)
 - `design/stories/epic-72-relay-only-key-delivery/README.md` (new)
-- `worklogs/NNNN_2026-09-15_relay-only-key-delivery-design.md` (new, sentinel)
+- `worklogs/0951_2026-09-15_relay-only-key-delivery-design.md` (new, sentinel)
