@@ -90,7 +90,7 @@ func TestEpic71S1Script_BudgetDefaultsEvaluate(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, epic71S1Script)
 	start := strings.Index(src, `S1B_ABORT_BUDGET_S=`)
-	end := strings.Index(src[start:], `WS_BASE="`)
+	end := strings.Index(src[start:], "failures=0")
 	if start < 0 || end < 0 {
 		t.Fatalf("could not locate the S1B budget-default block in %s", epic71S1Script)
 	}
