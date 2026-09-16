@@ -157,11 +157,13 @@ curl http://localhost:8080/livez   # 200 OK
 curl http://localhost:8080/readyz  # 200 if DB+Redis healthy, 503 otherwise
 ```
 
-> **Image tags:** The chart defaults each image tag to `.Chart.AppVersion`
-> (`0.2.2`), which resolves to the published GHCR image for the latest release
-> tag (`v0.2.2`). For intermediate (non-release) builds, supply a tag
+> **Image tags:** The chart defaults each platform component image tag to
+> `.Chart.AppVersion` (`0.2.2`), which resolves to the published GHCR image for
+> the latest release tag (`v0.2.2`). For intermediate (non-release) builds, supply a tag
 > explicitly via `--set api.image.tag=<tag>` (and the same for
-> `controller`, `frontend`, `runtimeEnvironments.base`). See [Image tags](#image-tags) below.
+> `controller`, `frontend`). The base runtime tag is **not** on this scheme — it is
+> CalVer `YYYY.MM.x` mirrored from the image-factory catalog seed (design 0053
+> D5/S4; see `docs/release-bump-checklist.md`). See [Image tags](#image-tags) below.
 
 ## Image tags
 
@@ -181,7 +183,8 @@ helm install llmsafespaces ./helm \
     --set api.image.tag=sha-ac861c3 \
     --set controller.image.tag=sha-ac861c3 \
     --set frontend.image.tag=sha-ac861c3 \
-    --set runtimeEnvironments.base.image.tag=sha-ac861c3 \
+    # base tag stays on CalVer from the catalog seed — do NOT pin it to a
+    # platform sha-/semver tag (design 0053 D5/S4)
     # ... other values
 ```
 
