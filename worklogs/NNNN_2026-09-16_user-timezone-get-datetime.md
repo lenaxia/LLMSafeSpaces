@@ -94,8 +94,9 @@ tzdata-delivery break or full-channel regression shipped green.
 - Frontend: dedup-half pinned (121s constant zone → still 1 call);
   retry test scoped to interval-only fake timers; test order
   documented as load-bearing.
-- Round-labeling blemish fixed: this section documents rounds 5-6
-  (prior section headers drifted by one).
+- Round-labeling corrected: the sections above now carry their true
+  round numbers (the "round 3/4" headers were off by one — their
+  content belongs to review rounds 4/5; this section covers 6-8).
 
 ## Review round 4 remediations
 
