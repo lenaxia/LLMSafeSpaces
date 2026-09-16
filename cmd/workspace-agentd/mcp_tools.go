@@ -340,17 +340,54 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 
 // --- get_datetime ---------------------------------------------------------
 
-// mcpGetDatetime reports the current instant in UTC and the pod's local
-// timezone. Pods default to UTC; TZ may pin otherwise.
-func mcpGetDatetime() (string, error) {
+// mcpGetDatetime reports the current instant in UTC and the USER's
+// timezone when known. Resolution order: an explicit `timezone`
+// argument (IANA name — use when the zone is known from conversation
+// context), then the platform's live browser-reported zone (pushed by
+// the API when the user's browser connects), then the pod's local zone
+// (TZ env or UTC). The `source` field says which won.
+func mcpGetDatetime(timezoneArg string) (string, error) {
 	now := time.Now()
-	out, _ := json.Marshal(map[string]string{
-		"utc":        now.UTC().Format(time.RFC3339),
-		"local":      now.Format(time.RFC3339),
-		"timezone":   now.Location().String(),
-		"utc_offset": now.Format("-07:00"),
+
+	location := time.Local
+	source := "pod"
+	name := ""
+
+	switch tz := userTimezone(); {
+	case timezoneArg != "":
+		loc, err := time.LoadLocation(timezoneArg)
+		if err != nil {
+			return "", fmt.Errorf("unknown timezone %q (IANA names like \"America/Los_Angeles\"; the tool cannot guess)", timezoneArg)
+		}
+		location, source, name = loc, "argument", timezoneArg
+	case tz != "":
+		// already validated at the endpoint
+		if loc, err := time.LoadLocation(tz); err == nil {
+			location, source, name = loc, "browser", tz
+		}
+	}
+
+	local := now.In(location)
+	out, _ := json.Marshal(getDatetimeResult{
+		UTC:       now.UTC().Format(time.RFC3339),
+		Local:     local.Format(time.RFC3339),
+		Timezone:  name, // omitempty: ABSENT when unknown, never faked
+		UTCOffset: local.Format("-07:00"),
+		Source:    source,
 	})
 	return string(out), nil
+}
+
+// getDatetimeResult is the typed tool output. Timezone is omitempty by
+// contract: the pod fallback emits NO zone name rather than an empty
+// string (review finding — the shipped claims and the emission must
+// agree; a typed struct also satisfies the no-map-shapes rule).
+type getDatetimeResult struct {
+	UTC       string `json:"utc"`
+	Local     string `json:"local"`
+	Timezone  string `json:"timezone,omitempty"`
+	UTCOffset string `json:"utc_offset"`
+	Source    string `json:"source"`
 }
 
 // --- session_metadata -----------------------------------------------------

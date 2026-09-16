@@ -897,9 +897,14 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["get_datetime"]
 		require.True(t, ok, "get_datetime in tools/list")
 		for _, want := range []string{
-			"UTC",            // always reported
-			"local timezone", // always reported alongside
-			"default to UTC", // pods are UTC — do not assume user's zone
+			"UTC",                 // always reported
+			"the USER's timezone", // user-local, not pod-local, is the contract
+			"source: browser",     // the live path is named
+			"source: argument",    // the explicit override is named
+			"source: pod",         // the fallback is named
+			"America/Los_Angeles", // the IANA-name arg form is exemplified
+			"Do not assume",       // do not assume the user's zone matches the pod
+			"pass it explicitly",  // the remediation when source != browser
 		} {
 			assert.Contains(t, d, want)
 		}

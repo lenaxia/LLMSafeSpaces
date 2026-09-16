@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,8 +16,20 @@ import (
 
 // SettingsHandler handles admin and user settings API requests.
 type SettingsHandler struct {
+	tzPushHook  TimezonePushHook
 	instanceSvc *settings.InstanceService
 	userSvc     *settings.UserService
+}
+
+// TimezonePushHook runs after a successful user `timezone` setting
+// update (userID + new zone) so the platform can push it to the user's
+// active workspace pods. Optional; failures in the hook never fail the
+// PUT — the SSE-connect push is the reliable re-delivery path.
+type TimezonePushHook func(ctx context.Context, userID, timezone string)
+
+// SetTimezonePushHook installs the post-update hook (app wiring).
+func (h *SettingsHandler) SetTimezonePushHook(hook TimezonePushHook) {
+	h.tzPushHook = hook
 }
 
 // NewSettingsHandler creates a new settings handler.
@@ -148,6 +161,11 @@ func (h *SettingsHandler) SetUserSetting(c *gin.Context) {
 	if err := h.userSvc.Set(c.Request.Context(), userID, key, value); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if key == "timezone" && h.tzPushHook != nil {
+		if tz, ok := value.(string); ok && tz != "" {
+			go h.tzPushHook(context.WithoutCancel(c.Request.Context()), userID, tz)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"key": key, "value": value})

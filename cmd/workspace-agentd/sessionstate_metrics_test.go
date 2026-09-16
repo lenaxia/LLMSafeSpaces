@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	abiv1 "github.com/lenaxia/llmsafespaces/pkg/abi/v1"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -187,6 +188,10 @@ func TestMetricsScrape_Completeness(t *testing.T) {
 		// (registration is package-init; a wiring typo is otherwise
 		// invisible until an operator needs it).
 		"llmsafespaces_orphan_parts_aborted_total",
+		// #1396: the answer-budget counter must be on the scrape — the
+		// canary signal for the would-be-hang class (same blindness
+		// argument as the orphan counter above).
+		"llmsafespaces_answer_budget_exceeded_total",
 	} {
 		assert.Contains(t, string(body), name, "metric scrapes")
 	}
@@ -265,4 +270,75 @@ type instantAdmitter struct{}
 
 func (instantAdmitter) Admit(ctx context.Context, sessionID, messageID, text, model string) (string, error) {
 	return "msg-1", nil
+}
+
+// budgetParkActor parks inside Act until its ctx dies — an answer forward
+// that outlives any configured budget (the #1396 funnel's driver).
+type budgetParkActor struct{}
+
+func (budgetParkActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestAnswerBudgetMetric_FunnelAdvances pins the #1396 Prometheus bridge
+// (the TestOrphanPartsMetric_FunnelAdvances convention): a budget-expired
+// answer's cumulative counter must advance the REGISTERED counter through
+// recordSessionStateMetrics — and only by the delta (a re-record without
+// new expiries must not double-count; an authority recreation must not
+// double-count or go negative). Deleting the bridge block must fail this.
+func TestAnswerBudgetMetric_FunnelAdvances(t *testing.T) {
+	newAuth := func() *sessionstate.Authority {
+		a, err := sessionstate.New(sessionstate.Config{
+			Parser:        metricFunnelParser{},
+			Store:         metricFunnelStore{},
+			Passwords:     []string{"pw"},
+			PlatformDir:   t.TempDir(),
+			FastCursor:    true,
+			Actor:         budgetParkActor{},
+			AnswerTimeout: 10 * time.Millisecond,
+			Capabilities: &abiv1.CapabilityReport{
+				SupportedActions: []abiv1.ActionType{abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION},
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = a.Close() })
+		return a
+	}
+	answer := &abiv1.ActionRequest{
+		SessionId: "ses_m",
+		Action: &abiv1.ActionRequest_AnswerQuestion{
+			AnswerQuestion: &abiv1.AnswerInputAction{InputId: "per_1", OptionIds: []string{"yes"}},
+		},
+	}
+
+	a := newAuth()
+	_, err := a.Act(context.Background(), &connect.Request[abiv1.ActionRequest]{Msg: answer})
+	require.Error(t, err, "the parked forward expires the budget")
+	require.EqualValues(t, 1, a.Metrics().AnswerBudgetExceeded, "exactly one budget expiry")
+
+	wsID := "ws-answer-budget-funnel"
+	recordSessionStateMetrics(wsID, a)
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.answerBudgetExceeded),
+		"the funnel must advance the registered answer-budget counter")
+
+	// Delta discipline: re-recording the same cumulative must not
+	// double-count.
+	recordSessionStateMetrics(wsID, a)
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.answerBudgetExceeded),
+		"the delta bridge must not re-add the cumulative on every scrape")
+
+	// Authority recreation (cumulative resets below the baseline): the
+	// bridge resets without double-counting or going negative.
+	b := newAuth()
+	recordSessionStateMetrics(wsID, b)
+	assert.Equal(t, 1.0, testutil.ToFloat64(sessionStateMetrics.answerBudgetExceeded),
+		"a fresh authority's zero cumulative must not double-count the baseline")
+
+	// A NEW expiry on the recreated authority advances by exactly one.
+	_, err = b.Act(context.Background(), &connect.Request[abiv1.ActionRequest]{Msg: answer})
+	require.Error(t, err)
+	recordSessionStateMetrics(wsID, b)
+	assert.Equal(t, 2.0, testutil.ToFloat64(sessionStateMetrics.answerBudgetExceeded),
+		"the recreated authority's new expiry advances the counter by exactly its delta")
 }

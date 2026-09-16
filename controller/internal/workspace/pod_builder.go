@@ -372,34 +372,33 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		runtimeClassName = *workspace.Spec.RuntimeClass
 	}
 
-	// terminationGracePeriodSeconds (2026-06-23 perf audit, item #5).
-	// The kubelet default of 30s wasted ~25s on every pod termination.
+	// terminationGracePeriodSeconds (#761 — supersedes the 2026-06-23
+	// perf-audit value of 5s).
 	//
-	// agentd has TWO different shutdown budgets layered:
-	//   1. The HTTP server's overall shutdown context is 25s
-	//      (cmd/workspace-agentd/main.go runShutdown). It includes
-	//      graceful HTTP server drain, background goroutine wait
-	//      (5s), and the opencode child SIGTERM→SIGKILL fallback.
-	//   2. The opencode child SIGTERM grace is 5s (managed_process.go
-	//      stop()). After 5s without exit, agentd SIGKILLs opencode.
+	// agentd's OUTER shutdown budget is serial in the worst case
+	// (cmd/workspace-agentd/main.go runShutdown):
+	//   1. HTTP server drain: 25s context — graceful drain of BOTH servers
+	//      including live SSE connections (which never go idle on their
+	//      own; this is exactly the in-flight-turn traffic #761 protects).
+	//   2. Background-goroutine wait: 5s (bgWg).
+	//   3. opencode child SIGTERM→SIGKILL: 5s (managed_process.go stop()).
+	//      25 + 5 + 5 = 35s serial worst case.
 	//
-	// Setting kubelet's terminationGracePeriodSeconds=5 means kubelet
-	// will SIGKILL the entire pod 5s after sending SIGTERM,
-	// short-circuiting agentd's outer 25s budget. That sounds
-	// aggressive, but it's safe in this codebase because:
-	//   - The 25s budget is a worst-case for a stuck HTTP server or
-	//     hung goroutine; live cluster measurement (see worklog) shows
-	//     pod-gone in ~2.2s after pod-delete in normal operation.
-	//   - opencode's 5s SIGTERM window matches kubelet's 5s here;
-	//     agentd will have just enough time to send SIGTERM and
-	//     observe a clean exit before kubelet SIGKILLs the whole pod.
-	//   - Even when agentd is killed mid-shutdown by kubelet, the only
-	//     state on disk is the workspace PVC, which is not modified
-	//     by shutdown. There is no graceful-state to lose.
+	// The old 5s value short-circuited this budget at stage 1: kubelet
+	// SIGKILLed the pod while agentd was still draining in-flight HTTP/SSE
+	// connections, destroying active LLM turns on every controller-initiated
+	// deletion. The old comment's claim that "the only state on disk is the
+	// workspace PVC" ignored in-flight streams and unflushed partial output.
 	//
-	// If the in-process measurement ever shows clean shutdowns
-	// approaching 5s, raise this to 10s rather than back to 30s.
-	terminationGrace := int64(5)
+	// 40s = the 35s serial budget + 5s margin (process teardown, PID-1
+	// signal latency). This is a worst-case bound only: kubelet reaps the
+	// pod as soon as the containers exit, and measured idle shutdown is
+	// ~2s, so suspend/recycle latency is unchanged in the common case.
+	// Where in-flight turns exist, the controller-side session drain
+	// (session_drain.go) defers the deletion entirely; this grace is the
+	// last-resort window for whatever slips past it (node drains, kubectl
+	// deletes, deferred-but-stalled forces).
+	terminationGrace := int64(40)
 
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

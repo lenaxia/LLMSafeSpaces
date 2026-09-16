@@ -10,8 +10,12 @@
 # Usage (inside a workspace pod):
 #   scripts/mcp-tools-liveprobe.sh
 #
-# Exits 0 when all probes pass, 1 otherwise. Read-only except for the
-# scratch session it creates and deletes.
+# Exits 0 when all probes pass, 1 otherwise. NOT read-only: besides the
+# scratch sessions it creates and deletes, the user-timezone leg
+# PERSISTENTLY overwrites the pod's last-known browser zone (no reset
+# endpoint exists). Run it on a pod whose user is not mid-session, or
+# accept that the pod reports the probe's zone until the next browser
+# (re)connect re-pushes the real one.
 
 set -u
 PW=$(cat /sandbox-cfg/password 2>/dev/null) || { echo "FAIL: cannot read /sandbox-cfg/password"; exit 1; }
@@ -111,6 +115,48 @@ if [ -n "$S2" ]; then
   AC=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "$OC/session/$S2/abort" -H 'Content-Type: application/json' -d '{}' --max-time 10)
   { [ "$AC" = 200 ] || [ "$AC" = 204 ]; } && note 0 "abort_session idle no-op (HTTP $AC)" || note 1 "abort_session idle no-op (HTTP $AC)"
   curl -s -o /dev/null -u "opencode:$PW" -X DELETE "$OC/session/$S2"
+fi
+
+echo "---"
+
+# --- user-timezone probes (PR #1389) ---
+# The live browser-zone channel end to end on a real pod: push a zone to
+# this agentd, then get_datetime must report source:browser with the
+# zone and a matching offset. Restores nothing — the zone persists
+# until the next browser (re)connect re-pushes the real one; an
+# already-connected session keeps reporting the probe's zone (see the
+# header's NOT-read-only note).
+# SKIPPED on agentd builds without the endpoint (pre-#1389 deployments):
+# a 404 on the feature-detect probe skips the leg rather than failing.
+TZR=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
+if [ "$TZR" = 404 ]; then
+  echo "SKIP: user-timezone probes (agentd predates PR #1389)"
+else
+[ "$TZR" = 200 ] && note 0 "user-timezone push accepted (200)" || note 1 "user-timezone push (HTTP $TZR)"
+# The MCP tool result is a JSON STRING nested inside content[0].text —
+# raw-grepping the wire body matches ESCAPED quotes ("source":"browser")
+# and never the literal form. Parse both layers instead.
+TZD=$(curl -s -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/mcp" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}}' | python3 -c '
+import json,sys
+try:
+    env=json.load(sys.stdin)
+    tool=json.loads(env["result"]["content"][0]["text"])
+    print(tool.get("source",""), tool.get("timezone",""), tool.get("utc_offset",""))
+except Exception:
+    print("parse-error", "", "")
+')
+TZ_SRC=$(echo "$TZD" | cut -d" " -f1)
+TZ_ZONE=$(echo "$TZD" | cut -d" " -f2)
+TZ_OFF=$(echo "$TZD" | cut -d" " -f3)
+[ "$TZ_SRC" = "browser" ] && note 0 "get_datetime source=browser after push" || note 1 "get_datetime source=browser (got '$TZ_SRC')"
+[ "$TZ_ZONE" = "Asia/Tokyo" ] && note 0 "get_datetime reports pushed IANA zone" || note 1 "get_datetime IANA zone (got '$TZ_ZONE')"
+[ "$TZ_OFF" = "+09:00" ] && note 0 "get_datetime Tokyo offset (+09:00)" || note 1 "Tokyo offset (got '$TZ_OFF')"
+# Invalid zone rejected end to end.
+TZB=$(curl -s -o /dev/null -w "%{http_code}" -u "opencode:$PW" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Mars/Olympus_Mons"}' --max-time 5)
+[ "$TZB" = 400 ] && note 0 "invalid zone rejected (400)" || note 1 "invalid zone rejection (HTTP $TZB)"
+# Unauthenticated push rejected.
+TZU=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:4097/v1/user-timezone" -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' --max-time 5)
+[ "$TZU" = 401 ] && note 0 "unauthenticated push rejected (401)" || note 1 "unauth rejection (HTTP $TZU)"
 fi
 
 echo "---"

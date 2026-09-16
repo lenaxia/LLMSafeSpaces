@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-09-16
+
+### Features — cross-session management + user timezone
+
+- **`send_message` + `abort_session`** (PR #1382, 6 review rounds): the
+  cross-session management pair. `send_message` delivers a text message
+  to an existing session fire-and-forget — the reply stays in the
+  target; busy targets queue server-side and deliver at the turn
+  boundary (L2-proven on the real binary); abort drops queued input
+  (disclosed). `abort_session` stops a target's current turn via the
+  consolidated, sessionID-validated `Client.Abort` (hardening the
+  API-proxy interrupt path). Detached goroutines capture their logger
+  at spawn — the cross-test global-log race class is closed.
+- **Live browser timezone for `get_datetime`** (PR #1389, 10 review
+  rounds): the tool reports user-local time with a `source` field
+  (`argument` | `browser` | `pod`). The frontend reports the browser's
+  IANA zone as a user setting; the API pushes it to workspace pods on
+  every SSE connect and on setting update (`fanOutTimezonePush`);
+  agentd serves `/v1/user-timezone` (§D1-gated, IANA-validated against
+  embedded tzdata — FROM-scratch delivery carries no system zoneinfo,
+  and a CI tripwire gates the embed's removal). The `timezone` key is
+  absent from the JSON when unknown, never faked. SDK/MCP callers pass
+  an explicit IANA argument. Kind-cluster e2e (Test 5b) gates the full
+  pod-side channel nightly.
+
 ## [0.30.1] - 2026-09-15
 
 ### Fixes — agentd

@@ -42,6 +42,7 @@ var sessionStateMetrics = struct {
 	reconcileEvidenceFails prometheus.Counter
 	leaseGatherFails       prometheus.Counter
 	orphanPartsAborted     prometheus.Counter
+	answerBudgetExceeded   prometheus.Counter
 }{
 	seqStall: promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "llmsafespaces_seq_stall_seconds",
@@ -113,6 +114,10 @@ var sessionStateMetrics = struct {
 	orphanPartsAborted: promauto.NewCounter(prometheus.CounterOpts{
 		Name: "llmsafespaces_orphan_parts_aborted_total",
 		Help: "In-flight tool parts folded as aborted by the harness-restart sweep (#1342 S12 backstop) — every count is a turn that died without terminal part state.",
+	}),
+	answerBudgetExceeded: promauto.NewCounter(prometheus.CounterOpts{
+		Name: "llmsafespaces_answer_budget_exceeded_total",
+		Help: "Answer forwards that exceeded their 5s deadline budget (#1396) — every count is a would-be multi-minute hang surfaced as a typed retryable DeadlineExceeded instead.",
 	}),
 }
 
@@ -242,6 +247,27 @@ var orphanPartsLast = struct {
 	m  map[string]int64
 }{m: map[string]int64{}}
 
+// answerBudgetLast carries the last cumulative #1396 answer-budget count
+// per workspace — same delta convention as customValveLast.
+var answerBudgetLast = struct {
+	mu sync.Mutex
+	m  map[string]int64
+}{m: map[string]int64{}}
+
+func answerBudgetDelta(workspaceID string, cumulative int64) int64 {
+	answerBudgetLast.mu.Lock()
+	defer answerBudgetLast.mu.Unlock()
+	prev, seen := answerBudgetLast.m[workspaceID]
+	answerBudgetLast.m[workspaceID] = cumulative
+	if !seen || cumulative < prev {
+		if !seen {
+			return cumulative
+		}
+		return 0 // baseline reset after authority recreation: no double count
+	}
+	return cumulative - prev
+}
+
 func orphanPartsDelta(workspaceID string, cumulative int64) int64 {
 	orphanPartsLast.mu.Lock()
 	defer orphanPartsLast.mu.Unlock()
@@ -313,6 +339,11 @@ func recordSessionStateMetrics(workspaceID string, a *sessionstate.Authority) {
 	}
 	if d := leaseGatherFailDelta(workspaceID, m.LeaseGatherFails); d > 0 {
 		sessionStateMetrics.leaseGatherFails.Add(d)
+	}
+	// #1396: budget-expired answer forwards — same delta convention (the
+	// authority exposes the cumulative; the scrape is periodic).
+	if d := answerBudgetDelta(workspaceID, m.AnswerBudgetExceeded); d > 0 {
+		sessionStateMetrics.answerBudgetExceeded.Add(float64(d))
 	}
 	// The funnel: reset-then-set so vanished states drop to zero instead
 	// of lingering at their last value.

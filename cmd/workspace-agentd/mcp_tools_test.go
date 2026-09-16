@@ -654,15 +654,18 @@ func TestMCPCreateSession_TitleOptional(t *testing.T) {
 // --- get_datetime ---------------------------------------------------------
 
 func TestMCPGetDatetime(t *testing.T) {
-	out, err := mcpGetDatetime()
+	resetUserTimezone(t)
+	out, err := mcpGetDatetime("")
 	require.NoError(t, err)
 
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
-	for _, k := range []string{"utc", "local", "timezone", "utc_offset"} {
+	for _, k := range []string{"utc", "local", "utc_offset", "source"} {
 		require.Contains(t, res, k)
 		require.NotEmpty(t, res[k], "%s must be non-empty", k)
 	}
+	assert.Equal(t, "pod", res["source"])
+	assert.NotContains(t, res, "timezone", "pod fallback emits NO zone name — the key is absent, not empty-string faked")
 	utc, err := time.Parse(time.RFC3339, res["utc"].(string))
 	require.NoError(t, err, "utc must be RFC3339")
 	assert.Equal(t, time.UTC.String(), utc.Location().String())
@@ -885,9 +888,19 @@ func TestCallMCPTool_RenameSession_MissingID(t *testing.T) {
 }
 
 func TestCallMCPTool_GetDatetime(t *testing.T) {
+	resetUserTimezone(t)
 	out, err := callMCPTool(context.Background(), mcpTestPassword, "get_datetime", map[string]any{})
 	require.NoError(t, err)
 	assert.Contains(t, out, "utc")
+	assert.Contains(t, out, `"source":"pod"`)
+
+	out, err = callMCPTool(context.Background(), mcpTestPassword, "get_datetime", map[string]any{
+		"timezone": "Asia/Tokyo",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"source":"argument"`)
+	assert.Contains(t, out, "Asia/Tokyo")
+	assert.Contains(t, out, "+09:00")
 }
 
 func TestCallMCPTool_SessionMetadata(t *testing.T) {
@@ -1328,4 +1341,94 @@ func TestMCPCompact_OmittedID_ResolvesRetryingSession(t *testing.T) {
 	assert.Contains(t, out, s1)
 	require.Eventually(t, func() bool { return f.lastSummary(s1) != nil }, 7*time.Second, 25*time.Millisecond,
 		"the detached summarize goroutine must complete before test end")
+}
+
+// --- get_datetime: user-timezone resolution ---------------------------------
+
+func resetUserTimezone(t *testing.T) {
+	t.Helper()
+	userTimezoneAtomic.Store("")
+}
+
+func TestMCPGetDatetime_FallbackPodZone(t *testing.T) {
+	resetUserTimezone(t)
+	out, err := mcpGetDatetime("")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "pod", res["source"])
+	assert.NotContains(t, res, "timezone", "no zone known — the key is absent, not empty-string faked")
+}
+
+func TestMCPGetDatetime_BrowserZoneWinsWhenNoArg(t *testing.T) {
+	resetUserTimezone(t)
+	userTimezoneAtomic.Store("America/Los_Angeles")
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	out, err := mcpGetDatetime("")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "browser", res["source"])
+	assert.Equal(t, "America/Los_Angeles", res["timezone"])
+	utc, err := time.Parse(time.RFC3339, res["utc"].(string))
+	require.NoError(t, err)
+	local, err := time.Parse(time.RFC3339, res["local"].(string))
+	require.NoError(t, err)
+	assert.WithinDuration(t, utc, local, 2*time.Minute)
+	assert.Contains(t, []string{"-07:00", "-08:00"}, res["utc_offset"], "PDT or PST")
+}
+
+func TestMCPGetDatetime_ArgumentOverridesBrowser(t *testing.T) {
+	resetUserTimezone(t)
+	userTimezoneAtomic.Store("America/Los_Angeles")
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	out, err := mcpGetDatetime("Europe/Berlin")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "argument", res["source"])
+	assert.Equal(t, "Europe/Berlin", res["timezone"])
+	assert.Contains(t, []string{"+01:00", "+02:00"}, res["utc_offset"])
+}
+
+func TestMCPGetDatetime_UnknownZoneRejected(t *testing.T) {
+	resetUserTimezone(t)
+	_, err := mcpGetDatetime("Mars/Olympus_Mons")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown timezone")
+}
+
+func TestUserTimezoneHandler_AuthAndValidation(t *testing.T) {
+	h := userTimezoneHandler("cp-pw", "oc-pw")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"America/New_York"}`))
+	h(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code, "unauthenticated push must be rejected")
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"Not/AZone"}`))
+	req.SetBasicAuth("opencode", "oc-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Empty(t, userTimezone())
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"America/New_York"}`))
+	req.SetBasicAuth("opencode", "oc-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "America/New_York", userTimezone())
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	// The control-plane credential must also pass (the §D1 carve-out pair).
+	userTimezoneAtomic.Store("")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"Europe/Berlin"}`))
+	req.SetBasicAuth("opencode", "cp-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "Europe/Berlin", userTimezone())
 }

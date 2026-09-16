@@ -1279,7 +1279,19 @@ runtimeEnvironments:
   base:
     image:
       repository: ghcr.io/lenaxia/llmsafespaces/base
-      tag: ""
+      # Design 0053 D5/S4: the base is content-versioned CalVer
+      # `YYYY.MM.x` on its OWN cadence (runtimes/base content changes),
+      # NEVER the platform VERSION — the platform train does not build
+      # base tags. Single source of truth:
+      # api/internal/imagefactory/catalog.seed.yaml → bases[bookworm]
+      # (base-image.yml publishes exactly that row). This value MIRRORS
+      # the seed's default row; repolint's version-scheme check (issue
+      # #1237) fails on CalVer violations and on drift from the seed —
+      # bump both in the same PR. Empty is not allowed: the chart must
+      # never fall back to the platform appVersion (incident
+      # 2026-09-02: base:0.26.0 never existed → fleet-wide
+      # ImagePullBackOff).
+      tag: "2026.09.0"
       # Immutable digest pin (optional, #476). See api.image.digest.
       digest: ""
 

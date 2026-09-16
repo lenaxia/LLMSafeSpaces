@@ -62,9 +62,14 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{}, nil
 	}
 
-	// Check restart generation.
+	// Check restart generation. #761: drain busy sessions before the
+	// recycle — the workspace stays Active (and the generation unobserved)
+	// until in-flight turns finish or stall out.
 	if workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration {
-		logger.Info("Restart generation bumped; deleting pod", "gen", workspace.Spec.RestartGeneration)
+		logger.Info("Restart generation bumped; draining in-flight sessions before pod deletion", "gen", workspace.Spec.RestartGeneration)
+		if r.drainBeforePodDeletion(ctx, workspace, drainReasonRestartGeneration) == drainDefer {
+			return ctrl.Result{RequeueAfter: drainPollInterval}, nil
+		}
 		r.deletePodByName(ctx, name, workspace.Namespace)
 		runtime := workspace.Spec.Runtime
 		secLevel := string(workspace.Spec.SecurityLevel)
@@ -84,10 +89,16 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 
 	// Ensure password secret still exists (can be lost during crash cycles
 	// or cleanup). If missing, recycle pod so handleCreating regenerates it.
+	// #761: the drain is consulted but with the Secret gone the statusz
+	// scrape cannot authenticate — it fails open, so the self-heal is not
+	// delayed. (Consulting it anyway covers un-gated dev agentd builds.)
 	pwSec := &corev1.Secret{}
 	if pwErr := r.Get(ctx, types.NamespacedName{Name: passwordSecretName(workspace.Name), Namespace: workspace.Namespace}, pwSec); pwErr != nil {
 		if errors.IsNotFound(pwErr) {
 			logger.Info("Password secret missing in Active phase; recycling pod to regenerate", "secret", passwordSecretName(workspace.Name))
+			if r.drainBeforePodDeletion(ctx, workspace, drainReasonPasswordSecretMissing) == drainDefer {
+				return ctrl.Result{RequeueAfter: drainPollInterval}, nil
+			}
 			r.deletePodByName(ctx, name, workspace.Namespace)
 			runtime := workspace.Spec.Runtime
 			secLevel := string(workspace.Spec.SecurityLevel)
@@ -168,7 +179,10 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		desiredArch = "amd64"
 	}
 	if pod.Spec.NodeSelector != nil && pod.Spec.NodeSelector["kubernetes.io/arch"] != desiredArch {
-		logger.Info("Architecture changed; recreating pod", "desired", desiredArch, "current", pod.Spec.NodeSelector["kubernetes.io/arch"])
+		logger.Info("Architecture changed; draining in-flight sessions before pod recreation", "desired", desiredArch, "current", pod.Spec.NodeSelector["kubernetes.io/arch"])
+		if r.drainBeforePodDeletion(ctx, workspace, drainReasonArchitectureDrift) == drainDefer {
+			return ctrl.Result{RequeueAfter: drainPollInterval}, nil
+		}
 		r.deletePodByName(ctx, name, workspace.Namespace)
 		runtime := workspace.Spec.Runtime
 		secLevel := string(workspace.Spec.SecurityLevel)

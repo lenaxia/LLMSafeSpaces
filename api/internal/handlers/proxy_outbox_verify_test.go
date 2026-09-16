@@ -595,6 +595,19 @@ func TestOutboxDeliver_V2SlowPromotionCompletesInWindow(t *testing.T) {
 func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
 	shrinkOutboxTimers(t)
 
+	// The unhappy-path subtests need the admission POST to actually LAND
+	// on the fake backend so the exercised classification is the intended
+	// one (HTTP rejection / hijacked transport cut), not a pre-send
+	// starvation of the shrunk 40ms DeliveryTimeout under full-suite load.
+	// A deadline that fires before the request is sent is equally
+	// ambiguous — the production classifier handles it correctly — but
+	// the #987 assertions here ("exactly one admission attempt") flake on
+	// it. Every backend in this test answers or cuts in microseconds, so
+	// an honest delivery budget changes nothing semantic.
+	origDTO := outbox.DeliveryTimeout
+	outbox.DeliveryTimeout = 5 * time.Second
+	t.Cleanup(func() { outbox.DeliveryTimeout = origDTO })
+
 	t.Run("admission 5xx is definitive — backoff retry, never error-parked or ambiguous", func(t *testing.T) {
 		backend := &fakeAgentBackend{admitStatus: http.StatusServiceUnavailable}
 		env := newVerifyEnv(t, backend, true)
@@ -625,10 +638,18 @@ func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
 		assert.Equal(t, outbox.StatusVerifying, entries[0].Status,
 			"unknown-outcome transport cut must verify, never re-send blindly (#987)")
 
+		// The admission POST runs on a goroutine — under parallel package
+		// load it can land after DeliverOutboxOnceForTest returns. Wait for
+		// it (same pattern as the nudge assertion below) before counting.
+		require.Eventually(t, func() bool {
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			return backend.admits >= 1
+		}, 2*time.Second, 5*time.Millisecond, "the admission attempt must land")
 		backend.mu.Lock()
 		admits := backend.admits
 		backend.mu.Unlock()
-		assert.Equal(t, 1, admits, "exactly one admission attempt so far")
+		assert.Equal(t, 1, admits, "exactly one admission attempt so far; entry=%+v", entries[0])
 
 		// The store read confirms delivery (persistFirst modeled the
 		// cut AFTER admission landed) — entry resolves and leaves.

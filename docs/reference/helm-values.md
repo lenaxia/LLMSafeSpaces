@@ -378,7 +378,7 @@ Seeded `RuntimeEnvironment` CRDs.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runtimeEnvironments.base.image.repository` | string | `ghcr.io/lenaxia/llmsafespaces/base` | Base runtime image. |
-| `runtimeEnvironments.base.image.tag` | string | `""` | Falls back to `Chart.AppVersion`. |
+| `runtimeEnvironments.base.image.tag` | string | `"2026.09.0"` | CalVer `YYYY.MM.x`, mirrors the image-factory catalog seed default row (design 0053 D5/S4). NEVER the platform version — the release train does not build base tags. Drift from the seed fails repolint (issue #1237). |
 
 ## `frontend`
 

@@ -5,15 +5,24 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	ctrMetrics "github.com/lenaxia/llmsafespaces/controller/internal/metrics"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
@@ -196,4 +205,193 @@ func TestHandleTerminating_G36_DoesNotDeleteOtherWorkspaceSecrets(t *testing.T) 
 			Namespace: "default",
 		}, got),
 		"cleanup must not delete another workspace's secrets")
+}
+
+// --- #772: PVC delete is best-effort; owner-reference GC is the backstop ---
+
+// reconcilerForTerminateWithInterceptor builds a reconciler whose fake client
+// applies the given interceptor funcs — used to simulate persistent API errors
+// on the delete path. Overlay delivery pins are irrelevant on the terminating
+// path (no pod is built), matching the bare reconciler used by
+// TestGaugeDrift_Terminating_StatusUpdateFailure_NoDecrement.
+func reconcilerForTerminateWithInterceptor(t *testing.T, funcs interceptor.Funcs, objs ...runtime.Object) *WorkspaceReconciler {
+	t.Helper()
+	scheme := testScheme(t)
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(objs...).
+		WithStatusSubresource(&v1.Workspace{}).
+		WithInterceptorFuncs(funcs).
+		Build()
+	r := &WorkspaceReconciler{Client: fc, Scheme: scheme}
+	r.Recorder = record.NewFakeRecorder(16)
+	return r
+}
+
+// requireNoWorkspaceEvent asserts the FakeRecorder emitted nothing.
+func requireNoWorkspaceEvent(t *testing.T, r *WorkspaceReconciler) {
+	t.Helper()
+	rec, ok := r.Recorder.(*record.FakeRecorder)
+	require.True(t, ok, "test must wire a FakeRecorder")
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("unexpected event emitted: %s", e)
+	default:
+	}
+}
+
+// TestHandleTerminating_PVCDeleteError_BestEffort_StillTerminates is the #772
+// regression: a PERSISTENT PVC delete error (RBAC denial; a PVC with a stuck
+// CSI finalizer returning conflicts on every reconcile — the Longhorn
+// node-loss case) must not wedge the workspace in Terminating forever. The
+// PVC carries a controller owner reference to the Workspace
+// (phase_pending.go SetControllerReference), so K8s GC owns the residual
+// cleanup once the finalizer is removed. Expected: no error, phase
+// Terminated, finalizer removed, and a warning Event + metric making the
+// delegated cleanup explicit to operators.
+func TestHandleTerminating_PVCDeleteError_BestEffort_StillTerminates(t *testing.T) {
+	ws := wsForTerminate("ws-pvcerr")
+	pvc := makeBoundPVC("workspace-ws-pvcerr", "default", ws.UID)
+	pwSecret := makePasswordSecret("ws-pvcerr", "default")
+
+	deleteErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "", Resource: "persistentvolumeclaims"},
+		"workspace-ws-pvcerr",
+		errors.New("the object has been modified; please apply your changes to the latest version and try again"))
+	r := reconcilerForTerminateWithInterceptor(t, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+				return deleteErr
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}, ws, pvc, pwSecret)
+
+	before := testutil.ToFloat64(ctrMetrics.WorkspacePVCCleanupDelegatedTotal.WithLabelValues("Conflict"))
+	_, err := r.Reconcile(context.Background(), reqFor("ws-pvcerr", "default"))
+	require.NoError(t, err,
+		"a persistent PVC delete error must NOT wedge termination — cleanup is delegated to owner-reference GC")
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-pvcerr", Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseTerminated, updated.Status.Phase,
+		"workspace must reach Terminated despite the PVC delete error")
+	assert.NotContains(t, updated.Finalizers, WorkspaceFinalizer,
+		"finalizer must be removed so the Workspace object (and via owner-ref GC, the PVC) can be collected")
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	select {
+	case e := <-rec.Events:
+		assert.Contains(t, e, "Warning", "event must be a warning")
+		assert.Contains(t, e, string(v1.ReasonPVCCleanupDelegated), "event reason must name the delegated cleanup")
+		assert.Contains(t, e, "workspace-ws-pvcerr", "event must name the PVC")
+		assert.Contains(t, e, "garbage collection", "event must state the GC fallback")
+		assert.Contains(t, e, "finalizer", "event must make the residual (reclaim blocked until the PVC's own finalizers clear) explicit")
+	default:
+		t.Fatal("expected a warning event on the Workspace when the PVC delete fails")
+	}
+
+	assert.Equal(t, before+1.0,
+		testutil.ToFloat64(ctrMetrics.WorkspacePVCCleanupDelegatedTotal.WithLabelValues("Conflict")),
+		"delegated-cleanup metric must increment once per occurrence")
+}
+
+// TestHandleTerminating_PVCDeleteError_ReconcileDoesNotRequeueOnError pins
+// the wedge fix itself: the reconcile returns nil error (no infinite
+// error-requeue loop burning the workqueue on a permanently failing delete).
+// The previous reconcile's error return is what kept the finalizer in place.
+func TestHandleTerminating_PVCDeleteError_ReconcileDoesNotRequeueOnError(t *testing.T) {
+	ws := wsForTerminate("ws-pvcloop")
+	pwSecret := makePasswordSecret("ws-pvcloop", "default")
+
+	deleteErr := apierrors.NewForbidden(
+		schema.GroupResource{Group: "", Resource: "persistentvolumeclaims"},
+		"workspace-ws-pvcloop",
+		errors.New("pvc protection"))
+	r := reconcilerForTerminateWithInterceptor(t, interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, ok := obj.(*corev1.PersistentVolumeClaim); ok {
+				return deleteErr
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}, ws, pwSecret)
+
+	for i := 0; i < 3; i++ {
+		_, err := r.Reconcile(context.Background(), reqFor("ws-pvcloop", "default"))
+		require.NoError(t, err, "iteration %d: persistent Forbidden must not error the reconcile", i)
+	}
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-pvcloop", Namespace: "default"}, updated))
+	assert.NotContains(t, updated.Finalizers, WorkspaceFinalizer,
+		"after the first reconcile the finalizer is gone — later reconciles are no-ops, not an error loop")
+}
+
+// TestHandleTerminating_PVCDeleteSucceeds_NoWarningEvent locks the quiet
+// paths: a successful PVC delete emits no Event (operator noise discipline —
+// events are reserved for the delegated-cleanup residual).
+func TestHandleTerminating_PVCDeleteSucceeds_NoWarningEvent(t *testing.T) {
+	ws := wsForTerminate("ws-quiet")
+	pvc := makeBoundPVC("workspace-ws-quiet", "default", ws.UID)
+	pwSecret := makePasswordSecret("ws-quiet", "default")
+	r := reconcilerFor(t, ws, pvc, pwSecret)
+	r.Recorder = record.NewFakeRecorder(16)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-quiet", "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-quiet", Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseTerminated, updated.Status.Phase)
+	assert.NotContains(t, updated.Finalizers, WorkspaceFinalizer)
+	requireNoWorkspaceEvent(t, r)
+}
+
+// TestHandleTerminating_PVCNotFound_SilentNoEvent: NotFound stays silent
+// (the PVC is already gone — the desired end state), extending
+// TestHandleTerminating_PVCAlreadyGone with the no-event assertion.
+func TestHandleTerminating_PVCNotFound_SilentNoEvent(t *testing.T) {
+	ws := wsForTerminate("ws-gone-quiet")
+	pwSecret := makePasswordSecret("ws-gone-quiet", "default")
+	r := reconcilerFor(t, ws, pwSecret)
+	r.Recorder = record.NewFakeRecorder(16)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-gone-quiet", "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-gone-quiet", Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseTerminated, updated.Status.Phase)
+	assert.NotContains(t, updated.Finalizers, WorkspaceFinalizer)
+	requireNoWorkspaceEvent(t, r)
+}
+
+// TestHandleTerminating_StatusUpdateError_StillReturned pins that the
+// best-effort PVC delete does not mask downstream failures: a status update
+// error still propagates so controller-runtime requeues with backoff
+// (semantics unchanged from before #772; the PVC is present and deletes
+// cleanly here, isolating the status path).
+func TestHandleTerminating_StatusUpdateError_StillReturned(t *testing.T) {
+	ws := wsForTerminate("ws-staterr")
+	pvc := makeBoundPVC("workspace-ws-staterr", "default", ws.UID)
+	pwSecret := makePasswordSecret("ws-staterr", "default")
+
+	updateErr := errors.New("simulated status update failure")
+	r := reconcilerForTerminateWithInterceptor(t, interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if subResourceName == "status" {
+				return updateErr
+			}
+			return c.Status().Update(ctx, obj, opts...)
+		},
+	}, ws, pvc, pwSecret)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-staterr", "default"))
+	require.ErrorIs(t, err, updateErr,
+		"status update errors must still propagate (requeue) after the PVC delete became best-effort")
 }
