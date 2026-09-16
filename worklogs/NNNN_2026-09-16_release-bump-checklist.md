@@ -21,7 +21,7 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 - Documented the ops-config pre-flight (the issue's four checks) since the config repo is outside repolint's reach.
 
 ### Guard (TDD)
-- `pkg/repolint/version_scheme_test.go` written FIRST (RED: `undefined: RunVersionSchemeCheck`), then `pkg/repolint/version_scheme.go` (GREEN). 22 test functions / 38 executed cases: happy path; base-tag CalVer violations (semver, one-digit month, month 13, latest, empty); base-tag drift vs seed; digest-pinned base skips tag checks; seed CalVer + tag==version + neither-tag-nor-digest + digest-pinned-row + exactly-one-default-row (zero and two) + empty-seed; agentd/opencode image-digest and per-arch-binary-pin equality vs controller/api/frontend/relay-router digests; agentd↔opencode identical pins; distinct pins pass; 10 missing-structural-key cases (block keys, the relay-router block, digest leaves, binarySHA256 leaves); missing files; untagged image refs.
+- `pkg/repolint/version_scheme_test.go` written FIRST (RED: `undefined: RunVersionSchemeCheck`), then `pkg/repolint/version_scheme.go` (GREEN). 22 test functions / 38 executed cases: happy path; base-tag CalVer violations (semver, one-digit month, month 13, latest, empty); base-tag drift vs seed; digest-pinned base skips tag checks; seed CalVer + tag==version + neither-tag-nor-digest + digest-pinned-row + exactly-one-default-row (zero and two) + empty-seed; agentd/opencode image-digest and per-arch-binary-pin equality vs controller/api/frontend/relay-router digests; agentd↔opencode identical pins; distinct pins pass; 9 missing-structural-key cases (block keys, the relay-router block, digest leaves, binarySHA256 leaves); missing files; untagged image refs.
 - Wired into `cmd/repolint/main.go` (`runVersionScheme`) — runs in pre-commit, CI (`ci.yml` make repolint), and release.yml's lint job.
 
 ### Pre-flight script (the issue's criterion 2, added in review round 1)
@@ -85,3 +85,23 @@ None.
 - `docs/operator/runtime-environments.md`, `docs/reference/helm-values.md`, `helm/README.md` (stale fallback docs corrected)
 - `api/internal/services/database/database.go` + 7 `*_integration_test.go` files (pre-existing lint failures fixed, Rule 5)
 - `worklogs/NNNN_2026-09-16_release-bump-checklist.md` (this file)
+
+---
+
+## Session 2 — 2026-09-16 (review round 4: preflight exit-code semantics + deep-dive re-verification)
+
+**Round-4 findings (all validated, all fixed test-first):**
+
+1. **Blocking — mid-run abort on binary-pin failure.** `verify_binary_pins` ended on `[ "${bad}" -eq 0 ] && ok …`; with `bad=1` the function returned 1 and the bare calls aborted the script under `set -euo pipefail` — the sibling artifact's pin check was skipped and `RESULT: FAIL` never printed (reproduced twice by the reviewer). Fix: unconditional terminal `if` + explicit `return 0` (the file's own `P2_COLLISION` flag-guard pattern).
+2. **False "pin matches the live index digest" after a P1 tag 404.** `verify_pin_coherence` fell into its match `ok` when `RESOLVED_DIGEST[label]` was unset (P1 had already failed the tag). Fix: silent `return 0` when no live index digest is on record; same guard added to the P1 loop's match branch for a 200-with-no-digest-header (never claim an unverified match).
+3. **Unreachable P4 die.** `grep … | head | cut` under pipefail aborted the script before the "cannot read the repo opencode pin" die when the Dockerfile lacked the ARG. Fix: `|| true` inside the substitution so the empty value flows to the documented die.
+4. **Count correction:** "10 missing-structural-key cases" → 9 (verified against the table at `pkg/repolint/version_scheme_test.go`); corrected above and in the PR body.
+
+**Regression tests (written first, RED on the round-4 head, GREEN after the fixes):** new legs — both-artifacts-mismatch (both `FAIL:` lines + `RESULT: FAIL` print; catches the sibling-skip), P1-tag-404-with-digest-pin (no live-index match claimed), Dockerfile-without-ARG via an `LSS_REPO_ROOT` fixture (P4 die reachable, prints `RESULT: FAIL`); strengthened legs — every binary-pin failure leg and the stale-pair leg now assert `RESULT: FAIL` still prints. Preflight suite: 4 funcs / 20 subtests (was 4/17).
+
+**Deep-dive re-verification (standing instruction):**
+- Issue #1237 mechanics re-confirmed on current tree: seed CalVer single-source (`catalog.seed.yaml` `2026.09.0`, design 0053 D5/S4 header comment intact), digest-pinned delivery blocks in `helm/values.yaml` (`agentdDelivery`/`opencodeDelivery` + break-glass `binarySHA256*`), wire-contract gates present (`local/opencode-binary-contract.sh`, `pkg/agent/opencode/testdata/` + REFRESH.md) and described accurately in §3.
+- #1386 (egress destination allowlist) and #1381 (design 0058/epic-72) were already in this branch's base — no conflicts: egress values are config, not versioned components; design 0058's future `llm-relay` router extends `cmd/relay-router`, so a one-line forward-reference was added under the §1 table (rides the platform-semver row; not a new scheme). Follow-ups #1387/#1388 are egress-audit/posture decisions — no version-scheme impact.
+- Merged `origin/main` (brings #1385 epic-71 canary alerts, #1390/#1391 flake fixes; `helm/values.yaml` merged clean — the alerting block and the base-tag default don't overlap).
+
+**Tests run this session:** `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 20 subtests, red-first); `go build ./...`, `make test`, `make lint` — green (post-merge).

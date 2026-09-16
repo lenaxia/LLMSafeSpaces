@@ -172,7 +172,10 @@ fi
 [ "${P2_COLLISION}" -eq 0 ] && ok "P2 offline: no delivery pin collides with a platform component digest"
 
 # ---- P4 (offline): opencode coordinate matches the repo pin ---------------
-PINNED_OPENCODE="$(grep -oE '^ARG OPENCODE_VERSION=[0-9.]+' "${OPENCODE_DOCKERFILE}" | head -1 | cut -d= -f2)"
+# `|| true`: a Dockerfile without the ARG (or a missing file) must flow the
+# empty value into the die below — under pipefail the bare grep|head|cut
+# pipeline would otherwise abort the script before the P4 message prints.
+PINNED_OPENCODE="$(grep -oE '^ARG OPENCODE_VERSION=[0-9.]+' "${OPENCODE_DOCKERFILE}" | head -1 | cut -d= -f2 || true)"
 OPENCODE_TAG="$(delivery_tag "${OPENCODE_REF}")"
 if [ -z "${PINNED_OPENCODE}" ]; then
   die "P4 cannot read the repo opencode pin (${OPENCODE_DOCKERFILE}) — parser drift?"
@@ -278,7 +281,12 @@ for entry in "${CHECK_REFS[@]}"; do
       read -r tcode idx <<<"$(head_manifest "${repo}" "${tag}")"
       if [ "${tcode}" != "200" ]; then
         die "P1 ${label} tag ${repo}:${tag} does not resolve (${tcode}) — the registry does not have this tag (incident 2026-09-02 class)"
-      elif [ "${idx}" != "-" ] && [ -n "${idx}" ] && [ "${digest}" != "${idx}" ]; then
+      elif [ "${idx}" = "-" ] || [ -z "${idx}" ]; then
+        RESOLVED_DIGEST["${label}"]="${idx}"
+        # tag resolves but the registry returned no index digest header —
+        # nothing to compare the pin against; never claim an unverified
+        # match (verify_pin_coherence skips on the same condition).
+      elif [ "${digest}" != "${idx}" ]; then
         die "P2 ${label} pin ${digest} is not the current index digest of ${repo}:${tag} (${idx}) — stale or foreign digest"
       else
         RESOLVED_DIGEST["${label}"]="${idx}"
@@ -305,7 +313,14 @@ verify_pin_coherence() {
   [ -z "${hex}" ] && { ok "P2 ${label} carries no explicit digest — index annotations resolve at controller startup"; return; }
   [ -z "${tag}" ] && { ok "P2 ${label} digest-only pin (${repo}@${hex}) — membership verified by P1 resolution"; return; }
   local idx="${RESOLVED_DIGEST["${label}"]-}"
-  if [ "${idx}" != "-" ] && [ -n "${idx}" ] && [ "sha256:${hex}" != "${idx}" ]; then
+  if [ -z "${idx}" ] || [ "${idx}" = "-" ]; then
+    # P1 already reported the tag/resolution failure above (or the
+    # registry returned no index digest) — there is no live index to
+    # compare against, and claiming a match would contradict the FAIL
+    # already on record. Stay silent; P1 owns that failure.
+    return 0
+  fi
+  if [ "sha256:${hex}" != "${idx}" ]; then
     die "P2 ${label} pin sha256:${hex} is not the current index digest of ${repo}:${tag} (${idx}) — stale or foreign digest"
   else
     ok "P2 ${label} pin matches the live index digest of ${repo}:${tag}"
@@ -361,7 +376,10 @@ verify_binary_pins() {
       verified=$((verified+1))
     fi
   fi
-  [ "${bad}" -eq 0 ] && ok "P2 ${label}: explicit binarySHA256* pins match the CI-stamped index annotations (${verified} verified)"
+  if [ "${bad}" -eq 0 ]; then
+    ok "P2 ${label}: explicit binarySHA256* pins match the CI-stamped index annotations (${verified} verified)"
+  fi
+  return 0
 }
 
 delivery_ref() { # the manifest ref to inspect: digest when pinned, else tag

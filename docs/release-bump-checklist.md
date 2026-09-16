@@ -36,6 +36,11 @@
 | image-factory catalog seeds (extensions) | content pins (mise/apt versions) | `api/internal/imagefactory/catalog.seed.yaml` `extensions:` | ride the base's cadence, not the platform train |
 | third-party images (`migrations`, `dbInit`) | upstream tags (Renovate domain) | `helm/values.yaml` (`migrations.image`, `dbInit.image`) | Renovate PRs; not part of a coordinated bump |
 
+> *Forward reference:* design 0058 / epic-72 (relay-only key delivery) adds
+> a BYO-resolve router Deployment in the `llm-relay` namespace built from the
+> existing `cmd/relay-router` — when it lands it rides the platform-semver
+> row above (same build/tag train); it is not a new version scheme.
+
 ---
 
 ## 2. Platform release bump (the coordinated part)

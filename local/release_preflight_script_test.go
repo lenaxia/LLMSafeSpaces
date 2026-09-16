@@ -240,6 +240,47 @@ func TestReleasePreflightScript_OfflineChecks(t *testing.T) {
 			t.Fatalf("expected usage failure, got 0:\n%s", out)
 		}
 	})
+
+	// Round-4 finding 3: a Dockerfile without the ARG pin must reach the
+	// documented P4 die — not abort silently under pipefail+errexit.
+	t.Run("dockerfile without the ARG pin fails P4 loudly", func(t *testing.T) {
+		fixture := t.TempDir()
+		seed, err := os.ReadFile(filepath.Join("..", "api", "internal", "imagefactory", "catalog.seed.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(fixture, "api", "internal", "imagefactory"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture, "api", "internal", "imagefactory", "catalog.seed.yaml"), seed, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(fixture, "runtimes", "opencode"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(fixture, "runtimes", "opencode", "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		path := filepath.Join(dir, "candidate.yaml")
+		if err := os.WriteFile(path, []byte(preflightHappyValues(t)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("bash", "./"+preflightScript, path, "--offline")
+		cmd.Env = append(os.Environ(), "LSS_REPO_ROOT="+fixture)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out)
+		}
+		for _, want := range []string{
+			"P4 cannot read the repo opencode pin",
+			"RESULT: FAIL", // the documented exit path, not a silent abort
+		} {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("output missing %q:\n%s", want, out)
+			}
+		}
+	})
 }
 
 // stubRegistry serves the ghcr v2 API surface the script consumes:
@@ -368,6 +409,9 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if !strings.Contains(out.String(), "stale or foreign digest") {
 			t.Errorf("output must name the stale pin:\n%s", out.String())
 		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a reported failure must still print the RESULT verdict:\n%s", out.String())
+		}
 	})
 
 	// binaryPinCandidate: happy values with agentd break-glass per-arch
@@ -427,6 +471,79 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if strings.Contains(out.String(), "match the CI-stamped index annotations") {
 			t.Errorf("a reported mismatch must NOT be followed by a match ok:\n%s", out.String())
 		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a binary-pin failure must still print the RESULT verdict (no mid-run abort):\n%s", out.String())
+		}
+	})
+
+	// Round-4 finding 1: BOTH artifacts carrying bad pins must both be
+	// reported, and the RESULT verdict must still print — the terminal
+	// `&& ok` returned 1 and the bare call aborted the script mid-run.
+	t.Run("both artifacts with mismatched pins report both failures and the summary", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, map[string]string{
+			agentdDig:  indexBodyWithAnnotations("agentd", amd64Hex, arm64Hex),
+			opencodeDg: indexBodyWithAnnotations("opencode", amd64Hex, arm64Hex),
+		})
+		wrongAmd64 := strings.Repeat("cccc1111", 8)
+		wrongArm64 := strings.Repeat("ffff4444", 8)
+		values := strings.Replace(binaryPinCandidate(t, wrongAmd64, arm64Hex),
+			`  opencodeDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/opencode:`+repoPinnedOpencode(t)+`@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""`,
+			`  opencodeDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/opencode:`+repoPinnedOpencode(t)+`@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    binarySHA256Amd64: "`+amd64Hex+`"
+    binarySHA256Arm64: "`+wrongArm64+`"`, 1)
+		cmd := exec.Command("bash", "./"+preflightScript, onlineValues(t, srv.URL, values))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out.String())
+		}
+		for _, want := range []string{
+			"agentdDelivery.binarySHA256Amd64",   // the FIRST artifact's failure
+			"opencodeDelivery.binarySHA256Arm64", // the sibling must not be skipped
+			"disagrees with the CI-stamped index annotation",
+			"RESULT: FAIL", // the verdict must still print after both checks ran
+		} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output missing %q:\n%s", want, out.String())
+			}
+		}
+		if strings.Contains(out.String(), "match the CI-stamped index annotations") {
+			t.Errorf("a reported mismatch must NOT be accompanied by a match ok:\n%s", out.String())
+		}
+	})
+
+	// Round-4 finding 2: after a P1 tag failure the coherence check must
+	// not claim a live-index match it never performed.
+	t.Run("P1 tag 404 with a digest pin set claims no live-index match", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			// ocTagRef deliberately absent → the opencode tag 404s
+			opencodeDg: idx2222,
+		}, nil)
+		cmd := exec.Command("bash", "./"+preflightScript, onlineCandidate(t, srv.URL))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "does not resolve") {
+			t.Errorf("output must name the unresolved tag:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "pin matches the live index digest") {
+			t.Errorf("a tag that failed P1 must not be reported as a live-index match:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a P1 failure must still print the RESULT verdict:\n%s", out.String())
+		}
 	})
 
 	t.Run("set pin on an un-annotated arch fails loud (no silent skip)", func(t *testing.T) {
@@ -450,6 +567,9 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if strings.Contains(out.String(), "match the CI-stamped index annotations") {
 			t.Errorf("an un-verified pin must not produce a match ok:\n%s", out.String())
 		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a binary-pin failure must still print the RESULT verdict (no mid-run abort):\n%s", out.String())
+		}
 	})
 
 	t.Run("annotation fetch failure with pins set fails loud", func(t *testing.T) {
@@ -468,6 +588,9 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "cannot read index annotations") {
 			t.Errorf("output must name the annotation fetch failure:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("an annotation-fetch failure must still print the RESULT verdict:\n%s", out.String())
 		}
 	})
 
@@ -495,6 +618,9 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if !strings.Contains(out.String(), "opencodeDelivery.binarySHA256Amd64") ||
 			!strings.Contains(out.String(), "disagrees with the CI-stamped index annotation") {
 			t.Errorf("output must name the opencode-side mismatch:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "RESULT: FAIL") {
+			t.Errorf("a binary-pin failure must still print the RESULT verdict (no mid-run abort):\n%s", out.String())
 		}
 	})
 
