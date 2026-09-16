@@ -330,6 +330,14 @@ const (
 	// (init-fs / bootstrap / materialize in the platform containers).
 	ReasonPlatformBootFailed = "PlatformBootFailed"
 	ReasonBootReady          = "BootReady"
+	// ReasonPVCCleanupDelegated is the warning-event reason for #772: the
+	// explicit PVC delete during termination failed (transient or
+	// persistent — RBAC denial, stuck CSI finalizer conflicts) and the
+	// workspace finalized anyway, delegating PVC removal to owner-reference
+	// garbage collection. "Orphan" is deliberately avoided — in Kubernetes
+	// parlance orphaning means keeping the dependent, the opposite of the
+	// delegated-delete semantics here.
+	ReasonPVCCleanupDelegated = "PVCCleanupDelegated"
 )
 
 // WorkspaceCondition describes a condition of a Workspace.

@@ -98,6 +98,19 @@ var (
 		},
 		[]string{"site"},
 	)
+	// #772: workspace terminations where the explicit PVC delete failed and
+	// cleanup was delegated to owner-reference garbage collection, by API
+	// error reason (conflict = likely stuck CSI finalizer, forbidden = RBAC
+	// denial). Non-zero rate means physical volume reclaim may lag or stay
+	// blocked even though the Workspace object completed termination —
+	// alert-worthy, not page-on-any.
+	WorkspacePVCCleanupDelegatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_workspace_pvc_cleanup_delegated_total",
+			Help: "Workspace terminations where the PVC delete failed and cleanup was delegated to owner-reference garbage collection, by API error reason",
+		},
+		[]string{"reason"},
+	)
 	WorkspaceCreateDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{Name: "llmsafespaces_workspace_create_duration_seconds", Help: "Wall-clock time from creation request to Active", Buckets: startupBuckets},
 		[]string{"has_packages", "has_init_script"},
@@ -219,6 +232,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspacePlatformBootFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,
+		WorkspacePVCCleanupDelegatedTotal,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,
 		WorkspaceInitContainerDurationSeconds,
 		ReconciliationDurationSeconds, ReconciliationErrorsTotal,
