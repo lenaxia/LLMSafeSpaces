@@ -37,3 +37,13 @@ func TestParseContained_PanicUnderLockNoDeadlock(t *testing.T) {
 type panicParser struct{}
 
 func (panicParser) Parse(_ []byte) (*abiv1.Event, bool, error) { panic("parser boom") }
+
+// TestAnswerForwardBudget_Default5s (#1396): the production default is the
+// issue's proposed 5s — the harness answers in milliseconds (53-307ms
+// measured), so 5s is generous headroom while never approaching the
+// caller-context hang class. Static pin; no wall-clock wait.
+func TestAnswerForwardBudget_Default5s(t *testing.T) {
+	if answerForwardBudget != 5*time.Second {
+		t.Fatalf("answerForwardBudget = %v, want 5s (issue #1396's proposed budget)", answerForwardBudget)
+	}
+}
