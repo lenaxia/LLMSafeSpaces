@@ -271,7 +271,7 @@ func TestPodBuilder_LivenessProbe_StableTiming(t *testing.T) {
 //	---
 //	35s  serial worst case
 //
-// The pre-#761 value of 5s short-circuuted this budget at the very first
+// The pre-#761 value of 5s short-circuited this budget at the very first
 // stage: kubelet SIGKILLed the pod while agentd was still draining
 // in-flight HTTP/SSE connections, destroying active LLM turns on every
 // controller-initiated deletion (suspend, restart-generation bump,
