@@ -39,6 +39,12 @@ export function PermissionPrompt({ workspaceId, request, onResolved }: Permissio
       onResolved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to respond");
+    } finally {
+      // #1365: reset on BOTH outcomes. On success the component usually
+      // unmounts (onResolved removes it), but when removal misses (a
+      // whileAway re-presentation or a fold that never drops the input)
+      // the mounted instance must not stay button-dead forever — that
+      // was the "it wouldn't let me click" experience.
       setSubmitting(false);
     }
   };

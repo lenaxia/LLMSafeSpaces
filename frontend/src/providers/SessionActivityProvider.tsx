@@ -7,7 +7,9 @@ import { workspacesApi } from "../api/workspaces";
 import type { InputRequest } from "../api/types";
 
 /** Provider-local extension: the envelope's whileAway marker rides the stored object (D3). */
-type StoredInputRequest = InputRequest & { whileAway?: boolean };
+// #1365: receivedAt is stamped on store entry — the whileAway staleness
+// bound in ChatPage keys off it, never off the (absent) event stream.
+type StoredInputRequest = InputRequest & { whileAway?: boolean; receivedAt?: number };
 
 interface SessionActivityContextValue {
   isSessionBusy: (sessionId: string) => boolean;
@@ -827,7 +829,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingQuestionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);
@@ -838,7 +840,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingPermissionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);

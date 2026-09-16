@@ -602,12 +602,24 @@ export function ChatPage() {
     // resolution evidence for them. The provider carries the envelope
     // marker on the stored object (D3: the ABI schema itself stays
     // clean; this is a provider-local extension).
+    // #1365: whileAway pills are fold-exempt (their lifecycle is the
+    // resolved-event path) but the inbox reply paths do not emit resolved
+    // events yet — so time-bound them: older than the bound drops as
+    // stale. Dismiss remains the explicit exit; this is the convergence
+    // backstop for a dead event leg.
+    const WHILE_AWAY_STALE_MS = 10 * 60 * 1000;
     for (const q of pendingQuestions) {
-      if (q.whileAway) continue;
+      if (q.whileAway) {
+        if (Date.now() - (q.receivedAt ?? 0) > WHILE_AWAY_STALE_MS) dropPendingAction(q.id);
+        continue;
+      }
       if (isOwn(q.sessionId) && !pendingIds.has(q.id) && !resolvedInputIdsRef.current.has(q.id)) dropPendingAction(q.id);
     }
     for (const perm of pendingPermissions) {
-      if (perm.whileAway) continue;
+      if (perm.whileAway) {
+        if (Date.now() - (perm.receivedAt ?? 0) > WHILE_AWAY_STALE_MS) dropPendingAction(perm.id);
+        continue;
+      }
       if (isOwn(perm.sessionId) && !pendingIds.has(perm.id) && !resolvedInputIdsRef.current.has(perm.id)) dropPendingAction(perm.id);
     }
     // The sync is idempotent (adds are first-wins by request id; removals
