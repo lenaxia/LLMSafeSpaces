@@ -311,3 +311,55 @@ func TestOpencodeStoreReader_SessionStates_WireDriftCorruption(t *testing.T) {
 		})
 	}
 }
+
+// TestOpencodeStoreReader_SessionStates_ItemDriftErrors (leg-10, r4
+// finding 2 — reproduced by the reviewer: a valid array whose items all
+// fail the dialect shape guard yielded err=nil, PendingInputs=0): item
+// drift is indeterminate, never authoritative-empty.
+func TestOpencodeStoreReader_SessionStates_ItemDriftErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+		case "/question":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"sessionID":"ses_1"},{"sessionID":"ses_1"}]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(srv.URL)
+
+	r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+	seeds, err := r.SessionStates(context.Background())
+	require.Error(t, err, "shape-drifted pending items must never read as authoritative-empty")
+	assert.Empty(t, seeds)
+}
+
+// The boot contract this file documents: 404 on the pending endpoints
+// (opencode version without them) is authoritative-empty, not an error.
+func TestOpencodeStoreReader_SessionStates_404IsAuthoritativeEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"not found"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(srv.URL)
+
+	r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+	seeds, err := r.SessionStates(context.Background())
+	require.NoError(t, err, "404 = endpoint absent = authoritative empty (documented boot contract)")
+	require.Len(t, seeds, 1)
+	assert.Empty(t, seeds["ses_1"].PendingInputs)
+}

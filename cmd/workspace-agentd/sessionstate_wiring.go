@@ -100,16 +100,23 @@ func fetchList[T any](ctx context.Context, client *OpenCodeClient, path string, 
 		return nil, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if rerr != nil {
+		return nil, fmt.Errorf("gather %s: read: %w", path, rerr)
+	}
 	var items []json.RawMessage
 	if uerr := json.Unmarshal(raw, &items); uerr != nil {
 		return nil, fmt.Errorf("gather %s: malformed body: %w", path, uerr)
 	}
 	var out []T
 	for _, item := range items {
-		if v, err := parse(item); err == nil {
-			out = append(out, v)
+		v, err := parse(item)
+		if err != nil {
+			// Item-level drift is indeterminate, never absence —
+			// same philosophy as fetchListStrict.
+			return nil, fmt.Errorf("gather %s: item drift: %w", path, err)
 		}
+		out = append(out, v)
 	}
 	return out, nil
 }
