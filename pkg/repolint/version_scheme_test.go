@@ -35,6 +35,12 @@ controller:
     image: ""
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
+  inferenceRelay:
+    router:
+      image:
+        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+        tag: ""
+        digest: ""
 frontend:
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/frontend
@@ -191,6 +197,38 @@ func TestVersionSchemeCheck_SeedNoDefaultRow(t *testing.T) {
 	vsFails(t, writeVersionSchemeFixture(t, vsHappyValues, seed), "default")
 }
 
+func TestVersionSchemeCheck_SeedTwoDefaultRows(t *testing.T) {
+	seed := vsMutate(t, vsHappySeed, `  - name: bookworm`,
+		`  - name: trixie
+    version: "2026.09.0"
+    image: ghcr.io/lenaxia/llmsafespaces/base
+    tag: "2026.09.0"
+    isDefault: true
+  - name: bookworm`)
+	vsFails(t, writeVersionSchemeFixture(t, vsHappyValues, seed), "ambiguous")
+}
+
+func TestVersionSchemeCheck_SeedRowWithoutTagOrDigest(t *testing.T) {
+	seed := vsMutate(t, vsHappySeed,
+		`    image: ghcr.io/lenaxia/llmsafespaces/base
+    tag: "2026.09.0"
+    isDefault: true`,
+		`    image: ghcr.io/lenaxia/llmsafespaces/base
+    isDefault: true`)
+	vsFails(t, writeVersionSchemeFixture(t, vsHappyValues, seed), "neither tag nor digest")
+}
+
+func TestVersionSchemeCheck_SeedDigestPinnedRowWithoutTagPasses(t *testing.T) {
+	seed := vsMutate(t, vsHappySeed,
+		`    image: ghcr.io/lenaxia/llmsafespaces/base
+    tag: "2026.09.0"
+    isDefault: true`,
+		`    image: ghcr.io/lenaxia/llmsafespaces/base
+    digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    isDefault: true`)
+	vsClean(t, writeVersionSchemeFixture(t, vsHappyValues, seed))
+}
+
 func TestVersionSchemeCheck_SeedEmpty(t *testing.T) {
 	vsFails(t, writeVersionSchemeFixture(t, vsHappyValues, "bases: []\n"), "no base rows")
 }
@@ -214,6 +252,12 @@ controller:
     image: ""
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
+  inferenceRelay:
+    router:
+      image:
+        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+        tag: ""
+        digest: ""
 api:
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/api
@@ -277,16 +321,15 @@ func TestVersionSchemeCheck_OpencodeBinaryPinsEqualFrontendDigest(t *testing.T) 
 func TestVersionSchemeCheck_AgentdDigestEqualsRelayRouterDigest(t *testing.T) {
 	const routerDigest = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	values := vsMutate(t, vsDeliveryBase(t),
-		`  agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
-		`  inferenceRelay:
-    router:
-      image:
-        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+		`        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
         tag: ""
-        digest: "sha256:`+routerDigest+`"
-  agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:`+routerDigest)
+        digest: ""`,
+		`        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+        tag: ""
+        digest: "sha256:`+routerDigest+`"`)
+	values = vsMutate(t, values,
+		"agentd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"agentd@sha256:"+routerDigest)
 	vsFails(t, writeVersionSchemeFixture(t, values, vsHappySeed),
 		"agentdDelivery", "router.image.digest")
 }
@@ -316,6 +359,12 @@ controller:
     image: "ghcr.io/lenaxia/llmsafespaces/opencode:1.18.15@sha256:4444444444444444444444444444444444444444444444444444444444444444"
     binarySHA256Amd64: "5555555555555555555555555555555555555555555555555555555555555555"
     binarySHA256Arm64: "6666666666666666666666666666666666666666666666666666666666666666"
+  inferenceRelay:
+    router:
+      image:
+        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+        tag: ""
+        digest: ""
 api:
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/api
@@ -399,6 +448,40 @@ func TestVersionSchemeCheck_MissingStructuralKeysFailLoudly(t *testing.T) {
     digest: ""
 `, ""),
 			want: "controller.image",
+		},
+		{
+			name: "relay-router image block missing (digest participates in the platform set)",
+			values: vsMutate(t, vsHappyValues, `  inferenceRelay:
+    router:
+      image:
+        repository: ghcr.io/lenaxia/llmsafespaces/relay-router
+        tag: ""
+        digest: ""
+`, ""),
+			want: "controller.inferenceRelay.router.image",
+		},
+		{
+			name: "controller.image.digest leaf missing (renamed?)",
+			values: vsMutate(t, vsHappyValues, `    repository: ghcr.io/lenaxia/llmsafespaces/controller
+    tag: ""
+    digest: ""
+  agentdDelivery:`,
+				`    repository: ghcr.io/lenaxia/llmsafespaces/controller
+    tag: ""
+    pin: ""
+  agentdDelivery:`),
+			want: "controller.image.digest",
+		},
+		{
+			name: "agentdDelivery.binarySHA256Amd64 leaf missing (renamed?)",
+			values: vsMutate(t, vsHappyValues, `    image: ""
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+  opencodeDelivery:`,
+				`    image: ""
+    binarySHA256Arm64: ""
+  opencodeDelivery:`),
+			want: "controller.agentdDelivery.binarySHA256Amd64",
 		},
 	}
 	for _, tc := range cases {

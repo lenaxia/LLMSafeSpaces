@@ -48,11 +48,18 @@
    - `controller.opencodeDelivery.image`: same, from **merge-opencode**.
    - `runtimeEnvironments.base.image.tag`: **leave alone** unless the seed row moved (§1) — it is CalVer, off the train.
    - GitRepository/ HelmRelease `ref.tag`: `vX.Y.Z` with `reconcileStrategy: Revision`.
-4. **Pre-flight the config PR** (the four checks from #1237):
-   - every `tag:`/`@sha256:` image+coordinate **resolves in ghcr** (`docker buildx imagetools inspect <ref>` or a manifest HEAD) — catches the Incident-3 class at PR time;
-   - every per-arch `sha256:` belongs to the **named image's** index — catches Incident 2;
-   - the base tag equals the **catalog seed version** — drift is a red light (and in this repo, a repolint failure);
-   - if the opencode pin changed anywhere in the bump: §3's gates are green against the runtime the bump ships.
+4. **Pre-flight the config PR** — run the script against the candidate values file; it encodes the four checks from #1237:
+
+   ```bash
+   ./local/release-preflight.sh path/to/candidate-values.yaml [--opencode-bin=<candidate binary>]
+   ```
+
+   - **P1** every `tag:`/`@sha256:` image+coordinate **resolves in the registry** (manifest HEAD 200) — catches the Incident-3 class at PR time;
+   - **P2** every digest belongs to the **named image's** index, no delivery pin reuses a platform component digest, and a tag+digest pair is coherent against the live index — catches Incident 2;
+   - **P3** the base tag is CalVer and equals the **catalog seed version** — drift is a red light (and in this repo, a repolint failure);
+   - **P4** the opencode coordinate matches the repo-validated pin, and (with `--opencode-bin`) §3's behavioral contract script runs green against the runtime the bump ships — catches the Incident-1 class.
+
+   `--offline` degrades to the offline checks (P3, the offline halves of P2/P4) with a loud warning — never a merge gate. Registry endpoint overridable via `GHCR_API` (mirrors, tests).
 
 ## 3. The opencode pin — contract gates are MANDATORY pre-bump
 
@@ -129,8 +136,10 @@ wrong-CalVer tag — the ghcr pre-flight in §2 catches that.
 | CI fixture-freshness gate | OPENCODE_VERSION bump ⇒ golden fixtures touched in the same PR | `.github/workflows/ci.yml` |
 | repolint `release_artifacts` check | every release image is signed/scanned/SBOM'd/tabled; merge jobs gate the release | `make repolint` |
 | delivery-pin render gates (design 0053 §4.5) | empty `agentdDelivery.image` / `opencodeDelivery.image` fail the render; one-sided `binarySHA256*` pairs fail | `helm/delivery_pins_gate_test.go`, controller startup |
+| pre-flight script (`local/release-preflight.sh`) | against a candidate config file: P1 registry resolution, P2 index membership + no platform-digest reuse + tag/digest coherence, P3 base CalVer + seed equality, P4 opencode pin alignment (+ behavioral contract via `--opencode-bin`) | operator-run on every config bump PR; pinned by `local/release_preflight_script_test.go` |
 
 **Known limit:** the repolint guard reads this repo's committed files; it
-cannot see the ops config repo's values. The ops-side classes are covered by
-the §2 pre-flight (run against the candidate config PR) — the two layers are
-complementary by design.
+cannot see the ops config repo's values — that is what the pre-flight script
+covers (run against the candidate config PR). The two layers are complementary
+by design: repolint gates this repo at commit time, the pre-flight gates the
+config repo at its PR time.

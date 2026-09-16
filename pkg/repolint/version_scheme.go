@@ -86,6 +86,7 @@ type versionSchemeSeedBase struct {
 	Name      string `yaml:"name"`
 	Version   string `yaml:"version"`
 	Tag       string `yaml:"tag"`
+	Digest    string `yaml:"digest"`
 	IsDefault bool   `yaml:"isDefault"`
 }
 
@@ -120,19 +121,35 @@ func RunVersionSchemeCheck(root string) []string {
 	}
 
 	// Structural presence: every key the comparisons depend on must
-	// exist at its real path. A renamed key would otherwise zero-value
-	// its way to a vacuous pass.
+	// exist at its real path — block keys AND the digest/tag/pin leaves
+	// the guard reads. A renamed key would otherwise zero-value its way
+	// to a vacuous pass. Includes the (feature-gated) relay-router image
+	// block: the router digest participates in the platform-digest set
+	// whenever the block is present in the committed values.
 	var shape map[string]any
 	if err := yaml.Unmarshal(valuesRaw, &shape); err != nil {
 		return []string{fmt.Sprintf("version scheme: cannot parse %s: %v", valuesPath, err)}
 	}
 	for _, path := range [][]string{
 		{"api", "image"},
+		{"api", "image", "digest"},
 		{"frontend", "image"},
+		{"frontend", "image", "digest"},
 		{"controller", "image"},
+		{"controller", "image", "digest"},
+		{"controller", "inferenceRelay", "router", "image"},
+		{"controller", "inferenceRelay", "router", "image", "digest"},
 		{"controller", "agentdDelivery"},
+		{"controller", "agentdDelivery", "image"},
+		{"controller", "agentdDelivery", "binarySHA256Amd64"},
+		{"controller", "agentdDelivery", "binarySHA256Arm64"},
 		{"controller", "opencodeDelivery"},
+		{"controller", "opencodeDelivery", "image"},
+		{"controller", "opencodeDelivery", "binarySHA256Amd64"},
+		{"controller", "opencodeDelivery", "binarySHA256Arm64"},
 		{"runtimeEnvironments", "base", "image"},
+		{"runtimeEnvironments", "base", "image", "tag"},
+		{"runtimeEnvironments", "base", "image", "digest"},
 	} {
 		if !hasYAMLPath(shape, path...) {
 			fails = append(fails, fmt.Sprintf(
@@ -169,7 +186,9 @@ func hasYAMLPath(m map[string]any, path ...string) bool {
 // checkSeedCalVer enforces the CalVer scheme on every catalog seed base
 // row and the row-internal version==tag identity (base-image.yml
 // publishes the version AS the tag; a divergent tag would make the
-// factory reference an image the workflow never pushed).
+// factory reference an image the workflow never pushed). A row with
+// neither tag nor digest renders an untagged, un-pinned image ref —
+// always a bug.
 func checkSeedCalVer(seedPath string, seed versionSchemeSeed) []string {
 	var fails []string
 	if len(seed.Bases) == 0 {
@@ -180,6 +199,12 @@ func checkSeedCalVer(seedPath string, seed versionSchemeSeed) []string {
 			fails = append(fails, fmt.Sprintf(
 				"version scheme: %s bases[%s].version %q is not CalVer YYYY.MM.x — the base is content-versioned off the platform train (design 0053 D5/S4, incident 2026-09-02); never a platform semver",
 				seedPath, b.Name, b.Version))
+		}
+		if b.Tag == "" && b.Digest == "" {
+			fails = append(fails, fmt.Sprintf(
+				"version scheme: %s bases[%s] sets neither tag nor digest — the row would render an untagged image ref; set tag == version (base-image.yml publishes the version as the tag) or a digest pin",
+				seedPath, b.Name))
+			continue
 		}
 		if b.Tag == "" {
 			continue

@@ -21,12 +21,16 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 - Documented the ops-config pre-flight (the issue's four checks) since the config repo is outside repolint's reach.
 
 ### Guard (TDD)
-- `pkg/repolint/version_scheme_test.go` written FIRST (RED: `undefined: RunVersionSchemeCheck`), then `pkg/repolint/version_scheme.go` (GREEN). 20 test functions / 30 cases: happy path; base-tag CalVer violations (semver, one-digit month, month 13, latest, empty); base-tag drift vs seed; digest-pinned base skips tag checks; seed CalVer + tag==version + exactly-one-default-row + empty-seed; agentd/opencode image-digest and per-arch-binary-pin equality vs controller/api/frontend/relay-router digests; agentd↔opencode identical pins; distinct pins pass; 6 missing-structural-key cases; missing files; untagged image refs.
+- `pkg/repolint/version_scheme_test.go` written FIRST (RED: `undefined: RunVersionSchemeCheck`), then `pkg/repolint/version_scheme.go` (GREEN). 22 test functions / 38 executed cases: happy path; base-tag CalVer violations (semver, one-digit month, month 13, latest, empty); base-tag drift vs seed; digest-pinned base skips tag checks; seed CalVer + tag==version + neither-tag-nor-digest + digest-pinned-row + exactly-one-default-row (zero and two) + empty-seed; agentd/opencode image-digest and per-arch-binary-pin equality vs controller/api/frontend/relay-router digests; agentd↔opencode identical pins; distinct pins pass; 10 missing-structural-key cases (block keys, the relay-router block, digest leaves, binarySHA256 leaves); missing files; untagged image refs.
 - Wired into `cmd/repolint/main.go` (`runVersionScheme`) — runs in pre-commit, CI (`ci.yml` make repolint), and release.yml's lint job.
+
+### Pre-flight script (the issue's criterion 2, added in review round 1)
+- `local/release-preflight.sh` — run against a candidate config values file: P1 registry resolution of every tag/digest (ghcr v2 API, `GHCR_API` overridable), P2 index membership + no delivery pin reusing a platform digest + tag/digest coherence against the live index, P3 base CalVer + seed single-source equality, P4 opencode coordinate vs the repo pin + optional behavioral-contract execution via `--opencode-bin`. `--offline` is an explicitly loud degraded mode.
+- `local/release_preflight_script_test.go` — 4 test functions / 11 subtests: bash syntax, structure pins (each detector row must exist), offline behaviors (happy, both incident classes, drift, pin mismatch, empty tag, usage error), and online behaviors against an in-process ghcr-v2 stub (resolve pass, incident-3 404, incident-2 foreign digest, stale tag+digest pair).
 
 ### Live defect the guard exposed (fixed)
 - The guard failed on main's own `helm/values.yaml`: `runtimeEnvironments.base.image.tag: ""` falls back to `.Chart.AppVersion` (`helm/templates/runtimeenvironment-base.yaml:9`) → `base:0.30.1`, a tag that has not existed since design 0053 moved the base to CalVer — the incident-3 mechanism, live in chart defaults.
-- Fix: values default `tag: "2026.09.0"` (mirror of the seed's default row, with rationale comment); template now FAILS on an empty tag instead of substituting appVersion; `helm/appversion_drift_test.go` rewritten — `TestChart_DefaultBaseRTE_TagIsSeedCalVer` asserts the default render mirrors the seed row (CalVer-regex-checked) and never equals appVersion. `TestChart_AppVersion_MatchesLatestRelease` unchanged (platform-train invariant).
+- Fix: values default `tag: "2026.09.0"` (mirror of the seed's default row, with rationale comment); template now FAILS on an empty tag instead of substituting appVersion; `helm/appversion_drift_test.go` rewritten — `TestChart_DefaultBaseRTE_TagIsSeedCalVer` asserts the default render mirrors the seed row (CalVer-regex-checked) and never equals appVersion. `TestChart_AppVersion_MatchesLatestRelease` unchanged (platform-train invariant). Render-gate failure path pinned by `helm/runtimeenvironment_base_test.go` (empty tag fails with the mandatory message; explicit tag renders verbatim; digest pin wins).
 - Stale docs corrected: `docs/operator/runtime-environments.md` (was: "falls back to Chart.AppVersion"), `docs/reference/helm-values.md` row, `helm/README.md` image-tags note + pinned-deploy example (dropped the base `sha-` pin line).
 
 ---
@@ -36,9 +40,10 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 1. **repolint, not a chart test, as the guard mechanism.** The repo's guard culture for incident-born invariants over committed files is repolint (`release_artifacts.go` ← v0.19.1; `agent_id_prefix` ← #1305; `spec_coupling_marker` ← #1305). The check reads the actual `helm/values.yaml` + `catalog.seed.yaml` (the task's "validate against the actual values/seed"), compares values keys a render cannot (delivery digests vs platform digests), and runs at commit time (pre-commit + CI), not just at render/test time.
 2. **No CalVer regex fail in the Helm template.** `local/s5-overlay-validation.sh:215` legitimately sets `runtimeEnvironments.base.image.tag=ci` (locally built kind image); a format gate in the template would break the shipped S5 suite. The template only fails on EMPTY (the appVersion substitution — the actual incident mechanism); format policing stays in repolint over committed files.
 3. **Fixing the appVersion fallback is in scope, not scope creep.** A guard that "fails when base.tag doesn't match CalVer" is incoherent while the chart silently substitutes a platform semver for the empty default — the committed default WAS empty, so the guard would fail on main forever or the fallback stays a live incident-class bug (Rule 5). The fix makes default installs reference an existing tag.
-4. **Structural-key presence = loud failure.** The check verifies `api.image`, `controller.image`, `controller.agentdDelivery`, `controller.opencodeDelivery`, `frontend.image`, `runtimeEnvironments.base.image` exist as map paths before comparing, so a values-key rename cannot degrade the guard into a vacuous pass. `controller.inferenceRelay.router.image` participates opportunistically (feature-gated optional component; requiring its presence would couple the guard to an optional feature).
+4. **Structural-key presence = loud failure, for every key the guard reads.** The check verifies the block keys AND the comparison leaves (`*.image.digest`, delivery `image`/`binarySHA256*`, base `tag`/`digest`) — including the relay-router image block (present in the committed values; its digest joins the platform-digest set) — so a values-key rename cannot degrade the guard into a vacuous pass. Review round 1 caught the initial set being narrower than the read set (router + leaves); the rule is now "read set == presence set".
 5. **Empty-vs-empty digests skip, not fail** — chart defaults carry no pins; the equality comparisons are active exactly when a coordinated bump has both sides set.
 6. **Digest normalization to bare hex** (`sha256:<hex>` fields vs bare `binarySHA256*` values vs `@sha256:<hex>` refs) so all three pin forms compare correctly.
+7. **Seed rows must set tag or digest** — neither means the row renders an untagged image ref (always broken); tag set ⇒ CalVer + `tag == version` (base-image.yml publishes the version as the tag); digest-pinned rows are valid without a tag.
 
 ---
 
@@ -50,28 +55,32 @@ None.
 
 ## Tests Run
 
-- `go test ./pkg/repolint/ -run TestVersionScheme` — PASS (20 funcs / 30 cases), written test-first (RED confirmed before implementation).
-- `go test ./helm/...` — PASS (full package, helm v3.16.4 on PATH), including the rewritten `TestChart_DefaultBaseRTE_TagIsSeedCalVer` and the delivery-pin render gates.
+- `go test ./pkg/repolint/` — PASS (full package incl. TestVersionScheme: 22 funcs / 38 cases, test-first RED→GREEN).
+- `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 11 subtests incl. in-process registry stub legs).
+- `go test ./helm/...` — PASS (full package, helm on PATH — CI installs latest; validated locally across helm v3 and v4 lines), including `TestChart_DefaultBaseRTE_TagIsSeedCalVer`, `TestBaseTag_MandatoryRenderGate`, and the delivery-pin render gates.
 - `go run ./cmd/repolint` — all checks passed (after the values.yaml fix; failed as designed before it).
-- `go build ./...`, `make test`, `make lint` — run before the PR (see PR body for results).
+- `go build ./...`, `make test`, `make lint` — green before the PR (see PR body).
 
 ---
 
 ## Next Steps
 
-- Ops side (talos-ops-prod, out of this repo's scope): adopt §2's pre-flight in the config-bump PR template — the four checks (ghcr resolution, per-arch digests belong to the named index, base tag == seed, contract script green) are procedure there, mechanical here.
-- If a future S5/kind suite wants CalVer-shaped local base tags, nothing blocks it — the template gate is empty-tag-only by design.
+- Ops side (talos-ops-prod): wire `./local/release-preflight.sh <candidate values>` into the config-bump PR template so P1–P4 run on every coordinated bump against the config repo.
 
 ---
 
 ## Files Modified
 
 - `docs/release-bump-checklist.md` (new)
+- `local/release-preflight.sh` (new)
+- `local/release_preflight_script_test.go` (new)
 - `pkg/repolint/version_scheme.go` (new)
 - `pkg/repolint/version_scheme_test.go` (new)
 - `cmd/repolint/main.go` (wire `runVersionScheme`)
 - `helm/values.yaml` (base tag default `2026.09.0` + comment)
 - `helm/templates/runtimeenvironment-base.yaml` (fail on empty tag; drop appVersion fallback)
 - `helm/appversion_drift_test.go` (default-base test asserts seed CalVer, not appVersion)
+- `helm/runtimeenvironment_base_test.go` (new — render-gate failure paths)
 - `docs/operator/runtime-environments.md`, `docs/reference/helm-values.md`, `helm/README.md` (stale fallback docs corrected)
+- `api/internal/services/database/database.go` + 7 `*_integration_test.go` files (pre-existing lint failures fixed, Rule 5)
 - `worklogs/NNNN_2026-09-16_release-bump-checklist.md` (this file)

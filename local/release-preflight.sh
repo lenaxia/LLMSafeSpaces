@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# release-preflight.sh — issue #1237's pre-flight for a candidate config
+# bump (the ops-repo HelmRelease values that deploy this chart). Run it
+# against the candidate values file BEFORE merging any coordinated bump:
+#
+#   ./local/release-preflight.sh path/to/candidate-values.yaml
+#
+# Four checks (one per incident class):
+#   P1  every image tag in the candidate RESOLVES in the registry
+#       (manifest HEAD 200) — incident 2026-09-02 (base:0.26.0 never
+#       existed; fleet-wide ImagePullBackOff)
+#   P2  every digest-pinned delivery ref belongs to the NAMED image's
+#       index, and no delivery pin reuses a platform component digest —
+#       incident 2026-09-01 (agentd lines refreshed with a controller
+#       digest). Optional per-arch binarySHA256* pins are verified
+#       against the index's CI-stamped annotations.
+#   P3  runtimeEnvironments.base.image.tag is CalVer YYYY.MM.x and
+#       equals the catalog seed default row — the single source
+#       (design 0053 D5/S4). Drift is a red light.
+#   P4  the opencode coordinate matches the repo's platform-validated
+#       pin (runtimes/opencode/Dockerfile ARG OPENCODE_VERSION); a
+#       candidate shipping an unvalidated opencode is the 2026-08-29
+#       incident class. With --opencode-bin <path> the behavioral
+#       contract script (local/opencode-binary-contract.sh) is executed
+#       against that binary as part of the pre-flight.
+#
+# Network checks (P1, the online half of P2) hit the registry API
+# ($GHCR_API, default https://ghcr.io) and REQUIRE reachability — a
+# pre-flight that silently skips them is not a pre-flight. --offline
+# explicitly degrades to the offline-only checks with a loud warning
+# (air-gapped use; never for a merge gate).
+#
+# Exit: 0 = all requested checks green; 1 = at least one red light.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${LSS_REPO_ROOT:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+GHCR_API="${GHCR_API:-https://ghcr.io}"
+SEED_FILE="${REPO_ROOT}/api/internal/imagefactory/catalog.seed.yaml"
+OPENCODE_DOCKERFILE="${REPO_ROOT}/runtimes/opencode/Dockerfile"
+CONTRACT_SCRIPT="${SCRIPT_DIR}/opencode-binary-contract.sh"
+
+OFFLINE=0
+OPENCODE_BIN=""
+CANDIDATE=""
+for arg in "$@"; do
+  case "${arg}" in
+    --offline)        OFFLINE=1 ;;
+    --opencode-bin=*) OPENCODE_BIN="${arg#--opencode-bin=}" ;;
+    -h|--help)        sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *)                if [ -n "${CANDIDATE}" ]; then
+                        echo "usage: $0 <candidate-values.yaml> [--offline] [--opencode-bin=<path>]" >&2
+                        exit 2
+                      fi
+                      CANDIDATE="${arg}" ;;
+  esac
+done
+if [ -z "${CANDIDATE}" ] || [ ! -f "${CANDIDATE}" ]; then
+  echo "usage: $0 <candidate-values.yaml> [--offline] [--opencode-bin=<path>]" >&2
+  [ -n "${CANDIDATE}" ] && echo "preflight: no such file: ${CANDIDATE}" >&2
+  exit 2
+fi
+
+FAIL=0
+ok()  { printf '[preflight] ok: %s\n' "$*"; }
+die() { printf '[preflight] FAIL: %s\n' "$*" >&2; FAIL=1; }
+
+# ---- parse the candidate values into full-path keys -----------------------
+# Emits "<dotted.path>\t<value>" for every scalar, tracking YAML block
+# nesting by indentation (the values files in this ecosystem are
+# 2-space indented, comments skipped). Values are de-quoted.
+flatten_values() {
+  awk '
+    function strip(v) { sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v);
+      if (length(v) >= 2 && (substr(v,1,1) == "\"" && substr(v,length(v),1) == "\"")) v = substr(v,2,length(v)-2);
+      return v }
+    {
+      raw = $0; sub(/\r$/, "", raw)
+      if (raw ~ /^[ \t]*$/) next
+      if (raw ~ /^[ \t]*#/) next
+      match(raw, /^ */); ind = RLENGTH
+      body = substr(raw, ind+1)
+      if (body ~ /:[ ]*$/) { k = body; sub(/:[ ]*$/, "", k)
+        while (n > 0 && ind_[n] >= ind) n--
+        n++; key_[n] = k; ind_[n] = ind; next }
+      c = index(body, ":")
+      if (c < 2) next
+      k = substr(body, 1, c-1); v = strip(substr(body, c+1))
+      path = ""
+      for (i = 1; i <= n; i++) path = path key_[i] "."
+      print path k "\t" v
+    }' "$1"
+}
+
+declare -A VALS
+while IFS=$'\t' read -r k v; do
+  VALS["${k}"]="${v}"
+done < <(flatten_values "${CANDIDATE}")
+
+val() { printf '%s' "${VALS["$1"]-}"; }
+
+# repo/tag decomposition for digest-first delivery refs: strip the
+# @digest, then split an optional ":tag" off the remainder (the repo
+# hostname itself contains no colon).
+delivery_repo() { local r="${1%%@*}"; printf '%s' "${r%:*}"; }
+delivery_tag() { local r="${1%%@*}"; case "${r}" in *:*) printf '%s' "${r##*:}" ;; *) printf '' ;; esac; }
+
+# ---- P3 (offline): base tag == catalog seed default row, CalVer ----------
+SEED_NAME="$(awk '/^bases:/{inb=1;next} inb && /^  - name: /{sub(/^  - name: /,"");sub(/[ \t]*$/,"");print;exit}' "${SEED_FILE}")"
+SEED_VERSION="$(awk '/^bases:/{inb=1;next} inb && /^  - name: /{inrow=1;next} inrow && /^    version:/{gsub(/"/,"",$2);print $2;exit}' "${SEED_FILE}")"
+BASE_TAG="$(val runtimeEnvironments.base.image.tag)"
+BASE_REPO="$(val runtimeEnvironments.base.image.repository)"
+BASE_DIGEST="$(val runtimeEnvironments.base.image.digest)"
+
+if [ -n "${BASE_DIGEST}" ]; then
+  ok "P3 base is digest-pinned (${BASE_REPO}@${BASE_DIGEST}) — CalVer check skipped (digest pin wins)"
+elif [ -z "${BASE_TAG}" ]; then
+  die "P3 runtimeEnvironments.base.image.tag is empty — an empty tag fails the chart render (design 0053 D5/S4); set the catalog seed row's version"
+elif [[ ! "${BASE_TAG}" =~ ^[0-9]{4}\.(0[1-9]|1[0-2])\.[0-9]+$ ]]; then
+  die "P3 base tag '${BASE_TAG}' is not CalVer YYYY.MM.x — the base is off the platform train (incident 2026-09-02: base:0.26.0 never existed)"
+elif [ "${BASE_TAG}" != "${SEED_VERSION}" ]; then
+  die "P3 base tag drift: candidate says '${BASE_TAG}', catalog seed default row (${SEED_NAME}) says '${SEED_VERSION}' — the seed row is the single source"
+else
+  ok "P3 base tag '${BASE_TAG}' matches the catalog seed default row (${SEED_NAME})"
+fi
+
+# ---- P2 (offline half): no delivery pin equals a platform digest ----------
+AGENTD_REF="$(val controller.agentdDelivery.image)"
+OPENCODE_REF="$(val controller.opencodeDelivery.image)"
+CTRL_DIGEST="$(val controller.image.digest)"
+API_DIGEST="$(val api.image.digest)"
+FE_DIGEST="$(val frontend.image.digest)"
+ROUTER_DIGEST="$(val controller.inferenceRelay.router.image.digest)"
+
+ref_digest() { case "$1" in *@sha256:*) printf '%s' "${1##*@sha256:}" ;; *) printf '' ;; esac; }
+
+PLATFORM_DIGESTS=()
+[ -n "${CTRL_DIGEST}" ]   && PLATFORM_DIGESTS+=("${CTRL_DIGEST#sha256:}")
+[ -n "${API_DIGEST}" ]    && PLATFORM_DIGESTS+=("${API_DIGEST#sha256:}")
+[ -n "${FE_DIGEST}" ]     && PLATFORM_DIGESTS+=("${FE_DIGEST#sha256:}")
+[ -n "${ROUTER_DIGEST}" ] && PLATFORM_DIGESTS+=("${ROUTER_DIGEST#sha256:}")
+
+DELIVERY_PINS=(
+  "controller.agentdDelivery.image:${AGENTD_REF}"
+  "controller.opencodeDelivery.image:${OPENCODE_REF}"
+  "controller.agentdDelivery.binarySHA256Amd64:$(val controller.agentdDelivery.binarySHA256Amd64)"
+  "controller.agentdDelivery.binarySHA256Arm64:$(val controller.agentdDelivery.binarySHA256Arm64)"
+  "controller.opencodeDelivery.binarySHA256Amd64:$(val controller.opencodeDelivery.binarySHA256Amd64)"
+  "controller.opencodeDelivery.binarySHA256Arm64:$(val controller.opencodeDelivery.binarySHA256Arm64)"
+)
+P2_COLLISION=0
+for pin in "${DELIVERY_PINS[@]}"; do
+  pin_key="${pin%%:*}"; pin_val="${pin#*:}"
+  pin_hex="$(ref_digest "${pin_val}")"
+  [ -z "${pin_hex}" ] && [ "${pin_val}" = "" ] && continue
+  [ -z "${pin_hex}" ] && pin_hex="${pin_val}"
+  [ -z "${pin_hex}" ] && continue
+  for pd in "${PLATFORM_DIGESTS[@]-}"; do
+    [ -z "${pd}" ] && continue
+    if [ "${pin_hex}" = "${pd}" ]; then
+      die "P2 ${pin_key} reuses a platform component digest (${pin_hex}) — delivery pins come from the merge-agentd/merge-opencode values blocks (incident 2026-09-01)"
+      P2_COLLISION=1
+    fi
+  done
+done
+AGENTD_HEX="$(ref_digest "${AGENTD_REF}")"
+OPENCODE_HEX="$(ref_digest "${OPENCODE_REF}")"
+if [ -n "${AGENTD_HEX}" ] && [ "${AGENTD_HEX}" = "${OPENCODE_HEX}" ]; then
+  die "P2 agentdDelivery and opencodeDelivery carry the same digest (${AGENTD_HEX}) — separate artifacts by design (design 0053 §5)"
+  P2_COLLISION=1
+fi
+[ "${P2_COLLISION}" -eq 0 ] && ok "P2 offline: no delivery pin collides with a platform component digest"
+
+# ---- P4 (offline): opencode coordinate matches the repo pin ---------------
+PINNED_OPENCODE="$(grep -oE '^ARG OPENCODE_VERSION=[0-9.]+' "${OPENCODE_DOCKERFILE}" | head -1 | cut -d= -f2)"
+OPENCODE_TAG="$(delivery_tag "${OPENCODE_REF}")"
+if [ -z "${PINNED_OPENCODE}" ]; then
+  die "P4 cannot read the repo opencode pin (${OPENCODE_DOCKERFILE}) — parser drift?"
+elif [ -z "${OPENCODE_REF}" ]; then
+  die "P4 controller.opencodeDelivery.image is empty — the delivery pin is mandatory (design 0053 §4.5)"
+elif [ -n "${OPENCODE_TAG}" ] && [ "${OPENCODE_TAG}" != "${PINNED_OPENCODE}" ]; then
+  die "P4 candidate opencode '${OPENCODE_TAG}' != repo-validated pin '${PINNED_OPENCODE}' — the platform-validated coordinate is runtimes/opencode/Dockerfile; shipping an unvalidated opencode is the 2026-08-29 incident class"
+else
+  ok "P4 opencode coordinate aligned with the repo pin (${PINNED_OPENCODE}); contract gates: goldens + REFRESH.md + ci fixture-freshness + local/opencode-binary-contract.sh must be green for this pin"
+fi
+if [ -n "${OPENCODE_BIN}" ]; then
+  if [ ! -x "${OPENCODE_BIN}" ] && ! command -v "${OPENCODE_BIN}" >/dev/null 2>&1; then
+    die "P4 --opencode-bin '${OPENCODE_BIN}' is not executable"
+  else
+    if OPENCODE_BIN="${OPENCODE_BIN}" bash "${CONTRACT_SCRIPT}"; then
+      ok "P4 behavioral contract script green against ${OPENCODE_BIN}"
+    else
+      die "P4 behavioral contract script FAILED against ${OPENCODE_BIN} — do NOT bump (local/opencode-binary-contract.sh)"
+    fi
+  fi
+fi
+
+# ---- P1 + P2 (online): registry resolution & index membership -------------
+if [ "${OFFLINE}" -eq 1 ]; then
+  printf '[preflight] WARNING: --offline — registry checks (P1 resolution, P2 index membership) SKIPPED; never use as a merge gate\n' >&2
+  if [ "${FAIL}" -ne 0 ]; then
+    printf '[preflight] RESULT: FAIL (offline checks)\n' >&2
+    exit 1
+  fi
+  printf '[preflight] RESULT: PASS (offline checks only)\n'
+  exit 0
+fi
+
+token_for() { curl -sf -m 10 "${GHCR_API}/token?scope=repository:${1}:pull" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'; }
+
+# head_manifest <repo> <tag-or-digest> -> "code digest" on stdout
+head_manifest() {
+  local repo="$1" ref="$2" tok out code digest
+  tok="$(token_for "${repo}")"
+  [ -z "${tok}" ] && { echo "000 -"; return; }
+  out="$(curl -s -m 15 -o /dev/null -D - \
+    -H "Authorization: Bearer ${tok}" \
+    -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+    "${GHCR_API}/v2/${repo}/manifests/${ref}")" || { echo "000 -"; return; }
+  code="$(printf '%s' "${out}" | awk 'NR==1{print $2}')"
+  digest="$(printf '%s' "${out}" | awk 'tolower($1)=="docker-content-digest:"{sub(/\r$/,"",$2);print $2;exit}')"
+  echo "${code:-000} ${digest:--}"
+}
+
+strip_registry() { case "$1" in ghcr.io/*) printf '%s' "${1#ghcr.io/}" ;; *) printf '%s' "$1" ;; esac; }
+
+# collect refs to resolve: repository + (tag | digest) per component.
+CHECK_REFS=(
+  "api.image:$(val api.image.repository):$(val api.image.tag):$(val api.image.digest)"
+  "controller.image:$(val controller.image.repository):$(val controller.image.tag):$(val controller.image.digest)"
+  "frontend.image:$(val frontend.image.repository):$(val frontend.image.tag):$(val frontend.image.digest)"
+  "mcp.image:$(val mcp.image.repository):$(val mcp.image.tag):"
+  "base:$(val runtimeEnvironments.base.image.repository):${BASE_TAG}:${BASE_DIGEST}"
+  "agentdDelivery:$(delivery_repo "${AGENTD_REF}"):$(delivery_tag "${AGENTD_REF}"):$(ref_digest "${AGENTD_REF}")"
+  "opencodeDelivery:$(delivery_repo "${OPENCODE_REF}"):$(delivery_tag "${OPENCODE_REF}"):$(ref_digest "${OPENCODE_REF}")"
+)
+[ -n "$(val controller.inferenceRelay.router.image.repository)" ] && \
+  CHECK_REFS+=("router.image:$(val controller.inferenceRelay.router.image.repository):$(val controller.inferenceRelay.router.image.tag):$(val controller.inferenceRelay.router.image.digest)")
+
+declare -A RESOLVED_DIGEST
+for entry in "${CHECK_REFS[@]}"; do
+  IFS=':' read -r label repo tag digest <<<"${entry}"
+  [ -z "${repo}" ] && continue
+  repo="$(strip_registry "${repo}")"
+  if [ -n "${digest}" ]; then
+    case "${digest}" in sha256:*) ;; *) digest="sha256:${digest}" ;; esac
+    read -r code _ <<<"$(head_manifest "${repo}" "${digest}")"
+    if [ "${code}" != "200" ]; then
+      die "P1 ${label} digest ${repo}@${digest} does not resolve (${code}) — the digest does not belong to this image's index (incident 2026-09-01 class)"
+    else
+      ok "P1 ${label} ${repo}@${digest} resolves"
+    fi
+    if [ -n "${tag}" ]; then
+      read -r tcode idx <<<"$(head_manifest "${repo}" "${tag}")"
+      if [ "${tcode}" != "200" ]; then
+        die "P1 ${label} tag ${repo}:${tag} does not resolve (${tcode}) — the registry does not have this tag (incident 2026-09-02 class)"
+      elif [ "${idx}" != "-" ] && [ -n "${idx}" ] && [ "${digest}" != "${idx}" ]; then
+        die "P2 ${label} pin ${digest} is not the current index digest of ${repo}:${tag} (${idx}) — stale or foreign digest"
+      else
+        RESOLVED_DIGEST["${label}"]="${idx}"
+        ok "P2 ${label} pin matches the live index digest of ${repo}:${tag}"
+      fi
+    fi
+  elif [ -n "${tag}" ]; then
+    read -r code idx <<<"$(head_manifest "${repo}" "${tag}")"
+    if [ "${code}" != "200" ]; then
+      die "P1 ${label} tag ${repo}:${tag} does not resolve (${code}) — the registry does not have this tag (incident 2026-09-02 class)"
+    else
+      RESOLVED_DIGEST["${label}"]="${idx}"
+      ok "P1 ${label} ${repo}:${tag} resolves (index ${idx})"
+    fi
+  else
+    die "P1 ${label} has neither tag nor digest — nothing to resolve"
+  fi
+done
+
+# P2 online: an explicit delivery digest must be the CURRENT index digest
+# of the named repo when a tag is also present (tag+digest coherence).
+verify_pin_coherence() {
+  local label="$1" ref="$2" repo="$3" tag="$4" hex="$5"
+  [ -z "${hex}" ] && { ok "P2 ${label} carries no explicit digest — index annotations resolve at controller startup"; return; }
+  [ -z "${tag}" ] && { ok "P2 ${label} digest-only pin (${repo}@${hex}) — membership verified by P1 resolution"; return; }
+  local idx="${RESOLVED_DIGEST["${label}"]-}"
+  if [ "${idx}" != "-" ] && [ -n "${idx}" ] && [ "sha256:${hex}" != "${idx}" ]; then
+    die "P2 ${label} pin sha256:${hex} is not the current index digest of ${repo}:${tag} (${idx}) — stale or foreign digest"
+  else
+    ok "P2 ${label} pin matches the live index digest of ${repo}:${tag}"
+  fi
+}
+verify_pin_coherence "agentdDelivery" "${AGENTD_REF}" "$(delivery_repo "${AGENTD_REF}")" "$(delivery_tag "${AGENTD_REF}")" "${AGENTD_HEX}"
+verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OPENCODE_REF}")" "$(delivery_tag "${OPENCODE_REF}")" "${OPENCODE_HEX}"
+
+if [ "${FAIL}" -ne 0 ]; then
+  printf '[preflight] RESULT: FAIL — do NOT merge; see failures above\n' >&2
+  exit 1
+fi
+printf '[preflight] RESULT: PASS — candidate coordinates all resolve and align\n'
