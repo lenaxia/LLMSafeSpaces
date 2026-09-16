@@ -731,7 +731,7 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 	case "trigger_list":
 		res, err = client.TriggerList(ctx, saToken, workspaceID)
 	case "trigger_create":
-		res, err = client.TriggerCreate(ctx, saToken, workspaceID, mustMarshalBody(body))
+		res, err = client.TriggerCreate(ctx, saToken, workspaceID, passThroughBody(body, "trigger"))
 	case "trigger_update":
 		res, err = client.TriggerUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
 	case "trigger_delete":
@@ -741,7 +741,7 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 	case "workflow_list":
 		res, err = client.WorkflowList(ctx, saToken, workspaceID)
 	case "workflow_create":
-		res, err = client.WorkflowCreate(ctx, saToken, workspaceID, mustMarshalBody(body))
+		res, err = client.WorkflowCreate(ctx, saToken, workspaceID, passThroughBody(body, "workflow"))
 	case "workflow_update":
 		res, err = client.WorkflowUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
 	case "workflow_delete":
@@ -767,9 +767,14 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 	return res.Body, nil
 }
 
-// mustMarshalBody serializes the tool's object argument; an empty map
-// stays an empty object.
-func mustMarshalBody(body map[string]any) json.RawMessage {
+// passThroughBody marshals the caller's object argument (nested under
+// key, flat form tolerated) for verbatim platform submission; an empty
+// argument stays an empty object. The tool schema documents the nested
+// form; the flat tolerance keeps the wire contract forgiving.
+func passThroughBody(body map[string]any, key string) json.RawMessage {
+	if nested, ok := body[key].(map[string]any); ok {
+		body = nested
+	}
 	out, err := json.Marshal(body)
 	if err != nil {
 		return json.RawMessage("{}")

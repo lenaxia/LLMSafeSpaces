@@ -20,6 +20,7 @@ import (
 type mockWorkflowStore struct {
 	workflows    map[string]*wf.WorkflowRow
 	lastCreated  *wf.WorkflowRow
+	lastRun      *wf.WorkflowRunRow
 	createErr    error
 	statuses     map[string]string
 	runStatuses  map[string]string
@@ -120,6 +121,7 @@ func (m *mockWorkflowStore) CountWorkflowsByOwner(_ context.Context, ownerType, 
 }
 
 func (m *mockWorkflowStore) CreateWorkflowRun(_ context.Context, row *wf.WorkflowRunRow) error {
+	m.lastRun = row
 	m.workflows[row.ID] = &wf.WorkflowRow{ID: row.ID}
 	return nil
 }

@@ -1487,13 +1487,25 @@ func TestMCPAutomation_CreateStampsWorkspace(t *testing.T) {
 	api, rec := newAutomationAPI(t, 201, `{"id":"t-1"}`)
 	setupRenameWorkspaceEnv(t, api)
 
-	out, err := mcpAutomation(context.Background(), "workflow_create", map[string]any{"spec": map[string]any{"nodes": []any{}}})
+	// The schema-documented wrapper form: {"workflow": {...}}. The real
+	// delegated handler binds FLAT — the wire body must be the unwrapped
+	// object with the resolver-spelling workspace stamp.
+	out, err := mcpAutomation(context.Background(), "workflow_create", map[string]any{
+		"workflow": map[string]any{"name": "wf", "spec": map[string]any{"nodes": []any{}}},
+	})
 	require.NoError(t, err)
 	assert.Contains(t, out, `"id":"t-1"`)
 	assert.Equal(t, http.MethodPost, rec.method)
 	assert.Equal(t, "/internal/v1/automation/workflows", rec.path)
-	assert.Contains(t, rec.body, `"workspaceID":"ws-1"`, "create body carries the resolver-spelling stamp")
-	assert.Contains(t, rec.body, `"nodes"`)
+
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+	assert.Contains(t, wire, "workspaceID", "create body carries the resolver-spelling stamp")
+	assert.NotContains(t, wire, "workflow", "wrapper key must NOT reach the wire (real handler binds flat)")
+	assert.NotContains(t, wire, "trigger", "wrapper key must NOT reach the wire (real handler binds flat)")
+	var ws string
+	require.NoError(t, json.Unmarshal(wire["workspaceID"], &ws))
+	assert.Equal(t, "ws-1", ws)
 }
 
 func TestMCPAutomation_UpdatePatchPurity(t *testing.T) {
@@ -1601,11 +1613,24 @@ func TestMCPAutomation_UnknownTool(t *testing.T) {
 // L1: full JSON-RPC through mcpHandler for a representative pair —
 // trigger_create then trigger_fires, the iterate-on-automation loop.
 func TestMCPHandler_AutomationFullStack(t *testing.T) {
-	var paths []string
+	// The fake API enforces the REAL delegated bind contract: flat
+	// CreateTriggerRequest (name required), wrapper bodies 400 — the
+	// exact contract the API-layer integration tests pin against the
+	// real TriggersHandler (import boundaries forbid mounting the real
+	// handler in-process here).
+	var createdName, createdPrompt string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/triggers"):
+			var fields map[string]json.RawMessage
+			_ = json.NewDecoder(r.Body).Decode(&fields)
+			if _, wrapped := fields["trigger"]; wrapped {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"Key: 'CreateTriggerRequest.Name' Error:Field validation for 'Name' failed on the 'required' tag"}`))
+				return
+			}
+			_ = json.Unmarshal(fields["name"], &createdName)
+			_ = json.Unmarshal(fields["prompt"], &createdPrompt)
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"11111111-1111-1111-1111-111111111111"}`))
 		case strings.HasSuffix(r.URL.Path, "/fires"):
@@ -1619,7 +1644,7 @@ func TestMCPHandler_AutomationFullStack(t *testing.T) {
 		name string
 		args map[string]any
 	}{
-		{"trigger_create", map[string]any{"trigger": map[string]any{"name": "cron", "schedule": "5 * * * *"}}},
+		{"trigger_create", map[string]any{"trigger": map[string]any{"name": "cron", "prompt": "ship it"}}},
 		{"trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"}},
 	} {
 		params, _ := json.Marshal(map[string]any{"name": call.name, "arguments": call.args})
@@ -1635,8 +1660,6 @@ func TestMCPHandler_AutomationFullStack(t *testing.T) {
 		assert.Nil(t, result["isError"], "%s must succeed: %v", call.name, result)
 	}
 
-	assert.Equal(t, []string{
-		"POST /internal/v1/automation/triggers",
-		"GET /internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/fires",
-	}, paths)
+	assert.Equal(t, "cron", createdName, "unwrapped flat body reached the delegated bind")
+	assert.Equal(t, "ship it", createdPrompt)
 }

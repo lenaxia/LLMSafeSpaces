@@ -4,11 +4,11 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -60,77 +60,95 @@ func (h *PodAutomationHandler) SetLogger(l interfaces.LoggerInterface) { h.logge
 // HasLogger reports logger wiring (app-level guard).
 func (h *PodAutomationHandler) HasLogger() bool { return h.logger != nil }
 
+// captureBody drains the request body ONCE, up front, so every later
+// reader (the workspaceID sniff in resolve, the delegated handler's
+// bind) works from the same bytes instead of a consumed stream. Returns
+// nil for body-less requests.
+func captureBody(c *gin.Context) []byte {
+	if c.Request == nil || c.Request.Body == nil || c.Request.ContentLength == 0 {
+		return nil
+	}
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil && len(raw) == 0 {
+		return nil // delegated bind (if any) reports; resolve falls back to query
+	}
+	return raw
+}
+
 // resolve authenticates the pod (bearer SA token → TokenReview → SA
-// principal bound to this workspace+namespace) and returns the owner
-// userID. Writes the auth-failure response itself; returns ok=false.
-func (h *PodAutomationHandler) resolve(c *gin.Context) (workspaceID, ownerID string, ok bool) {
+// principal bound to this workspace+namespace) and returns the captured
+// request body plus the owner userID. The workspace arrives in-query on
+// reads/updates/deletes/runs or in-body on creates (the seam stamps
+// it); patches and run-inputs stay clean — they carry only their own
+// fields. Writes the auth-failure response itself; returns ok=false.
+func (h *PodAutomationHandler) resolve(c *gin.Context) (raw []byte, workspaceID, ownerID string, ok bool) {
 	token := extractBearerToken(c.GetHeader("Authorization"))
 	if token == "" {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization"})
-		return "", "", false
+		return nil, "", "", false
 	}
 	username, err := h.tokenReviewer.Review(c.Request.Context(), token)
 	if err != nil {
 		if errors.Is(err, errTokenNotAuthenticated) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token not authenticated"})
-			return "", "", false
+			return nil, "", "", false
 		}
 		if h.logger != nil {
 			h.logger.Error("automation: token review failed", err)
 		}
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "token review failed"})
-		return "", "", false
+		return nil, "", "", false
 	}
 	if exp, hasExp := unverifiedJWTExp(token); hasExp && time.Now().After(exp.Add(jwtExpiryLeeway)) {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token expired"})
-		return "", "", false
+		return nil, "", "", false
 	}
 
-	// The workspace arrives in-query on reads/deletes (no body) or
-	// in-body on creates (the seam stamps it). Patches and run-inputs
-	// stay clean — they carry only their own fields.
+	raw = captureBody(c)
 	resolved := c.Query("workspaceID")
-	if workspaceID == "" {
-		var body struct {
-			WorkspaceID string `json:"workspaceID"`
-		}
-		if c.Request.Body != nil && c.Request.ContentLength > 0 {
-			_ = c.ShouldBindJSON(&body)
-			resolved = body.WorkspaceID
+	if resolved == "" && len(raw) > 0 {
+		// Exact-key read: the resolver spelling must not be folded with
+		// the DTO's "workspaceId" by the decoder's case-insensitive
+		// matching — a caller-supplied DTO value must never satisfy
+		// (or trip) the identity check.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err == nil {
+			if v, ok := fields["workspaceID"]; ok {
+				_ = json.Unmarshal(v, &resolved)
+			}
 		}
 	}
 	if resolved == "" {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspaceID required (query or body)"})
-		return "", "", false
+		return nil, "", "", false
 	}
-	workspaceID = resolved
 
-	saNamespace, saWorkspaceID, ok := parseSAPrincipal(username)
-	if !ok || saWorkspaceID != workspaceID || saNamespace != h.expectedNamespace {
+	saNamespace, saWorkspaceID, principalOK := parseSAPrincipal(username)
+	if !principalOK || saWorkspaceID != resolved || saNamespace != h.expectedNamespace {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "workspace identity mismatch"})
-		return "", "", false
+		return nil, "", "", false
 	}
 
-	ws, err := h.lookup.GetWorkspace(c.Request.Context(), workspaceID)
+	ws, err := h.lookup.GetWorkspace(c.Request.Context(), resolved)
 	if err != nil {
 		if h.logger != nil {
-			h.logger.Error("automation: lookup failed", err, "workspaceID", workspaceID)
+			h.logger.Error("automation: lookup failed", err, "workspaceID", resolved)
 		}
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workspace lookup failed"})
-		return "", "", false
+		return nil, "", "", false
 	}
 	if ws == nil {
 		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
-		return "", "", false
+		return nil, "", "", false
 	}
-	return workspaceID, ws.UserID, true
+	return raw, resolved, ws.UserID, true
 }
 
-// delegate re-binds the request as the resolved owner and invokes fn.
-// The body was consumed by resolve's optional bind — replay it.
+// delegate re-binds the request as the resolved owner and invokes fn,
+// replaying the captured body (if any) onto a fresh reader.
 func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay []byte, fn func(*gin.Context)) {
 	if replay != nil {
-		c.Request.Body = io.NopCloser(newReusableBody(replay))
+		c.Request.Body = io.NopCloser(bytes.NewReader(replay))
 		c.Request.ContentLength = int64(len(replay))
 	}
 	c.Set("userID", ownerID)
@@ -138,58 +156,63 @@ func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay [
 }
 
 // forceTriggerWorkspace rewrites the create body's workspaceId to this
-// pod's workspace (the automation scoping rule).
-func forceTriggerWorkspace(replay []byte, workspaceID string) []byte {
-	var body map[string]any
-	if json.Unmarshal(replay, &body) != nil {
-		return replay
+// pod's workspace (the automation scoping rule). All other fields pass
+// through as raw JSON — no re-formatting, no float64 round-trips.
+// Non-object bodies are an error (the seam always sends an object).
+func forceTriggerWorkspace(replay []byte, workspaceID string) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(replay, &fields); err != nil {
+		return nil, err
 	}
-	body["workspaceId"] = workspaceID
-	out, err := json.Marshal(body)
+	stamped, err := json.Marshal(workspaceID)
 	if err != nil {
-		return replay
+		return nil, err
 	}
-	return out
+	fields["workspaceId"] = stamped
+	return json.Marshal(fields)
 }
 
 // --- Trigger routes -------------------------------------------------------
 
 func (h *PodAutomationHandler) TriggerList(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.triggers.UserList)
 	}
 }
 
 func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
-	ws, owner, ok := h.resolve(c)
+	raw, ws, owner, ok := h.resolve(c)
 	if !ok {
 		return
 	}
-	replay := readBodyForReplay(c)
-	replay = forceTriggerWorkspace(replay, ws)
-	h.delegate(c, owner, replay, h.triggers.UserCreate)
+	forced, err := forceTriggerWorkspace(raw, ws)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
+		return
+	}
+	h.delegate(c, owner, forced, h.triggers.UserCreate)
 }
 
 func (h *PodAutomationHandler) TriggerGet(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.triggers.UserGet)
 	}
 }
 
 func (h *PodAutomationHandler) TriggerUpdate(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
-		h.delegate(c, owner, readBodyForReplay(c), h.triggers.UserUpdate)
+	if raw, _, owner, ok := h.resolve(c); ok {
+		h.delegate(c, owner, raw, h.triggers.UserUpdate)
 	}
 }
 
 func (h *PodAutomationHandler) TriggerDelete(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.triggers.UserDelete)
 	}
 }
 
 func (h *PodAutomationHandler) TriggerFires(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.triggers.UserListFires)
 	}
 }
@@ -197,60 +220,43 @@ func (h *PodAutomationHandler) TriggerFires(c *gin.Context) {
 // --- Workflow routes ------------------------------------------------------
 
 func (h *PodAutomationHandler) WorkflowList(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.workflows.UserList)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowCreate(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
-		h.delegate(c, owner, readBodyForReplay(c), h.workflows.UserCreate)
+	if raw, _, owner, ok := h.resolve(c); ok {
+		h.delegate(c, owner, raw, h.workflows.UserCreate)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowGet(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.workflows.UserGet)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowUpdate(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
-		h.delegate(c, owner, readBodyForReplay(c), h.workflows.UserUpdate)
+	if raw, _, owner, ok := h.resolve(c); ok {
+		h.delegate(c, owner, raw, h.workflows.UserUpdate)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowDelete(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.workflows.UserDelete)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowRun(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
-		h.delegate(c, owner, readBodyForReplay(c), h.workflows.UserRunWorkflow)
+	if raw, _, owner, ok := h.resolve(c); ok {
+		h.delegate(c, owner, raw, h.workflows.UserRunWorkflow)
 	}
 }
 
 func (h *PodAutomationHandler) WorkflowRuns(c *gin.Context) {
-	if _, owner, ok := h.resolve(c); ok {
+	if _, _, owner, ok := h.resolve(c); ok {
 		h.delegate(c, owner, nil, h.workflows.UserListRuns)
 	}
-}
-
-// --- body replay helpers --------------------------------------------------
-
-// readBodyForReplay drains the request body so resolve's optional bind
-// and the delegated handler can both read it.
-func readBodyForReplay(c *gin.Context) []byte {
-	if c.Request.Body == nil || c.Request.ContentLength == 0 {
-		return nil
-	}
-	buf := make([]byte, c.Request.ContentLength)
-	n, _ := c.Request.Body.Read(buf)
-	return buf[:n]
-}
-
-func newReusableBody(b []byte) *strings.Reader {
-	return strings.NewReader(string(b))
 }

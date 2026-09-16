@@ -6,10 +6,8 @@ package opencode
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -163,6 +161,3 @@ func TestSeam_WorkflowRunEmptyInputDefaults(t *testing.T) {
 }
 
 func ctx() context.Context { return context.Background() }
-
-var _ = fmt.Sprintf
-var _ = strings.TrimSpace
