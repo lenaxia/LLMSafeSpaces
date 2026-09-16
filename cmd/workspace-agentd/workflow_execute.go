@@ -352,22 +352,8 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		return
 	}
 
-	var msgResp struct {
-		Info struct {
-			ID     string `json:"id"`
-			Agent  string `json:"agent"`
-			Tokens struct {
-				Input  int `json:"input"`
-				Output int `json:"output"`
-				Total  int `json:"total"`
-			} `json:"tokens"`
-		} `json:"info"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&msgResp); err != nil {
+	msgResp, err := parseAgentNodeResponse(resp.Body)
+	if err != nil {
 		writeWorkflowError(w, http.StatusOK, "script_output_invalid", fmt.Sprintf("cannot parse opencode response: %v", err))
 		return
 	}
@@ -464,13 +450,50 @@ func createOpencodeSession(ctx context.Context, password string) string {
 		return ""
 	}
 	defer func() { _ = resp.Body.Close() }()
+	id, err := parseCreatedSessionID(resp.Body)
+	if err != nil {
+		return ""
+	}
+	return id
+}
+
+// agentNodeMessage is the opencode V1 message wire shape the workflow
+// agent node consumes (info + text parts — the same surface the seam's
+// SessionSend parses).
+type agentNodeMessage struct {
+	Info struct {
+		ID     string `json:"id"`
+		Agent  string `json:"agent"`
+		Tokens struct {
+			Input  int `json:"input"`
+			Output int `json:"output"`
+			Total  int `json:"total"`
+		} `json:"tokens"`
+	} `json:"info"`
+	Parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"parts"`
+}
+
+// parseAgentNodeResponse strictly decodes the message 200 (leg-10: a
+// drifted body must fail the node, never emit phantom output).
+func parseAgentNodeResponse(r io.Reader) (agentNodeMessage, error) {
+	var m agentNodeMessage
+	err := decodeStrict(r, &m)
+	return m, err
+}
+
+// parseCreatedSessionID strictly decodes the POST /session 200 (leg-10:
+// drift yields no session ID, never a phantom one to delete later).
+func parseCreatedSessionID(r io.Reader) (string, error) {
 	var s struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
-		return ""
+	if err := decodeStrict(r, &s); err != nil {
+		return "", err
 	}
-	return s.ID
+	return s.ID, nil
 }
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {

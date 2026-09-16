@@ -274,3 +274,40 @@ func TestVerifyDelivery_V2StoreBranch(t *testing.T) {
 		require.Error(t, err, "the fake server only serves the V2 path — the V1 read must fail, proving the branch")
 	})
 }
+
+// TestVerifyDelivery_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — review r1 finding: a drifted 200 on the page walk must never
+// be read as PROVEN ABSENCE): the four canonical corruption shapes on
+// a history page must surface as an error (inconclusive — the caller
+// retries) — never a definitive "absent" verdict a lenient or swallowed
+// decode would produce from a phantom empty page.
+func TestVerifyDelivery_WireDriftCorruption(t *testing.T) {
+	since := time.Now().Add(-1 * time.Hour)
+	// mode bodies that, IF decoded, satisfy the page decode — the
+	// phantom case that matters here is the VALID-EMPTY-PAGE + garbage
+	// tail: a lenient decode reads "history exhausted" from the
+	// truncated prefix and proves absence from drift.
+	modes := []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `[{"info":{"id":"m","role":"user","ti`},
+		{"trailing_garbage", `[]garbage-bytes`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			var hits []string
+			srv := newVerifyServer(t, map[string]verifyPage{
+				"": {items: mode.body},
+			}, &hits)
+			a := newTestAdapter(t, srv)
+
+			delivered, definitive, err := a.VerifyDelivery(context.Background(), "u-1", "ws-1", "ses_1", "the long turn text", since)
+			require.Error(t, err, "a corrupted page 200 must fail the verify walk")
+			assert.False(t, delivered)
+			assert.False(t, definitive, "a corrupted page must never be read as PROVEN absence (the re-send decision would fire on drift, not truth)")
+		})
+	}
+}

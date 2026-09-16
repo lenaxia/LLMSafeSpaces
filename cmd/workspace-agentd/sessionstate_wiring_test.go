@@ -180,3 +180,186 @@ func TestOpencodeStoreReader_PendingInputsStrict(t *testing.T) {
 		})
 	}
 }
+
+// TestOpencodeStoreReader_MessagePresence_WireDriftCorruption (leg-10,
+// epic-71 / leg10-pins, #1312 — r2 review reproduced this defect on
+// HEAD: a valid-empty-page + garbage tail returned err=nil,
+// present=false — ABSENCE PROVEN FROM DRIFT, flowing into definitive
+// TurnEnded/Failed ledger transitions). The four canonical corruption
+// modes must error (inconclusive), never prove absence.
+func TestOpencodeStoreReader_MessagePresence_WireDriftCorruption(t *testing.T) {
+	modes := []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `[{"info":{"id":"msg_1","ti`},
+		{"trailing_garbage", `[]garbage-bytes`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	}
+	for _, mode := range modes {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+			present, err := r.MessagePresence(context.Background(), "ses_1", []string{"msg_1"})
+			require.Error(t, err, "a corrupted page must never resolve presence (drift is indeterminate, not absence)")
+			assert.Empty(t, present, "no presence map — let alone an all-false one — escapes from drift")
+		})
+	}
+}
+
+// TestOpencodeAdmitter_WireDriftCorruption (leg-10, r2 sweep): the
+// Admit ack decode (the promotion-correlation message ID) and the
+// generic post decode must fail loudly on corrupted 200s — a phantom
+// empty ack must never key the ledger's markAdmitted.
+func TestOpencodeAdmitter_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"info":{"id":"msg_1`},
+		{"trailing_garbage", `{"info":{"id":"msg_1"}}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run("Admit/"+mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The model-set call precedes the steer; both answer clean.
+				if strings.HasSuffix(r.URL.Path, "/model") {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			a := opencodeAdmitter{password: "pw"}
+			id, err := a.Admit(context.Background(), "ses_1", "msg_1", "hello", "")
+			require.Error(t, err, "a corrupted ack must never admit")
+			assert.Empty(t, id, "no phantom message ID escapes the admitter")
+		})
+		t.Run("post/"+mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			a := opencodeAdmitter{password: "pw"}
+			var out struct {
+				ID string `json:"id"`
+			}
+			err := a.post(context.Background(), "/session/ses_1", map[string]any{}, &out)
+			require.Error(t, err, "a corrupted 200 must never decode as a posted payload")
+		})
+	}
+}
+
+// TestOpencodeStoreReader_SessionStates_WireDriftCorruption (leg-10,
+// epic-71 / leg10-pins, #1312 — r3 review reproduced this on HEAD: a
+// corrupted 200 on /question or /permission rode silently into
+// SessionStates as err=nil, PendingInputs empty — phantom-empty
+// pending inputs on the authority/reseed path). The documented
+// authoritative-empty contract covers 404/conn-refused ONLY (opencode
+// versions without the endpoints never had questions); a 200 carrying
+// drift is indeterminate and must error.
+func TestOpencodeStoreReader_SessionStates_WireDriftCorruption(t *testing.T) {
+	corrupt := map[string]string{
+		"invalid_json":     `[{"id":"que_1","sessionID":"ses_1","ti`,
+		"trailing_garbage": `[]garbage-bytes`,
+		"empty_body":       ``,
+		"html_error_page":  `<html><body>502 Bad Gateway</body></html>`,
+	}
+	for name, questionBody := range corrupt {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/session":
+					_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+				case "/question":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(questionBody))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[]`))
+				}
+			}))
+			t.Cleanup(srv.Close)
+			orig := agentAddrAtomic.Load()
+			t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+			agentAddrAtomic.Store(srv.URL)
+
+			r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+			seeds, err := r.SessionStates(context.Background())
+			require.Error(t, err, "a corrupted pending-inputs 200 must never read as authoritative-empty (drift is indeterminate)")
+			assert.Empty(t, seeds)
+		})
+	}
+}
+
+// TestOpencodeStoreReader_SessionStates_ItemDriftErrors (leg-10, r4
+// finding 2 — reproduced by the reviewer: a valid array whose items all
+// fail the dialect shape guard yielded err=nil, PendingInputs=0): item
+// drift is indeterminate, never authoritative-empty.
+func TestOpencodeStoreReader_SessionStates_ItemDriftErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+		case "/question":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"sessionID":"ses_1"},{"sessionID":"ses_1"}]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(srv.URL)
+
+	r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+	seeds, err := r.SessionStates(context.Background())
+	require.Error(t, err, "shape-drifted pending items must never read as authoritative-empty")
+	assert.Empty(t, seeds)
+}
+
+// The boot contract this file documents: 404 on the pending endpoints
+// (opencode version without them) is authoritative-empty, not an error.
+func TestOpencodeStoreReader_SessionStates_404IsAuthoritativeEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session":
+			_, _ = w.Write([]byte(`[{"id":"ses_1","title":"t","status":"idle"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"not found"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(srv.URL)
+
+	r := opencodeStoreReader{client: &OpenCodeClient{password: "pw", client: srv.Client()}}
+	seeds, err := r.SessionStates(context.Background())
+	require.NoError(t, err, "404 = endpoint absent = authoritative empty (documented boot contract)")
+	require.Len(t, seeds, 1)
+	assert.Empty(t, seeds["ses_1"].PendingInputs)
+}
