@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-15
 **Session:** epic-71 / leg10-pins — close the #1312 assessment gap: the #1379-era parse sites (`pkg/agent/opencode/loopback.go`, `translate.go`) lacked verified leg-10 (wire drift) pins. Audit, pin red-first, mutate-to-red evidence.
-**Status:** Complete
+**Status:** Complete — APPROVED (5th review round, commit 3adcb1c1); awaiting owner merge (PR #1384)
 
 ---
 
@@ -175,6 +175,15 @@ r4 findings validated and closed, plus the reviewer's pattern note adopted: the 
 | Contract-internal Custom.Data re-parses | `vision_gate.go` | operates on already-parsed contract parts (out of class) |
 
 (Cosmetic: stale `:737` cite for `opencodeActor.post` superseded by this table.)
+
+### 13. Review outcome
+
+Round 5 (commit `3adcb1c1`): **APPROVED** — both r4 findings verified closed by execution (M11 red-checks independently reproduced, pre-fix reds rebuilt from the `7de57267` tree), and the mechanical inventory independently re-derived by two review passes with zero unaccounted in-class sites. Non-blocking follow-ups recorded by the reviewer (all out-of-class or pre-existing):
+1. Enumerate the agentd `/v1/statusz` decodes in `api/internal/handlers` (`proxy_connections.go:219`, `proxy_events.go:236`, `proxy_lifecycle.go:539`) for future sweeps — verified loud/defaulted.
+2. `mcpSecretsResync` self-call decodes (`mcp_server.go:613-645`) — loud/defaulted.
+3. Workflow structured-output text re-parse (`workflow_execute.go:378`) — loud `schema_mismatch`.
+4. `fetchList` boot branch conflates any ≥400 (not just 404) into authoritative-empty — pre-existing settled contract; doc comment could name the actual status set; a 5xx-during-boot pin is nice-to-have.
+5. Stale doc comment on `parseProviderCatalogForContract` (`adapter_helpers.go:78-79`, introduced `13114e52`, file untouched here) — drive-by fix on a future touch.
 
 ---
 
