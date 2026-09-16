@@ -424,6 +424,78 @@ func TestReleasePreflightScript_OnlineResolution(t *testing.T) {
 		if !strings.Contains(out.String(), "disagrees with the CI-stamped index annotation") {
 			t.Errorf("output must name the annotation mismatch:\n%s", out.String())
 		}
+		if strings.Contains(out.String(), "match the CI-stamped index annotations") {
+			t.Errorf("a reported mismatch must NOT be followed by a match ok:\n%s", out.String())
+		}
+	})
+
+	t.Run("set pin on an un-annotated arch fails loud (no silent skip)", func(t *testing.T) {
+		// Index annotated for amd64 ONLY; the candidate pins a foreign
+		// arm64 hash — the round-3 Finding-B repro. Skip-must-not-pass.
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, map[string]string{agentdDig: indexBodyWithAnnotations("agentd", amd64Hex, "")})
+		cmd := exec.Command("bash", "./"+preflightScript,
+			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, strings.Repeat("dddd2222", 8))))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("a set pin with no annotation on its arch must FAIL, got pass:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "no arm64 annotation") {
+			t.Errorf("output must name the un-verifiable arch:\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "match the CI-stamped index annotations") {
+			t.Errorf("an un-verified pin must not produce a match ok:\n%s", out.String())
+		}
+	})
+
+	t.Run("annotation fetch failure with pins set fails loud", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething,
+			// agentdDig absent → P1 fails AND index_annotations cannot read
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, nil)
+		cmd := exec.Command("bash", "./"+preflightScript,
+			onlineValues(t, srv.URL, binaryPinCandidate(t, amd64Hex, arm64Hex)))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "cannot read index annotations") {
+			t.Errorf("output must name the annotation fetch failure:\n%s", out.String())
+		}
+	})
+
+	t.Run("opencode binary pin disagreeing with its index annotation fails (artifact symmetry)", func(t *testing.T) {
+		srv := stubRegistry(t, map[string]string{
+			apiTag: idxSomething, ctrlTag: idxSomething, feTag: idxSomething,
+			baseRef: idxSomething, agentdDig: idx2222,
+			ocTagRef: idx2222, opencodeDg: idx2222,
+		}, map[string]string{opencodeDg: indexBodyWithAnnotations("opencode", amd64Hex, arm64Hex)})
+		values := strings.Replace(preflightHappyValues(t),
+			`  opencodeDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/opencode:`+repoPinnedOpencode(t)+`@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""`,
+			`  opencodeDelivery:
+    image: "ghcr.io/lenaxia/llmsafespaces/opencode:`+repoPinnedOpencode(t)+`@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    binarySHA256Amd64: "`+strings.Repeat("eeee3333", 8)+`"
+    binarySHA256Arm64: "`+arm64Hex+`"`, 1)
+		cmd := exec.Command("bash", "./"+preflightScript, onlineValues(t, srv.URL, values))
+		var out strings.Builder
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("expected failure, got pass:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "opencodeDelivery.binarySHA256Amd64") ||
+			!strings.Contains(out.String(), "disagrees with the CI-stamped index annotation") {
+			t.Errorf("output must name the opencode-side mismatch:\n%s", out.String())
+		}
 	})
 
 	t.Run("binary pins on an un-annotated index are the documented break-glass posture", func(t *testing.T) {

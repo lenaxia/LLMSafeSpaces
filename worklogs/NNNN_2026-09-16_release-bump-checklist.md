@@ -26,7 +26,7 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 
 ### Pre-flight script (the issue's criterion 2, added in review round 1)
 - `local/release-preflight.sh` — run against a candidate config values file: P1 registry resolution of every tag/digest (ghcr v2 API, `GHCR_API` overridable), P2 index membership + no delivery pin reusing a platform digest + tag/digest coherence against the live index + `binarySHA256*` break-glass pins verified against the CI-stamped index annotations (`dev.llmsafespaces/<artifact>.sha256-{amd64,arm64}`; un-annotated index + pins set = documented break-glass posture, noted not failed — round-2 review finding: the header claimed this verification before it existed), P3 base CalVer + seed single-source equality, P4 opencode coordinate vs the repo pin + optional behavioral-contract execution via `--opencode-bin`. `--offline` is an explicitly loud degraded mode.
-- `local/release_preflight_script_test.go` — 4 test functions / 14 subtests: bash syntax, structure pins (each detector row must exist), offline behaviors (happy, both incident classes, drift, pin mismatch, empty tag, usage error), and online behaviors against an in-process ghcr-v2 stub (resolve pass, incident-3 404, incident-2 foreign digest, stale tag+digest pair, annotation match / mismatch / un-annotated break-glass).
+- `local/release_preflight_script_test.go` — 4 test functions / 17 subtests: bash syntax, structure pins (each detector row must exist), offline behaviors (happy, both incident classes, drift, pin mismatch, empty tag, usage error), and online behaviors against an in-process ghcr-v2 stub (resolve pass, incident-3 404, incident-2 foreign digest, stale tag+digest pair, annotation match / mismatch / un-annotated break-glass).
 
 ### Live defect the guard exposed (fixed)
 - The guard failed on main's own `helm/values.yaml`: `runtimeEnvironments.base.image.tag: ""` falls back to `.Chart.AppVersion` (`helm/templates/runtimeenvironment-base.yaml:9`) → `base:0.30.1`, a tag that has not existed since design 0053 moved the base to CalVer — the incident-3 mechanism, live in chart defaults.
@@ -44,6 +44,7 @@ Three incidents in four days (one fleet-wide outage) came from coordinated bumps
 5. **Empty-vs-empty digests skip, not fail** — chart defaults carry no pins; the equality comparisons are active exactly when a coordinated bump has both sides set.
 6. **Digest normalization to bare hex** (`sha256:<hex>` fields vs bare `binarySHA256*` values vs `@sha256:<hex>` refs) so all three pin forms compare correctly.
 7. **Seed rows must set tag or digest** — neither means the row renders an untagged image ref (always broken); tag set ⇒ CalVer + `tag == version` (base-image.yml publishes the version as the tag); digest-pinned rows are valid without a tag.
+8. **Per-arch pin verification is fail-loud in the unsafe direction** (round-3 review findings A+B): a `binarySHA256*` pin that disagrees with the CI-stamped annotation fails; a SET pin whose arch annotation is absent ALSO fails (skip-must-not-pass — the controller uses explicit pins as-is); only a fully-unannotated index with pins set is the documented break-glass posture (noted). The terminal ok is flag-guarded so a reported mismatch is never followed by a "match" line.
 
 ---
 
@@ -56,7 +57,7 @@ None.
 ## Tests Run
 
 - `go test ./pkg/repolint/` — PASS (full package incl. TestVersionScheme: 22 funcs / 38 cases, test-first RED→GREEN).
-- `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 14 subtests incl. in-process registry-stub legs: resolve, both incident classes online, stale pin, annotation match/mismatch/break-glass).
+- `go test ./local/ -run TestReleasePreflight` — PASS (4 funcs / 17 subtests incl. in-process registry-stub legs: resolve, both incident classes online, stale pin, annotation match/mismatch/break-glass, un-annotated-arch fail-loud, fetch failure, opencode-side symmetry).
 - `go test ./helm/...` — PASS (full package, helm on PATH — CI installs latest; validated locally across helm v3 and v4 lines), including `TestChart_DefaultBaseRTE_TagIsSeedCalVer`, `TestBaseTag_MandatoryRenderGate`, and the delivery-pin render gates.
 - `go run ./cmd/repolint` — all checks passed (after the values.yaml fix; failed as designed before it).
 - `go build ./...`, `make test`, `make lint` — green before the PR (see PR body).

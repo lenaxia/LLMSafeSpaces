@@ -318,11 +318,13 @@ verify_pin_coherence "opencodeDelivery" "${OPENCODE_REF}" "$(delivery_repo "${OP
 # Break-glass binarySHA256* pins are overrides the controller uses as-is
 # (it resolves only UNSET pins from the annotations) — so a stale or
 # foreign paste would reach every pod. The CI-stamped index annotations
-# are the ground truth: a pin that disagrees with them is wrong. An
-# index without annotations is the documented break-glass posture for
+# are the ground truth: a pin that disagrees fails, and a SET pin with
+# no annotation on its arch fails too (skip = green is the wrong
+# direction — the incident-2026-09-01 class). An index with NO
+# annotations at all is the documented break-glass posture for
 # un-annotated images (values.yaml caveat) — noted, not failed.
 verify_binary_pins() {
-  local label="$1" repo="$2" ref="$3" name="$4" amd64="$5" arm64="$6" out idx_amd64 idx_arm64
+  local label="$1" repo="$2" ref="$3" name="$4" amd64="$5" arm64="$6" out idx_amd64 idx_arm64 bad
   [ -z "${amd64}" ] && [ -z "${arm64}" ] && { ok "P2 ${label}: no explicit binarySHA256* pins — resolved from the index annotations at controller startup"; return; }
   [ -z "${ref}" ] && { die "P2 ${label}: binary pins set but the delivery ref carries neither tag nor digest — cannot verify against the index"; return; }
   if ! out="$(index_annotations "${repo}" "${ref}" "${name}")"; then
@@ -335,13 +337,31 @@ verify_binary_pins() {
     ok "P2 ${label}: index carries no annotations — break-glass posture (values.yaml caveat); pins used as-is by the controller"
     return
   fi
-  if [ -n "${amd64}" ] && [ "${idx_amd64}" != "-" ] && [ "${amd64}" != "${idx_amd64}" ]; then
-    die "P2 ${label}.binarySHA256Amd64 (${amd64}) disagrees with the CI-stamped index annotation (${idx_amd64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+  bad=0
+  local verified=0
+  if [ -n "${amd64}" ]; then
+    if [ "${idx_amd64}" = "-" ]; then
+      die "P2 ${label}.binarySHA256Amd64 is set but the index carries no amd64 annotation — cannot verify, and the controller uses explicit pins as-is (fail-loud: remove the pin or annotate the index)"
+      bad=1
+    elif [ "${amd64}" != "${idx_amd64}" ]; then
+      die "P2 ${label}.binarySHA256Amd64 (${amd64}) disagrees with the CI-stamped index annotation (${idx_amd64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+      bad=1
+    else
+      verified=$((verified+1))
+    fi
   fi
-  if [ -n "${arm64}" ] && [ "${idx_arm64}" != "-" ] && [ "${arm64}" != "${idx_arm64}" ]; then
-    die "P2 ${label}.binarySHA256Arm64 (${arm64}) disagrees with the CI-stamped index annotation (${idx_arm64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+  if [ -n "${arm64}" ]; then
+    if [ "${idx_arm64}" = "-" ]; then
+      die "P2 ${label}.binarySHA256Arm64 is set but the index carries no arm64 annotation — cannot verify, and the controller uses explicit pins as-is (fail-loud: remove the pin or annotate the index)"
+      bad=1
+    elif [ "${arm64}" != "${idx_arm64}" ]; then
+      die "P2 ${label}.binarySHA256Arm64 (${arm64}) disagrees with the CI-stamped index annotation (${idx_arm64}) — stale or foreign per-arch pin (incident 2026-09-01 class)"
+      bad=1
+    else
+      verified=$((verified+1))
+    fi
   fi
-  ok "P2 ${label}: explicit binarySHA256* pins match the CI-stamped index annotations"
+  [ "${bad}" -eq 0 ] && ok "P2 ${label}: explicit binarySHA256* pins match the CI-stamped index annotations (${verified} verified)"
 }
 
 delivery_ref() { # the manifest ref to inspect: digest when pinned, else tag
