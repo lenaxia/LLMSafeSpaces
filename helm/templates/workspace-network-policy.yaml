@@ -88,18 +88,55 @@ spec:
     {{- $workspaceEgressEnabled = .Values.networkPolicy.workspaceEgress.enabled -}}
   {{- end -}}
 {{- end -}}
+{{- $egressMode := "public" -}}
+{{- if hasKey .Values.networkPolicy "workspaceEgress" -}}
+  {{- if hasKey .Values.networkPolicy.workspaceEgress "mode" -}}
+    {{- $egressMode = .Values.networkPolicy.workspaceEgress.mode -}}
+  {{- end -}}
+{{- end -}}
+{{- if not (has $egressMode (list "public" "allowlist")) -}}
+  {{- fail (printf "networkPolicy.workspaceEgress.mode must be \"public\" or \"allowlist\", got %q (#821)" $egressMode) -}}
+{{- end -}}
 {{- if and .Values.networkPolicy.enabled $workspaceEgressEnabled }}
-# Epic 17 G16: Workspace egress allow-list.
+# Workspace egress policy (#821 / Epic 67).
 #
-# Sandbox pods need:
-#   - DNS resolution (otherwise nothing else can connect by name)
-#   - Egress to LLM endpoints and operator-allowlisted CIDRs
+# Two postures, selected by networkPolicy.workspaceEgress.mode:
+#
+#   public (default — staged rollout per #821)
+#     Allow 0.0.0.0/0 minus blockedEgressCIDRs (RFC1918/CGNAT/link-local/
+#     loopback/metadata). Arbitrary PUBLIC destinations remain reachable;
+#     this is the legacy deny-list posture, kept as the default because
+#     the product surface (direct-to-Zen + agents installing arbitrary
+#     packages from CDN-fronted registries) cannot be captured by chart
+#     default CIDRs without either rotting (pinned /32s) or re-admitting
+#     the exfiltration channel wholesale (whole-CDN ranges). Operators
+#     should move to allowlist as they pin their own destination set.
+#
+#   allowlist
+#     Explicit destination allowlist (#821 option 1): no general public
+#     rule is rendered. Egress is limited to:
+#       - DNS (UDP/TCP 53 to the configured resolver pods)
+#       - the in-namespace API service (relay WebSocket path)
+#       - the relay-router when the fleet is enabled (pod-selector based)
+#       - operator-supplied CIDR groups, each restricted to TCP 443/80:
+#           allowlist.llmCIDRs        — data-plane (LLM inference)
+#           allowlist.tooling.cidrs   — registries / git hosts, gated by
+#                                       allowlist.tooling.enabled (the
+#                                       #821 data-plane/tooling split)
+#       - networkPolicy.extraEgressCIDRs — unchanged all-ports escape
+#         hatch for operator-accepted internal destinations
+#
+#     FQDN allowlisting is NOT possible with plain NetworkPolicy (no
+#     FQDN matching in the API). Per-workspace FQDN widening exists via
+#     spec.networkAccess.egress (controller resolves domains to /32s at
+#     reconcile time) and composes with this policy by NetPol union
+#     semantics. For strict FQDN enforcement use a CNI-native policy
+#     (Cilium CNP) with this policy disabled — see below.
 #
 # The policy explicitly forbids egress to:
-#   - kube-apiserver and other in-cluster services (via blockedEgressCIDRs)
+#   - kube-apiserver and other in-cluster services (via blockedEgressCIDRs
+#     on the public-mode catch-all; selector rules are namespace-scoped)
 #   - cloud metadata endpoint (169.254.169.254)
-# A hostile agent in a sandbox can still reach the public internet via the
-# allowed CIDRs; that's accepted risk per threat-model §4.4.
 #
 # WHEN TO DISABLE (networkPolicy.workspaceEgress.enabled: false):
 #   Operators using a CNI-native policy engine (Cilium CNP, Calico
@@ -175,15 +212,54 @@ spec:
         - protocol: TCP
           port: 8080
     {{- end }}
-    # External egress: allowedEgressCIDRs minus blockedEgressCIDRs.
-    {{- if .Values.networkPolicy.allowedEgressCIDRs }}
+    {{- if eq $egressMode "allowlist" }}
+    {{- $allowlist := .Values.networkPolicy.workspaceEgress.allowlist }}
+    # Destination allowlist groups (#821). Plain ipBlock entries WITHOUT
+    # an except: list — Kubernetes rejects ipBlock rules whose except
+    # entries are not subnets of the cidr, and the blockedEgressCIDRs
+    # private ranges are not subnets of a narrow public CIDR. Entries
+    # must be PUBLIC destination CIDRs; for in-cluster destinations use
+    # networkPolicy.extraEgressCIDRs (documented escape hatch).
+    {{- if $allowlist.llmCIDRs }}
+    # Data-plane: LLM inference endpoints (direct-to-Zen, provider APIs).
+    - to:
+        {{- range $allowlist.llmCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- end }}
+    {{- if and $allowlist.tooling.enabled $allowlist.tooling.cidrs }}
+    # Tooling: package registries + git hosts. Toggled separately from
+    # the data-plane group — the #821 data-plane/tooling split. Disabling
+    # tooling egress yields the LLM/relay-only posture.
+    - to:
+        {{- range $allowlist.tooling.cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
+    {{- end }}
+    {{- else if .Values.networkPolicy.allowedEgressCIDRs }}
+    # External egress (legacy public posture): allowedEgressCIDRs. The
+    # blockedEgressCIDRs except: list is attached ONLY to the 0.0.0.0/0
+    # catch-all — Kubernetes rejects except entries that are not subnets
+    # of the cidr, so narrow operator CIDRs must render plain.
     - to:
         {{- range .Values.networkPolicy.allowedEgressCIDRs }}
         - ipBlock:
             cidr: {{ . }}
-            {{- with $.Values.networkPolicy.blockedEgressCIDRs }}
+            {{- if and $.Values.networkPolicy.blockedEgressCIDRs (eq . "0.0.0.0/0") }}
             except:
-              {{- toYaml . | nindent 14 }}
+              {{- toYaml $.Values.networkPolicy.blockedEgressCIDRs | nindent 14 }}
             {{- end }}
         {{- end }}
     {{- end }}

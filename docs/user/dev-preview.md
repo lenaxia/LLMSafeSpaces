@@ -99,7 +99,7 @@ cloudflared tunnel --url http://localhost:5173
 ngrok http 5173
 ```
 
-Both produce a public HTTPS URL that you can share. The workspace egress NetworkPolicy already allows outbound HTTPS to public internet, so no platform configuration is needed. **The platform does not provide public shareable URLs in v1.**
+Both produce a public HTTPS URL that you can share. The workspace egress NetworkPolicy already allows outbound HTTPS to public internet in the default (`public`) posture, so no platform configuration is needed. On clusters running `networkPolicy.workspaceEgress.mode=allowlist` (#821), the tunnel provider's egress CIDRs must be in the allowlist groups or the tunnel cannot connect. **The platform does not provide public shareable URLs in v1.**
 
 ## Troubleshooting
 
