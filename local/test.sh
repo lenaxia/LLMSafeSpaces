@@ -254,6 +254,52 @@ case "${HEALTH}" in
 esac
 
 # -----------------------------------------------------------------------------
+# Test 5b: user-timezone channel (PR #1389) — CI-gated e2e
+# -----------------------------------------------------------------------------
+# The full pod-side channel against the deployed agentd: push a zone via
+# the §D1-gated /v1/user-timezone endpoint, then get_datetime must report
+# source=browser with the IANA zone and the matching offset. Exercises
+# the FROM-scratch tzdata embed for real (no system zoneinfo in the
+# delivery image) — the static go-list tripwire cannot.
+log "  verifying user-timezone push + get_datetime source=browser"
+TZ_PUSH=$(kc -n "${NS}" exec "${POD}" -c workspace -- \
+    curl -sfm 5 -u "opencode:${OC_PASSWORD}" \
+    -X POST http://127.0.0.1:4097/v1/user-timezone \
+    -H 'Content-Type: application/json' -d '{"timezone":"Asia/Tokyo"}' 2>&1 || true)
+case "${TZ_PUSH}" in
+    *Asia/Tokyo*) ok "user-timezone push accepted: ${TZ_PUSH}" ;;
+    *) die "user-timezone push failed: ${TZ_PUSH}" ;;
+esac
+
+# The MCP tool result is a JSON string nested in content[0].text — parse
+# both layers (raw grep would match escaped quotes only).
+TZ_TOOL=$(kc -n "${NS}" exec "${POD}" -c workspace -- \
+    curl -sfm 5 -u "opencode:${OC_PASSWORD}" \
+    -X POST http://127.0.0.1:4097/v1/mcp \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"get_datetime","arguments":{}}}' \
+    2>&1 || true)
+TZ_PARSED=$(printf '%s' "${TZ_TOOL}" | python3 -c '
+import json,sys
+try:
+    env=json.load(sys.stdin)
+    tool=json.loads(env["result"]["content"][0]["text"])
+    print(tool.get("source",""), tool.get("timezone",""), tool.get("utc_offset",""))
+except Exception:
+    print("parse-error","","")
+')
+case "${TZ_PARSED}" in
+    "browser Asia/Tokyo +09:00") ok "get_datetime: source=browser zone=Asia/Tokyo offset=+09:00" ;;
+    *) die "get_datetime timezone channel broken (got: ${TZ_PARSED}; raw: ${TZ_TOOL})" ;;
+esac
+
+TZ_BAD=$(kc -n "${NS}" exec "${POD}" -c workspace -- \
+    curl -s -o /dev/null -w '%{http_code}' -m 5 -u "opencode:${OC_PASSWORD}" \
+    -X POST http://127.0.0.1:4097/v1/user-timezone \
+    -H 'Content-Type: application/json' -d '{"timezone":"Mars/Olympus_Mons"}' 2>&1 || true)
+[[ "${TZ_BAD}" == "400" ]] && ok "invalid zone rejected (400)" || die "invalid zone not rejected (HTTP ${TZ_BAD})"
+
+# -----------------------------------------------------------------------------
 # Test 6: API proxy → opencode session lifecycle
 # -----------------------------------------------------------------------------
 # Drive the LLMSafeSpaces API service end-to-end: insert a user + API key

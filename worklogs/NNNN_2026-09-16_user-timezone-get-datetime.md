@@ -69,6 +69,30 @@ secondary for pod-wide surfaces (log timestamps) and is NOT built.
    opens one; SDK/MCP callers do not (by design — they get
    argument/pod).
 
+## Review round 5/6 remediations — the CI-gated e2e
+
+The carried blocker (four rounds): the timezone workflow had no
+CI-gated e2e — the liveprobe is manual-only and pod-half-only, so a
+tzdata-delivery break or full-channel regression shipped green.
+
+- **`local/test.sh` Test 5b** (runs in `e2e-nightly.yml` against the
+  kind cluster with the PR's own agentd): push `Asia/Tokyo` via the
+  §D1-gated `/v1/user-timezone` → `get_datetime` must answer
+  `source=browser zone=Asia/Tokyo offset=+09:00` (double-JSON parse —
+  raw grep matches escaped quotes only) → invalid zone rejected 400.
+  This is the only leg that exercises the FROM-scratch tzdata embed on
+  real cluster delivery; the static `go list` tripwire cannot.
+- Liveprobe get_datetime probes rewritten to the same double-layer
+  parse (round-5 finding: three probes were permanent false negatives
+  matching escaped quote forms); all error classes fail closed.
+- Test-plan rows corrected (10/10 on pre-#1389 agentd; +6 timezone
+  probes engage post-deploy; the CI-gated leg now has its own row).
+- Frontend: dedup-half pinned (121s constant zone → still 1 call);
+  retry test scoped to interval-only fake timers; test order
+  documented as load-bearing.
+- Round-labeling blemish fixed: this section documents rounds 5-6
+  (prior section headers drifted by one).
+
 ## Review round 4 remediations
 
 - The round-3 `PW2` alias removal left three usages unbound — 5 of 6
