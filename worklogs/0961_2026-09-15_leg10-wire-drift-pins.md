@@ -249,4 +249,4 @@ None.
 - `cmd/workspace-agentd/relay_injector.go` — fetchFreeModels strict (r2)
 - `cmd/workspace-agentd/relay_injector_test.go` — fetchFreeModels drift pin (r2)
 - `COORDINATE.md` — claim row
-- `worklogs/NNNN_2026-09-15_leg10-wire-drift-pins.md` — this worklog
+- `worklogs/0961_2026-09-15_leg10-wire-drift-pins.md` — this worklog
