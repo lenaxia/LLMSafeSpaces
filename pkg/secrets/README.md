@@ -74,6 +74,35 @@ abuse while the RCE is live.
 - **Production (GCP):** `gcp-kms`. Same shape as AWS with GCP key resource
   names and a service-account JSON Secret.
 
+## Staging envelopes (Epic 72 / US-72.1)
+
+`staging_provider.go` is the relay-key delivery envelope (design 0058 §4.2)
+— distinct from the at-rest `RootKeyProvider` machinery above. It seals a
+provider key so the plaintext exists only in controller/router memory:
+
+- **KMS mode (prod):** `KMSStagingProvider` — a 32-byte local KEK stored
+  only KMS-wrapped in the `llm-relay-kek` Secret (`key-id` + `wrapped-kek`,
+  never plaintext bytes). The KMS client is invoked exactly once at
+  construction; Seal/Resolve are local AES-256-GCM (µs; benchmark-pinned
+  zero KMS calls at steady state).
+- **HPKE mode (dev / no-KMS production):** `HPKEStagingSealer` (controller,
+  public key only — no decrypt capability) and `HPKEStagingResolver`
+  (router), RFC 9180 via `github.com/cloudflare/circl` (pinned `v1.6.5`,
+  BSD-3-Clause; dependency review in the US-72.1 worklog).
+
+Wire format: `stg:v1:<alg>:<keyID>:<base64(payload)>` with `alg` ∈
+{`aes-256-gcm`, `hpke`}; the header is GCM/HPKE AAD, so version, algorithm,
+and the plaintext `keyID` are integrity-bound. HPKE keypair Secret payloads
+(`{privateKey, publicKey, generation}` / `{publicKey, generation}`) and the
+self-contained `AssertHPKEKeyPair` integrity check are here too; the
+router-side halves (create-or-adopt, Secret-watch, dual-key resolve,
+retention, DR) land with US-72.2.
+
+The provider also carries the staged-key redaction seam (design 0058 §4.9):
+`StagedKeyRedactor` / `RedactStagedKeys` register resolved key material as
+dynamic exact-value rules in `pkg/redact` at seal/resolve time; revocation
+unregisters. See `pkg/redact/README.md`.
+
 ## Sealed-key file format
 
 `cmd/seal-key` writes the root key sealed under an Argon2id KEK derived from the
