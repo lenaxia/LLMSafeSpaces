@@ -1569,7 +1569,7 @@ jobs:
       - name: Verify image contents (CA bundle)
         if: matrix.platform == 'linux/amd64'
         run: |
-          docker buildx build --platform linux/amd64 --load -t agentd-verify ./cmd/workspace-agentd
+          docker buildx build --platform linux/amd64 -f ./cmd/workspace-agentd/Dockerfile --load -t agentd-verify .
           cid="agentd-verify-$GITHUB_RUN_ID"
           docker create --platform linux/amd64 --name "$cid" agentd-verify /usr/local/bin/workspace-agentd >/dev/null
           docker cp "$cid":/etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt

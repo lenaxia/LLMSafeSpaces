@@ -5,8 +5,9 @@
 # Standalone workspace-agentd image (#863).
 #
 # This is the image-volume delivery artifact: the controller pins it by
-# digest into every workspace pod, and the entrypoint verifies the binary
-# sha256 against per-arch pins before exec. Contents: the agentd binary
+# digest into every workspace pod, and the supervisor self-verifies the
+# binary sha256 against the per-arch pins before exec (design 0053 —
+# the deleted entrypoint's check moved into the binary). Contents: the agentd binary
 # plus ONE data file — the public CA bundle (#1416, /etc/ssl/certs/
 # ca-certificates.crt) for the sidecar's TLS egress. No distro, no
 # shell, no opencode: those stay in the workspace image ("the image is

@@ -48,7 +48,7 @@ Because release CI tags the base with the platform `VERSION` (`release.yml` prin
 | Base is tagged with the platform VERSION | `.github/workflows/release.yml:1324` (`base:${VERSION}`) |
 | agentd overlay delivery exists: digest-pinned image volume `/agentd`, per-arch sha256 as OCI index annotations, controller-resolved at startup, cached in `llmsafespaces-agentd-pins` ConfigMap, verified before exec | `docs/operator/agentd-delivery.md`; `helm/values.yaml` (`controller.agentdDelivery`); `controller/internal/controller/controller.go:61-63` |
 | Sidecar mode runs platform boot (init-fs/bootstrap/materialize) from the agentd artifact and bypasses the baked entrypoint; #863 verify moved into the supervisor | `helm/values.yaml` (`agentdSidecar`, migration-state note); design 0051 |
-| The agentd artifact's trust contract is "one file, one sha256" — `FROM scratch`, ~25MB, "do not add anything executable" | `cmd/workspace-agentd/Dockerfile` |
+| The agentd artifact's trust contract is "one EXECUTABLE file, one sha256" — `FROM scratch`, ~25MB+CA roots (#1416), "do not add anything executable" (the CA bundle is 0644 data) | `cmd/workspace-agentd/Dockerfile` |
 | agentd already dispatches subcommands: `init-fs`, `supervise-opencode`, `--sidecar`, `materialize`, `bootstrap` | `cmd/workspace-agentd/main.go:82-112` |
 | `redact` is a ~40-line stdin→stdout filter consumed only by platform-owned paths: the entrypoint (pipes opencode stdout/stderr in high-security mode) and PATH-shadowing wrappers | `cmd/redact/main.go`; `docs/reference/cli.md:148-167`; `docs/operator/runtime-environments.md:82` |
 | The factory floor blocks builds onto bases older than `0.15.7` (the #871 contract) | `api/internal/imagefactory/dockerfile.go:25,41-44` |

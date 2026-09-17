@@ -24,7 +24,10 @@ Make TLS egress from the agentd sidecar verify against real roots without distur
 None.
 
 ## Tests Run
-- repolint pins (3) green; full pkg/repolint suite green; image builds in CI.
+- repolint pins (3) green; full pkg/repolint suite green.
+- CI integration pin: the agentd job builds the image (repo-root
+  context, -f cmd/workspace-agentd/Dockerfile), extracts the bundle from
+  a created container, fails on missing/empty/certless — runs on PRs.
 
 ## Next Steps
 Merge with the #1410-#1419 batch; live http-node leg in the comprehensive test (#1427).
