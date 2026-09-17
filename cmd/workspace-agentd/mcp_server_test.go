@@ -856,15 +856,160 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, schemaDescs["create_session/prompt"], "will NOT return to you")
 	})
 
+	t.Run("send_message guidance", func(t *testing.T) {
+		d, ok := descs["send_message"]
+		require.True(t, ok, "send_message in tools/list")
+		for _, want := range []string{
+			"fire-and-forget",                    // delivery semantics
+			"stays in THAT session",              // reply never returns to the caller
+			"session_read",                       // follow-up path for the response
+			"delivering_after_current_turn",      // busy-target queueing named
+			"the moment their current turn ends", // run-at-boundary semantics
+			"your OWN current session",           // self-send = scheduled next turn
+			"use the task tool",                  // blocking alternative for answers needed here
+			"create_session",                     // pointer: new sessions go there
+			"self-contained",                     // target inherits no context
+			"Delivery is not retried",            // loss semantics disclosed (finding 2)
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("abort_session guidance", func(t *testing.T) {
+		d, ok := descs["abort_session"]
+		require.True(t, ok, "abort_session in tools/list")
+		for _, want := range []string{
+			"Stop a session's current turn",      // the verb and scope
+			"history and recorded work are kept", // non-destructive to history
+			"runaway",                            // trigger: runaway session
+			"queued for the target",              // abort x queued-message interaction named
+			"may be dropped",                     // destructive-to-queue disclosed
+			"re-send anything that mattered",     // the remediation path
+			"idle session is a harmless no-op",   // idempotence
+			"cannot abort your way out",          // own-session exclusion
+			"create_session / send_message",      // management family pointers
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("get_datetime guidance", func(t *testing.T) {
 		d, ok := descs["get_datetime"]
 		require.True(t, ok, "get_datetime in tools/list")
 		for _, want := range []string{
-			"UTC",            // always reported
-			"local timezone", // always reported alongside
-			"default to UTC", // pods are UTC — do not assume user's zone
+			"UTC",                 // always reported
+			"the USER's timezone", // user-local, not pod-local, is the contract
+			"source: browser",     // the live path is named
+			"source: argument",    // the explicit override is named
+			"source: pod",         // the fallback is named
+			"America/Los_Angeles", // the IANA-name arg form is exemplified
+			"Do not assume",       // do not assume the user's zone matches the pod
+			"pass it explicitly",  // the remediation when source != browser
 		} {
 			assert.Contains(t, d, want)
 		}
+	})
+
+	t.Run("trigger_list guidance", func(t *testing.T) {
+		d, ok := descs["trigger_list"]
+		require.True(t, ok, "trigger_list in tools/list")
+		for _, want := range []string{
+			"resolved from this pod's identity", // ownership is pod-identity derived, not an argument
+			"Start here before create/update",   // learn-shapes-first loop
+			"exact body shapes",                 // schema discovery from live entries
+			"consecutiveFailures",               // the auto-disable signal is named
+			"Pair with trigger_fires",           // the debugging read is pointed to
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("trigger_create guidance", func(t *testing.T) {
+		d, ok := descs["trigger_create"]
+		require.True(t, ok, "trigger_create in tools/list")
+		for _, want := range []string{
+			"cron or webhook",                                // source vocabulary
+			"the platform forces this workspace",             // scoping invariant surfaced to the agent
+			"you cannot schedule work into other workspaces", // the explicit cannot
+			"autoDisableAfter",                               // failure-policy field named
+			"trigger_fires",                                  // where failures show up
+			// #1415 drift pins — the description once invented a
+			// snake_case field and omitted validation semantics.
+			"workflowId (camelCase!)",   // DTO spelling (snake_case is silently dropped)
+			"does NOT fire immediately", // first-occurrence scheduling semantics
+			"both are validated",        // create-path validation surfaced
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("trigger_update guidance", func(t *testing.T) {
+		d, ok := descs["trigger_update"]
+		require.True(t, ok, "trigger_update in tools/list")
+		assert.Contains(t, d, "omitted = keep existing") // patch semantics
+		assert.Contains(t, d, "immutable after create")  // sourceType rule
+	})
+
+	t.Run("trigger_delete guidance", func(t *testing.T) {
+		d, ok := descs["trigger_delete"]
+		require.True(t, ok, "trigger_delete in tools/list")
+		assert.Contains(t, d, "trigger_update {enabled:false}") // disarm-first alternative
+	})
+
+	t.Run("trigger_fires guidance", func(t *testing.T) {
+		d, ok := descs["trigger_fires"]
+		require.True(t, ok, "trigger_fires in tools/list")
+		for _, want := range []string{
+			"fire audit",     // what it is
+			"input envelope", // what the trigger saw
+			"error payloads", // why it failed
+			"is not working", // the user-symptom it answers
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("workflow_create guidance", func(t *testing.T) {
+		d, ok := descs["workflow_create"]
+		require.True(t, ok, "workflow_create in tools/list")
+		assert.Contains(t, d, "passed through to the platform verbatim")
+		assert.Contains(t, d, "or YAML text", "#1418: both dialects taught") // schema-decoupled contract
+		assert.Contains(t, d, "workflow_list")                               // where shapes are learned
+		// #1415 drift pins — the description once invented a node
+		// vocabulary the validator rejects and never stated the
+		// script-node contract.
+		assert.Contains(t, d, "script, agent, http, condition") // the validated vocabulary, exactly
+		assert.NotContains(t, d, "transform")                   // no invented types may return
+		assert.NotContains(t, d, "mcp_call")
+		assert.Contains(t, d, "handler(input) -> dict") // script handler is source, not a shell command
+		assert.Contains(t, d, "targetWorkspaceId")      // runs are rejected without it
+	})
+
+	t.Run("workflow_update guidance", func(t *testing.T) {
+		d, ok := descs["workflow_update"]
+		require.True(t, ok, "workflow_update in tools/list")
+		for _, want := range []string{
+			"UpdateWorkflowRequest",       // the patch shape is named
+			"STRINGIFIED spec",            // specYaml is a string, not a nested object
+			"inputSchema",                 // compile-checked + enforced on runs
+			"targetWorkspaceId",           // runs are rejected without it
+			"script/agent/http/condition", // re-validation vocabulary
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("workflow_run guidance", func(t *testing.T) {
+		d, ok := descs["workflow_run"]
+		require.True(t, ok, "workflow_run in tools/list")
+		assert.Contains(t, d, "inputSchema")   // input is validated against the spec
+		assert.Contains(t, d, "workflow_runs") // the poll read is named
+	})
+
+	t.Run("workflow_runs guidance", func(t *testing.T) {
+		d, ok := descs["workflow_runs"]
+		require.True(t, ok, "workflow_runs in tools/list")
+		assert.Contains(t, d, "error codes")             // failures are diagnosable
+		assert.Contains(t, d, "pair with trigger_fires") // trigger-fired runs cross-read
 	})
 }

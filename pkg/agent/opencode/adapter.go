@@ -907,7 +907,19 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 			zap.Int("status", qResp.StatusCode))
 		return nil, fmt.Errorf("%w: GET /question returned %d", ErrPendingUnavailable, qResp.StatusCode)
 	}
-	out = append(out, a.parsePendingQuestions(qResp)...)
+	if qResp.StatusCode == http.StatusNotFound {
+		// 404 = endpoint not implemented in this opencode version —
+		// the documented authoritative empty. The body is an error
+		// object and must not reach the array parser.
+	} else {
+		q, pErr := a.parsePendingQuestions(qResp)
+		if pErr != nil {
+			a.logger.Warn("adapter ListPending: GET /question body drift",
+				zap.Error(pErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
+			return nil, fmt.Errorf("%w: GET /question: %v", ErrPendingUnavailable, pErr)
+		}
+		out = append(out, q...)
+	}
 
 	pResp, pErr := a.doGet(ctx, c, d.PermissionListPath())
 	if pErr != nil {
@@ -921,7 +933,18 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 			zap.Int("status", pResp.StatusCode))
 		return nil, fmt.Errorf("%w: GET /permission returned %d", ErrPendingUnavailable, pResp.StatusCode)
 	}
-	out = append(out, a.parsePendingPermissions(pResp)...)
+	if pResp.StatusCode == http.StatusNotFound {
+		// 404 = endpoint not implemented — authoritative empty (see
+		// the /question arm).
+	} else {
+		p, pErr := a.parsePendingPermissions(pResp)
+		if pErr != nil {
+			a.logger.Warn("adapter ListPending: GET /permission body drift",
+				zap.Error(pErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
+			return nil, fmt.Errorf("%w: GET /permission: %v", ErrPendingUnavailable, pErr)
+		}
+		out = append(out, p...)
+	}
 	return out, nil
 }
 
@@ -932,17 +955,23 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 // sessionID. The previous stub parser (PR #717 review critical bug)
 // discarded all content fields, producing blank question events in
 // the SSE snapshot path.
-func (a *Adapter) parsePendingQuestions(resp *http.Response) []session.InputRequest {
-	raw, _ := readBody(resp, 1<<20)
+func (a *Adapter) parsePendingQuestions(resp *http.Response) ([]session.InputRequest, error) {
+	raw, rerr := readBody(resp, 1<<20)
+	if rerr != nil {
+		return nil, fmt.Errorf("read body: %w", rerr)
+	}
 	var items []json.RawMessage
-	if json.Unmarshal(raw, &items) != nil {
-		return nil
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("malformed body: %w", err)
 	}
 	d := &Dialect{}
 	out := make([]session.InputRequest, 0, len(items))
 	for _, item := range items {
 		req, err := d.ParseQuestionRequest("question.asked", item)
-		if err != nil || req == nil {
+		if err != nil {
+			return nil, fmt.Errorf("question item drift: %w", err)
+		}
+		if req == nil {
 			continue
 		}
 		ir := session.InputRequest{
@@ -975,7 +1004,7 @@ func (a *Adapter) parsePendingQuestions(resp *http.Response) []session.InputRequ
 		}
 		out = append(out, ir)
 	}
-	return out
+	return out, nil
 }
 
 // parsePendingPermissions reads /permission response body and converts
@@ -984,17 +1013,23 @@ func (a *Adapter) parsePendingQuestions(resp *http.Response) []session.InputRequ
 // (permission, patterns, metadata, always, tool) — NOT just id +
 // sessionID + permission. The previous stub parser discarded patterns,
 // always, and tool, producing incomplete permission events.
-func (a *Adapter) parsePendingPermissions(resp *http.Response) []session.InputRequest {
-	raw, _ := readBody(resp, 1<<20)
+func (a *Adapter) parsePendingPermissions(resp *http.Response) ([]session.InputRequest, error) {
+	raw, rerr := readBody(resp, 1<<20)
+	if rerr != nil {
+		return nil, fmt.Errorf("read body: %w", rerr)
+	}
 	var items []json.RawMessage
-	if json.Unmarshal(raw, &items) != nil {
-		return nil
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, fmt.Errorf("malformed body: %w", err)
 	}
 	d := &Dialect{}
 	out := make([]session.InputRequest, 0, len(items))
 	for _, item := range items {
 		req, err := d.ParsePermissionRequest("permission.asked", item)
-		if err != nil || req == nil {
+		if err != nil {
+			return nil, fmt.Errorf("permission item drift: %w", err)
+		}
+		if req == nil {
 			continue
 		}
 		ir := session.InputRequest{
@@ -1013,7 +1048,7 @@ func (a *Adapter) parsePendingPermissions(resp *http.Response) []session.InputRe
 		}
 		out = append(out, ir)
 	}
-	return out
+	return out, nil
 }
 
 // AnswerQuestion posts the question-reply schema verbatim

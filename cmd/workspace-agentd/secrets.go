@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -102,6 +103,20 @@ const interruptCallTimeout = 3 * time.Second
 // seam (sessionstate_wiring.go newSessionInterrupter); nil disables
 // interrupts (the force path degrades to the pre-1342 direct restart).
 type sessionInterrupter func(ctx context.Context, sessionID string) error
+
+// deferredRestarts counts outstanding deferred-restart goroutines spawned
+// by makeSessionAwareRestartDecision (any path: credential apply, relay
+// kill, config watcher). #910's named constraint — re-arm attempts must
+// not stack behind deferred kills — reads this gauge: the relay re-arm
+// loop's RestartDeferred gate skips its cycle while any deferral is
+// outstanding, closing the ≤restartIdleCheckInterval window between the
+// last busy→idle transition and the deferred restart firing where a
+// second restart could otherwise stack.
+var deferredRestarts atomic.Int64
+
+// anyRestartDeferred reports whether a session-aware deferred restart is
+// outstanding.
+func anyRestartDeferred() bool { return deferredRestarts.Load() > 0 }
 
 // restartDecisionConfig carries the session-aware restart decision's
 // collaborators and tunables. StallBound/GraceWindow/PollInterval <= 0
@@ -294,6 +309,7 @@ func makeSessionAwareRestartDecision(
 	}
 
 	runDeferred := func() {
+		defer deferredRestarts.Add(-1)
 		defer cfg.PendingApply.clear()
 		ticker := time.NewTicker(cfg.PollInterval)
 		defer ticker.Stop()
@@ -326,6 +342,7 @@ func makeSessionAwareRestartDecision(
 		}
 	}
 
+	deferredRestarts.Add(1)
 	if cfg.BgWg != nil {
 		cfg.BgWg.Add(1)
 		go func() {

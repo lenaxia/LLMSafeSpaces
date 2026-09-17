@@ -72,6 +72,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useClearSessionPendingPrompts: () => () => {},
   useWorkspaceInputSnapshot: () => undefined,
   SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useWhileAwayStalenessSweep: () => {},
 }));
 
 const WS = "ws-1";

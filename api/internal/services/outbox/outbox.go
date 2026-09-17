@@ -927,10 +927,16 @@ func verifyBackoffFor(passes int) time.Duration {
 // VERIFYING: the interrupted send's outcome is unknown — blind re-send
 // is the #987 duplicate class.
 //
-// Holds the per-session lock: the head-LPush shifts every snapshot
-// index, and at boot it can overlap the seed transition's parked sweep
-// (same replica — Start wires the probe, the watcher seed fires
-// synchronously, Run's first act is Recover): a sweep LRange before the
+// Holds the per-session lock BEFORE reading staging: the requeue
+// decision (entry absent from main) is only valid against state no
+// concurrent delivery can change. A pre-lock staging snapshot races a
+// completing delivery — restore → verify → claim between the snapshot
+// and the lock acquisition leaves the entry absent from main, and the
+// stale snapshot requeues it as a verifying zombie: a later pass
+// verifies and claims it again, firing OnDelivered twice for one send
+// (the 2026-09-16 multi-replica storm failure). This is also why the
+// head-LPush shifts every snapshot index and the boot overlap with the
+// seed transition's parked sweep matters: a sweep LRange before the
 // LPush with its LSet after would overwrite an innocent neighbor (the
 // r4 review's boot-overlap window — seconds of probe I/O, not µs).
 func (s *Service) Recover(ctx context.Context) int {
@@ -938,15 +944,11 @@ func (s *Service) Recover(ctx context.Context) int {
 	for _, pair := range s.sessions(ctx) {
 		ws, ses := pair[0], pair[1]
 		dk := dKey(ws, ses)
-		staged, err := s.client.LRange(ctx, dk, 0, -1).Result()
-		if err != nil || len(staged) == 0 {
-			continue
-		}
 		token, ok := s.acquireLockWithRetry(ctx, ws, ses)
 		if !ok {
 			continue // a delivery or sweep owns the session; requeue next boot
 		}
-		n += s.recoverSessionLocked(ctx, ws, ses, dk, staged)
+		n += s.recoverSessionLocked(ctx, ws, ses, dk)
 		// Detached + deferred-equivalent: a shutdown cancellation during
 		// the pass must not leak the lock for LockTTL (r5 finding 2).
 		s.releaseLockDetached(ctx, ws, ses, token)
@@ -954,7 +956,11 @@ func (s *Service) Recover(ctx context.Context) int {
 	return n
 }
 
-func (s *Service) recoverSessionLocked(ctx context.Context, ws, ses, dk string, staged []string) int {
+func (s *Service) recoverSessionLocked(ctx context.Context, ws, ses, dk string) int {
+	staged, err := s.client.LRange(ctx, dk, 0, -1).Result()
+	if err != nil || len(staged) == 0 {
+		return 0
+	}
 	main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
 	inMain := map[string]bool{}
 	for _, v := range main {

@@ -9,6 +9,9 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // authedReq builds a request carrying the agentd Basic-auth header, the
@@ -249,4 +252,79 @@ func TestNodeExecRegistry(t *testing.T) {
 		t.Error("cancel was not called")
 	}
 	r.stop("node1")
+}
+
+// TestWorkflowParse_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — r2 sweep): the workflow agent node's two opencode-wire parses
+// — the synchronous message response and the created-session ID — are
+// pinned at the extracted parse helpers (the workflow path dials the
+// fixed 127.0.0.1:AgentPort by design, so the deterministic pin
+// targets the decode, not the socket). The trailing_garbage bodies are
+// type-satisfying (a real answer followed by drift bytes): a lenient
+// decode would emit phantom output / a phantom session ID.
+func TestWorkflowParse_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"info":{"id":"msg_1","role":"assist`},
+		{"trailing_garbage", `{"info":{"id":"msg_1"},"parts":[{"type":"text","text":"the answer"}]}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run("agentMessage/"+mode.name, func(t *testing.T) {
+			_, err := parseAgentNodeResponse(strings.NewReader(mode.body))
+			require.Error(t, err, "a corrupted 200 must fail the agent node AT THE PARSE, never emit phantom output (the caller discards the partial decode on error)")
+		})
+		t.Run("createdSessionID/"+mode.name, func(t *testing.T) {
+			id, err := parseCreatedSessionID(strings.NewReader(mode.body))
+			require.Error(t, err)
+			assert.Empty(t, id, "a corrupted 200 must never yield a phantom session ID")
+		})
+	}
+}
+
+// --- #1414: script failure detail must survive ---
+
+// An unsupported language is a pre-execution failure (scriptwrap sentinel
+// exit -1, empty stderr): the real error ("unsupported language") must
+// reach the caller — not "exit -1: ".
+func TestWorkflowExecute_ScriptUnsupportedLanguageKeepsDetail(t *testing.T) {
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"bash","handler":"echo hi"},"input":{}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "script failures report on the 200 error envelope")
+
+	var resp workflowExecuteError
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Contains(t, resp.Detail, "unsupported language: bash", "the pre-execution error must not be swallowed")
+	assert.NotContains(t, resp.Detail, "exit -1", "the sentinel exit code with empty stderr is not a usable message")
+}
+
+// A real process failure (python that runs and exits non-zero) keeps the
+// exit code + stderr shape.
+func TestWorkflowExecute_ScriptProcessFailureKeepsExitCode(t *testing.T) {
+	// Same runtime-image dependency skip as TestWorkflowExecute_ScriptSuccess.
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; script-node runtime is a workspace-image dependency")
+	}
+	handler := "def handler(input):\n    raise RuntimeError('boom')"
+	bodyJSON, err := json.Marshal(map[string]any{
+		"nodeId": "s2", "nodeType": "script",
+		"spec":  map[string]any{"language": "python", "handler": handler},
+		"input": map[string]any{},
+	})
+	require.NoError(t, err)
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(string(bodyJSON)))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp workflowExecuteError
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Contains(t, resp.Detail, "exit 1", "real process exits keep the exit N: stderr shape")
+	assert.Contains(t, resp.Detail, "boom", "handler traceback surfaces in stderr")
 }

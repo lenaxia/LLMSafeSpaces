@@ -392,10 +392,11 @@ The platform is decoupling from opencode via a **platform-owned session contract
 **Discipline rules (enforced by review + repolint):**
 
 1. 5 part types forever. No `PartTodo`, `PartEdit`, `PartSearch` — all tools are `ToolPart`.
-2. No agent identifier leaks (`ses_`/`msg_` IDs, `patch` part, `opencode-relay` naming stay in `pkg/agent/opencode/`).
+2. No agent identifier leaks. The agent's ID lexicon (`que_`/`per_`/`ses_`/`msg_` prefixes) and `patch` part / `opencode-relay` naming stay in `pkg/agent/opencode/`. Enforced by the repolint `agent_id_prefix_literal` rule (#1305): prefix matches/mints outside `pkg/agent/opencode/` (incl. `testdata/` fixtures), `cmd/workspace-agentd/`, `pkg/repolint/`, and the per-file reviewer-sanctioned dispatch fast-path `pkg/mcp/server.go` fail the lint; tolerated leaks carry a reason + issue pointer.
 3. Agent-specific operations (rewind, fork, stash) are capability-gated pass-through, not contract types.
 4. Cost/usage fields are display-only. Billing is cgroup-based.
 5. Diff text is authoritative (`Patch string`), not hunk structs.
+6. The client-facing spec (`sdks/openapi.yaml`) carries no agent-coupling markers: `x-opencode-proxy` keys and coupling-phrase descriptions ("tracks upstream", "from opencode", "opencode session object") fail the repolint `spec_coupling_marker` rule (#1305); the top-level `info.description` opencode mention is the single anchored allowlist.
 
 **The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) have moved behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
 
@@ -480,7 +481,7 @@ Multi-tenant isolation rests on layered controls in a **shared namespace** (no p
 
 | Control | Status | Mechanism |
 |---------|--------|-----------|
-| Network isolation | Shipped | Chart-level default-deny ingress + RFC1918/CGNAT-filtered egress NetworkPolicies |
+| Network isolation | Shipped | Chart-level default-deny ingress + RFC1918/CGNAT-filtered egress NetworkPolicies (default posture), with an opt-in destination-allowlist egress mode — data-plane/tooling split — via `networkPolicy.workspaceEgress.mode=allowlist` (#821, Epic 67) |
 | Secret scoping | Shipped | `rbac.scope=namespace` default; namespace-scoped Secrets Role |
 | Tenant identity | Shipped | `WorkspaceOwner{UserID, OrgID}` on the CRD; `llmsafespaces.dev/tenant` pod label |
 | Container-runtime isolation | Opt-in (Epic 51 S51.1) | gVisor (`runsc`) RuntimeClass — the primary control against kernel-exploitation container escape; `--default-runtime-class=gvisor` + `gvisor.defaultRuntimeClass`; per-workspace opt-out via `spec.runtimeClass: "runc"` |
@@ -562,7 +563,7 @@ The writer captures the existing on-disk config at construction (`loadExisting()
 
 1. **~~Multiple writers of agent-config.json~~ — RESOLVED (US-46.10), then contained behind a seam (US-65.1).** The four-writer design was replaced by a single writer (`pkg/agent/opencode.ConfigWriter`, behind the `agent.AgentConfigWriter` interface) that owns all writes to `agent-config.json`. Callers stage an `AgentConfigInput` and call `Apply` — the writer merges staged changes over its captured sources into a complete config written atomically via temp-file + `os.Rename`. The relay injector, pre-boot relay, boot normalize, and reload handler all go through this one seam; the writer always reflects current state.
 
-2. **One-shot relay injector.** The injector goroutine runs once per pod lifetime. If the opencode credential changes after the injector has run (personal key → public key), the relay is not re-evaluated. The user must restart the pod. A re-triggerable injector (channel-based state machine) would handle this automatically.
+2. **Relay injector re-arm — fetch-failure class resolved (#910), credential-change class open.** The injector's boot window is no longer one-shot-per-pod: on a terminal fetch failure (`fetch_failed`, `no_free_models`, `unhealthy_timeout`, config write failures) the SAME attempt re-arms on a generalized bounded-backoff loop (`cmd/workspace-agentd/rearm_loop.go`: waits double from 5m, capped at 30m; gated on no busy sessions via the SSE session tracker; not stacked behind a session-aware deferred restart — a `deferredRestarts` gauge is checked at cycle entry AND immediately before the relay kill, where a deferral that appeared mid-attempt skips the kill entirely because the outstanding deferred restart reads the just-written config; `HasRelay()` re-checked at each cycle entry; per-cycle `llmsafespaces_rearm_outcome_total{loop="relay_injector",outcome}`). The 2026-08-16 incident class (workspace 946a442f: boot-window fetch EOF → relay-only default unresolvable for the pod's entire lifetime) now recovers without pod recreation. US-72.4's relay-only liveness consumes the same loop. Remaining gap: the loop only starts after a retryable failure — a personal-key boot (`skipped_personal_key`, non-retryable by design: relay is correctly bypassed) never re-evaluates if the credential later changes public. That trigger still needs an explicit re-trigger.
 
 3. **In-memory model cache is per-API-replica.** `SetModel` evicts on the replica that handled the request; other replicas serve stale data for up to 5 seconds. Future: Redis-backed cache for cross-replica consistency (US-30.11).
 
@@ -587,7 +588,7 @@ The relay config subsystem uses a single `ConfigWriter` (`pkg/agent/opencode/con
 1. **Materialize subcommand** (separate process, before agentd): applies `/sandbox-cfg/secrets.json` (the batch file — a v2 envelope or the legacy bare array; the resync pull overwrites it on every applied revision, so a container restart re-materializes by applying the same file: the #443 scenario, now by pull). `Materialize(batch)` (resets tmpfs credential files, then re-applies) → `EnrichProviders` refreshes custom-endpoint model lists → `FlushProviders()` writes provider credentials → `applyMCPServersToConfig()` stages user-bound MCP servers (Epic 53) → `applyWorkspaceConfig()` adds the model key in `providerID/modelID` form when the default resolves to a written provider; unresolvable defaults (e.g. relay-only model while the injector failed) omit the key and write `model-resolution-warning.json` — surfaced to the user via healthz/statusz → AgentHealthy condition (incident 2026-08-16).
 2. **Pre-boot relay** (conditional: `INFERENCE_RELAY_BASEURL` set, free-models catalog present and non-empty, and no personal opencode API key in auth.json): still inside the materialize process — `applyRelayConfigPreBoot` (`pre_boot_relay.go`) applies a relay-only `AgentConfigInput` before agentd's main writer exists
 3. **agentd starts**: `ensureBootAgentConfig` (`boot_config.go`, #857) constructs the writer and applies an empty `AgentConfigInput` — one unconditional, idempotent write that stamps the platform MCP entry, admin prompt, and allowed dirs while preserving the captured provider/model/mcp sources, before `startManagedProcess` so opencode's first read sees the completed config
-4. **~T+7s**: `startRelayInjector()` — skips entirely when the pre-boot relay already applied (`HasRelay()` short-circuit, outcome `skipped_pre_boot_applied`); otherwise fetches free models → `Apply` with a `RelayState` writes the merged config → updates auth.json → restarts opencode (session-aware restart, #852)
+4. **~T+7s**: `startRelayInjector()` — skips entirely when the pre-boot relay already applied (`HasRelay()` short-circuit, outcome `skipped_pre_boot_applied`); otherwise fetches free models → `Apply` with a `RelayState` writes the merged config → updates auth.json → restarts opencode (session-aware restart, #852). On terminal fetch failure the attempt re-arms on the bounded backoff loop (#910, `rearm_loop.go`: 5m→30m cap, busy-gated, never stacked behind a deferred restart; re-arm cycles tick `llmsafespaces_rearm_outcome_total{loop="relay_injector"}`; `relayFreeModelsState` stays degraded until a cycle applies)
 
 #### Agent-config.json write sequence (secrets apply — the resync pull)
 
@@ -627,9 +628,14 @@ relay injection that has just completed:
   call may read stale `providerCache` for another 15s — making the first correct response
   appear at approximately T=21s.
 
-This is acceptable: the Phase 1 window is ~7s, and users are unlikely to interact with
-the workspace within the first 20s of pod boot. The stale window is purely cosmetic
+This is acceptable: the Phase 1 window is ~7s, and users are unlikely to interact with the
+workspace within the first 20s of pod boot. The stale window is purely cosmetic
 (models show `providerID="opencode"` instead of `"opencode-relay"`) and self-corrects.
+Since #910 the same 20s window can also open mid-pod-life: a re-arm cycle that applies
+after a boot-window failure flips `HasRelay()` (and thus `RelayInjected`) at its apply
+moment, minutes after boot. Same mechanism, same cosmetic effect — and the re-arm's
+opencode restart is session-aware (deferred until idle), so no in-flight request
+observes the transition.
 
 #### annotateModels remap — intentional defense-in-depth
 

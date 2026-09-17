@@ -260,20 +260,28 @@ func TestPodBuilder_LivenessProbe_StableTiming(t *testing.T) {
 	assert.Equal(t, int32(8), probe.FailureThreshold, "8×10s ≈ 80s grace before a real liveness kill")
 }
 
-// TestPodBuilder_TerminationGracePeriod_Tight verifies the pod's
-// terminationGracePeriodSeconds is set to a tight value (2026-06-23 perf
-// audit, item #5). The default kubelet value is 30s, but agentd has been
-// measured to exit cleanly in under 1s on the live cluster — the headroom
-// was unused.
+// TestPodBuilder_TerminationGracePeriod_CoversAgentdShutdownBudget (#761)
+// verifies the pod's terminationGracePeriodSeconds covers agentd's FULL
+// outer shutdown budget, which is serial in the worst case
+// (cmd/workspace-agentd/main.go runShutdown):
 //
-// Concrete impact: on every controller-initiated pod recycle (suspend,
-// restartGeneration bump, architecture drift, password-secret heal),
-// this saves up to ~25s of dead time waiting for SIGKILL.
+//	25s  HTTP server drain context (admin + user servers, SSE-safe)
+//	 5s  background-goroutine drain wait (bgWg)
+//	 5s  opencode child SIGTERM→SIGKILL window (managed_process.go stop())
+//	---
+//	35s  serial worst case
 //
-// Lower bound is 5s (not 1s) to leave room for opencode SIGTERM
-// propagation by agentd's supervisor (managed_process.go reserves a
-// 5s SIGTERM-then-SIGKILL window for the opencode child).
-func TestPodBuilder_TerminationGracePeriod_Tight(t *testing.T) {
+// The pre-#761 value of 5s short-circuited this budget at the very first
+// stage: kubelet SIGKILLed the pod while agentd was still draining
+// in-flight HTTP/SSE connections, destroying active LLM turns on every
+// controller-initiated deletion (suspend, restart-generation bump,
+// architecture drift, password-secret heal).
+//
+// Lower bound 35s = the validated serial budget. Upper bound 60s keeps the
+// value tight: agentd exits in ~2s in the common case (kubelet does not wait
+// out the grace once containers exit), so the headroom only matters in the
+// worst case it exists to protect.
+func TestPodBuilder_TerminationGracePeriod_CoversAgentdShutdownBudget(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
 	r := reconcilerFor(t)
 
@@ -281,13 +289,11 @@ func TestPodBuilder_TerminationGracePeriod_Tight(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NotNil(t, pod.Spec.TerminationGracePeriodSeconds,
-		"terminationGracePeriodSeconds must be set explicitly — "+
-			"the default of 30s wastes ~25s on every pod termination")
-	assert.GreaterOrEqual(t, *pod.Spec.TerminationGracePeriodSeconds, int64(5),
-		"must allow >=5s for agentd to SIGTERM opencode and exit cleanly")
-	assert.LessOrEqual(t, *pod.Spec.TerminationGracePeriodSeconds, int64(15),
-		"must be tight enough that suspend/recycle latency benefits — "+
-			"agentd exits in <1s in practice, 30s default was over-provisioned")
+		"terminationGracePeriodSeconds must be set explicitly")
+	assert.GreaterOrEqual(t, *pod.Spec.TerminationGracePeriodSeconds, int64(35),
+		"must cover agentd's serial shutdown budget: 25s HTTP drain + 5s goroutine wait + 5s child SIGTERM→SIGKILL")
+	assert.LessOrEqual(t, *pod.Spec.TerminationGracePeriodSeconds, int64(60),
+		"must stay tight — agentd exits in ~2s when idle; grace only bounds the worst case")
 }
 
 // findVolume returns the named Volume from a pod spec, or nil.

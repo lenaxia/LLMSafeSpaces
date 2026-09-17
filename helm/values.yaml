@@ -52,20 +52,34 @@ api:
   # "5:POST:/internal/v1/pod-bootstrap". Empty (default) = feature absent;
   # a malformed value makes the API fail to start.
   e2eFaultInjection: ""
-  # Epic-71 / 0c (#1312): the metrics-only canary probe runner. When
-  # enabled, the API probes every configured workspace class (v1: a class
-  # IS a runtime-environment name, e.g. "python:3.11") once per interval:
-  # a GetSnapshot round-trip (liveness) and an Act(answer_question) on a
+  # Epic-71 / 0c (#1312): the canary probe runner. When enabled, the API
+  # probes every configured workspace class (v1: a class IS a
+  # runtime-environment name, e.g. "python:3.11") once per interval: a
+  # GetSnapshot round-trip (liveness) and an Act(answer_question) on a
   # synthetic input (S6 resolve-by-absence) — zero model spend by
   # construction. Enabled with an empty class list makes the API refuse
-  # to boot (fail-closed). Metrics-only: alerting stays gated until the
-  # epic's L3/L4 bounds are green; enable for the prod baseline once the
-  # fleet has one Active workspace per listed class.
+  # to boot (fail-closed). The L3/L4 harness gate is green, so the
+  # alert layer SHIPS ARMED (prometheus-rules.yaml, epic-71 / 0c-alerts):
+  # flipping enabled=true arms CanaryS6Violation (critical, immediate),
+  # CanaryProbeTimeouts + CanaryResolveL2Burn (warning, burn-rate) and
+  # CanaryNoTarget (info) on the probe metrics, plus
+  # LoopCanaryProbeStale on the canary_probe loop-liveness gauge — see
+  # helm/MONITORING-OPERATIONAL.md §"Canary alerts & loop liveness" for
+  # what each arm means and how thresholds scale with interval. While
+  # disabled the canary emits no series and every canary alert is
+  # structurally silent (pinned by helm/tests/alerts_promtool_test.yaml).
+  # Enable for the prod baseline once the fleet has one Active workspace
+  # per listed class (a class without one stays at no_target = false
+  # coverage, surfaced by the info-tier CanaryNoTarget alert).
   canary:
     enabled: false
-    # Probe pass period (Go duration; default 60s when empty).
+    # Probe pass period (Go duration; default 60s when empty). The
+    # LoopCanaryProbeStale alert budget (5m) assumes the default — scale
+    # it with this value (5x is the convention).
     interval: ""
-    # Per-leg probe budget (Go duration; default 2s when empty).
+    # Per-leg probe budget (Go duration; default 2s when empty). The
+    # default equals the L2 resolve bound — probes that hit it classify
+    # as timeout and drive the wedge/burn alerts.
     timeout: ""
     # Workspace classes to probe — runtime-environment names. At least
     # one is REQUIRED when enabled.
@@ -283,7 +297,8 @@ controller:
   # #863 agentd overlay delivery. When enabled, workspace pods receive the
   # workspace-agentd binary via a digest-pinned read-only image volume
   # (KEP-4639) instead of the copy baked into runtimes/base, and the
-  # entrypoint verifies its sha256 against the per-arch pins before exec.
+  # supervisor self-verifies its sha256 against the per-arch pins before exec
+  # (design 0053 — the deleted entrypoint's check moved into the binary).
   # Platform agentd fixes then reach every workspace on any pod
   # (re)creation without rebuilding the runtime base.
   #
@@ -887,10 +902,12 @@ dbInit:
 #      The API proxy explicitly allows itself via API-server pod selector.
 #
 #   2. workspace-egress
-#      Default-deny egress with explicit allowances for:
-#        - DNS (UDP/TCP 53 to kube-system kube-dns)
-#        - LLM provider domains via FQDN policy if your CNI supports it,
-#          otherwise CIDRs from .networkPolicy.allowedEgressCIDRs.
+#      Egress posture selected by networkPolicy.workspaceEgress.mode:
+#        - public (default): 0.0.0.0/0 minus blockedEgressCIDRs — the
+#          legacy #821 deny-list baseline
+#        - allowlist: explicit destination allowlist (DNS + in-namespace
+#          API relay + optional relay-router + operator CIDR groups;
+#          see workspaceEgress.allowlist below)
 #      Without DNS, sandbox pods can't resolve any external host on boot.
 #
 # Operators with their own network policy controller (Cilium CRDs, etc.)
@@ -921,6 +938,75 @@ networkPolicy:
   # ops-prod/docs/runbooks/cilium-migration.md gotcha #10.
   workspaceEgress:
     enabled: true
+
+    # Egress posture (#821, Epic 67 — staged rollout).
+    #
+    #   public (default)
+    #     Legacy deny-list posture: 0.0.0.0/0 minus blockedEgressCIDRs.
+    #     Arbitrary public destinations stay reachable. Kept as the
+    #     default because the product surface (direct-to-Zen inference
+    #     + agents installing arbitrary packages from CDN-fronted
+    #     registries) cannot be captured by chart-shipped CIDR
+    #     defaults: pinned /32s rot as CDNs rebalance, and whole-CDN
+    #     ranges (Cloudflare/Fastly/GitHub) include free
+    #     attacker-usable hosting, re-admitting the exfiltration
+    #     channel the allowlist exists to close. Operators should pin
+    #     their own destination set and switch to allowlist.
+    #
+    #   allowlist
+    #     Explicit destination allowlist: the general public-internet
+    #     rule is NOT rendered. Egress is limited to DNS, the
+    #     in-namespace API relay path, the relay-router (fleet-enabled
+    #     clusters), extraEgressCIDRs, and the CIDR groups under
+    #     .allowlist below — each group restricted to TCP 443/80.
+    #     With all groups empty this is the strictest posture
+    #     (DNS + in-cluster platform paths only) and is forward-
+    #     compatible with the #820 relay-only data-plane: an llm-relay
+    #     namespace/router is added as a selector rule later without
+    #     redesign.
+    #
+    #     FQDN NOTE (honest limitation): plain Kubernetes NetworkPolicy
+    #     cannot match FQDNs — only IPs. Resolve your destinations to
+    #     CIDRs at deploy time (e.g. `dig +short pypi.org`) or use a
+    #     CNI-native FQDN policy (Cilium CNP; then also set
+    #     workspaceEgress.enabled=false to avoid union-widening).
+    #     Per-workspace FQDN widening exists via the Workspace CRD
+    #     field spec.networkAccess.egress (controller resolves domains
+    #     to /32s at reconcile time) and composes with this policy.
+    #
+    #     Entries in the groups must be PUBLIC CIDRs — guarded at
+    #     render time for well-formed input, IPv4 and IPv6 (a private
+    #     entry fails helm template with an error naming the entry;
+    #     Kubernetes rejects ipBlock except: entries that are not
+    #     subnets of the cidr, so the shared blockedEgressCIDRs
+    #     subtraction cannot be attached here — and well-formed
+    #     IPv6-internal CIDRs are API-valid, so no apply-time backstop
+    #     exists for them). Malformed spellings pass the render but
+    #     are rejected loudly at apply time by the API server's
+    #     ipBlock validation. For in-cluster destinations use
+    #     networkPolicy.extraEgressCIDRs.
+    mode: public
+
+    allowlist:
+      # Data-plane group: LLM inference endpoints. This is where the
+      # direct-to-Zen default (https://opencode.ai/zen/v1) and any
+      # provider API endpoints belong. Resolve current CIDRs at deploy
+      # time — the values are deliberately NOT shipped as defaults
+      # because CDN-fronted endpoints rotate (opencode.ai resolves into
+      # Cloudflare space at the time of writing; verify with
+      # `dig +short opencode.ai`).
+      llmCIDRs: []
+
+      # Tooling group: package registries (pypi, npm, ...) and git
+      # hosts. Split from the data-plane group per #821: disabling it
+      # yields an LLM/relay-only egress posture. Agents install
+      # arbitrary packages — that IS the product — so tooling egress is
+      # enabled by default within allowlist mode; the CIDRs are still
+      # operator-supplied (registries are CDN-fronted; resolve at
+      # deploy time, e.g. `dig +short pypi.org registry.npmjs.org`).
+      tooling:
+        enabled: true
+        cidrs: []
 
   # API server pod selector — used by workspace ingress allow rule so the
   # API proxy can reach sandbox pods on agentd port 4097.
@@ -975,10 +1061,15 @@ networkPolicy:
   dnsPodLabelSelector:
     k8s-app: kube-dns
 
-  # CIDR allowlist for sandbox egress. Defaults to RFC1918 (private)
+  # CIDR allowlist for sandbox egress in the legacy public posture
+  # (workspaceEgress.mode=public). Defaults to RFC1918 (private)
   # negation so all public internet traffic is allowed and only internal
-  # cluster traffic is blocked. This is the documented Epic 17 baseline;
-  # tighter operators can replace with a strict allowlist.
+  # cluster traffic is blocked — the #821 staged default. The blocked-
+  # ranges subtraction (except:) is attached only to the 0.0.0.0/0
+  # catch-all entry; Kubernetes rejects except entries that are not
+  # subnets of the cidr, so narrow custom entries render plain. Tighter
+  # operators should use workspaceEgress.mode=allowlist instead of
+  # narrowing this list.
   allowedEgressCIDRs:
     - 0.0.0.0/0
   # Render the in-cluster relay-router egress allow (podSelector-based,
@@ -1189,7 +1280,19 @@ runtimeEnvironments:
   base:
     image:
       repository: ghcr.io/lenaxia/llmsafespaces/base
-      tag: ""
+      # Design 0053 D5/S4: the base is content-versioned CalVer
+      # `YYYY.MM.x` on its OWN cadence (runtimes/base content changes),
+      # NEVER the platform VERSION — the platform train does not build
+      # base tags. Single source of truth:
+      # api/internal/imagefactory/catalog.seed.yaml → bases[bookworm]
+      # (base-image.yml publishes exactly that row). This value MIRRORS
+      # the seed's default row; repolint's version-scheme check (issue
+      # #1237) fails on CalVer violations and on drift from the seed —
+      # bump both in the same PR. Empty is not allowed: the chart must
+      # never fall back to the platform appVersion (incident
+      # 2026-09-02: base:0.26.0 never existed → fleet-wide
+      # ImagePullBackOff).
+      tag: "2026.09.0"
       # Immutable digest pin (optional, #476). See api.image.digest.
       digest: ""
 

@@ -61,13 +61,42 @@ const (
 // inside the deadline and run its full attempt timeout) — only when the
 // sidecar is down.
 const (
-	spawnEnvPullBound       = 2 * time.Second
-	spawnEnvPullAttempt     = 500 * time.Millisecond
-	spawnEnvPullRetryGap    = 150 * time.Millisecond
-	spawnEnvPullURLPath     = "/v1/spawn-env"
-	spawnEnvPullAddrEnvVar  = "LLMSAFESPACES_SPAWN_ENV_PULL_ADDR"
-	supervisorCredentialEnv = "OPENCODE_SERVER_PASSWORD"
+	spawnEnvPullBound         = 2 * time.Second
+	spawnEnvPullAttempt       = 500 * time.Millisecond
+	spawnEnvPullRetryGap      = 150 * time.Millisecond
+	spawnEnvPullURLPath       = "/v1/spawn-env"
+	spawnEnvPullAddrEnvVar    = "LLMSAFESPACES_SPAWN_ENV_PULL_ADDR"
+	spawnEnvPullBoundEnvVar   = "LLMSAFESPACES_SPAWN_ENV_PULL_BOUND"
+	spawnEnvPullAttemptEnvVar = "LLMSAFESPACES_SPAWN_ENV_PULL_ATTEMPT"
+	supervisorCredentialEnv   = "OPENCODE_SERVER_PASSWORD"
 )
+
+// spawnPullBudgets resolves the bounded-wait budgets both spawn pullers
+// (env + files — the vars govern the pair; both share this struct's
+// machinery) run with. Production keeps the consts above — the
+// sidecar's healthy response is single-digit milliseconds on loopback.
+// The env overrides are the exec-level test seam (same pattern as
+// spawnEnvPullAddr): the re-exec'd supervisor harness runs on contended
+// CI runners where a multi-MiB staged-manifest read can outgrow the
+// in-pod budgets. Guarantee: unparsable, zero, or negative values fail
+// OPEN to the defaults — a typo cannot change the budget silently. A
+// valid-but-small value DOES narrow (no floor/ceiling); on a real pod
+// nothing sets these vars, so unset behavior is byte-identical
+// production behavior.
+func spawnPullBudgets() (bound, attempt time.Duration) {
+	bound, attempt = spawnEnvPullBound, spawnEnvPullAttempt
+	if v := os.Getenv(spawnEnvPullBoundEnvVar); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			bound = d
+		}
+	}
+	if v := os.Getenv(spawnEnvPullAttemptEnvVar); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			attempt = d
+		}
+	}
+	return bound, attempt
+}
 
 // spawnEnvResponse is the /v1/spawn-env wire shape: the current
 // secrets-env delta plus the sidecar's revision over it. The supervisor
@@ -180,13 +209,14 @@ type spawnEnvPuller struct {
 }
 
 func newSpawnEnvPuller(addr, password string) *spawnEnvPuller {
+	bound, attempt := spawnPullBudgets()
 	return &spawnEnvPuller{
 		url:      "http://" + addr + spawnEnvPullURLPath,
 		username: agentd.AuthUsername,
 		password: password,
 		client:   &http.Client{},
-		bound:    spawnEnvPullBound,
-		attempt:  spawnEnvPullAttempt,
+		bound:    bound,
+		attempt:  attempt,
 		retryGap: spawnEnvPullRetryGap,
 	}
 }

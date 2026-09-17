@@ -382,3 +382,36 @@ func TestNotify_StopCancelsPendingRetry(t *testing.T) {
 		"the canceled retry must never reach the pod")
 	svc.Stop() // idempotent
 }
+
+func TestPushUserTimezone_PostsZoneToPod(t *testing.T) {
+	server, spy := newNotifyServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","timezone":"Europe/Berlin"}`))
+	})
+	svc := newNotifyService(t, server.URL)
+
+	err := svc.PushUserTimezone(context.Background(), "user-1", "ws-1", "Europe/Berlin")
+	require.NoError(t, err)
+
+	path, method, auth, bodyLen := spy.snapshot()
+	assert.Equal(t, "/v1/user-timezone", path)
+	assert.Equal(t, http.MethodPost, method)
+	assert.NotEmpty(t, auth, "§D1 Basic credential required")
+	assert.Greater(t, bodyLen, 0, "the zone rides the JSON body")
+}
+
+func TestPushUserTimezone_EmptyZoneIsNoOp(t *testing.T) {
+	svc := newNotifyService(t, "http://127.0.0.1:1")
+	require.NoError(t, svc.PushUserTimezone(context.Background(), "u", "w", ""),
+		"empty zone must short-circuit without any dispatch")
+}
+
+func TestPushUserTimezone_PodErrorSurfaces(t *testing.T) {
+	server, _ := newNotifyServer(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	svc := newNotifyService(t, server.URL)
+	err := svc.PushUserTimezone(context.Background(), "user-1", "ws-1", "Bad/Zone")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "400")
+}

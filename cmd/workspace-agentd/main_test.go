@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1355,4 +1357,24 @@ func TestFetchSessionPromptTokens_OnlyZeroStamps_ReturnsZero(t *testing.T) {
 	setAgentAddr(server.URL)
 
 	assert.Equal(t, int64(0), client.fetchSessionPromptTokens(context.Background(), "ses_1"))
+}
+
+// TestTimeTzdataImported gates the FROM-scratch delivery property
+// (review PR #1389 round 3): the delivery image carries NO
+// /usr/share/zoneinfo, so /v1/user-timezone and get_datetime resolve
+// arbitrary IANA zones ONLY through the embedded time/tzdata import in
+// main. Nothing at any other test level can see its removal (runners
+// carry system tzdata; the live pod leg is manual) — this static gate
+// is the automated tripwire.
+func TestTimeTzdataImported(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", ".").Output()
+	if err != nil {
+		t.Skipf("go list unavailable: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "time/tzdata" {
+			return
+		}
+	}
+	t.Fatal("time/tzdata is NOT in the agentd dependency graph — the _ \"time/tzdata\" import in main.go was removed; the FROM-scratch delivery image has no system zoneinfo and every timezone feature goes dark at runtime")
 }

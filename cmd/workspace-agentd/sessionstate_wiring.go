@@ -66,13 +66,21 @@ func (r opencodeStoreReader) SessionStates(ctx context.Context) (map[string]sess
 		out[s.ID] = sessionstate.SessionSeed{Status: status}
 	}
 	d := &opencode.Dialect{}
-	for _, in := range fetchList(ctx, r.client, "/question", d.ParseQuestionListItem) {
+	questions, qerr := fetchList(ctx, r.client, "/question", d.ParseQuestionListItem)
+	if qerr != nil {
+		return nil, qerr
+	}
+	for _, in := range questions {
 		if seed, ok := out[in.SessionID]; ok {
 			seed.PendingInputs = append(seed.PendingInputs, questionToABI(in))
 			out[in.SessionID] = seed
 		}
 	}
-	for _, in := range fetchList(ctx, r.client, "/permission", d.ParsePermissionListItem) {
+	permissions, perr := fetchList(ctx, r.client, "/permission", d.ParsePermissionListItem)
+	if perr != nil {
+		return nil, perr
+	}
+	for _, in := range permissions {
 		if seed, ok := out[in.SessionID]; ok {
 			seed.PendingInputs = append(seed.PendingInputs, permissionToABI(in))
 			out[in.SessionID] = seed
@@ -85,28 +93,37 @@ func (r opencodeStoreReader) SessionStates(ctx context.Context) (map[string]sess
 // Unreachable/unimplemented endpoints (404, conn refused) are an
 // authoritative-empty for PENDING INPUTS specifically — opencode versions
 // without the endpoints never had questions; session-list errors above are
-// the real store-read failure path.
-func fetchList[T any](ctx context.Context, client *OpenCodeClient, path string, parse func(json.RawMessage) (T, error)) []T {
+// the real store-read failure path. A 200 carrying a corrupted body is NOT
+// that case: it is indeterminate (leg-10 wire drift) and errors — never a
+// phantom-empty pending-inputs verdict.
+func fetchList[T any](ctx context.Context, client *OpenCodeClient, path string, parse func(json.RawMessage) (T, error)) ([]T, error) {
 	resp, err := client.doRequest(ctx, path)
 	if err != nil || resp.StatusCode >= 400 {
 		if resp != nil {
 			_ = resp.Body.Close()
 		}
-		return nil
+		return nil, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if rerr != nil {
+		return nil, fmt.Errorf("gather %s: read: %w", path, rerr)
+	}
 	var items []json.RawMessage
-	if json.Unmarshal(raw, &items) != nil {
-		return nil
+	if uerr := json.Unmarshal(raw, &items); uerr != nil {
+		return nil, fmt.Errorf("gather %s: malformed body: %w", path, uerr)
 	}
 	var out []T
 	for _, item := range items {
-		if v, err := parse(item); err == nil {
-			out = append(out, v)
+		v, err := parse(item)
+		if err != nil {
+			// Item-level drift is indeterminate, never absence —
+			// same philosophy as fetchListStrict.
+			return nil, fmt.Errorf("gather %s: item drift: %w", path, err)
 		}
+		out = append(out, v)
 	}
-	return out
+	return out, nil
 }
 
 // Message-evidence paging bounds (#1311): the V1 list is newest-first with
@@ -158,7 +175,7 @@ func (r opencodeStoreReader) MessagePresence(ctx context.Context, sessionID stri
 				ID string `json:"id"`
 			} `json:"info"`
 		}
-		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&msgs)
+		decodeErr := decodeStrict(io.LimitReader(resp.Body, 8<<20), &msgs)
 		next := resp.Header.Get("X-Next-Cursor")
 		_ = resp.Body.Close()
 		if decodeErr != nil {
@@ -427,7 +444,7 @@ func (o opencodeAdmitter) post(ctx context.Context, path string, payload any, ou
 		return fmt.Errorf("status %d: %s", resp.StatusCode, string(errBody))
 	}
 	if out != nil {
-		return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+		return decodeStrict(io.LimitReader(resp.Body, 1<<20), out)
 	}
 	return nil
 }
@@ -502,7 +519,7 @@ func (o opencodeAdmitter) Admit(ctx context.Context, sessionID, messageID, text,
 			ID string `json:"id"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &out); err != nil {
 		return "", err
 	}
 	return out.Info.ID, nil

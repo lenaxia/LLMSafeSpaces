@@ -97,7 +97,10 @@ func main() {
 	failures += runGinSetMode(root)
 	failures += runAgentImport(root)
 	failures += runEventLiteral(root)
+	failures += runAgentIDPrefix(root)
+	failures += runSpecCouplingMarker(root)
 	failures += runReleaseArtifacts(root)
+	failures += runVersionScheme(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -108,6 +111,18 @@ func main() {
 	}
 	fmt.Println("repolint: all checks passed")
 	os.Exit(exitOK)
+}
+
+// runVersionScheme enforces the coordinated-bump version-scheme
+// invariants (issue #1237): base CalVer single-sourcing from the catalog
+// seed, and delivery pins never reusing a platform component digest.
+// See pkg/repolint/version_scheme.go.
+func runVersionScheme(root string) int {
+	fails := repolint.RunVersionSchemeCheck(root)
+	for _, f := range fails {
+		fmt.Fprintf(os.Stderr, "FAIL %s\n", f)
+	}
+	return len(fails)
 }
 
 // runReleaseArtifacts enforces the release workflow's artifact-completeness
@@ -414,6 +429,70 @@ func runEventLiteral(root string) int {
 		}
 	}
 	fmt.Printf("ok    agent event literals (%d known leak(s) tolerated)\n", leaks)
+	return 0
+}
+
+// runAgentIDPrefix enforces the agent ID-prefix lexicon rule (#1305):
+// matching or minting que_/per_/ses_/msg_ identifiers outside the seam
+// is agent knowledge (design/0049 discipline rule 2). The input
+// surface's literals were confined to the seams by #1302/PR #1363;
+// pkg/mcp/server.go's dispatch fast-path is a per-file allowlist entry
+// (reviewer-sanctioned, see agent_id_prefix.go). New matches fail.
+func runAgentIDPrefix(root string) int {
+	rep, err := repolint.AgentIDPrefixCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  agent ID prefixes: %v\n", err)
+		return 1
+	}
+	if rep.HasNew() {
+		fmt.Fprintf(os.Stderr, "FAIL  agent ID prefixes (new matches outside the seam):\n")
+		for _, v := range rep.Violations {
+			if v.IsLeaked {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  - %s:%d  %q  %s\n", v.File, v.Line, v.Prefix, v.Excerpt)
+		}
+		fmt.Fprintf(os.Stderr, "  Move the matching behind pkg/agent/opencode (design/0049) or add a\n  dated knownLeaks entry with an issue pointer in pkg/repolint/agent_id_prefix.go.\n")
+		return 1
+	}
+	leaks := 0
+	for _, v := range rep.Violations {
+		if v.IsLeaked {
+			leaks++
+		}
+	}
+	fmt.Printf("ok    agent ID prefixes (%d known leak(s) tolerated)\n", leaks)
+	return 0
+}
+
+// runSpecCouplingMarker enforces the spec coupling-marker rule (#1305):
+// x-opencode-proxy keys and coupling-phrase descriptions are banned
+// from sdks/openapi.yaml (#1304 deleted them all); the top-level
+// info.description opencode mention is the single anchored allowlist.
+func runSpecCouplingMarker(root string) int {
+	rep, err := repolint.SpecCouplingMarkerCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  spec coupling markers: %v\n", err)
+		return 1
+	}
+	if rep.HasNew() {
+		fmt.Fprintf(os.Stderr, "FAIL  spec coupling markers (%s):\n", repolint.SpecPath)
+		for _, v := range rep.Violations {
+			if v.IsLeaked {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  - %s:%d  [%s]  %s\n", repolint.SpecPath, v.Line, v.Kind, v.Excerpt)
+		}
+		fmt.Fprintf(os.Stderr, "  The client-facing spec must describe the platform contract, not track\n  the agent. Rewrite the description or remove the marker; a dated\n  knownLeaks entry with an issue pointer lives in\n  pkg/repolint/spec_coupling_marker.go.\n")
+		return 1
+	}
+	leaks := 0
+	for _, v := range rep.Violations {
+		if v.IsLeaked {
+			leaks++
+		}
+	}
+	fmt.Printf("ok    spec coupling markers (%d known leak(s) tolerated)\n", leaks)
 	return 0
 }
 

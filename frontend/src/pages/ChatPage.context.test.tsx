@@ -59,6 +59,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useClearSessionPendingPrompts: () => () => {},
   useWorkspaceInputSnapshot: () => undefined,
   SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useWhileAwayStalenessSweep: () => {},
 }));
 vi.mock("../api/messages", () => {
   const gh = vi.fn().mockResolvedValue([]);

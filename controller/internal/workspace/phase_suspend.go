@@ -40,8 +40,8 @@ func (r *WorkspaceReconciler) suspendFromPreActive(ctx context.Context, workspac
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
 	// US-24.8 F22 parity: suspend clears recovery state for a fresh start
-	// on resume. SafeMode is intentionally preserved so handleSuspended
-	// can disable TTL for safe-mode workspaces.
+	// on resume — including the derived RecoveryExhausted condition
+	// (#760): it must not outlive the counters it is derived from.
 	wasInRecovery := workspace.Status.ConsecutiveFailures > 0
 	if wasInRecovery {
 		metrics.WorkspacesInRecovery.Dec()
@@ -56,12 +56,8 @@ func (r *WorkspaceReconciler) suspendFromPreActive(ctx context.Context, workspac
 	workspace.Status.PodIP = ""
 	workspace.Status.Endpoint = ""
 	workspace.Status.SuspendedAt = &now
-	workspace.Status.ConsecutiveFailures = 0
+	clearRecoveryState(workspace)
 	workspace.Status.ControllerRestartCount = 0
-	workspace.Status.NextRetryAt = nil
-	workspace.Status.LastFailureClass = ""
-	workspace.Status.LastFailureAt = nil
-	workspace.Status.LastStableAt = nil
 	if err := r.Status().Update(ctx, workspace); err != nil {
 		recordStatusUpdateConflictOnError("suspendFromPreActive_suspended", err)
 		if wasInRecovery {
@@ -85,11 +81,21 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 	uid := string(workspace.UID)
 	name := podName(workspace.Name, uid)
 
+	// #761: drain in-flight sessions before the pod deletion. This gate
+	// covers every path that funnels into Suspending — user suspend,
+	// org-level suspension, idle auto-suspend, and the spec timeout. While
+	// sessions are busy AND making progress the deletion is deferred; the
+	// phase stays Suspending (established SSE streams keep flowing — the
+	// proxy only 503s NEW requests while not Active). Terminating a
+	// wedged turn is bounded by the drain's stall window.
+	if r.drainBeforePodDeletion(ctx, workspace, drainReasonSuspend) == drainDefer {
+		return ctrl.Result{RequeueAfter: drainPollInterval}, nil
+	}
+
 	r.deletePodByName(ctx, name, workspace.Namespace)
 
-	// US-24.8 F22: suspend clears recovery state for a fresh start on resume.
-	// SafeMode is intentionally preserved (US-24.13 AC 9) so handleSuspended
-	// can disable TTL for safe-mode workspaces.
+	// US-24.8 F22: suspend clears recovery state for a fresh start on
+	// resume — including the derived RecoveryExhausted condition (#760).
 	wasInRecovery := workspace.Status.ConsecutiveFailures > 0
 	if wasInRecovery {
 		metrics.WorkspacesInRecovery.Dec()
@@ -106,12 +112,8 @@ func (r *WorkspaceReconciler) handleSuspending(ctx context.Context, workspace *v
 	workspace.Status.PodIP = ""
 	workspace.Status.Endpoint = ""
 	workspace.Status.SuspendedAt = &now
-	workspace.Status.ConsecutiveFailures = 0
+	clearRecoveryState(workspace)
 	workspace.Status.ControllerRestartCount = 0
-	workspace.Status.NextRetryAt = nil
-	workspace.Status.LastFailureClass = ""
-	workspace.Status.LastFailureAt = nil
-	workspace.Status.LastStableAt = nil
 	workspace.Status.Sessions = nil
 	workspace.Status.ActiveSessions = 0
 	if err := r.Status().Update(ctx, workspace); err != nil {

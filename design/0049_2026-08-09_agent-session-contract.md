@@ -220,6 +220,8 @@ The contract is right-sized, but the discipline is what keeps it that way:
 4. **Diff text is authoritative.** Not hunks.
 5. **Cost is optional everywhere and never billing.**
 6. **Agent-specific operations are pass-through.** Rewind/stash/fork results are `json.RawMessage` until a second adapter validates a typed shape.
+7. **No agent ID-prefix lexicon outside the seam.** Matching or minting `que_`/`per_`/`ses_`/`msg_` identifiers is agent knowledge. Enforced by repolint (`agent_id_prefix_literal`, #1305): allowed only in `pkg/agent/opencode/` (incl. `testdata/` fixtures), `cmd/workspace-agentd/`, `pkg/repolint/`, and — as a per-file, reviewer-sanctioned dispatch fast-path (#1302 4a-2 r3) — `pkg/mcp/server.go`. Known leaks carry a reason + issue pointer and the rule fails on any NEW match.
+8. **The client-facing spec carries no agent-coupling markers.** `x-opencode-proxy` keys and coupling-phrase descriptions ("tracks upstream", "from opencode", "opencode session object") are banned from `sdks/openapi.yaml`. Enforced by repolint (`spec_coupling_marker`, #1305); the top-level `info.description` opencode mention (platform overview) is the single anchored allowlist. #1304 deleted every marker; reintroduction fails the lint.
 
 ---
 

@@ -36,8 +36,7 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 		workspace.Status.PodNamespace = ""
 		workspace.Status.PodIP = ""
 		workspace.Status.Endpoint = ""
-		workspace.Status.ConsecutiveFailures = 0
-		workspace.Status.NextRetryAt = nil
+		clearRecoveryState(workspace)
 		workspace.Status.RestartCount++
 		workspace.Status.ObservedRestartGeneration = workspace.Spec.RestartGeneration
 		if err := r.Status().Update(ctx, workspace); err != nil {
@@ -61,8 +60,7 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 		workspace.Status.Phase = v1.WorkspacePhaseCreating
 		workspace.Status.PodIP = ""
 		workspace.Status.Endpoint = ""
-		workspace.Status.ConsecutiveFailures = 0
-		workspace.Status.NextRetryAt = nil
+		clearRecoveryState(workspace)
 		workspace.Status.Message = ""
 		workspace.Status.FailureReason = v1.FailureReasonNone
 		if err := r.Status().Update(ctx, workspace); err != nil {
@@ -93,8 +91,7 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 			workspace.Status.Endpoint = fmt.Sprintf("http://%s:4096", pod.Status.PodIP)
 			workspace.Status.ImageTag = imageTagFromPod(pod)
 			workspace.Status.StartTime = &now
-			workspace.Status.ConsecutiveFailures = 0
-			workspace.Status.NextRetryAt = nil
+			clearRecoveryState(workspace)
 			workspace.Status.ConsecutiveHealthFailures = 0
 			workspace.Status.Message = ""
 			workspace.Status.FailureReason = v1.FailureReasonNone
@@ -113,8 +110,7 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 	workspace.Status.Phase = v1.WorkspacePhaseCreating
 	workspace.Status.PodIP = ""
 	workspace.Status.Endpoint = ""
-	workspace.Status.ConsecutiveFailures = 0
-	workspace.Status.NextRetryAt = nil
+	clearRecoveryState(workspace)
 	workspace.Status.Message = ""
 	workspace.Status.FailureReason = v1.FailureReasonNone
 	if err := r.Status().Update(ctx, workspace); err != nil {

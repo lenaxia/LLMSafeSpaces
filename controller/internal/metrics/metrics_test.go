@@ -123,20 +123,20 @@ func TestWorkspacesRunningGauge(t *testing.T) {
 	assert.EqualValues(t, 1.0, m.GetGauge().GetValue())
 }
 
-// TestWorkspacesFailedLabels verifies the failed counter accepts the
-// reason label and increments correctly.
-func TestWorkspacesFailedLabels(t *testing.T) {
+// TestWorkspaceRecoveryExhaustedLabels verifies the #760 exhaustion
+// counter accepts the failure_class label and increments correctly.
+func TestWorkspaceRecoveryExhaustedLabels(t *testing.T) {
 	reg := isolatedRegistry(t)
 
-	metrics.WorkspacesFailedTotal.WithLabelValues("PodBuildFailed").Inc()
-	metrics.WorkspacesFailedTotal.WithLabelValues("PodBuildFailed").Inc()
-	metrics.WorkspacesFailedTotal.WithLabelValues("PodFailedDuringCreation").Inc()
+	metrics.WorkspaceRecoveryExhaustedTotal.WithLabelValues("Infrastructure").Inc()
+	metrics.WorkspaceRecoveryExhaustedTotal.WithLabelValues("Infrastructure").Inc()
+	metrics.WorkspaceRecoveryExhaustedTotal.WithLabelValues("Process").Inc()
 
-	mf := gatherFamily(t, reg, "llmsafespaces_workspaces_failed_total")
+	mf := gatherFamily(t, reg, "llmsafespaces_workspace_recovery_exhausted_total")
 	require.NotNil(t, mf)
 	assert.Len(t, mf.GetMetric(), 2)
 
-	m := findMetricByLabels(t, mf, map[string]string{"reason": "PodBuildFailed"})
+	m := findMetricByLabels(t, mf, map[string]string{"failure_class": "Infrastructure"})
 	require.NotNil(t, m)
 	assert.EqualValues(t, 2.0, m.GetCounter().GetValue())
 }

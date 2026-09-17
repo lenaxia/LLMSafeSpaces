@@ -9,8 +9,12 @@ When enabled, every workspace pod receives:
 
 - an **image volume** (`/agentd`) whose content is the standalone
   `ghcr.io/lenaxia/llmsafespaces/agentd` image — a `FROM scratch`
-  artifact containing only the `workspace-agentd` binary,
-- mounted **read-only** on the workspace container,
+  artifact containing the `workspace-agentd` binary and (since #1416)
+  the public CA bundle at `/etc/ssl/certs/ca-certificates.crt` — Go's
+  default system-roots path — so the agentd sidecar's TLS egress
+  (workflow `http` nodes) verifies against real roots,
+- mounted **read-only** on the workspace container (the CA bundle file
+  rides along; the kubelet image volume serves the whole image),
 - with the binary's **per-arch sha256** pinned in the pod spec env,
 - verified by the supervisor itself before any work (`runSupervisorSelfVerify`, `sha256sum` vs pin — design 0053 S3 moved the deleted entrypoint's bash verify into the binary; exit 81/82 unchanged).
 
@@ -124,7 +128,7 @@ resume it (or bump `spec.restartGeneration`).
 
 ## Behavior on verification failure
 
-| Entrypoint outcome | Exit | What happens |
+| Supervisor self-verify outcome | Exit | What happens |
 |---|---|---|
 | sha256 matches pin | 0 | exec overlay binary; pod sets `AgentdVerified=True` |
 | sha256 mismatch | **81** | refuse to exec — **no fallback**; CrashLoopBackOff |
@@ -166,6 +170,6 @@ Triage by comparing the observed digest from the event message:
 
 Image volumes are served through the runsc gofer as read-only mounts;
 first-pod-on-node pull cost applies per digest. The agentd image is
-~25 MB per arch. If resume latency on gVisor nodes ever breaches budget,
+~25 MB per arch plus ~220 KB of CA roots (#1416). If resume latency on gVisor nodes ever breaches budget,
 a chart-gated pre-puller DaemonSet is the fallback (deliberately not
 built until measured — see #863).

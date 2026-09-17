@@ -375,6 +375,45 @@ func TestParseSessionListWire_MalformedJSON(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestParseSessionListWire_CorruptBody (leg-10, epic-71 / leg10-pins,
+// #1312): the four canonical corruption shapes riding a 200 (the
+// #1308 class, mirroring pkg/abi/abitest.CorruptMode) must error
+// loudly — never a silent empty session list.
+func TestParseSessionListWire_CorruptBody(t *testing.T) {
+	corrupt := map[string][]byte{
+		"invalid_json":     []byte(`[{"id":"ses_1","ti`),
+		"trailing_garbage": []byte(`[{"id":"ses_1"}]garbage`),
+		"empty_body":       []byte(``),
+		"html_error_page":  []byte(`<html><body>502 Bad Gateway</body></html>`),
+	}
+	for name, body := range corrupt {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseSessionListWire(body, "ws-1")
+			require.Error(t, err, "a corrupted 200 body must never parse as a session list")
+		})
+	}
+}
+
+// TestParseSessionWire_CorruptBody (leg-10, epic-71 / leg10-pins,
+// #1312): the same four corruption modes at the GET /session/:id
+// parse site — loud error, never a phantom session and never a silent
+// nil.
+func TestParseSessionWire_CorruptBody(t *testing.T) {
+	corrupt := map[string][]byte{
+		"invalid_json":     []byte(`{"id":"ses_1","ti`),
+		"trailing_garbage": []byte(`{"id":"ses_1"}garbage`),
+		"empty_body":       []byte(``),
+		"html_error_page":  []byte(`<html><body>502 Bad Gateway</body></html>`),
+	}
+	for name, body := range corrupt {
+		t.Run(name, func(t *testing.T) {
+			s, err := ParseSessionWire(body, "ws-1")
+			require.Error(t, err, "a corrupted 200 body must never parse as a session")
+			assert.Nil(t, s, "no misparsed session escapes the seam")
+		})
+	}
+}
+
 func TestParseSessionWire_WrappedData(t *testing.T) {
 	body := []byte(`{"data":{
 		"id":"ses_1",

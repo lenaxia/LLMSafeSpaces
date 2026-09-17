@@ -7,6 +7,183 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-09-17
+
+### Features — secrets
+
+- **US-72.1: StagingProvider envelope (KMS/HPKE) + dynamic staged-key
+  redaction rules** (PR #1407): `pkg/secrets.StagingProvider` implements
+  the design-0058 §4.2 `stg:v1` envelope — wire format
+  `stg:v1:<alg>:<keyID>:<base64(payload)>` with `alg` ∈ {aes-256-gcm,
+  hpke} and the header (version + algorithm + plaintext keyID) bound as
+  AEAD AAD, so an envelope cannot claim an algorithm or key it was not
+  sealed under. KMS mode stores the 32-byte local KEK only KMS-wrapped
+  in `llm-relay-kek` — never plaintext bytes in any artifact. The
+  owner-directed redaction integration (§4.9 addendum) lands in
+  `pkg/redact` as dynamic staged-key rules: redaction (payload hygiene)
+  and staging (credential delivery) remain separate mechanisms meeting
+  at exactly one place — the seal/resolve seam. 1.7k lines incl.
+  dynamic-redaction and staging-provider suites plus benchmarks.
+
+### Fixes — automation (live e2e findings #1410–#1415, PR #1420)
+
+- **Cron triggers fire at the schedule they were given, not stale
+  slots** (#1410): `UpdateTrigger` gained a `NextFireAt` column, and the
+  update handler recomputes the slot the moment `sourceConfig` changes
+  (previously a rescheduled trigger kept firing at the OLD schedule's
+  time until that slot passed). A stale (past) slot is refreshed on
+  disabled→enabled re-enable — transition-guarded so a no-op
+  `enabled:true` never pushes an imminent-but-unclaimed fire.
+- **Create validates schedules and never fires immediately** (#1411):
+  cron exprs are parsed (five-field syntax) and tz validated (IANA) at
+  create/update — 400 on garbage instead of the silent hourly retry
+  loop — and `next_fire_at` initializes to the schedule's first real
+  occurrence instead of `now` (every newly created enabled trigger
+  previously fired ~7s after creation). Shared logic in the new
+  `pkg/workflows/schedule.go`; the engine keeps legacy fallbacks for
+  pre-validation rows.
+- **DAG triggers work from the pod automation surface** (#1412):
+  `workflowId` (camelCase — the snake_case alias is normalized,
+  contradictory duplicates 400) no longer collides with the forced
+  routine stamp; the pod handler gates the target on existence, owner,
+  and targeting THIS pod's workspace (404/403). Firing at a deleted
+  workflow now records a FAILED fire with a workflow-not-found payload
+  and drives the failure counter / auto-disable — previously a silent
+  forever-tick. All workspace/workflow keys fold case-insensitively
+  (the decoder binds DTO fields case-insensitively; exact-spelling
+  strips were bypassable via variants like `workspaceid`).
+- **Workflow runs enforce inputSchema** (#1413): run input is validated
+  against the workflow's `inputSchema` before queueing (400 with schema
+  detail — previously garbage inputs burned node executions and failed
+  deep in the DAG with confusing errors); schemas are compile-checked at
+  workflow create/update. Trigger-fired runs deliberately bypass (the
+  system envelope can never satisfy user schemas) — documented at the
+  site, design options tracked in #1425.
+- **Script failures name their cause** (#1414): script node language is
+  validated at spec time (`python|node`); pre-execution failures keep
+  their real error (`unsupported language: bash`) instead of the
+  swallowed `exit -1: ` with empty stderr; real process exits keep the
+  `exit N: stderr` shape.
+- **Agentd MCP tool descriptions match the contracts** (#1415): the
+  invented node vocabulary (transform/parallel/delay/mcp_call) is
+  replaced by the validated four (script/agent/http/condition) with the
+  script-node `handler(input) -> dict` contract, the `workflowId`
+  spelling, targetWorkspaceId requirements, and no-immediate-fire
+  semantics — content-pinned by drift tests so the class cannot
+  silently return.
+
+### Fixes — automation (pod seam, #1426 via PR #1431)
+
+- **The pod-scoping invariant holds on the update path**: the rule
+  above (a pod schedules work only in ITS workspace) was create-only —
+  `trigger_update` replayed caller `workspaceId`/`workflowId` verbatim,
+  allowing retargets to other workspaces or cross-workspace DAGs.
+  Update patches now scope exactly like create (workspace retargets
+  forced here; workflow retargets gated 404/403, folded
+  case-insensitively — a `WorkflowId` variant previously escaped the
+  gate entirely; clearing a DAG target lands the routine HERE; JSON
+  null is an explicit 400).
+
+### Fixes — platform
+
+- **Epic-71 test flakes** (PR #1408): outbox-verify persistFirst data
+  race fixed plus contended timing windows.
+- **CI: gVisor bundle sidecar tree** (PR #1406): install step stages
+  gvisor_sentry under STRICT policy.
+
+### Testing — automation e2e
+
+- Nightly kind-cluster rows R1–R5 (`local/issue-1410-1412-automation-
+  e2e.sh`): create validation + first-slot, immediate reschedule,
+  no-op-enable slot stability, missing-workflow failed fire with
+  failure accounting, and run-input schema enforcement — API-only and
+  LLM-free (ghost-workflow targets), with structural pins so rows
+  cannot silently drop. Real-PG `UpdateTrigger` next_fire_at
+  persistence row added to the integration suite.
+
+## [0.32.1] - 2026-09-17
+
+### Fixes — webhook triggers were unreachable at their advertised URL
+
+- **Receiver resolved the wrong ID** (PR #1404): create/rotate advertise
+  `/api/v1/hooks/<triggerID>` but the webhook row gets an independent
+  `uuid.New()` id, and the receiver looked the path param up as
+  `webhooks.id` — two UUIDs that can never match, so every webhook
+  trigger ever created returned 404 at its advertised URL before HMAC
+  verification. The receiver now resolves by trigger_id
+  (`GetWebhookByTriggerID`), repairing all existing webhooks with zero
+  migration; delivery dedup keys on the resolved row identity. Dead
+  `Store.GetWebhook` removed; contract comments corrected. Guarded by a
+  cross-handler e2e (`TestWebhookE2E_AdvertisedURLDelivers`): real
+  create → advertised URL verbatim → rotate → signed POST → 202 + fire
+  + queued run, plus bad-signature/unknown-id/duplicate unhappy legs.
+
+### Features — agentd
+
+- **`trigger_rotate_webhook_secret`** (PR #1405): the automation
+  surface could create webhook triggers but never obtain a signing
+  secret (create doesn't return one; rotate lived only on the user
+  API). Delegates the existing rotate over pod identity; the response
+  `{webhookSecret, webhookUrl}` surfaces verbatim to the owner's agent.
+  Rotation is AUDITED — `trigger.rotate_webhook_secret` event with the
+  resolved owner as actor (previously rotate issued credentials with no
+  audit event while create was audited), the secret never enters the
+  audit row. Also adds `TestMCPHandler_EveryAdvertisedToolDispatches`
+  (every tools/list name must survive the dispatcher — kills the
+  advertised-but-uncallable class caught in review).
+
+## [0.32.0] - 2026-09-16
+
+### Features — agentd automation tools (trigger_* / workflow_*)
+
+- **Automation CRUD + debugging over pod identity** (PR #1402, 2 review
+  rounds): eleven MCP tools on `/v1/mcp` — `trigger_list/create/update/
+  delete/fires` and `workflow_list/create/update/delete/run/runs` —
+  backed by `/internal/v1/automation` (13 routes) and a contained
+  opencode seam. The surface authenticates the pod (TokenReview → SA
+  principal → namespace+workspace match), resolves the owner
+  server-side, and delegates to the EXISTING user handlers — auth +
+  scoping only, zero duplicated domain logic. Trigger-create forces the
+  routine target to this pod's workspace (a pod cannot schedule work
+  into other workspaces). Bodies pass through verbatim (schema-decoupled:
+  platform schema evolution needs zero agentd changes; agents learn
+  shapes from live `*_list` output, and platform validation errors
+  surface verbatim); patches carry caller fields only (id rides the
+  URL, workspaceID the query); IDs are UUID-validated before any dial.
+  `trigger_fires` (per-fire status, input envelope, error payloads) +
+  `workflow_runs` (statuses, error codes) are the debugging reads;
+  `workflow_run` is the manual fire button. The first review round
+  caught three body-path defects (drained-body replay, query-clobber in
+  the resolver guard, un-unwrapped tool wrapper keys) — all fixed with
+  delegated-handler integration coverage against the REAL handlers,
+  plus an exact-key workspaceID sniff (case-insensitive JSON folding
+  could otherwise mix the DTO spelling into the identity check).
+
+## [0.31.0] - 2026-09-16
+
+### Features — cross-session management + user timezone
+
+- **`send_message` + `abort_session`** (PR #1382, 6 review rounds): the
+  cross-session management pair. `send_message` delivers a text message
+  to an existing session fire-and-forget — the reply stays in the
+  target; busy targets queue server-side and deliver at the turn
+  boundary (L2-proven on the real binary); abort drops queued input
+  (disclosed). `abort_session` stops a target's current turn via the
+  consolidated, sessionID-validated `Client.Abort` (hardening the
+  API-proxy interrupt path). Detached goroutines capture their logger
+  at spawn — the cross-test global-log race class is closed.
+- **Live browser timezone for `get_datetime`** (PR #1389, 10 review
+  rounds): the tool reports user-local time with a `source` field
+  (`argument` | `browser` | `pod`). The frontend reports the browser's
+  IANA zone as a user setting; the API pushes it to workspace pods on
+  every SSE connect and on setting update (`fanOutTimezonePush`);
+  agentd serves `/v1/user-timezone` (§D1-gated, IANA-validated against
+  embedded tzdata — FROM-scratch delivery carries no system zoneinfo,
+  and a CI tripwire gates the embed's removal). The `timezone` key is
+  absent from the JSON when unknown, never faked. SDK/MCP callers pass
+  an explicit IANA argument. Kind-cluster e2e (Test 5b) gates the full
+  pod-side channel nightly.
+
 ## [0.30.1] - 2026-09-15
 
 ### Fixes — agentd

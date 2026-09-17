@@ -90,10 +90,21 @@ gvisor_install_on_node() { # node
       # The bundle carries BOTH binaries at its root (verified against
       # release-20260907.0); runsc also needs the SHIM (run 10: "runtime
       # io.containerd.runsc.v1 binary not installed containerd-shim-runsc-v1").
-      tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp runsc containerd-shim-runsc-v1
+      # The bundle runsc (v2026.5+) runs with --sidecar-usage-policy STRICT:
+      # sandbox creation needs the staged gvisor_sentry under
+      # /usr/local/bin/gvisor-bin/ (pool 35169738298 — every gVisor
+      # sandbox failed with "sidecar gvisor_sentry not usable" when only
+      # the two top-level binaries were installed).
+      tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp runsc containerd-shim-runsc-v1 gvisor-bin
       install -m 0755 /tmp/runsc /usr/local/bin/runsc
       install -m 0755 /tmp/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
-      rm -f /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS /tmp/runsc /tmp/containerd-shim-runsc-v1
+      rm -rf /usr/local/bin/gvisor-bin
+      cp -a /tmp/gvisor-bin /usr/local/bin/gvisor-bin
+      # Loud at provisioning, not hours later in sandbox creation (the
+      # pool 35169738298 wedge class): the STRICT policy looks up the
+      # sentry HERE — fail now if it is missing or not executable.
+      test -x /usr/local/bin/gvisor-bin/gvisor_sentry
+      rm -rf /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS /tmp/runsc /tmp/containerd-shim-runsc-v1 /tmp/gvisor-bin
       /usr/local/bin/runsc --version >/dev/null
       # Register the handler in containerd (config_v2 runtime table);
       # containerd resolves `runsc` from PATH (/usr/local/bin).

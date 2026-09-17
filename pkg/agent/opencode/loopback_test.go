@@ -438,3 +438,140 @@ func TestSeam_SessionPromptTokens_OnlyZeroStamps(t *testing.T) {
 	})
 	assert.Equal(t, int64(0), c.SessionPromptTokens(context.Background(), "ses_1"))
 }
+
+// --- leg-10 wire-drift pins (epic-71 / leg10-pins, #1312) ---
+//
+// The four canonical corruption shapes of fault leg 10 (the #1308
+// class, mirroring pkg/abi/abitest.CorruptMode): schema-drifted bytes
+// riding a valid HTTP 200 — the layer that defeats hand-adjacent
+// parsers while passing transport checks. Every seam method that
+// PARSES a 200 body must fail LOUDLY on every mode — never a silent
+// success and never a misparse into a phantom result. The terminus
+// (outbox_terminus_test.go:506) and abiAct (proxy_actions_test.go:226)
+// sites already enforce this contract; these pins bring the #1379-era
+// seam parse sites under the same discipline.
+const (
+	driftInvalidJSON   = `{"id":"ses_x","info":{"role":"assist`      // truncated mid-object
+	driftTrailingJunk  = `{"id":"ses_x"}garbage-bytes`               // valid JSON + non-JSON tail
+	driftEmptyBody     = ``                                          // zero-byte 200
+	driftHTMLErrorPage = `<html><body>502 Bad Gateway</body></html>` // proxy error page riding 200
+)
+
+// leg10DriftModes enumerates the leg-10 corruption bodies by their
+// abitest.CorruptMode name.
+var leg10DriftModes = []struct {
+	name string
+	body string
+}{
+	{"invalid_json", driftInvalidJSON},
+	{"trailing_garbage", driftTrailingJunk},
+	{"empty_body", driftEmptyBody},
+	{"html_error_page", driftHTMLErrorPage},
+}
+
+// seamDriftServer serves every seam route with the same corrupted 200
+// body — the parse, not the routing, is under test.
+func seamDriftServer(t *testing.T, body string) *Client {
+	return newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body))
+	})
+}
+
+// TestSeam_WireDriftCorruption: each 200-parsing seam method × each
+// leg-10 corruption mode → a returned error. Sites excluded by design:
+//   - SessionRename/Delete/Summarize — 2xx-only, no body parse
+//   - SessionListRaw/MessagesRaw — byte passthrough, no parse site
+//   - SessionPromptTokens — best-effort display value, fail-open 0 by
+//     contract; its shape is pinned by the Epic-36 formula tests above
+func TestSeam_WireDriftCorruption(t *testing.T) {
+	ctx := context.Background()
+	sites := map[string]func(c *Client) error{
+		"SessionCreate": func(c *Client) error {
+			_, err := c.SessionCreate(ctx, "")
+			return err
+		},
+		"SessionSend": func(c *Client) error {
+			_, err := c.SessionSend(ctx, "ses_1", "t", "", nil)
+			return err
+		},
+		"SessionList": func(c *Client) error {
+			_, err := c.SessionList(ctx)
+			return err
+		},
+		"SessionMessageCount": func(c *Client) error {
+			_, err := c.SessionMessageCount(ctx, "ses_1")
+			return err
+		},
+		"SessionContextCount": func(c *Client) error {
+			_, err := c.SessionContextCount(ctx, "ses_1")
+			return err
+		},
+		"SessionModelRef": func(c *Client) error {
+			_, err := c.SessionModelRef(ctx, "ses_1")
+			return err
+		},
+		"ModelInfo": func(c *Client) error {
+			_, err := c.ModelInfo(ctx, "p1", "m1")
+			return err
+		},
+	}
+	for site, call := range sites {
+		for _, mode := range leg10DriftModes {
+			t.Run(site+"/"+mode.name, func(t *testing.T) {
+				c := seamDriftServer(t, mode.body)
+				err := call(c)
+				require.Error(t, err, "a corrupted 200 must never parse as success")
+				// DISCRIMINATION (the terminus r1 pattern): the failure
+				// must be AT THE PARSE — every seam decode failure is
+				// wrapped with "decode" — never a downstream phantom
+				// (e.g. ModelInfo's not-found guard, which a swallowed
+				// parse error would satisfy with an empty catalog).
+				assert.Contains(t, err.Error(), "decode",
+					"the corrupted 200 must fail AT THE PARSE, not degrade into a downstream sentinel")
+			})
+		}
+	}
+}
+
+// TestSeam_SessionCreate_IDDriftLoud: a VALID-JSON 200 that no longer
+// carries the id field (the renamed-field drift class) must fail loudly
+// — the empty-ID guard is the seam's only shape-rename tripwire.
+func TestSeam_SessionCreate_IDDriftLoud(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"sessionID":"ses_x"}`))
+	})
+	_, err := c.SessionCreate(context.Background(), "t")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no id")
+}
+func TestSeam_Abort_ExactWire(t *testing.T) {
+	var method, path, body string
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		buf := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(buf)
+		body = string(buf)
+		w.WriteHeader(http.StatusOK)
+	})
+	require.NoError(t, c.Abort(context.Background(), "ses_1"))
+	assert.Equal(t, http.MethodPost, method)
+	assert.Equal(t, "/session/ses_1/abort", path)
+	assert.Equal(t, "{}", body, "V1 abort takes an empty JSON body")
+}
+
+func TestSeam_Abort_Non2xx(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	err := c.Abort(context.Background(), "ses_x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
+}
+
+func TestSeam_Abort_InvalidID(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no wire call for an invalid id")
+	})
+	assert.Error(t, c.Abort(context.Background(), "../x"))
+}

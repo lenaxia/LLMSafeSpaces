@@ -46,6 +46,9 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
       onResolved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to submit");
+    } finally {
+      // #1365: reset on both outcomes — a surviving instance must stay
+      // clickable (removal can miss on whileAway/fold-lag paths).
       setSubmitting(false);
     }
   };
@@ -62,6 +65,7 @@ export function QuestionPrompt({ workspaceId, request, onResolved }: QuestionPro
       onResolved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to dismiss");
+    } finally {
       setSubmitting(false);
     }
   };

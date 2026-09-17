@@ -28,6 +28,7 @@ vi.mock("../api/messages", () => {
 vi.mock("../api/sessions", () => ({ sessionsApi: { create: vi.fn().mockResolvedValue({ sessionId: "sess-auto" }) } }));
 vi.mock("../hooks/useEventStream", () => ({ useEventStream: vi.fn() }));
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useWhileAwayStalenessSweep: () => {},
   useClearPendingUnread: () => vi.fn(),
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

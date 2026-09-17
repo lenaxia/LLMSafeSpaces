@@ -132,6 +132,12 @@ type Config struct {
 	// Injectable so the #1315 incident repro can drive the hung-turn
 	// window without wall-clock waits.
 	AdmitterTimeout time.Duration
+	// AnswerTimeout (#1396) bounds one ANSWER_QUESTION forward. The
+	// forward targets the harness ask registry and completes in
+	// milliseconds (53-307ms measured); zero ⇒ answerForwardBudget (5s).
+	// Injectable so the budget leg tests expire it without wall-clock
+	// waits (the AdmitterTimeout precedent).
+	AnswerTimeout time.Duration
 	// Actor (US-69.9) is the typed-actions seam; nil DISABLES the Act op
 	// (NotSupported) — the wiring layer injects the opencode executor.
 	Actor Actor
@@ -194,7 +200,9 @@ type Authority struct {
 
 	// sessionLocks is the per-session single-flight domain shared by
 	// delivery admission and Act (US-69.9 sole-writer serialization:
-	// actions serialize against in-flight delivery on the same lock).
+	// TRANSCRIPT verbs serialize against in-flight delivery on the same
+	// lock; #1396 exempts answer verbs — registry forwards that commute
+	// with admissions — from the domain).
 	sessionLocks   map[string]*sync.Mutex
 	sessionLocksMu sync.Mutex
 
@@ -214,6 +222,9 @@ type Authority struct {
 	reconFailed         int64
 	reconBusyCleared    int64
 	reconEvidenceFails  int64
+	// answerBudgetExceeded counts budget-expired answer forwards
+	// (#1396; a.mu-guarded, Metrics-exposed).
+	answerBudgetExceeded int64
 }
 
 // New constructs the authority and loads the durable seq cursor from
@@ -270,8 +281,10 @@ func New(cfg Config) (*Authority, error) {
 	}
 	if cfg.Admitter != nil {
 		// The driver joins the authority's per-session single-flight —
-		// the SAME lock domain Act executes under (US-69.9: actions and
-		// admissions serialize per session; M1 sole writer).
+		// the lock domain Act's TRANSCRIPT verbs execute under
+		// (US-69.9: actions and admissions serialize per session; M1
+		// sole writer. #1396: answer verbs forward to the ask registry
+		// outside this domain).
 		driver = newDeliveryDriver(ledger, cfg.Admitter, cfg, a.sessionLock)
 		a.deliver = driver
 	}
@@ -701,6 +714,11 @@ type Metrics struct {
 	ReconcileFailed        int64
 	ReconcileBusyCleared   int64
 	ReconcileEvidenceFails int64
+	// AnswerBudgetExceeded is the cumulative count of answer forwards
+	// that exceeded AnswerTimeout (#1396): the typed retryable
+	// DeadlineExceeded path — every count is a would-be 125s hang made
+	// visible and fast.
+	AnswerBudgetExceeded int64
 }
 
 func (a *Authority) Metrics() Metrics {
@@ -732,6 +750,7 @@ func (a *Authority) Metrics() Metrics {
 	m.ReconcileFailed = a.reconFailed
 	m.ReconcileBusyCleared = a.reconBusyCleared
 	m.ReconcileEvidenceFails = a.reconEvidenceFails
+	m.AnswerBudgetExceeded = a.answerBudgetExceeded
 	return m
 }
 

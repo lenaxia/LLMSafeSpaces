@@ -7,12 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	types "github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
@@ -20,6 +22,7 @@ import (
 type mockWorkflowStore struct {
 	workflows    map[string]*wf.WorkflowRow
 	lastCreated  *wf.WorkflowRow
+	lastRun      *wf.WorkflowRunRow
 	createErr    error
 	statuses     map[string]string
 	runStatuses  map[string]string
@@ -120,6 +123,7 @@ func (m *mockWorkflowStore) CountWorkflowsByOwner(_ context.Context, ownerType, 
 }
 
 func (m *mockWorkflowStore) CreateWorkflowRun(_ context.Context, row *wf.WorkflowRunRow) error {
+	m.lastRun = row
 	m.workflows[row.ID] = &wf.WorkflowRow{ID: row.ID}
 	return nil
 }
@@ -649,4 +653,182 @@ func TestWorkflowUpdate_TargetWorkspaceID(t *testing.T) {
 	updated := store.workflows["wf-ws"]
 	require.NotNil(t, updated.TargetWorkspaceID)
 	assert.Equal(t, "ws-target-1", *updated.TargetWorkspaceID)
+}
+
+// --- #1413: run input must satisfy the workflow's inputSchema ---
+
+func setupWorkflowRunRouter(store workflowStore) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, nil)
+	r.POST("/api/v1/me/workflows/:id/runs", func(c *gin.Context) {
+		c.Set("userID", "test-user")
+		h.UserRunWorkflow(c)
+	})
+	return r
+}
+
+func TestWorkflowRun_InputSchemaEnforced(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		TargetWorkspaceID: &target,
+		InputSchema:       json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`),
+	}
+	r := setupWorkflowRunRouter(store)
+
+	// Missing the required field: rejected before a run is queued.
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"wrong": true},
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "inputSchema")
+	assert.Nil(t, store.lastRun, "no run row may be created for invalid input")
+
+	// Wrong type: also rejected.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"topic": 42},
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	// Valid input still queues.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastRun)
+	assert.Equal(t, types.RunStatusQueued, store.lastRun.Status)
+}
+
+func TestWorkflowCreate_MalformedInputSchemaRejected(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":        "bad-schema",
+		"specYaml":    `{"nodes": [{"id": "a", "type": "script", "data": {"language": "python", "handler": "def handler(i): return {}"}}], "edges": []}`,
+		"inputSchema": `{"type":"object",`,
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "inputSchema")
+}
+
+func TestWorkflowCreate_YAMLSpec(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	yamlSpec := `nodes:
+  - id: say
+    type: agent
+    data:
+      prompt: "hello"
+edges: []
+`
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "yaml-spec", "specYaml": yamlSpec,
+		"targetWorkspaceId": "ws-1",
+	})
+	require.Equal(t, 201, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastCreated)
+	assert.NotNil(t, store.lastCreated.SpecJSON, "YAML normalized to the JSON spec column")
+	assert.Contains(t, string(store.lastCreated.SpecJSON), `"hello"`, "content preserved through the dialect conversion")
+}
+
+func TestWorkflowCreate_NeitherJSONNorYAML(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "garbage", "specYaml": "}: not yaml [or json", "targetWorkspaceId": "ws-1",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "neither JSON nor YAML", "the error names the dialect problem, not a JSON parse artifact")
+}
+
+// #1418: direct table-driven coverage of extractSpecJSON across its
+// input classes.
+func TestExtractSpecJSON_Table(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr string
+	}{
+		{"empty -> empty object", "", "{}", ""},
+		{"whitespace-only", "   \n\t", "{}", ""},
+		{"JSON object passes through", `{"nodes":[]}`, `{"nodes":[]}`, ""},
+		{"JSON array passes through", `[1,2]`, `[1,2]`, ""},
+		{"block YAML converts", "nodes: []\nedges: []", `{"edges":[],"nodes":[]}`, ""},
+		{"flow YAML converts", `{nodes: [], edges: []}`, `{"edges":[],"nodes":[]}`, ""},
+		{"bare scalar YAML", "just-a-string", `"just-a-string"`, ""},
+		{"multi-doc rejected", "nodes: []\n---\nedges: []", "", "single document"},
+		{"malformed second doc rejected", "nodes: []\n---\n: oops", "", "trailing YAML"},
+		{"garbage rejected", "}: not yaml [or json", "", "neither JSON nor YAML"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractSpecJSON(tc.in)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want error containing %q, got %v (out %s)", tc.wantErr, err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("want %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+// The update path shares the dialect handling — YAML specs update too.
+func TestWorkflowUpdate_YAMLSpec(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-y1"] = &wf.WorkflowRow{
+		ID: "wf-y1", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y1", map[string]any{
+		"specYaml": "nodes:\n  - id: a\n    type: agent\n    data:\n      prompt: hi\nedges: []\n",
+	})
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "wf-y1")
+	// Storage contract: the caller's dialect is kept VERBATIM in
+	// specYaml; the normalized canonical form lands in the SpecJSON
+	// column run-time consumers read.
+	updated := store.workflows["wf-y1"]
+	assert.Contains(t, updated.SpecYAML, "nodes:", "caller dialect kept verbatim")
+	assert.Contains(t, string(updated.SpecJSON), `"prompt":"hi"`, "normalized JSON spec column")
+}
+
+// Update-path unhappy legs: multi-doc and malformed-second-doc YAML are
+// both rejected on PUT (no silent truncation to the first document).
+func TestWorkflowUpdate_YAMLRejections(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-y2"] = &wf.WorkflowRow{
+		ID: "wf-y2", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y2", map[string]any{
+		"specYaml": "nodes: []\n---\nedges: []\n",
+	})
+	require.Equal(t, 400, w.Code, "two valid documents rejected")
+	assert.Contains(t, w.Body.String(), "single document")
+
+	w = doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y2", map[string]any{
+		"specYaml": "nodes: []\n---\n: oops\n",
+	})
+	require.Equal(t, 400, w.Code, "malformed SECOND document rejected, not swallowed")
+	assert.Contains(t, w.Body.String(), "trailing YAML")
 }

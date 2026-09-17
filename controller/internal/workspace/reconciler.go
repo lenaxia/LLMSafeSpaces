@@ -85,8 +85,9 @@ type WorkspaceReconciler struct {
 	APIPublicURL string
 	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
 	// digest-addressed image volume into every workspace pod and the
-	// entrypoint verifies the binary's sha256 against the per-arch pins
-	// before exec. All three fields must be set together (validated at
+	// supervisor self-verifies the binary's sha256 against the per-arch
+	// pins before exec (design 0053 — the deleted entrypoint's check
+	// moved into the binary). All three fields must be set together (validated at
 	// startup by validateAgentdDeliveryConfig). Empty AgentdImage = legacy
 	// mode (binary baked into runtimes/base; no volume, mount, or env).
 	AgentdImage             string
@@ -122,6 +123,15 @@ type WorkspaceReconciler struct {
 	// the next reconcile will just call it immediately).
 	lastDeepStatus   map[string]time.Time
 	lastDeepStatusMu sync.Mutex
+
+	// drainStates tracks the per-workspace pre-deletion drain window (#761):
+	// when a deferrable pod deletion (suspend, restart-generation bump,
+	// architecture drift, password-secret heal) last observed busy sessions
+	// and last observed progress. In-memory only — lost on controller
+	// restart, which restarts the drain window (documented in
+	// session_drain.go).
+	drainStates   map[string]*podDrainState
+	drainStatesMu sync.Mutex
 
 	// MaxConcurrentReconciles: how many DIFFERENT workspaces reconcile in
 	// parallel (controller-runtime never runs the same object concurrently,

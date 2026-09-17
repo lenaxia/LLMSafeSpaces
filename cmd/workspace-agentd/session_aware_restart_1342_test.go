@@ -236,23 +236,36 @@ func TestRestart1342_ProgressingSessionDefersUnbounded(t *testing.T) {
 
 func TestRestart1342_MixedProgressAndStalled_DefersWhileAnyProgress(t *testing.T) {
 	tracker := newSessionStatusTracker()
+	// Both sessions start wedged (busy-mark aged past the bound) so the
+	// ONLY thing that can defer the force path is the fresh progress
+	// signal — a regression that ignores it force-restarts at the first
+	// poll instead of after one bound-sized delay.
 	tracker.set("ses_build", "busy")
+	stallSession(tracker, "ses_build")
 	stallSession(tracker, "ses_wedged")
+	// One synchronous progress event: ses_build is progressing from the
+	// first poll on, independent of when the producer's first tick lands.
+	tracker.processEvent(`{"type":"message.part.updated","properties":{"sessionID":"ses_build","part":{"id":"prt_seed","type":"text","text":"chunk"}}}`)
 
 	proc := newOrderRecordingProc()
 	intr := newRecordingInterrupter()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel() // the defer goroutine must die with the test
+	// Contention-proof budgets (epic-71 flake-verify-race): the progress
+	// ticker's callbacks must survive a loaded runner. The bound sits at
+	// 30x the tick period — scheduler starvation would have to swallow a
+	// 3s window to misclassify a streaming session as stalled (the
+	// production default restartStallBound stays what it is).
 	_ = makeSessionAwareRestartDecision(ctx, proc, tracker, restartDecisionConfig{
-		PollInterval: 20 * time.Millisecond,
-		StallBound:   80 * time.Millisecond,
+		PollInterval: 50 * time.Millisecond,
+		StallBound:   3 * time.Second,
 		GraceWindow:  30 * time.Millisecond,
 		Interrupter:  intr.interrupt,
 	})
 
 	stop := make(chan struct{})
 	go func() {
-		tick := time.NewTicker(30 * time.Millisecond)
+		tick := time.NewTicker(100 * time.Millisecond)
 		defer tick.Stop()
 		for {
 			select {
@@ -263,7 +276,7 @@ func TestRestart1342_MixedProgressAndStalled_DefersWhileAnyProgress(t *testing.T
 			}
 		}
 	}()
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(700 * time.Millisecond)
 	close(stop)
 
 	assert.Equal(t, 0, proc.restartCount(),

@@ -278,7 +278,11 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 			ProvidersConfigured: configured,
 			AgentVersion:        snap.Version,
 			AgentType:           "opencode",
-			// RelayInjected: true once the relay injector successfully completed.
+			// RelayInjected: true while the writer holds relay state —
+			// evaluated live per request (boot injection, injector run, or a
+			// mid-pod-life #910 re-arm cycle); the restart that LOADS the
+			// config may still be pending. Full semantics in the
+			// ReadyzResponse.RelayInjected doc (pkg/agentd/types.go).
 			// Included in readyz (not statusz) because readyz is cache-based and
 			// lightweight, making it safe to call on every ListModels cache miss.
 			RelayInjected: deps.agentConfigWriter != nil && deps.agentConfigWriter.HasRelay(),
@@ -436,6 +440,11 @@ func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) 
 	}))
 
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
+
+	// Live browser timezone: the API pushes the user's IANA zone here on
+	// browser (re)connect; get_datetime renders user-local time from it.
+	// Same §D1 carve-out credential pair as every API-driven route.
+	userMux.HandleFunc("/v1/user-timezone", userTimezoneHandler(deps.password, deps.controlPlanePassword))
 
 	// Epic 68 US-68.1: file-ingest endpoint. Control-plane route on the
 	// user mux, symmetric with the control-plane routes (design epic-68 D1) — the

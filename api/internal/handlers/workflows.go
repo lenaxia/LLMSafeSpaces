@@ -10,14 +10,18 @@ package handlers
 // middleware chain (OrgAdminGuard / auth).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -73,6 +77,14 @@ func NewOrgWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *Wo
 
 // SetAudit wires the audit logger (deferred injection — may be nil at construction).
 func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
+
+// GetWorkflowRow exposes the owner-scoped workflow lookup to co-located
+// handlers: pod automation's DAG-trigger creation uses it to enforce the
+// pod-scoping rule (a workflow-targeted trigger must reference a workflow
+// whose target workspace is THIS pod's workspace).
+func (h *WorkflowsHandler) GetWorkflowRow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
+	return h.store.GetWorkflow(ctx, ownerType, ownerID, workflowID)
+}
 
 // ListSessionOrigins returns session origin mappings for a workspace.
 func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
@@ -224,7 +236,12 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
-	spec, err := wf.ParseSpec(json.RawMessage(extractSpecJSON(req.SpecYAML)))
+	specJSON, err := extractSpecJSON(req.SpecYAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	spec, err := wf.ParseSpec(json.RawMessage(specJSON))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 		return
@@ -248,7 +265,14 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
-	specJSON, err := json.Marshal(spec)
+	// A declared inputSchema must at least compile (#1413) — a malformed
+	// schema would otherwise turn every run into a validation error.
+	if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	validatedJSON, err := json.Marshal(spec)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal validated spec"})
 		return
@@ -272,7 +296,7 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 	row := &wf.WorkflowRow{
 		ID: uuid.New().String(), OwnerType: ownerType, OwnerID: ownerID,
 		Name: req.Name, Slug: slug, Description: req.Description,
-		SpecYAML: req.SpecYAML, SpecJSON: specJSON,
+		SpecYAML: req.SpecYAML, SpecJSON: validatedJSON,
 		InputSchema: req.InputSchema, TargetWorkspaceID: targetWS,
 		OnMissingWorkspace: onMissing,
 		Status:             status, Defaults: req.Defaults,
@@ -345,6 +369,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 			return
 		}
 	}
+	if req.InputSchema != nil {
+		if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 
 	// Re-validate spec if it changed.
 	if req.SpecYAML != nil {
@@ -357,7 +387,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch existing workflow"})
 			return
 		}
-		spec, err := wf.ParseSpec(json.RawMessage(extractSpecJSON(*req.SpecYAML)))
+		updateSpecJSON, err := extractSpecJSON(*req.SpecYAML)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		spec, err := wf.ParseSpec(json.RawMessage(updateSpecJSON))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 			return
@@ -493,21 +528,43 @@ func slugify(name string) string {
 	return s
 }
 
-// extractSpecJSON wraps a YAML spec string as a JSON string for ParseSpec.
-// In v1, spec_yaml is expected to be JSON (the YAML editor sends JSON via the
-// API). If the content is already valid JSON, it passes through; if it's YAML,
-// it will fail ParseSpec with a clear error (YAML parsing is a frontend concern).
-func extractSpecJSON(specYAML string) string {
+// extractSpecJSON normalizes the specYaml field for ParseSpec (#1418).
+// Valid JSON passes through untouched (canonical stays canonical).
+// Anything else is parsed as YAML — block OR flow style — and emitted
+// as the equivalent JSON so both dialects feed the validator the same
+// shape. Exactly one document is required: multi-document YAML is a
+// spec-authoring error and is rejected rather than silently truncated
+// to its first document.
+func extractSpecJSON(specYAML string) (string, error) {
 	trimmed := strings.TrimSpace(specYAML)
 	if trimmed == "" {
-		return "{}"
+		return "{}", nil
 	}
-	// If it starts with { or [, it's JSON — pass through.
-	if trimmed[0] == '{' || trimmed[0] == '[' {
-		return trimmed
+	if json.Valid([]byte(trimmed)) {
+		return trimmed, nil
 	}
-	// Not JSON — wrap in a minimal object so ParseSpec produces a clear error.
-	return trimmed
+	// #1418: the field is named specYaml — honor it. Convert YAML to
+	// JSON so ParseSpec sees the same shape either dialect produces.
+	// Flow-style YAML ({nodes: ...}) also lands here: it starts with {
+	// but is not valid JSON, and must NOT fall back to the old
+	// misleading JSON-parse error.
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(trimmed)))
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return "", fmt.Errorf("spec is neither JSON nor YAML: %v", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err == nil || !errors.Is(err, io.EOF) {
+		// A second decodable document, OR a MALFORMED one (any non-EOF
+		// error) — both are multi-document input, both rejected; treating
+		// a parse error as end-of-stream silently truncated.
+		return "", fmt.Errorf("spec must be a single document (multi-document or trailing YAML rejected)")
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("cannot normalize YAML spec: %v", err)
+	}
+	return string(out), nil
 }
 
 func isWorkflowUniqueViolation(err error) bool {
@@ -548,6 +605,14 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get workflow"})
+		return
+	}
+
+	// Run input must satisfy the workflow's declared inputSchema (#1413) —
+	// before this check, missing required fields sailed through and only
+	// surfaced as opaque node failures deep in the DAG.
+	if verr := wf.ValidateRunInput(wfRow.InputSchema, req.Input); verr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input does not satisfy the workflow's inputSchema: %v", verr)})
 		return
 	}
 

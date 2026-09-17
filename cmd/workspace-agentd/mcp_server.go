@@ -192,11 +192,119 @@ func mcpHandler(password string) http.HandlerFunc {
 						},
 					},
 					{
-						Name:        "get_datetime",
-						Description: "Get the current date and time — in UTC and in this workspace's local timezone (with the zone name and UTC offset). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\"), file timestamps, or when the user asks for the time. Workspace pods default to UTC — do not assume the user's local timezone matches; report both.",
+						Name:        "send_message",
+						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing is returned to you. Read the target later with session_read if you need its response. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
 						InputSchema: map[string]any{
-							"type":       "object",
-							"properties": map[string]any{},
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "The target session (from session_list / session_metadata)"},
+								"message":    map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
+							},
+							"required": []string{"session_id", "message"},
+						},
+					},
+					{
+						Name:        "trigger_list",
+						Description: "List YOUR automation triggers (cron schedules + webhooks) - the workspace owner's, resolved from this pod's identity. Each entry carries sourceType/sourceConfig, target workspace/workflow, enabled, consecutiveFailures, lastFiredAt/nextFireAt. Start here before create/update: live entries show the exact body shapes. Pair with trigger_fires for why a trigger is misbehaving.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+					{
+						Name:        "trigger_create",
+						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook; sourceConfig carries the source's config (cron: expr, five-field cron syntax, + optional tz as an IANA name - both are validated, invalid schedules are rejected with 400). Without a workflow target it fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). To fire a DAG instead, set workflowId (camelCase!) to a workflow whose targetWorkspaceId is THIS workspace - the platform enforces that scope. A new or rescheduled trigger does NOT fire immediately: scheduling starts at the next occurrence of the schedule. autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflowId (DAG, camelCase)"},
+						}, "required": []string{"trigger"}},
+					},
+					{
+						Name:        "trigger_update",
+						Description: "Partially update one trigger (id + the fields to change; omitted = keep existing). sourceType is immutable after create. Typical: flip enabled after a fire-storm, tweak a cron schedule, fix a prompt.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id":    map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
+							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateTriggerRequest shape)"},
+						}, "required": []string{"id", "patch"}},
+					},
+					{
+						Name:        "trigger_delete",
+						Description: "Delete one trigger permanently. Disarm-first alternative for temporary pauses: trigger_update {enabled:false}.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "trigger_fires",
+						Description: "The debugging gold: a trigger's fire audit - per-fire status, the input envelope (cron render / webhook body), error payloads, and the consecutive-failure trail behind consecutiveFailures/auto-disable. Use when a trigger 'is not working': this says whether it fired, what it saw, and why it failed.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "trigger_rotate_webhook_secret",
+						Description: "Rotate a webhook trigger's HMAC signing secret. Returns {webhookSecret, webhookUrl} — hand the secret to the EXTERNAL sender; sign deliveries as X-Hub-Signature-256: sha256=<hex hmac of the raw body>. Rotating invalidates the previous secret immediately. Use after trigger_create for a webhook source (create does NOT return a secret) or whenever a secret may have leaked.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "workflow_list",
+						Description: "List YOUR workflows (DAG specs) - the workspace owner's. Entries show the full spec (nodes, edges, input schema) - the reference shape for workflow_create.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+					},
+					{
+						Name:        "workflow_create",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml is a STRINGIFIED spec - a JSON object string or YAML text (single document; the server converts YAML to the canonical JSON spec) - passed through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on every workflow_run input. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
+						}, "required": []string{"workflow"}},
+					},
+					{
+						Name:        "workflow_update",
+						Description: "Partially update one workflow (id + fields to change; omitted = keep existing). Patch shape = UpdateWorkflowRequest: specYaml (the DAG as a STRINGIFIED spec - JSON object string or YAML text - re-validated, node types script/agent/http/condition), inputSchema (JSON Schema, compile-checked and enforced on workflow_run inputs), targetWorkspaceId (set this workspace or runs are rejected), defaults, status, name/slug/description. Spec re-validation fails closed with per-node details.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
+							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateWorkflowRequest shape)"},
+						}, "required": []string{"id", "patch"}},
+					},
+					{
+						Name:        "workflow_delete",
+						Description: "Delete one workflow permanently. Triggers referencing it will fail to fire - check trigger_list first.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "workflow_run",
+						Description: "Manually fire a workflow NOW (the test loop's fire button): starts a run with your input object (must satisfy the workflow's inputSchema) and returns the run. Poll status via workflow_runs.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
+							"input": map[string]any{"type": "object", "description": "The run's input object (validated against the workflow's inputSchema)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "workflow_runs",
+						Description: "A workflow's run history: statuses (running/succeeded/failed), error codes + payloads, started/finished times. The debugging read for a failing DAG - pair with trigger_fires when the run was trigger-fired.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
+						Name:        "abort_session",
+						Description: "Stop a session's current turn (IDs from session_list / session_metadata — the busy ones). The turn ends immediately; the session's history and recorded work are kept — only the in-flight generation is cut. Use for cross-session management: a runaway or wrong-direction session you started (create_session / send_message), or stopping work that is no longer needed so it stops consuming tokens. Abort stops the in-flight turn DESTRUCTIVELY: any message queued for the target (e.g. a send_message still waiting for its turn to end) may be dropped — after aborting, re-send anything that mattered. Aborting an idle session is a harmless no-op. Sending another message afterwards (send_message) starts a new turn as usual. Not for: your own current session (you cannot abort your way out of this turn — finish it), or deleting history (compact summarizes; sessions are never deleted through these tools).",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"session_id": map[string]any{"type": "string", "description": "The session whose current turn should be stopped"},
+							},
+							"required": []string{"session_id"},
+						},
+					},
+					{
+						Name:        "get_datetime",
+						Description: "Get the current date and time — in UTC and in the USER's timezone (IANA zone name and UTC offset included). The user's zone comes live from their browser when connected (source: browser); pass an explicit `timezone` argument (IANA name like \"America/Los_Angeles\") to convert for any other zone or when no browser is connected (source: argument); without either you get the pod's zone (source: pod — usually UTC). Use before any timestamp-sensitive work: scheduling, log correlation, interpreting relative times in user requests (\"yesterday\", \"next week\", \"this afternoon\"), file timestamps, or when the user asks for the time. Do not assume the user's zone matches the pod's. When source is not browser and the user's zone matters, ask or infer from context and pass it explicitly.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"timezone": map[string]any{"type": "string", "description": "Optional IANA timezone name (e.g. \"America/Los_Angeles\") to convert for; default = the user's browser zone when known, else the pod's zone"},
+							},
 						},
 					},
 					{
@@ -302,8 +410,20 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		prompt, _ := args["prompt"].(string)
 		title, _ := args["title"].(string)
 		return mcpCreateSession(ctx, password, prompt, title)
+	case "send_message":
+		sessionID, _ := args["session_id"].(string)
+		message, _ := args["message"].(string)
+		return mcpSendMessage(ctx, password, sessionID, message)
+	case "abort_session":
+		sessionID, _ := args["session_id"].(string)
+		return mcpAbortSession(ctx, password, sessionID)
+	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
+		"trigger_rotate_webhook_secret",
+		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs":
+		return mcpAutomation(ctx, name, args)
 	case "get_datetime":
-		return mcpGetDatetime()
+		timezoneArg, _ := args["timezone"].(string)
+		return mcpGetDatetime(timezoneArg)
 	case "session_metadata":
 		sessionID, _ := args["session_id"].(string)
 		return mcpSessionMetadata(ctx, password, sessionID)

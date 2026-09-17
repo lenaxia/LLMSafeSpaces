@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ec2 v1.307.0
 	github.com/aws/aws-sdk-go-v2/service/kms v1.54.0
 	github.com/aws/aws-sdk-go-v2/service/ses v1.35.2
+	github.com/cloudflare/circl v1.6.5
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/expr-lang/expr v1.17.8
 	github.com/fxamacker/cbor/v2 v2.9.2

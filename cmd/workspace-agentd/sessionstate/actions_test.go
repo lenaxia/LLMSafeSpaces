@@ -123,7 +123,7 @@ func allActions() []abiv1.ActionType {
 	}
 }
 
-func actionsAuthority(t *testing.T, actor sessionstate.Actor, actions []abiv1.ActionType, admitter sessionstate.Admitter) *sessionstate.Authority {
+func actionsAuthority(t *testing.T, actor sessionstate.Actor, actions []abiv1.ActionType, admitter sessionstate.Admitter, mutate ...func(*sessionstate.Config)) *sessionstate.Authority {
 	t.Helper()
 	cfg := sessionstate.Config{
 		PlatformDir: t.TempDir(),
@@ -134,6 +134,9 @@ func actionsAuthority(t *testing.T, actor sessionstate.Actor, actions []abiv1.Ac
 		Capabilities: &abiv1.CapabilityReport{
 			SupportedActions: actions,
 		},
+	}
+	for _, m := range mutate {
+		m(&cfg)
 	}
 	if actor != nil {
 		cfg.Actor = actor

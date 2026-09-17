@@ -322,9 +322,10 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 		return "", fmt.Errorf("failed to create session: %w", err)
 	}
 
+	logger := log
 	go func() {
 		if _, err := seamClientWithPassword(password).SessionSend(context.WithoutCancel(ctx), sessionID, prompt, "", nil); err != nil {
-			log.Warn("create_session: background prompt delivery failed",
+			logger.Warn("create_session: background prompt delivery failed",
 				zap.String("sessionID", sessionID), zap.Error(err))
 		}
 	}()
@@ -339,17 +340,54 @@ func mcpCreateSession(ctx context.Context, password, prompt, title string) (stri
 
 // --- get_datetime ---------------------------------------------------------
 
-// mcpGetDatetime reports the current instant in UTC and the pod's local
-// timezone. Pods default to UTC; TZ may pin otherwise.
-func mcpGetDatetime() (string, error) {
+// mcpGetDatetime reports the current instant in UTC and the USER's
+// timezone when known. Resolution order: an explicit `timezone`
+// argument (IANA name — use when the zone is known from conversation
+// context), then the platform's live browser-reported zone (pushed by
+// the API when the user's browser connects), then the pod's local zone
+// (TZ env or UTC). The `source` field says which won.
+func mcpGetDatetime(timezoneArg string) (string, error) {
 	now := time.Now()
-	out, _ := json.Marshal(map[string]string{
-		"utc":        now.UTC().Format(time.RFC3339),
-		"local":      now.Format(time.RFC3339),
-		"timezone":   now.Location().String(),
-		"utc_offset": now.Format("-07:00"),
+
+	location := time.Local
+	source := "pod"
+	name := ""
+
+	switch tz := userTimezone(); {
+	case timezoneArg != "":
+		loc, err := time.LoadLocation(timezoneArg)
+		if err != nil {
+			return "", fmt.Errorf("unknown timezone %q (IANA names like \"America/Los_Angeles\"; the tool cannot guess)", timezoneArg)
+		}
+		location, source, name = loc, "argument", timezoneArg
+	case tz != "":
+		// already validated at the endpoint
+		if loc, err := time.LoadLocation(tz); err == nil {
+			location, source, name = loc, "browser", tz
+		}
+	}
+
+	local := now.In(location)
+	out, _ := json.Marshal(getDatetimeResult{
+		UTC:       now.UTC().Format(time.RFC3339),
+		Local:     local.Format(time.RFC3339),
+		Timezone:  name, // omitempty: ABSENT when unknown, never faked
+		UTCOffset: local.Format("-07:00"),
+		Source:    source,
 	})
 	return string(out), nil
+}
+
+// getDatetimeResult is the typed tool output. Timezone is omitempty by
+// contract: the pod fallback emits NO zone name rather than an empty
+// string (review finding — the shipped claims and the emission must
+// agree; a typed struct also satisfies the no-map-shapes rule).
+type getDatetimeResult struct {
+	UTC       string `json:"utc"`
+	Local     string `json:"local"`
+	Timezone  string `json:"timezone,omitempty"`
+	UTCOffset string `json:"utc_offset"`
+	Source    string `json:"source"`
 }
 
 // --- session_metadata -----------------------------------------------------
@@ -403,7 +441,7 @@ func mcpSessionMetadata(ctx context.Context, password, sessionID string) (string
 			ID:    s.ID,
 			Title: s.Title,
 			Agent: s.Agent,
-			Busy:  busy[s.ID] == "busy",
+			Busy:  busy[s.ID] == "busy" || busy[s.ID] == "retry",
 		}
 		if s.Time.Created > 0 {
 			created := time.UnixMilli(s.Time.Created)
@@ -500,12 +538,13 @@ func mcpCompact(ctx context.Context, password, sessionID, model string) (string,
 		return "", fmt.Errorf("failed to read session status: %w", err)
 	}
 
-	if busy[sessionID] == "busy" {
+	if busy[sessionID] == "busy" || busy[sessionID] == "retry" {
 		// Detached: completes at the turn boundary; the tool must not
 		// wait (the waiting turn may be the caller's own).
+		logger := log
 		go func() {
 			if err := client.SessionSummarize(context.WithoutCancel(ctx), sessionID, providerID, modelID); err != nil {
-				log.Warn("compact: background summarize failed",
+				logger.Warn("compact: background summarize failed",
 					zap.String("sessionID", sessionID), zap.Error(err))
 			}
 		}()
@@ -535,9 +574,11 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 	if err != nil {
 		return "", fmt.Errorf("failed to read session statuses: %w", err)
 	}
+	// retry-as-busy, matching mcpSendMessage/session_metadata: a session
+	// in backoff is definitionally running.
 	var busyIDs []string
 	for id, st := range busy {
-		if st == "busy" {
+		if st == "busy" || st == "retry" {
 			busyIDs = append(busyIDs, id)
 		}
 	}
@@ -549,4 +590,224 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 	default:
 		return "", fmt.Errorf("multiple sessions are busy (%s) — pass session_id explicitly", strings.Join(busyIDs, ", "))
 	}
+}
+
+// --- send_message ---------------------------------------------------------
+
+// mcpSendMessage delivers a text message to another session in this
+// workspace, fire-and-forget: the reply (if any) stays in the target
+// session — nothing returns to the caller (the same philosophy as
+// create_session; the task tool is the blocking/returns-result path).
+//
+// Busy targets queue the message server-side and deliver it when their
+// current turn ends (live-proven run-at-boundary semantics — the same
+// POST shape that powers compact's scheduling), so delivery is detached
+// either way and the tool reports which case applies.
+func mcpSendMessage(ctx context.Context, password, sessionID, message string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "", fmt.Errorf("message is required")
+	}
+
+	client := seamClientWithPassword(password)
+
+	// Reject unknown IDs up front rather than failing silently in the
+	// detached delivery (the caller cannot see the goroutine's error).
+	sessions, err := client.SessionList(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve the target session: %w", err)
+	}
+	known := false
+	for _, s := range sessions {
+		if s.ID == sessionID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)", sessionID)
+	}
+
+	busy, err := client.GetSessionStatuses(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read session status: %w", err)
+	}
+
+	// Advisory label only (TOCTOU: the status may flip between read and
+	// POST) — delivery correctness never depends on it; the POST itself
+	// queues server-side either way. "retry" targets (backing off after
+	// stream errors) behave like busy: the POST waits for the retrying
+	// turn to settle — same reporting bucket, matching how the rest of
+	// the codebase treats retry-as-busy.
+	status := "delivering"
+	switch busy[sessionID] {
+	case "busy", "retry":
+		status = "delivering_after_current_turn"
+	}
+
+	// Detached delivery: WithoutCancel so it survives the tool response;
+	// server-side queuing handles busy targets. Delivery is not retried
+	// (same loss semantics as create_session — stated in the description).
+	// The logger is captured at spawn: this goroutine routinely outlives
+	// the tool call, and reading the package global later races with
+	// tests that swap it (the withObservedLog guard's documented
+	// constraint — found by CI's race detector, PR #1382 r5).
+	logger := log
+	go func() {
+		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, message, "", nil); err != nil {
+			logger.Warn("send_message: background delivery failed",
+				zap.String("sessionID", sessionID), zap.Error(err))
+		}
+	}()
+
+	out, _ := json.Marshal(map[string]string{
+		"status":     status,
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}
+
+// --- abort_session --------------------------------------------------------
+
+// mcpAbortSession stops a session's current turn via the consolidated
+// V1 abort (Client.Abort — the same method the API proxy's interrupt
+// path uses). History survives; the in-flight turn is cut DESTRUCTIVELY
+// — any queued-but-undelivered message may be dropped (the description
+// tells the agent to re-send). Aborting an idle session is a no-op.
+func mcpAbortSession(ctx context.Context, password, sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("session_id is required")
+	}
+	if err := seamClientWithPassword(password).Abort(ctx, sessionID); err != nil {
+		return "", fmt.Errorf("failed to abort session: %w", err)
+	}
+	out, _ := json.Marshal(map[string]string{
+		"status":     "aborted",
+		"session_id": sessionID,
+	})
+	return string(out), nil
+}
+
+// --- automation: triggers + workflows --------------------------------------
+
+// automationDeps resolves the SA token + workspace id from pod env (the
+// /internal/v1/automation surface's credentials — same bootstrap token
+// as rename_workspace).
+func automationDeps() (saToken, apiURL, workspaceID string, err error) {
+	workspaceID = strings.TrimSpace(os.Getenv("WORKSPACE_ID"))
+	if workspaceID == "" {
+		return "", "", "", fmt.Errorf("automation unavailable: WORKSPACE_ID is not set in this pod")
+	}
+	apiURL = strings.TrimSpace(os.Getenv("LLMSAFESPACE_API_URL"))
+	if apiURL == "" {
+		return "", "", "", fmt.Errorf("automation unavailable: LLMSAFESPACE_API_URL is not set in this pod")
+	}
+	raw, err := os.ReadFile(bootstrapTokenPathFromEnv())
+	if err != nil {
+		return "", "", "", fmt.Errorf("automation unavailable: pod SA token unreadable: %w", err)
+	}
+	return strings.TrimSpace(string(raw)), strings.TrimSuffix(apiURL, "/"), workspaceID, nil
+}
+
+// mcpAutomation executes one automation seam call and wraps the result
+// for the tool surface. Body/patch JSON is passed through verbatim —
+// the platform validates and its error text names invalid fields.
+func mcpAutomation(ctx context.Context, name string, body map[string]any) (string, error) {
+	saToken, apiURL, workspaceID, err := automationDeps()
+	if err != nil {
+		return "", err
+	}
+	client := opencode.NewLoopbackClient(apiURL, "")
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var res *opencode.AutomationResponse
+	switch name {
+	case "trigger_list":
+		res, err = client.TriggerList(ctx, saToken, workspaceID)
+	case "trigger_create":
+		res, err = client.TriggerCreate(ctx, saToken, workspaceID, passThroughBody(body, "trigger"))
+	case "trigger_update":
+		res, err = client.TriggerUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
+	case "trigger_delete":
+		res, err = client.TriggerDelete(ctx, saToken, workspaceID, toolArgID(body))
+	case "trigger_fires":
+		res, err = client.TriggerFires(ctx, saToken, workspaceID, toolArgID(body))
+	case "trigger_rotate_webhook_secret":
+		res, err = client.TriggerRotateWebhookSecret(ctx, saToken, workspaceID, toolArgID(body))
+	case "workflow_list":
+		res, err = client.WorkflowList(ctx, saToken, workspaceID)
+	case "workflow_create":
+		res, err = client.WorkflowCreate(ctx, saToken, workspaceID, passThroughBody(body, "workflow"))
+	case "workflow_update":
+		res, err = client.WorkflowUpdate(ctx, saToken, workspaceID, toolArgID(body), patchWithoutID(body))
+	case "workflow_delete":
+		res, err = client.WorkflowDelete(ctx, saToken, workspaceID, toolArgID(body))
+	case "workflow_run":
+		var input json.RawMessage
+		if raw, ok := body["input"]; ok {
+			b, _ := json.Marshal(raw)
+			input = b
+		}
+		res, err = client.WorkflowRun(ctx, saToken, workspaceID, toolArgID(body), input)
+	case "workflow_runs":
+		res, err = client.WorkflowRuns(ctx, saToken, workspaceID, toolArgID(body))
+	default:
+		return "", fmt.Errorf("unknown automation tool: %s", name)
+	}
+	if err != nil {
+		return "", fmt.Errorf("%s failed: %w", name, err)
+	}
+	if res.Body == "" {
+		return fmt.Sprintf(`{"status":%d}`, res.Status), nil
+	}
+	return res.Body, nil
+}
+
+// passThroughBody marshals the caller's object argument (nested under
+// key, flat form tolerated) for verbatim platform submission; an empty
+// argument stays an empty object. The tool schema documents the nested
+// form; the flat tolerance keeps the wire contract forgiving.
+func passThroughBody(body map[string]any, key string) json.RawMessage {
+	if nested, ok := body[key].(map[string]any); ok {
+		body = nested
+	}
+	out, err := json.Marshal(body)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
+}
+
+// toolArgID extracts the tool argument "id" as a validated string.
+func toolArgID(body map[string]any) string {
+	id, _ := body["id"].(string)
+	return id
+}
+
+// patchWithoutID unwraps the tool's "patch" argument (routing and scoping
+// fields stripped) — the id rides the URL, workspaceID the query, and the
+// wire body carries caller content only.
+func patchWithoutID(body map[string]any) json.RawMessage {
+	patch, ok := body["patch"].(map[string]any)
+	if !ok {
+		patch = body
+	}
+	clean := make(map[string]any, len(patch))
+	for k, v := range patch {
+		if k == "id" || k == "workspaceID" || k == "workspaceId" {
+			continue
+		}
+		clean[k] = v
+	}
+	out, err := json.Marshal(clean)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return out
 }

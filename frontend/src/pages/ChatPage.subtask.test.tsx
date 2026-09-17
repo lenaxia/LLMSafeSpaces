@@ -48,6 +48,7 @@ vi.mock("../hooks/useChatStream", () => ({
   })),
 }));
 vi.mock("../providers/SessionActivityProvider", () => ({
+  useWhileAwayStalenessSweep: () => {},
   useClearPendingUnread: () => () => {},
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,

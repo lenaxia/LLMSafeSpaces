@@ -34,7 +34,9 @@ package chart_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -2426,6 +2428,19 @@ func TestMonitoring_DashboardConfigMap_ContainsJSON(t *testing.T) {
 	data, _ := cm["data"].(map[string]any)
 	require.Contains(t, data, "operational.json", "ConfigMap must contain operational.json")
 	require.Contains(t, data, "billing.json", "ConfigMap must contain billing.json")
+
+	// #760: the retired SafeMode/failed_total panels were repointed at
+	// recovery_exhausted_total — the retired metric names must stay gone.
+	for _, gone := range []string{
+		"llmsafespaces_workspace_safe_mode_active",
+		"llmsafespaces_workspaces_failed_total",
+	} {
+		for name, v := range data {
+			s, _ := v.(string)
+			require.NotContains(t, s, gone,
+				"dashboard %q must not query retired metric %q (#760)", name, gone)
+		}
+	}
 }
 
 // TestMonitoring_DashboardConfigMap_HasGrafanaLabel verifies the
@@ -2543,8 +2558,6 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesWorkspaceFailures",
 		"LLMSafeSpacesWorkspaceCreationSlow",
 		"LLMSafeSpacesRecoveryBackoffHigh",
-		"LLMSafeSpacesSafeModeActive",
-		"LLMSafeSpacesHighConsecutiveFailures",
 		"LLMSafeSpacesStatusUpdateConflicts",
 		"LLMSafeSpacesInitContainerSlow",
 		"LLMSafeSpacesAgentReloadFailures",
@@ -2565,6 +2578,16 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesTrackerBusyResetRate",
 		"LLMSafeSpacesRestartMarkerWriteFailed",
 		"LLMSafeSpacesRelayInjectorDegraded",
+		// Epic-71 / 0c-alerts (#1312 alerts wave): canary S/L rules +
+		// loop-liveness staleness consumers. See prometheus-rules.yaml's
+		// canary section for the metric-contract citations.
+		"LLMSafeSpacesCanaryS6Violation",
+		"LLMSafeSpacesCanaryProbeTimeouts",
+		"LLMSafeSpacesCanaryResolveL2Burn",
+		"LLMSafeSpacesCanaryNoTarget",
+		"LLMSafeSpacesLoopCanaryProbeStale",
+		"LLMSafeSpacesLoopParkedSweeperStale",
+		"LLMSafeSpacesLoopReconcileWatchdogStale",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],
@@ -2585,6 +2608,29 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 	} {
 		require.False(t, alertNames[gone],
 			"retired tracker alert %q must not render (tracker deleted, US-69.11)", gone)
+	}
+
+	// #760: the retired SafeMode alert and the writerless
+	// HighConsecutiveFailures alert (queried a metric with no producer)
+	// must stay gone. Successor: LLMSafeSpacesWorkspaceFailures on the
+	// recovery_exhausted_total counter.
+	require.False(t, alertNames["LLMSafeSpacesSafeModeActive"],
+		"retired SafeMode gauge alert must not render (SafeMode deleted, #760)")
+	require.False(t, alertNames["LLMSafeSpacesHighConsecutiveFailures"],
+		"writerless consecutive_failures_max alert must not render (deleted with #760; metric never had a producer)")
+
+	// #760: the retired metric names must not reappear in any rule expr.
+	rendered, err := yaml.Marshal(rule)
+	require.NoError(t, err)
+	for _, gone := range []string{
+		"llmsafespaces_workspace_safe_mode_active",
+		"llmsafespaces_workspace_safe_mode_entries_total",
+		"llmsafespaces_workspace_safe_mode_exits_total",
+		"llmsafespaces_workspaces_failed_total",
+		"llmsafespaces_workspace_consecutive_failures_max",
+	} {
+		require.NotContains(t, string(rendered), gone,
+			"retired metric %q must not appear in any PrometheusRule (#760)", gone)
 	}
 }
 
@@ -2641,6 +2687,88 @@ func TestMonitoring_DashboardConfigMap_NotEmpty(t *testing.T) {
 		require.Greater(t, len(content), 1000,
 			"dashboard %q must be non-trivial (>1000 chars); got %d", key, len(content))
 	}
+}
+
+// TestMonitoring_DashboardCanaryLoopPanels pins the epic-71 / 0c-alerts
+// (#1312 alerts wave) dashboard contract on the raw operational.json:
+// the canary probe surface (outcome counters + the resolve-leg L2
+// latency histogram) and the loop-liveness grid (the
+// llmsafespaces_loop_last_run_timestamp_seconds family's first in-repo
+// consumer besides the alerts). Before this wave the metric families
+// shipped with zero panels — the assessment's "no consumer" gap.
+//
+// Structural pins only (panel existence + metric-name presence + job
+// placeholders); the promtool suite owns expression semantics and
+// TestMonitoring_DashboardJobVariablesPortable owns render-time
+// substitution of the placeholders pinned here.
+func TestMonitoring_DashboardCanaryLoopPanels(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(chartDir(t), "dashboards", "operational.json"))
+	require.NoError(t, err)
+
+	var dash struct {
+		Panels []struct {
+			Type    string `json:"type"`
+			Title   string `json:"title"`
+			Targets []struct {
+				Expr string `json:"expr"`
+			} `json:"targets"`
+		} `json:"panels"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &dash))
+	require.NotEmpty(t, dash.Panels, "operational.json must have panels")
+
+	sawRow := false
+	sawOutcomes := false
+	sawDuration := false
+	sawResolveLeg := false
+	sawLoopAPI := false
+	sawLoopAgentd := false
+	var canaryExprs []string
+	for _, p := range dash.Panels {
+		if p.Type == "row" && strings.Contains(p.Title, "Canary & Loop Liveness") {
+			sawRow = true
+		}
+		for _, tg := range p.Targets {
+			e := tg.Expr
+			if strings.Contains(e, "llmsafespaces_canary_probe_outcomes_total") {
+				sawOutcomes = true
+			}
+			if strings.Contains(e, "llmsafespaces_canary_probe_duration_seconds") {
+				sawDuration = true
+				if strings.Contains(e, `leg="resolve"`) && strings.Contains(e, "histogram_quantile") {
+					sawResolveLeg = true
+				}
+			}
+			if strings.Contains(e, "llmsafespaces_loop_last_run_timestamp_seconds") {
+				if strings.Contains(e, "__LLMSAFESPACES_API_JOB__") {
+					sawLoopAPI = true
+				}
+				if strings.Contains(e, "__LLMSAFESPACES_AGENTD_JOB__") {
+					sawLoopAgentd = true
+				}
+				// The loop-liveness family is per-binary: a matcher that
+				// pins neither job placeholder would render one binary's
+				// loops against the other's scrape job.
+				if !strings.Contains(e, "__LLMSAFESPACES_API_JOB__") &&
+					!strings.Contains(e, "__LLMSAFESPACES_AGENTD_JOB__") {
+					canaryExprs = append(canaryExprs, e)
+				}
+			}
+		}
+	}
+	require.True(t, sawRow, "operational.json must have a Canary & Loop Liveness row")
+	require.True(t, sawOutcomes,
+		"a panel must query llmsafespaces_canary_probe_outcomes_total (probe rate/classifications)")
+	require.True(t, sawDuration,
+		"a panel must query llmsafespaces_canary_probe_duration_seconds (L-bound latency)")
+	require.True(t, sawResolveLeg,
+		"a panel must run histogram_quantile over leg=\"resolve\" duration buckets (the L2 surface)")
+	require.True(t, sawLoopAPI,
+		"a panel must query loop liveness against __LLMSAFESPACES_API_JOB__ (canary_probe + outbox_parked_sweeper)")
+	require.True(t, sawLoopAgentd,
+		"a panel must query loop liveness against __LLMSAFESPACES_AGENTD_JOB__ (reconcile_watchdog)")
+	require.Empty(t, canaryExprs,
+		"every loop-liveness expression must pin a job placeholder (API or agentd), got: %v", canaryExprs)
 }
 
 // TestMonitoring_DashboardJobVariablesPortable verifies that the operational

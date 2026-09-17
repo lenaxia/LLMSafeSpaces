@@ -45,19 +45,34 @@ func incrementWorkspacesDeleted(ws *v1.Workspace) {
 	incrementWorkspacesDeletedInto(metrics.WorkspacesDeletedTotal, ws)
 }
 
+// incrementPVCCleanupDelegatedInto increments the delegated-PVC-cleanup
+// counter (#772), labeled by the API error reason (conflict, forbidden, …).
+// Non-status errors map to "unknown".
+func incrementPVCCleanupDelegatedInto(ctr *prometheus.CounterVec, err error) {
+	reason := string(apierrors.ReasonForError(err))
+	if reason == "" {
+		reason = "unknown"
+	}
+	ctr.WithLabelValues(reason).Inc()
+}
+
+// incrementPVCCleanupDelegated increments into the package-level metric.
+func incrementPVCCleanupDelegated(err error) {
+	incrementPVCCleanupDelegatedInto(metrics.WorkspacePVCCleanupDelegatedTotal, err)
+}
+
 // recordRecoveryMetricsInto records recovery-related metrics after enterRecovery
-// updates workspace status. Called with the post-increment ConsecutiveFailures and
-// the resolved NextRetryAt / SafeMode values.
+// updates workspace status. exhaustionCrossed is true only on the episode's
+// not-exhausted → exhausted transition, so the exhaustion counter fires once
+// per episode (#760).
 func recordRecoveryMetricsInto(
 	ws *v1.Workspace,
 	class FailureClass,
 	wasInRecovery bool,
-	wasInSafeMode bool,
+	exhaustionCrossed bool,
 	attempts *prometheus.CounterVec,
 	backoffHist *prometheus.HistogramVec,
-	safeModeGauge prometheus.Gauge,
-	safeModeEntries *prometheus.CounterVec,
-	failedCtr *prometheus.CounterVec,
+	exhaustedCtr *prometheus.CounterVec,
 	inRecoveryGauge prometheus.Gauge,
 ) {
 	attempts.WithLabelValues(string(class)).Inc()
@@ -77,22 +92,17 @@ func recordRecoveryMetricsInto(
 		backoffHist.WithLabelValues(string(class)).Observe(backoff.Seconds())
 	}
 
-	// Only Inc safe-mode gauge + entries on the false→true transition.
-	if ws.Status.SafeMode && !wasInSafeMode {
-		safeModeGauge.Inc()
-		safeModeEntries.WithLabelValues(string(class)).Inc()
-		failedCtr.WithLabelValues(string(class)).Inc()
+	if exhaustionCrossed {
+		exhaustedCtr.WithLabelValues(string(class)).Inc()
 	}
 }
 
-func recordRecoveryMetrics(ws *v1.Workspace, class FailureClass, wasInRecovery, wasInSafeMode bool) {
+func recordRecoveryMetrics(ws *v1.Workspace, class FailureClass, wasInRecovery, exhaustionCrossed bool) {
 	recordRecoveryMetricsInto(
-		ws, class, wasInRecovery, wasInSafeMode,
+		ws, class, wasInRecovery, exhaustionCrossed,
 		metrics.WorkspaceRecoveryAttemptsTotal,
 		metrics.WorkspaceRecoveryBackoffDurationSeconds,
-		metrics.WorkspaceSafeModeActive,
-		metrics.WorkspaceSafeModeEntriesTotal,
-		metrics.WorkspacesFailedTotal,
+		metrics.WorkspaceRecoveryExhaustedTotal,
 		metrics.WorkspacesInRecovery,
 	)
 }

@@ -255,7 +255,7 @@ func TestStartRelayInjector_FetchErrorDeadlineExhausted_Skips(t *testing.T) {
 
 	writer := opencode.NewConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		OpenCodePassword:  "testpw",
@@ -380,7 +380,7 @@ func TestStartRelayInjector_ConfigWriteFailure_DoesNotKill(t *testing.T) {
 
 	writer := opencode.NewConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		OpenCodePassword:  "testpw",
@@ -593,6 +593,18 @@ func resetRelayState(t *testing.T) {
 	t.Cleanup(func() { relayFreeModelsState.Store(0) })
 }
 
+// rearmTestCtx is the ctx failure-path tests pass to startRelayInjector:
+// since #910 a terminally failing boot spawns the re-arm loop, and this
+// ctx's t.Cleanup cancel tears that goroutine down with the test instead
+// of leaking it on context.Background() until the 5m default delay fires
+// past the test's already-torn-down server/tempdir.
+func rearmTestCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // TestStartRelayInjector_FetchFailedTerminal: a permanently erroring
 // /provider ends at the deadline-exhausted terminal — state 2 (degraded),
 // exactly ONE fetch_failed tick, and NO no_free_models tick (the double-Inc
@@ -607,7 +619,7 @@ func TestStartRelayInjector_FetchFailedTerminal(t *testing.T) {
 	defer srv.Close()
 	dir := t.TempDir()
 
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		AuthJSONPath:      filepath.Join(dir, "auth.json"), // absent → no personal-key skip
@@ -644,7 +656,7 @@ func TestStartRelayInjector_CatalogEmptyTerminal(t *testing.T) {
 	defer srv.Close()
 	dir := t.TempDir()
 
-	startRelayInjector(context.Background(), relayInjectorConfig{
+	startRelayInjector(rearmTestCtx(t), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		AuthJSONPath:      filepath.Join(dir, "auth.json"),
@@ -726,4 +738,32 @@ func TestUpdateAuthJSONForRelay_CrossUIDMode(t *testing.T) {
 		require.Contains(t, string(data), "sk-legacy")
 		require.Contains(t, string(data), "opencode-relay")
 	})
+}
+
+// TestFetchFreeModels_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — r2 sweep): the four canonical corruption shapes riding a 200
+// on GET /provider must fail AT THE PARSE — a lenient decode would
+// hand the relay injector a phantom (empty) free-model catalog.
+func TestFetchFreeModels_WireDriftCorruption(t *testing.T) {
+	for _, mode := range []struct {
+		name string
+		body string
+	}{
+		{"invalid_json", `{"connected":["opencode"],"al`},
+		{"trailing_garbage", `{"connected":["opencode"],"all":[{"id":"opencode","models":{}}]}garbage`},
+		{"empty_body", ``},
+		{"html_error_page", `<html><body>502 Bad Gateway</body></html>`},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(mode.body))
+			}))
+			t.Cleanup(srv.Close)
+
+			models, err := fetchFreeModels(context.Background(), srv.URL, "pw")
+			require.Error(t, err, "a corrupted 200 must never parse as a model catalog")
+			assert.Empty(t, models, "no phantom free-model list escapes the injector")
+		})
+	}
 }
