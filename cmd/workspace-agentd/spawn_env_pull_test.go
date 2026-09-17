@@ -268,6 +268,13 @@ func TestSpawnEnvPuller_OversizedBodyIsBounded(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := fastPuller(hostOf(t, srv), "pw")
+	// This test pins the CAP-vs-decode classification, not the retry
+	// ladder: fastPuller's 100ms attempt cannot absorb a loaded runner
+	// reading 1MiB (epic-71 flake-verify-race — under contention the
+	// truncated read surfaced as spawn_env_unavailable instead). The
+	// ladder tests below keep the fast budgets.
+	p.attempt = 5 * time.Second
+	p.bound = 10 * time.Second
 	_, reason, err := p.pullBounded(context.Background())
 	require.Error(t, err)
 	require.Equal(t, spawnEnvReasonBadResponse, reason,
@@ -315,6 +322,41 @@ func TestSpawnEnvPullAddr_DefaultAndOverride(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("127.0.0.1:%d", agentd.AgentdPort), spawnEnvPullAddr())
 	t.Setenv("LLMSAFESPACES_SPAWN_ENV_PULL_ADDR", "127.0.0.1:14097")
 	require.Equal(t, "127.0.0.1:14097", spawnEnvPullAddr())
+}
+
+// TestSpawnPullBudgets_DefaultsOverrideAndFailOpen pins the env seam's
+// contract: unset → production consts; valid durations widen; unparsable,
+// unit-less, zero, and negative values fail OPEN to the defaults (a typo
+// must never change the budget silently). Only the set var is overridden
+// — the other keeps its default.
+func TestSpawnPullBudgets_DefaultsOverrideAndFailOpen(t *testing.T) {
+	t.Run("unset keeps production defaults", func(t *testing.T) {
+		bound, attempt := spawnPullBudgets()
+		require.Equal(t, spawnEnvPullBound, bound)
+		require.Equal(t, spawnEnvPullAttempt, attempt)
+	})
+	t.Run("valid durations widen", func(t *testing.T) {
+		t.Setenv(spawnEnvPullBoundEnvVar, "8s")
+		t.Setenv(spawnEnvPullAttemptEnvVar, "8s")
+		bound, attempt := spawnPullBudgets()
+		require.Equal(t, 8*time.Second, bound)
+		require.Equal(t, 8*time.Second, attempt)
+	})
+	t.Run("one var set leaves the other at its default", func(t *testing.T) {
+		t.Setenv(spawnEnvPullAttemptEnvVar, "5s")
+		bound, attempt := spawnPullBudgets()
+		require.Equal(t, spawnEnvPullBound, bound)
+		require.Equal(t, 5*time.Second, attempt)
+	})
+	for _, v := range []string{"abc", "30", "0s", "-5s"} {
+		t.Run("fail-open on "+v, func(t *testing.T) {
+			t.Setenv(spawnEnvPullBoundEnvVar, v)
+			t.Setenv(spawnEnvPullAttemptEnvVar, v)
+			bound, attempt := spawnPullBudgets()
+			require.Equal(t, spawnEnvPullBound, bound, "bound must fail open to the default")
+			require.Equal(t, spawnEnvPullAttempt, attempt, "attempt must fail open to the default")
+		})
+	}
 }
 
 func hostOf(t *testing.T, srv *httptest.Server) string {

@@ -168,13 +168,14 @@ var errPullUnauthorized = errors.New("pull: 401 unauthorized")
 // manifest: same bounded-wait machinery as the env puller, its own path
 // and reason-code family.
 func newSpawnFilesPuller(addr, password string) *spawnEnvPuller {
+	bound, attempt := spawnPullBudgets()
 	return &spawnEnvPuller{
 		url:      "http://" + addr + spawnFilesURLPath,
 		username: agentd.AuthUsername,
 		password: password,
 		client:   &http.Client{},
-		bound:    spawnEnvPullBound,
-		attempt:  spawnEnvPullAttempt,
+		bound:    bound,
+		attempt:  attempt,
 		retryGap: spawnEnvPullRetryGap,
 	}
 }

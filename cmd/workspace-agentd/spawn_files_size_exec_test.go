@@ -41,17 +41,33 @@ func TestSupervisorSubprocess_SpawnFiles_NearCapValueDeliversWhole(t *testing.T)
 	secretsEnv := writeSecretsEnv(t, t.TempDir(), "export PULL_PROBE='x'\n")
 	m := startFilesMux(t, secretsEnv, &staging)
 
-	sp := startSupervisorSubprocessEnv(t, filesEnvFor(m.addr, rtDir, filepath.Join(t.TempDir(), "led.json"))...)
+	// The re-exec'd supervisor runs the PRODUCTION pull machinery against
+	// a near-cap manifest (~2.8MiB of JSON). The in-pod budgets (2s
+	// bound / 500ms attempt) assume an idle loopback sidecar; a
+	// contended CI runner starves the multi-MiB read past them and the
+	// single exec-sleep spawn never re-pulls (epic-71 flake-verify-race:
+	// spawn_files_unavailable at spawn, delivery never landing). Widen
+	// both pullers' budgets via the env seam. Window math: worst-case
+	// preSpawn is 2 pullers × (bound + one trailing attempt) ≈ 33s
+	// including subprocess boot — inside the 45s windows below with
+	// scheduler headroom (12s+10s budgets overran them: 2×22s ≈ 44s).
+	env := append(filesEnvFor(m.addr, rtDir, filepath.Join(t.TempDir(), "led.json")),
+		spawnEnvPullBoundEnvVar+"=8s", spawnEnvPullAttemptEnvVar+"=8s")
+	sp := startSupervisorSubprocessEnv(t, env...)
 	cc := newControlClient(sp.addr)
+	// The control-client default (2s) cannot absorb a contended runner's
+	// status round-trip while the supervisor is starved mid-preSpawn —
+	// every sibling exec test sets the same generous RPC budget.
+	cc.timeout = 30 * time.Second
 
 	require.Eventually(t, func() bool { return sp.childPIDOf(t, cc) > 0 },
-		15*time.Second, 100*time.Millisecond, "spawn must happen (delivery never blocks it)")
+		45*time.Second, 100*time.Millisecond, "spawn must happen (delivery never blocks it)")
 
 	big := filepath.Join(rtDir, "secrets", "big.bin")
 	require.Eventually(t, func() bool {
 		info, err := os.Stat(big)
 		return err == nil && info.Size() == int64(len(value))
-	}, 15*time.Second, 200*time.Millisecond,
+	}, 45*time.Second, 200*time.Millisecond,
 		"the near-cap file must deliver byte-complete at spawn")
 
 	data, err := os.ReadFile(big)
