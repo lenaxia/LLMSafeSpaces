@@ -1039,3 +1039,46 @@ func mcpTestLogger(t *testing.T) *apilogger.Logger {
 func ginSetTestMode() {
 	gin.SetMode(gin.TestMode)
 }
+
+// #1410 e2e: rescheduling through the MCP surface (production router,
+// SDK client) moves next_fire_at to the NEW schedule's next slot.
+func TestMCPRouterTriggerReschedule_RecomputesNextFire(t *testing.T) {
+	f := newMCPRouterFixture(t)
+	seedTrigger(t, f, "trg_resched")
+	// Give the seed a real cron config + a far-future old slot.
+	f.trgStore.mu.Lock()
+	row := f.trgStore.triggers["trg_resched"]
+	row.SourceConfig = json.RawMessage(`{"expr":"0 9 * * *","tz":"UTC"}`)
+	old := time.Now().UTC().Add(8 * time.Hour)
+	row.NextFireAt = &old
+	f.trgStore.mu.Unlock()
+
+	// The SDK tool surface exposes enabled-only updates; a reschedule
+	// rides the same production PUT route through the raw client.
+	raw, err := f.client.UpdateTriggerRaw(context.Background(), "trg_resched", map[string]any{
+		"sourceConfig": map[string]any{"expr": "42 4 * * *", "tz": "UTC"},
+	})
+	require.NoError(t, err, string(raw))
+	assert.Contains(t, string(raw), "trg_resched")
+
+	upd := f.lastTriggerUpdate()
+	require.NotNil(t, upd)
+	require.NotNil(t, upd.NextFireAt, "reschedule must recompute next_fire_at")
+	assert.Equal(t, 4, upd.NextFireAt.Hour())
+	assert.Equal(t, 42, upd.NextFireAt.Minute())
+}
+
+// #1413 e2e: a run whose input violates the workflow's declared
+// inputSchema is rejected through the MCP surface with a named cause.
+func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
+	f := newMCPRouterFixture(t)
+	seedWorkflow(t, f, "wfl_schema")
+	f.wfStore.mu.Lock()
+	row := f.wfStore.workflows["wfl_schema"]
+	row.InputSchema = json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`)
+	f.wfStore.mu.Unlock()
+
+	raw, err := f.client.RunWorkflow(context.Background(), "wfl_schema", `{"wrong":true}`, mcpTestWSID)
+	require.Error(t, err, "schema-violating run must be rejected, got: %s", string(raw))
+	assert.Contains(t, err.Error(), "inputSchema", "the 400 names the contract: %s", err.Error())
+}

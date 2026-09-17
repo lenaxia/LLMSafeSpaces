@@ -522,7 +522,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 			logger.Error(err, "scheduler: workflow lookup failed", "triggerId", trigger.ID, "workflowId", workflowID)
 			return
 		}
-		errPayload, _ := json.Marshal(map[string]string{"error": "workflow_not_found"})
+		errPayload, _ := json.Marshal(map[string]string{"reason": "workflow_not_found"})
 		completed := now
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
 			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "cron",

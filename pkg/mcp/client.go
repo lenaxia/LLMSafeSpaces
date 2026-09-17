@@ -900,6 +900,15 @@ func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enable
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
 }
 
+// UpdateTriggerRaw sends an arbitrary partial-update body to the
+// trigger update route (the typed UpdateTrigger covers enabled-only).
+func (c *HTTPClient) UpdateTriggerRaw(ctx context.Context, triggerID string, body map[string]any) (json.RawMessage, error) {
+	if err := validateID(triggerID, "trigger_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
+}
+
 func (c *HTTPClient) DeleteTrigger(ctx context.Context, triggerID string) error {
 	if err := validateID(triggerID, "trigger_id"); err != nil {
 		return err

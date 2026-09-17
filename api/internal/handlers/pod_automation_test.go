@@ -364,3 +364,48 @@ func TestPodAutomation_WorkflowTriggerMissingWorkflow(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "workflow not found")
 }
+
+// Case-variant workspaceID spellings all fold onto the DTO field —
+// every one must be stripped (EqualFold, not exact-match).
+func TestPodAutomation_WorkflowTriggerCaseVariants(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	wfStore.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","WorkspaceId":"ws-fake","workspaceid":"ws-fake2",
+		"name":"dag-cv","sourceType":"cron","sourceConfig":{"expr":"0 4 * * *"},
+		"workflowId":"wf-1"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID, "no case variant may fold into a routine workspace")
+	}
+
+	// Conflicting spellings are a loud 400, not a silent drop.
+	w = doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"dag-both","sourceType":"cron","sourceConfig":{"expr":"0 4 * * *"},
+		"workflow_id":"wf-1","workflowId":"wf-1"
+	}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "one spelling")
+}
+
+// Schema-only PATCH (no specYAML) must still validate the inputSchema —
+// the round-2 bypass.
+func TestWorkflowUpdate_SchemaOnlyPatchValidates(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-1", map[string]any{
+		"inputSchema": map[string]any{"type": "string"},
+	})
+	require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "root type must be object")
+}

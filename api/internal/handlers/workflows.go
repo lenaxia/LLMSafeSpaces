@@ -331,6 +331,17 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 		Status: req.Status, Defaults: req.Defaults,
 	}
 
+	// #1413 (write-time half): a malformed or non-object inputSchema
+	// would make EVERY future run 400 — reject it at authoring time, on
+	// ANY update shape (schema-only PATCHes included, not just spec
+	// rewrites).
+	if len(req.InputSchema) > 0 {
+		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
+			return
+		}
+	}
+
 	if req.Name != nil {
 		if !types.ValidWorkflowName(*req.Name) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workflow name"})
@@ -371,14 +382,6 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 			return
-		}
-		// #1413 (write-time half): a malformed or non-object inputSchema
-		// would make EVERY future run 400 — reject it at authoring time.
-		if len(req.InputSchema) > 0 {
-			if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
-				return
-			}
 		}
 
 		var defaults wf.DefaultsBlock

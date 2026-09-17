@@ -278,9 +278,10 @@ func normalizeTriggerCreateBody(raw []byte) ([]byte, error) {
 	}
 	if snake, hasSnake := fields["workflow_id"]; hasSnake {
 		delete(fields, "workflow_id")
-		if _, exists := fields["workflowId"]; !exists {
-			fields["workflowId"] = snake
+		if _, exists := fields["workflowId"]; exists {
+			return nil, errors.New("both workflow_id and workflowId supplied — send one spelling (workflowId)")
 		}
+		fields["workflowId"] = snake
 	}
 	return json.Marshal(fields)
 }
