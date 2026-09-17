@@ -374,8 +374,8 @@ func renderTemplateValue(v any) string {
 // ref — neither across a newline (no (?s)) nor on the same line (a
 // brace-free body stops the lazy match at the first }} where the valid
 // ref's own {{ begins). Multi-line/brace-containing keys are not
-// addressable anyway. The charset lives in the MATCHER (exact key hit
-// first, then path walk), not the pattern.
+// addressable anyway. KEY matching is by map lookup — the matched
+// body is not constrained to any whitelist vocabulary.
 var templateRefPattern = regexp.MustCompile(`\{\{\.([^{}\n]+?)\}\}`)
 
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
