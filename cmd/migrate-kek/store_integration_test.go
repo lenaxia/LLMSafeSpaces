@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/migrations"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 // --- harness-convention wiring (TEST_DATABASE_URL + skip-if-unreachable) ---
@@ -152,6 +153,27 @@ func seedOrgSSO(t *testing.T, pool *pgxpool.Pool, ct []byte) string {
 	return orgID
 }
 
+// filterMigrationRows keeps only rows whose ID is in want — the harness
+// convention for shared-table assertions (the CI Postgres is shared across
+// concurrently-running suite binaries; never assume exclusive ownership).
+func filterMigrationRows(rows []secrets.MigrationRow, want map[string]bool) []secrets.MigrationRow {
+	var out []secrets.MigrationRow
+	for _, r := range rows {
+		if want[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func migrationRowIDs(rows []secrets.MigrationRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.ID
+	}
+	return out
+}
+
 // --- store-layer tests ---
 
 // TestPgMigrationStore_ListMigrationRows verifies listing across all three
@@ -166,13 +188,19 @@ func TestPgMigrationStore_ListMigrationRows(t *testing.T) {
 	adminID := seedProviderCredential(t, pool, "admin", []byte("lkms:v1:admin-blob"))
 	orgID := seedProviderCredential(t, pool, "org", []byte("lkms:v1:org-blob"))
 
+	// The CI Postgres is shared with the rotate-kek suite (go test runs the
+	// two package binaries concurrently) — scope assertions to rows we
+	// seeded instead of assuming table ownership.
 	rows, err := store.ListMigrationRows(ctx, "provider_credentials", "", 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 2)
-	ownerByID := map[string]string{rows[0].ID: rows[0].OwnerType, rows[1].ID: rows[1].OwnerType}
+	mine := filterMigrationRows(rows, map[string]bool{adminID: true, orgID: true})
+	require.Len(t, mine, 2)
+	ownerByID := map[string]string{}
+	for _, r := range mine {
+		ownerByID[r.ID] = r.OwnerType
+	}
 	assert.Equal(t, "admin", ownerByID[adminID])
 	assert.Equal(t, "org", ownerByID[orgID])
-	assert.Equal(t, 1, rows[0].KeyVersion)
 
 	// Resume cursor + limit on the varchar-keyed api_keys table.
 	userID := integrationID("u")
@@ -181,23 +209,25 @@ func TestPgMigrationStore_ListMigrationRows(t *testing.T) {
 	ak2 := seedAPIKey(t, pool, userID, []byte("lkms:v1:ak2"))
 	rows, err = store.ListMigrationRows(ctx, "api_keys", "", 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 2)
-	assert.Equal(t, []string{ak1, ak2}, []string{rows[0].ID, rows[1].ID}, "insertion order is id ASC here because ids share a monotonically increasing marker")
+	mineAK := filterMigrationRows(rows, map[string]bool{ak1: true, ak2: true})
+	require.Len(t, mineAK, 2)
+	assert.Equal(t, []string{ak1, ak2}, migrationRowIDs(mineAK), "insertion order is id ASC here because ids share a monotonically increasing marker")
 	rows, err = store.ListMigrationRows(ctx, "api_keys", ak1, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, ak2, rows[0].ID)
+	mineAK = filterMigrationRows(rows, map[string]bool{ak1: true, ak2: true})
+	assert.Equal(t, []string{ak2}, migrationRowIDs(mineAK))
 	rows, err = store.ListMigrationRows(ctx, "api_keys", "", 1)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
+	require.Len(t, rows, 1, "LIMIT must cap the listing")
 
 	// org_sso_configs: uuid PK + oidc_client_secret column.
 	ssoID := seedOrgSSO(t, pool, []byte("lkms:v1:sso"))
 	rows, err = store.ListMigrationRows(ctx, "org_sso_configs", "", 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, ssoID, rows[0].ID)
-	assert.Equal(t, []byte("lkms:v1:sso"), rows[0].Ciphertext)
+	mineSSO := filterMigrationRows(rows, map[string]bool{ssoID: true})
+	require.Len(t, mineSSO, 1)
+	assert.Equal(t, ssoID, mineSSO[0].ID)
+	assert.Equal(t, []byte("lkms:v1:sso"), mineSSO[0].Ciphertext)
 
 	_, err = store.ListMigrationRows(ctx, "user_keys", "", 0)
 	require.Error(t, err, "user_keys is not a migration table")

@@ -187,6 +187,19 @@ func seedUserKey(t *testing.T, pool *pgxpool.Pool, userID string, ct []byte, ver
 
 // --- store-layer tests ---
 
+// filterRotationRows keeps only rows whose ID is in want — the harness
+// convention for shared-table assertions (the CI Postgres is shared across
+// concurrently-running suite binaries; never assume exclusive ownership).
+func filterRotationRows(rows []secrets.RotationRow, want map[string]bool) []secrets.RotationRow {
+	var out []secrets.RotationRow
+	for _, r := range rows {
+		if want[r.ID] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func rowIDs(rows []secrets.RotationRow) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {
@@ -227,28 +240,36 @@ func TestPgRotationStore_ListRotationRows(t *testing.T) {
 		first, second = second, first
 	}
 
+	// The CI Postgres is shared with the migrate-kek suite (go test runs the
+	// two package binaries concurrently) — scope every assertion to rows we
+	// seeded via filterRotationRows rather than assuming table ownership.
 	rows, err := store.ListRotationRows(ctx, "provider_credentials", "", 2, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 2, "row at target version must be excluded (got ids %v)", rowIDs(rows))
-	assert.Equal(t, []string{first, second}, rowIDs(rows), "rows must be ordered by id ASC")
-	ownerByPos := map[string]string{first: rows[0].OwnerType, second: rows[1].OwnerType}
-	assert.Equal(t, "admin", ownerByPos[id1])
-	assert.Equal(t, "org", ownerByPos[id2])
-	assert.Equal(t, 1, rows[0].KeyVersion)
+	mine := filterRotationRows(rows, map[string]bool{id1: true, id2: true})
+	require.Len(t, mine, 2, "exactly our rows below target must be listed (row at target excluded); got %v", rowIDs(rows))
+	assert.Equal(t, []string{first, second}, rowIDs(mine), "our rows must be ordered by id ASC")
+	ownerByID := map[string]string{}
+	for _, r := range mine {
+		ownerByID[r.ID] = r.OwnerType
+	}
+	assert.Equal(t, "admin", ownerByID[id1])
+	assert.Equal(t, "org", ownerByID[id2])
 	ctByID := map[string][]byte{id1: ct1, id2: ct2}
-	assert.Equal(t, ctByID[rows[0].ID], rows[0].Ciphertext)
+	for _, r := range mine {
+		assert.Equal(t, ctByID[r.ID], r.Ciphertext, "row %s", r.ID)
+	}
 
-	// Resume cursor: listing after the first row must return only the second.
+	// Resume cursor: listing after the first row must return only the second
+	// of ours.
 	rows, err = store.ListRotationRows(ctx, "provider_credentials", first, 2, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, second, rows[0].ID)
+	mine = filterRotationRows(rows, map[string]bool{id1: true, id2: true})
+	assert.Equal(t, []string{second}, rowIDs(mine))
 
-	// Limit.
+	// Limit: the id-ASC stream (ours included) is capped.
 	rows, err = store.ListRotationRows(ctx, "provider_credentials", "", 2, 1)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, first, rows[0].ID, "LIMIT must cap the id-ASC stream")
+	require.Len(t, rows, 1, "LIMIT must cap the listing")
 
 	// api_keys column mapping.
 	akCT, err := secrets.EncryptSecret(oldKey, []byte("ak"))
@@ -256,10 +277,11 @@ func TestPgRotationStore_ListRotationRows(t *testing.T) {
 	akID := seedAPIKey(t, pool, userID, akCT, 1)
 	rows, err = store.ListRotationRows(ctx, "api_keys", "", 2, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, akID, rows[0].ID)
-	assert.Equal(t, akCT, rows[0].Ciphertext)
-	assert.Empty(t, rows[0].OwnerType)
+	mineAK := filterRotationRows(rows, map[string]bool{akID: true})
+	require.Len(t, mineAK, 1)
+	assert.Equal(t, akID, mineAK[0].ID)
+	assert.Equal(t, akCT, mineAK[0].Ciphertext)
+	assert.Empty(t, mineAK[0].OwnerType)
 
 	// org_sso_configs column mapping (PK org_id, ciphertext oidc_client_secret).
 	orgID := seedOrg(t, pool)
@@ -273,9 +295,10 @@ func TestPgRotationStore_ListRotationRows(t *testing.T) {
 	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM org_sso_configs WHERE org_id = $1::uuid`, orgID) })
 	rows, err = store.ListRotationRows(ctx, "org_sso_configs", "", 2, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, orgID, rows[0].ID, "org_sso_configs rows must be keyed by org_id")
-	assert.Equal(t, ssoCT, rows[0].Ciphertext)
+	mineSSO := filterRotationRows(rows, map[string]bool{orgID: true})
+	require.Len(t, mineSSO, 1)
+	assert.Equal(t, orgID, mineSSO[0].ID, "org_sso_configs rows must be keyed by org_id")
+	assert.Equal(t, ssoCT, mineSSO[0].Ciphertext)
 
 	// user_keys column mapping (keyed by user_id, ciphertext wrapped_dek).
 	ukCT, err := secrets.EncryptSecret(oldKey, []byte("uk"))
@@ -283,9 +306,10 @@ func TestPgRotationStore_ListRotationRows(t *testing.T) {
 	seedUserKey(t, pool, userID, ukCT, 1)
 	rows, err = store.ListRotationRows(ctx, "user_keys", "", 2, 0)
 	require.NoError(t, err)
-	require.Len(t, rows, 1)
-	assert.Equal(t, userID, rows[0].ID, "user_keys rows must be keyed by user_id")
-	assert.Equal(t, ukCT, rows[0].Ciphertext)
+	mineUK := filterRotationRows(rows, map[string]bool{userID: true})
+	require.Len(t, mineUK, 1)
+	assert.Equal(t, userID, mineUK[0].ID, "user_keys rows must be keyed by user_id")
+	assert.Equal(t, ukCT, mineUK[0].Ciphertext)
 
 	// Unknown table is rejected (no SQL-injection surface via table name).
 	_, err = store.ListRotationRows(ctx, "users; DROP TABLE users", "", 2, 0)
@@ -374,6 +398,25 @@ func (f *failingUpdateStore) UpdateRotationRow(ctx context.Context, table, rowID
 	return f.RotationStore.UpdateRotationRow(ctx, table, rowID, ct, ver)
 }
 
+// ownRowsStore scopes a real RotationStore to a fixed set of row IDs so a
+// coordinator e2e is deterministic on the SHARED CI Postgres (go test runs
+// the rotate-kek and migrate-kek package binaries concurrently; both suites
+// seed provider_credentials). The underlying listing is still the real SQL —
+// only rows this test does not own are dropped before the coordinator sees
+// them.
+type ownRowsStore struct {
+	secrets.RotationStore
+	own map[string]bool
+}
+
+func (o *ownRowsStore) ListRotationRows(ctx context.Context, table, resumeFromID string, targetVersion, limit int) ([]secrets.RotationRow, error) {
+	rows, err := o.RotationStore.ListRotationRows(ctx, table, resumeFromID, targetVersion, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterRotationRows(rows, o.own), nil
+}
+
 // stripStaticPrefix unwraps the lkms:v1: prefix StaticKeyProvider adds, so
 // DecryptSecret (raw AES-GCM) can verify the round-trip.
 func stripStaticPrefix(t *testing.T, ct []byte) []byte {
@@ -408,7 +451,8 @@ func TestIntegration_RotateE2E_OldToNewDecryptVerify(t *testing.T) {
 	oldP, newP, err := buildCLIProviders(oldMaster, newMaster)
 	require.NoError(t, err)
 
-	coord := secrets.NewRotationCoordinator(store, oldP, newP)
+	scoped := &ownRowsStore{RotationStore: store, own: map[string]bool{id: true}}
+	coord := secrets.NewRotationCoordinator(scoped, oldP, newP)
 	res, err := coord.RotateTable(ctx, "provider_credentials", "", 2, false)
 	require.NoError(t, err)
 	assert.Equal(t, 1, res.Processed)
@@ -451,7 +495,8 @@ func TestIntegration_RotateE2E_DryRunNoWrites(t *testing.T) {
 
 	oldP, newP, err := buildCLIProviders(oldMaster, newMaster)
 	require.NoError(t, err)
-	coord := secrets.NewRotationCoordinator(store, oldP, newP)
+	scoped := &ownRowsStore{RotationStore: store, own: map[string]bool{ids[0]: true, ids[1]: true, ids[2]: true}}
+	coord := secrets.NewRotationCoordinator(scoped, oldP, newP)
 
 	results, err := coord.RotateAll(ctx, 2, true)
 	require.NoError(t, err)
@@ -511,8 +556,14 @@ func TestIntegration_RotateE2E_ResumeFromInterruptedRun(t *testing.T) {
 	oldP, newP, err := buildCLIProviders(oldMaster, newMaster)
 	require.NoError(t, err)
 
+	own := map[string]bool{}
+	for _, id := range ordered {
+		own[id] = true
+	}
+	scoped := &ownRowsStore{RotationStore: store, own: own}
+
 	// Interrupt after the first row is updated.
-	interrupted := &failingUpdateStore{RotationStore: store, failAt: 1}
+	interrupted := &failingUpdateStore{RotationStore: scoped, failAt: 1}
 	coord := secrets.NewRotationCoordinator(interrupted, oldP, newP)
 	res, err := coord.RotateTable(ctx, "provider_credentials", "", 2, false)
 	require.NoError(t, err, "per-row update failures are reported in the result, not as a call error")
@@ -522,7 +573,7 @@ func TestIntegration_RotateE2E_ResumeFromInterruptedRun(t *testing.T) {
 	assert.Equal(t, ordered[0], res.LastRowID, "resume cursor is the first row in id order")
 
 	// Restart with --resume-from <last-row-id> — exactly what the runbook says.
-	resumed := secrets.NewRotationCoordinator(store, oldP, newP)
+	resumed := secrets.NewRotationCoordinator(scoped, oldP, newP)
 	res2, err := resumed.RotateTable(ctx, "provider_credentials", res.LastRowID, 2, false)
 	require.NoError(t, err)
 	assert.Equal(t, 2, res2.Processed, "the resumed run must finish the remaining rows")
