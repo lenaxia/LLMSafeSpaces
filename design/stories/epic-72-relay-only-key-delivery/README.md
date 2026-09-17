@@ -134,6 +134,8 @@ plaintext fallback; cross-algorithm envelope confusion rejected.
 
 **Sizing:** M. **Dependencies:** none (Epic 50/58 KEK providers exist on main).
 
+**Addendum (2026-09-17, owner direction) — dynamic staged-key redaction:** US-72.1 additionally integrates the redaction pipeline at the seal/resolve seam (design 0058 §4.9). Redaction (payload hygiene) and staging (credential delivery) remain separate mechanisms; they interface at the one place the platform legitimately knows a staged key's plaintext — seal (controller) and resolve (router). Shipped here: `pkg/redact` dynamic exact-value rules (`RegisterDynamic`/`UnregisterDynamic`, ID-grouped, applied before the static 16-rule pipeline so static patterns cannot fragment a secret first) and the `pkg/secrets` `StagedKeyRedactor` seam + `RedactStagedKeys` adapter + `StagedKeyRedactionID(envelope)` (both sides derive the same rule-group ID from the envelope alone; revocation = Secret deletion → unregister). Registration covers raw / std-base64 / URL-base64 encodings of the material; a registration failure fails the seal/resolve loudly. The ROUTER-side application of the combined static+dynamic pipeline to proxied traffic lands with US-72.2. `pkg/redact` stays in `pkg/` (consumers: `cmd/workspace-agentd` — incl. the folded `redact` subcommand, #1152 — and the staging provider; the #842 relocate-into-`cmd/redact` plan is dead). *(Amended 2026-09-17, review iteration 1 — binding on the wiring stories: US-72.2/US-72.3 construction paths pin a NON-NIL redactor by test; the US-72.3 re-seal (rotation) pass unregisters the superseded envelope's rule group in the same pass — `UnregisterStagedKey(StagedKeyRedactionID(oldEnvelope))` — the resolve side is bounded by design, the re-seal side only by that obligation.)*
+
 ---
 
 ## US-72.2 — `llm-relay` namespace + 2-replica BYO resolve router
@@ -404,5 +406,6 @@ a deliberate positive-control mode.
 - **K6 — No new delivery path**: tokens ride the Epic 70 batch machinery only.
 - **K7 — Router persistence posture**: metadata-only logging; request/response
   bodies never logged, sampled, traced, or buffered to disk at any verbosity;
-  body-adjacent diagnostics pass `pkg/redact` or are forbidden (design 0027
-  proxy-as-trust-boundary principle; design 0058 §4.7).
+  body-adjacent diagnostics pass `pkg/redact` (the combined static + dynamic
+  staged-key pipeline — design 0058 §4.9, amended 2026-09-17) or are forbidden
+  (design 0027 proxy-as-trust-boundary principle; design 0058 §4.7).

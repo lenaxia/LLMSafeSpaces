@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	types "github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
@@ -651,4 +652,64 @@ func TestWorkflowUpdate_TargetWorkspaceID(t *testing.T) {
 	updated := store.workflows["wf-ws"]
 	require.NotNil(t, updated.TargetWorkspaceID)
 	assert.Equal(t, "ws-target-1", *updated.TargetWorkspaceID)
+}
+
+// --- #1413: run input must satisfy the workflow's inputSchema ---
+
+func setupWorkflowRunRouter(store workflowStore) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, nil)
+	r.POST("/api/v1/me/workflows/:id/runs", func(c *gin.Context) {
+		c.Set("userID", "test-user")
+		h.UserRunWorkflow(c)
+	})
+	return r
+}
+
+func TestWorkflowRun_InputSchemaEnforced(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		TargetWorkspaceID: &target,
+		InputSchema:       json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`),
+	}
+	r := setupWorkflowRunRouter(store)
+
+	// Missing the required field: rejected before a run is queued.
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"wrong": true},
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "inputSchema")
+	assert.Nil(t, store.lastRun, "no run row may be created for invalid input")
+
+	// Wrong type: also rejected.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"topic": 42},
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code)
+
+	// Valid input still queues.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-1/runs", map[string]any{
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastRun)
+	assert.Equal(t, types.RunStatusQueued, store.lastRun.Status)
+}
+
+func TestWorkflowCreate_MalformedInputSchemaRejected(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":        "bad-schema",
+		"specYaml":    `{"nodes": [{"id": "a", "type": "script", "data": {"language": "python", "handler": "def handler(i): return {}"}}], "edges": []}`,
+		"inputSchema": `{"type":"object",`,
+	})
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "inputSchema")
 }

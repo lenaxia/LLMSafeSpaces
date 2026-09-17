@@ -24,7 +24,11 @@ description = "Known-safe paths and content. See per-entry rationale."
 paths = [
   # Redaction package test corpus — patterns are explicitly the strings
   # the redactor must catch. False positive by construction.
+  # redact_dynamic_test.go added 2026-09-17 (US-72.1): same corpus class —
+  # golden static-rule rows and dynamic-rule fixtures; the "leaks" are the
+  # [REDACTED] markers and fake low-entropy values the pipeline consumes.
   '''pkg/redact/redact_test\.go''',
+  '''pkg/redact/redact_dynamic_test\.go''',
   '''pkg/utilities/utilities_test\.go''',
   # Auth tests use canonical "test-secret" / "test-jwt-secret" strings;
   # never a real signing key (verified by inspection 2026-05-31).

@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -536,4 +537,22 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestValidateSpec_ScriptNodeBadLanguage(t *testing.T) {
+	spec := &Spec{
+		Nodes: []SpecNode{
+			{ID: "a", Type: "script", Data: mustJSON(t, `{"language":"bash","handler":"echo hi"}`)},
+		},
+	}
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	found := false
+	for _, e := range errs {
+		if e.Code == "invalid_node_data" && strings.Contains(e.Detail, "not supported") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected unsupported-language validation error, got: %v", errs)
+	}
 }

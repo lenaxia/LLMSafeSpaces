@@ -210,9 +210,9 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "trigger_create",
-						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook; sourceConfig carries the source's config (cron: schedule + optional timezone). With workflow_id set the trigger fires that DAG; without it, it fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). Learn exact shapes from trigger_list entries. autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
+						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook; sourceConfig carries the source's config (cron: expr, five-field cron syntax, + optional tz as an IANA name - both are validated, invalid schedules are rejected with 400). Without a workflow target it fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). To fire a DAG instead, set workflowId (camelCase!) to a workflow whose targetWorkspaceId is THIS workspace - the platform enforces that scope. A new or rescheduled trigger does NOT fire immediately: scheduling starts at the next occurrence of the schedule. autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflow_id (DAG)"},
+							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflowId (DAG, camelCase)"},
 						}, "required": []string{"trigger"}},
 					},
 					{
@@ -251,17 +251,17 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn the node vocabulary (transform/parallel/delay/mcp_call...) from workflow_list entries. Wire triggers to it via trigger_create {workflow_id} or fire it manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on every workflow_run input. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change).",
+						Description: "Partially update one workflow (id + fields to change; omitted = keep existing). Patch shape = UpdateWorkflowRequest: specYaml (the DAG as a STRINGIFIED spec, re-validated - node types script/agent/http/condition), inputSchema (JSON Schema, compile-checked and enforced on workflow_run inputs), targetWorkspaceId (set this workspace or runs are rejected), defaults, status, name/slug/description. Spec re-validation fails closed with per-node details.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
-							"patch": map[string]any{"type": "object", "description": "Fields to change"},
+							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateWorkflowRequest shape)"},
 						}, "required": []string{"id", "patch"}},
 					},
 					{

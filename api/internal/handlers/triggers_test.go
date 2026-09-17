@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -93,6 +94,12 @@ func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, 
 	}
 	if upd.PreserveSession != nil {
 		r.PreserveSession = *upd.PreserveSession
+	}
+	if upd.SourceConfig != nil {
+		r.SourceConfig = upd.SourceConfig
+	}
+	if upd.NextFireAt != nil {
+		r.NextFireAt = upd.NextFireAt
 	}
 	return r, nil
 }
@@ -608,4 +615,187 @@ func TestTriggerRotateWebhookSecret_NotFound(t *testing.T) {
 
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers/nonexistent/rotate-secret", nil)
 	assert.Equal(t, 404, w.Code)
+}
+
+// --- #1411: create-path cron validation + real first fire slot ---
+
+func TestTriggerCreate_InvalidCronExpr(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "bad-cron", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "not-a-cron", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid cron expr")
+	assert.Empty(t, store.triggers, "invalid schedule must not be stored")
+}
+
+func TestTriggerCreate_InvalidTZ(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "bad-tz", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 * * * *", "tz": "Mars/Olympus_Mons"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid tz")
+}
+
+func TestTriggerCreate_CronNextFireIsFirstOccurrence(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	before := time.Now().UTC().Add(time.Minute)
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "cron-first-slot", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	raw, ok := resp["nextFireAt"].(string)
+	require.True(t, ok, "nextFireAt present")
+	next, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+	assert.True(t, next.After(before), "nextFireAt must be the first scheduled occurrence, never creation time (was %s)", raw)
+	assert.Equal(t, 0, next.Minute())
+	assert.Equal(t, 2, next.Hour())
+}
+
+// --- #1410: schedule changes recompute next_fire_at immediately ---
+
+func TestTriggerUpdate_ScheduleChangeRecomputesNextFireAt(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "reschedule", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"sourceConfig": map[string]any{"expr": "0 4 1 * *", "tz": "UTC"},
+	})
+	require.Equal(t, 200, w2.Code, "body: %s", w2.Body.String())
+
+	var updated map[string]any
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &updated))
+	raw, ok := updated["nextFireAt"].(string)
+	require.True(t, ok, "nextFireAt present after update")
+	next, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+	assert.Equal(t, 4, next.Hour(), "nextFireAt must reflect the NEW schedule immediately")
+	assert.Equal(t, 1, next.Day())
+}
+
+func TestTriggerUpdate_InvalidCronExprRejected(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "stay-valid", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"sourceConfig": map[string]any{"expr": "every 5 minutes", "tz": "UTC"},
+	})
+	assert.Equal(t, 400, w2.Code)
+	assert.Contains(t, w2.Body.String(), "invalid cron expr")
+}
+
+func TestTriggerUpdate_EnableStaleSlotRecomputes(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "sleeper", "sourceType": "cron", "enabled": false,
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	// Simulate a long-disabled trigger: stored slot long in the past.
+	stale := time.Now().UTC().Add(-48 * time.Hour)
+	for _, row := range store.triggers {
+		row.NextFireAt = &stale
+	}
+
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"enabled": true,
+	})
+	require.Equal(t, 200, w2.Code, "body: %s", w2.Body.String())
+
+	var updated map[string]any
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &updated))
+	raw, ok := updated["nextFireAt"].(string)
+	require.True(t, ok, "nextFireAt present after re-enable")
+	next, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err)
+	assert.True(t, next.After(time.Now().UTC()), "re-enabling a stale trigger resumes on the next future occurrence, not the stale slot")
+	assert.Equal(t, 2, next.Hour())
+}
+
+func TestTriggerUpdate_NoopEnableKeepsFutureSlot(t *testing.T) {
+	// enabled:true on an ALREADY-enabled trigger must never move the
+	// slot — an imminent-but-unclaimed fire (the scheduler tick window)
+	// would otherwise be silently pushed to the next occurrence
+	// (review finding on #1410).
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "imminent", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	// Put the stored slot just inside the claim window: due, but not yet
+	// claimed by the scheduler.
+	imminent := time.Now().UTC().Add(-2 * time.Second)
+	for _, row := range store.triggers {
+		row.NextFireAt = &imminent
+	}
+
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"enabled": true,
+	})
+	require.Equal(t, 200, w2.Code)
+
+	for _, row := range store.triggers {
+		require.NotNil(t, row.NextFireAt)
+		assert.WithinDuration(t, imminent, *row.NextFireAt, time.Second,
+			"no-op enable on an enabled trigger must not reschedule an imminent fire")
+	}
 }

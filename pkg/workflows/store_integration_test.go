@@ -1062,3 +1062,55 @@ func (s *StoreIntegrationSuite) TestRecordSessionOrigin_TriggerFK() {
 	require.Len(s.T(), origins, 1)
 	require.Nil(s.T(), origins[0].TriggerID, "trigger_id must be SET NULL after trigger deleted")
 }
+
+// TestUpdateTrigger_NextFireAt_PersistsAndNilPreserves verifies the real-SQL
+// behavior of the next_fire_at SET clause added for #1410: an explicit
+// NextFireAt writes through (and reads back), nil preserves the stored slot
+// for unrelated updates, and the RETURNING row reflects the change.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_NextFireAt_PersistsAndNilPreserves() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "slot-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig:     json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		AutoDisableAfter: 10,
+		CreatedAt:        now, UpdatedAt: now,
+	}))
+
+	// Baseline: no slot stored yet.
+	got, err := s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	require.Nil(s.T(), got.NextFireAt)
+
+	// Unrelated update with nil NextFireAt: must not materialize a slot.
+	newName := "slot-trigger-2"
+	_, err = s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{Name: &newName})
+	require.NoError(s.T(), err)
+	got, err = s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	assert.Nil(s.T(), got.NextFireAt, "nil NextFireAt must preserve (not write) the slot")
+
+	// Explicit slot writes through the SQL and reads back.
+	want := time.Date(2026, 10, 1, 4, 0, 0, 0, time.UTC)
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{NextFireAt: &want})
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), updated.NextFireAt)
+	assert.True(s.T(), updated.NextFireAt.Equal(want), "RETURNING row carries the new slot")
+
+	got, err = s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), got.NextFireAt)
+	assert.True(s.T(), got.NextFireAt.Equal(want), "slot persists across reads")
+
+	// A later nil update keeps the explicit slot.
+	newName2 := "slot-trigger-3"
+	_, err = s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{Name: &newName2})
+	require.NoError(s.T(), err)
+	got, err = s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), got.NextFireAt)
+	assert.True(s.T(), got.NextFireAt.Equal(want), "nil update after explicit slot preserves it")
+}
