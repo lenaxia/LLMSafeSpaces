@@ -288,9 +288,13 @@ for _ in $(seq 1 20); do
     sleep 3
 done
 S1B_SEND_LOG=/tmp/e71s1_slow_send.out
-(S1B_CODE=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/message" \
-    "{"parts":[{"type":"text","text":"S1-SLOW-TURN ${S1B_SLOW_TURN_S} take your time"}],"model":{"modelID":"mock-model-s1","providerID":"s1-stub"}}" /dev/null) \
-    ; echo "${S1B_CODE}" >"${S1B_SEND_LOG}") &
+S1B_SEND_BODY='{"parts":[{"type":"text","text":"a deliberately slow turn"}],"model":{"modelID":"mock-model-s1","providerID":"s1-slow-stub"}}'
+S1B_SEND_RAW=$(mktemp)
+(S1B_CODE=$(curl -s -m $(( S1B_SLOW_TURN_S + 120 )) -o "${S1B_SEND_RAW}" -w '%{http_code}' \
+    -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" -H 'Content-Type: application/json' \
+    -d "${S1B_SEND_BODY}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/message" 2>/dev/null || echo 000) \
+    ; { echo "${S1B_CODE}"; head -c 400 "${S1B_SEND_RAW}" 2>/dev/null || true; } >"${S1B_SEND_LOG}") &
 S1B_SEND_PID=$!
 sleep 5 # let the turn start (registry/pod round trips done, mock sleeping)
 

@@ -168,3 +168,28 @@ func TestEpic71S1Script_ShellcheckUnbound(t *testing.T) {
 		t.Fatalf("shellcheck found error-level defects (unbound vars among them):\n%s", out)
 	}
 }
+
+func TestEpic71S1Script_SendBodyIsValidJSON(t *testing.T) {
+	// Pool r9's API-log fetch named the root cause: the slow-send body
+	// arrived with UNQUOTED KEYS ('invalid character p looking for
+	// beginning of object key string') — a shell-escaping mangle that
+	// three rounds of scripted edits both created and failed to see.
+	// The body now lives in a single-quoted literal; this pin parses it
+	// with jq so the class can never ship silently again.
+	src := mustRead(t, epic71S1Script)
+	start := strings.Index(src, "S1B_SEND_BODY='")
+	end := strings.Index(src[start+1:], "'\n")
+	if start < 0 || end < 0 {
+		t.Fatalf("could not locate the S1B_SEND_BODY literal in %s", epic71S1Script)
+	}
+	literal := src[start+len("S1B_SEND_BODY='") : start+1+end]
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not on PATH — CI runs this row with it preinstalled")
+	}
+	cmd := exec.Command(jq, "-e", ".model.providerID == \"s1-slow-stub\"")
+	cmd.Stdin = strings.NewReader(literal)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("S1B_SEND_BODY is not the valid slow-provider JSON literal (%q): %v: %s", literal, err, out)
+	}
+}
