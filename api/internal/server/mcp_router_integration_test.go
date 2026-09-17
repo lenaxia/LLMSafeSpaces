@@ -29,9 +29,11 @@ package server
 // not just route resolution.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -799,7 +801,7 @@ func TestMCPClientWorkflowAndTriggerCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "sweep-flow")
 
-	run, err := f.client.RunWorkflow(ctx, wfResp.ID, `{"x":1}`, mcpTestWSID)
+	run, err := f.client.RunWorkflow(ctx, wfResp.ID, json.RawMessage(`{"x":1}`), mcpTestWSID)
 	require.NoError(t, err)
 	var runResp struct {
 		ID string `json:"id"`
@@ -1054,12 +1056,19 @@ func TestMCPRouterTriggerReschedule_RecomputesNextFire(t *testing.T) {
 	f.trgStore.mu.Unlock()
 
 	// The SDK tool surface exposes enabled-only updates; a reschedule
-	// rides the same production PUT route through the raw client.
-	raw, err := f.client.UpdateTriggerRaw(context.Background(), "trg_resched", map[string]any{
+	// rides the same production PUT route directly.
+	body, _ := json.Marshal(map[string]any{
 		"sourceConfig": map[string]any{"expr": "42 4 * * *", "tz": "UTC"},
 	})
-	require.NoError(t, err, string(raw))
-	assert.Contains(t, string(raw), "trg_resched")
+	req, _ := http.NewRequest(http.MethodPut, f.apiSrv.URL+"/api/v1/me/triggers/trg_resched", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+f.client.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := f.apiSrv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(respBody))
+	assert.Contains(t, string(respBody), "trg_resched")
 
 	upd := f.lastTriggerUpdate()
 	require.NotNil(t, upd)
@@ -1078,7 +1087,21 @@ func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
 	row.InputSchema = json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`)
 	f.wfStore.mu.Unlock()
 
-	raw, err := f.client.RunWorkflow(context.Background(), "wfl_schema", `{"wrong":true}`, mcpTestWSID)
-	require.Error(t, err, "schema-violating run must be rejected, got: %s", string(raw))
+	// Unhappy: missing the required field — the 400 must NAME the
+	// violation (not the double-encode "got string" artifact).
+	_, err := f.client.RunWorkflow(context.Background(), "wfl_schema", json.RawMessage(`{"wrong":true}`), mcpTestWSID)
+	require.Error(t, err, "schema-violating run must be rejected")
 	assert.Contains(t, err.Error(), "inputSchema", "the 400 names the contract: %s", err.Error())
+	assert.Contains(t, err.Error(), "topic", "the missing required field is named: %s", err.Error())
+	assert.NotContains(t, err.Error(), "got string", "double-encoding regression: %s", err.Error())
+
+	// Happy: a CONFORMING input must pass through the same surface
+	// (round-3's double-encode broke exactly this).
+	ok, err := f.client.RunWorkflow(context.Background(), "wfl_schema", json.RawMessage(`{"topic":"e2e"}`), mcpTestWSID)
+	require.NoError(t, err, "conforming input must be accepted: %s", string(ok))
+	var runOut struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(ok, &runOut), string(ok))
+	require.NotEmpty(t, runOut.ID, "run queued: %s", string(ok))
 }

@@ -153,7 +153,7 @@ func (m *MockAPIClient) UpdateWorkflow(ctx context.Context, workflowID string, n
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error) {
+func (m *MockAPIClient) RunWorkflow(ctx context.Context, workflowID string, input json.RawMessage, workspaceID string) (json.RawMessage, error) {
 	args := m.Called(ctx, workflowID, input, workspaceID)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }

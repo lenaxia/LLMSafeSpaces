@@ -81,7 +81,7 @@ type APIClient interface {
 	GetWorkflow(ctx context.Context, workflowID string) (json.RawMessage, error)
 	CreateWorkflow(ctx context.Context, name, specYAML, status string) (json.RawMessage, error)
 	UpdateWorkflow(ctx context.Context, workflowID string, name, status, specYAML *string) (json.RawMessage, error)
-	RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error)
+	RunWorkflow(ctx context.Context, workflowID string, input json.RawMessage, workspaceID string) (json.RawMessage, error)
 	GetWorkflowRunStatus(ctx context.Context, runID string) (json.RawMessage, error)
 	CancelWorkflowRun(ctx context.Context, runID string) error
 
@@ -834,11 +834,17 @@ func (c *HTTPClient) UpdateWorkflow(ctx context.Context, workflowID string, name
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/workflows/"+workflowID, body)
 }
 
-func (c *HTTPClient) RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error) {
+func (c *HTTPClient) RunWorkflow(ctx context.Context, workflowID string, input json.RawMessage, workspaceID string) (json.RawMessage, error) {
 	if err := validateID(workflowID, "workflow_id"); err != nil {
 		return nil, err
 	}
-	body := map[string]string{"input": input, "workspaceId": workspaceID}
+	if len(input) == 0 {
+		input = json.RawMessage("{}")
+	}
+	// input rides as a RAW OBJECT (#1421 r3): wrapping it in
+	// map[string]string double-encoded it as a JSON string on the wire,
+	// which inputSchema enforcement correctly rejects.
+	body := map[string]any{"input": &input, "workspaceId": workspaceID}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/workflows/"+workflowID+"/runs", body)
 }
 
@@ -896,15 +902,6 @@ func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enable
 	body := map[string]any{}
 	if enabled != nil {
 		body["enabled"] = *enabled
-	}
-	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
-}
-
-// UpdateTriggerRaw sends an arbitrary partial-update body to the
-// trigger update route (the typed UpdateTrigger covers enabled-only).
-func (c *HTTPClient) UpdateTriggerRaw(ctx context.Context, triggerID string, body map[string]any) (json.RawMessage, error) {
-	if err := validateID(triggerID, "trigger_id"); err != nil {
-		return nil, err
 	}
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
 }
