@@ -238,6 +238,13 @@ func mcpHandler(password string) http.HandlerFunc {
 						}, "required": []string{"id"}},
 					},
 					{
+						Name:        "trigger_rotate_webhook_secret",
+						Description: "Rotate a webhook trigger's HMAC signing secret. Returns {webhookSecret, webhookUrl} — hand the secret to the EXTERNAL sender; sign deliveries as X-Hub-Signature-256: sha256=<hex hmac of the raw body>. Rotating invalidates the previous secret immediately. Use after trigger_create for a webhook source (create does NOT return a secret) or whenever a secret may have leaked.",
+						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+							"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
+						}, "required": []string{"id"}},
+					},
+					{
 						Name:        "workflow_list",
 						Description: "List YOUR workflows (DAG specs) - the workspace owner's. Entries show the full spec (nodes, edges, input schema) - the reference shape for workflow_create.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},

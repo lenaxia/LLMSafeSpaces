@@ -946,7 +946,8 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 		"create_session", "send_message", "get_datetime", "session_metadata",
 		"compact", "abort_session",
 		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
-		"trigger_fires", "workflow_list", "workflow_create", "workflow_update",
+		"trigger_fires", "trigger_rotate_webhook_secret",
+		"workflow_list", "workflow_create", "workflow_update",
 		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		assert.True(t, names[want], "%s must be in tools/list", want)
@@ -960,7 +961,8 @@ func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 		"call_with_model", "create_session", "send_message", "abort_session", "get_datetime",
 		"session_metadata", "compact", "secrets_resync", "dev_preview_url",
 		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
-		"trigger_fires", "workflow_list", "workflow_create", "workflow_update",
+		"trigger_fires", "trigger_rotate_webhook_secret",
+		"workflow_list", "workflow_create", "workflow_update",
 		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		params, _ := json.Marshal(map[string]any{"name": tool, "arguments": map[string]any{}})
@@ -1600,6 +1602,19 @@ func TestMCPAutomation_MissingDeps(t *testing.T) {
 	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SA token unreadable")
+}
+
+func TestMCPAutomation_RotateWebhookSecret(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"webhookSecret":"whs_x","webhookUrl":"/api/v1/hooks/11111111-1111-1111-1111-111111111111"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_rotate_webhook_secret", map[string]any{
+		"id": "11111111-1111-1111-1111-111111111111",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"webhookSecret":"whs_x"`, "credential surfaces verbatim to the agent")
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/rotate-secret", rec.path)
 }
 
 func TestMCPAutomation_UnknownTool(t *testing.T) {

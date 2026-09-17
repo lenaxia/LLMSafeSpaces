@@ -349,19 +349,20 @@ var implOnlyAllowlist = map[route]bool{
 	// /internal/v1/automation/* — K8s projected SA token (TokenReview).
 	// The agentd trigger_/workflow_ MCP tools; delegation runs as the
 	// pod's resolved owner, trigger-create is workspace-scoped.
-	{method: "GET", path: "/internal/v1/automation/triggers"}:            true,
-	{method: "POST", path: "/internal/v1/automation/triggers"}:           true,
-	{method: "GET", path: "/internal/v1/automation/triggers/:id"}:        true,
-	{method: "PUT", path: "/internal/v1/automation/triggers/:id"}:        true,
-	{method: "DELETE", path: "/internal/v1/automation/triggers/:id"}:     true,
-	{method: "GET", path: "/internal/v1/automation/triggers/:id/fires"}:  true,
-	{method: "GET", path: "/internal/v1/automation/workflows"}:           true,
-	{method: "POST", path: "/internal/v1/automation/workflows"}:          true,
-	{method: "GET", path: "/internal/v1/automation/workflows/:id"}:       true,
-	{method: "PUT", path: "/internal/v1/automation/workflows/:id"}:       true,
-	{method: "DELETE", path: "/internal/v1/automation/workflows/:id"}:    true,
-	{method: "POST", path: "/internal/v1/automation/workflows/:id/runs"}: true,
-	{method: "GET", path: "/internal/v1/automation/workflows/:id/runs"}:  true,
+	{method: "GET", path: "/internal/v1/automation/triggers"}:                    true,
+	{method: "POST", path: "/internal/v1/automation/triggers"}:                   true,
+	{method: "GET", path: "/internal/v1/automation/triggers/:id"}:                true,
+	{method: "PUT", path: "/internal/v1/automation/triggers/:id"}:                true,
+	{method: "DELETE", path: "/internal/v1/automation/triggers/:id"}:             true,
+	{method: "GET", path: "/internal/v1/automation/triggers/:id/fires"}:          true,
+	{method: "POST", path: "/internal/v1/automation/triggers/:id/rotate-secret"}: true,
+	{method: "GET", path: "/internal/v1/automation/workflows"}:                   true,
+	{method: "POST", path: "/internal/v1/automation/workflows"}:                  true,
+	{method: "GET", path: "/internal/v1/automation/workflows/:id"}:               true,
+	{method: "PUT", path: "/internal/v1/automation/workflows/:id"}:               true,
+	{method: "DELETE", path: "/internal/v1/automation/workflows/:id"}:            true,
+	{method: "POST", path: "/internal/v1/automation/workflows/:id/runs"}:         true,
+	{method: "GET", path: "/internal/v1/automation/workflows/:id/runs"}:          true,
 	// POST /internal/image-factory/builds/:id/callback — constant-time
 	// per-build callback token; the builder is the only caller.
 	{method: "POST", path: "/internal/image-factory/builds/:id/callback"}: true,

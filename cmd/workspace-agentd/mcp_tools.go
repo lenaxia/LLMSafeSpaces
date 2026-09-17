@@ -738,6 +738,8 @@ func mcpAutomation(ctx context.Context, name string, body map[string]any) (strin
 		res, err = client.TriggerDelete(ctx, saToken, workspaceID, toolArgID(body))
 	case "trigger_fires":
 		res, err = client.TriggerFires(ctx, saToken, workspaceID, toolArgID(body))
+	case "trigger_rotate_webhook_secret":
+		res, err = client.TriggerRotateWebhookSecret(ctx, saToken, workspaceID, toolArgID(body))
 	case "workflow_list":
 		res, err = client.WorkflowList(ctx, saToken, workspaceID)
 	case "workflow_create":

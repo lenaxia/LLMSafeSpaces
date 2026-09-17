@@ -1170,6 +1170,7 @@ func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
 	t.PUT("/:id", h.TriggerUpdate)
 	t.DELETE("/:id", h.TriggerDelete)
 	t.GET("/:id/fires", h.TriggerFires)
+	t.POST("/:id/rotate-secret", h.TriggerRotateWebhookSecret)
 
 	w := router.Group("/internal/v1/automation/workflows")
 	w.GET("", h.WorkflowList)

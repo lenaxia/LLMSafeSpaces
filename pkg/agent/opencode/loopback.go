@@ -748,6 +748,17 @@ func (c *Client) TriggerFires(ctx context.Context, saToken, workspaceID, id stri
 		fmt.Sprintf("/internal/v1/automation/triggers/%s/fires?workspaceID=%s", id, workspaceID), saToken, nil)
 }
 
+// TriggerRotateWebhookSecret rotates a webhook trigger's HMAC secret;
+// the response {webhookSecret, webhookUrl} surfaces verbatim — the
+// owner's credential delivered to the owner's agent.
+func (c *Client) TriggerRotateWebhookSecret(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s/rotate-secret?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
 // WorkflowList lists the owner's workflows.
 func (c *Client) WorkflowList(ctx context.Context, saToken, workspaceID string) (*AutomationResponse, error) {
 	return c.automationCall(ctx, http.MethodGet,

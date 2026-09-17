@@ -161,3 +161,20 @@ func TestSeam_WorkflowRunEmptyInputDefaults(t *testing.T) {
 }
 
 func ctx() context.Context { return context.Background() }
+
+func TestSeam_TriggerRotateWebhookSecretWire(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path+"?"+r.URL.RawQuery, r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"webhookSecret":"whs_new","webhookUrl":"/api/v1/hooks/t1"}`))
+	}))
+	defer srv.Close()
+	c := NewLoopbackClient(srv.URL, "")
+
+	res, err := c.TriggerRotateWebhookSecret(context.Background(), "sa", "ws-1", "11111111-1111-1111-1111-111111111111")
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/rotate-secret?workspaceID=ws-1", gotPath)
+	assert.Equal(t, "Bearer sa", gotAuth)
+	assert.Contains(t, res.Body, `"webhookSecret":"whs_new"`, "credential surfaces verbatim")
+}

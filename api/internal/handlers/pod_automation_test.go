@@ -4,6 +4,8 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +43,7 @@ func newAutomationRouter(t *testing.T, reviewer TokenReviewer, lookup bootstrapW
 	r.PUT("/internal/v1/automation/triggers/:id", h.TriggerUpdate)
 	r.DELETE("/internal/v1/automation/triggers/:id", h.TriggerDelete)
 	r.GET("/internal/v1/automation/triggers/:id/fires", h.TriggerFires)
+	r.POST("/internal/v1/automation/triggers/:id/rotate-secret", h.TriggerRotateWebhookSecret)
 	r.GET("/internal/v1/automation/workflows", h.WorkflowList)
 	r.POST("/internal/v1/automation/workflows", h.WorkflowCreate)
 	r.GET("/internal/v1/automation/workflows/:id", h.WorkflowGet)
@@ -207,6 +210,29 @@ func TestPodAutomation_LargeBodyReplay(t *testing.T) {
 	for _, row := range trigStore.triggers {
 		assert.Len(t, row.Prompt, 64*1024, "full body replayed, no truncation")
 	}
+}
+
+// Rotate through the automation surface: the REAL rotate handler runs
+// delegated as the owner and the new credential lands in the store.
+func TestPodAutomation_DelegatedRotate(t *testing.T) {
+	r, trigStore, _ := newAutomationRouter(t, automationReviewer(), automationLookup())
+	id := "trig-hook"
+	trigStore.triggers[id] = &wf.TriggerRow{ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", Name: "hook", Enabled: true, SourceType: "webhook"}
+	// Seed the webhook row via the shared store contract.
+	require.NoError(t, trigStore.CreateWebhook(context.Background(), &wf.WebhookRow{ID: "wh-1", TriggerID: id, SecretCipher: []byte("old"), KeyVersion: 1}))
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers/"+id+"/rotate-secret?workspaceID=ws-1", "tok", "")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	var resp struct {
+		WebhookSecret string `json:"webhookSecret"`
+		WebhookURL    string `json:"webhookUrl"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp.WebhookSecret)
+	assert.Equal(t, "/api/v1/hooks/"+id, resp.WebhookURL, "advertises the trigger-id URL")
+	hook, err := trigStore.GetWebhookByTriggerID(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("enc:"+resp.WebhookSecret), hook.SecretCipher, "store carries the encrypted new secret")
 }
 
 func TestForceTriggerWorkspace(t *testing.T) {
