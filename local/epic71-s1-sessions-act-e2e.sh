@@ -279,14 +279,19 @@ log "S1b: abort returns while the slow turn still runs (budget ${S1B_ABORT_BUDGE
 # (agentd healthz: opencode 4096 connection-refused right at S1b; the
 # send ate a spurious empty 400). Wait for harness health BEFORE arming
 # the row — a restarting opencode is a wait, not a row failure.
+S1B_HARNESS_OK=1
 for _ in $(seq 1 20); do
     if kc exec "${S1_POD}" -c workspace -- curl -sfm 3 -o /dev/null \
         "http://127.0.0.1:4096/global/health" >/dev/null 2>&1; then
         break
     fi
-    [[ "$_" == "20" ]] && note_fail "S1b pre-flight: harness unhealthy for 60s (environment — not row semantics)"
+    if [[ "$_" == "20" ]]; then
+        note_fail "S1b pre-flight: harness unhealthy for 60s (environment — not row semantics); S1b skipped this pass"
+        S1B_HARNESS_OK=0
+    fi
     sleep 3
 done
+if [[ ${S1B_HARNESS_OK} == 1 ]]; then
 S1B_SEND_LOG=/tmp/e71s1_slow_send.out
 S1B_SEND_BODY='{"parts":[{"type":"text","text":"a deliberately slow turn"}],"model":{"modelID":"mock-model-s1","providerID":"s1-slow-stub"}}'
 S1B_SEND_RAW=$(mktemp)
@@ -306,17 +311,21 @@ S1B_SEND_PID=$!
 # after ≥8s — or name the engagement failure loudly with the reply body.
 S1B_ENGAGED=0
 S1B_ROW_T0=$(date +%s)
-for _eng in $(seq 1 15); do
+# 4 iterations x 2s ≈ 8s: the send is "provably not-yet-completed" once
+# its log is still absent after ~8s against a ≥45s turn — not proof of
+# liveness (a dead sender also leaves it absent), which the abort-side
+# in-flight re-check and the reply body on failure bound.
+for _eng in 1 2 3 4; do
     if [[ -f "${S1B_SEND_LOG}" ]]; then
         break
     fi
-    if [[ ${_eng} -ge 4 ]]; then
-        S1B_ENGAGED=1; break
+    if [[ ${_eng} == 4 ]]; then
+        S1B_ENGAGED=1
     fi
     sleep 2
 done
 if [[ ${S1B_ENGAGED} != 1 ]]; then
-    note_fail "S1b pre-abort: the slow turn never engaged (send completed in $(( $(date +%s) - S1B_T0 ))s-class window; reply='$(head -c 200 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' — harness restart or provider override not honored; preempt semantics untestable this pass)"
+    note_fail "S1b pre-abort: the slow turn never engaged (send completed within $(( $(date +%s) - S1B_ROW_T0 ))s; reply='$(head -c 200 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' — harness restart or provider override not honored; preempt semantics untestable this pass)"
     wait "${S1B_SEND_PID}" 2>/dev/null || true
 else
     ok "S1b slow turn engaged (send pending ≥8s)"
@@ -372,6 +381,7 @@ else
     note_fail "S1b session still '${S1B_SEEN}' after ${S1B_IDLE_BUDGET_S}s (wedged-busy class); harness=$(agent_field "${S1_POD}" "${S1_PW}" "${S1_SID}" '.status' | head -c 120)"
 fi
 fi # end S1B_ENGAGED else-branch (abort + settle only run against a proved-in-flight turn)
+fi # end S1B_HARNESS_OK (the whole row skips when the harness never recovered)
 
 # --- S1c: rename through Act -----------------------------------------------
 log "S1c: title rename lands agent-side (the PATCH rides the actor)"

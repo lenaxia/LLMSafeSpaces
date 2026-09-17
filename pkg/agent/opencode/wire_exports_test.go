@@ -91,3 +91,25 @@ func TestMessageModelOverrideWire(t *testing.T) {
 		})
 	}
 }
+
+// TestParseMessageWire_RejectsTrailingBytes pins the strict-decode
+// contract (the change rode 87896e3f undisclosed — this row is its
+// disclosure pin): the send response must parse as exactly ONE JSON
+// value; trailing bytes are wire drift or proxy corruption and must
+// error, never parse as phantom success (the #1308 rationale; parity
+// with the adapter's decodeStrict).
+func TestParseMessageWire_RejectsTrailingBytes(t *testing.T) {
+	raw, err := os.ReadFile("testdata/history_1_18_10_flat_tool.json")
+	require.NoError(t, err)
+	var arr []json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &arr))
+	require.GreaterOrEqual(t, len(arr), 2)
+
+	_, _, err = opencode.ParseMessageWire(append(append([]byte{}, arr[1]...), []byte(` trailing garbage`)...))
+	require.Error(t, err, "trailing bytes after the JSON value must fail the parse")
+	assert.Contains(t, err.Error(), "trailing")
+
+	msg, _, err := opencode.ParseMessageWire(arr[1])
+	require.NoError(t, err, "the clean fixture still parses")
+	assert.NotEmpty(t, msg.ID)
+}

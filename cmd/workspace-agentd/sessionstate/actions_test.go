@@ -531,12 +531,15 @@ func (p *parkingSendActor) Act(ctx context.Context, sessionID string, req *abiv1
 	return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}, nil
 }
 
-// TestActOp_AnswerPreemptsInFlightSend (r4): a mid-turn ask must be
-// answerable WHILE the asking turn holds the sync-send HTTP response —
-// the harness blocks the turn on the ask, so queueing the answer behind
-// the send's lock hold deadlocks the ask-answer cycle (the flag-off
-// adapter answers mid-turn; S6/L2 demand it). Red pre-fix: the answer
-// queued for the parked send's full duration.
+// TestActOp_AnswerPreemptsInFlightSend (r4, re-scoped at #1396): a
+// mid-turn ask must be answerable WHILE the asking turn holds the
+// sync-send HTTP response — the harness blocks the turn on the ask, so
+// queueing the answer behind the turn deadlocks the ask-answer cycle
+// (the flag-off adapter answers mid-turn; S6/L2 demand it). Since
+// #1396, answers bypass the session lock via actAnswer unconditionally,
+// so this row pins THAT dispatch; the send-side carve-out it originally
+// proved is pinned separately by TestActOp_SendDoesNotQueueBehind
+// InFlightAdmission (mutation-verified).
 func TestActOp_AnswerPreemptsInFlightSend(t *testing.T) {
 	actor := &parkingSendActor{entered: make(chan struct{}), release: make(chan struct{})}
 	a := actionsAuthority(t, actor, allActions(), &recordingAdmitter{})
@@ -583,4 +586,70 @@ func TestActOp_AnswerPreemptsInFlightSend(t *testing.T) {
 		t.Fatal("answer queued behind the in-flight send — the ask-answer cycle deadlocks")
 	}
 	releaseOnce.Do(func() { close(actor.release) })
+}
+
+// TestActOp_SendDoesNotQueueBehindInFlightAdmission (#1372 r4, the
+// send carve-out's discriminating pin — mutation-verified): the send
+// action must NOT take the session single-flight. The harness
+// serializes per-session message writes itself (busy sessions block
+// incoming messages, B1) and S2 (#1315) dedupes admissions at the
+// harness write, so the lock adds no write protection — while HOLDING it
+// across a full LLM turn re-creates the r1-f1 class: a send queueing
+// behind a slow/parked admission inherits the holder's full duration
+// (an outbox admission can legally take ~3 minutes under the admitter's
+// retry budget). With `&& m.GetSend() == nil` reverted, this row FAILS
+// (the send parks on the admission's lock); at HEAD it returns while
+// the admission is still parked.
+func TestActOp_SendDoesNotQueueBehindInFlightAdmission(t *testing.T) {
+	admitter := newBlockingAdmitter()
+	actor := &recordingActor{}
+	a := actionsAuthority(t, actor, allActions(), admitter)
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	go func() {
+		_, _ = c.Deliver(ctx, connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "s1", EntryId: "e-1", Attempt: 1,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "hello"}}},
+		}))
+	}()
+	select {
+	case <-admitter.entered: // the admission is in flight, holding the session lock
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission never started")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(admitter.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "mid-admission send"}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		assert.NotNil(t, res.GetSend(), "the send executed without the session lock")
+	case err := <-errCh:
+		t.Fatalf("send failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("send queued behind the in-flight admission — the carve-out is reverted (the r1-f1 duration-inheritance class)")
+	}
+
+	// The admission is STILL parked: the send genuinely did not wait.
+	select {
+	case <-admitter.release:
+		t.Fatal("the admission was released — the choreography broke")
+	default:
+	}
+	releaseOnce.Do(func() { close(admitter.release) })
 }

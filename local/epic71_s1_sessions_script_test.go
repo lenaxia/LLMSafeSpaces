@@ -16,6 +16,7 @@ package local_test
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -191,5 +192,48 @@ func TestEpic71S1Script_SendBodyIsValidJSON(t *testing.T) {
 	cmd.Stdin = strings.NewReader(literal)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("S1B_SEND_BODY is not the valid slow-provider JSON literal (%q): %v: %s", literal, err, out)
+	}
+}
+
+func TestEpic71S1Script_S1BVarsAssignedBeforeFirstUse(t *testing.T) {
+	// r10's head shipped an unbound-variable crash inside the exact
+	// engagement-failure branch built to diagnose harness restarts
+	// (S1B_T0 referenced before its assignment in the other branch) —
+	// the third set -u instance of the class, and ShellcheckUnbound
+	// structurally cannot see cross-branch ordering. This pin is
+	// linear: for every S1B_* variable, its first assignment must
+	// precede its first reference anywhere in the script.
+	src := mustRead(t, epic71S1Script)
+	assign := map[string]int{}
+	firstUse := map[string]int{}
+	lines := strings.Split(src, "\n")
+	tokenRe := regexp.MustCompile(`S1B_[A-Z0-9_]+`)
+	for i, line := range lines {
+		for _, m := range tokenRe.FindAllString(line, -1) {
+			// An assignment is NAME= at a statement position —
+			// line start, after whitespace, or after ( ; & (the
+			// defaults block's NAME="${NAME:-…}" and the subshell's
+			// (S1B_CODE=$(…) forms included).
+			isAssign := regexp.MustCompile(`(^|[\s(;&])` + regexp.QuoteMeta(m) + `=`).MatchString(line)
+			if isAssign {
+				if _, ok := assign[m]; !ok {
+					assign[m] = i + 1
+				}
+				continue
+			}
+			if _, ok := firstUse[m]; !ok {
+				firstUse[m] = i + 1
+			}
+		}
+	}
+	for name, useLine := range firstUse {
+		assignLine, ok := assign[name]
+		if !ok {
+			t.Errorf("%s referenced at line %d but never assigned", name, useLine)
+			continue
+		}
+		if assignLine > useLine {
+			t.Errorf("%s assigned at line %d but referenced earlier at line %d (use-before-assignment — the r10 crash class)", name, assignLine, useLine)
+		}
 	}
 }
