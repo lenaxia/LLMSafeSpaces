@@ -417,9 +417,13 @@ func startManagedProcess(bgCtx context.Context, supervise bool, sseTracker *sess
 // maybeStartRelayInjector launches the Epic 42 Phase-2 relay injection
 // when INFERENCE_RELAY_BASEURL is set and the opencode supervisor is
 // running. After opencode is healthy, fetch the live free model list
-// and rewrite the config to use the self-hosted relay fleet. Runs at
-// most once per pod lifetime. Skipped if the user has a personal
-// opencode API key (paying Zen subscriber).
+// and rewrite the config to use the self-hosted relay fleet. The boot
+// window runs once; on terminal fetch failure the attempt re-arms on
+// the generalized bounded-backoff loop for the pod's lifetime (#910) —
+// gated on no busy sessions and no outstanding deferred restart, with
+// the HasRelay() short-circuit re-checked every cycle. Skipped
+// permanently if the user has a personal opencode API key (paying Zen
+// subscriber).
 func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
 	relayURL := os.Getenv("INFERENCE_RELAY_BASEURL")
 	if relayURL == "" || deps.proc == nil {
@@ -441,6 +445,12 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
 		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions, deps.interrupter),
+		// #910 gates: no re-arm attempt while any session is busy (the
+		// existing tracker oracle — the same busyness source the restart
+		// deferral trusts) or while a deferred restart is outstanding
+		// (never stack a restart behind a deferred kill).
+		Busy:            func() bool { return trackerHasBusyOrUnknown(deps.sseTracker) },
+		RestartDeferred: anyRestartDeferred,
 	})
 }
 

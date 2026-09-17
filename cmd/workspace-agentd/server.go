@@ -278,7 +278,11 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 			ProvidersConfigured: configured,
 			AgentVersion:        snap.Version,
 			AgentType:           "opencode",
-			// RelayInjected: true once the relay injector successfully completed.
+			// RelayInjected: true while the writer holds relay state —
+			// evaluated live per request (boot injection, injector run, or a
+			// mid-pod-life #910 re-arm cycle); the restart that LOADS the
+			// config may still be pending. Full semantics in the
+			// ReadyzResponse.RelayInjected doc (pkg/agentd/types.go).
 			// Included in readyz (not statusz) because readyz is cache-based and
 			// lightweight, making it safe to call on every ListModels cache miss.
 			RelayInjected: deps.agentConfigWriter != nil && deps.agentConfigWriter.HasRelay(),

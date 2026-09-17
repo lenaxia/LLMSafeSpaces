@@ -165,14 +165,22 @@ type ReadyzResponse struct {
 	ProvidersConfigured int      `json:"providers_configured"`
 	AgentVersion        string   `json:"agent_version"`
 	AgentType           string   `json:"agent_type"`
-	// RelayInjected is true when the relay injector successfully completed
-	// (wrote relay config and restarted opencode). False before the injector
-	// has run, if it was skipped (personal opencode key), or if it failed.
-	// Included here (readyz) rather than statusz because: relay injection is
-	// a one-time boot event with the same semantics as pod readiness, readyz
-	// is cache-based and lightweight (no synchronous opencode calls), and the
-	// API server needs this flag on every ListModels cache miss — using statusz
-	// (which has no latency upper bound) would be unsafe.
+	// RelayInjected is true when the writer holds relay state — i.e. the
+	// relay config block has been applied (via pre-boot injection, a
+	// successful injector run, or a successful #910 re-arm cycle
+	// mid-pod-life; evaluated live per request, not latched at boot).
+	// The opencode restart that LOADS the config may still be pending:
+	// session-aware deferral holds it until sessions idle, and the
+	// re-arm path skips its own kill entirely when another deferred
+	// restart is outstanding. False before any apply, when skipped
+	// (personal opencode key), or while every attempt keeps failing.
+	// Known corner (pre-existing, documented): a terminal auth.json
+	// write failure after a successful config apply leaves this true
+	// with the opencode-relay auth entry missing. Included here (readyz)
+	// rather than statusz: readyz is cache-based and lightweight (no
+	// synchronous opencode calls), and the API server needs this flag
+	// on every ListModels cache miss — using statusz (which has no
+	// latency upper bound) would be unsafe.
 	RelayInjected bool `json:"relay_injected"`
 }
 
@@ -249,9 +257,9 @@ type StatuszResponse struct {
 	Disk                *DiskUsage    `json:"disk,omitempty"`
 	Memory              *MemoryUsage  `json:"memory,omitempty"`
 	CPU                 *CPUUsage     `json:"cpu,omitempty"`
-	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (injector deadline
-	// exhausted — free-tier routing unavailable until the next agent
-	// restart; #901 G8).
+	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (terminal fetch
+	// failure this attempt — free-tier routing degraded until a re-arm
+	// cycle applies, bounded by the 5m→30m backoff; #901 G8, #910).
 	RelayFreeModels int32 `json:"relay_free_models"`
 	// InFlightDeliveries: the ledger's unresolved delivery count pod-wide
 	// (ledgered + admitted + stalled — the flip gate's drain signal,

@@ -499,7 +499,15 @@ func TestRelayKillFunc_BusyTracker_DefersRestart(t *testing.T) {
 	proc := &mockManagedProcess{}
 	tracker := newSessionStatusTracker()
 	tracker.set("ses_busy", "busy")
-	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil, nil)
+	// Isolation: the deferred restart goroutine holds deferredRestarts
+	// for its life. On context.Background() with a forever-busy tracker
+	// it never releases — the leaked gauge holder then breaks every
+	// later gauge assertion under -count>1 (this file sorts after
+	// relay_rearm_test.go, so count 2+ inherits the leak). Cancelable
+	// ctx + cleanup releases the gauge deterministically at test end.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	kill := relayKillFunc(ctx, nil, proc, tracker, nil, nil)
 	kill()
 	assert.Equal(t, 0, proc.restartCount(),
 		"a busy session (e.g. waiting on a pending question) must not be killed by the relay injector")

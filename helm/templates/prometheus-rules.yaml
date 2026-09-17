@@ -152,8 +152,12 @@ spec:
               A restart-reason marker failed to persist — post-mortem evidence for
               that restart is lost. Check the workspace PVC and agentd logs.
 
-        # #901 G8: relay injector permanently degraded (free-model fetch
-        # deadline exhausted — terminal for this agent generation).
+        # #901 G8: relay injector degraded (free-model fetch terminally
+        # failed in the boot window). #910: the injector re-arms on a
+        # bounded 5m→30m backoff — a transient outage self-heals within
+        # minutes; this firing means watch the re-arm outcomes
+        # (llmsafespaces_rearm_outcome_total) for recovery (success) vs
+        # persistent failure.
         - alert: LLMSafeSpacesRelayInjectorDegraded
           expr: |
             sum(increase(llmsafespaces_relay_injector_total{job=~"{{ $agentdJob }}", outcome=~"fetch_failed|no_free_models"}[10m])) > 0
@@ -164,9 +168,14 @@ spec:
           annotations:
             summary: "Relay injector free-model fetch exhausted"
             description: >-
-              The relay injector gave up fetching free models for this agent
-              generation — free-tier model routing is unavailable until the next
-              agent restart. Check opencode /provider health.
+              The relay injector's boot-window free-model fetch terminally
+              failed — free-tier model routing is degraded and the injector
+              has entered its bounded re-arm loop (retrying every 5–30m;
+              #910). Recovery is automatic once the relay router/catalog
+              answers: watch llmsafespaces_rearm_outcome_total{loop="relay_injector"}
+              for a success tick. If re-arm failures persist for the pod's
+              whole life, check opencode /provider health and the relay
+              router.
 
         {{- /* US-70.3 (#1158 PR-5): a workspace whose secrets delivery is
               divergent for >15m pages — the reconcile loop's backoff
