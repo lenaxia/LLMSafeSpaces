@@ -1678,3 +1678,57 @@ func TestMCPHandler_AutomationFullStack(t *testing.T) {
 	assert.Equal(t, "cron", createdName, "unwrapped flat body reached the delegated bind")
 	assert.Equal(t, "ship it", createdPrompt)
 }
+
+// Every advertised tool must be dispatchable: table over tools/list,
+// each name probed through the real dispatcher. Catches the
+// advertised-but-uncallable class (a tool added to tools/list and the
+// executor but missing from the dispatcher's case list).
+func TestMCPHandler_EveryAdvertisedToolDispatches(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	tools := resp.Result.(map[string]any)["tools"].([]any)
+	require.NotEmpty(t, tools)
+
+	// Valid auth, empty args: every tool must get PAST the dispatcher
+	// (its own arg validation may error — but never "unknown tool").
+	for _, tool := range tools {
+		name := tool.(map[string]any)["name"].(string)
+		_, err := callMCPTool(context.Background(), mcpTestPassword, name, map[string]any{})
+		if err == nil {
+			continue
+		}
+		assert.NotContains(t, err.Error(), "unknown tool", "%s is advertised in tools/list but not dispatchable", name)
+	}
+}
+
+// L1: rotate through the full JSON-RPC surface — the rotated secret
+// must reach the tool response.
+func TestMCPHandler_RotateWebhookSecretFullStack(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"webhookSecret":"whs_l1","webhookUrl":"/api/v1/hooks/11111111-1111-1111-1111-111111111111"}`))
+	}))
+	defer api.Close()
+	setupRenameWorkspaceEnv(t, api)
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "trigger_rotate_webhook_secret",
+		"arguments": map[string]any{"id": "11111111-1111-1111-1111-111111111111"},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 77, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	rr := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, rr)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.Nil(t, result["isError"], "%v", result)
+	content := result["content"].([]any)
+	assert.Contains(t, content[0].(map[string]any)["text"], `"webhookSecret":"whs_l1"`)
+}

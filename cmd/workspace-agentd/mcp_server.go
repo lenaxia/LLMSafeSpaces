@@ -418,6 +418,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		sessionID, _ := args["session_id"].(string)
 		return mcpAbortSession(ctx, password, sessionID)
 	case "trigger_list", "trigger_create", "trigger_update", "trigger_delete", "trigger_fires",
+		"trigger_rotate_webhook_secret",
 		"workflow_list", "workflow_create", "workflow_update", "workflow_delete", "workflow_run", "workflow_runs":
 		return mcpAutomation(ctx, name, args)
 	case "get_datetime":
