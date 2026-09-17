@@ -269,7 +269,13 @@ func normalizeTriggerCreateBody(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
 	}
-	delete(fields, "workspaceID")
+	// Case-INSENSITIVE strip: encoding/json folds any casing of the key
+	// onto the DTO's workspaceId, so every variant must go.
+	for k := range fields {
+		if strings.EqualFold(k, "workspaceID") {
+			delete(fields, k)
+		}
+	}
 	if snake, hasSnake := fields["workflow_id"]; hasSnake {
 		delete(fields, "workflow_id")
 		if _, exists := fields["workflowId"]; !exists {

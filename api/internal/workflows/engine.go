@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	goerrors "errors"
+
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -511,8 +513,15 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
 	if err != nil {
-		// #1412: a missing/deleted target workflow is a FAILURE, never a
+		// #1412: a MISSING/DELETED target workflow is a failure, never a
 		// silent no-op — record the fire, count it toward auto-disable.
+		// A TRANSIENT store error is the platform's problem, not the
+		// trigger's: log it and leave the trigger untouched (counting
+		// outage blips would auto-disable healthy triggers).
+		if !goerrors.Is(err, wf.ErrNotFound) {
+			logger.Error(err, "scheduler: workflow lookup failed", "triggerId", trigger.ID, "workflowId", workflowID)
+			return
+		}
 		errPayload, _ := json.Marshal(map[string]string{"error": "workflow_not_found"})
 		completed := now
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{

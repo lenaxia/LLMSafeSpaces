@@ -697,3 +697,34 @@ func TestWorkflowRun_InputSchemaEnforced(t *testing.T) {
 	})
 	require.Equal(t, 202, w.Code)
 }
+
+// #1413 write-time half: malformed / non-object inputSchemas are
+// rejected at authoring, not at every future run.
+func TestWorkflowCreate_InputSchemaWellFormed(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+	spec := `{"nodes":[{"id":"a","type":"agent","data":{"prompt":"p"}}],"edges":[]}`
+
+	// string-rooted schema: every run would fail — reject at create.
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "bad-schema", "specYaml": spec, "targetWorkspaceId": "ws-1",
+		"inputSchema": map[string]any{"type": "string"},
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "root type must be object")
+
+	// garbage schema: named rejection.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "garbage-schema", "specYaml": spec, "targetWorkspaceId": "ws-1",
+		"inputSchema": map[string]any{"required": "not-an-array"},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid inputSchema")
+
+	// valid object schema: fine.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "ok-schema", "specYaml": spec, "targetWorkspaceId": "ws-1",
+		"inputSchema": map[string]any{"type": "object", "required": []string{"topic"}},
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+}

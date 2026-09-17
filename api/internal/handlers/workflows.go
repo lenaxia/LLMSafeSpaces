@@ -231,6 +231,15 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
+	// #1413 (write-time half): a malformed or non-object inputSchema
+	// would make EVERY future run 400 — reject it at authoring time.
+	if len(req.InputSchema) > 0 {
+		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
+			return
+		}
+	}
+
 	var defaults wf.DefaultsBlock
 	if len(req.Defaults) > 0 {
 		if err := json.Unmarshal(req.Defaults, &defaults); err != nil {
@@ -363,6 +372,15 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 			return
 		}
+		// #1413 (write-time half): a malformed or non-object inputSchema
+		// would make EVERY future run 400 — reject it at authoring time.
+		if len(req.InputSchema) > 0 {
+			if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
+				return
+			}
+		}
+
 		var defaults wf.DefaultsBlock
 		if len(req.Defaults) > 0 {
 			_ = json.Unmarshal(req.Defaults, &defaults)
@@ -598,6 +616,39 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 	c.JSON(http.StatusAccepted, workflowRunRowToResponse(run))
 }
 
+const maxSchemaCauses = 10
+
+// validateInputSchemaDeclarable ensures a declared inputSchema compiles
+// and is object-rooted (run inputs are JSON objects; a string-rooted
+// schema would reject every run).
+func validateInputSchemaDeclarable(schemaJSON json.RawMessage) error {
+	var schemaDoc any
+	if err := json.Unmarshal(schemaJSON, &schemaDoc); err != nil {
+		return fmt.Errorf("not valid JSON: %v", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("inputSchema.json", schemaDoc); err != nil {
+		return err
+	}
+	sch, err := compiler.Compile("inputSchema.json")
+	if err != nil {
+		return fmt.Errorf("does not compile: %v", err)
+	}
+	if !sch.Types.IsEmpty() {
+		kinds := sch.Types.ToStrings()
+		objectRooted := false
+		for _, k := range kinds {
+			if k == "object" {
+				objectRooted = true
+			}
+		}
+		if !objectRooted {
+			return fmt.Errorf("root type must be object (got %v)", kinds)
+		}
+	}
+	return nil
+}
+
 // validateInputAgainstSchema checks run input against the workflow's
 // declared inputSchema (draft 2020-12 / any resolved dialect).
 func validateInputAgainstSchema(input json.RawMessage, schemaJSON json.RawMessage) error {
@@ -627,6 +678,9 @@ func validateInputAgainstSchema(input json.RawMessage, schemaJSON json.RawMessag
 				if u.Error != nil {
 					causes = append(causes, u.Error.String())
 				}
+			}
+			if len(causes) > maxSchemaCauses {
+				causes = append(causes[:maxSchemaCauses], fmt.Sprintf("(+ %d more)", len(causes)-maxSchemaCauses))
 			}
 			if len(causes) > 0 {
 				return fmt.Errorf("%s", strings.Join(causes, "; "))
