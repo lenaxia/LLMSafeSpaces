@@ -1693,3 +1693,25 @@ func TestUS70Gvisor_VerifyBeforeExtractAndInstall(t *testing.T) {
 		t.Fatalf("ordering violated: verify=%d extract=%d install=%d — verification must precede extraction and installation", verify, extract, install)
 	}
 }
+
+// TestUS70GvisorBundle_InstallsSidecarTree: the release bundle's runsc
+// runs with --sidecar-usage-policy STRICT — sandbox creation requires
+// the staged gvisor_sentry at /usr/local/bin/gvisor-bin/ (pool run
+// 35169738298: "sidecar gvisor_sentry not usable ... no such file or
+// directory" — every gVisor pod sandbox failed, AC-13 wedged). The
+// provisioning must extract and install the bundle's gvisor-bin tree,
+// not just the two top-level binaries.
+func TestUS70GvisorBundle_InstallsSidecarTree(t *testing.T) {
+	src := mustRead(t, us70GvisorScript)
+	extract := strings.Index(src, "tar --zstd -xf")
+	if extract < 0 {
+		t.Fatal("bundle extraction not found")
+	}
+	window := src[extract:min(extract+600, len(src))]
+	if !strings.Contains(window, "gvisor-bin") {
+		t.Fatal("the tar extraction must include the gvisor-bin sidecar tree (pool 35169738298: sandbox create failed - gvisor_sentry not usable under STRICT policy)")
+	}
+	if !strings.Contains(src, "/usr/local/bin/gvisor-bin") {
+		t.Fatal("the sidecar tree must be installed under /usr/local/bin/gvisor-bin (the STRICT policy lookup path)")
+	}
+}
