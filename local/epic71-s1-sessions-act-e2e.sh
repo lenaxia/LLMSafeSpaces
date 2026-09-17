@@ -296,7 +296,30 @@ S1B_SEND_RAW=$(mktemp)
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/message" 2>/dev/null || echo 000) \
     ; { echo "${S1B_CODE}"; head -c 400 "${S1B_SEND_RAW}" 2>/dev/null || true; } >"${S1B_SEND_LOG}") &
 S1B_SEND_PID=$!
-sleep 5 # let the turn start (registry/pod round trips done, mock sleeping)
+
+# ENGAGEMENT gate: the abort row is only meaningful against a turn that
+# is actually IN flight. Two prior dispatches died on a harness-restart
+# window that opens right here (opencode unhealthy ~60s after the
+# self-check; the send then completes in ~2s on a just-recovered harness
+# and in-flight=0 was a mystery until the reply's createdAt decoded the
+# timeline). Wait until the send is PROVABLY in flight — log absent
+# after ≥8s — or name the engagement failure loudly with the reply body.
+S1B_ENGAGED=0
+S1B_ROW_T0=$(date +%s)
+for _eng in $(seq 1 15); do
+    if [[ -f "${S1B_SEND_LOG}" ]]; then
+        break
+    fi
+    if [[ ${_eng} -ge 4 ]]; then
+        S1B_ENGAGED=1; break
+    fi
+    sleep 2
+done
+if [[ ${S1B_ENGAGED} != 1 ]]; then
+    note_fail "S1b pre-abort: the slow turn never engaged (send completed in $(( $(date +%s) - S1B_T0 ))s-class window; reply='$(head -c 200 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' — harness restart or provider override not honored; preempt semantics untestable this pass)"
+    wait "${S1B_SEND_PID}" 2>/dev/null || true
+else
+    ok "S1b slow turn engaged (send pending ≥8s)"
 
 S1B_T0=$(date +%s)
 S1B_ABORT=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/abort" '' )
@@ -348,6 +371,7 @@ if [[ ${S1B_SETTLED} == 1 ]]; then
 else
     note_fail "S1b session still '${S1B_SEEN}' after ${S1B_IDLE_BUDGET_S}s (wedged-busy class); harness=$(agent_field "${S1_POD}" "${S1_PW}" "${S1_SID}" '.status' | head -c 120)"
 fi
+fi # end S1B_ENGAGED else-branch (abort + settle only run against a proved-in-flight turn)
 
 # --- S1c: rename through Act -----------------------------------------------
 log "S1c: title rename lands agent-side (the PATCH rides the actor)"

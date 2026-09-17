@@ -862,7 +862,7 @@ func ParseSessionWire(body []byte, workspaceID string) (*session.Session, error)
 // bytes in both regimes.
 func ParseMessageWire(body []byte) (session.Message, []string, error) {
 	var m ocMessage
-	if err := json.Unmarshal(body, &m); err != nil {
+	if err := decodeStrict(bytes.NewReader(body), &m); err != nil {
 		return session.Message{}, nil, fmt.Errorf("opencode message: parse: %w", err)
 	}
 	msg, files := translateMessage(m)
