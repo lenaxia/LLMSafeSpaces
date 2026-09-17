@@ -241,7 +241,8 @@ func TestDrainWiringThroughServeBYO(t *testing.T) {
 	require.NoError(t, err)
 	go func() {
 		// The PRODUCTION drain path (serveBYOOn is serveBYO's body —
-		// listener injected) — deleting the drain block fails this test.
+		// listener injected). Drain semantics (in-flight completion) AND
+		// drain effect (listener closed) are both pinned below.
 		serveErr <- serveBYOOn(ctx, cfg, rig.svc, ln)
 	}()
 	addr := ln.Addr().String()
@@ -276,4 +277,10 @@ func TestDrainWiringThroughServeBYO(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("serveBYO never returned after drain")
 	}
+
+	// The distinguishing assertion: Shutdown CLOSES the listener. A
+	// deleted drain block returns nil while the abandoned server keeps
+	// serving — dialing would succeed; after a real drain it must not.
+	_, dialErr := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	require.Error(t, dialErr, "listener must be closed after drain")
 }
