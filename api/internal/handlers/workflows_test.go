@@ -89,6 +89,9 @@ func (m *mockWorkflowStore) UpdateWorkflow(_ context.Context, ownerType, ownerID
 	if upd.SpecYAML != nil {
 		r.SpecYAML = *upd.SpecYAML
 	}
+	if upd.InputSchema != nil {
+		r.InputSchema = upd.InputSchema
+	}
 	if upd.TargetWorkspaceID != nil {
 		if *upd.TargetWorkspaceID == "" {
 			r.TargetWorkspaceID = nil
@@ -713,6 +716,158 @@ func TestWorkflowCreate_MalformedInputSchemaRejected(t *testing.T) {
 	})
 	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "inputSchema")
+}
+
+// --- #1433: the inputSchema write gate must require object-rooted schemas ---
+
+// validObjectRootedInputSchema is a schema a run input can actually satisfy.
+const validObjectRootedInputSchema = `{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`
+
+const minimalValidWorkflowSpec = `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
+
+// Non-object-rooted schemas COMPILE — the #1413 gate let them through —
+// but a run input is always a JSON object, so every subsequent run 400s
+// with "got string, want object". The create path must reject them.
+func TestWorkflowCreate_NonObjectRootedInputSchemaRejected(t *testing.T) {
+	for _, schema := range []string{
+		`{"type":"string"}`,
+		`{"type":"number"}`,
+		`{"type":"array","items":{"type":"string"}}`,
+	} {
+		store := newMockWorkflowStore()
+		r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+		w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+			"name":        "non-object-rooted",
+			"specYaml":    minimalValidWorkflowSpec,
+			"inputSchema": json.RawMessage(schema),
+		})
+		require.Equal(t, http.StatusBadRequest, w.Code, "schema %s: body: %s", schema, w.Body.String())
+		assert.Contains(t, w.Body.String(), "inputSchema")
+		assert.Nil(t, store.lastCreated, "no row may be stored for a schema no run input can satisfy")
+	}
+}
+
+func TestWorkflowCreate_ObjectRootedInputSchemaAccepted(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":        "valid-schema",
+		"specYaml":    minimalValidWorkflowSpec,
+		"inputSchema": json.RawMessage(validObjectRootedInputSchema),
+	})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastCreated)
+	assert.Equal(t, json.RawMessage(validObjectRootedInputSchema), store.lastCreated.InputSchema)
+}
+
+// Explicit JSON null at write time means schema-less — the same as an
+// absent field. It must NOT 400 (pre-#1433 it died on compilation: a
+// null document is not a valid JSON Schema), and nothing schema-like is
+// stored for the row.
+func TestWorkflowCreate_NullInputSchemaIsSchemaLess(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":        "null-schema",
+		"specYaml":    minimalValidWorkflowSpec,
+		"inputSchema": nil,
+	})
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastCreated)
+	assert.Empty(t, store.lastCreated.InputSchema, "explicit null normalizes to an absent schema")
+}
+
+// The update path (schema-only PATCH included) shares the gate.
+func TestWorkflowUpdate_NonObjectRootedInputSchemaRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		schema     any // json.RawMessage embeds verbatim; string marshals as a JSON string (garbage convention, see malformed-create test)
+		wantSubstr string
+	}{
+		{"string-rooted", json.RawMessage(`{"type":"string"}`), "inputSchema"},
+		{"garbage", `{"type":"object",`, "inputSchema"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMockWorkflowStore()
+			store.workflows["wf-s"] = &wf.WorkflowRow{
+				ID: "wf-s", OwnerType: "user", OwnerID: "test-user",
+				Name: "test", Slug: "test", Status: "draft",
+				SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+				InputSchema: json.RawMessage(validObjectRootedInputSchema),
+			}
+			r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+			w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-s", map[string]any{
+				"inputSchema": tc.schema,
+			})
+			require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+			assert.Contains(t, w.Body.String(), tc.wantSubstr)
+			// The stored schema survives a rejected patch untouched.
+			assert.Equal(t, json.RawMessage(validObjectRootedInputSchema), store.workflows["wf-s"].InputSchema)
+		})
+	}
+}
+
+func TestWorkflowUpdate_ObjectRootedInputSchemaReplaces(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-r"] = &wf.WorkflowRow{
+		ID: "wf-r", OwnerType: "user", OwnerID: "test-user",
+		Name: "test", Slug: "test", Status: "draft",
+		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"old":{"type":"string"}}}`),
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-r", map[string]any{
+		"inputSchema": json.RawMessage(validObjectRootedInputSchema),
+	})
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, json.RawMessage(validObjectRootedInputSchema), store.workflows["wf-r"].InputSchema)
+}
+
+// A schema-only PATCH carrying an explicit JSON null must not 400 — and
+// "null is schema-less, same as absent" means it keeps the stored schema
+// rather than clearing it (absent fields keep existing on PATCH).
+func TestWorkflowUpdate_NullInputSchemaKeepsExisting(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-n"] = &wf.WorkflowRow{
+		ID: "wf-n", OwnerType: "user", OwnerID: "test-user",
+		Name: "test", Slug: "test", Status: "draft",
+		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+		InputSchema: json.RawMessage(validObjectRootedInputSchema),
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-n", map[string]any{
+		"inputSchema": nil,
+	})
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, json.RawMessage(validObjectRootedInputSchema), store.workflows["wf-n"].InputSchema,
+		"explicit null behaves exactly like an omitted field: keep existing")
+}
+
+// A stored row whose input_schema column holds the JSON literal null
+// (jsonb 'null', not SQL NULL — e.g. written before #1433's write-time
+// normalization) must behave schema-less at run time, not 400 every run.
+func TestWorkflowRun_NullStoredInputSchemaRowIsSchemaLess(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-nullrow"] = &wf.WorkflowRow{
+		ID: "wf-nullrow", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		TargetWorkspaceID: &target,
+		InputSchema:       json.RawMessage(`null`),
+	}
+	r := setupWorkflowRunRouter(store)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-nullrow/runs", map[string]any{
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.Equal(t, http.StatusAccepted, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastRun, "a schema-less row must still queue runs")
+	assert.Equal(t, types.RunStatusQueued, store.lastRun.Status)
 }
 
 func TestWorkflowCreate_YAMLSpec(t *testing.T) {

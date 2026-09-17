@@ -265,8 +265,10 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
-	// A declared inputSchema must at least compile (#1413) — a malformed
-	// schema would otherwise turn every run into a validation error.
+	// A declared inputSchema must compile AND root at type "object"
+	// (#1413/#1433) — a string-rooted schema compiles but no run input
+	// can ever satisfy it, so every subsequent run would 400. An
+	// explicit JSON null means schema-less, same as an absent field.
 	if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -297,7 +299,10 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		ID: uuid.New().String(), OwnerType: ownerType, OwnerID: ownerID,
 		Name: req.Name, Slug: slug, Description: req.Description,
 		SpecYAML: req.SpecYAML, SpecJSON: validatedJSON,
-		InputSchema: req.InputSchema, TargetWorkspaceID: targetWS,
+		// Null normalizes to absent (#1433): a literal jsonb null row is
+		// never written; schema-less is schema-less.
+		InputSchema:        wf.NormalizeInputSchema(req.InputSchema),
+		TargetWorkspaceID:  targetWS,
 		OnMissingWorkspace: onMissing,
 		Status:             status, Defaults: req.Defaults,
 		CreatedAt: now, UpdatedAt: now,
@@ -340,7 +345,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 
 	upd := &wf.WorkflowUpdate{
 		Name: req.Name, Slug: req.Slug, Description: req.Description,
-		SpecYAML: req.SpecYAML, InputSchema: req.InputSchema,
+		SpecYAML: req.SpecYAML,
+		// The DTO's InputSchema is a non-pointer RawMessage, so an
+		// explicit JSON null binds to the raw bytes "null" — collapse it
+		// to absent so the store keeps the existing schema, exactly like
+		// an omitted field (#1433).
+		InputSchema:       wf.NormalizeInputSchema(req.InputSchema),
 		TargetWorkspaceID: req.TargetWorkspaceID, OnMissingWorkspace: req.OnMissingWorkspace,
 		Status: req.Status, Defaults: req.Defaults,
 	}
@@ -370,6 +380,8 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 		}
 	}
 	if req.InputSchema != nil {
+		// Non-nil covers the null literal too ("null" bytes, #1433) —
+		// ValidateInputSchema itself treats it as schema-less.
 		if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
