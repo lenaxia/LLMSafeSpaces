@@ -742,6 +742,12 @@ func TestWorkflowUpdate_YAMLSpec(t *testing.T) {
 	})
 	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "wf-y1")
+	// Storage contract: the caller's dialect is kept VERBATIM in
+	// specYaml; the normalized canonical form lands in the SpecJSON
+	// column run-time consumers read.
+	updated := store.workflows["wf-y1"]
+	assert.Contains(t, updated.SpecYAML, "nodes:", "caller dialect kept verbatim")
+	assert.Contains(t, string(updated.SpecJSON), `"prompt":"hi"`, "normalized JSON spec column")
 }
 
 // Update-path unhappy legs: multi-doc and malformed-second-doc YAML are
