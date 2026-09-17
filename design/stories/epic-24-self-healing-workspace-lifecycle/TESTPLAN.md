@@ -285,6 +285,11 @@ TestMetrics_ControllerRestarts_Increments
 TestMetrics_SafeModeEntries_Increments
 ```
 
+> #760 (2026-09-16): the SafeMode entries/active/exits metrics and their
+> tests above were deleted with the SafeMode machinery — superseded by the
+> `WorkspaceRecoveryExhaustedTotal` counter tests in
+> `controller/internal/workspace/recovery_exhaustion_test.go`.
+
 ---
 
 ## Integration Tests (envtest)

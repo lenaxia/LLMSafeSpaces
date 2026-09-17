@@ -144,7 +144,6 @@ Controller-owned except where noted. Each field has exactly one writer (US-23.3 
 | `nextRetryAt` | *metav1.Time | controller | Recovery backoff expiry. |
 | `lastStableAt` | *metav1.Time | controller | Stability window anchor. |
 | `controllerRestartCount` | int32 | controller | Health-check-driven restarts. |
-| `safeMode` | bool | controller | Recovery-exhausted flag. |
 | `observedRestartGeneration` | int64 | controller | Last acted-upon `restartGeneration`. |
 | `credentialSecretHash` | string | controller | Hash of the credential Secret for drift detection. |
 | `lastHealthCheckAt` | *metav1.Time | controller | |

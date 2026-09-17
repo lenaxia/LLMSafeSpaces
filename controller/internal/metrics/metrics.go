@@ -22,12 +22,19 @@ var (
 		prometheus.GaugeOpts{Name: "llmsafespaces_workspaces_running", Help: "Workspaces currently in Active phase"},
 		[]string{"runtime", "security_level"},
 	)
-	WorkspacesFailedTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspaces_failed_total", Help: "Workspaces entering SafeMode, by failure class (incremented once per episode on the failure that trips SafeMode)"},
-		[]string{"reason"},
-	)
 	WorkspaceRecoveryAttemptsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_recovery_attempts_total", Help: "Recovery state-machine entries by failure class"},
+		[]string{"failure_class"},
+	)
+	// #760: recovery episodes that crossed the per-class exhaustion
+	// threshold. Incremented once per episode (on the crossing), labeled
+	// by failure class — the alertable replacement for the retired
+	// SafeMode funnel. A non-zero rate means a workspace is stuck in a
+	// failure loop that will not self-heal (the Longhorn silent-loop
+	// class, which previously produced no signal at all);
+	// spec.suspend=true halts it.
+	WorkspaceRecoveryExhaustedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_recovery_exhausted_total", Help: "Recovery episodes that crossed the per-class consecutive-failure exhaustion threshold (#760), by failure class. Once per episode, on the crossing"},
 		[]string{"failure_class"},
 	)
 	WorkspaceRecoverySuccessTotal = prometheus.NewCounterVec(
@@ -41,17 +48,6 @@ var (
 			Buckets: []float64{5, 15, 30, 60, 120, 300, 600, 1800},
 		},
 		[]string{"failure_class"},
-	)
-	WorkspaceSafeModeActive = prometheus.NewGauge(
-		prometheus.GaugeOpts{Name: "llmsafespaces_workspace_safe_mode_active", Help: "Count of workspaces currently in SafeMode (aggregate, no per-workspace label per F18)"},
-	)
-	WorkspaceSafeModeEntriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspace_safe_mode_entries_total", Help: "Total entries into SafeMode, labeled by trigger"},
-		[]string{"trigger"},
-	)
-	WorkspaceSafeModeExitsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspace_safe_mode_exits_total", Help: "Total exits from SafeMode, labeled by method"},
-		[]string{"method"},
 	)
 	WorkspaceControllerRestartsTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_controller_restarts_total", Help: "Pod restarts initiated by the controller's health-check loop (distinct from user-initiated RestartGeneration bumps)"},
@@ -239,10 +235,10 @@ func collectors() []prometheus.Collector {
 // AllCollectors returns all registered metric collectors. Exported for testing.
 func AllCollectors() []prometheus.Collector {
 	return []prometheus.Collector{
-		WorkspacesCreatedTotal, WorkspacesDeletedTotal, WorkspacesRunning, WorkspacesFailedTotal,
+		WorkspacesCreatedTotal, WorkspacesDeletedTotal, WorkspacesRunning,
 		WorkspaceRecoveryAttemptsTotal, WorkspaceRecoverySuccessTotal,
+		WorkspaceRecoveryExhaustedTotal,
 		WorkspaceRecoveryBackoffDurationSeconds,
-		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
 		WorkspaceDrainDeferredTotal, WorkspaceDrainForcedTotal, WorkspaceDrainFailedOpenTotal,
 		WorkspaceAgentdVerifyFailuresTotal,

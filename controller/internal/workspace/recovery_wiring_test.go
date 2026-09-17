@@ -97,7 +97,9 @@ func TestRestartGeneration_InCreating_BypassesBackoff(t *testing.T) {
 	ws.Spec.RestartGeneration = 2
 	ws.Status.ObservedRestartGeneration = 1
 	ws.Status.ConsecutiveFailures = 5
-	ws.Status.SafeMode = true
+	ws.Status.Conditions = append(ws.Status.Conditions, v1.WorkspaceCondition{
+		Type: v1.WorkspaceConditionRecoveryExhausted, Status: "True", Reason: v1.ReasonRecoveryExhausted,
+	})
 	future := metav1.NewTime(time.Now().Add(5 * time.Minute))
 	ws.Status.NextRetryAt = &future
 
@@ -116,7 +118,8 @@ func TestRestartGeneration_InCreating_BypassesBackoff(t *testing.T) {
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-restart", Namespace: "default"}, updated))
 	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures)
 	assert.Nil(t, updated.Status.NextRetryAt)
-	assert.False(t, updated.Status.SafeMode)
+	assert.Nil(t, recoveryExhaustedCondition(updated),
+		"restartGeneration bump must clear the RecoveryExhausted condition with the rest of the recovery state")
 	assert.Equal(t, int64(2), updated.Status.ObservedRestartGeneration)
 	assert.NotEmpty(t, updated.Status.PodName, "pod should be created after restartGeneration bypass")
 }

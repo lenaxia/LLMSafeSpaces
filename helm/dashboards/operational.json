@@ -302,13 +302,13 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "llmsafespaces_workspace_safe_mode_active{job=~\"__LLMSAFESPACES_CTRL_JOB__\"}",
+          "expr": "sum(increase(llmsafespaces_workspace_recovery_exhausted_total{job=~\"__LLMSAFESPACES_CTRL_JOB__\"}[1h]))",
           "refId": "A"
         }
       ],
-      "title": "Safe Mode Workspaces",
+      "title": "Recovery-Exhausted Episodes (1h)",
       "type": "stat",
-      "description": "Workspaces in Safe Mode (repeated failure, awaiting manual intervention). Any non-zero value requires operator action — affected workspaces will NOT auto-recover. Action: investigate the failing workspace, fix root cause, manually clear safe mode."
+      "description": "Recovery episodes that crossed their per-class exhaustion threshold (#760). Retries continue under backoff — the workspace will NOT auto-heal. Action: investigate the failing workspace's RecoveryExhausted condition/event, fix the root cause, or suspend (spec.suspend=true) to halt the loop."
     },
     {
       "datasource": {
@@ -1040,14 +1040,14 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(increase(llmsafespaces_workspaces_failed_total{job=~\"__LLMSAFESPACES_CTRL_JOB__\"}[$__rate_interval])) by (reason)",
-          "legendFormat": "failed: {{reason}}",
+          "expr": "sum(increase(llmsafespaces_workspace_recovery_exhausted_total{job=~\"__LLMSAFESPACES_CTRL_JOB__\"}[$__rate_interval])) by (failure_class)",
+          "legendFormat": "exhausted: {{failure_class}}",
           "refId": "B"
         }
       ],
       "title": "Workspace Failure & Restart Rate",
       "type": "timeseries",
-      "description": "Rate of workspaces entering Failed or re-entering Creating (restart loops). Non-zero is CRITICAL. Action: investigate why workspaces are failing — check Recovery Attempts vs Success panel, examine controller logs for phase handler errors. reason label on failed_total identifies OOM, crash, eviction, etc."
+      "description": "Rate of workspaces re-entering Creating (restart loops) and recovery episodes crossing their exhaustion threshold (#760). Non-zero exhausted is CRITICAL. Action: investigate why workspaces are failing — check Recovery Attempts vs Success panel, examine controller logs for phase handler errors. failure_class label on exhausted_total identifies Infrastructure, Resource, Process, or Configuration loops; suspend (spec.suspend=true) halts a loop."
     },
     {
       "collapsed": false,

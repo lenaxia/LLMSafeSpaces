@@ -292,6 +292,15 @@ const (
 	// it applies on the next idle transition or a stalled-session
 	// interrupt — never a fixed wall clock.
 	WorkspaceConditionCredentialsApplyPending WorkspaceConditionType = "CredentialsApplyPending"
+	// WorkspaceConditionRecoveryExhausted reports that the workspace's
+	// recovery loop crossed the per-class consecutive-failure threshold
+	// (#760): backoff retries continue, but the failure is not
+	// self-healing and needs operator attention. Derived from
+	// ConsecutiveFailures — set on the threshold crossing, cleared
+	// wherever the recovery counters reset (2-minute stability window,
+	// restartGeneration bump, suspend, Failed-phase self-heal). The
+	// operator remedy is spec.suspend=true (#699), which halts the loop.
+	WorkspaceConditionRecoveryExhausted WorkspaceConditionType = "RecoveryExhausted"
 )
 
 const (
@@ -305,6 +314,10 @@ const (
 	// condition's reason (#1342): the restart that would apply the
 	// staged credential change is waiting for busy sessions.
 	ReasonCredentialsApplyDeferred = "CredentialsApplyDeferred"
+	// ReasonRecoveryExhausted is the RecoveryExhausted condition's
+	// reason and its warning-event reason (#760): consecutive failures
+	// crossed the class's exhaustion threshold.
+	ReasonRecoveryExhausted = "RecoveryExhausted"
 )
 
 const (
@@ -411,7 +424,6 @@ type WorkspaceStatus struct {
 	NextRetryAt               *metav1.Time `json:"nextRetryAt,omitempty"`
 	LastStableAt              *metav1.Time `json:"lastStableAt,omitempty"`
 	ControllerRestartCount    int32        `json:"controllerRestartCount,omitempty"`
-	SafeMode                  bool         `json:"safeMode,omitempty"`
 	ObservedRestartGeneration int64        `json:"observedRestartGeneration,omitempty"`
 	CredentialSecretHash      string       `json:"credentialSecretHash,omitempty"`
 	LastHealthCheckAt         *metav1.Time `json:"lastHealthCheckAt,omitempty"`

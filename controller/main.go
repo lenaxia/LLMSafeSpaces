@@ -461,19 +461,15 @@ func (s *workspaceGaugeSeeder) Start(ctx context.Context) error {
 	}
 	counts := map[[2]string]int{}
 	inRecovery := 0
-	inSafeMode := 0
 	for _, ws := range wsList.Items {
 		if ws.Status.Phase == v1.WorkspacePhaseActive {
 			runtime := ws.Spec.Runtime
 			secLevel := string(ws.Spec.SecurityLevel)
 			counts[[2]string{runtime, secLevel}]++
 		}
-		// US-24.11: seed recovery + safe-mode gauges so they survive controller restart.
+		// US-24.11: seed the recovery gauge so it survives controller restart.
 		if ws.Status.ConsecutiveFailures > 0 && ws.Status.Phase != v1.WorkspacePhaseActive {
 			inRecovery++
-		}
-		if ws.Status.SafeMode {
-			inSafeMode++
 		}
 	}
 	for k, n := range counts {
@@ -481,9 +477,8 @@ func (s *workspaceGaugeSeeder) Start(ctx context.Context) error {
 		logger.Info("seeded WorkspacesRunning gauge", "runtime", k[0], "security_level", k[1], "count", n)
 	}
 	metrics.WorkspacesInRecovery.Set(float64(inRecovery))
-	metrics.WorkspaceSafeModeActive.Set(float64(inSafeMode))
-	if inRecovery > 0 || inSafeMode > 0 {
-		logger.Info("seeded recovery gauges", "in_recovery", inRecovery, "in_safe_mode", inSafeMode)
+	if inRecovery > 0 {
+		logger.Info("seeded recovery gauges", "in_recovery", inRecovery)
 	}
 	return nil
 }

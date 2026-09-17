@@ -144,42 +144,50 @@ When a pod dies (crash, OOM, node loss), the controller doesn't just blindly rec
 flowchart TD
     DEATH["Pod death detected<br/>(health check fail / pod Failed)"]
     DEATH --> CLASS{Classify failure}
-    CLASS -->|kubelet/PVC/image pull| INF["Infrastructure<br/>MaxAttempts: 0<br/>backoff 5s→2m"]
-    CLASS -->|resource limits| RES["Resource<br/>SafeModeAfter: 6<br/>backoff 10s→5m"]
-    CLASS -->|opencode exit| PRC["Process<br/>SafeModeAfter: 6<br/>backoff 10s→5m"]
-    CLASS -->|bad config / secret| CFG["Configuration<br/>SafeModeAfter: 3<br/>backoff 30s→5m"]
+    CLASS -->|kubelet/PVC/image pull| INF["Infrastructure<br/>exhaustion: 10<br/>backoff 5s→2m"]
+    CLASS -->|resource limits| RES["Resource<br/>exhaustion: 6<br/>backoff 10s→5m"]
+    CLASS -->|opencode exit| PRC["Process<br/>exhaustion: 6<br/>backoff 10s→5m"]
+    CLASS -->|bad config / secret| CFG["Configuration<br/>exhaustion: 3<br/>backoff 30s→5m"]
     INF --> REC[enterRecovery]
     RES --> REC
     PRC --> REC
     CFG --> REC
     REC --> BK["ConsecutiveFailures++<br/>NextRetryAt = now + backoff<br/>Phase → Creating"]
-    BK --> WAIT{Stable for 2m?}
-    WAIT -->|yes| RESET[Reset counters]
-    WAIT -->|no| BK2[Requeue after backoff]
+    BK --> EXH{Crossed class threshold?}
+    EXH -->|yes, first time| SIG["RecoveryExhausted condition<br/>+ warning Event + counter"]
+    EXH -->|no / already flagged| BK2[Requeue after backoff]
+    SIG --> BK2
+    BK2 --> WAIT{Stable for 2m?}
+    WAIT -->|yes| RESET[Reset counters<br/>clear condition]
+    WAIT -->|no| BK2
     BK2 --> RETRY[Re-create pod]
 ```
 
 The four failure classes and their policies:
 
-| Class | Examples | Backoff base / max / factor | Safe mode after |
+| Class | Examples | Backoff base / max / factor | Exhaustion threshold |
 |---|---|---|---|
-| `Infrastructure` | kubelet unreachable, PVC bind, image pull | 5s / 2m / 2x | 0 (never safe-modes) |
+| `Infrastructure` | kubelet unreachable, PVC bind, image pull | 5s / 2m / 2x | 10 failures |
 | `Resource` | OOM, CPU exhaustion | 10s / 5m / 2x | 6 failures |
 | `Process` | opencode panic, exit non-zero | 10s / 5m / 2x | 6 failures |
 | `Configuration` | bad secret, invalid config | 30s / 5m / 2x | 3 failures |
 
-`MaxAttempts: 0` means no hard cap on retries — the controller backs off exponentially and will keep trying, but safe mode kicks in for repeated same-class failures.
+`MaxAttempts: 0` means no hard cap on retries — the controller backs off exponentially and will keep trying. There is no behavioral gate: nothing halts reconciliation. The operator's halt is `spec.suspend: true` (#699).
 
-### Safe mode
+### Recovery exhaustion (#760)
 
-When `ConsecutiveFailures` hits the class threshold, the workspace enters **safe mode** (`status.safeMode: true`, `SafeMode` condition). Safe mode is a signal to operators and the frontend that something is wrong; it doesn't change reconciliation behavior directly. Safe mode exits when:
+When `ConsecutiveFailures` crosses the class's exhaustion threshold, the workspace is flagged **recovery exhausted**: a `RecoveryExhausted` condition, a Kubernetes warning Event (`ReasonRecoveryExhausted`), and one increment of `WorkspaceRecoveryExhaustedTotal{failure_class}` — all fired once, on the crossing. This is a derived signal, not a mode: backoff retries continue, and the condition clears wherever the recovery counters reset:
 
-- The workspace stabilizes (2 minutes of health → counters reset), or
-- The workspace is terminated (`SafeModeExitsTotal{reason="termination"}`).
+- 2 minutes of stability (`maybeResetConsecutiveFailures`),
+- a `restartGeneration` bump (the user-initiated retry),
+- suspend, or
+- the workspace entering the terminal Failed path.
+
+Every class carries a non-zero threshold. `Infrastructure` gets 10 (vs 6 for Resource/Process) because infra failures back off faster (5s base → 2m cap): 10 failures span roughly 12 minutes of retries, long enough to ride out transient kubelet/PVC hiccups while still escalating the silent permanent loops (the Longhorn case that previously retried forever with no signal at all). A per-class threshold of `0` disables the signal for that class — no shipped class uses it.
 
 ### Counter reset
 
-After 2 minutes of stability (`maybeResetConsecutiveFailures`), the controller clears `ConsecutiveFailures`, `LastFailureClass`, `LastFailureAt`, `NextRetryAt`, `LastStableAt`, and `ControllerRestartCount`. This prevents a workspace that had one bad day from carrying recovery baggage forever. The guard checks **both** `ConsecutiveFailures` and `ControllerRestartCount` because a health-check restart bumps the latter without touching the former (worklog 0372 C1).
+After 2 minutes of stability (`maybeResetConsecutiveFailures`), the controller clears `ConsecutiveFailures`, `LastFailureClass`, `LastFailureAt`, `NextRetryAt`, `LastStableAt`, the derived `RecoveryExhausted` condition, and `ControllerRestartCount`. This prevents a workspace that had one bad day from carrying recovery baggage forever. The guard checks **both** `ConsecutiveFailures` and `ControllerRestartCount` because a health-check restart bumps the latter without touching the former (worklog 0372 C1).
 
 ### Transient pod loss
 

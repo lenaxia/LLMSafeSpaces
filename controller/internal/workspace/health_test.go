@@ -551,9 +551,8 @@ func TestRemoveCondition(t *testing.T) {
 			},
 		},
 	}
-	r := reconcilerFor(t)
 
-	r.removeCondition(ws, v1.WorkspaceConditionPodRunning)
+	removeCondition(ws, v1.WorkspaceConditionPodRunning)
 
 	assert.Len(t, ws.Status.Conditions, 2)
 	for _, c := range ws.Status.Conditions {
@@ -569,9 +568,8 @@ func TestRemoveCondition_NotPresent(t *testing.T) {
 			},
 		},
 	}
-	r := reconcilerFor(t)
 
-	r.removeCondition(ws, v1.WorkspaceConditionPodRunning)
+	removeCondition(ws, v1.WorkspaceConditionPodRunning)
 
 	assert.Len(t, ws.Status.Conditions, 1)
 }

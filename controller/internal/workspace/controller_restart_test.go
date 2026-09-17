@@ -76,7 +76,7 @@ func TestMaybeResetConsecutiveFailures_ControllerRestartCountOnly_NilLastStableA
 	assert.Equal(t, int32(3), ws.Status.ControllerRestartCount, "must not reset on the clock-starting reconcile")
 }
 
-// --- C4 + M6 + C5: health-check restart increments, safe-mode trigger, metrics. ---
+// --- C4 + C5: health-check restart increments and metrics. ---
 //
 // The shared harness wires an httptest health endpoint, overrides the
 // controller's package-level port/interval vars, and stands up a reconciler
@@ -179,33 +179,18 @@ func TestControllerRestart_EmitsControllerRestartsMetric(t *testing.T) {
 	assert.Greater(t, after, before, "WorkspaceControllerRestartsTotal must increment on health-check restart")
 }
 
-// TestControllerRestart_6Consecutive_TriggersSafeMode (US-24.7 AC 3 / US-24.13 entry trigger 2)
-func TestControllerRestart_6Consecutive_TriggersSafeMode(t *testing.T) {
-	ws := activeWorkspaceForHealthCheck("ws-cr-safemode")
-	ws.Status.ControllerRestartCount = 5 // one more restart → 6 → exceeds threshold
-	r, _ := setupUnhealthyHealthReconciler(t, ws)
+// --- C4 + M6: health-check restarts no longer escalate to a SafeMode
+// signal (retired by #760). The persistent-unreachability escalation
+// path now only exists for classified failure episodes
+// (enterRecovery); health-check restarts bump the counters and the
+// recovery-exhaustion coverage lives in recovery_exhaustion_test.go. ---
 
-	entriesBefore := readCounterValue(t, ctrMetrics.WorkspaceSafeModeEntriesTotal.WithLabelValues("controller_restart"))
-	activeBefore := readPlainGaugeValue(t, ctrMetrics.WorkspaceSafeModeActive)
-
-	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
-	require.NoError(t, err)
-
-	updated := &v1.Workspace{}
-	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
-	assert.True(t, updated.Status.SafeMode, "ControllerRestartCount > 5 without stability must enter SafeMode")
-	assert.Equal(t, int32(6), updated.Status.ControllerRestartCount)
-
-	entriesAfter := readCounterValue(t, ctrMetrics.WorkspaceSafeModeEntriesTotal.WithLabelValues("controller_restart"))
-	activeAfter := readPlainGaugeValue(t, ctrMetrics.WorkspaceSafeModeActive)
-	assert.Greater(t, entriesAfter, entriesBefore, "WorkspaceSafeModeEntriesTotal{trigger=controller_restart} must increment")
-	assert.Greater(t, activeAfter, activeBefore, "WorkspaceSafeModeActive gauge must increment")
-}
-
-// TestControllerRestart_5OrFewer_NoSafeMode: the trigger is strictly > 5.
-func TestControllerRestart_5OrFewer_NoSafeMode(t *testing.T) {
-	ws := activeWorkspaceForHealthCheck("ws-cr-nosafe")
-	ws.Status.ControllerRestartCount = 4 // one more → 5 → NOT beyond threshold
+func TestControllerRestart_5Consecutive_NoEscalationSignal(t *testing.T) {
+	// #760: the restart path must not write any escalation state — the
+	// derived RecoveryExhausted condition only comes from classified
+	// failure episodes crossing their per-class threshold.
+	ws := activeWorkspaceForHealthCheck("ws-cr-noesc")
+	ws.Status.ControllerRestartCount = 4
 	r, _ := setupUnhealthyHealthReconciler(t, ws)
 
 	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
@@ -213,8 +198,9 @@ func TestControllerRestart_5OrFewer_NoSafeMode(t *testing.T) {
 
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
-	assert.False(t, updated.Status.SafeMode, "ControllerRestartCount reaching exactly 5 must not trip SafeMode (trigger is > 5)")
 	assert.Equal(t, int32(5), updated.Status.ControllerRestartCount)
+	assert.Nil(t, recoveryExhaustedCondition(updated),
+		"health-check restarts are not classified failures and must not set the RecoveryExhausted condition")
 }
 
 // --- M7: restartGeneration bump clears ControllerRestartCount (US-24.7 AC 5). ---
@@ -227,7 +213,9 @@ func TestRestartGeneration_InCreating_ClearsControllerRestartCount(t *testing.T)
 	ws.Status.ObservedRestartGeneration = 1
 	ws.Status.ControllerRestartCount = 4
 	ws.Status.ConsecutiveFailures = 5
-	ws.Status.SafeMode = true
+	ws.Status.Conditions = append(ws.Status.Conditions, v1.WorkspaceCondition{
+		Type: v1.WorkspaceConditionRecoveryExhausted, Status: "True", Reason: v1.ReasonRecoveryExhausted,
+	})
 
 	pvc := makeBoundPVC("workspace-ws-rg-crc", "default", ws.UID)
 	pwSecret := makePasswordSecret("ws-rg-crc", "default")
@@ -243,7 +231,7 @@ func TestRestartGeneration_InCreating_ClearsControllerRestartCount(t *testing.T)
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-rg-crc", Namespace: "default"}, updated))
 	assert.Equal(t, int32(0), updated.Status.ControllerRestartCount, "restartGeneration bump must clear ControllerRestartCount")
-	assert.False(t, updated.Status.SafeMode)
+	assert.Nil(t, recoveryExhaustedCondition(updated), "restartGeneration bump must clear the derived RecoveryExhausted condition")
 }
 
 // TestRestartGeneration_InCreating_ClearsLastStableAt guards an adversarial
@@ -281,14 +269,16 @@ func TestRestartGeneration_InCreating_ClearsLastStableAt(t *testing.T) {
 }
 
 // --- H5: suspend must Dec WorkspacesInRecovery and clear ControllerRestartCount
-// (US-24.8 F22), but preserve SafeMode (US-24.13 AC 9). ---
+// (US-24.8 F22) — and clear the derived RecoveryExhausted condition (#760). ---
 
 func TestSuspend_InRecovery_DecountersInRecoveryGauge_AndClearsRestartCount(t *testing.T) {
 	ws := makeWorkspace("ws-susp-crc", "default", v1.WorkspacePhaseSuspending)
 	ws.UID = "ws-susp-crc-uid"
 	ws.Status.ConsecutiveFailures = 4
 	ws.Status.ControllerRestartCount = 3
-	ws.Status.SafeMode = true
+	ws.Status.Conditions = append(ws.Status.Conditions, v1.WorkspaceCondition{
+		Type: v1.WorkspaceConditionRecoveryExhausted, Status: "True", Reason: v1.ReasonRecoveryExhausted,
+	})
 	now := metav1.Now()
 	ws.Status.LastFailureAt = &now
 
@@ -310,7 +300,7 @@ func TestSuspend_InRecovery_DecountersInRecoveryGauge_AndClearsRestartCount(t *t
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-susp-crc", Namespace: "default"}, updated))
 	assert.Equal(t, int32(0), updated.Status.ControllerRestartCount, "suspend must clear ControllerRestartCount (US-24.8 F22)")
 	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures)
-	assert.True(t, updated.Status.SafeMode, "suspend must preserve SafeMode (US-24.13 AC 9)")
+	assert.Nil(t, recoveryExhaustedCondition(updated), "suspend must clear the derived RecoveryExhausted condition (#760)")
 }
 
 // TestSuspend_NotInRecovery_DoesNotDecrementGauge: a healthy workspace

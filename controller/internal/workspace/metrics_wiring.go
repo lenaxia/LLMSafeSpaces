@@ -62,18 +62,17 @@ func incrementPVCCleanupDelegated(err error) {
 }
 
 // recordRecoveryMetricsInto records recovery-related metrics after enterRecovery
-// updates workspace status. Called with the post-increment ConsecutiveFailures and
-// the resolved NextRetryAt / SafeMode values.
+// updates workspace status. exhaustionCrossed is true only on the episode's
+// not-exhausted → exhausted transition, so the exhaustion counter fires once
+// per episode (#760).
 func recordRecoveryMetricsInto(
 	ws *v1.Workspace,
 	class FailureClass,
 	wasInRecovery bool,
-	wasInSafeMode bool,
+	exhaustionCrossed bool,
 	attempts *prometheus.CounterVec,
 	backoffHist *prometheus.HistogramVec,
-	safeModeGauge prometheus.Gauge,
-	safeModeEntries *prometheus.CounterVec,
-	failedCtr *prometheus.CounterVec,
+	exhaustedCtr *prometheus.CounterVec,
 	inRecoveryGauge prometheus.Gauge,
 ) {
 	attempts.WithLabelValues(string(class)).Inc()
@@ -93,22 +92,17 @@ func recordRecoveryMetricsInto(
 		backoffHist.WithLabelValues(string(class)).Observe(backoff.Seconds())
 	}
 
-	// Only Inc safe-mode gauge + entries on the false→true transition.
-	if ws.Status.SafeMode && !wasInSafeMode {
-		safeModeGauge.Inc()
-		safeModeEntries.WithLabelValues(string(class)).Inc()
-		failedCtr.WithLabelValues(string(class)).Inc()
+	if exhaustionCrossed {
+		exhaustedCtr.WithLabelValues(string(class)).Inc()
 	}
 }
 
-func recordRecoveryMetrics(ws *v1.Workspace, class FailureClass, wasInRecovery, wasInSafeMode bool) {
+func recordRecoveryMetrics(ws *v1.Workspace, class FailureClass, wasInRecovery, exhaustionCrossed bool) {
 	recordRecoveryMetricsInto(
-		ws, class, wasInRecovery, wasInSafeMode,
+		ws, class, wasInRecovery, exhaustionCrossed,
 		metrics.WorkspaceRecoveryAttemptsTotal,
 		metrics.WorkspaceRecoveryBackoffDurationSeconds,
-		metrics.WorkspaceSafeModeActive,
-		metrics.WorkspaceSafeModeEntriesTotal,
-		metrics.WorkspacesFailedTotal,
+		metrics.WorkspaceRecoveryExhaustedTotal,
 		metrics.WorkspacesInRecovery,
 	)
 }
