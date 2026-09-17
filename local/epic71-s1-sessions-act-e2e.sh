@@ -88,20 +88,22 @@ metadata:
   namespace: llmsafespaces
 data:
   serve.py: |
-    import json, re, time
+    import json, os, time
     from http.server import BaseHTTPRequestHandler, HTTPServer
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
             marker = "S1-TURN-OK"
-            m = re.search(rb"S1-SLOW-TURN (\d+)", body)
-            if m:
-                # The duration rides the PROMPT — no shell/env
-                # substitution into this manifest (the quoted-heredoc
-                # class the r4 review caught: env delivery broke the
-                # slow mode silently in every prior dispatch).
-                time.sleep(int(m.group(1)))
+            # The slow variant sleeps S1_SLEEP_S before replying — the
+            # duration arrives via `kubectl set env`, NEVER via shell
+            # substitution into this manifest (the quoted-heredoc class
+            # the r4 review caught), and NEVER via the request body
+            # (the r5 dispatch proved opencode's provider request shape
+            # does not reliably carry the prompt text verbatim).
+            sleep_s = int(os.environ.get("S1_SLEEP_S", "0"))
+            if sleep_s:
+                time.sleep(sleep_s)
             if b'"stream":true' in body or b'"stream": true' in body:
                 def chunk(delta, finish=None):
                     return json.dumps({
@@ -165,21 +167,69 @@ spec:
   clusterIP: 10.217.200.201
   selector: {app: mock-llm-s1}
   ports: [{port: 80, targetPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-llm-s1-slow
+  namespace: llmsafespaces
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: mock-llm-s1-slow}}
+  template:
+    metadata:
+      labels:
+        app: mock-llm-s1-slow
+        app.kubernetes.io/name: llmsafespaces
+        app.kubernetes.io/instance: llmsafespaces
+        app.kubernetes.io/component: relay-router
+    spec:
+      containers:
+        - name: serve
+          image: python:3.12-alpine
+          command: ["python", "/srv/serve.py"]
+          volumeMounts: [{name: cfg, mountPath: /srv}]
+      volumes:
+        - name: cfg
+          configMap: {name: mock-llm-s1-config}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-llm-s1-slow
+  namespace: llmsafespaces
+spec:
+  clusterIP: 10.217.200.202
+  selector: {app: mock-llm-s1-slow}
+  ports: [{port: 80, targetPort: 8080}]
 MOCK
+# The slow duration rides a direct `kubectl set env` — no heredoc, no
+# quoting mode, no request-shape dependence (each of those broke a prior
+# dispatch; see the worklog's pool history).
+kc set env deployment/mock-llm-s1-slow S1_SLEEP_S="${S1B_SLOW_TURN_S}" >/dev/null
+kubectl --context "${CTX}" -n "${NS}" rollout status deployment/mock-llm-s1-slow --timeout=180s >/dev/null \
+    || die "s1: slow mock env injection failed"
 kubectl --context "${CTX}" -n "${NS}" rollout status deployment/mock-llm-s1 --timeout=180s >/dev/null \
     || die "s1: mock upstream failed to deploy"
 
 S1_WS=$(ws_id 73)
 S1_CRED=$(create_stub_credential "s1-stub" "mock-model-s1" "http://mock-llm-s1.${NS}.svc/v1")
+S1_SLOW_CRED=$(create_stub_credential "s1-slow-stub" "mock-model-s1" "http://mock-llm-s1-slow.${NS}.svc/v1")
 seed_workspace "${S1_WS}"
 S1_BIND=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
     -H "Authorization: Bearer ${AUTH_TOKEN}" \
     "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${S1_CRED}/bind/${S1_WS}")
 [[ "${S1_BIND}" == 2* ]] || die "s1: credential bind failed: HTTP ${S1_BIND}"
+S1_SLOW_BIND=$(curl -sm 30 -o /dev/null -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${AUTH_TOKEN}" \
+    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/provider-credentials/${S1_SLOW_CRED}/bind/${S1_WS}")
+[[ "${S1_SLOW_BIND}" == 2* ]] || die "s1: slow credential bind failed: HTTP ${S1_SLOW_BIND}"
 wait_phase "${S1_WS}" Active 240 || die "s1: workspace never Active"
 secrets_converged "${S1_WS}" 120 || die "s1: secretsDelivery not converged"
 registry_admits "${S1_WS}" "s1-stub" "mock-model-s1" 120 \
     || die "s1: mock provider never admitted to the registry"
+registry_admits "${S1_WS}" "s1-slow-stub" "mock-model-s1" 120 \
+    || die "s1: slow mock provider never admitted to the registry"
 
 S1_POD=$(pod_of "${S1_WS}")
 S1_PW=$(kc get secret "workspace-pw-${S1_WS}" -o jsonpath='{.data.password}' | base64 -d)
@@ -188,19 +238,18 @@ S1_PW=$(kc get secret "workspace-pw-${S1_WS}" -o jsonpath='{.data.password}' | b
 # on it — a direct slow-mode probe must take ≥ half the slow budget,
 # while a fast probe returns in seconds. The row that would have exposed
 # the quoted-heredoc ValueError in one dispatch.
-MOCK_SVC="http://mock-llm-s1.${NS}.svc/v1/chat/completions"
 mock_probe_s() { # prompt → seconds the probe took
     local t0
     t0=$(date +%s)
     kc exec "${S1_POD}" -c workspace -- curl -sm $(( S1B_SLOW_TURN_S + 30 ))         -o /dev/null -X POST -H 'content-type: application/json'         -d "{"messages":[{"role":"user","content":"$1"}]}" "${MOCK_SVC}" >/dev/null 2>&1 || true
     echo $(( $(date +%s) - t0 ))
 }
-MOCK_FAST_S=$(mock_probe_s "fast probe")
-MOCK_SLOW_S=$(mock_probe_s "S1-SLOW-TURN ${S1B_SLOW_TURN_S} slow probe")
+MOCK_FAST_S=$(mock_probe_s "fast probe" "mock-llm-s1")
+MOCK_SLOW_S=$(mock_probe_s "slow probe" "mock-llm-s1-slow")
 if [[ ${MOCK_SLOW_S} -ge $(( S1B_SLOW_TURN_S / 2 )) && ${MOCK_FAST_S} -lt $(( S1B_SLOW_TURN_S / 2 )) ]]; then
-    ok "mock self-check: slow=${MOCK_SLOW_S}s fast=${MOCK_FAST_S}s (slow mode mechanically works)"
+    ok "mock self-check: slow-svc=${MOCK_SLOW_S}s fast-svc=${MOCK_FAST_S}s (the slow turn mechanically works)"
 else
-    note_fail "mock self-check: slow=${MOCK_SLOW_S}s fast=${MOCK_FAST_S}s — the slow mode is broken; no S1b evidence below is valid"
+    note_fail "mock self-check: slow-svc=${MOCK_SLOW_S}s fast-svc=${MOCK_FAST_S}s — the slow turn is broken; no S1b evidence below is valid"
 fi
 
 # The platform session (sessions/new is the UNMIGRATED service route —
@@ -245,7 +294,7 @@ if ! [[ -f "${S1B_SEND_LOG}" ]]; then S1B_INFLIGHT=1; fi
 if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} && ${S1B_INFLIGHT} == 1 ]]; then
     ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s, send still pending (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
 else
-    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending)"
+    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send-log='$(head -c 40 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending)"
 fi
 
 # The interrupted session must not be WEDGED BUSY: after the turn's own

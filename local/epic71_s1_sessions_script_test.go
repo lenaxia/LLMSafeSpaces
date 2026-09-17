@@ -51,8 +51,15 @@ func TestEpic71S1Script_RowPins(t *testing.T) {
 	if !strings.Contains(src, "S1B_ABORT_BUDGET_S") || !strings.Contains(src, "S1-SLOW-TURN") {
 		t.Fatalf("s1 script must assert abort's preempt budget against a slow turn")
 	}
-	if !strings.Contains(src, `re.search(rb"S1-SLOW-TURN`) {
-		t.Fatalf("the mock must parse the slow-turn duration from the prompt body, not env")
+	// r5: the slow turn is a DEDICATED always-slow mock whose duration
+	// rides `kubectl set env` — no heredoc substitution (r4's class) and
+	// no request-body dependence (r5's dispatch proved opencode's
+	// provider request shape does not reliably carry the prompt text).
+	if !strings.Contains(src, "S1_SLEEP_S") || !strings.Contains(src, "set env deployment/mock-llm-s1-slow") {
+		t.Fatalf("the slow turn must be env-injected via kubectl set env on a dedicated mock")
+	}
+	if strings.Contains(src, "S1-SLOW-TURN (") {
+		t.Fatalf("no request-body slow-mode parsing — the provider request shape is not ours to depend on")
 	}
 	// r4: the row must carry its own discriminator — the IN-FLIGHT
 	// assertion (the send's completion log still absent when the abort
