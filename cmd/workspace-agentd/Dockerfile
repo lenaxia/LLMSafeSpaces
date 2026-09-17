@@ -11,8 +11,9 @@
 # image ("the image is the workspace"); this image is platform runtime,
 # delivered on platform cadence.
 #
-# FROM scratch keeps it minimal (~25MB/binary) so the kubelet image-volume
-# pull is cheap on the resume path. The binary is static (CGO_ENABLED=0).
+# FROM scratch keeps it minimal (~25MB/binary + ~220KB CA roots, #1416)
+# so the kubelet image-volume pull is cheap on the resume path. The
+# binary is static (CGO_ENABLED=0).
 #
 # Binary path inside the image MUST match the controller's
 # agentdBinaryRelPath (/usr/local/bin/workspace-agentd) — the pod env pin
