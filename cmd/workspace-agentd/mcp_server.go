@@ -210,7 +210,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "trigger_create",
-						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook. cron sourceConfig: {expr: <5-field cron, required, validated>, tz: <IANA name, optional>}; the first fire is the schedule's NEXT slot - a trigger never fires at creation moment. With workflowId (camelCase) the trigger fires that DAG - the workflow must exist and target THIS workspace; without it the trigger fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
+						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook. cron sourceConfig: {expr: <5-field cron>, tz: <IANA name, optional>}. With workflowId (camelCase) the trigger fires that DAG - the workflow must exist and target THIS workspace; without it the trigger fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflowId (DAG workflow id - camelCase; snake_case is silently dropped)"},
 						}, "required": []string{"trigger"}},
@@ -258,7 +258,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change). patch fields follow workflow_create: specYaml is a STRINGIFIED spec (JSON object or YAML text) with the same node vocabulary and rules; inputSchema (if set) must compile and be object-rooted; runs need a target workspace (targetWorkspaceId) or an explicit workspace_id per run.",
+						Description: "Partially update one workflow (id + fields to change). patch fields follow workflow_create: specYaml is a STRINGIFIED JSON-object spec with the same node vocabulary and rules; runs need a target workspace (targetWorkspaceId) or an explicit workspaceId per run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
 							"patch": map[string]any{"type": "object", "description": "Fields to change"},

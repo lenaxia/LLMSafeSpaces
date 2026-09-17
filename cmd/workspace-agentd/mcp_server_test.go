@@ -939,12 +939,13 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["workflow_update"]
 		require.True(t, ok, "workflow_update in tools/list")
 		for _, want := range []string{
-			"STRINGIFIED spec",  // specYaml is a string field (#1415 drift 4)
-			"object-rooted",     // write-time schema rule
-			"targetWorkspaceId", // runs need a target workspace
+			"STRINGIFIED JSON-object spec", // specYaml is a string field (#1415 drift 4); YAML rides #1424
+			"targetWorkspaceId",            // runs need a target workspace
+			"workspaceId per run",          // camelCase wire spelling (#1415)
 		} {
 			assert.Contains(t, d, want)
 		}
+		assert.NotContains(t, d, "workspace_id", "snake_case is dropped by the decoder")
 	})
 
 	t.Run("trigger_create guidance", func(t *testing.T) {
