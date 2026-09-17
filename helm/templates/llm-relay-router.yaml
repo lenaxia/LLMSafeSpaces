@@ -59,6 +59,8 @@ spec:
               value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | quote }}
             - name: BYO_MAX_RESP_BYTES
               value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | quote }}
+            - name: BYO_INFORMER_RESYNC
+              value: {{ .Values.relayOnlyKeyDelivery.router.informerResync | default "5m" | quote }}
           ports:
             - name: http
               containerPort: 8090

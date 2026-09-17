@@ -114,7 +114,12 @@ func newByoKeyManager(store byoSecrets, retention time.Duration, redaction secre
 // adopted Secret triggers the same self-issued rotate the watch path uses,
 // so a running fleet converges on bounded recovery without a restart.
 func (m *byoKeyManager) Bootstrap(ctx context.Context) error {
-	kp, err := secrets.GenerateHPKEKeyPairPayload(1)
+	// Seed from the loaded high-water mark, not a constant: a RUNNING
+	// replica recovering from keypair-Secret loss regenerates at N+1,
+	// keeping keyIDs strictly monotonic (dead-key envelopes keep failing
+	// as the clean unknown-keyID signal; pub never rewinds). A fresh
+	// replica (highwater 0) seeds at generation 1.
+	kp, err := secrets.GenerateHPKEKeyPairPayload(m.loadedGeneration() + 1)
 	if err != nil {
 		return err
 	}

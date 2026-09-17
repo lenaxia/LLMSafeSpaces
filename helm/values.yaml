@@ -1770,6 +1770,12 @@ relayOnlyKeyDelivery:
     priorKeyRetention: "10m"
     # Per-workspace quota (exfil-through-relay bound, §4.7 rule 6).
     quota:
+      window: "60s"
       requestsPerWindow: 120
       bytesPerWindow: 209715200
+    # Body caps (§4.7 rule 3).
+    maxBodyBytes: 10485760
+    maxRespBytes: 52428800
+    # Informer resync for the Secret watch.
+    informerResync: "5m"
     resources: {}

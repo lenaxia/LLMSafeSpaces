@@ -133,6 +133,36 @@ relayOnlyKeyDelivery:
 	}
 }
 
+// TestRelayOnlyKeyDelivery_EgressCarveoutFunctional (iteration 2): the
+// carve-out must select REAL workspace pods (app+component labels, the
+// same pair every chart policy uses), allow the post-DNAT POD port 8090,
+// and gate on the master networkPolicy toggle.
+func TestRelayOnlyKeyDelivery_EgressCarveoutFunctional(t *testing.T) {
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+`)
+	var carveout map[string]any
+	for _, d := range findDocs(t, docs, "NetworkPolicy") {
+		if docName(t, d) == "llm-relay-egress-carveout" {
+			carveout = d
+		}
+	}
+	require.NotNil(t, carveout, "egress carve-out must render with the flag on")
+
+	spec := carveout["spec"].(map[string]any)
+	sel := spec["podSelector"].(map[string]any)["matchLabels"].(map[string]any)
+	assert.Equal(t, "llmsafespaces", sel["app"], "selects the real workspace pod label")
+	assert.Equal(t, "workspace", sel["component"])
+
+	egress := spec["egress"].([]any)[0].(map[string]any)
+	port := egress["ports"].([]any)[0].(map[string]any)
+	assert.EqualValues(t, 8090, port["port"], "post-DNAT pod port, not the Service port")
+	to := egress["to"].([]any)[0].(map[string]any)
+	podSel := to["podSelector"].(map[string]any)["matchLabels"].(map[string]any)
+	assert.Equal(t, "llm-relay-router", podSel["app.kubernetes.io/name"])
+}
+
 // TestRelayOnlyKeyDelivery_RendersWithMonitoring (review R1): enabling the
 // alerts alongside relay-only must render — the two flags together are the
 // US-72.5 flip-gate posture.

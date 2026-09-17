@@ -52,14 +52,9 @@ func sanitizeMeta(s string) string {
 
 // byoServerConfig carries the deployment-tunable knobs.
 type byoServerConfig struct {
-	listenAddr    string
-	namespace     string
-	maxBodyBytes  int64
-	maxRespBytes  int64
-	quotaWindow   time.Duration
-	quotaRequests int64
-	quotaBytes    int64
-	retention     time.Duration
+	listenAddr   string
+	maxBodyBytes int64
+	maxRespBytes int64
 }
 
 func byoReject(w http.ResponseWriter, code string, status int, detail string) {
@@ -146,6 +141,43 @@ func (s *byoServer) requireMintAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+type modelEntry struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
+type modelListing struct {
+	Object string       `json:"object"`
+	Data   []modelEntry `json:"data"`
+}
+
+type rotateReceipt struct {
+	KeyID      string `json:"keyID"`
+	Generation int64  `json:"generation"`
+	PublicKey  []byte `json:"publicKey"`
+}
+
+// scopeModels intersects the staged catalog with the token allowlist; an
+// empty allowlist passes the catalog through (unreachable in production —
+// US-72.3 always stages one).
+func scopeModels(models, allowlist []string) []string {
+	if len(allowlist) == 0 {
+		return models
+	}
+	allowed := make(map[string]bool, len(allowlist))
+	for _, m := range allowlist {
+		allowed[m] = true
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if allowed[m] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 type mintTokenRequest struct {
 	WorkspaceID    string   `json:"workspaceID"`
 	ProviderSlug   string   `json:"providerSlug"`
@@ -204,10 +236,10 @@ func (s *byoServer) handleRotateKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.recordInternal(r.URL.Path, http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"keyID":      secrets.HPKEKeyID(pub.Generation),
-		"generation": pub.Generation,
-		"publicKey":  pub.PublicKey,
+	_ = json.NewEncoder(w).Encode(rotateReceipt{
+		KeyID:      secrets.HPKEKeyID(pub.Generation),
+		Generation: pub.Generation,
+		PublicKey:  pub.PublicKey,
 	})
 }
 
@@ -322,13 +354,16 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 			s.metrics.recordRequest(workspaceID, providerSlug, http.StatusOK)
 			log.Printf("byo-router: ws=%s slug=%s keyID=%s status=%d latency=%s bytes=%d", //nolint:gosec // sanitized metadata only (K7)
 				sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), sanitizeMeta(payload.KeyID), http.StatusOK, time.Since(start), 0)
-			entries := make([]map[string]string, 0, len(models))
-			for _, id := range models {
-				entries = append(entries, map[string]string{"id": id, "object": "model", "owned_by": "byo"})
+			// The staged catalog is scoped to the token's allowlist — the
+			// listing never widens beyond what the workspace was granted.
+			allowed := scopeModels(models, payload.ModelAllowlist)
+			entries := make([]modelEntry, 0, len(allowed))
+			for _, id := range allowed {
+				entries = append(entries, modelEntry{ID: id, Object: "model", OwnedBy: "byo"})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": entries})
+			_ = json.NewEncoder(w).Encode(modelListing{Object: "list", Data: entries})
 			return
 		}
 		// No staged catalog: fall through to the upstream fetch below.
@@ -350,6 +385,9 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 	// (6) Body redaction: the precise dynamic staged-key rules — a
 	// resolved key can never be echoed back through the relay (§4.9).
 	redactedBody := s.redactor.RedactDynamicOnly(string(bodyBytes))
+	// Request-direction bytes count against the byte budget (the residual
+	// is primarily prompt-direction content — §3).
+	s.quota.RecordBytes(workspaceID, int64(len(redactedBody)))
 
 	// (7) Forward: sanitized headers, resolved key injected, destination
 	// pinned to the token's baseURL (SSRF-proof by construction, §4.4).

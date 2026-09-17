@@ -56,7 +56,9 @@ func TestModelsServedFromStagedCatalog(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&listing))
 	assert.Equal(t, "list", listing.Object)
-	assert.Len(t, listing.Data, 2)
+	// The listing is scoped to the token's allowlist (glm-4.7 only — the
+	// catalog's glm-4.7-air is outside the grant and never enumerated).
+	assert.Len(t, listing.Data, 1)
 	assert.Equal(t, "glm-4.7", listing.Data[0].ID)
 	assert.Zero(t, rig.upstream.count(), "zero upstream fetches for /models")
 }
@@ -214,6 +216,12 @@ func TestKeypairSecretDeleteTriggersRecovery(t *testing.T) {
 
 	require.NoError(t, store.cs.CoreV1().Secrets("llm-relay").Delete(context.Background(), byoKeyPairSecretName, metav1.DeleteOptions{}))
 	byoWatchDelete(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: byoKeyPairSecretName}}, m, newByoEnvelopeCache())
+
+	// Recovery is a bounded-retry goroutine — wait for regeneration.
+	require.Eventually(t, func() bool {
+		_, err := store.Get(context.Background(), byoKeyPairSecretName)
+		return err == nil
+	}, 3*time.Second, 10*time.Millisecond, "watch-time delete triggers regeneration without a restart")
 
 	regenerated, err := store.Get(context.Background(), byoKeyPairSecretName)
 	require.NoError(t, err, "watch-time delete triggers regeneration without a restart")

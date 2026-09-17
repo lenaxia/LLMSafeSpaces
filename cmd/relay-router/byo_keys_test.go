@@ -21,8 +21,10 @@ import (
 )
 
 // fakeByoStore wraps the client-go fake clientset behind byoSecrets. The
-// fake's ObjectTracker enforces resourceVersion on Update, providing the
-// same optimistic-concurrency serialization the API server does.
+// fake does NOT enforce resourceVersion on Update (verified empirically,
+// worklog A1) — concurrent-writer serialization is therefore pinned via
+// the GENERATION precondition here; the real API server additionally
+// enforces resourceVersion.
 type fakeByoStore struct {
 	cs *fake.Clientset
 }

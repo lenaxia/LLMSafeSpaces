@@ -29,23 +29,31 @@ spec:
        rule above and applied only when the platform's egress NetworkPolicy
        posture is on. */}}
 {{- $ns2 := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
-{{- if and .Values.relayOnlyKeyDelivery.enabled .Values.networkPolicy.workspaceEgress.enabled }}
+{{- if and .Values.relayOnlyKeyDelivery.enabled .Values.networkPolicy.enabled .Values.networkPolicy.workspaceEgress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: llm-relay-egress-carveout
   namespace: {{ .Release.Namespace }}
 spec:
+  # The SAME label pair every chart policy selects for workspace pods
+  # (pod_builder.go labels + _helpers.tpl defaults) — not a novel label.
   podSelector:
     matchLabels:
-      llmsafespaces.dev/kind: workspace
+      app: llmsafespaces
+      component: workspace
   policyTypes: [Egress]
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $ns2 }}
+          # NetworkPolicy egress matches the post-DNAT POD port — the
+          # router container listens on 8090 (Service 80 → 8090).
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: llm-relay-router
       ports:
         - protocol: TCP
-          port: 80
+          port: 8090
 {{- end }}

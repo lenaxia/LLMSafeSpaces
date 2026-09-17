@@ -168,27 +168,10 @@ func runBYO(ctx context.Context) error {
 	}
 	log.Printf("byo-router: informer synced, cached envelopes=%d", cacheStore.Len())
 
-	metrics := newByoMetrics().withCacheLen(cacheStore.Len)
-	server := &byoServer{
-		cfg: byoServerConfig{
-			listenAddr:    cfg.listenAddr,
-			namespace:     cfg.namespace,
-			maxBodyBytes:  cfg.maxBodyBytes,
-			maxRespBytes:  cfg.maxRespBytes,
-			quotaWindow:   cfg.quotaWindow,
-			quotaRequests: cfg.quotaRequests,
-			quotaBytes:    cfg.quotaBytes,
-			retention:     cfg.retention,
-		},
-		minter:   nil, // set below (Secret-held mint key)
-		cache:    cacheStore,
-		resolve:  resolveDispatcher{keys: keys},
-		quota:    newByoWorkspaceQuota(cfg.quotaWindow, cfg.quotaRequests, cfg.quotaBytes),
-		redactor: redactor,
-		client:   defaultRouterClient(),
-		metrics:  metrics,
+	server, err := buildBYOServer(cfg, keys, cacheStore, redactor, newLazyMinter(mintAuth), defaultRouterClient())
+	if err != nil {
+		return fmt.Errorf("byo-router: building server: %w", err)
 	}
-	server.minter = newLazyMinter(mintAuth)
 
 	httpServer := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -231,14 +214,9 @@ func buildBYOServer(cfg byoRunConfig, keys *byoKeyManager, cacheStore *byoEnvelo
 	}
 	return &byoServer{
 		cfg: byoServerConfig{
-			listenAddr:    cfg.listenAddr,
-			namespace:     cfg.namespace,
-			maxBodyBytes:  cfg.maxBodyBytes,
-			maxRespBytes:  cfg.maxRespBytes,
-			quotaWindow:   cfg.quotaWindow,
-			quotaRequests: cfg.quotaRequests,
-			quotaBytes:    cfg.quotaBytes,
-			retention:     cfg.retention,
+			listenAddr:   cfg.listenAddr,
+			maxBodyBytes: cfg.maxBodyBytes,
+			maxRespBytes: cfg.maxRespBytes,
 		},
 		minter:   minter,
 		cache:    cacheStore,
@@ -281,10 +259,23 @@ func byoWatchDelete(ctx context.Context, obj any, keys *byoKeyManager, cacheStor
 	if sec.Name == byoKeyPairSecretName {
 		// Keypair-Secret loss on a RUNNING replica is the DR case: fall
 		// back to create-or-adopt regeneration (the losing replica of a
-		// simultaneous recovery adopts the winner — same tail as boot).
-		if err := keys.Bootstrap(ctx); err != nil {
-			log.Printf("byo-router: keypair-secret loss recovery failed: %v", err)
-		}
+		// simultaneous recovery adopts the winner — same tail as boot). A
+		// deleted Secret never re-delivers on resync, so transient API
+		// errors get a bounded retry — never a silent strand.
+		go func() {
+			for attempt := 0; attempt < 3; attempt++ {
+				if err := keys.Bootstrap(ctx); err == nil {
+					return
+				} else {
+					log.Printf("byo-router: keypair-secret loss recovery attempt %d failed: %v", attempt+1, err)
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Duration(attempt+1) * 5 * time.Second):
+				}
+			}
+		}()
 		return
 	}
 	cacheStore.Evict(sec.Name)

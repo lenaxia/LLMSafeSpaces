@@ -10,7 +10,9 @@ import (
 
 // byoWorkspaceQuota bounds the exfil-through-relay residual (design 0058
 // §3/§4.7 rule 6): per-workspace request-rate and byte-rate counters over
-// a sliding window, with caps and 429 rejection. Counters are in-memory
+// a sliding window, with caps and 429 rejection. Byte counters cover BOTH
+// directions — the residual is primarily request-direction content
+// (prompts), response bytes complete the picture. Counters are in-memory
 // per replica — the bound is per-replica, which the two-replica topology
 // multiplies by 2; documented, deployment-tunable.
 type byoWorkspaceQuota struct {
@@ -69,7 +71,30 @@ func (q *byoWorkspaceQuota) Allow(workspaceID string) bool {
 	return requests < q.maxRequests
 }
 
-// Record counts an accepted request and its bytes against the window.
+// RecordBytes counts bytes only (both directions; requests counted once
+// via Record).
+func (q *byoWorkspaceQuota) RecordBytes(workspaceID string, bytes int64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	c := q.countersLocked(workspaceID)
+	q.pruneLocked(c)
+	now := q.clock()
+	var b *quotaBucket
+	if len(c.buckets) > 0 {
+		last := &c.buckets[len(c.buckets)-1]
+		if now.Sub(last.start) < time.Minute {
+			b = last
+		}
+	}
+	if b == nil {
+		c.buckets = append(c.buckets, quotaBucket{start: now})
+		b = &c.buckets[len(c.buckets)-1]
+	}
+	b.bytes += bytes
+}
+
+// Record counts an accepted request and its response bytes against the
+// window.
 func (q *byoWorkspaceQuota) Record(workspaceID string, bytes int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
