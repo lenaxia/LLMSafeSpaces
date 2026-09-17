@@ -233,8 +233,8 @@ func (s *StoreIntegrationSuite) TestTriggerInputMappingRoundtrip() {
 		ID: id, OwnerType: "user", OwnerID: "u1",
 		Name: "mapped-trigger", Enabled: true,
 		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
-		WorkflowID: &wfPtr,
-		InputFrom:  "mapped", Input: json.RawMessage(`{"topic":"nightly","n":1}`),
+		WorkflowID: &wfPtr, AutoDisableAfter: 10,
+		InputFrom: "mapped", Input: json.RawMessage(`{"topic":"nightly","n":1}`),
 		CreatedAt: now, UpdatedAt: now,
 	}
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, created))
