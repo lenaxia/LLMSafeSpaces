@@ -168,12 +168,18 @@ func (h *handlers) workflowRun(ctx context.Context, req mcp.CallToolRequest) (*m
 	// inputSchema enforcement); marshal the map so the client embeds a
 	// raw JSON object on the wire.
 	input := json.RawMessage("{}")
-	if m, ok := args["input"].(map[string]any); ok && len(m) > 0 {
-		b, err := json.Marshal(m)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid input object: %v", err)), nil
+	if raw, present := args["input"]; present && raw != nil {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("input must be an object (got %T) — the run is validated against the workflow's inputSchema", raw)), nil
 		}
-		input = b
+		if len(m) > 0 {
+			b, err := json.Marshal(m)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid input object: %v", err)), nil
+			}
+			input = b
+		}
 	}
 	workspaceID, _ := args["workspace_id"].(string)
 	resp, err := h.client.RunWorkflow(ctx, workflowID, input, workspaceID)

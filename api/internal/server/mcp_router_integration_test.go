@@ -1095,6 +1095,16 @@ func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
 	assert.Contains(t, err.Error(), "topic", "the missing required field is named: %s", err.Error())
 	assert.NotContains(t, err.Error(), "got string", "double-encoding regression: %s", err.Error())
 
+	// Second unhappy leg, second workflow: a TYPE violation (not a
+	// missing field) — different schema, different failure class.
+	seedWorkflow(t, f, "wfl_schema2")
+	f.wfStore.mu.Lock()
+	f.wfStore.workflows["wfl_schema2"].InputSchema = json.RawMessage(`{"type":"object","properties":{"count":{"type":"number"}}}`)
+	f.wfStore.mu.Unlock()
+	_, err = f.client.RunWorkflow(context.Background(), "wfl_schema2", json.RawMessage(`{"count":"not-a-number"}`), mcpTestWSID)
+	require.Error(t, err, "type violation must be rejected")
+	assert.Contains(t, err.Error(), "want number", "the type violation names the wanted type: %s", err.Error())
+
 	// Happy: a CONFORMING input must pass through the same surface
 	// (round-3's double-encode broke exactly this).
 	ok, err := f.client.RunWorkflow(context.Background(), "wfl_schema", json.RawMessage(`{"topic":"e2e"}`), mcpTestWSID)

@@ -10,6 +10,7 @@ package handlers
 // middleware chain (OrgAdminGuard / auth).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -233,11 +234,14 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 
 	// #1413 (write-time half): a malformed or non-object inputSchema
 	// would make EVERY future run 400 — reject it at authoring time.
-	if len(req.InputSchema) > 0 {
+	// A literal null CLEARS the schema (legacy-clear semantics).
+	if hasInputSchema(req.InputSchema) {
 		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
 			return
 		}
+	} else if bytes.Equal(bytes.TrimSpace(req.InputSchema), []byte("null")) {
+		req.InputSchema = nil
 	}
 
 	var defaults wf.DefaultsBlock
@@ -334,12 +338,15 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	// #1413 (write-time half): a malformed or non-object inputSchema
 	// would make EVERY future run 400 — reject it at authoring time, on
 	// ANY update shape (schema-only PATCHes included, not just spec
-	// rewrites).
-	if len(req.InputSchema) > 0 {
+	// rewrites). A literal null CLEARS the schema.
+	if hasInputSchema(req.InputSchema) {
 		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
 			return
 		}
+	} else if bytes.Equal(bytes.TrimSpace(req.InputSchema), []byte("null")) {
+		upd.InputSchema = nil
+		req.InputSchema = nil
 	}
 
 	if req.Name != nil {
@@ -576,7 +583,7 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 	// #1413: a declared inputSchema is the contract a run must satisfy —
 	// reject at submission with named violations instead of letting the
 	// run fail opaquely inside nodes later. Empty input counts as {}.
-	if len(wfRow.InputSchema) > 0 {
+	if hasInputSchema(wfRow.InputSchema) {
 		input := req.Input
 		if len(input) == 0 {
 			input = json.RawMessage("{}")
@@ -620,6 +627,15 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 }
 
 const maxSchemaCauses = 10
+
+// hasInputSchema reports whether a raw inputSchema carries a usable
+// schema: absent/empty AND the literal null both mean "no schema" — the
+// null literal is a legacy shape (jsonb 'null' rows predate validation)
+// and must behave as schema-less, never brick runs or 400 writes.
+func hasInputSchema(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
+}
 
 // validateInputSchemaDeclarable ensures a declared inputSchema compiles
 // and is object-rooted (run inputs are JSON objects; a string-rooted

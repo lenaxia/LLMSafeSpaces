@@ -98,6 +98,9 @@ func (m *mockWorkflowStore) UpdateWorkflow(_ context.Context, ownerType, ownerID
 	if upd.OnMissingWorkspace != nil {
 		r.OnMissingWorkspace = *upd.OnMissingWorkspace
 	}
+	if upd.InputSchema != nil {
+		r.InputSchema = upd.InputSchema
+	}
 	return r, nil
 }
 
@@ -727,4 +730,50 @@ func TestWorkflowCreate_InputSchemaWellFormed(t *testing.T) {
 		"inputSchema": map[string]any{"type": "object", "required": []string{"topic"}},
 	})
 	require.Equal(t, 201, w.Code, w.Body.String())
+}
+
+// Null-schema semantics: the literal null CLEARS the schema at write
+// time and behaves as schema-less at run time (legacy jsonb-'null'
+// rows must not brick).
+func TestWorkflowSchema_NullLiteralSemantics(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	spec := `{"nodes":[{"id":"a","type":"agent","data":{"prompt":"p"}}],"edges":[]}`
+	store.workflows["wf-n1"] = &wf.WorkflowRow{
+		ID: "wf-n1", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(spec), TargetWorkspaceID: &target,
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"]}`),
+	}
+	// A legacy jsonb-'null' row: schema-less, runs fine.
+	store.workflows["wf-n2"] = &wf.WorkflowRow{
+		ID: "wf-n2", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(spec), TargetWorkspaceID: &target,
+		InputSchema: json.RawMessage(`null`),
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	// Write: explicit null is a no-op that KEEPS the schema (store
+	// semantics: nil param -> CASE keeps), and never 400s.
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-n1", map[string]any{
+		"inputSchema": nil,
+	})
+	require.Equal(t, 200, w.Code, "null is accepted, never 400s: %s", w.Body.String())
+
+	// Run: the kept schema still enforces.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-n1/runs", map[string]any{
+		"input": map[string]any{"anything": true},
+	})
+	assert.Equal(t, 400, w.Code, "schema kept: missing topic still rejects")
+
+	// Legacy null-schema row: runs must not 400.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-n2/runs", map[string]any{
+		"input": map[string]any{"x": 1},
+	})
+	require.Equal(t, 202, w.Code, "legacy jsonb-null schema behaves as schema-less: %s", w.Body.String())
+
+	// A valid replacement schema still lands.
+	w = doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-n2", map[string]any{
+		"inputSchema": map[string]any{"type": "object"},
+	})
+	require.Equal(t, 200, w.Code, w.Body.String())
 }
