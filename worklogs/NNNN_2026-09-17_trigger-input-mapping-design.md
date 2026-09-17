@@ -17,6 +17,8 @@ Write design/0059 proposing the unified fix for #1425 (cron/DAG) and #1419 (webh
 ## Key Decisions
 - Recommended option: static input + inputFrom mapping (body mode is the #1419 headline fix; mapped mode the #1425 one).
 - Fire-time validation only for opted-in triggers — unconditional validation would brick every legacy schema-bearing DAG trigger (the envelope can never satisfy required non-envelope properties).
+- `validation_error` fire payloads are typed `{jsonPointer, keyword, message}` violations — locations only, never instance values, 4 KiB cap (the #1419-thread constraint; raw jsonschema messages embed instance content and `action_result` is a rendered audit field).
+- V6 wiring guard on update applies only when the patch changes `workflowId`/`input`/`inputFrom` — legacy triggers stay editable (rename/schedule patches re-run no validation).
 - `validation_error` fires count toward auto-disable (flagged as open question for the webhook-garbage case).
 
 ## Blockers
@@ -30,4 +32,4 @@ PR → review; implementation PRs (migration + resolver + handlers + MCP descrip
 
 ## Files Modified
 - design/0059_2026-09-17_trigger-input-mapping.md (new)
-- worklogs/0978_2026-09-17_trigger-input-mapping-design.md (new)
+- worklogs/NNNN_2026-09-17_trigger-input-mapping-design.md (new, this file — number bot-assigned at merge)
