@@ -95,6 +95,17 @@ type NodeExecRequest struct {
 	Spec     json.RawMessage `json:"spec"`
 	Input    json.RawMessage `json:"input"`
 	Timeout  string          `json:"timeout,omitempty"`
+	// WorkflowID/RunID carry the logical-execution identity agentd
+	// derives its harness dedupe key from (#1327): the run's WorkflowID
+	// and ID on the workflow path; the routine's trigger ID (its
+	// reusable definition) and fire ID (its logical execution) on the
+	// routine path. Stable across a node's retries and a pending fire's
+	// re-drives, distinct across runs/fires — the key must upsert retry
+	// re-POSTs but never two executions. Non-agent node types ignore
+	// them (no harness transcript write); identity-less callers omit
+	// them and agentd POSTs keyless exactly as before.
+	WorkflowID string `json:"workflowId,omitempty"`
+	RunID      string `json:"runId,omitempty"`
 }
 
 type NodeExecResponse struct {
@@ -338,6 +349,10 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 
 		req := &NodeExecRequest{
 			NodeID: node.ID, NodeType: node.Type,
+			// #1327: run identity rides every dispatch (retry-stable —
+			// the loop re-sends the same run/node pair); agentd derives
+			// the harness dedupe key from it on the agent path.
+			WorkflowID: run.WorkflowID, RunID: run.ID,
 			Spec: node.Data, Input: input, Timeout: node.Timeout,
 		}
 
@@ -669,8 +684,16 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	}
 	prompt = strings.ReplaceAll(prompt, "{{.input}}", string(envelopeJSON))
 
+	// #1327: the routine's logical-execution identity — trigger (the
+	// reusable definition, stable across fires) + fire (this execution,
+	// stable across processPendingRoutineFire re-drives of the SAME
+	// pending fire). Distinct fires key apart; a re-driven fire upserts
+	// its own transcript message. The routine-script dispatch above
+	// carries no identity: script nodes never write to the harness
+	// transcript, so the key has no consumer there.
 	agentReq := &NodeExecRequest{
 		NodeID: "routine-agent", NodeType: "agent",
+		WorkflowID: trigger.ID, RunID: fire.ID,
 		Spec: buildRoutineAgentSpec(trigger, prompt), Input: envelopeJSON,
 		Timeout: "10m",
 	}

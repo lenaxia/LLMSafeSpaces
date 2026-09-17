@@ -13,6 +13,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,6 +36,16 @@ type workflowExecuteRequest struct {
 	Spec     json.RawMessage `json:"spec"`
 	Input    json.RawMessage `json:"input"`
 	Timeout  string          `json:"timeout,omitempty"`
+	// WorkflowID/RunID identify the logical execution this dispatch
+	// belongs to (#1327): the run's workflow/run IDs on the workflow
+	// path, the routine's trigger/fire IDs on the routine path. The
+	// agent node derives its harness dedupe key from them. Absent (an
+	// older API server), the harness POST stays keyless exactly as
+	// before — deriving from partial identity would hand every
+	// identity-less dispatch the same key and collapse distinct
+	// executions into one transcript message.
+	WorkflowID string `json:"workflowId,omitempty"`
+	RunID      string `json:"runId,omitempty"`
 }
 
 type workflowExecuteResponse struct {
@@ -295,10 +307,6 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 	writeWorkflowSuccess(w, map[string]any{}, "otherwise")
 }
 
-// opencodeAddr is the harness endpoint the agent-node path talks to;
-// a var (not the const) so integration tests can point it at a stub.
-var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
-
 // renderTemplateRefs replaces {{.path}} references in an agent prompt
 // with values from the node input, in ONE left-to-right pass —
 // replacements are emitted straight to the output builder and are
@@ -400,9 +408,21 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		createdEphemeral = true
 	}
 
+	// #1327: the agent POST carries the execution-derived dedupe key.
+	// The pinned harness (opencode 1.18.15, G1 probe on PR #1323)
+	// validates the msg_-prefix, uses a repeated messageID verbatim as
+	// the user message's store ID, and UPSERTS on collision — so a key
+	// stable across the retry/re-drive of the SAME logical node
+	// execution bounds the session transcript to one message per
+	// execution. Empty identity (older API servers) keeps today's
+	// keyless wire body byte-for-byte.
+	dedupeKey := workflowAgentMessageKey(req.WorkflowID, req.NodeID, req.RunID)
 	body := fmt.Sprintf(`{"agentID":%q,"parts":[{"type":"text","text":%q}]}`, data.Agent, prompt)
+	if dedupeKey != "" {
+		body = fmt.Sprintf(`{"messageID":%q,"agentID":%q,"parts":[{"type":"text","text":%q}]}`, dedupeKey, data.Agent, prompt)
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/session/%s/message", opencodeAddr, sessionID),
+		fmt.Sprintf("%s/session/%s/message", getAgentAddr(), sessionID),
 		strings.NewReader(body))
 	if err != nil {
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
@@ -470,6 +490,68 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	writeWorkflowSuccess(w, result)
 }
 
+// Key-shape constants for workflowAgentMessageKey (#1327). The prefix
+// cap keeps the whole key within 64 chars (a common store-ID budget)
+// while the per-component cap keeps one long component from evicting
+// the others' readable share; the hash suffix carries uniqueness, so
+// truncation only costs readability.
+const (
+	agentKeyComponentCap = 16
+	agentKeyPrefixCap    = 55 // "msg_wf_" + components + separators; +1+"-"+8 hash → ≤64
+)
+
+// workflowAgentMessageKey derives the harness message dedupe key for a
+// workflow agent-node execution: msg_wf_<workflow>_<node>_<run>-<hash8>
+// (#1327). Retries/re-drives of the SAME logical node execution re-POST
+// the same prompt; the harness upserts on a repeated msg_-prefixed
+// messageID, so a key that is stable across the retry and distinct
+// across executions bounds the session transcript to one message per
+// logical execution. Any missing identity component returns "" — the
+// caller then POSTs keyless (fail open): a partial-identity key would
+// be shared by every identity-less dispatch and let distinct
+// executions upsert each other's transcript messages.
+//
+// The hash suffix (sha256 over the RAW identity, unit-separator
+// framed, first 4 bytes hex) keeps keys distinct where the readable
+// prefix collides: node IDs are user-authored, and sanitization folds
+// distinct raw IDs onto the same safe alphabet (a/b and a_b both
+// sanitize to a_b — without the hash one node's POST could upsert
+// another node's transcript message).
+func workflowAgentMessageKey(workflowID, nodeID, runID string) string {
+	if workflowID == "" || nodeID == "" || runID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(workflowID + "\x1f" + nodeID + "\x1f" + runID))
+	prefix := fmt.Sprintf("msg_wf_%s_%s_%s",
+		sanitizeKeyComponent(workflowID),
+		sanitizeKeyComponent(nodeID),
+		sanitizeKeyComponent(runID))
+	if len(prefix) > agentKeyPrefixCap {
+		prefix = prefix[:agentKeyPrefixCap]
+	}
+	return prefix + "-" + hex.EncodeToString(sum[:4])
+}
+
+// sanitizeKeyComponent folds a key component onto the harness-safe
+// alphabet [A-Za-z0-9._-] and caps its length.
+func sanitizeKeyComponent(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if len(out) > agentKeyComponentCap {
+		out = out[:agentKeyComponentCap]
+	}
+	return out
+}
+
 func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -520,8 +602,7 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 
 func createOpencodeSession(ctx context.Context, password string) string {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://%s/session", opencodeAddr),
-		strings.NewReader("{}"))
+		getAgentAddr()+"/session", strings.NewReader("{}"))
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{}).Do(req)
@@ -577,7 +658,7 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
-		fmt.Sprintf("http://%s/session/%s", opencodeAddr, sessionID), nil)
+		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
 	if err != nil {
 		// Malformed sessionID (control chars) makes the URL unparseable;
 		// req would be nil and SetBasicAuth would panic.

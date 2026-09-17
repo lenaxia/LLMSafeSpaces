@@ -392,9 +392,9 @@ func TestWorkflowExecuteHandler_AgentNodeRendersNestedRefs(t *testing.T) {
 		}
 	}))
 	defer stub.Close()
-	old := opencodeAddr
-	opencodeAddr = strings.TrimPrefix(stub.URL, "http://")
-	defer func() { opencodeAddr = old }()
+	orig := agentAddrAtomic.Load()
+	defer agentAddrAtomic.Store(orig)
+	agentAddrAtomic.Store(stub.URL)
 
 	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"topic={{.body.topic}} at {{.body.when}} raw={{.body}}"},"input":{"body":{"topic":"ship-it","when":"2026-09-17"},"source":{"type":"webhook"}}}`
 	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
@@ -436,9 +436,9 @@ func TestWorkflowExecuteHandler_AgentNodeUnresolvedRefsStayLiteral(t *testing.T)
 		_, _ = w.Write([]byte(`{"id":"ses_stub2"}`))
 	}))
 	defer stub.Close()
-	old := opencodeAddr
-	opencodeAddr = strings.TrimPrefix(stub.URL, "http://")
-	defer func() { opencodeAddr = old }()
+	orig := agentAddrAtomic.Load()
+	defer agentAddrAtomic.Store(orig)
+	agentAddrAtomic.Store(stub.URL)
 
 	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"keep {{.body.nope}} and {{.not.a.map}} ok={{.body.topic}}"},"input":{"body":{"topic":"x"}}}`
 	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
