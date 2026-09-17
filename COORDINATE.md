@@ -17,6 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
+| opencode (epic-71 / flake-verify-race) | #1312 flake fixes: outbox-verify persistFirst data race + 3 contended agentd tests | `api/internal/handlers/proxy_outbox_verify_test.go`, `cmd/workspace-agentd/session_aware_restart_1342_test.go`, `cmd/workspace-agentd/spawn_env_pull_test.go`, `cmd/workspace-agentd/spawn_env_pull.go`, `cmd/workspace-agentd/spawn_files_pull.go`, `cmd/workspace-agentd/spawn_files_size_exec_test.go` | In Progress | 2026-09-16 |
 | opencode (epic-71 / 0c-alerts) | #1312 alerts wave: canary S/L alert rules + loop-liveness consumers + dashboard panels + promtool scenarios | `helm/templates/prometheus-rules.yaml`, `helm/tests/alerts_promtool_test.yaml`, `helm/dashboards/operational.json`, `helm/chart_test.go` (alert-inventory/dashboard pins only), `helm/values.yaml` (canary comment), `helm/MONITORING-OPERATIONAL.md` | In Progress | 2026-09-15 |
 | opencode (g13) | G13 — account lockout IP+email keying | `api/internal/services/auth/auth.go`, `api/internal/server/router.go`, `api/internal/services/auth/*_test.go` | In Progress | 2026-07-12 |
 | opencode (g-batch) | Code-fixable batch: G6/G41, G21, G42, G44, G46, G47 | `api/internal/server/router.go`, `controller/internal/workspace/pod_builder.go`, `api/internal/handlers/stream_user_events.go`, `cmd/workspace-agentd/main.go`, `helm/templates/controller-deployment.yaml` (+ tests) | In Progress | 2026-07-11 |

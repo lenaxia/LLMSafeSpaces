@@ -68,6 +68,12 @@ type fakeAgentBackend struct {
 	// nothing ever reached the agent (persist only after the stall —
 	// which the timed-out sender never sees).
 	persistFirst bool
+	// latePersistGate, when non-nil, blocks the persist-after-stall path
+	// until the channel closes. Tests that assert definitive ABSENCE
+	// must sequence the late persist deterministically instead of racing
+	// it against a verify pass (a starved poll could otherwise observe
+	// the late landing). Set only at construction.
+	latePersistGate chan struct{}
 
 	// modelSets counts POST /api/session/:sid/model hits; callOrder
 	// records model-vs-admit ordering (R4: model BEFORE admission);
@@ -207,15 +213,20 @@ func (f *fakeAgentBackend) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		f.posts++
+		persistAfterStall := !f.persistFirst
 		if f.persistFirst {
 			f.persist(text)
 		}
+		gate := f.latePersistGate
 		stall, status := f.stall, f.respondStatus
 		f.mu.Unlock()
 		if stall > 0 {
 			time.Sleep(stall) // outside the lock: history stays readable mid-turn
 		}
-		if !f.persistFirst {
+		if persistAfterStall {
+			if gate != nil {
+				<-gate
+			}
 			f.mu.Lock()
 			f.persist(text)
 			f.mu.Unlock()
@@ -267,7 +278,7 @@ func quoteJSON(s string) string {
 // shrinkV2PromotionTimers shrinks the #1119 promotion-await window so the
 // delivery path exercises in test time. The await runs INSIDE the
 // deliverer's detached context, whose budget is outbox.DeliveryTimeout
-// (40ms after shrinkOutboxTimers) — raise it above the shrunk window so
+// (300ms after shrinkOutboxTimers) — raise it above the shrunk window so
 // the await path, not the transport budget, is what the tests exercise.
 func shrinkV2PromotionTimers(t *testing.T) {
 	t.Helper()
@@ -284,7 +295,15 @@ func shrinkOutboxTimers(t *testing.T) {
 	t.Helper()
 	origTimeout, origVD, origVB, origMVB := outbox.DeliveryTimeout, outbox.VerifyDelay, outbox.VerifyBackoff, outbox.MaxVerifyBackoff
 	origRB, origMB := outbox.RetryBackoff, outbox.MaxBackoff
-	outbox.DeliveryTimeout = 40 * time.Millisecond
+	// DeliveryTimeout keeps real headroom (epic-71 flake-verify-race):
+	// a 40ms budget could not absorb a loaded CI runner — under
+	// contention the POST sometimes failed to complete a local
+	// round trip at all, classifying definitive rejections as
+	// ambiguous (29-58 failures per test in contended loops). 300ms
+	// does; tests whose sends must outlive the budget (the stall
+	// shapes) use stalls at 3x the budget, a load-independent
+	// wall-clock margin.
+	outbox.DeliveryTimeout = 300 * time.Millisecond
 	outbox.VerifyDelay = 5 * time.Millisecond
 	outbox.VerifyBackoff, outbox.MaxVerifyBackoff = time.Millisecond, time.Millisecond
 	outbox.RetryBackoff, outbox.MaxBackoff = time.Millisecond, time.Millisecond
@@ -350,7 +369,7 @@ func subscribeQueueUpdates(t *testing.T, env *e2eEnv) <-chan apitypes.WorkspaceS
 // emitted exactly once.
 func TestOutboxVerify_LongTurnDeliveredExactlyOnce(t *testing.T) {
 	shrinkOutboxTimers(t)
-	backend := &fakeAgentBackend{stall: 120 * time.Millisecond, persistFirst: true} // > DeliveryTimeout
+	backend := &fakeAgentBackend{stall: 900 * time.Millisecond, persistFirst: true} // 3x DeliveryTimeout
 	env := newVerifyEnv(t, backend)
 	events := subscribeQueueUpdates(t, env)
 
@@ -363,8 +382,17 @@ func TestOutboxVerify_LongTurnDeliveredExactlyOnce(t *testing.T) {
 	require.Len(t, entries, 1)
 	assert.Equal(t, outbox.StatusVerifying, entries[0].Status, "timeout mid-turn is unknown-outcome, never a retry trigger")
 
-	// Wait out the verify delay; second pass resolves via the transcript.
-	time.Sleep(15 * time.Millisecond)
+	// The verify pass must not run before the stalled POST's
+	// persist-at-admit is observable: a scheduler-delayed handler would
+	// otherwise make the transcript read as definitive ABSENCE and
+	// re-send — the exact duplicate this test forbids. Poll the fake's
+	// transcript directly (the same oracle the verifier uses).
+	assert.Eventually(t, func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return len(backend.userTexts) == 1
+	}, 2*time.Second, 5*time.Millisecond, "persist-before-turn must land while the turn stalls")
+	time.Sleep(15 * time.Millisecond) // let the verify delay elapse
 	require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
 	assert.Empty(t, listOutbox(t, env), "verified-delivered entry leaves the queue")
 
@@ -390,8 +418,13 @@ func TestOutboxVerify_DefinitiveAbsenceRetriesSafely(t *testing.T) {
 	shrinkOutboxTimers(t)
 	// The first POST stalls past the timeout AND nothing persisted
 	// (transport cut before the agent received anything): the verify
-	// pass must PROVE absence and retry safely.
-	backend := &fakeAgentBackend{stall: 120 * time.Millisecond, persistFirst: false}
+	// pass must PROVE absence and retry safely. The gate holds the
+	// late persist (the fake's "eventually lands, sender never sees it"
+	// behavior) until cleanup, so the verify passes observe absence
+	// deterministically no matter how the scheduler delays them.
+	latePersist := make(chan struct{})
+	t.Cleanup(func() { close(latePersist) })
+	backend := &fakeAgentBackend{stall: 900 * time.Millisecond, persistFirst: false, latePersistGate: latePersist}
 	env := newVerifyEnv(t, backend)
 	events := subscribeQueueUpdates(t, env)
 
@@ -632,6 +665,14 @@ func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
 
 		// The store read confirms delivery (persistFirst modeled the
 		// cut AFTER admission landed) — entry resolves and leaves.
+		// Poll the promotion persist first: a scheduler-delayed
+		// promotion goroutine must never make the verify pass read the
+		// transcript as definitive absence (which would re-admit).
+		assert.Eventually(t, func() bool {
+			backend.mu.Lock()
+			defer backend.mu.Unlock()
+			return len(backend.userTexts) == 1
+		}, 2*time.Second, 5*time.Millisecond, "post-admission promotion must persist within the test window")
 		time.Sleep(15 * time.Millisecond)
 		require.True(t, env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1"))
 		assert.Empty(t, listOutbox(t, env))

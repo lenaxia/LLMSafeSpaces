@@ -268,6 +268,13 @@ func TestSpawnEnvPuller_OversizedBodyIsBounded(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	p := fastPuller(hostOf(t, srv), "pw")
+	// This test pins the CAP-vs-decode classification, not the retry
+	// ladder: fastPuller's 100ms attempt cannot absorb a loaded runner
+	// reading 1MiB (epic-71 flake-verify-race — under contention the
+	// truncated read surfaced as spawn_env_unavailable instead). The
+	// ladder tests below keep the fast budgets.
+	p.attempt = 5 * time.Second
+	p.bound = 10 * time.Second
 	_, reason, err := p.pullBounded(context.Background())
 	require.Error(t, err)
 	require.Equal(t, spawnEnvReasonBadResponse, reason,
