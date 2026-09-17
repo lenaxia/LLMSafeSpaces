@@ -5,21 +5,26 @@
 # Standalone workspace-agentd image (#863).
 #
 # This is the image-volume delivery artifact: the controller pins it by
-# digest into every workspace pod, and the entrypoint verifies the binary
-# sha256 against per-arch pins before exec. It contains ONLY the agentd
-# binary — no distro, no shell, no opencode. Those stay in the workspace
-# image ("the image is the workspace"); this image is platform runtime,
-# delivered on platform cadence.
+# digest into every workspace pod, and the supervisor self-verifies the
+# binary sha256 against the per-arch pins before exec (design 0053 —
+# the deleted entrypoint's check moved into the binary). Contents: the agentd binary
+# plus ONE data file — the public CA bundle (#1416, /etc/ssl/certs/
+# ca-certificates.crt) for the sidecar's TLS egress. No distro, no
+# shell, no opencode: those stay in the workspace image ("the image is
+# the workspace"); this image is platform runtime, delivered on
+# platform cadence.
 #
-# FROM scratch keeps it minimal (~25MB/binary) so the kubelet image-volume
-# pull is cheap on the resume path. The binary is static (CGO_ENABLED=0).
+# FROM scratch keeps it minimal (~25MB/binary + ~220KB CA roots, #1416)
+# so the kubelet image-volume pull is cheap on the resume path. The
+# binary is static (CGO_ENABLED=0).
 #
 # Binary path inside the image MUST match the controller's
 # agentdBinaryRelPath (/usr/local/bin/workspace-agentd) — the pod env pin
 # LLMSAFESPACES_AGENTD_BINARY is /agentd + that path once mounted.
 #
-# NOTE: do not add anything executable to this image. The whole point of
-# the sha256 pin is that one file's integrity is the contract.
+# NOTE: do not add anything EXECUTABLE to this image (the CA bundle is
+# 0644 data). The whole point of the sha256 pin is that one file's
+# integrity — the binary — is the contract.
 
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 
@@ -46,7 +51,16 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 
 FROM scratch
 
+# #1416: public TLS roots for the sidecar's workflow http nodes (and any
+# https egress) — a scratch image ships none, so every TLS fetch failed
+# with "certificate signed by unknown authority". Copied from the builder
+# (bookworm) at Go's default system-roots path; purely additive (in-cluster
+# API traffic is plain HTTP; nothing sets SSL_CERT_FILE).
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 COPY --from=builder --chmod=755 /out/workspace-agentd /usr/local/bin/workspace-agentd
 
-# Not a runnable image by itself (no entrypoint) — it is consumed only as
-# an image volume mounted read-only at /agentd in workspace pods.
+# Not runnable by itself (no entrypoint). Consumed two ways: as the
+# image volume mounted read-only at /agentd in workspace pods (the
+# binary), and as the agentd SIDECAR image (binary + CA bundle for TLS
+# egress — http nodes, #1416).

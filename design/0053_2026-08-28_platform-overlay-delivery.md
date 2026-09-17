@@ -48,7 +48,7 @@ Because release CI tags the base with the platform `VERSION` (`release.yml` prin
 | Base is tagged with the platform VERSION | `.github/workflows/release.yml:1324` (`base:${VERSION}`) |
 | agentd overlay delivery exists: digest-pinned image volume `/agentd`, per-arch sha256 as OCI index annotations, controller-resolved at startup, cached in `llmsafespaces-agentd-pins` ConfigMap, verified before exec | `docs/operator/agentd-delivery.md`; `helm/values.yaml` (`controller.agentdDelivery`); `controller/internal/controller/controller.go:61-63` |
 | Sidecar mode runs platform boot (init-fs/bootstrap/materialize) from the agentd artifact and bypasses the baked entrypoint; #863 verify moved into the supervisor | `helm/values.yaml` (`agentdSidecar`, migration-state note); design 0051 |
-| The agentd artifact's trust contract is "one file, one sha256" — `FROM scratch`, ~25MB, "do not add anything executable" | `cmd/workspace-agentd/Dockerfile` |
+| The agentd artifact's trust contract is "one EXECUTABLE file, one sha256" — `FROM scratch`, ~25MB+CA roots (#1416), "do not add anything executable" (the CA bundle is 0644 data) | `cmd/workspace-agentd/Dockerfile` |
 | agentd already dispatches subcommands: `init-fs`, `supervise-opencode`, `--sidecar`, `materialize`, `bootstrap` | `cmd/workspace-agentd/main.go:82-112` |
 | `redact` is a ~40-line stdin→stdout filter consumed only by platform-owned paths: the entrypoint (pipes opencode stdout/stderr in high-security mode) and PATH-shadowing wrappers | `cmd/redact/main.go`; `docs/reference/cli.md:148-167`; `docs/operator/runtime-environments.md:82` |
 | The factory floor blocks builds onto bases older than `0.15.7` (the #871 contract) | `api/internal/imagefactory/dockerfile.go:25,41-44` |
@@ -59,7 +59,7 @@ Because release CI tags the base with the platform `VERSION` (`release.yml` prin
 
 ### 4.1 Artifact 1 — `agentdDelivery.image` (existing, role extended)
 
-The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, one binary, one per-arch sha256. It already carries the supervisor and the platform-boot phases; after this design it also carries `redact` — **as a subcommand**, not a second file:
+The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, one binary, one per-arch sha256 (plus, since #1416, one non-executable data file — the public CA bundle at `/etc/ssl/certs/ca-certificates.crt` — carried for the sidecar's TLS egress; the binary-integrity contract is untouched). It already carries the supervisor and the platform-boot phases; after this design it also carries `redact` — **as a subcommand**, not a second file:
 
 - `workspace-agentd redact` — `cmd/redact/main.go` folds into the agentd binary using the existing subcommand dispatch (`main.go:82-112`). The standalone `cmd/redact` is deleted.
 - The supervisor writes a wrapper at `/sandbox-runtime/bin/redact` (RW tmpfs, uid-1000 space) — `exec /agentd/usr/local/bin/workspace-agentd redact "$@"` — and includes `/sandbox-runtime/bin` in opencode's PATH. This preserves the documented UX (`some-command | redact`, `docs/reference/cli.md`) for the PATH-shadowing wrappers with zero bytes of a second executable in the trusted artifact.
@@ -67,7 +67,7 @@ The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, o
 
 ### 4.2 Artifact 2 — `opencodeDelivery.image` (new)
 
-Same construction as the agentd artifact, one binary, one hash:
+Same construction as the agentd artifact — one executable, one hash (the agentd artifact additionally carries the #1416 CA data file):
 
 - `FROM scratch`; the opencode binary at a fixed path (`/usr/local/bin/opencode`); per-arch binary sha256 stamped onto the image index as OCI annotations by the same CI job that stamps agentd's.
 - Helm: `controller.opencodeDelivery.image` (+ optional `binarySHA256Amd64`/`Arm64` break-glass overrides, set-both-or-neither, mirroring `agentdDelivery`). **Mandatory**: the render fails when empty — as `agentdDelivery` becomes after this design.

@@ -1,0 +1,42 @@
+# Worklog: #1416 — public CA roots in the agentd image
+
+**Date:** 2026-09-17
+**Session:** Workflow http nodes failed every TLS target: the digest-pinned agentd image is FROM scratch and ships no trust store. One COPY line plus the contract pins.
+**Status:** Complete
+
+---
+
+## Objective
+Make TLS egress from the agentd sidecar verify against real roots without disturbing the delivery image's contracts (binary-only image volume — now binary + one data file, per-arch sha256 pins, nothing executable, ~25MB pull budget).
+
+## Work Completed
+- Dockerfile: COPY the bookworm builder's ca-certificates.crt to /etc/ssl/certs/ca-certificates.crt (Go's first default system-roots probe path, root_linux.go certFiles[0]).
+- Verified additive-only: in-cluster API traffic is plain HTTP (APIServiceURL http://…svc); nothing repo-wide sets SSL_CERT_FILE; the main container's own TLS paths use its own rootfs bundle. The self-verify hashes /proc/self/exe only — unaffected.
+- Contract pins in pkg/repolint (dockerfile_ca_bundle_test.go): bundle COPY present at the exact path, bundle never chmod'd executable, binary stays --chmod=755; pins fail loud on unreadable Dockerfile.
+- Docs corrected where they claimed binary-only contents or a ~25MB image: operator delivery doc + the Dockerfile's own sizing comment.
+- Deferred live verification (http node GET https://…/health) tracked in #1427.
+
+## Key Decisions
+- Copy from the $BUILDPLATFORM builder (bundle is arch-independent data).
+- No clear-path invention for inputSchema-style semantics — n/a here; single-purpose data file.
+
+## Blockers
+None.
+
+## Tests Run
+- repolint pins (3) green; full pkg/repolint suite green.
+- CI integration pin: the agentd job builds the image (repo-root
+  context, -f cmd/workspace-agentd/Dockerfile), extracts the bundle from
+  a created container, fails on missing/empty/certless — runs on PRs.
+
+## Next Steps
+Merge with the #1410-#1419 batch; live http-node leg in the comprehensive test (#1427).
+
+## Files Modified
+- cmd/workspace-agentd/Dockerfile (CA COPY + header/sizing comments)
+- pkg/repolint/dockerfile_ca_bundle_test.go (3 fail-loud pins)
+- .github/workflows/ci.yml (built-image integration pin: presence, functional TLS acceptance with a guard self-test — all PR-gated; extract-step comments)
+- docs/operator/agentd-delivery.md (contents clause, sizing, self-verify wording + failure table)
+- helm/values.yaml (supervisor self-verify wording)
+- design/0053_2026-08-28_platform-overlay-delivery.md (trust-contract rows)
+- controller/internal/workspace/reconciler.go (AgentdImage doc comment: supervisor self-verify)
