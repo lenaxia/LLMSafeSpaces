@@ -474,3 +474,20 @@ func TestRenderTemplateRefs_TopLevelAnyCharsetAndFlatDotted(t *testing.T) {
 		t.Fatalf("top-level any-charset + flat-dotted precedence: %q", out)
 	}
 }
+
+// Double-render pin: a VALUE shaped like a ref is never re-expanded —
+// externally-supplied payloads cannot smuggle other fields in.
+func TestRenderTemplateRefs_NoDoubleRender(t *testing.T) {
+	input := map[string]any{
+		"x": "{{.y}}",
+		"y": "PWNED",
+	}
+	if got := renderTemplateRefs("{{.x}}", input); got != "{{.y}}" {
+		t.Fatalf("value-shaped refs must stay literal after substitution, got %q", got)
+	}
+	// Nested walk too: a body value containing a ref shape stays inert.
+	input = map[string]any{"body": map[string]any{"a": "{{.body.b}}", "b": "SECRET"}}
+	if got := renderTemplateRefs("{{.body.a}}", input); got != "{{.body.b}}" {
+		t.Fatalf("walked values must not re-expand, got %q", got)
+	}
+}

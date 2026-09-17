@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,22 +301,31 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
 
 // renderTemplateRefs replaces {{.path}} references in an agent prompt
-// with values from the node input. TWO passes:
+// with values from the node input, in ONE expansion pass:
 //
-// Pass 1 (back-compat): every TOP-LEVEL key renders by exact-match
-// ReplaceAll — any key charset, exactly as the pre-#1417 code behaved
-// (a flat key literally named "body.topic" still wins over path
-// walking).
+// Top-level keys substitute by exact match (any key charset — KEY
+// matching is the pre-#1417 behavior; value rendering improved:
+// composites render as JSON, nil as null). Substituted values are
+// held behind sentinel tokens until after the dotted-path scan, so a
+// VALUE that itself looks like a ref is never re-expanded (the
+// double-render class: an externally-supplied webhook payload field
+// containing {{.headers.authorization}} must not pull other fields
+// into the prompt).
 //
-// Pass 2: dotted paths walk nested maps — {{.body.topic}} — matching
-// the condition nodes' expression depth; webhook-driven runs hand the
-// fire envelope whose payload lives under body. Scalars render bare;
-// composites render as compact JSON; unresolvable refs stay literal.
+// Dotted paths ({{.body.topic}}) then walk nested maps — matching the
+// condition nodes' expression depth; webhook-driven runs hand the
+// fire envelope whose payload lives under body. A flat key literally
+// named "body.topic" wins over path walking (exact match first).
+// Scalars render bare; composites as compact JSON; unresolvable refs
+// stay literal.
 func renderTemplateRefs(prompt string, input map[string]any) string {
+	var restored []string
 	for k, v := range input {
-		prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", renderTemplateValue(v))
+		tok := "\x00" + strconv.Itoa(len(restored)) + "\x00"
+		restored = append(restored, renderTemplateValue(v))
+		prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", tok)
 	}
-	return templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
+	prompt = templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
 		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
 		if path == "" {
 			return ref
@@ -333,14 +343,16 @@ func renderTemplateRefs(prompt string, input map[string]any) string {
 		}
 		return renderTemplateValue(cur)
 	})
+	for i, v := range restored {
+		prompt = strings.ReplaceAll(prompt, "\x00"+strconv.Itoa(i)+"\x00", v)
+	}
+	return prompt
 }
 
 func renderTemplateValue(v any) string {
 	switch t := v.(type) {
 	case string:
 		return t
-	case fmt.Stringer:
-		return t.String()
 	default:
 		b, err := json.Marshal(v)
 		if err != nil {
