@@ -21,7 +21,10 @@ import (
 func TestAgentdDockerfile_CABundleDelivered(t *testing.T) {
 	raw, err := os.ReadFile("../../cmd/workspace-agentd/Dockerfile")
 	if err != nil {
-		t.Skipf("Dockerfile unreadable (module-root run?): %v", err)
+		raw, err = os.ReadFile("cmd/workspace-agentd/Dockerfile")
+	}
+	if err != nil {
+		t.Fatalf("agentd Dockerfile unreadable — the #1416 pins must fail loud, not skip: %v", err)
 	}
 	df := string(raw)
 
@@ -34,7 +37,10 @@ func TestAgentdDockerfile_CABundleDelivered(t *testing.T) {
 func TestAgentdDockerfile_CABundleNotExecutable(t *testing.T) {
 	raw, err := os.ReadFile("../../cmd/workspace-agentd/Dockerfile")
 	if err != nil {
-		t.Skipf("Dockerfile unreadable (module-root run?): %v", err)
+		raw, err = os.ReadFile("cmd/workspace-agentd/Dockerfile")
+	}
+	if err != nil {
+		t.Fatalf("agentd Dockerfile unreadable — the #1416 pins must fail loud, not skip: %v", err)
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		if strings.Contains(line, "ca-certificates.crt") && strings.Contains(line, "--chmod=755") {
@@ -46,7 +52,10 @@ func TestAgentdDockerfile_CABundleNotExecutable(t *testing.T) {
 func TestAgentdDockerfile_BinaryStillExecutable(t *testing.T) {
 	raw, err := os.ReadFile("../../cmd/workspace-agentd/Dockerfile")
 	if err != nil {
-		t.Skipf("Dockerfile unreadable (module-root run?): %v", err)
+		raw, err = os.ReadFile("cmd/workspace-agentd/Dockerfile")
+	}
+	if err != nil {
+		t.Fatalf("agentd Dockerfile unreadable — the #1416 pins must fail loud, not skip: %v", err)
 	}
 	if !strings.Contains(string(raw), "COPY --from=builder --chmod=755 /out/workspace-agentd") {
 		t.Fatalf("the agentd BINARY must remain --chmod=755 — the kubelet image volume execs it")

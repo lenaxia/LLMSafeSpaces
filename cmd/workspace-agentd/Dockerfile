@@ -55,5 +55,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifi
 
 COPY --from=builder --chmod=755 /out/workspace-agentd /usr/local/bin/workspace-agentd
 
-# Not a runnable image by itself (no entrypoint) — it is consumed only as
-# an image volume mounted read-only at /agentd in workspace pods.
+# Not runnable by itself (no entrypoint). Consumed two ways: as the
+# image volume mounted read-only at /agentd in workspace pods (the
+# binary), and as the agentd SIDECAR image (binary + CA bundle for TLS
+# egress — http nodes, #1416).
