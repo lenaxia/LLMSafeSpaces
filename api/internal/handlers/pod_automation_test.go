@@ -388,3 +388,114 @@ func TestPodAutomation_RotateIsAudited(t *testing.T) {
 	assert.Equal(t, "triggers/user-7/trigger.rotate_webhook_secret/"+id, audit.events[0])
 	assert.NotContains(t, w.Body.String()+fmt.Sprint(audit.events), "whs_", "no secret material leaks into response or audit")
 }
+
+// --- #1426: the scoping rule holds on the update path too ---
+
+func TestScopeTriggerUpdateBody(t *testing.T) {
+	// Unrelated patch: verbatim passthrough.
+	out, wfID, err := scopeTriggerUpdateBody([]byte(`{"enabled":false,"prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.JSONEq(t, `{"enabled":false,"prompt":"p"}`, string(out), "no target keys -> untouched")
+
+	// Workspace retarget attempt: forced to THIS workspace.
+	out, _, err = scopeTriggerUpdateBody([]byte(`{"workspaceid":"ws-OTHER","enabled":true}`), "ws-1")
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant retarget forced to this pod's workspace")
+	assert.NotContains(t, string(out), "ws-OTHER")
+	assert.Contains(t, string(out), `"enabled":true`, "sibling fields ride along")
+
+	// DAG retarget: gated by the caller (workflowId returned), no stamp.
+	out, wfID, err = scopeTriggerUpdateBody([]byte(`{"workflowId":"wf-9","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID)
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
+	assert.NotContains(t, string(out), `"workspaceId"`)
+
+	// Clearing the DAG target without naming a workspace: becomes a
+	// routine HERE, never a targetless zombie.
+	out, wfID, err = scopeTriggerUpdateBody([]byte(`{"workflowId":""}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.Contains(t, string(out), `"workflowId":""`)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
+
+	// Same guards as create.
+	_, _, err = scopeTriggerUpdateBody([]byte(`null`), "ws-1")
+	require.Error(t, err)
+	_, _, err = scopeTriggerUpdateBody([]byte(`{"workflowId":123}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflowId must be a string")
+}
+
+// The full update chain: a routine trigger created for THIS workspace
+// cannot be retargeted to another workspace via the pod seam.
+func TestPodAutomation_TriggerUpdateCannotRetargetWorkspace(t *testing.T) {
+	r, trigStore, _ := newAutomationRouter(t, automationReviewer(), automationLookup())
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"hostage","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	id := created["id"].(string)
+
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workspaceId":"ws-EVIL","enabled":false}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	row := trigStore.triggers[id]
+	require.NotNil(t, row)
+	require.NotNil(t, row.WorkspaceID)
+	assert.Equal(t, "ws-1", *row.WorkspaceID, "retarget to another workspace silently forced back to this pod's")
+	assert.False(t, row.Enabled, "sibling patch fields still apply")
+}
+
+// The full update chain: DAG retarget is gated on existence + ownership +
+// THIS workspace, exactly like create.
+func TestPodAutomation_TriggerUpdateWorkflowTargetGating(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	other := "ws-OTHER"
+	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"gated","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	id := created["id"].(string)
+
+	// Retarget to a workflow in ANOTHER workspace: rejected.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-away"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "does not target this workspace")
+
+	// Retarget to a nonexistent workflow: rejected.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-nope"}`)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Retarget to THIS workspace's workflow: allowed, stored.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-ok"}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	row := trigStore.triggers[id]
+	require.NotNil(t, row.WorkflowID)
+	assert.Equal(t, "wf-ok", *row.WorkflowID)
+
+	// Clearing the DAG target lands the routine HERE.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":""}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	row = trigStore.triggers[id]
+	assert.Nil(t, row.WorkflowID, "DAG target cleared")
+	require.NotNil(t, row.WorkspaceID, "routine target stamped")
+	assert.Equal(t, "ws-1", *row.WorkspaceID)
+}
