@@ -1,0 +1,52 @@
+// Copyright (C) 2026 Michael Kao
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package local_test
+
+// issue_1417_templating_e2e_script_test.go — structural pins for the
+// #1417 templating e2e (local/issue-1417-templating-e2e.sh), same
+// philosophy as issue_1410_automation_e2e_script_test.go: the script
+// is CI glue on the kind cluster; what is pinnable deterministically
+// is the structure past failures actually broke — bash syntax, the
+// row set, and the presence of the assertions so rows cannot be
+// silently dropped.
+
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const issue1417Script = "issue-1417-templating-e2e.sh"
+
+func TestIssue1417E2EScript_BashSyntax(t *testing.T) {
+	cmd := exec.Command("bash", "-n", issue1417Script)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "bash -n failed: %s", string(out))
+}
+
+func TestIssue1417E2EScript_RowAssertionsPresent(t *testing.T) {
+	raw, err := os.ReadFile(issue1417Script)
+	require.NoError(t, err)
+	s := string(raw)
+
+	// Both rows and their discriminative assertions must exist.
+	for _, want := range []string{
+		"{{.body.topic}}",                         // the nested-ref prompt shape under test
+		"PROMPT-WAS: e2e-nested-topic",            // T1 happy: rendered value asserted
+		"grep -q \"{{.missing.path}}\"",           // T2 unhappy: literal fallback asserted
+		"registry_admits",                         // the stub model must be admitted before the turn
+		"rollout status deployment/mock-llm-1417", // the mock upstream must be up
+		"targetWorkspaceId",                       // the workflow targets the seeded workspace
+	} {
+		assert.Contains(t, s, want)
+	}
+	// The failure leg must not silently pass: failures gate the exit.
+	assert.Contains(t, s, "note_fail")
+	assert.Contains(t, s, `die "${failures} templating e2e row(s) failed"`)
+	assert.NotContains(t, strings.ReplaceAll(s, "note_fail", ""), "TODO", "no stub rows")
+}
