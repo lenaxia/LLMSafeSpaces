@@ -251,7 +251,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn the node vocabulary (transform/parallel/delay/mcp_call...) from workflow_list entries. Wire triggers to it via trigger_create {workflow_id} or fire it manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml is a STRINGIFIED spec - a JSON object string {nodes:[...],edges:[...]} or YAML text (single document; the server converts YAML to the canonical JSON spec) - passed through to the platform verbatim - learn the node vocabulary (transform/parallel/delay/mcp_call...) from workflow_list entries. Wire triggers to it via trigger_create {workflow_id} or fire it manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},
