@@ -21,3 +21,13 @@
 ## Files modified
 
 - `runtimes/base/Dockerfile`, `local/runtime_dockerfile_test.go`, this worklog
+
+## Review r1 remediation
+
+- **f1 (BLOCKING — the sixth un-retried fetch):** `runtimes/opencode/Dockerfile:71` (the opencode release tarball, built by the SAME pool step) gains the identical retry flags — the fix now covers the failure class, not just the file that happened to fail.
+- **f2 (pin hardening):** numeric `--retry 5` asserted (a bare `--retry` substring can no longer masquerade), both Dockerfiles pinned, and an exact-floor `totalHits >= 6` stops silent shrinkage.
+- **f3 (worklog wording corrected by this note, not rewritten):** "identical semantics to the gvisor.sh precedent" was inaccurate — gvisor.sh uses `--retry 3` WITHOUT `--retry-all-errors` plus a manual 404 loop and connect/max-time caps; this change shares only "bounded, loud after exhaustion". Recorded.
+
+## Tests run (r1)
+
+- `go test -timeout 60s -run TestRuntimeDockerfiles ./local/` — ok (renamed row covers both files); full `./local/` ok; repolint passed.
