@@ -4,8 +4,12 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResolveAuditTarget_MapsProviderShortNameToPrefixForm is the regression
@@ -139,4 +143,52 @@ func TestRunAudit_ValidKms_ReachesPgConnection(t *testing.T) {
 			// is covered by store_integration_test.go.
 		})
 	}
+}
+
+// TestRun_TableAllWithResumeFromRejected is the migrate-kek twin of
+// cmd/rotate-kek's guard test (PR #1409 review iteration 2): --resume-from
+// is a per-table cursor, MigrateAll takes none — silently ignoring it would
+// strand pre-cursor rows. The guard fires before any key-file read or KMS
+// construction, so no fixtures are needed.
+func TestRun_TableAllWithResumeFromRejected(t *testing.T) {
+	err := run("postgres://127.0.0.1:1/nope", "/nonexistent-master.key", "aws", "us-east-1", "/nonexistent-creds",
+		"/nonexistent-gcp", "arn:a", "arn:b", "arn:c", "", "", "",
+		"all", "some-row-id", "", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--resume-from applies per table")
+}
+
+// TestPrintResumeHint_DryRunNeverSuggestsResumeFrom is the migrate-kek twin
+// of cmd/rotate-kek's hint test (PR #1409 review iteration 2): in a dry-run
+// nothing was written, so suggesting --resume-from would make the apply run
+// SKIP every row before the cursor. The dry-run hint must say to re-run
+// plainly instead.
+func TestPrintResumeHint_DryRunNeverSuggestsResumeFrom(t *testing.T) {
+	out := captureHintStderr(t, func() { printResumeHint("api_keys", "row-7", true) })
+	assert.NotContains(t, out, "--resume-from row-7", "dry-run hint must not suggest resuming FROM the reported cursor")
+	assert.Contains(t, out, "re-run without --dry-run")
+}
+
+// TestPrintResumeHint_ApplyRunSuggestsResumeFrom pins the apply-run shape.
+func TestPrintResumeHint_ApplyRunSuggestsResumeFrom(t *testing.T) {
+	out := captureHintStderr(t, func() { printResumeHint("api_keys", "row-7", false) })
+	assert.Contains(t, out, "--resume-from row-7")
+	assert.Contains(t, out, "--table api_keys")
+}
+
+// captureHintStderr captures os.Stderr while fn runs. The hint is a single
+// short line (< PIPE_BUF), so one write + one read cannot deadlock.
+func captureHintStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	saved := os.Stderr
+	os.Stderr = w
+	fn()
+	w.Close()
+	os.Stderr = saved
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	r.Close()
+	return string(buf[:n])
 }

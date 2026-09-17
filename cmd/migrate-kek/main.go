@@ -351,18 +351,21 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 		fmt.Fprintf(os.Stderr, "  ERROR %s/%s: %v\n", table, e.RowID, e.Error)
 	}
 	printResumeHint(table, result.LastRowID, dryRun)
-	if result.Failed > 0 {
-		return fmt.Errorf("%d rows failed migration", result.Failed)
-	}
 	// The runbook promises the Redis DEK cache is flushed automatically on
 	// success — for every invocation shape, including the documented
 	// per-table recovery path. MigrateAll flushes inside the coordinator; a
-	// single-table run flushes here. With no --redis-url the store's flush
-	// is the pg-only no-op.
+	// single-table run flushes here. The flush runs after the walk even
+	// with per-row failures (matching MigrateAll): flushing is always safe —
+	// evicted DEKs are re-derived on demand and still decrypt via the
+	// static fallback during the migration window. With no --redis-url the
+	// store's flush is the pg-only no-op.
 	if !dryRun {
 		if err := store.FlushDEKCache(ctx); err != nil {
 			return fmt.Errorf("flush DEK cache: %w", err)
 		}
+	}
+	if result.Failed > 0 {
+		return fmt.Errorf("%d rows failed migration", result.Failed)
 	}
 	return nil
 }

@@ -120,3 +120,16 @@ Reviewer's out-of-scope note (pre-existing, loud-failing by design): `purposeFor
 - `go test ./cmd/rotate-kek/ ./cmd/migrate-kek/ -tags=integration -race` — PASS (incl. new flush e2e, 20 rotate-kek tests).
 - Unit suites for cmd/, pkg/secrets, api/internal/app — PASS.
 - `golangci-lint run` — 0 issues.
+
+---
+
+## Review iteration 2 (PR #1409, AI reviewer: REQUEST CHANGES — all iteration-1 fixes verified)
+
+Both issues now rated FULLY ADDRESSED by the reviewer; remaining findings fixed:
+
+1. **migrate-kek guard unit test** (twin of rotate-kek's): added `TestRun_TableAllWithResumeFromRejected` — the guard fires before any key-file read, so no fixtures needed.
+2. **migrate-kek dry-run hint unit tests**: added `TestPrintResumeHint_DryRunNeverSuggestsResumeFrom` + `TestPrintResumeHint_ApplyRunSuggestsResumeFrom`.
+3. **Flush asymmetry (advisory) aligned**: the single-table path now flushes after the walk even with per-row failures, matching RotateAll/MigrateAll (flushing is always safe — evicted DEKs re-derive on demand and still decrypt via the still-mounted old key during the window). Flush-before-failed-check in both CLIs.
+4. **Stale worklog line corrected** (worklogs are append-only; correction recorded here): the iteration-1 entry said the flush e2e runs `--table api_keys`; the committed test deliberately uses `--table user_keys` for shared-CI-DB isolation (api_keys is seeded concurrently by the migrate-kek suite binary). The test's own comment is authoritative.
+
+**Acknowledged gap (reviewer's item 3, accepted as follow-up):** migrate-kek's single-table flush is exercised at store level (`TestCompositeMigrationStore_FlushDelegatesToRedis`) but not via `run()` — driving it requires a live KMS (every row fails at Encrypt with unreachable KMS, and the flush-on-success path needs a successful walk). Closing it properly needs an injectable provider seam in `run()`, deliberately out of scope for this PR's footprint. Rotate-kek's symmetric path IS covered end-to-end (`TestIntegration_SingleTableRunFlushesDEKCache`).

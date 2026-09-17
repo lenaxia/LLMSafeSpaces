@@ -147,19 +147,21 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 		fmt.Fprintf(os.Stderr, "  ERROR %s/%s: %v\n", table, e.RowID, e.Error)
 	}
 	printResumeHint(table, result.LastRowID, dryRun)
-	if result.Failed > 0 {
-		return fmt.Errorf("%d rows failed rotation", result.Failed)
-	}
 	// The runbook promises the Redis DEK cache is flushed automatically on
 	// success — for every invocation shape, including the documented
 	// per-table recovery path. RotateAll flushes inside the coordinator; a
-	// single-table run flushes here. With no --redis-url the store's flush
-	// is the pg-only no-op (operators who skipped --redis-url get the same
-	// no-flush behavior the all-tables path has).
+	// single-table run flushes here. The flush runs after the walk even
+	// with per-row failures (matching RotateAll): flushing is always safe —
+	// evicted DEKs are re-derived on demand and still decrypt via the
+	// still-mounted old key during the rotation window. With no --redis-url
+	// the store's flush is the pg-only no-op.
 	if !dryRun {
 		if err := redisCacheStore.FlushDEKCache(ctx); err != nil {
 			return fmt.Errorf("flush DEK cache: %w", err)
 		}
+	}
+	if result.Failed > 0 {
+		return fmt.Errorf("%d rows failed rotation", result.Failed)
 	}
 	return nil
 }
