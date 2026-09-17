@@ -46,6 +46,13 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 
 FROM scratch
 
+# #1416: public TLS roots for the sidecar's workflow http nodes (and any
+# https egress) — a scratch image ships none, so every TLS fetch failed
+# with "certificate signed by unknown authority". Copied from the builder
+# (bookworm) at Go's default system-roots path; purely additive (in-cluster
+# API traffic is plain HTTP; nothing sets SSL_CERT_FILE).
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
 COPY --from=builder --chmod=755 /out/workspace-agentd /usr/local/bin/workspace-agentd
 
 # Not a runnable image by itself (no entrypoint) — it is consumed only as
