@@ -514,3 +514,12 @@ func TestRenderTemplateRefs_UnclosedRefDoesNotSwallow(t *testing.T) {
 		t.Fatalf("the valid ref after an unclosed one must render, got %q", got)
 	}
 }
+
+// Same-line swallow pin: an unclosed ref before a valid one on the
+// SAME line must not consume it.
+func TestRenderTemplateRefs_UnclosedSameLineDoesNotSwallow(t *testing.T) {
+	got := renderTemplateRefs("{{.typo oops {{.y}}", map[string]any{"y": "RENDERED"})
+	if !strings.Contains(got, "RENDERED") {
+		t.Fatalf("same-line valid ref must render, got %q", got)
+	}
+}

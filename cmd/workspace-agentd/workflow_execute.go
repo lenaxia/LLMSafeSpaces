@@ -361,12 +361,14 @@ func renderTemplateValue(v any) string {
 	return string(b)
 }
 
-// templateRefPattern matches {{.anything}} non-greedily, per-line (NO
-// (?s): DOTALL let an unclosed {{.x swallow the NEXT valid ref across
-// a newline, suppressing its render. Multi-line keys are not
+// templateRefPattern matches a ref whose body contains NO braces and
+// no newlines: an unclosed {{.x must never swallow a following valid
+// ref — neither across a newline (no (?s)) nor on the same line (a
+// brace-free body stops the lazy match at the first }} where the valid
+// ref's own {{ begins). Multi-line/brace-containing keys are not
 // addressable anyway. The charset lives in the MATCHER (exact key hit
 // first, then path walk), not the pattern.
-var templateRefPattern = regexp.MustCompile(`\{\{\.(.+?)\}\}`)
+var templateRefPattern = regexp.MustCompile(`\{\{\.([^{}\n]+?)\}\}`)
 
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData
