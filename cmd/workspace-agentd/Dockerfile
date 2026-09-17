@@ -6,10 +6,12 @@
 #
 # This is the image-volume delivery artifact: the controller pins it by
 # digest into every workspace pod, and the entrypoint verifies the binary
-# sha256 against per-arch pins before exec. It contains ONLY the agentd
-# binary — no distro, no shell, no opencode. Those stay in the workspace
-# image ("the image is the workspace"); this image is platform runtime,
-# delivered on platform cadence.
+# sha256 against per-arch pins before exec. Contents: the agentd binary
+# plus ONE data file — the public CA bundle (#1416, /etc/ssl/certs/
+# ca-certificates.crt) for the sidecar's TLS egress. No distro, no
+# shell, no opencode: those stay in the workspace image ("the image is
+# the workspace"); this image is platform runtime, delivered on
+# platform cadence.
 #
 # FROM scratch keeps it minimal (~25MB/binary + ~220KB CA roots, #1416)
 # so the kubelet image-volume pull is cheap on the resume path. The
@@ -19,8 +21,9 @@
 # agentdBinaryRelPath (/usr/local/bin/workspace-agentd) — the pod env pin
 # LLMSAFESPACES_AGENTD_BINARY is /agentd + that path once mounted.
 #
-# NOTE: do not add anything executable to this image. The whole point of
-# the sha256 pin is that one file's integrity is the contract.
+# NOTE: do not add anything EXECUTABLE to this image (the CA bundle is
+# 0644 data). The whole point of the sha256 pin is that one file's
+# integrity — the binary — is the contract.
 
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 

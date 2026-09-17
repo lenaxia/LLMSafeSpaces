@@ -1563,6 +1563,20 @@ jobs:
             COMMIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
+      # #1416/#1423: integration-level pin on the BUILT image — the CA
+      # bundle must exist and carry real roots (unit-level Dockerfile
+      # pins cannot see the assembled filesystem).
+      - name: Verify image contents (CA bundle)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker buildx build --platform linux/amd64 --load -t agentd-verify ./cmd/workspace-agentd
+          cid="agentd-verify-$GITHUB_RUN_ID"
+          docker create --platform linux/amd64 --name "$cid" agentd-verify /usr/local/bin/workspace-agentd >/dev/null
+          docker cp "$cid":/etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt
+          docker rm -f "$cid" >/dev/null
+          test -s /tmp/ca-bundle.crt || (echo "FAIL: CA bundle missing/empty (#1416 regression)" && exit 1)
+          grep -q "BEGIN CERTIFICATE" /tmp/ca-bundle.crt || (echo "FAIL: bundle carries no certificates" && exit 1)
+          echo "CA bundle verified: $(grep -c 'BEGIN CERTIFICATE' /tmp/ca-bundle.crt) certificates, $(wc -c < /tmp/ca-bundle.crt) bytes"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |

@@ -59,7 +59,7 @@ Because release CI tags the base with the platform `VERSION` (`release.yml` prin
 
 ### 4.1 Artifact 1 — `agentdDelivery.image` (existing, role extended)
 
-The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, one binary, one per-arch sha256. It already carries the supervisor and the platform-boot phases; after this design it also carries `redact` — **as a subcommand**, not a second file:
+The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, one binary, one per-arch sha256 (plus, since #1416, one non-executable data file — the public CA bundle at `/etc/ssl/certs/ca-certificates.crt` — carried for the sidecar's TLS egress; the binary-integrity contract is untouched). It already carries the supervisor and the platform-boot phases; after this design it also carries `redact` — **as a subcommand**, not a second file:
 
 - `workspace-agentd redact` — `cmd/redact/main.go` folds into the agentd binary using the existing subcommand dispatch (`main.go:82-112`). The standalone `cmd/redact` is deleted.
 - The supervisor writes a wrapper at `/sandbox-runtime/bin/redact` (RW tmpfs, uid-1000 space) — `exec /agentd/usr/local/bin/workspace-agentd redact "$@"` — and includes `/sandbox-runtime/bin` in opencode's PATH. This preserves the documented UX (`some-command | redact`, `docs/reference/cli.md`) for the PATH-shadowing wrappers with zero bytes of a second executable in the trusted artifact.
