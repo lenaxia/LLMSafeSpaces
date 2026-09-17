@@ -38,12 +38,13 @@ func newMockWebhookReceiverStore() *mockWebhookReceiverStore {
 	}
 }
 
-func (m *mockWebhookReceiverStore) GetWebhook(_ context.Context, id string) (*wf.WebhookRow, error) {
-	r, ok := m.webhooks[id]
-	if !ok {
-		return nil, wf.ErrNotFound
+func (m *mockWebhookReceiverStore) GetWebhookByTriggerID(_ context.Context, triggerID string) (*wf.WebhookRow, error) {
+	for _, r := range m.webhooks {
+		if r.TriggerID == triggerID {
+			return r, nil
+		}
 	}
-	return r, nil
+	return nil, wf.ErrNotFound
 }
 
 func (m *mockWebhookReceiverStore) GetTrigger(_ context.Context, _, _, id string) (*wf.TriggerRow, error) {
@@ -140,7 +141,7 @@ func TestWebhookReceiver_ValidSignature(t *testing.T) {
 	body := `{"event":"push","ref":"main"}`
 	sig := makeHMAC([]byte(body), []byte(secret))
 
-	req := httptest.NewRequest("POST", "/api/v1/hooks/"+hookID, bytes.NewBufferString(body))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/trig-1", bytes.NewBufferString(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -163,7 +164,7 @@ func TestWebhookReceiver_MissingSignature(t *testing.T) {
 
 	r := setupWebhookRouter(t, store, &mockDecryptor{secret: "s"})
 
-	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-1", bytes.NewBufferString(`{}`))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/trig-1", bytes.NewBufferString(`{}`))
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 
@@ -184,7 +185,7 @@ func TestWebhookReceiver_InvalidSignature(t *testing.T) {
 
 	r := setupWebhookRouter(t, store, &mockDecryptor{secret: "real-secret"})
 
-	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-1", bytes.NewBufferString(`{}`))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/trig-1", bytes.NewBufferString(`{}`))
 	req.Header.Set("X-Hub-Signature-256", "sha256=invalidhex")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -195,9 +196,8 @@ func TestWebhookReceiver_InvalidSignature(t *testing.T) {
 func TestWebhookReceiver_Dedup(t *testing.T) {
 	store := newMockWebhookReceiverStore()
 	secret := "s"
-	hookID := "hook-dedup"
-	store.webhooks[hookID] = &wf.WebhookRow{
-		ID: hookID, TriggerID: "t1",
+	store.webhooks["hook-dedup"] = &wf.WebhookRow{
+		ID: "hook-dedup", TriggerID: "t1",
 		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyHeader,
 		IdempotencyHeader: "X-Request-ID",
 	}
@@ -217,7 +217,7 @@ func TestWebhookReceiver_Dedup(t *testing.T) {
 	sig := makeHMAC([]byte(body), []byte(secret))
 
 	// First delivery.
-	req1 := httptest.NewRequest("POST", "/api/v1/hooks/"+hookID, bytes.NewBufferString(body))
+	req1 := httptest.NewRequest("POST", "/api/v1/hooks/t1", bytes.NewBufferString(body))
 	req1.Header.Set("X-Hub-Signature-256", sig)
 	req1.Header.Set("X-Request-ID", "delivery-1")
 	w1 := httptest.NewRecorder()
@@ -225,7 +225,7 @@ func TestWebhookReceiver_Dedup(t *testing.T) {
 	assert.Equal(t, 202, w1.Code)
 
 	// Second delivery with same dedup key.
-	req2 := httptest.NewRequest("POST", "/api/v1/hooks/"+hookID, bytes.NewBufferString(body))
+	req2 := httptest.NewRequest("POST", "/api/v1/hooks/t1", bytes.NewBufferString(body))
 	req2.Header.Set("X-Hub-Signature-256", sig)
 	req2.Header.Set("X-Request-ID", "delivery-1")
 	w2 := httptest.NewRecorder()
@@ -267,7 +267,7 @@ func TestWebhookReceiver_ConcurrentRun(t *testing.T) {
 
 	body := `{}`
 	sig := makeHMAC([]byte(body), []byte(secret))
-	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-1", bytes.NewBufferString(body))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/t1", bytes.NewBufferString(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -343,7 +343,7 @@ func TestWebhookReceiver_RateLimited(t *testing.T) {
 
 	body := `{}`
 	sig := makeHMAC([]byte(body), []byte(secret))
-	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-rl", bytes.NewBufferString(body))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/t-rl", bytes.NewBufferString(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -375,7 +375,7 @@ func TestWebhookReceiver_RateLimitAllows(t *testing.T) {
 
 	body := `{}`
 	sig := makeHMAC([]byte(body), []byte(secret))
-	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-ok", bytes.NewBufferString(body))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/t-ok", bytes.NewBufferString(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)

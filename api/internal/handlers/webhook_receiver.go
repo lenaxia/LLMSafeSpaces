@@ -33,8 +33,11 @@ import (
 )
 
 // webhookReceiverStore is the narrow store interface for the webhook receiver.
+// The public hook URL carries the TRIGGER id (what trigger create/rotate
+// advertise: /api/v1/hooks/<triggerID>) — the webhook row is resolved by
+// trigger_id, never by its own random UUID.
 type webhookReceiverStore interface {
-	GetWebhook(ctx context.Context, webhookID string) (*wf.WebhookRow, error)
+	GetWebhookByTriggerID(ctx context.Context, triggerID string) (*wf.WebhookRow, error)
 	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
 	RecordWebhookDelivery(ctx context.Context, webhookID, dedupKey string) error
@@ -91,7 +94,10 @@ const (
 func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 	webhookID := c.Param("webhookId")
 
-	hook, err := h.store.GetWebhook(c.Request.Context(), webhookID)
+	// The path param is the TRIGGER id (the URL every creator is handed).
+	// Resolving by the webhook row's own UUID can never match it — the
+	// row id is a fresh uuid.New() at create (triggers.go), never exposed.
+	hook, err := h.store.GetWebhookByTriggerID(c.Request.Context(), webhookID)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "webhook not found"})
@@ -173,7 +179,7 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		dedupKey = computeHashDedupKey(rawBody, tsHeader)
 	}
 	if dedupKey != "" {
-		if err := h.store.RecordWebhookDelivery(c.Request.Context(), webhookID, dedupKey); err != nil {
+		if err := h.store.RecordWebhookDelivery(c.Request.Context(), hook.ID, dedupKey); err != nil {
 			if errors.Is(err, wf.ErrDedupConflict) {
 				c.JSON(http.StatusOK, gin.H{"status": "duplicate"})
 				return
