@@ -515,10 +515,69 @@ func (p *parkingSendActor) Act(ctx context.Context, sessionID string, req *abiv1
 	if req.GetInterrupt() != nil {
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Interrupt{Interrupt: &abiv1.InterruptResult{}}}, nil
 	}
+	if ans := req.GetAnswerQuestion(); ans != nil {
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{
+			AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()},
+		}}, nil
+	}
 	if req.GetSend() == nil {
 		return &abiv1.ActionResult{}, nil
 	}
 	close(p.entered)
 	<-p.release
 	return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}, nil
+}
+
+// TestActOp_AnswerPreemptsInFlightSend (r4): a mid-turn ask must be
+// answerable WHILE the asking turn holds the sync-send HTTP response —
+// the harness blocks the turn on the ask, so queueing the answer behind
+// the send's lock hold deadlocks the ask-answer cycle (the flag-off
+// adapter answers mid-turn; S6/L2 demand it). Red pre-fix: the answer
+// queued for the parked send's full duration.
+func TestActOp_AnswerPreemptsInFlightSend(t *testing.T) {
+	actor := &parkingSendActor{entered: make(chan struct{}), release: make(chan struct{})}
+	a := actionsAuthority(t, actor, allActions(), &recordingAdmitter{})
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	go func() {
+		_, _ = c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "long turn"}},
+		}))
+	}()
+	select {
+	case <-actor.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send never started")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(actor.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{
+				InputId: "que_live1", OptionIds: []string{"Yes"},
+			}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		assert.NotNil(t, res.GetAnswerQuestion(), "the answer lands while the turn still runs")
+	case err := <-errCh:
+		t.Fatalf("answer failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("answer queued behind the in-flight send — the ask-answer cycle deadlocks")
+	}
+	releaseOnce.Do(func() { close(actor.release) })
 }

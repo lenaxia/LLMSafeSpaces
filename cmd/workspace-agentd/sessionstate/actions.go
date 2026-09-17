@@ -81,17 +81,27 @@ func (a *Authority) act(ctx context.Context, m *abiv1.ActionRequest) (*abiv1.Act
 	// Sole-writer serialization (M1/W4 + the no-exceptions matrix): the
 	// action holds the session's single-flight lock across execution —
 	// the SAME lock admissions take, so a delivery in flight and an
-	// action can never interleave. ONE carve-out (#1372 r2): interrupt
-	// is exempt. It mutates no projected records (I7), so the
-	// sole-writer rationale does not apply to it — and its entire
-	// purpose is to preempt the lock HOLDER's in-flight turn (the send
-	// action executes a blocking full-turn POST under this lock);
-	// queueing it behind that turn would make abort a delayed no-op,
-	// regressing the flag-off adapter abort (live-verified: stops the
-	// running turn within seconds). The harness serializes the abort
-	// POST against its own turn state; the projected fold needs no lock
-	// here (resolve-by-absence takes a.mu, whose ordering is documented).
-	if m.GetInterrupt() == nil {
+	// action can never interleave. TWO carve-outs, both about the
+	// full-turn HTTP hold (#1372):
+	//
+	//   - interrupt (r2): it mutates no projected records (I7), so the
+	//     sole-writer rationale does not apply — and its entire purpose
+	//     is to preempt the lock HOLDER's in-flight turn; queueing it
+	//     behind that turn would make abort a delayed no-op (the
+	//     flag-off adapter abort stops the live turn within seconds,
+	//     live-verified). The harness serializes the abort POST against
+	//     its own turn state.
+	//   - send (r4): the harness itself serializes per-session message
+	//     writes (a busy session blocks incoming messages, B1) and S2
+	//     (#1315) dedupes admissions at the harness write — so the
+	//     single-flight adds no write protection here. Holding it across
+	//     a full LLM turn DEADLOCKS the ask-answer cycle: a mid-turn ask
+	//     must be answerable while the asking turn holds the sync-send
+	//     response (the flag-off adapter answers mid-turn; S6/L2 demand
+	//     it). The lock's remaining takers are the projection-mutating
+	//     fast verbs (answers, model/agent switches, compact, delete,
+	//     rename) and admissions.
+	if m.GetInterrupt() == nil && m.GetSend() == nil {
 		lock := a.sessionLock(m.GetSessionId())
 		lock.Lock()
 		defer lock.Unlock()

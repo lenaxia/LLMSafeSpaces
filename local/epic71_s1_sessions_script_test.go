@@ -14,6 +14,7 @@ package local_test
 // fault seam is armed.
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -42,11 +43,33 @@ func TestEpic71S1Script_SourcesCommonLibAndDistinctBase(t *testing.T) {
 func TestEpic71S1Script_RowPins(t *testing.T) {
 	src := mustRead(t, epic71S1Script)
 
-	// r2-f2: the abort row must BUDGET the preempt, not eyeball it — the
-	// budget strictly below the slow-turn duration is what discriminates
-	// a preempting abort from one queued behind the turn.
+	// r2-f2: the abort row must BUDGET the preempt, not eyeball it —
+	// and the duration must ride the PROMPT (the quoted-heredoc env
+	// delivery broke the slow mode silently in every prior dispatch —
+	// the r4 review's finding; the regex parse has no shell
+	// substitution to break).
 	if !strings.Contains(src, "S1B_ABORT_BUDGET_S") || !strings.Contains(src, "S1-SLOW-TURN") {
 		t.Fatalf("s1 script must assert abort's preempt budget against a slow turn")
+	}
+	if !strings.Contains(src, `re.search(rb"S1-SLOW-TURN`) {
+		t.Fatalf("the mock must parse the slow-turn duration from the prompt body, not env")
+	}
+	// r4: the row must carry its own discriminator — the IN-FLIGHT
+	// assertion (the send's completion log still absent when the abort
+	// returns). Without it a no-op abort against a crashed turn passes.
+	if !strings.Contains(src, "S1B_SEND_LOG") || !strings.Contains(src, "S1B_INFLIGHT") {
+		t.Fatalf("s1 script must assert the send is still in flight when the abort returns")
+	}
+	// r4: the mock self-check — the row that would have exposed the
+	// broken slow mode in one dispatch.
+	if !strings.Contains(src, "mock self-check") {
+		t.Fatalf("s1 script must self-check the mock's slow mode before any row relies on it")
+	}
+	// r4: a read failure is NOT settled — the settle loop must require a
+	// 2xx read with a parsed status (the || true pipe false-passed
+	// wedged/unreachable pods).
+	if !strings.Contains(src, `S1B_CODE}" == "200"`) {
+		t.Fatalf("s1 script's settle loop must distinguish read failures from settled statuses")
 	}
 	// The delete/rename rows' ground truth is AGENT-side (an API-side
 	// assert would be circular — the write and the read share the regime).
@@ -61,9 +84,10 @@ func TestEpic71S1Script_RowPins(t *testing.T) {
 		t.Fatalf("s1 script must pin the dead-session codes (send/delete 502, abort 204)")
 	}
 	// S1b's settle row must assert the not-wedged property via the
-	// platform's own session read (never the raw harness shape).
-	if !strings.Contains(src, "wedged") || !strings.Contains(src, ".status // empty") {
-		t.Fatalf("s1 script must assert the post-abort settle as not-wedged via the platform session read")
+	// platform's own session read, and a read FAILURE must not count as
+	// settled (r4: the || true pipe false-passed wedged/unreachable pods).
+	if !strings.Contains(src, "wedged") || !strings.Contains(src, `.status // "absent"`) || !strings.Contains(src, "READ FAILURE IS NOT SETTLED") {
+		t.Fatalf("s1 script must assert the post-abort settle as not-wedged via a 2xx platform session read")
 	}
 	// The happy send row asserts the round-tripped contract message, not
 	// just a status code.
@@ -100,12 +124,25 @@ func TestEpic71S1Script_BudgetDefaultsEvaluate(t *testing.T) {
 		t.Fatalf("could not locate the S1B budget-default block in %s", epic71S1Script)
 	}
 	block := src[start : start+end]
-	cmd := exec.Command(bash, "-c", "set -euo pipefail\n"+block+"\necho ok=${S1B_IDLE_BUDGET_S}")
+	cmd := exec.Command(bash, "-c", "set -euo pipefail\n"+block+"\necho ok=${S1B_IDLE_BUDGET_S} abort=${S1B_ABORT_BUDGET_S} slow=${S1B_SLOW_TURN_S}")
+	cmd.Env = []string{} // ambient env must not mask the defaults (r4)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("budget defaults fail under set -euo pipefail: %v: %s", err, out)
 	}
 	if !strings.Contains(string(out), "ok=") {
 		t.Fatalf("budget defaults did not evaluate: %s", out)
+	}
+	// The strict-below budget is the discriminator's arithmetic — pin
+	// it, not just the substrings' presence (r4).
+	var idle, abort, slow int
+	if _, err := fmt.Sscanf(string(out), "ok=%d abort=%d slow=%d", &idle, &abort, &slow); err != nil {
+		t.Fatalf("could not parse budget echo %q: %v", out, err)
+	}
+	if abort >= slow {
+		t.Fatalf("S1B_ABORT_BUDGET_S (%d) must be strictly below S1B_SLOW_TURN_S (%d) — the preempt discriminator's arithmetic", abort, slow)
+	}
+	if idle < slow {
+		t.Fatalf("S1B_IDLE_BUDGET_S (%d) must cover the turn's own duration (%d)", idle, slow)
 	}
 }

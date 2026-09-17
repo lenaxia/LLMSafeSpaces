@@ -88,15 +88,20 @@ metadata:
   namespace: llmsafespaces
 data:
   serve.py: |
-    import json, time
+    import json, re, time
     from http.server import BaseHTTPRequestHandler, HTTPServer
     class H(BaseHTTPRequestHandler):
         def do_POST(self):
             n = int(self.headers.get("content-length", 0))
             body = self.rfile.read(n)
             marker = "S1-TURN-OK"
-            if b"S1-SLOW-TURN" in body:
-                time.sleep(int(__import__("os").environ.get("S1B_SLOW_TURN_S", "45")))
+            m = re.search(rb"S1-SLOW-TURN (\d+)", body)
+            if m:
+                # The duration rides the PROMPT — no shell/env
+                # substitution into this manifest (the quoted-heredoc
+                # class the r4 review caught: env delivery broke the
+                # slow mode silently in every prior dispatch).
+                time.sleep(int(m.group(1)))
             if b'"stream":true' in body or b'"stream": true' in body:
                 def chunk(delta, finish=None):
                     return json.dumps({
@@ -145,7 +150,6 @@ spec:
       containers:
         - name: serve
           image: python:3.12-alpine
-          env: [{name: S1B_SLOW_TURN_S, value: "${S1B_SLOW_TURN_S}"}]
           command: ["python", "/srv/serve.py"]
           volumeMounts: [{name: cfg, mountPath: /srv}]
       volumes:
@@ -180,6 +184,25 @@ registry_admits "${S1_WS}" "s1-stub" "mock-model-s1" 120 \
 S1_POD=$(pod_of "${S1_WS}")
 S1_PW=$(kc get secret "workspace-pw-${S1_WS}" -o jsonpath='{.data.password}' | base64 -d)
 
+# Mock self-check (r4): prove the slow mode WORKS before any row relies
+# on it — a direct slow-mode probe must take ≥ half the slow budget,
+# while a fast probe returns in seconds. The row that would have exposed
+# the quoted-heredoc ValueError in one dispatch.
+MOCK_SVC="http://mock-llm-s1.${NS}.svc/v1/chat/completions"
+mock_probe_s() { # prompt → seconds the probe took
+    local t0
+    t0=$(date +%s)
+    kc exec "${S1_POD}" -c workspace -- curl -sm $(( S1B_SLOW_TURN_S + 30 ))         -o /dev/null -X POST -H 'content-type: application/json'         -d "{"messages":[{"role":"user","content":"$1"}]}" "${MOCK_SVC}" >/dev/null 2>&1 || true
+    echo $(( $(date +%s) - t0 ))
+}
+MOCK_FAST_S=$(mock_probe_s "fast probe")
+MOCK_SLOW_S=$(mock_probe_s "S1-SLOW-TURN ${S1B_SLOW_TURN_S} slow probe")
+if [[ ${MOCK_SLOW_S} -ge $(( S1B_SLOW_TURN_S / 2 )) && ${MOCK_FAST_S} -lt $(( S1B_SLOW_TURN_S / 2 )) ]]; then
+    ok "mock self-check: slow=${MOCK_SLOW_S}s fast=${MOCK_FAST_S}s (slow mode mechanically works)"
+else
+    note_fail "mock self-check: slow=${MOCK_SLOW_S}s fast=${MOCK_FAST_S}s — the slow mode is broken; no S1b evidence below is valid"
+fi
+
 # The platform session (sessions/new is the UNMIGRATED service route —
 # honest staging; #1372's five sites are the routes asserted below).
 S1_SID=$(curl -sfm 60 -X POST -H "Authorization: Bearer ${AUTH_TOKEN}" \
@@ -205,7 +228,7 @@ rm -f "${S1A_BODY}"
 log "S1b: abort returns while the slow turn still runs (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
 S1B_SEND_LOG=/tmp/e71s1_slow_send.out
 (S1B_CODE=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/message" \
-    '{"parts":[{"type":"text","text":"S1-SLOW-TURN take your time"}],"model":{"modelID":"mock-model-s1","providerID":"s1-stub"}}' /dev/null) \
+    "{"parts":[{"type":"text","text":"S1-SLOW-TURN ${S1B_SLOW_TURN_S} take your time"}],"model":{"modelID":"mock-model-s1","providerID":"s1-stub"}}" /dev/null) \
     ; echo "${S1B_CODE}" >"${S1B_SEND_LOG}") &
 S1B_SEND_PID=$!
 sleep 5 # let the turn start (registry/pod round trips done, mock sleeping)
@@ -213,10 +236,16 @@ sleep 5 # let the turn start (registry/pod round trips done, mock sleeping)
 S1B_T0=$(date +%s)
 S1B_ABORT=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/abort" '' )
 S1B_ELAPSED=$(( $(date +%s) - S1B_T0 ))
-if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} ]]; then
-    ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s (budget ${S1B_ABORT_BUDGET_S}s)"
+# IN-FLIGHT assertion (r4): the abort's 204 must return while the send
+# is STILL pending — its completion log must be absent at this moment.
+# Without this discriminator a no-op abort against a crashed turn
+# passes (exactly the vacuity the r4 review caught).
+S1B_INFLIGHT=0
+if ! [[ -f "${S1B_SEND_LOG}" ]]; then S1B_INFLIGHT=1; fi
+if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} && ${S1B_INFLIGHT} == 1 ]]; then
+    ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s, send still pending (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
 else
-    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s (queued behind the turn? budget ${S1B_ABORT_BUDGET_S}s)"
+    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending)"
 fi
 
 # The interrupted session must not be WEDGED BUSY: after the turn's own
@@ -227,12 +256,26 @@ fi
 # exists to kill. The raw harness object rides the failure line for
 # diagnosis (the exact idle shape is version-dependent — pinned by the
 # unit suites, not guessed here).
-S1B_SETTLED=0 S1B_SEEN=""
+# A READ FAILURE IS NOT SETTLED (r4: the previous || true pipe made
+# transport failures read as ""=settled — a wedged or unreachable pod
+# false-passed the anti-wedge assert). Only a 2xx read with a parsed
+# non-busy status settles: idle, or unknown when the harness leaves the
+# field absent (the adapter's own translateSessionStatus treats absent
+# as not-busy, #743 F3). busy persisting past the turn is the wedged
+# class this epic exists to kill.
+S1B_SETTLED=0 S1B_SEEN="(never-read)"
 for _ in $(seq 1 $(( S1B_IDLE_BUDGET_S / 3 ))); do
-    S1B_SEEN=$(curl -sm 15 -H "Authorization: Bearer ${AUTH_TOKEN}"         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}"         2>/dev/null | jq -r '.status // empty' 2>/dev/null || true)
-    case "${S1B_SEEN}" in
-        idle|unknown|"") S1B_SETTLED=1; break ;;
-    esac
+    S1B_BODY=$(mktemp)
+    S1B_CODE=$(http_code_of GET "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}" '' "${S1B_BODY}")
+    if [[ "${S1B_CODE}" == "200" ]]; then
+        S1B_SEEN=$(jq -r '.status // "absent"' "${S1B_BODY}" 2>/dev/null || echo unreadable)
+        case "${S1B_SEEN}" in
+            idle|unknown|absent) S1B_SETTLED=1; rm -f "${S1B_BODY}"; break ;;
+        esac
+    else
+        S1B_SEEN="read-${S1B_CODE}"
+    fi
+    rm -f "${S1B_BODY}"
     sleep 3
 done
 if [[ ${S1B_SETTLED} == 1 ]]; then
