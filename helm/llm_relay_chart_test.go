@@ -163,6 +163,108 @@ relayOnlyKeyDelivery:
 	assert.Equal(t, "llm-relay-router", podSel["app.kubernetes.io/name"])
 }
 
+// TestRelayOnlyKeyDelivery_SelectorConsistency (iteration 3): the
+// Deployment's selector must be a subset of its pod-template labels (API
+// server rejects otherwise), and the Service/PDB/NetworkPolicy selectors
+// must match the RENDERED pod labels — nothing else in the suite catches
+// this drift class (helpers clobbering hardcoded labels).
+func TestRelayOnlyKeyDelivery_SelectorConsistency(t *testing.T) {
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+`)
+
+	var podLabels map[string]any
+	for _, d := range findDocs(t, docs, "Deployment") {
+		if docName(t, d) != "llm-relay-router" {
+			continue
+		}
+		spec := d["spec"].(map[string]any)
+		sel := spec["selector"].(map[string]any)["matchLabels"].(map[string]any)
+		tmpl := spec["template"].(map[string]any)["metadata"].(map[string]any)["labels"].(map[string]any)
+		for k, v := range sel {
+			tv, ok := tmpl[k]
+			require.True(t, ok, "selector key %s missing from pod template labels", k)
+			assert.Equal(t, v, tv, "selector value for %s must match template", k)
+		}
+		podLabels = tmpl
+	}
+	require.NotNil(t, podLabels)
+
+	// Service + PDB + router ingress NP all select within podLabels.
+	selectors := 0
+	for _, d := range docs {
+		kind := d["kind"]
+		if kind != "Service" && kind != "PodDisruptionBudget" && kind != "NetworkPolicy" {
+			continue
+		}
+		meta := d["metadata"].(map[string]any)
+		if name, _ := meta["name"].(string); name == "" ||
+			(name != "llm-relay-router" && name != "llm-relay-router-allow-workspaces") {
+			continue
+		}
+		spec := d["spec"].(map[string]any)
+		var sel map[string]any
+		if kind == "Service" {
+			// Service selectors are bare label maps (no matchLabels).
+			sel = spec["selector"].(map[string]any)
+		} else if s, ok := spec["selector"].(map[string]any); ok {
+			sel = s["matchLabels"].(map[string]any)
+		} else if ps, ok := spec["podSelector"].(map[string]any); ok {
+			sel = ps["matchLabels"].(map[string]any)
+		}
+		require.NotEmpty(t, sel)
+		for k, v := range sel {
+			tv, ok := podLabels[k]
+			require.True(t, ok, "%s selects %s which no pod carries", meta["name"], k)
+			assert.Equal(t, v, tv)
+		}
+		selectors++
+	}
+	require.GreaterOrEqual(t, selectors, 3, "service+PDB+ingress NP selectors checked")
+}
+
+// TestRelayOnlyKeyDelivery_NumericOverridesRenderExactly (iteration 3):
+// int values must render as exact decimal strings (helm's quote on a
+// values int renders scientific notation, which strconv.Atoi rejects —
+// silently discarding operator overrides of the exfil byte bound).
+func TestRelayOnlyKeyDelivery_NumericOverridesRenderExactly(t *testing.T) {
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+  router:
+    quota:
+      bytesPerWindow: 300000000
+    maxBodyBytes: 2097152
+`)
+	for _, d := range findDocs(t, docs, "Deployment") {
+		if docName(t, d) != "llm-relay-router" {
+			continue
+		}
+		env := podEnv(t, d)
+		assert.Equal(t, "300000000", env["BYO_QUOTA_BYTES"], "override must render as exact decimal")
+		assert.Equal(t, "2097152", env["BYO_MAX_BODY_BYTES"])
+		assert.Equal(t, "120", env["BYO_QUOTA_REQUESTS"], "default renders exactly too")
+	}
+}
+
+func podEnv(t *testing.T, dep map[string]any) map[string]string {
+	t.Helper()
+	spec := dep["spec"].(map[string]any)
+	pod := spec["template"].(map[string]any)["spec"].(map[string]any)
+	containers := pod["containers"].([]any)
+	out := map[string]string{}
+	for _, e := range containers[0].(map[string]any)["env"].([]any) {
+		kv := e.(map[string]any)
+		if name, ok := kv["name"].(string); ok {
+			if value, ok := kv["value"].(string); ok {
+				out[name] = value
+			}
+		}
+	}
+	return out
+}
+
 // TestRelayOnlyKeyDelivery_RendersWithMonitoring (review R1): enabling the
 // alerts alongside relay-only must render — the two flags together are the
 // US-72.5 flip-gate posture.

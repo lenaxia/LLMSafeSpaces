@@ -11,19 +11,16 @@ metadata:
   name: llm-relay-router
   namespace: {{ $ns }}
   labels:
-    app.kubernetes.io/name: llm-relay-router
-    app.kubernetes.io/component: relay-router
-    {{- include "llmsafespaces.labels" . | nindent 4 }}
+    {{- include "llmsafespaces.llmRelayRouter.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.relayOnlyKeyDelivery.router.replicas | default 2 }}
   selector:
     matchLabels:
-      app.kubernetes.io/name: llm-relay-router
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: llm-relay-router
-        {{- include "llmsafespaces.labels" . | nindent 8 }}
+        {{- include "llmsafespaces.llmRelayRouter.labels" . | nindent 8 }}
     spec:
       serviceAccountName: llm-relay-router
       automountServiceAccountToken: true
@@ -52,13 +49,13 @@ spec:
             - name: BYO_QUOTA_WINDOW
               value: {{ .Values.relayOnlyKeyDelivery.router.quota.window | default "60s" | quote }}
             - name: BYO_QUOTA_REQUESTS
-              value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | int | quote }}
             - name: BYO_QUOTA_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | int | quote }}
             - name: BYO_MAX_BODY_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | int | quote }}
             - name: BYO_MAX_RESP_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | int | quote }}
             - name: BYO_INFORMER_RESYNC
               value: {{ .Values.relayOnlyKeyDelivery.router.informerResync | default "5m" | quote }}
           ports:
@@ -99,5 +96,5 @@ spec:
   maxUnavailable: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: llm-relay-router
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
 {{- end }}

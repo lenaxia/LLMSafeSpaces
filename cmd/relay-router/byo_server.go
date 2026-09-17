@@ -129,6 +129,7 @@ func (s *byoServer) requireMintAuth(next http.HandlerFunc) http.HandlerFunc {
 		key, err := s.minter.AuthKey(r.Context())
 		if err != nil {
 			byoReject(w, byoRejectMintUnavailable, http.StatusServiceUnavailable, "mint key unavailable")
+			s.metrics.recordInternal(r.URL.Path, http.StatusServiceUnavailable)
 			return
 		}
 		token, ok := extractBearerToken(r.Header.Get(byoInternalAuthHeader))
@@ -230,7 +231,11 @@ func (s *byoServer) handleRotateKeys(w http.ResponseWriter, r *http.Request) {
 	pub, err := s.resolve.keys.Rotate(r.Context())
 	if err != nil {
 		log.Printf("byo-router: rotate failed: %v", err) // metadata only
-		byoReject(w, byoRejectUpstreamUnreachable, http.StatusInternalServerError, "rotate failed")
+		reason := byoRejectUpstreamUnreachable
+		if errors.Is(err, errRotatePrecondition) {
+			reason = "rotate_precondition_failed" // a peer won the write; retry lands on it
+		}
+		byoReject(w, reason, http.StatusInternalServerError, "rotate failed")
 		s.metrics.recordInternal(r.URL.Path, http.StatusInternalServerError)
 		return
 	}

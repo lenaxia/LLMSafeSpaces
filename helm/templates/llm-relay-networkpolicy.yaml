@@ -12,7 +12,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: llm-relay-router
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
   policyTypes: [Ingress]
   ingress:
     - from:

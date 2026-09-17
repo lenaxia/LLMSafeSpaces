@@ -147,6 +147,19 @@ app.kubernetes.io/component: relay-router
 app.kubernetes.io/component: relay-router
 {{- end }}
 
+{{- define "llmsafespaces.llmRelayRouter.selectorLabels" -}}
+app.kubernetes.io/name: llm-relay-router
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "llmsafespaces.llmRelayRouter.labels" -}}
+{{ include "llmsafespaces.llmRelayRouter.selectorLabels" . }}
+app.kubernetes.io/component: relay-router
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
 {{- define "llmsafespaces.relayRouter.image" -}}
 {{- if .Values.controller.inferenceRelay.router.image.digest -}}
 {{- printf "%s@%s" .Values.controller.inferenceRelay.router.image.repository .Values.controller.inferenceRelay.router.image.digest -}}

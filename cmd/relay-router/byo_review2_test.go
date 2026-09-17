@@ -24,8 +24,8 @@ import (
 )
 
 // TestByteQuotaEnforced (R5 regression pin, iteration 2): a workspace whose
-// byte budget (request-direction) is exhausted → 429 quota_exceeded. The
-// gate would fail nothing if BytesLeft were removed again.
+// byte budget (request-direction) is exhausted → 429 quota_exceeded.
+// Reviewer mutation-verified: removing the BytesLeft gate fails this test.
 func TestByteQuotaEnforced(t *testing.T) {
 	rig := newByoTestRig(t)
 	rig.svc.quota = newByoWorkspaceQuota(time.Minute, 100, 64) // 64-byte budget

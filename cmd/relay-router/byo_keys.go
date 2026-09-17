@@ -26,8 +26,9 @@ const (
 
 // byoSecrets is the narrow Secret surface the keypair machinery needs.
 // Production wraps a CoreV1 client scoped to llm-relay; tests wrap the
-// client-go fake, whose resourceVersion tracking provides the same
-// optimistic-concurrency semantics the API server enforces.
+// client-go fake. NOTE: the fake does NOT enforce resourceVersion on
+// Update — concurrent-writer serialization is pinned via the generation
+// precondition; the real API server additionally enforces resourceVersion.
 type byoSecrets interface {
 	Get(ctx context.Context, name string) (*corev1.Secret, error)
 	Create(ctx context.Context, sec *corev1.Secret) (*corev1.Secret, error)

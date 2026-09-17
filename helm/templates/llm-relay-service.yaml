@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: llm-relay-router
 spec:
   selector:
-    app.kubernetes.io/name: llm-relay-router
+    {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 4 }}
   ports:
     - name: http
       port: 80

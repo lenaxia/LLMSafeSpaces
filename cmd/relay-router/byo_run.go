@@ -275,6 +275,11 @@ func byoWatchDelete(ctx context.Context, obj any, keys *byoKeyManager, cacheStor
 				case <-time.After(time.Duration(attempt+1) * 5 * time.Second):
 				}
 			}
+			// Terminal: loud give-up — resolve stays fail-closed; a pod
+			// restart re-enters the same recovery (fresh manager seeds
+			// from its empty highwater, so a rotated lineage should be
+			// re-sealed by the controller regardless).
+			log.Printf("byo-router: keypair-secret loss recovery EXHAUSTED after 3 attempts; giving up (fail-closed)")
 		}()
 		return
 	}
