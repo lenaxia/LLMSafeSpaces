@@ -66,7 +66,7 @@ var triggerListTool = mcp.NewTool("trigger_list",
 )
 
 var triggerCreateTool = mcp.NewTool("trigger_create",
-	mcp.WithDescription("Create a new trigger. For routine mode (no workflow_id), provide workspace_id + prompt. For workflow mode, provide workflow_id."),
+	mcp.WithDescription("Create a new trigger. For routine mode (no workflow_id), provide workspace_id + prompt. For workflow mode, provide workflow_id. input (object) is the static run input for workflow-mode triggers, validated against the workflow's inputSchema when input_from is \"mapped\"; input_from selects what a fired run's input is: \"envelope\" (default — the system envelope {source, received_at, headers, body}), \"body\" (webhook only — the posted payload becomes the run input), or \"mapped\" (the static input document). Wiring an envelope-mode trigger to a workflow whose schema requires non-envelope fields is rejected with 400 — set input, use input_from \"body\", or relax the schema."),
 	mcp.WithString("name", mcp.Required(), mcp.Description("Trigger name")),
 	mcp.WithString("source_type", mcp.Required(), mcp.Description("Source type: cron or webhook")),
 	mcp.WithString("source_config", mcp.Required(), mcp.Description("Source config (JSON: {expr,tz} for cron, {} for webhook)")),
@@ -76,12 +76,16 @@ var triggerCreateTool = mcp.NewTool("trigger_create",
 	mcp.WithString("memory_mode", mcp.Description("Memory mode: none or last_result")),
 	mcp.WithString("capture_mode", mcp.Description("Capture mode: errors_only or full")),
 	mcp.WithString("preserve_session", mcp.Description("Session preservation: never, always, on_failure")),
+	mcp.WithString("input_from", mcp.Description("What a fired run's input is: envelope (default), body (webhook only), or mapped (the static input document)")),
+	mcp.WithString("input", mcp.Description("Static run input (workflow mode; a JSON object serialized as a string, ≤ 64 KiB)")),
 )
 
 var triggerUpdateTool = mcp.NewTool("trigger_update",
-	mcp.WithDescription("Update a trigger (partial update)"),
+	mcp.WithDescription("Update a trigger (partial update). input_from and input are patchable: an empty input_from keeps the stored mode; an empty input keeps the stored document while the JSON literal null (\"null\") clears it back to no static input."),
 	mcp.WithString("trigger_id", mcp.Required(), mcp.Description("Trigger ID")),
 	mcp.WithBoolean("enabled", mcp.Description("Enable/disable")),
+	mcp.WithString("input_from", mcp.Description("Patch the input source: envelope, body (webhook only), or mapped")),
+	mcp.WithString("input", mcp.Description("Patch the static run input (a JSON document serialized as a string; \"null\" clears it)")),
 )
 
 var triggerDeleteTool = mcp.NewTool("trigger_delete",
@@ -239,7 +243,12 @@ func (h *handlers) triggerCreate(ctx context.Context, req mcp.CallToolRequest) (
 	memoryMode, _ := args["memory_mode"].(string)
 	captureMode, _ := args["capture_mode"].(string)
 	preserveSession, _ := args["preserve_session"].(string)
-	resp, err := h.client.CreateTrigger(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession)
+	inputFrom, _ := args["input_from"].(string)
+	input, _ := args["input"].(string)
+	if input != "" && !json.Valid([]byte(input)) {
+		return mcp.NewToolResultError("input must be a valid JSON document"), nil
+	}
+	resp, err := h.client.CreateTrigger(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create trigger: %v", err)), nil
 	}
@@ -259,7 +268,15 @@ func (h *handlers) triggerUpdate(ctx context.Context, req mcp.CallToolRequest) (
 	if v, ok := args["enabled"].(bool); ok {
 		enabled = &v
 	}
-	resp, err := h.client.UpdateTrigger(ctx, triggerID, enabled)
+	// input_from/input: empty string = key absent (keep existing); a
+	// non-empty input must be a JSON document ("null" clears the stored
+	// static input — the API's key-presence discrimination).
+	inputFrom, _ := args["input_from"].(string)
+	input, _ := args["input"].(string)
+	if input != "" && !json.Valid([]byte(input)) {
+		return mcp.NewToolResultError("input must be a valid JSON document"), nil
+	}
+	resp, err := h.client.UpdateTrigger(ctx, triggerID, enabled, inputFrom, input)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to update trigger: %v", err)), nil
 	}

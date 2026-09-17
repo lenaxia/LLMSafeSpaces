@@ -87,8 +87,8 @@ type APIClient interface {
 
 	// Trigger management (Epic 64)
 	ListTriggers(ctx context.Context) (json.RawMessage, error)
-	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error)
-	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error)
+	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error)
+	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error)
 	DeleteTrigger(ctx context.Context, triggerID string) error
 }
 
@@ -866,7 +866,7 @@ func (c *HTTPClient) ListTriggers(ctx context.Context) (json.RawMessage, error) 
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/triggers", nil)
 }
 
-func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error) {
+func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error) {
 	body := map[string]any{
 		"name": name, "sourceType": sourceType, "sourceConfig": json.RawMessage(sourceConfig),
 	}
@@ -888,20 +888,34 @@ func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, source
 	if preserveSession != "" {
 		body["preserveSession"] = preserveSession
 	}
+	if inputFrom != "" {
+		body["inputFrom"] = inputFrom
+	}
+	if input != "" {
+		body["input"] = json.RawMessage(input)
+	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/triggers", body)
 }
 
 // UpdateTrigger issues a partial update via PUT /me/triggers/:id. The
 // API binds types.UpdateTriggerRequest.Enabled *bool — a nil enabled
 // sends no key (keep existing); a present value must be a JSON boolean
-// (#1035).
-func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error) {
+// (#1035). inputFrom/input follow the same empty-string-means-omitted
+// convention; a non-empty input is a JSON document ("null" clears the
+// stored static input).
+func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error) {
 	if err := validateID(triggerID, "trigger_id"); err != nil {
 		return nil, err
 	}
 	body := map[string]any{}
 	if enabled != nil {
 		body["enabled"] = *enabled
+	}
+	if inputFrom != "" {
+		body["inputFrom"] = inputFrom
+	}
+	if input != "" {
+		body["input"] = json.RawMessage(input)
 	}
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
 }

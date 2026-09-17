@@ -257,7 +257,10 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 					InputEnvelope: envelopeJSON, ActionType: "run_workflow",
 					ActionResult: actionResult, Status: fireStatus, FiredAt: now, CompletedAt: &completed,
 				})
-				if n, ferr := h.store.IncrementTriggerFailures(c.Request.Context(), trigger.ID); ferr == nil && n >= trigger.AutoDisableAfter {
+				// The #1412 accounting shape, identical to the cron path
+				// (engine.go fireWorkflowTarget) — the two fire paths share
+				// the resolver and now the failure bookkeeping too.
+				if n, _ := h.store.IncrementTriggerFailures(c.Request.Context(), trigger.ID); n >= trigger.AutoDisableAfter {
 					_ = h.store.DisableTrigger(c.Request.Context(), trigger.ID)
 				}
 				c.JSON(http.StatusAccepted, gin.H{"status": "fired"})

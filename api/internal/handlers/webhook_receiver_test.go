@@ -577,3 +577,36 @@ func TestWebhookReceiver_NonJSONFallbackShape(t *testing.T) {
 	require.True(t, ok, "the fallback doc must carry content_type: %s", store.recordedRuns[0].Input)
 	assert.NotEmpty(t, string(ct))
 }
+
+// TestWebhookReceiver_InvalidSchemaFailedFire pins the webhook-side
+// non-compiling-schema branch (duplicated from the cron path): a workflow
+// defect, not an input defect — failed fire with
+// {"code":"invalid_input_schema"}, 202 to the sender, no run.
+func TestWebhookReceiver_InvalidSchemaFailedFire(t *testing.T) {
+	store := newMockWebhookReceiverStore()
+	secret := "s"
+	store.webhooks["hook-broken"] = &wf.WebhookRow{
+		ID: "hook-broken", TriggerID: "trig-broken",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["trig-broken"] = &wf.TriggerRow{
+		ID: "trig-broken", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: "webhook",
+		WorkflowID: strPtrWF("wf-broken"), InputFrom: "body",
+		AutoDisableAfter: 10,
+	}
+	store.workflows["wf-broken"] = &wf.WorkflowRow{
+		ID: "wf-broken", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
+		InputSchema: json.RawMessage(`{"$ref":"#/definitions/missing"}`),
+	}
+	r := setupWebhookRouter(t, store, &mockDecryptor{secret: secret})
+
+	w := postSignedTo(t, r, "/api/v1/hooks/trig-broken", secret, `{"topic":"x"}`)
+	require.Equal(t, 202, w.Code, "delivery succeeded; the workflow's defect surfaces via trigger_fires")
+	assert.Len(t, store.recordedRuns, 0)
+	require.Len(t, store.recordedFires, 1)
+	assert.Equal(t, types.TriggerFireFailed, store.recordedFires[0].Status)
+	assert.JSONEq(t, `{"code":"invalid_input_schema"}`, string(store.recordedFires[0].ActionResult))
+	assert.Equal(t, 1, store.triggerFail["trig-broken"])
+}

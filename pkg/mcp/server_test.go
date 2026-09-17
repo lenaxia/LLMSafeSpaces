@@ -171,13 +171,13 @@ func (m *MockAPIClient) ListTriggers(ctx context.Context) (json.RawMessage, erro
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error) {
-	args := m.Called(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession)
+func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input string) (json.RawMessage, error) {
+	args := m.Called(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession, inputFrom, input)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error) {
-	args := m.Called(ctx, triggerID, enabled)
+func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool, inputFrom, input string) (json.RawMessage, error) {
+	args := m.Called(ctx, triggerID, enabled, inputFrom, input)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -931,4 +931,52 @@ func TestWorkflowToolSpecDescriptions_TeachDialects(t *testing.T) {
 	b, err = json.Marshal(workflowUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "or YAML text", "update spec_yaml teaches YAML")
+}
+
+// --- 0059: trigger input mapping args (flat-arg passthrough) -----------------
+
+func TestTriggerTools_InputMappingArgsPassThrough(t *testing.T) {
+	h, client := newTestHandlers()
+
+	client.On("CreateTrigger", mock.Anything, "mapped-trig", "cron", `{"expr":"0 2 * * *"}`,
+		"", "wf-1", "", "", "", "", "mapped", `{"topic":"nightly"}`).
+		Return(`{"id":"t1","inputFrom":"mapped"}`, nil)
+	res, err := h.triggerCreate(context.Background(), makeReq("trigger_create", map[string]any{
+		"name": "mapped-trig", "source_type": "cron", "source_config": `{"expr":"0 2 * * *"}`,
+		"workflow_id": "wf-1", "input_from": "mapped", "input": `{"topic":"nightly"}`,
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError, "input_from/input must pass through verbatim")
+	client.AssertExpectations(t)
+
+	// Update: empty strings = keys omitted (keep existing); "null" passes
+	// through so the API's key-presence discrimination can clear the doc.
+	enabled := true
+	client.On("UpdateTrigger", mock.Anything, "t1", &enabled, "", "null").
+		Return(`{"id":"t1"}`, nil)
+	res, err = h.triggerUpdate(context.Background(), makeReq("trigger_update", map[string]any{
+		"trigger_id": "t1", "enabled": true, "input": "null",
+	}))
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	client.AssertExpectations(t)
+
+	// Garbage input documents die at the tool boundary, not at the API.
+	res, err = h.triggerCreate(context.Background(), makeReq("trigger_create", map[string]any{
+		"name": "bad", "source_type": "cron", "source_config": `{}`, "input": `{nope`,
+	}))
+	require.NoError(t, err)
+	require.True(t, res.IsError, "invalid JSON input must be rejected by the tool")
+
+	// The tool schemas advertise the new args, and the tool descriptions
+	// carry the wiring-guard guidance (D7).
+	b, err := json.Marshal(triggerCreateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "input_from")
+	assert.Contains(t, string(b), "envelope (default)")
+	assert.Contains(t, triggerCreateTool.Description, "envelope-mode trigger")
+	b, err = json.Marshal(triggerUpdateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "input_from")
+	assert.Contains(t, triggerUpdateTool.Description, "patchable")
 }

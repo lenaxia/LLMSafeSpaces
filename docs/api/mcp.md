@@ -160,8 +160,8 @@ openai_compatible
 | Tool | Required args | Description |
 |------|---------------|-------------|
 | `trigger_list` | _(none)_ | List triggers owned by the authenticated user |
-| `trigger_create` | `name`, `source_type`, `source_config` | Create a trigger. Routine mode (no `workflow_id`): `workspace_id` + `prompt`. Workflow mode: `workflow_id`. Optional: `memory_mode`, `capture_mode`, `preserve_session`. |
-| `trigger_update` | `trigger_id` | Partial update. Optional: `enabled` (**boolean**). |
+| `trigger_create` | `name`, `source_type`, `source_config` | Create a trigger. Routine mode (no `workflow_id`): `workspace_id` + `prompt`. Workflow mode: `workflow_id`. Optional: `memory_mode`, `capture_mode`, `preserve_session`, `input_from` (`envelope` default \| `body` — webhook only, the posted payload becomes the run input \| `mapped` — the static `input` document), `input` (static run input, workflow mode; a JSON object ≤ 64 KiB; in envelope/body modes a shallow top-level overlay, static wins; in `mapped` mode validated against the workflow's `inputSchema`). Wiring an envelope-mode trigger with no `input` to a workflow whose `inputSchema` requires non-envelope fields is rejected with a 400 — set `input`, use `input_from: "body"`, or relax the schema. |
+| `trigger_update` | `trigger_id` | Partial update. Optional: `enabled` (**boolean**), `input_from`, `input` (a JSON `null` clears the static input; omitting the key keeps it). |
 | `trigger_delete` | `trigger_id` | Delete a trigger |
 
 `source_type` is `cron` (with `source_config` JSON `{"expr","tz"}`) or `webhook` (with `{}`).

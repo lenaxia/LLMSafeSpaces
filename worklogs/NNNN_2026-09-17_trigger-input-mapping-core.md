@@ -31,6 +31,13 @@ Implement design/0059 (merged @ b0664d50): migrations + store/DTO plumbing + cre
 ## Blockers
 None. (Local docker unavailable: migration up/down round-trip + store integration run in CI, which has TEST_DATABASE_URL + the migration-safety job.)
 
+## Review Round 2 (r1: CHANGES_REQUESTED — findings addressed)
+- **D7 contract surfaces (blocking)**: `sdks/openapi.yaml` (Trigger response + TriggerCreateRequest/TriggerUpdateRequest: `inputFrom`/`input`, key-presence update semantics, the V6 400 documented in the request descriptions), `docs/api/mcp.md` (trigger_create/trigger_update rows), and `pkg/mcp/workflow_tools.go` + `pkg/mcp/client.go` (flat-arg `input_from`/`input` on triggerCreateTool/triggerUpdateTool, wired through the API client signatures; JSON validated at the tool boundary; empty string = key omitted; `"null"` clears the static doc) — plus a passthrough test in `server_test.go`. The agentd descriptions and §5's R6 e2e rows remain the stacked sibling PR #1438's claimed files (`cmd/workspace-agentd/mcp_server.go`, `local/issue-1410-1412-automation-e2e.sh` — sibling session in /workspace/lss-0059-agentd, messaged for coordination).
+- **Robustness #1**: `fireWorkflowTarget` no longer logs the raw `ValidateRunInput` error (library `Error()` embeds instance content) — locations/status only; the sanitized fire-row payload is the auditable detail.
+- **Robustness #2**: the webhook validation/accounting block now uses the exact cron/#1412 shape (`n, _ :=` + threshold disable) — the duplicated blocks no longer diverge in error handling.
+- **Missing test #2**: `TestWebhookReceiver_InvalidSchemaFailedFire` pins the webhook-side `ErrInvalidInputSchema` branch (202 + `failed` fire `{"code":"invalid_input_schema"}` + no run + accounting).
+- **Style nit**: dropped the pointless `sprintf` wrapper in `input_schema_test.go`.
+
 ## Tests Run
 `go build ./...` clean; `go test ./pkg/workflows/ ./api/internal/handlers/ ./api/internal/workflows/ ./api/internal/server/` green; `gofmt` clean; `golangci-lint run` (touched packages, `--new-from-merge-base=origin/main`) 0 issues; `make repolint` passes (migration 000031 api/helm mirror, worklog sentinel).
 

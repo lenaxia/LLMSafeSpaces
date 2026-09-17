@@ -275,7 +275,7 @@ func TestSchemaMismatchPayload_CapInvariant(t *testing.T) {
 	// A schema with many required fields produces many violations.
 	var required []string
 	for i := 0; i < 400; i++ {
-		required = append(required, sprintf("field%03d", i))
+		required = append(required, fmt.Sprintf("field%03d", i))
 	}
 	schemaBytes, _ := json.Marshal(map[string]any{"type": "object", "required": required})
 	err := runFailingValidation(t, string(schemaBytes), `{}`)
@@ -476,8 +476,4 @@ func TestValidateRunInput_InvalidSchemaSentinel(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid inputSchema") {
 		t.Fatalf("message must keep the invalid inputSchema prefix, got %v", err)
 	}
-}
-
-func sprintf(format string, args ...any) string {
-	return fmt.Sprintf(format, args...)
 }

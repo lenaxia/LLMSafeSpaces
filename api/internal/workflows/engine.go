@@ -592,7 +592,12 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
 				_ = s.Store.DisableTrigger(ctx, trigger.ID)
 			}
-			logger.Error(verr, "scheduler: fired input failed schema validation", "triggerId", trigger.ID, "workflowId", workflowID, "status", fireStatus)
+			// Log locations only — the raw ValidateRunInput error can embed
+			// instance-derived content (the §3.5 sanitization rationale); the
+			// sanitized payload on the fire row is the auditable detail.
+			logger.Error(fmt.Errorf("fired input failed schema validation (%s)", fireStatus),
+				"scheduler: fired input failed schema validation",
+				"triggerId", trigger.ID, "workflowId", workflowID, "status", fireStatus)
 			return
 		}
 	}
