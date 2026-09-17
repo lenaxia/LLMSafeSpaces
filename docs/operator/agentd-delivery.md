@@ -128,7 +128,7 @@ resume it (or bump `spec.restartGeneration`).
 
 ## Behavior on verification failure
 
-| Entrypoint outcome | Exit | What happens |
+| Supervisor self-verify outcome | Exit | What happens |
 |---|---|---|
 | sha256 matches pin | 0 | exec overlay binary; pod sets `AgentdVerified=True` |
 | sha256 mismatch | **81** | refuse to exec — **no fallback**; CrashLoopBackOff |

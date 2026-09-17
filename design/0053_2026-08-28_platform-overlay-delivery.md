@@ -67,7 +67,7 @@ The existing #863 artifact and its contract are **unchanged**: `FROM scratch`, o
 
 ### 4.2 Artifact 2 — `opencodeDelivery.image` (new)
 
-Same construction as the agentd artifact, one binary, one hash:
+Same construction as the agentd artifact — one executable, one hash (the agentd artifact additionally carries the #1416 CA data file):
 
 - `FROM scratch`; the opencode binary at a fixed path (`/usr/local/bin/opencode`); per-arch binary sha256 stamped onto the image index as OCI annotations by the same CI job that stamps agentd's.
 - Helm: `controller.opencodeDelivery.image` (+ optional `binarySHA256Amd64`/`Arm64` break-glass overrides, set-both-or-neither, mirroring `agentdDelivery`). **Mandatory**: the render fails when empty — as `agentdDelivery` becomes after this design.

@@ -1581,12 +1581,14 @@ jobs:
           # verify the real target's TLS chain — the same verification
           # an http node performs. Any HTTP status proves the handshake;
           # --cacert makes the bundle the ONLY trust source.
-          code=$(curl -s -o /dev/null -w "%{http_code}" --cacert /tmp/ca-bundle.crt \
-            https://api.safespaces.dev/api/v1/health --max-time 30 || echo "curl-failed")
-          if [ "$code" = "000" ] || [ "$code" = "curl-failed" ]; then
-            echo "FAIL: bundle did not verify the target's TLS chain (curl code $code)"
-            exit 1
-          fi
+          # -w and a failing curl concatenate; capture the code with the
+          # fallback INSIDE the substitution so the guard can actually fire.
+          code="$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/ca-bundle.crt \
+            https://api.safespaces.dev/api/v1/health --max-time 30)" || code="curl-failed"
+          case "$code" in
+            2*|3*|4*|5*) : ;;
+            *) echo "FAIL: bundle did not verify the target's TLS chain (curl code '$code')"; exit 1 ;;
+          esac
           echo "functional acceptance: TLS-verified response HTTP $code from api.safespaces.dev"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'

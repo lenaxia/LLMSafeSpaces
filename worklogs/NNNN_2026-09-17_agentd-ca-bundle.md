@@ -33,6 +33,9 @@ None.
 Merge with the #1410-#1419 batch; live http-node leg in the comprehensive test (#1427).
 
 ## Files Modified
-- cmd/workspace-agentd/Dockerfile (+doc comment)
-- pkg/repolint/dockerfile_ca_bundle_test.go
-- docs/operator/agentd-delivery.md
+- cmd/workspace-agentd/Dockerfile (CA COPY + header/sizing comments)
+- pkg/repolint/dockerfile_ca_bundle_test.go (3 fail-loud pins)
+- .github/workflows/ci.yml (built-image integration pin: presence + functional TLS acceptance, PR-gated)
+- docs/operator/agentd-delivery.md (contents clause, sizing, self-verify wording)
+- helm/values.yaml (supervisor self-verify wording)
+- design/0053_2026-08-28_platform-overlay-delivery.md (trust-contract rows)
