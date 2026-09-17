@@ -191,6 +191,27 @@ relayOnlyKeyDelivery:
 	}
 	require.NotNil(t, podLabels)
 
+	// The carve-out's egress to.podSelector must also match the rendered
+	// pod labels (the reviewer-flagged coverage gap).
+	for _, d := range findDocs(t, docs, "NetworkPolicy") {
+		if docName(t, d) != "llm-relay-egress-carveout" {
+			continue
+		}
+		egress := d["spec"].(map[string]any)["egress"].([]any)[0].(map[string]any)
+		for _, to := range egress["to"].([]any) {
+			ps, ok := to.(map[string]any)["podSelector"]
+			if !ok {
+				continue
+			}
+			sel := ps.(map[string]any)["matchLabels"].(map[string]any)
+			for k, v := range sel {
+				tv, ok := podLabels[k]
+				require.True(t, ok, "carve-out to.podSelector key %s not on rendered pods", k)
+				assert.Equal(t, v, tv)
+			}
+		}
+	}
+
 	// Service + PDB + router ingress NP all select within podLabels.
 	selectors := 0
 	for _, d := range docs {
@@ -245,6 +266,29 @@ relayOnlyKeyDelivery:
 		assert.Equal(t, "300000000", env["BYO_QUOTA_BYTES"], "override must render as exact decimal")
 		assert.Equal(t, "2097152", env["BYO_MAX_BODY_BYTES"])
 		assert.Equal(t, "120", env["BYO_QUOTA_REQUESTS"], "default renders exactly too")
+	}
+}
+
+// TestRelayOnlyKeyDelivery_OddNotationNumerics (iteration 4): string
+// decimal/exponential notations (the --set input class) must coerce to
+// exact positive decimals — a silent "0" would disable the byte quota —
+// and garbage must fail the render loudly.
+func TestRelayOnlyKeyDelivery_OddNotationNumerics(t *testing.T) {
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+  router:
+    quota:
+      bytesPerWindow: "2e8"
+    maxBodyBytes: "300.5"
+`)
+	for _, d := range findDocs(t, docs, "Deployment") {
+		if docName(t, d) != "llm-relay-router" {
+			continue
+		}
+		env := podEnv(t, d)
+		assert.Equal(t, "200000000", env["BYO_QUOTA_BYTES"], "exponential string notation coerces exactly")
+		assert.Equal(t, "300", env["BYO_MAX_BODY_BYTES"], "decimal string notation coerces exactly")
 	}
 }
 

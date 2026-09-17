@@ -49,13 +49,13 @@ spec:
             - name: BYO_QUOTA_WINDOW
               value: {{ .Values.relayOnlyKeyDelivery.router.quota.window | default "60s" | quote }}
             - name: BYO_QUOTA_REQUESTS
-              value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | int | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | include "llmsafespaces.positiveIntEnv" }}
             - name: BYO_QUOTA_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | int | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | include "llmsafespaces.positiveIntEnv" }}
             - name: BYO_MAX_BODY_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | int | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | include "llmsafespaces.positiveIntEnv" }}
             - name: BYO_MAX_RESP_BYTES
-              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | int | quote }}
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | include "llmsafespaces.positiveIntEnv" }}
             - name: BYO_INFORMER_RESYNC
               value: {{ .Values.relayOnlyKeyDelivery.router.informerResync | default "5m" | quote }}
           ports:

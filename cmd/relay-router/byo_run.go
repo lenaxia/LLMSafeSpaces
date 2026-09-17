@@ -173,6 +173,14 @@ func runBYO(ctx context.Context) error {
 		return fmt.Errorf("byo-router: building server: %w", err)
 	}
 
+	return serveBYO(ctx, cfg, server)
+}
+
+// serveBYO runs the HTTP server until ctx is canceled, then drains
+// in-flight streams within the grace bound (#1078: a cap, not a delay).
+// The signal→drain WIRING lives here so a test can drive ctx-cancel the
+// way SIGTERM does.
+func serveBYO(ctx context.Context, cfg byoRunConfig, server *byoServer) error {
 	httpServer := &http.Server{
 		Addr:              cfg.listenAddr,
 		Handler:           server.handler(),
@@ -275,10 +283,12 @@ func byoWatchDelete(ctx context.Context, obj any, keys *byoKeyManager, cacheStor
 				case <-time.After(time.Duration(attempt+1) * 5 * time.Second):
 				}
 			}
-			// Terminal: loud give-up — resolve stays fail-closed; a pod
-			// restart re-enters the same recovery (fresh manager seeds
-			// from its empty highwater, so a rotated lineage should be
-			// re-sealed by the controller regardless).
+			// Terminal: loud give-up — resolve stays fail-closed. A pod
+			// restart re-enters the same recovery with a FRESH manager
+			// (empty highwater): on a rotated lineage it re-bootstraps at
+			// generation 1 until a surviving peer's assert-driven DR
+			// converges the fleet forward (US-72.3's controller re-seal
+			// is the eventual backstop, not code in this PR).
 			log.Printf("byo-router: keypair-secret loss recovery EXHAUSTED after 3 attempts; giving up (fail-closed)")
 		}()
 		return

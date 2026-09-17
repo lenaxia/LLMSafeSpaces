@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -114,6 +115,9 @@ func TestRotateEndpointReceiptAndPrecondition(t *testing.T) {
 	rec := httptest.NewRecorder()
 	rig2svc.handleRotateKeys(rec, req)
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+	var out map[string]string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
+	assert.Equal(t, "rotate_precondition_failed", out["reason"], "distinct from transport-class 500s")
 }
 
 // TestDRAfterRotationStaysMonotonic (iteration 2 finding 2): a manager that
@@ -211,3 +215,94 @@ type netListener = net.Listener
 func netListen(addr string) (net.Listener, error) { return net.Listen("tcp", addr) }
 
 func httpServerClient() *http.Client { return &http.Client{Timeout: 10 * time.Second} }
+
+// TestDrainWiringThroughServeBYO (iteration 4): the SIGNAL→DRAIN wiring —
+// serveBYO's ctx-cancel path runs http.Server.Shutdown under the grace
+// bound exactly as SIGTERM does at runtime. Deleting the drain block
+// fails this test (the stream or the serve call never returns cleanly).
+func TestDrainWiringThroughServeBYO(t *testing.T) {
+	chunks := 8
+	rig := newByoTestRigWithUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for i := 0; i < chunks; i++ {
+			_, _ = io.WriteString(w, "data: k\n\n")
+			flusher.Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+	token := rig.mint(t, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := loadByoRunConfig()
+	cfg.listenAddr = "127.0.0.1:0"
+	cfg.drainGrace = 5 * time.Second
+	serveErr := make(chan error, 1)
+	addrCh := make(chan string, 1)
+	go func() {
+		// Probe the ephemeral port serveBYO binds (log-free): serve, then
+		// hand the address over via the server's listener — simplest is to
+		// pre-bind and pass the fd-free listener address via cfg.
+		serveErr <- serveBYOWithListener(ctx, cfg, rig.svc, addrCh)
+	}()
+
+	addr := <-addrCh
+	streamDone := make(chan string, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/w/ws-1/zai/v1/chat/completions", strings.NewReader(`{"model":"glm-4.7"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			streamDone <- "err:" + err.Error()
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		streamDone <- string(body)
+	}()
+
+	time.Sleep(50 * time.Millisecond) // mid-stream: SIGTERM-equivalent cancel
+	cancel()
+
+	select {
+	case got := <-streamDone:
+		require.NotContains(t, got, "err:")
+		assert.Equal(t, chunks, strings.Count(got, "data: k"), "in-flight stream completed through the drain")
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream never completed")
+	}
+	select {
+	case err := <-serveErr:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("serveBYO never returned after drain")
+	}
+}
+
+// serveBYOWithListener is serveBYO with a pre-bound listener so the test
+// can learn the ephemeral address (production binds cfg.listenAddr).
+func serveBYOWithListener(ctx context.Context, cfg byoRunConfig, server *byoServer, addrCh chan<- string) error {
+	ln, err := net.Listen("tcp", cfg.listenAddr)
+	if err != nil {
+		return err
+	}
+	addrCh <- ln.Addr().String()
+	httpServer := &http.Server{Handler: server.handler(), ReadHeaderTimeout: 10 * time.Second}
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpServer.Serve(ln) }()
+	select {
+	case <-ctx.Done():
+		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.drainGrace)
+		defer cancel()
+		if err := httpServer.Shutdown(drainCtx); err != nil { //nolint:contextcheck // drain outlives the canceled parent by design
+			return err
+		}
+		return nil
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
