@@ -80,6 +80,6 @@ func (m *byoMetrics) recordInternal(path string, status int) {
 	m.internal.WithLabelValues(path, strconv.Itoa(status)).Inc()
 }
 
-func (m *byoMetrics) writePrometheus(w http.ResponseWriter) {
-	m.handler.ServeHTTP(w, nil)
+func (m *byoMetrics) writePrometheus(w http.ResponseWriter, r *http.Request) {
+	m.handler.ServeHTTP(w, r)
 }

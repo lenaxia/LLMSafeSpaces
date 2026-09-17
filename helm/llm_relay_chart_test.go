@@ -133,6 +133,33 @@ relayOnlyKeyDelivery:
 	}
 }
 
+// TestRelayOnlyKeyDelivery_RendersWithMonitoring (review R1): enabling the
+// alerts alongside relay-only must render — the two flags together are the
+// US-72.5 flip-gate posture.
+func TestRelayOnlyKeyDelivery_RendersWithMonitoring(t *testing.T) {
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+monitoring:
+  enabled: true
+  prometheusRules:
+    enabled: true
+`)
+	found := 0
+	for _, d := range docs {
+		if d["kind"] == "PrometheusRule" {
+			spec := d["spec"].(map[string]any)
+			groups := spec["groups"].([]any)
+			for _, g := range groups {
+				if g.(map[string]any)["name"] == "llmsafespaces.llm-relay" {
+					found++
+				}
+			}
+		}
+	}
+	require.Equal(t, 1, found, "llm-relay alert group present exactly once with monitoring on")
+}
+
 func toStrings(t *testing.T, v any) []string {
 	t.Helper()
 	list, ok := v.([]any)

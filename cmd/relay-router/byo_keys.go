@@ -177,10 +177,21 @@ func (m *byoKeyManager) publishPub(ctx context.Context, kp *secrets.HPKEKeyPairP
 			ObjectMeta: metav1.ObjectMeta{Name: byoPubSecretName},
 			Data:       map[string][]byte{byoPayloadKey: data},
 		})
+		if apierrors.IsAlreadyExists(err) {
+			// A simultaneous cold-start peer won the create race: adopt its
+			// Secret instead of crash-looping (create-or-adopt symmetry).
+			existing, err = m.store.Get(ctx, byoPubSecretName)
+			if err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
+	} else if err != nil {
 		return err
 	}
-	if err != nil {
-		return err
+	if string(existing.Data[byoPayloadKey]) == string(data) {
+		return nil
 	}
 	existing.Data[byoPayloadKey] = data
 	_, err = m.store.Update(ctx, existing)

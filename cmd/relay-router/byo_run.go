@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -60,26 +61,46 @@ func loadByoRunConfig() byoRunConfig {
 
 // byoMintAuth resolves the mint key lazily from its Secret, caching for a
 // bounded window so rotation converges without a restart.
+
+// mintSecretReader is the Secret-read surface the mint auth needs (narrow
+// so tests can use the client-go fake).
+type mintSecretReader interface {
+	Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Secret, error)
+}
+
+// mintSecrets adapts a CoreV1 Secrets getter to mintSecretReader.
+type mintSecrets struct {
+	client kubernetes.Interface
+	ns     string
+}
+
+func (m mintSecrets) Get(ctx context.Context, name string, opts metav1.GetOptions) (*corev1.Secret, error) {
+	return m.client.CoreV1().Secrets(m.ns).Get(ctx, name, opts)
+}
+
 type byoMintAuth struct {
-	client    *kubernetes.Clientset
+	client    mintSecretReader
 	namespace string
 	ttl       time.Duration
+	clock     func() time.Time
 
-	ch   chan struct{}
+	mu   sync.Mutex
 	key  string
 	age  time.Time
 	once bool
 }
 
-func newByoMintAuth(client *kubernetes.Clientset, namespace string) *byoMintAuth {
-	return &byoMintAuth{client: client, namespace: namespace, ttl: time.Minute, ch: make(chan struct{}, 1)}
+func newByoMintAuth(client mintSecretReader, namespace string) *byoMintAuth {
+	return &byoMintAuth{client: client, namespace: namespace, ttl: time.Minute, clock: time.Now}
 }
 
 func (a *byoMintAuth) current(ctx context.Context) (string, error) {
-	if a.once && time.Since(a.age) < a.ttl {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.once && a.clock().Sub(a.age) < a.ttl {
 		return a.key, nil
 	}
-	sec, err := a.client.CoreV1().Secrets(a.namespace).Get(ctx, byoMintAuthKeyName, metav1.GetOptions{})
+	sec, err := a.client.Get(ctx, byoMintAuthKeyName, metav1.GetOptions{})
 	if err != nil {
 		if a.once {
 			return a.key, nil // cached last-known-good through outages
@@ -90,8 +111,8 @@ func (a *byoMintAuth) current(ctx context.Context) (string, error) {
 	if key == "" {
 		return "", errors.New("mint key secret has empty mint-key data")
 	}
-	a.key, a.age, a.once = key, time.Now(), true
-	return a.key, nil
+	a.key, a.age, a.once = key, a.clock(), true
+	return key, nil
 }
 
 // runBYO is the BYO resolve router entrypoint: bootstrap the keypair
@@ -131,7 +152,7 @@ func runBYO(ctx context.Context) error {
 	}
 
 	cacheStore := newByoEnvelopeCache()
-	mintAuth := newByoMintAuth(clientset, cfg.namespace)
+	mintAuth := newByoMintAuth(mintSecrets{client: clientset, ns: cfg.namespace}, cfg.namespace)
 
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, cfg.informerResync,
 		informers.WithNamespace(cfg.namespace))
@@ -139,7 +160,7 @@ func runBYO(ctx context.Context) error {
 	_, _ = secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    func(obj any) { byoWatchAdd(ctx, obj, keys, cacheStore) },
 		UpdateFunc: func(_, obj any) { byoWatchAdd(ctx, obj, keys, cacheStore) },
-		DeleteFunc: func(obj any) { byoWatchDelete(obj, cacheStore) },
+		DeleteFunc: func(obj any) { byoWatchDelete(ctx, obj, keys, cacheStore) },
 	})
 	factory.Start(ctx.Done())
 	if !cache.WaitForCacheSync(ctx.Done(), secretInformer.HasSynced) {
@@ -199,6 +220,36 @@ func runBYO(ctx context.Context) error {
 	}
 }
 
+// buildBYOServer assembles the server from its runtime dependencies.
+// Construction-side pins (US-72.1 §4.9 amendment binding): the redactor is
+// NON-NIL on the production path and the key manager's redaction hook is
+// wired — pinned by TestBuildBYOServerPinsNonNilRedactor.
+func buildBYOServer(cfg byoRunConfig, keys *byoKeyManager, cacheStore *byoEnvelopeCache,
+	redactor *redact.Redactor, minter byoMintService, client *http.Client) (*byoServer, error) {
+	if redactor == nil {
+		return nil, errors.New("byo-router: a nil redactor on the production path violates design 0058 §4.9 (fail-open is test-adoption only)")
+	}
+	return &byoServer{
+		cfg: byoServerConfig{
+			listenAddr:    cfg.listenAddr,
+			namespace:     cfg.namespace,
+			maxBodyBytes:  cfg.maxBodyBytes,
+			maxRespBytes:  cfg.maxRespBytes,
+			quotaWindow:   cfg.quotaWindow,
+			quotaRequests: cfg.quotaRequests,
+			quotaBytes:    cfg.quotaBytes,
+			retention:     cfg.retention,
+		},
+		minter:   minter,
+		cache:    cacheStore,
+		resolve:  resolveDispatcher{keys: keys},
+		quota:    newByoWorkspaceQuota(cfg.quotaWindow, cfg.quotaRequests, cfg.quotaBytes),
+		redactor: redactor,
+		client:   client,
+		metrics:  newByoMetrics().withCacheLen(cacheStore.Len),
+	}, nil
+}
+
 // byoWatchAdd routes watch deliveries: the keypair Secret feeds the key
 // machinery (assert on every load); labeled envelope Secrets feed the
 // ciphertext cache. Everything else is ignored.
@@ -216,14 +267,26 @@ func byoWatchAdd(ctx context.Context, obj any, keys *byoKeyManager, cacheStore *
 	}
 }
 
-func byoWatchDelete(obj any, cacheStore *byoEnvelopeCache) {
+func byoWatchDelete(ctx context.Context, obj any, keys *byoKeyManager, cacheStore *byoEnvelopeCache) {
+	// Stale-watch tombstones wrap the deleted object; unwrap or the delete
+	// is silently dropped (informers deliver DeletedFinalStateUnknown when
+	// the watch bookkeeping outruns the delete confirmation).
+	if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tombstone.Obj
+	}
 	sec, ok := obj.(*corev1.Secret)
 	if !ok {
 		return
 	}
-	// Keypair-Secret loss is the DR case — the manager regenerates via
-	// create-or-adopt on the next bootstrap/watch cycle; eviction here is
-	// ciphertext-only.
+	if sec.Name == byoKeyPairSecretName {
+		// Keypair-Secret loss on a RUNNING replica is the DR case: fall
+		// back to create-or-adopt regeneration (the losing replica of a
+		// simultaneous recovery adopts the winner — same tail as boot).
+		if err := keys.Bootstrap(ctx); err != nil {
+			log.Printf("byo-router: keypair-secret loss recovery failed: %v", err)
+		}
+		return
+	}
 	cacheStore.Evict(sec.Name)
 }
 

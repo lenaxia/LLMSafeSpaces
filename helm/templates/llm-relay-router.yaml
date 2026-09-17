@@ -49,13 +49,25 @@ spec:
               value: {{ .Values.relayOnlyKeyDelivery.router.priorKeyRetention | default "10m" | quote }}
             - name: BYO_DRAIN_GRACE
               value: {{ .Values.relayOnlyKeyDelivery.router.drainGrace | default "600s" | quote }}
+            - name: BYO_QUOTA_WINDOW
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.window | default "60s" | quote }}
             - name: BYO_QUOTA_REQUESTS
               value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | quote }}
             - name: BYO_QUOTA_BYTES
               value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | quote }}
+            - name: BYO_MAX_BODY_BYTES
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | quote }}
+            - name: BYO_MAX_RESP_BYTES
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | quote }}
           ports:
             - name: http
               containerPort: 8090
+          # #1078 pre-not-ready: give the endpoint removal a head start
+          # before the graceful drain begins.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
           readinessProbe:
             httpGet:
               path: /healthz

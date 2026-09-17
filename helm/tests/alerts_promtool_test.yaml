@@ -798,3 +798,40 @@ tests:
       - eval_time: 20m
         alertname: LLMSafeSpacesCanaryResolveL2Burn
         exp_alerts: []
+
+  # ── LlmRelayRouter alerts (Epic 72 / US-72.2) ────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'llm_relay_byo_requests_total{workspace="ws-canary",provider="zai",status="401"}'
+        values: '0+3x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LlmRelayRouterRejectSpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: llm-relay
+              workspace: ws-canary
+            exp_annotations:
+              summary: "BYO relay router rejecting a workspace's requests"
+              description: >-
+                Workspace ws-canary accumulated 30 rejections (401/403/429) in 10m — check CredentialStale/CredentialRejected
+                conditions and quota usage.
+
+  - interval: 1m
+    input_series:
+      - series: 'llm_relay_byo_requests_total{workspace="ws-canary",provider="zai",status="502"}'
+        values: '0+2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: LlmRelayRouterUpstreamErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              component: llm-relay
+              workspace: ws-canary
+            exp_annotations:
+              summary: "BYO relay router upstream failures"
+              description: >-
+                Workspace ws-canary saw 20 upstream-class
+                failures in 10m — resolve path or provider availability issue.

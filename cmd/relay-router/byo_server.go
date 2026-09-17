@@ -28,6 +28,7 @@ const (
 	byoRejectScopeViolation      = "scope_violation"
 	byoRejectSanitization        = "sanitization_refused"
 	byoRejectQuota               = "quota_exceeded"
+	byoRejectMintUnavailable     = "mint_unavailable"
 	byoRejectUpstreamUnreachable = "upstream_unreachable"
 )
 
@@ -121,9 +122,9 @@ func (s *byoServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *byoServer) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+func (s *byoServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	s.metrics.writePrometheus(w)
+	s.metrics.writePrometheus(w, r)
 }
 
 // requireMintAuth gates the internal API: only the controller holds the
@@ -132,7 +133,7 @@ func (s *byoServer) requireMintAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key, err := s.minter.AuthKey(r.Context())
 		if err != nil {
-			byoReject(w, byoRejectUnauthorized, http.StatusServiceUnavailable, "mint key unavailable")
+			byoReject(w, byoRejectMintUnavailable, http.StatusServiceUnavailable, "mint key unavailable")
 			return
 		}
 		token, ok := extractBearerToken(r.Header.Get(byoInternalAuthHeader))
@@ -277,8 +278,8 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// (3) Quota (§4.7 rule 6).
-	if !s.quota.Allow(workspaceID) {
+	// (3) Quota (§4.7 rule 6): request-rate AND byte-rate budgets.
+	if !s.quota.Allow(workspaceID) || s.quota.BytesLeft(workspaceID) <= 0 {
 		w.Header().Set("Retry-After", "10")
 		reject(byoRejectQuota, http.StatusTooManyRequests, "workspace quota exceeded")
 		return
@@ -304,9 +305,33 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 		reject(byoRejectSanitization, http.StatusBadRequest, "request body must be JSON")
 		return
 	}
-	if err := byoModelAllowed(shape, payload.ModelAllowlist); err != nil {
-		reject(byoRejectScopeViolation, http.StatusForbidden, "model outside token allowlist")
-		return
+	if r.Method == http.MethodPost {
+		if err := byoModelAllowed(shape, payload.ModelAllowlist); err != nil {
+			reject(byoRejectScopeViolation, http.StatusForbidden, "model outside token allowlist")
+			return
+		}
+	}
+
+	// GET /models is served from the staged catalog (design §4.5): zero
+	// upstream fetches (AC2), zero key bytes in the response — the model
+	// list travels in the envelope Secret (US-72.3 writer), not the key.
+	if subPath == "models" && r.Method == http.MethodGet {
+		models, staged := s.cache.Models(workspaceID, providerSlug)
+		if staged {
+			s.quota.Record(workspaceID, 0)
+			s.metrics.recordRequest(workspaceID, providerSlug, http.StatusOK)
+			log.Printf("byo-router: ws=%s slug=%s keyID=%s status=%d latency=%s bytes=%d", //nolint:gosec // sanitized metadata only (K7)
+				sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), sanitizeMeta(payload.KeyID), http.StatusOK, time.Since(start), 0)
+			entries := make([]map[string]string, 0, len(models))
+			for _, id := range models {
+				entries = append(entries, map[string]string{"id": id, "object": "model", "owned_by": "byo"})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"object": "list", "data": entries})
+			return
+		}
+		// No staged catalog: fall through to the upstream fetch below.
 	}
 
 	// (5) Per-request resolve — local decrypt, discard (D2). Registration
@@ -364,6 +389,10 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 	// (8) Response: sanitized headers, capped, streamed with the staged-key
 	// redaction carry, flushed per chunk for SSE.
 	copyByoHeaders(w.Header(), resp.Header)
+	// The body is rewritten (redaction/cap), so any upstream length framing
+	// is invalid — drop it and let the server re-frame (chunked).
+	w.Header().Del("Content-Length")
+	w.Header().Del("Transfer-Encoding")
 	w.WriteHeader(resp.StatusCode)
 
 	matcher := newExactValueMatcher(s.redactor)
@@ -377,9 +406,12 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 			total += int64(n)
 			if total > s.cfg.maxRespBytes {
 				// Over cap: stop copying. The stream is truncated at a
-				// chunk boundary — visible to the client as a short body.
+				// chunk boundary (length framing already dropped above).
 				log.Printf("byo-router: ws=%s slug=%s response exceeded cap (%d bytes)", //nolint:gosec // sanitized metadata only
 					sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), s.cfg.maxRespBytes)
+				s.quota.Record(workspaceID, total)
+				s.metrics.recordRequest(workspaceID, providerSlug, resp.StatusCode)
+				s.metrics.recordBytes(workspaceID, total)
 				return
 			}
 			out := stream.Write(buf[:n])

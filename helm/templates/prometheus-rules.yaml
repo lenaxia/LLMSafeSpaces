@@ -848,10 +848,10 @@ spec:
        and the credential-freshness signals. Metadata-only metrics (K7). */}}
 {{- if .Values.relayOnlyKeyDelivery.enabled }}
     - name: llmsafespaces.llm-relay
-    rules:
+      rules:
         - alert: LlmRelayRouterRejectSpike
           expr: |
-          sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"401|403|429"}[10m])) > 20
+            sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"401|403|429"}[10m])) > 20
           for: 5m
           labels:
             severity: warning
@@ -864,7 +864,7 @@ spec:
               conditions and quota usage.
         - alert: LlmRelayRouterUpstreamErrors
           expr: |
-          sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"5.."}[10m])) > 10
+            sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"5.."}[10m])) > 10
           for: 5m
           labels:
             severity: warning

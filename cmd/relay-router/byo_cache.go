@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ const (
 	byoEnvWorkspaceLabel = "llmsafespaces.dev/workspace-id"
 	byoEnvProviderLabel  = "llmsafespaces.dev/provider-slug"
 	byoEnvDataKey        = "envelope"
+	byoEnvModelsKey      = "models"
 )
 
 type envCacheKey struct {
@@ -32,21 +34,28 @@ type envCacheKey struct {
 // ciphertext ONLY; the resolve path decrypts per request and discards).
 // Revocation = Secret deletion → watch eviction → next resolve fails
 // closed (bounded by watch propagation).
+type cachedEnvelope struct {
+	envelope string
+	models   []string
+}
+
 type byoEnvelopeCache struct {
 	mu    sync.RWMutex
-	envs  map[envCacheKey]string
+	envs  map[envCacheKey]cachedEnvelope
 	names map[string]envCacheKey
 }
 
 func newByoEnvelopeCache() *byoEnvelopeCache {
 	return &byoEnvelopeCache{
-		envs:  map[envCacheKey]string{},
+		envs:  map[envCacheKey]cachedEnvelope{},
 		names: map[string]envCacheKey{},
 	}
 }
 
 // Apply ingests a watch-delivered Secret. Non-envelope Secrets (missing
-// labels or the data key) are ignored.
+// labels or the data key) are ignored. The optional `models` key carries
+// the staged provider catalog (design §4.5 — the router serves GET /models
+// from it with zero upstream fetches).
 func (c *byoEnvelopeCache) Apply(sec *corev1.Secret) {
 	ws := sec.Labels[byoEnvWorkspaceLabel]
 	slug := sec.Labels[byoEnvProviderLabel]
@@ -54,11 +63,15 @@ func (c *byoEnvelopeCache) Apply(sec *corev1.Secret) {
 	if ws == "" || slug == "" || envelope == "" {
 		return
 	}
+	var models []string
+	if raw := sec.Data[byoEnvModelsKey]; len(raw) > 0 {
+		_ = json.Unmarshal(raw, &models) // best-effort catalog; absence is fine
+	}
 	key := envCacheKey{workspaceID: ws, providerSlug: slug}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.names[sec.Name] = key
-	c.envs[key] = envelope
+	c.envs[key] = cachedEnvelope{envelope: envelope, models: models}
 }
 
 // Evict removes a Secret's entry (delete event). Kept as a no-op for
@@ -76,8 +89,17 @@ func (c *byoEnvelopeCache) Evict(secretName string) {
 func (c *byoEnvelopeCache) Envelope(workspaceID, providerSlug string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	env, ok := c.envs[envCacheKey{workspaceID: workspaceID, providerSlug: providerSlug}]
-	return env, ok
+	entry, ok := c.envs[envCacheKey{workspaceID: workspaceID, providerSlug: providerSlug}]
+	return entry.envelope, ok
+}
+
+// Models returns the staged provider catalog, when the envelope Secret
+// carried one.
+func (c *byoEnvelopeCache) Models(workspaceID, providerSlug string) ([]string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.envs[envCacheKey{workspaceID: workspaceID, providerSlug: providerSlug}]
+	return entry.models, ok && entry.models != nil
 }
 
 // Len reports the cached entry count (metrics/tests).

@@ -153,6 +153,10 @@ Redaction (payload hygiene) and staging (credential delivery) are separate mecha
 - **Consumption (US-72.2):** the router's mandatory sanitization stage (§4.7) applies the **combined static + dynamic pipeline** to proxied traffic, so a resolved key can never be echoed back through the relay. US-72.1 ships the surface plus the seal/resolve-side wiring and its tests; the router-side application lands with US-72.2.
 - **`pkg/redact` home:** stays in `pkg/`. #842 once planned relocating it into `cmd/redact`; that binary has since been folded into workspace-agentd's `redact` subcommand (#1152, design 0053 S2 / #1116), and with the staging provider as a second genuine consumer the package is shared platform machinery, not a CLI internal.
 
+**§4.9 amendment (2026-09-17, US-72.2 review iteration 1 — owner sign-off flagged):** proxied BODIES receive the **dynamic staged-key exact-value rules only** (requests full-buffer; responses via a carry-window streaming matcher); diagnostics and logs receive the full combined static+dynamic pipeline (K7). Rationale: the static heuristics (40+-char base64, `token=`…) would corrupt legitimate structured/vision payloads — base64 image parts are a live wire format (#1307) — while the threat this integration names ("a resolved key can never be echoed back through the relay") is fully covered by the exact-value rules with zero false positives; §3 already accepts the general exfil-through-relay content channel as quota-bounded.
+
+**§4.3 deviation note (US-72.2):** Kubernetes RBAC cannot express "all Secrets except two" without enumerating names. The controller's llm-relay Role grants create/update/delete without resourceNames (its envelope Secrets are dynamically named) — technically covering the keypair Secrets too. Reads remain excluded (the controller's only name-scoped read is `get` on `llm-relay-hpke-pub`), so the controller can blind-write but never read key material; accepted and pinned by chart test.
+
 ---
 
 ## 5. Stage 0 disposition: EXCLUDED

@@ -456,3 +456,9 @@ func TestMintEndpointAuthAndShape(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 400, resp2Status(t, resp3))
 }
+
+func (r *upstreamRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.requests)
+}
