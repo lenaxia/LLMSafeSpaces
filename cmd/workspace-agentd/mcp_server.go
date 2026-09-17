@@ -258,7 +258,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change). patch fields follow workflow_create: specYaml is a STRINGIFIED JSON-object spec with the same node vocabulary and rules; runs need a target workspace (targetWorkspaceId) or an explicit workspaceId per run.",
+						Description: "Partially update one workflow (id + fields to change). patch fields follow workflow_create: specYaml is a STRINGIFIED JSON-object spec with the same node vocabulary and rules. For the workflow to be fireable from this surface it must carry targetWorkspaceId (this surface cannot pass a per-run workspace override).",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
 							"patch": map[string]any{"type": "object", "description": "Fields to change"},

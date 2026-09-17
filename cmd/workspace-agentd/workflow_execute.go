@@ -301,6 +301,10 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 	writeWorkflowSuccess(w, map[string]any{}, "otherwise")
 }
 
+// opencodeAddr is the harness endpoint the agent-node path talks to;
+// a var (not the const) so integration tests can point it at a stub.
+var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
+
 // renderTemplateRefs replaces {{.path}} references in an agent prompt
 // with values from the node input. Paths may be dotted (#1417):
 // {{.body.topic}} walks nested maps, matching the condition nodes'
@@ -373,7 +377,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 
 	body := fmt.Sprintf(`{"agentID":%q,"parts":[{"type":"text","text":%q}]}`, data.Agent, prompt)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://127.0.0.1:%d/session/%s/message", agentd.AgentPort, sessionID),
+		fmt.Sprintf("http://%s/session/%s/message", opencodeAddr, sessionID),
 		strings.NewReader(body))
 	if err != nil {
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
@@ -491,7 +495,7 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 
 func createOpencodeSession(ctx context.Context, password string) string {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://127.0.0.1:%d/session", agentd.AgentPort),
+		fmt.Sprintf("http://%s/session", opencodeAddr),
 		strings.NewReader("{}"))
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
@@ -548,7 +552,7 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
-		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
+		fmt.Sprintf("http://%s/session/%s", opencodeAddr, sessionID), nil)
 	if err != nil {
 		// Malformed sessionID (control chars) makes the URL unparseable;
 		// req would be nil and SetBasicAuth would panic.

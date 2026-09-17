@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -366,5 +367,52 @@ func TestWorkflowExecuteHandler_UnsupportedLanguageThroughHandler(t *testing.T) 
 	}
 	if !strings.Contains(resp.Detail, "unsupported language: sh") {
 		t.Fatalf("named cause through the handler wiring, got: %q", resp.Detail)
+	}
+}
+
+// #1417 handler-level integration: an agent node through the REAL
+// handler + wire against a stub harness — the RENDERED prompt must
+// carry nested-path values, proving renderTemplateRefs is wired (unit
+// tests alone can't).
+func TestWorkflowExecuteHandler_AgentNodeRendersNestedRefs(t *testing.T) {
+	promptMu := sync.Mutex{}
+	var gotPrompt string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptMu.Lock()
+			if parts, ok := body["parts"].([]any); ok && len(parts) > 0 {
+				if p, ok := parts[0].(map[string]any); ok {
+					gotPrompt, _ = p["text"].(string)
+				}
+			}
+			promptMu.Unlock()
+			_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"m1","time":{"created":1786400000000}},"parts":[{"type":"text","text":"ok"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"ses_stub1"}`))
+		}
+	}))
+	defer stub.Close()
+	old := opencodeAddr
+	opencodeAddr = strings.TrimPrefix(stub.URL, "http://")
+	defer func() { opencodeAddr = old }()
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"topic={{.body.topic}} at {{.body.when}} raw={{.body}}"},"input":{"body":{"topic":"ship-it","when":"2026-09-17"},"source":{"type":"webhook"}}}`
+	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	for _, want := range []string{"topic=ship-it", "at 2026-09-17", `"topic":"ship-it"`} {
+		if !strings.Contains(gotPrompt, want) {
+			t.Fatalf("rendered prompt missing %q: %q", want, gotPrompt)
+		}
 	}
 }

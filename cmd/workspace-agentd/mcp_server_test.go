@@ -940,12 +940,12 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "workflow_update in tools/list")
 		for _, want := range []string{
 			"STRINGIFIED JSON-object spec", // specYaml is a string field (#1415 drift 4); YAML rides #1424
-			"targetWorkspaceId",            // runs need a target workspace
-			"workspaceId per run",          // camelCase wire spelling (#1415)
+			"targetWorkspaceId",            // the fireable-from-this-surface requirement
 		} {
 			assert.Contains(t, d, want)
 		}
 		assert.NotContains(t, d, "workspace_id", "snake_case is dropped by the decoder")
+		assert.NotContains(t, d, "workspaceId per run", "this surface cannot pass a per-run workspace — teaching it steers agents into a 400")
 	})
 
 	t.Run("trigger_create guidance", func(t *testing.T) {
