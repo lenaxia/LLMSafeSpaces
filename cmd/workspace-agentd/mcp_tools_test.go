@@ -1758,7 +1758,8 @@ func TestMCPHandler_TriggerCreateDAGRefusedFullStack(t *testing.T) {
 	var resp mcpResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	result := resp.Result.(map[string]any)
-	assert.True(t, result["isError"] == true || result["isError"] != nil, "refusal must surface as a tool error: %v", result)
+	isErr, _ := result["isError"].(bool)
+	require.True(t, isErr, "refusal must surface as isError=true through the full JSON-RPC stack: %v", result)
 	content := result["content"].([]any)
 	assert.Contains(t, content[0].(map[string]any)["text"], "different workspace")
 }

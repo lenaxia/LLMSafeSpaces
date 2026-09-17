@@ -210,7 +210,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "trigger_create",
-						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook; cron sourceConfig: {expr: <5-field cron, validated>, tz: <IANA name, optional>} and the first fire is the schedule's NEXT slot (never at creation moment). With workflowId (camelCase - snake_case is silently dropped) the trigger fires that DAG - the workflow must exist and target THIS workspace (the pod-scoping rule; a different-workspace target is refused); without it the trigger fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the routine target - you cannot schedule work into other workspaces). autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
+						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook; cron sourceConfig: {expr: <5-field cron, validated>, tz: <IANA name, optional>} and the first fire is the schedule's NEXT slot (never at creation moment). With workflowId (camelCase; snake_case workflow_id accepted as an alias) the trigger fires that DAG - the workflow must exist and target THIS workspace (the pod-scoping rule; a different-workspace target is refused); without it the trigger fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the routine target - you cannot schedule work into other workspaces). autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflowId (DAG workflow id, camelCase)"},
 						}, "required": []string{"trigger"}},
@@ -251,7 +251,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn the node vocabulary (transform/parallel/delay/mcp_call...) from workflow_list entries. Wire triggers to it via trigger_create {workflow_id} or fire it manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn the node vocabulary (transform/parallel/delay/mcp_call...) from workflow_list entries. Wire triggers to it via trigger_create {workflowId} or fire it manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},

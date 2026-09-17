@@ -939,7 +939,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		} {
 			assert.Contains(t, d, want)
 		}
-		assert.NotContains(t, d, "workflow_id", "snake_case spelling must not be taught")
+		assert.NotContains(t, d, "workflow_id)", "dropped-spelling teaching must not return")
 		triggerProp, ok := schemaDescs["trigger_create/trigger"]
 		require.True(t, ok)
 		assert.Contains(t, triggerProp, "workflowId (DAG workflow id, camelCase)")
