@@ -799,7 +799,7 @@ func TestMCPClientWorkflowAndTriggerCRUD(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(got), "sweep-flow")
 
-	run, err := f.client.RunWorkflow(ctx, wfResp.ID, `{"x":1}`, mcpTestWSID)
+	run, err := f.client.RunWorkflow(ctx, wfResp.ID, json.RawMessage(`{"x":1}`), mcpTestWSID)
 	require.NoError(t, err)
 	var runResp struct {
 		ID string `json:"id"`
@@ -1038,4 +1038,43 @@ func mcpTestLogger(t *testing.T) *apilogger.Logger {
 
 func ginSetTestMode() {
 	gin.SetMode(gin.TestMode)
+}
+
+// #1413 e2e: a run whose input violates the workflow's declared
+// inputSchema is rejected through the MCP surface with a named cause.
+func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
+	f := newMCPRouterFixture(t)
+	seedWorkflow(t, f, "wfl_schema")
+	f.wfStore.mu.Lock()
+	row := f.wfStore.workflows["wfl_schema"]
+	row.InputSchema = json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`)
+	f.wfStore.mu.Unlock()
+
+	// Unhappy: missing the required field — the 400 must NAME the
+	// violation (not the double-encode "got string" artifact).
+	_, err := f.client.RunWorkflow(context.Background(), "wfl_schema", json.RawMessage(`{"wrong":true}`), mcpTestWSID)
+	require.Error(t, err, "schema-violating run must be rejected")
+	assert.Contains(t, err.Error(), "inputSchema", "the 400 names the contract: %s", err.Error())
+	assert.Contains(t, err.Error(), "topic", "the missing required field is named: %s", err.Error())
+	assert.NotContains(t, err.Error(), "got string", "double-encoding regression: %s", err.Error())
+
+	// Second unhappy leg, second workflow: a TYPE violation (not a
+	// missing field) — different schema, different failure class.
+	seedWorkflow(t, f, "wfl_schema2")
+	f.wfStore.mu.Lock()
+	f.wfStore.workflows["wfl_schema2"].InputSchema = json.RawMessage(`{"type":"object","properties":{"count":{"type":"number"}}}`)
+	f.wfStore.mu.Unlock()
+	_, err = f.client.RunWorkflow(context.Background(), "wfl_schema2", json.RawMessage(`{"count":"not-a-number"}`), mcpTestWSID)
+	require.Error(t, err, "type violation must be rejected")
+	assert.Contains(t, err.Error(), "want number", "the type violation names the wanted type: %s", err.Error())
+
+	// Happy: a CONFORMING input must pass through the same surface
+	// (round-3's double-encode broke exactly this).
+	ok, err := f.client.RunWorkflow(context.Background(), "wfl_schema", json.RawMessage(`{"topic":"e2e"}`), mcpTestWSID)
+	require.NoError(t, err, "conforming input must be accepted: %s", string(ok))
+	var runOut struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(ok, &runOut), string(ok))
+	require.NotEmpty(t, runOut.ID, "run queued: %s", string(ok))
 }

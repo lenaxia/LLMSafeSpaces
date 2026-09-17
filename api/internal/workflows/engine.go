@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	goerrors "errors"
+
 	"github.com/google/uuid"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -510,10 +512,17 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
 	if err != nil {
-		// A deleted (or otherwise unresolvable) workflow must surface as
-		// a failed fire — not a silent tick (#1412). Without this the
-		// trigger spins forever with no audit trail and auto-disable
-		// never engages.
+		// A TRANSIENT store error (pool exhaustion, canceled context) is
+		// the platform's problem, not the trigger's: counting it toward
+		// auto-disable would disarm healthy triggers during an outage.
+		// Only a genuine missing/deleted workflow records a failed fire.
+		if !goerrors.Is(err, wf.ErrNotFound) {
+			logger.Error(err, "scheduler: workflow lookup failed", "triggerId", trigger.ID, "workflowId", workflowID)
+			return
+		}
+		// A deleted workflow must surface as a failed fire — not a silent
+		// tick (#1412). Without this the trigger spins forever with no
+		// audit trail and auto-disable never engages.
 		errMsg, _ := json.Marshal(map[string]string{"error": "workflow not found", "workflowId": workflowID})
 		completed := now
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
