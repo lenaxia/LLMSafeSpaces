@@ -294,7 +294,7 @@ if ! [[ -f "${S1B_SEND_LOG}" ]]; then S1B_INFLIGHT=1; fi
 if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} && ${S1B_INFLIGHT} == 1 ]]; then
     ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s, send still pending (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
 else
-    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send-log='$(head -c 40 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending)"
+    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send='$(head -c 400 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending); agentd-tail='$( { kc logs "${S1_POD}" -c agentd --tail=200 2>/dev/null || true; } | grep -aiE "act|send|abort|error" | tail -4 | tr "\n" "|" )'"
 fi
 
 # The interrupted session must not be WEDGED BUSY: after the turn's own

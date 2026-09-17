@@ -168,3 +168,7 @@ The r4 rework worked as designed: the MOCK SELF-CHECK proved the slow mode mecha
 ### Pool dispatch r6 (35221709837, 10fd2ee8) — a leftover reference killed the leg at start
 
 The two-mock rework left one stale `MOCK_SVC` reference inside the probe helper (my line-merging edits had corrupted the replacement target; `bash -n` is blind to unbound-at-runtime). Fixed, and the class is now caught statically: `TestEpic71S1Script_ShellcheckUnbound` runs shellcheck -S error (SC2154 = unbound variables) — CI runners ship it (skips where absent). Re-dispatched.
+
+### Pool dispatch r7 (35231574892, 62211782) — the discriminator works; the slow send itself 400s
+
+The r6 fix landed; this run's self-check proved BOTH mocks (slow-svc=45s fast-svc=1s), and S1b failed on REAL evidence: `in-flight=0 send-log='400'` — the slow send was rejected 400 by the API within 5s (before the abort), so the row correctly refused to claim preemption. Static tracing cannot place a 400 on this route for this body (the Act path maps invalid_argument→502 — probe-verified locally in-repo; the early validators accept this exact shape — the sibling S1a row 200s with only the providerID differing). The sender now captures the response BODY and the failure note dumps it plus the agentd pod's Act tail — the next dispatch is decisive. The 400 is either a genuinely new API-side gate on the second provider credential or something environmental; the row will name it.
