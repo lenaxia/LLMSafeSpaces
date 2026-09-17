@@ -153,3 +153,18 @@ func TestEpic71S1Script_BudgetDefaultsEvaluate(t *testing.T) {
 		t.Fatalf("S1B_IDLE_BUDGET_S (%d) must cover the turn's own duration (%d)", idle, slow)
 	}
 }
+
+func TestEpic71S1Script_ShellcheckUnbound(t *testing.T) {
+	// Pool r6 died at runtime on an unbound variable (a leftover MOCK_SVC
+	// reference after the two-mock rework — bash -n is blind to it and
+	// each pool cycle costs ~40min). shellcheck's SC2154 catches the
+	// class statically; CI runners ship it, this box may not (skip then).
+	sc, err := exec.LookPath("shellcheck")
+	if err != nil {
+		t.Skip("shellcheck not on PATH — CI runs this row with it preinstalled")
+	}
+	out, err := exec.Command(sc, "-S", "error", "-s", "bash", epic71S1Script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("shellcheck found error-level defects (unbound vars among them):\n%s", out)
+	}
+}

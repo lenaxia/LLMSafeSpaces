@@ -238,10 +238,10 @@ S1_PW=$(kc get secret "workspace-pw-${S1_WS}" -o jsonpath='{.data.password}' | b
 # on it — a direct slow-mode probe must take ≥ half the slow budget,
 # while a fast probe returns in seconds. The row that would have exposed
 # the quoted-heredoc ValueError in one dispatch.
-mock_probe_s() { # prompt → seconds the probe took
+mock_probe_s() { # prompt svc → seconds the probe took
     local t0
     t0=$(date +%s)
-    kc exec "${S1_POD}" -c workspace -- curl -sm $(( S1B_SLOW_TURN_S + 30 ))         -o /dev/null -X POST -H 'content-type: application/json'         -d "{"messages":[{"role":"user","content":"$1"}]}" "${MOCK_SVC}" >/dev/null 2>&1 || true
+    kc exec "${S1_POD}" -c workspace -- curl -sm $(( S1B_SLOW_TURN_S + 30 )) -o /dev/null -X POST -H 'content-type: application/json' -d "{\"messages\":[{\"role\":\"user\",\"content\":\"$1\"}]}" "http://$2.${NS}.svc/v1/chat/completions" >/dev/null 2>&1 || true
     echo $(( $(date +%s) - t0 ))
 }
 MOCK_FAST_S=$(mock_probe_s "fast probe" "mock-llm-s1")
