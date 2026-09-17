@@ -182,7 +182,8 @@ func runBYO(ctx context.Context) error {
 // The signal→drain WIRING lives here so a test can drive ctx-cancel the
 // way SIGTERM does.
 func serveBYO(ctx context.Context, cfg byoRunConfig, server *byoServer) error {
-	ln, err := net.Listen("tcp", cfg.listenAddr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", cfg.listenAddr)
 	if err != nil {
 		return fmt.Errorf("byo-router: listen %s: %w", cfg.listenAddr, err)
 	}
