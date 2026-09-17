@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -160,15 +161,17 @@ func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay [
 
 // normalizeTriggerTargetKeys performs the shared body normalization for
 // the create and update scoping paths: rejects non-object/`null` bodies,
-// folds the snake_case workflow_id alias onto the DTO spelling
-// (contradictory duplicates are an explicit error), extracts the
-// workflowId value (when present), and strips EVERY caller-supplied
-// workspace key case-insensitively — Go's decoder binds DTO fields
-// case-insensitively and map keys marshal in sorted order, so any case
-// variant of workspaceId left in the body would deterministically
-// override a forced stamp. Reports whether any workspace key was present
-// so the update path can distinguish "caller tried to change the target"
-// from an unrelated patch.
+// folds the workflow target key — the snake_case alias AND every
+// case-variant of workflowId (Go's decoder binds DTO fields
+// case-insensitively, so a "WorkflowId" variant would bind the DTO while
+// escaping this seam's gate entirely) — onto the canonical spelling,
+// rejects contradictory duplicates and JSON null explicitly, and strips
+// EVERY caller-supplied workspace key case-insensitively (map keys
+// marshal in sorted order, so any case variant of workspaceId left in
+// the body would deterministically override a forced stamp). Reports
+// whether any workspace key was present so the update path can
+// distinguish "caller tried to change the target" from an unrelated
+// patch.
 func normalizeTriggerTargetKeys(replay []byte) (fields map[string]json.RawMessage, workflowID string, hasWorkflowKey, hadWorkspaceKey bool, err error) {
 	if err := json.Unmarshal(replay, &fields); err != nil {
 		return nil, "", false, false, fmt.Errorf("trigger body must be a JSON object: %w", err)
@@ -179,6 +182,8 @@ func normalizeTriggerTargetKeys(replay []byte) (fields map[string]json.RawMessag
 	if fields == nil {
 		return nil, "", false, false, fmt.Errorf("trigger body must be a JSON object")
 	}
+	// The snake_case alias is forgiveness only — the decoder cannot bind
+	// it, so no escape is possible at that spelling.
 	if alias, ok := fields["workflow_id"]; ok {
 		if _, exists := fields["workflowId"]; exists {
 			var aliasVal, canonicalVal string
@@ -192,11 +197,34 @@ func normalizeTriggerTargetKeys(replay []byte) (fields map[string]json.RawMessag
 		}
 		delete(fields, "workflow_id")
 	}
-	if raw, ok := fields["workflowId"]; ok {
+	// Fold every case-variant of the DTO spelling onto one canonical key.
+	// Sorted iteration keeps contradiction reporting deterministic.
+	variants := make([]string, 0, 2)
+	for k := range fields {
+		if strings.EqualFold(k, "workflowId") {
+			variants = append(variants, k)
+		}
+	}
+	sort.Strings(variants)
+	if len(variants) > 0 {
 		hasWorkflowKey = true
-		if err := json.Unmarshal(raw, &workflowID); err != nil {
+		canonical := fields[variants[0]]
+		for _, v := range variants {
+			if string(fields[v]) != string(canonical) {
+				return nil, "", false, false, fmt.Errorf("workflowId specified multiple times with different values")
+			}
+			delete(fields, v)
+		}
+		// JSON null is neither set nor clear: the delegated DTO would bind
+		// it as "absent" (preserve the existing target) while this seam's
+		// update semantics treat "" as clear — refuse rather than guess.
+		if string(canonical) == "null" {
+			return nil, "", false, false, fmt.Errorf(`workflowId must be a string (use "" to clear the target)`)
+		}
+		if uerr := json.Unmarshal(canonical, &workflowID); uerr != nil {
 			return nil, "", false, false, fmt.Errorf("workflowId must be a string")
 		}
+		fields["workflowId"] = canonical
 	}
 	for k := range fields {
 		if strings.EqualFold(k, "workspaceId") {
@@ -240,12 +268,18 @@ func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, wor
 // UPDATE patch (#1426 — the rule was create-only, so a caller could
 // retarget a trigger to another workspace or a cross-workflow DAG via the
 // update path):
-//   - a non-empty workflowId passes through for the caller's
-//     existence/ownership/target gating (404/403) — never stamped;
+//   - a non-empty workflowId (any case-variant spelling, folded onto the
+//     canonical key) passes through for the caller's
+//     existence/ownership/target gating (404/403) — never stamped. A
+//     workspace key riding alongside it is dropped: the workflow target
+//     wins in the engine (fireWorkflowTarget), and the workflow itself is
+//     gated to this workspace, so the dropped value cannot smuggle a
+//     cross-workspace escape;
 //   - any attempt to set workspaceId is forced to THIS pod's workspace;
-//   - clearing workflowId ("" ) without naming a workspace stamps this
+//   - clearing workflowId ("") without naming a workspace stamps this
 //     workspace, so the trigger becomes a routine HERE instead of a
-//     targetless zombie;
+//     targetless zombie (JSON null is rejected — the delegated DTO would
+//     bind it as "absent"/preserve, which contradicts the clear path);
 //   - a patch that touches neither key passes through verbatim.
 func scopeTriggerUpdateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
 	fields, workflowID, hasWorkflowKey, hadWorkspaceKey, err := normalizeTriggerTargetKeys(replay)
