@@ -48,4 +48,4 @@ PR → review iterations → APPROVED (never merge; the core PR closes #1425/#14
 - cmd/workspace-agentd/mcp_server_test.go (trigger_create guidance pins)
 - local/issue-1410-1412-automation-e2e.sh (row R6)
 - local/issue_1410_automation_e2e_script_test.go (R6 structural pins)
-- worklogs/NNNN_2026-09-17_agentd-trigger-input-mapping-e2e-r6.md (new, this file — number bot-assigned at merge)
+- worklogs/0981_2026-09-17_agentd-trigger-input-mapping-e2e-r6.md (new, this file — number bot-assigned at merge)
