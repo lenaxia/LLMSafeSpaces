@@ -928,14 +928,21 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["trigger_create"]
 		require.True(t, ok, "trigger_create in tools/list")
 		for _, want := range []string{
-			"cron or webhook",                                // source vocabulary
-			"the platform forces this workspace",             // scoping invariant surfaced to the agent
-			"you cannot schedule work into other workspaces", // the explicit cannot
-			"autoDisableAfter",                               // failure-policy field named
-			"trigger_fires",                                  // where failures show up
+			"cron or webhook",                                   // source vocabulary
+			"the platform forces this workspace",                // routine scoping invariant
+			"you cannot schedule work into other workspaces",    // the explicit cannot
+			"autoDisableAfter",                                  // failure-policy field named
+			"trigger_fires",                                     // where failures show up
+			"workflowId (camelCase",                             // #1412: the DTO spelling, alias is dead
+			"the workflow must exist and target THIS workspace", // #1412: DAG pod-scoping rule
+			"never at creation moment",                          // #1411: anchored to the next slot
 		} {
 			assert.Contains(t, d, want)
 		}
+		assert.NotContains(t, d, "workflow_id", "snake_case spelling must not be taught")
+		triggerProp, ok := schemaDescs["trigger_create/trigger"]
+		require.True(t, ok)
+		assert.Contains(t, triggerProp, "workflowId (DAG workflow id, camelCase)")
 	})
 
 	t.Run("trigger_update guidance", func(t *testing.T) {

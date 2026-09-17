@@ -1732,3 +1732,33 @@ func TestMCPHandler_RotateWebhookSecretFullStack(t *testing.T) {
 	content := result["content"].([]any)
 	assert.Contains(t, content[0].(map[string]any)["text"], `"webhookSecret":"whs_l1"`)
 }
+
+// L1 unhappy: a DAG-trigger create refused by the platform (different-
+// workspace target) surfaces as a tool error through the full
+// JSON-RPC stack — the agent sees the scoping refusal, not a silent
+// routine downgrade.
+func TestMCPHandler_TriggerCreateDAGRefusedFullStack(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"workflow targets a different workspace — this pod cannot schedule it"}`))
+	}))
+	defer api.Close()
+	setupRenameWorkspaceEnv(t, api)
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "trigger_create",
+		"arguments": map[string]any{"trigger": map[string]any{"name": "dag", "sourceType": "cron", "sourceConfig": map[string]any{"expr": "0 4 * * *"}, "workflowId": "wf-other-ws"}},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 88, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	rr := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, rr)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.True(t, result["isError"] == true || result["isError"] != nil, "refusal must surface as a tool error: %v", result)
+	content := result["content"].([]any)
+	assert.Contains(t, content[0].(map[string]any)["text"], "different workspace")
+}

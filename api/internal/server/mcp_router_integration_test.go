@@ -1138,7 +1138,8 @@ func TestMCPRouterTriggerCRUD_UnhappyLegs(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(respBody))
 	assert.Contains(t, string(respBody), "invalid cron expr")
 
-	// Reschedule to a junk schedule: named 400, nothing written.
+	// Reschedule to a junk schedule: named 400, nothing written (the
+	// store row must survive UNCHANGED — not just a 400 observed).
 	seedTrigger(t, f, "trg_bad_resched")
 	f.trgStore.mu.Lock()
 	f.trgStore.triggers["trg_bad_resched"].SourceType = "cron"
@@ -1154,6 +1155,12 @@ func TestMCPRouterTriggerCRUD_UnhappyLegs(t *testing.T) {
 	respBody, _ = io.ReadAll(resp.Body)
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(respBody))
 	assert.Contains(t, string(respBody), "invalid cron expr")
+	f.trgStore.mu.Lock()
+	surviving := f.trgStore.triggers["trg_bad_resched"]
+	f.trgStore.mu.Unlock()
+	require.NotNil(t, surviving, "row survives the rejected update")
+	assert.JSONEq(t, `{"expr":"0 9 * * *","tz":"UTC"}`, string(surviving.SourceConfig), "nothing written: sourceConfig untouched")
+	assert.Nil(t, f.lastTriggerUpdate(), "no UpdateTrigger call reached the store")
 
 	// Workflow create with a non-object inputSchema: named 400.
 	wfBody, _ := json.Marshal(map[string]any{

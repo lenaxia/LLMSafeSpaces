@@ -1093,7 +1093,8 @@ func nullableJSON(b json.RawMessage) any {
 	return []byte(b)
 }
 
-// nullableStrPtr dereferences a *string for SQL, returning nil for nil.
+// nullableTimePtr dereferences a *time.Time for SQL, returning nil
+// for nil (the NextFireAt recompute column, #1410).
 func nullableTimePtr(t *time.Time) any {
 	if t == nil {
 		return nil

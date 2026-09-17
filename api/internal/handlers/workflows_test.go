@@ -732,9 +732,9 @@ func TestWorkflowCreate_InputSchemaWellFormed(t *testing.T) {
 	require.Equal(t, 201, w.Code, w.Body.String())
 }
 
-// Null-schema semantics: the literal null CLEARS the schema at write
-// time and behaves as schema-less at run time (legacy jsonb-'null'
-// rows must not brick).
+// Null-schema semantics: the literal null is a no-op that KEEPS the
+// stored schema at write time; legacy jsonb-'null' rows behave as
+// schema-less at run time (must not brick).
 func TestWorkflowSchema_NullLiteralSemantics(t *testing.T) {
 	store := newMockWorkflowStore()
 	target := "ws-1"
