@@ -416,3 +416,47 @@ func TestWorkflowExecuteHandler_AgentNodeRendersNestedRefs(t *testing.T) {
 		}
 	}
 }
+
+// #1417 unhappy leg through the REAL handler: unresolvable refs stay
+// literal in the rendered prompt (inspectable, never silently empty).
+func TestWorkflowExecuteHandler_AgentNodeUnresolvedRefsStayLiteral(t *testing.T) {
+	promptMu := sync.Mutex{}
+	var gotPrompt string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/message") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptMu.Lock()
+			if parts, ok := body["parts"].([]any); ok && len(parts) > 0 {
+				if p, ok := parts[0].(map[string]any); ok {
+					gotPrompt, _ = p["text"].(string)
+				}
+			}
+			promptMu.Unlock()
+			_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"m1","time":{"created":1786400000000}},"parts":[{"type":"text","text":"ok"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_stub2"}`))
+	}))
+	defer stub.Close()
+	old := opencodeAddr
+	opencodeAddr = strings.TrimPrefix(stub.URL, "http://")
+	defer func() { opencodeAddr = old }()
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"keep {{.body.nope}} and {{.not.a.map}} ok={{.body.topic}}"},"input":{"body":{"topic":"x"}}}`
+	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	for _, want := range []string{"{{.body.nope}}", "{{.not.a.map}}", "ok=x"} {
+		if !strings.Contains(gotPrompt, want) {
+			t.Fatalf("rendered prompt missing %q: %q", want, gotPrompt)
+		}
+	}
+}
