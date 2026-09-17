@@ -604,6 +604,11 @@ func TestIntegration_RotateE2E_ResumeFromInterruptedRun(t *testing.T) {
 // automatically on success — for every invocation shape. Drives the real
 // run() (the CLI's own code path) with --table and --redis-url against the
 // live Postgres + a miniredis, and asserts the stale DEK keys are gone.
+//
+// The table is user_keys deliberately: run() walks the WHOLE table, and the
+// CI Postgres is shared with the migrate-kek suite running concurrently
+// (which seeds api_keys/provider_credentials/org_sso_configs). user_keys is
+// rotate-kek-only, so the walk cannot meet rows it cannot decrypt.
 func TestIntegration_SingleTableRunFlushesDEKCache(t *testing.T) {
 	_, pool := newIntegrationStore(t)
 
@@ -619,18 +624,19 @@ func TestIntegration_SingleTableRunFlushesDEKCache(t *testing.T) {
 
 	userID := integrationID("u")
 	seedUser(t, pool, userID)
-	seedAPIKey(t, pool, userID, encryptFor(t, oldKey, "flush-me"), 1)
+	seedUserKey(t, pool, userID, encryptFor(t, oldKey, "flush-me"), 1)
 
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
 	t.Cleanup(mr.Close)
 	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rc.Close() })
 	require.NoError(t, rc.Set(context.Background(), "dek:stale-session", "wrapped", time.Hour).Err())
 	require.NoError(t, rc.Set(context.Background(), "ratelimit:keep", "1", time.Hour).Err())
 
-	// The exact invocation shape of the runbook's resume procedure (minus
+	// The exact invocation shape of the runbook's recovery procedure (minus
 	// --resume-from, which is orthogonal to the flush).
-	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "api_keys", "", 2, false)
+	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "user_keys", "", 2, false)
 	require.NoError(t, err, "per-table run must succeed and flush")
 
 	assert.False(t, mr.Exists("dek:stale-session"), "a successful per-table run must flush the DEK cache")
@@ -638,8 +644,7 @@ func TestIntegration_SingleTableRunFlushesDEKCache(t *testing.T) {
 
 	// The dry-run counterpart: no writes of any kind, flush included.
 	require.NoError(t, rc.Set(context.Background(), "dek:dryrun-session", "wrapped", time.Hour).Err())
-	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "api_keys", "", 2, true)
+	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "user_keys", "", 2, true)
 	require.NoError(t, err)
 	assert.True(t, mr.Exists("dek:dryrun-session"), "a dry-run must not flush (or write) anything")
-	_ = rc.Close()
 }
