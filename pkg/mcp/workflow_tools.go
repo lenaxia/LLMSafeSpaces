@@ -47,7 +47,7 @@ var workflowUpdateTool = mcp.NewTool("workflow_update",
 var workflowRunTool = mcp.NewTool("workflow_run",
 	mcp.WithDescription("Start a workflow run with the given input"),
 	mcp.WithString("workflow_id", mcp.Required(), mcp.Description("Workflow ID")),
-	mcp.WithString("input", mcp.Description("JSON input for the workflow")),
+	mcp.WithObject("input", mcp.Description("Input object for the workflow (must satisfy the workflow's inputSchema)")),
 	mcp.WithString("workspace_id", mcp.Description("Override target workspace")),
 )
 
@@ -164,7 +164,23 @@ func (h *handlers) workflowRun(ctx context.Context, req mcp.CallToolRequest) (*m
 	if workflowID == "" {
 		return mcp.NewToolResultError("workflow_id is required"), nil
 	}
-	input, _ := args["input"].(string)
+	// #1421 r3: the input is an OBJECT (double-encoded strings fail
+	// inputSchema enforcement); marshal the map so the client embeds a
+	// raw JSON object on the wire.
+	input := json.RawMessage("{}")
+	if raw, present := args["input"]; present && raw != nil {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			return mcp.NewToolResultError(fmt.Sprintf("input must be an object (got %T) — the run is validated against the workflow's inputSchema", raw)), nil
+		}
+		if len(m) > 0 {
+			b, err := json.Marshal(m)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid input object: %v", err)), nil
+			}
+			input = b
+		}
+	}
 	workspaceID, _ := args["workspace_id"].(string)
 	resp, err := h.client.RunWorkflow(ctx, workflowID, input, workspaceID)
 	if err != nil {

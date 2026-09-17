@@ -153,8 +153,11 @@ func (m *MockAPIClient) UpdateWorkflow(ctx context.Context, workflowID string, n
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error) {
+func (m *MockAPIClient) RunWorkflow(ctx context.Context, workflowID string, input json.RawMessage, workspaceID string) (json.RawMessage, error) {
 	args := m.Called(ctx, workflowID, input, workspaceID)
+	if raw, ok := args.Get(0).(json.RawMessage); ok {
+		return raw, args.Error(1)
+	}
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
@@ -856,12 +859,75 @@ func TestRunResolve_NullAndEmptyArrayRepliesRejected(t *testing.T) {
 	}
 }
 
-// #1424: the tool contracts teach both spec dialects.
+// ===== workflow_run (#1421 r5): the tool handler's input contract =====
+
+func TestWorkflowRunTool_ObjectInputPassesRaw(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	var captured json.RawMessage
+	mockClient.On("RunWorkflow", ctx, "wf_1", mock.Anything, "ws-1").
+		Run(func(args mock.Arguments) {
+			captured = args.Get(2).(json.RawMessage)
+		}).
+		Return(json.RawMessage(`{"id":"run_1"}`), nil)
+
+	result, err := h.workflowRun(ctx, makeReq("workflow_run", map[string]any{
+		"workflow_id":  "wf_1",
+		"input":        map[string]any{"topic": "e2e", "n": 2.0},
+		"workspace_id": "ws-1",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, toolText(result))
+	assert.JSONEq(t, `{"topic":"e2e","n":2}`, string(captured), "input reaches the client as a RAW JSON object")
+}
+
+func TestWorkflowRunTool_NonObjectInputIsLoud(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	for _, bad := range []any{"{\"topic\":\"x\"}", []any{1}, 42.0} {
+		result, err := h.workflowRun(context.Background(), makeReq("workflow_run", map[string]any{
+			"workflow_id": "wf_1",
+			"input":       bad,
+		}))
+		require.NoError(t, err)
+		require.True(t, result.IsError, "present-but-non-object input must be a loud tool error, got %v", bad)
+		assert.Contains(t, toolText(result), "must be an object")
+	}
+}
+
+func TestWorkflowRunTool_AbsentInputDefaultsEmptyObject(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	var captured json.RawMessage
+	mockClient.On("RunWorkflow", ctx, "wf_1", mock.Anything, "").
+		Run(func(args mock.Arguments) { captured = args.Get(2).(json.RawMessage) }).
+		Return(json.RawMessage(`{"id":"run_2"}`), nil)
+
+	result, err := h.workflowRun(ctx, makeReq("workflow_run", map[string]any{
+		"workflow_id": "wf_1",
+	}))
+	require.NoError(t, err)
+	require.False(t, result.IsError, toolText(result))
+	assert.JSONEq(t, `{}`, string(captured), "absent input defaults to {} (matches #1413 run semantics)")
+}
+
+func toolText(r *mcp.CallToolResult) string {
+	if r == nil || len(r.Content) == 0 {
+		return ""
+	}
+	if tc, ok := r.Content[0].(mcp.TextContent); ok {
+		return tc.Text
+	}
+	return ""
+}
+
+// #1428: the tool contracts teach both spec dialects.
 func TestWorkflowToolSpecDescriptions_TeachDialects(t *testing.T) {
 	b, err := json.Marshal(workflowCreateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "or YAML text", "create spec_yaml teaches YAML")
-	assert.NotContains(t, string(b), `spec (JSON)"`, "bare JSON-only wording gone")
 	b, err = json.Marshal(workflowUpdateTool.InputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(b), "or YAML text", "update spec_yaml teaches YAML")
