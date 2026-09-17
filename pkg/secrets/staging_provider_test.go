@@ -638,6 +638,39 @@ func TestRedactStagedKeysAdaptsRedactor(t *testing.T) {
 	nilAdapter.UnregisterStagedKey("staged:x")
 }
 
+// TestResealRegistrationLifecycle pins the R2 lifecycle contract (review
+// iteration 1): the re-seal path mints a fresh envelope and therefore a
+// fresh rule group — the re-sealer (US-72.3 controller reconcile) must
+// unlink the superseded group — while the resolve side is structurally
+// bounded because re-resolving the same envelope replaces its group in
+// place.
+func TestResealRegistrationLifecycle(t *testing.T) {
+	rec := newRecordingRedactor()
+	_, secretData, _ := kmsFixture(t)
+	provider, err := NewKMSStagingProvider(context.Background(), newCountingKMS(t), secretData, rec)
+	require.NoError(t, err)
+
+	material := []byte("rotate-me-key-0123456789")
+	env1, err := provider.Seal(context.Background(), material)
+	require.NoError(t, err)
+	require.Len(t, rec.current, 1)
+
+	env2, err := provider.Seal(context.Background(), material)
+	require.NoError(t, err)
+	require.Len(t, rec.current, 2, "a re-seal without unlink leaves the superseded group — the obligation exists for exactly this")
+
+	rec.UnregisterStagedKey(StagedKeyRedactionID(env1))
+	require.Len(t, rec.current, 1, "the documented re-seal unlink restores the bound")
+
+	resolver, err := NewKMSStagingProvider(context.Background(), newCountingKMS(t), secretData, rec)
+	require.NoError(t, err)
+	for i := 0; i < 25; i++ {
+		_, err := resolver.Resolve(context.Background(), env2)
+		require.NoError(t, err)
+	}
+	assert.Len(t, rec.current, 1, "repeated resolve of the same envelope must replace in place, not accumulate")
+}
+
 func TestKMSConstructionFailsLoud(t *testing.T) {
 	// Corrupt wrapped blob → construction fails, no silent fallback.
 	_, secretData, _ := kmsFixture(t)

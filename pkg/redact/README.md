@@ -29,9 +29,12 @@ concurrent `Redact`.
 
 Two invariants:
 
-1. **Dynamic rules run before the static pipeline.** A static pattern
-   (e.g. `token=…`) could otherwise fragment a secret before the exact
-   match sees it, leaving partial key bytes in the output.
+1. **Dynamic rules run before the static pipeline, longest value first.**
+   A static pattern (e.g. `token=…`) could otherwise fragment a secret
+   before the exact match sees it, and a registered value that prefixes
+   another registered value could fragment the longer one — ordering by
+   descending value length keeps removal atomic and output deterministic.
+   Pinned by `TestDynamicPrefixOverlapAtomicAndDeterministic`.
 2. **Static behavior never changes when dynamic rules are registered** —
    pinned by the golden corpus run in both modes.
 

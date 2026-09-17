@@ -89,8 +89,25 @@ type StagingResolver interface {
 // staged key's plaintext at seal and resolve time; it registers the material
 // as exact-value redaction rules so the payload pipeline (static rules +
 // dynamic staged-key rules, applied at the router's sanitization stage in
-// US-72.2) can never echo a key back through the relay. Revocation (Secret
-// deletion, D2) unregisters via UnregisterStagedKey with the same ID.
+// US-72.2) can never echo a key back through the relay.
+//
+// Lifecycle contract (binding on the wiring stories, US-72.2/US-72.3):
+//
+//   - Register at seal (controller) and resolve (router). The rule-group ID
+//     is envelope-derived (StagedKeyRedactionID), so re-registering the SAME
+//     envelope replaces its group in place — the resolve side is thereby
+//     bounded by the live envelope set the informer holds.
+//   - The RE-SEAL path (rotation, design 0058 §4.2) mints a fresh envelope
+//     and therefore a fresh group. Nothing in this seam can know the
+//     replacement relationship — only the re-sealer does. The controller
+//     staging reconcile (US-72.3) MUST unregister the superseded envelope's
+//     group in the same pass: UnregisterStagedKey(StagedKeyRedactionID(oldEnvelope)).
+//     Pinned by TestResealRegistrationLifecycle.
+//   - Revocation (Secret deletion, D2) unregisters via the same helper from
+//     the informer's delete path.
+//   - A nil seam skips registration (fail-open, for unit-test adoption and
+//     staged rollouts); production construction paths pin a non-nil
+//     redactor by test.
 type StagedKeyRedactor interface {
 	RegisterStagedKey(id string, material []byte) error
 	UnregisterStagedKey(id string)
@@ -448,7 +465,7 @@ func ParseHPKEPubPayload(data []byte) (*HPKEPubPayload, error) {
 }
 
 // AssertHPKEKeyPair is the self-contained integrity assert of design 0058
-// §42: derive the public key from the loaded private key and compare against
+// §4.2: derive the public key from the loaded private key and compare against
 // the co-located copy, plus generation monotonicity. prevGeneration is the
 // highest generation previously observed by the caller (0 on first load);
 // equality passes — informer re-lists redeliver the same object, so only a

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -96,8 +97,10 @@ func (r *Redactor) Redact(input string) (string, error) {
 	result := input
 	// Dynamic exact-value rules run BEFORE the static pipeline: a static
 	// pattern (e.g. `token=…`) can fragment a secret before the exact match
-	// sees it, leaving partial key bytes in the output. Removing the whole
-	// value first guarantees atomic removal.
+	// sees it, leaving partial key bytes in the output. The snapshot is
+	// ordered longest-value-first so a value that prefixes another
+	// registered value cannot fragment it — removal stays atomic and the
+	// output deterministic regardless of map iteration order.
 	for _, e := range r.dynamicSnapshot() {
 		result = strings.ReplaceAll(result, e.value, e.replacement)
 	}
@@ -114,6 +117,12 @@ func (r *Redactor) dynamicSnapshot() []dynamicEntry {
 	for _, entries := range r.dynamic {
 		snapshot = append(snapshot, entries...)
 	}
+	sort.Slice(snapshot, func(i, j int) bool {
+		if len(snapshot[i].value) != len(snapshot[j].value) {
+			return len(snapshot[i].value) > len(snapshot[j].value)
+		}
+		return snapshot[i].value < snapshot[j].value
+	})
 	return snapshot
 }
 

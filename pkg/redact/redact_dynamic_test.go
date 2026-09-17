@@ -253,6 +253,34 @@ func TestPackageLevelRegisterDynamic(t *testing.T) {
 	assert.Contains(t, out, value)
 }
 
+func TestDynamicPrefixOverlapAtomicAndDeterministic(t *testing.T) {
+	// R1 regression pin (review iteration 1): when one registered value is a
+	// strict prefix of another, the shorter firing first would fragment the
+	// longer and leak its tail — and map-iteration order made that
+	// non-deterministic. Longest-first snapshot ordering must keep removal
+	// atomic and the output identical on every run.
+	r, err := redact.NewRedactor(nil)
+	require.NoError(t, err)
+
+	short := "sk-proj-sharedprefix"
+	long := "sk-proj-sharedprefixAAAsuffixXYZ"
+	require.NoError(t, r.RegisterDynamic(
+		redact.DynamicRule{ID: "staged:short", Value: short, Replacement: stagedReplacement},
+		redact.DynamicRule{ID: "staged:long", Value: long, Replacement: stagedReplacement},
+	))
+
+	payload := "leak: " + long + " and lone " + short + " end"
+	want := "leak: " + stagedReplacement + " and lone " + stagedReplacement + " end"
+	for i := 0; i < 500; i++ {
+		out, err := r.Redact(payload)
+		require.NoError(t, err)
+		if out != want {
+			t.Fatalf("iteration %d: non-deterministic or residue-leaking output: %q", i, out)
+		}
+	}
+	assert.NotContains(t, want, "AAAsuffixXYZ")
+}
+
 func TestDynamicRulesConcurrent(t *testing.T) {
 	r, err := redact.NewRedactor(nil)
 	require.NoError(t, err)
@@ -261,6 +289,7 @@ func TestDynamicRulesConcurrent(t *testing.T) {
 	}))
 
 	var wg sync.WaitGroup
+	errs := make(chan error, 8)
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -268,18 +297,30 @@ func TestDynamicRulesConcurrent(t *testing.T) {
 			id := fmt.Sprintf("staged:concurrent-%d", i)
 			value := fmt.Sprintf("concurrentKey%d", i)
 			for j := 0; j < 50; j++ {
-				require.NoError(t, r.RegisterDynamic(redact.DynamicRule{
+				if err := r.RegisterDynamic(redact.DynamicRule{
 					ID: id, Value: value, Replacement: stagedReplacement,
-				}))
+				}); err != nil {
+					errs <- fmt.Errorf("worker %d iter %d: register: %w", i, j, err)
+					return
+				}
 				out, err := r.Redact("x " + value + " y token=leaked")
-				require.NoError(t, err)
-				assert.NotContains(t, out, value)
-				assert.Contains(t, out, "token=[REDACTED]")
+				if err != nil {
+					errs <- fmt.Errorf("worker %d iter %d: redact: %w", i, j, err)
+					return
+				}
+				if strings.Contains(out, value) || !strings.Contains(out, "token=[REDACTED]") {
+					errs <- fmt.Errorf("worker %d iter %d: bad output %q", i, j, out)
+					return
+				}
 				r.UnregisterDynamic(id)
 			}
 		}(i)
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 }
 
 func TestDynamicRuleBase64EncodingCaught(t *testing.T) {
