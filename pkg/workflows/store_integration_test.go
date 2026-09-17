@@ -275,7 +275,7 @@ func (s *StoreIntegrationSuite) TestTriggerInputMappingRoundtrip() {
 		ID: defaultID, OwnerType: "user", OwnerID: "u1",
 		Name: "legacy-trigger", Enabled: true,
 		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *"}`),
-		WorkflowID: &wfPtr, CreatedAt: now, UpdatedAt: now,
+		WorkflowID: &wfPtr, AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
 	}))
 	legacy, err := s.store.GetTrigger(ctx, "user", "u1", defaultID)
 	require.NoError(s.T(), err)
