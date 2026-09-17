@@ -47,14 +47,6 @@ func (m *mockWebhookReceiverStore) GetWebhookByTriggerID(_ context.Context, trig
 	return nil, wf.ErrNotFound
 }
 
-func (m *mockWebhookReceiverStore) GetTrigger(_ context.Context, _, _, id string) (*wf.TriggerRow, error) {
-	r, ok := m.triggers[id]
-	if !ok {
-		return nil, wf.ErrNotFound
-	}
-	return r, nil
-}
-
 func (m *mockWebhookReceiverStore) GetTriggerByID(_ context.Context, id string) (*wf.TriggerRow, error) {
 	r, ok := m.triggers[id]
 	if !ok {

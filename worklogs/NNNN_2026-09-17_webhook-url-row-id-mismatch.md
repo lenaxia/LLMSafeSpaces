@@ -23,9 +23,10 @@ Make webhook triggers reachable at the URL the platform hands out. The receiver 
 ## Blockers
 None.
 
-## Tests Run
-- `go test ./api/internal/handlers/ -run Webhook` — all 14 green (ValidSignature, Missing/InvalidSignature, Dedup, NotFound, ConcurrentRun, RateLimit×2, rotate, create-webhook paths).
-- Full handlers suite green post-change.
+## Tests Run (after review round 1)
+- `TestWebhookE2E_AdvertisedURLDelivers` — the composed seam: ONE store shared by the real TriggersHandler (create → advertised webhookUrl verbatim; rotate → the signing secret) and the real WebhookReceiverHandler (signed POST to that URL → 202 + fire row + queued run). Unhappy legs: bad signature → 401 + no fire; unknown id → 404; duplicate delivery → 200 "duplicate" + no second fire. Red against the pre-fix receiver by construction (the URL is the trigger id; the old lookup keyed the row id).
+- All 14 webhook receiver/trigger tests green; full handlers + pkg/workflows suites green.
+- Review hygiene: dead `Store.GetWebhook` removed (zero prod callers); stale contract comments corrected (store.go header, integration test); unused mock method dropped.
 
 ## Next Steps
 - PR + review; ships with next release (needs API redeploy — receiver runs in the API, not agentd).
