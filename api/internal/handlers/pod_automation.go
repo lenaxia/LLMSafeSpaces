@@ -217,6 +217,16 @@ func (h *PodAutomationHandler) TriggerFires(c *gin.Context) {
 	}
 }
 
+// TriggerRotateWebhookSecret rotates a webhook trigger's HMAC secret and
+// returns {webhookSecret, webhookUrl} to the pod's agent — the owner's
+// own credential, delivered to the owner's own agent (the same secret
+// the owner would see rotating via the user API).
+func (h *PodAutomationHandler) TriggerRotateWebhookSecret(c *gin.Context) {
+	if _, _, owner, ok := h.resolve(c); ok {
+		h.delegate(c, owner, nil, h.triggers.UserRotateWebhookSecret)
+	}
+}
+
 // --- Workflow routes ------------------------------------------------------
 
 func (h *PodAutomationHandler) WorkflowList(c *gin.Context) {
