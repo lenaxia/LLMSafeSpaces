@@ -43,6 +43,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,7 +157,7 @@ func (c *Client) SessionCreate(ctx context.Context, title string) (string, error
 	var out struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &out); err != nil {
 		return "", fmt.Errorf("POST /session: decode: %w", err)
 	}
 	if out.ID == "" {
@@ -290,7 +291,7 @@ func (c *Client) SessionSend(ctx context.Context, sessionID, text, model string,
 			Text string `json:"text"`
 		} `json:"parts"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64<<20), &out); err != nil {
 		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
 	}
 	var texts []string
@@ -453,7 +454,7 @@ func (c *Client) SessionContextCount(ctx context.Context, sessionID string) (int
 	var out struct {
 		Data []json.RawMessage `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&out); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 16<<20), &out); err != nil {
 		return 0, fmt.Errorf("GET /api/session/%s/context: decode: %w", sessionID, err)
 	}
 	return len(out.Data), nil
@@ -530,7 +531,7 @@ func (c *Client) SessionModelRef(ctx context.Context, sessionID string) (*sessio
 			ProviderID string `json:"providerID"`
 		} `json:"model"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&s); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 1<<20), &s); err != nil {
 		return nil, fmt.Errorf("GET /session/%s: decode: %w", sessionID, err)
 	}
 	if s.Model == nil || s.Model.ID == "" {
@@ -570,7 +571,7 @@ func (c *Client) ModelInfo(ctx context.Context, providerID, modelID string) (*Mo
 			} `json:"models"`
 		} `json:"providers"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&result); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 32<<20), &result); err != nil {
 		return nil, fmt.Errorf("GET /config/providers: decode: %w", err)
 	}
 	for _, p := range result.Providers {
@@ -602,6 +603,26 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return c.httpClient.Do(req)
 }
 
+// decodeStrict decodes exactly ONE JSON value from r and requires the
+// stream to end there. A plain Decode silently accepts trailing bytes
+// after the first value — the leg-10 wire-drift class (#1308: drifted
+// or proxy-corrupted bytes riding a valid HTTP 200 parsing as a
+// phantom success). Trailing whitespace (a final newline) stays
+// acceptable.
+func decodeStrict(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return errors.New("trailing bytes after JSON value")
+	}
+	return nil
+}
+
 // statusError renders a non-2xx into an error carrying the route, status,
 // and a bounded body excerpt (validation messages name the offending
 // field — load-bearing for callers diagnosing wire drift).
@@ -628,4 +649,208 @@ func NewLoopbackClient(baseURL, password string) *Client {
 		Timeout:   seamDefaultTimeout,
 		Transport: transport,
 	}))
+}
+
+// AutomationResponse is the raw passthrough of one automation API call:
+// status + body verbatim. The trigger/workflow shapes are the platform's
+// evolving API contract (types/workflows.go) — the seam deliberately
+// does NOT re-model them; agentd tools pass JSON through and surface
+// errors verbatim so schema evolution needs no agentd change.
+type AutomationResponse struct {
+	Status int
+	Body   string
+}
+
+// automationCall is the shared transport for every /internal/v1/automation
+// route: SA-token bearer (the pod-identity surface), JSON body in, status
+// + body out. Non-2xx returns the body as an error (the platform's error
+// JSON names the invalid field — load-bearing for tool users).
+func (c *Client) automationCall(ctx context.Context, method, path, saToken string, body []byte) (*AutomationResponse, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+saToken)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("automation API %s %s: status %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(out)))
+	}
+	return &AutomationResponse{Status: resp.StatusCode, Body: string(out)}, nil
+}
+
+// TriggerList lists the owner's triggers (pod-identity resolved).
+func (c *Client) TriggerList(ctx context.Context, saToken, workspaceID string) (*AutomationResponse, error) {
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/triggers?workspaceID=%s", workspaceID), saToken, nil)
+}
+
+// TriggerCreate creates a trigger; the platform forces workspaceId to
+// this pod's workspace (the automation scoping rule).
+func (c *Client) TriggerCreate(ctx context.Context, saToken, workspaceID string, trigger json.RawMessage) (*AutomationResponse, error) {
+	body, err := withWorkspaceID(trigger, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost, "/internal/v1/automation/triggers", saToken, body)
+}
+
+// TriggerGet fetches one trigger.
+func (c *Client) TriggerGet(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// TriggerUpdate partially updates one trigger (nil = keep existing).
+// The workspace rides the query; the patch body stays pure caller
+// content — no scoping fields are injected into it.
+func (c *Client) TriggerUpdate(ctx context.Context, saToken, workspaceID, id string, patch json.RawMessage) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPut,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s?workspaceID=%s", id, workspaceID), saToken, patch)
+}
+
+// TriggerDelete removes one trigger.
+func (c *Client) TriggerDelete(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodDelete,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// TriggerFires lists a trigger's fire audit rows — the debugging gold:
+// per-fire status, error payloads, and the consecutive-failure trail.
+func (c *Client) TriggerFires(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s/fires?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// TriggerRotateWebhookSecret rotates a webhook trigger's HMAC secret;
+// the response {webhookSecret, webhookUrl} surfaces verbatim — the
+// owner's credential delivered to the owner's agent.
+func (c *Client) TriggerRotateWebhookSecret(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost,
+		fmt.Sprintf("/internal/v1/automation/triggers/%s/rotate-secret?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// WorkflowList lists the owner's workflows.
+func (c *Client) WorkflowList(ctx context.Context, saToken, workspaceID string) (*AutomationResponse, error) {
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/workflows?workspaceID=%s", workspaceID), saToken, nil)
+}
+
+// WorkflowCreate creates a workflow (spec passed through verbatim).
+func (c *Client) WorkflowCreate(ctx context.Context, saToken, workspaceID string, workflow json.RawMessage) (*AutomationResponse, error) {
+	body, err := withWorkspaceID(workflow, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost, "/internal/v1/automation/workflows", saToken, body)
+}
+
+// WorkflowGet fetches one workflow.
+func (c *Client) WorkflowGet(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/workflows/%s?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// WorkflowUpdate partially updates one workflow. The workspace rides
+// the query; the patch body stays pure.
+func (c *Client) WorkflowUpdate(ctx context.Context, saToken, workspaceID, id string, patch json.RawMessage) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPut,
+		fmt.Sprintf("/internal/v1/automation/workflows/%s?workspaceID=%s", id, workspaceID), saToken, patch)
+}
+
+// WorkflowDelete removes one workflow.
+func (c *Client) WorkflowDelete(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodDelete,
+		fmt.Sprintf("/internal/v1/automation/workflows/%s?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// WorkflowRun starts a manual run (the test loop's fire button). The
+// body is CreateWorkflowRunRequest{input} — the run-input object, NOT a
+// bare passthrough (the delegated handler binds this shape).
+func (c *Client) WorkflowRun(ctx context.Context, saToken, workspaceID, id string, input json.RawMessage) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	if len(input) == 0 {
+		input = json.RawMessage("{}")
+	}
+	body, err := json.Marshal(map[string]json.RawMessage{"input": input})
+	if err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodPost,
+		fmt.Sprintf("/internal/v1/automation/workflows/%s/runs?workspaceID=%s", id, workspaceID), saToken, body)
+}
+
+// WorkflowRuns lists a workflow's run history (statuses + error codes).
+func (c *Client) WorkflowRuns(ctx context.Context, saToken, workspaceID, id string) (*AutomationResponse, error) {
+	if err := validateAutomationID(id); err != nil {
+		return nil, err
+	}
+	return c.automationCall(ctx, http.MethodGet,
+		fmt.Sprintf("/internal/v1/automation/workflows/%s/runs?workspaceID=%s", id, workspaceID), saToken, nil)
+}
+
+// automationIDPattern guards interpolation into automation URLs: the
+// platform's UUID IDs (uuid.New().String() — lowercase hex + dashes).
+var automationIDPattern = regexp.MustCompile(`^[a-f0-9][a-f0-9-]{0,63}$`)
+
+func validateAutomationID(id string) error {
+	if !automationIDPattern.MatchString(id) {
+		return fmt.Errorf("invalid automation id %q", id)
+	}
+	return nil
+}
+
+// withWorkspaceID merges workspaceID into a JSON object body (the
+// resolver requires it in-body on every automation call).
+func withWorkspaceID(raw json.RawMessage, workspaceID string) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("body must be a JSON object: %w", err)
+	}
+	// Drop any caller-supplied workspace scoping first — the SA-derived
+	// workspace is the only truth (the API side re-stamps the DTO
+	// spelling for the delegated handler).
+	delete(body, "workspaceId")
+	body["workspaceID"] = workspaceID
+	return json.Marshal(body)
 }

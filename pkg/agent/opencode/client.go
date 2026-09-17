@@ -226,7 +226,7 @@ func (c *Client) GetSessionStatuses(ctx context.Context) (map[string]string, err
 	var raw map[string]struct {
 		Type string `json:"type"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&raw); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64*1024), &raw); err != nil {
 		return nil, fmt.Errorf("decode session/status: %w", err)
 	}
 	result := make(map[string]string, len(raw))

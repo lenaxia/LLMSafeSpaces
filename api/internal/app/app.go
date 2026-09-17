@@ -55,8 +55,10 @@ import (
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	apisv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	emailpkg "github.com/lenaxia/llmsafespaces/pkg/email"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -388,6 +390,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var secretsHandler *handlers.SecretsHandler
 	var secretsReconcileSvc *secretsreconcile.Service
 	var agentPusherSvc *agentpush.Service
+	// Timezone setting updates push the user's zone to the user's active
+	// workspace pods (the SSE-connect push is the re-delivery path; this
+	// catches mid-session changes). agentPusherSvc is populated later in
+	// startup — the closure reads it at call time.
+	settingsHandler.SetTimezonePushHook(func(ctx context.Context, userID, tz string) {
+		fanOutTimezonePush(ctx, agentPusherSvc, svc.Workspace, log, userID, tz)
+	})
 	var modelsHandler *handlers.ModelsHandler
 	var workspaceEnvHandler *handlers.WorkspaceEnvHandler
 	var unlockDEKHandler *handlers.UnlockDEKHandler
@@ -676,6 +685,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentpush.WithLogger(log),
 			agentpush.WithNotifyMetricsHook(metrics.RecordSecretNotify),
 		)
+
+		// Live browser-timezone push (get_datetime source: browser): the
+		// proxy pushes the user's stored IANA zone to the pod on every SSE
+		// connect. Failures are latency-only by design.
+		proxyHandler.SetTimezonePush(agentPusher, userSettings)
 		agentPusherSvc = agentPusher
 		secretsHandler.SetAgentPusher(agentPusher)
 
@@ -1389,6 +1403,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	podWorkspaceRenameHandler.SetLogger(log)
 
+	// Pod-identity automation CRUD (agentd trigger_/workflow_ MCP
+	// tools). Delegates to the existing user handlers under the pod's
+	// resolved owner; constructed whenever the user handlers exist
+	// (always, today).
+	var podAutomationHandler *handlers.PodAutomationHandler
+	if userTriggersHandler != nil && userWorkflowsHandler != nil {
+		podAutomationHandler = handlers.NewPodAutomationHandlerFromClientset(
+			k8sClient.Clientset(), dbSvc, userTriggersHandler, userWorkflowsHandler, cfg.Kubernetes.Namespace,
+		)
+		podAutomationHandler.SetLogger(log)
+	}
+
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
@@ -1434,6 +1460,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
 		PodBootstrapHandler:             podBootstrapHandler,
 		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
+		PodAutomationHandler:            podAutomationHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,
@@ -2028,4 +2055,46 @@ func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, o
 		return "", fmt.Errorf("pin workspace %s on workflow %s: %w", wsID, workflowID, err)
 	}
 	return wsID, nil
+}
+
+// timezonePushTarget is the ListWorkspaces surface fanOutTimezonePush
+// needs (satisfied by the workspace service; narrow for testability).
+type timezonePushTarget interface {
+	ListWorkspaces(ctx context.Context, userID string, opts types.ListOptions) (*types.WorkspaceListResult, error)
+}
+
+// fanOutTimezonePush pushes the user's zone to every Active/Creating/
+// Resuming workspace pod. Best-effort by contract: list failures and
+// per-pod failures log and continue — the SSE-connect push is the
+// reliable re-delivery path.
+func fanOutTimezonePush(ctx context.Context, pusher handlers.TimezonePusher, lister timezonePushTarget, log pkginterfaces.LoggerInterface, userID, tz string) {
+	if pusher == nil || lister == nil {
+		return
+	}
+	// Limit 50 mirrors the sidebar's page size; users beyond it are
+	// covered by the SSE-connect push (fires per browser session).
+	list, err := lister.ListWorkspaces(ctx, userID, types.ListOptions{Limit: 50})
+	if err != nil || list == nil {
+		if err == nil {
+			err = fmt.Errorf("lister returned nil result")
+		}
+		if log != nil {
+			log.Warn("timezone push: list workspaces failed", "userID", userID, "error", err.Error())
+		}
+		return
+	}
+	for _, ws := range list.Items {
+		switch apisv1.WorkspacePhase(ws.Phase) {
+		case apisv1.WorkspacePhaseActive, apisv1.WorkspacePhaseCreating, apisv1.WorkspacePhaseResuming:
+		default:
+			continue
+		}
+		if err := pusher.PushUserTimezone(ctx, userID, ws.ID, tz); err != nil {
+			// Latency-only per contract; log for observability (the
+			// Notify sibling logs its failures).
+			if log != nil {
+				log.Warn("timezone push: pod push failed", "userID", userID, "workspaceID", ws.ID, "error", err.Error())
+			}
+		}
+	}
 }

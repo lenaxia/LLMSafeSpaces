@@ -1495,3 +1495,81 @@ func TestAdapter_RejectInput_TransportErrorSurfaces_QueID(t *testing.T) {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// TestAdapter_Send_WireDriftCorruption (leg-10, epic-71 / leg10-pins,
+// #1312 — review r1 finding: this site decodes the SAME
+// POST /session/:id/message wire as the now-strict loopback seam and
+// was its lenient twin): the four canonical corruption shapes riding a
+// 200 must fail AT THE PARSE — never a silent empty assistant message.
+func TestAdapter_Send_WireDriftCorruption(t *testing.T) {
+	for _, mode := range leg10DriftModes {
+		t.Run(mode.name, func(t *testing.T) {
+			srv := newFakeOpencode(t)
+			srv.register("POST", "/session/ses_1/message", mode.body, 0)
+			a := newTestAdapter(t, srv.Server)
+
+			msg, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+			require.Error(t, err, "a corrupted 200 must never parse as a delivered message")
+			assert.Nil(t, msg, "no misparsed message escapes the adapter")
+			assert.Contains(t, err.Error(), "decode",
+				"the corrupted 200 must fail AT THE PARSE")
+		})
+	}
+}
+
+// TestAdapter_ListPending_WireDriftCorruption (leg-10, epic-71 /
+// leg10-pins, #1312 — r4 finding 1: the pending helpers swallowed every
+// corruption mode into (empty, nil), fabricating the "no pending input"
+// verdict the fail-closed dismiss path treats as positive death
+// evidence). A corrupted 200 must surface ErrPendingUnavailable —
+// "pending set unknown", never authoritative empty. 404 stays the
+// documented authoritative-empty (endpoint not implemented).
+func TestAdapter_ListPending_WireDriftCorruption(t *testing.T) {
+	corrupt := map[string]string{
+		"invalid_json":     `[{"id":"que_1","sessionID":"ses_1","ti`,
+		"trailing_garbage": `[]garbage-bytes`,
+		"empty_body":       ``,
+		"html_error_page":  `<html><body>502 Bad Gateway</body></html>`,
+	}
+	for name, questionBody := range corrupt {
+		t.Run(name, func(t *testing.T) {
+			srv := newFakeOpencode(t)
+			srv.register("GET", "/question", questionBody, 0)
+			srv.register("GET", "/permission", `[]`, 0)
+			a := newTestAdapter(t, srv.Server)
+
+			pending, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+			require.Error(t, err, "a corrupted pending-inputs 200 must never read as authoritative empty")
+			assert.ErrorIs(t, err, ErrPendingUnavailable)
+			assert.Empty(t, pending)
+		})
+	}
+}
+
+// Item-level drift: a valid JSON array whose entries fail the dialect
+// shape guard (missing id) is drift, not absence — same philosophy as
+// fetchListStrict.
+func TestAdapter_ListPending_ItemDriftErrors(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/question", `[{"sessionID":"ses_1"},{"sessionID":"ses_1"}]`, 0)
+	srv.register("GET", "/permission", `[]`, 0)
+	a := newTestAdapter(t, srv.Server)
+
+	pending, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.Error(t, err, "shape-drifted items must not silently vanish from the pending set")
+	assert.ErrorIs(t, err, ErrPendingUnavailable)
+	assert.Empty(t, pending)
+}
+
+// The documented boot contract: 404 on the pending endpoints is
+// "not implemented in this opencode version" — authoritative empty.
+func TestAdapter_ListPending_404IsAuthoritativeEmpty(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/question", `{"message":"not found"}`, http.StatusNotFound)
+	srv.register("GET", "/permission", `{"message":"not found"}`, http.StatusNotFound)
+	a := newTestAdapter(t, srv.Server)
+
+	pending, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err)
+	assert.Empty(t, pending, "404 = endpoint absent = authoritative empty (documented contract)")
+}

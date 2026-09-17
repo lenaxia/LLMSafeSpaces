@@ -68,6 +68,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useClearSessionPendingPrompts: () => () => {},
   useWorkspaceInputSnapshot: () => undefined,
   SessionActivityProvider: ({ children }: { children: any }) => <>{children}</>,
+  useWhileAwayStalenessSweep: () => {},
 }));
 
 vi.mock("../api/workspaces", () => ({

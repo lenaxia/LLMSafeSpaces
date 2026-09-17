@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -33,6 +35,25 @@ func (c *OpenCodeClient) doRequest(ctx context.Context, path string) (*http.Resp
 	return c.client.Do(req)
 }
 
+// decodeStrict decodes exactly ONE JSON value and requires the stream
+// to end there. A plain Decode silently accepts trailing bytes — the
+// leg-10 wire-drift class (#1308: drifted or proxy-corrupted bytes
+// riding a valid HTTP 200 parsing as a phantom success). Local twin of
+// pkg/agent/opencode's helper (unexported, two owning packages).
+func decodeStrict(r io.Reader, v any) error {
+	dec := json.NewDecoder(r)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing bytes after JSON value: %w", err)
+		}
+		return errors.New("trailing bytes after JSON value")
+	}
+	return nil
+}
+
 func (c *OpenCodeClient) IsHealthy(ctx context.Context) (bool, string, error) {
 	resp, err := c.doRequest(ctx, "/global/health")
 	if err != nil {
@@ -43,7 +64,7 @@ func (c *OpenCodeClient) IsHealthy(ctx context.Context) (bool, string, error) {
 		Healthy bool   `json:"healthy"`
 		Version string `json:"version"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return false, "", err
 	}
 	return result.Healthy, result.Version, nil
@@ -58,7 +79,7 @@ func (c *OpenCodeClient) ConnectedProviders(ctx context.Context) ([]string, erro
 	var result struct {
 		Connected []string `json:"connected"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return nil, err
 	}
 	return result.Connected, nil
@@ -73,7 +94,7 @@ func (c *OpenCodeClient) ConfiguredProviderCount(ctx context.Context) (int, erro
 	var result struct {
 		Providers []struct{} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeStrict(resp.Body, &result); err != nil {
 		return 0, err
 	}
 	return len(result.Providers), nil
@@ -98,7 +119,10 @@ func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, provide
 			} `json:"models"`
 		} `json:"providers"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	// Fail-open 0 by contract (display value) — but strict and logged,
+	// never a silent swallow (Rule 3; leg-10 drift visibility).
+	if err := decodeStrict(resp.Body, &result); err != nil {
+		log.Debug("ModelContextLimit: decode failed", zap.Error(err), zap.String("modelID", modelID), zap.String("providerID", providerID))
 		return 0
 	}
 	for _, p := range result.Providers {
@@ -140,8 +164,8 @@ func (c *OpenCodeClient) ListSessions(ctx context.Context) ([]agentd.SessionInfo
 			ID string `json:"id"`
 		} `json:"model"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		return nil, err
+	if err := decodeStrict(resp.Body, &sessions); err != nil {
+		return nil, fmt.Errorf("GET /session: decode: %w", err)
 	}
 	result := make([]agentd.SessionInfo, len(sessions))
 	for i, s := range sessions {
@@ -178,7 +202,12 @@ func (c *OpenCodeClient) fetchSessionTitle(ctx context.Context, sessionID string
 	var s struct {
 		Title string `json:"title"`
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&s)
+	// Best-effort by contract (a drifted title must never fail the
+	// listing) — but the decode is strict and the failure is logged,
+	// never silently swallowed (Rule 3; leg-10 drift visibility).
+	if err := decodeStrict(resp.Body, &s); err != nil {
+		log.Debug("fetchSessionTitle: decode failed", zap.Error(err), zap.String("sessionID", sessionID))
+	}
 	return s.Title
 }
 
@@ -208,7 +237,7 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 			} `json:"tokens"`
 		} `json:"info"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&messages); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 16<<20), &messages); err != nil {
 		log.Debug("fetchSessionPromptTokens: decode failed", zap.Error(err), zap.String("sessionID", sessionID))
 		return 0
 	}

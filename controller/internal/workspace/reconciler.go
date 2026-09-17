@@ -123,6 +123,15 @@ type WorkspaceReconciler struct {
 	lastDeepStatus   map[string]time.Time
 	lastDeepStatusMu sync.Mutex
 
+	// drainStates tracks the per-workspace pre-deletion drain window (#761):
+	// when a deferrable pod deletion (suspend, restart-generation bump,
+	// architecture drift, password-secret heal) last observed busy sessions
+	// and last observed progress. In-memory only — lost on controller
+	// restart, which restarts the drain window (documented in
+	// session_drain.go).
+	drainStates   map[string]*podDrainState
+	drainStatesMu sync.Mutex
+
 	// MaxConcurrentReconciles: how many DIFFERENT workspaces reconcile in
 	// parallel (controller-runtime never runs the same object concurrently,
 	// so per-workspace state stays single-writer). 0/negative = framework

@@ -202,6 +202,12 @@ type RouterConfig struct {
 	// namespace, so a pod can only rename its own workspace.
 	PodWorkspaceRenameHandler *handlers.PodWorkspaceRenameHandler
 
+	// PodAutomationHandler, when non-nil, registers the pod-identity
+	// trigger + workflow CRUD surface the agentd automation MCP tools
+	// call — TokenReview-gated like the rename endpoint, delegating to
+	// the existing user handlers under the pod's resolved owner.
+	PodAutomationHandler *handlers.PodAutomationHandler
+
 	// MCPServersHandler handles external MCP server CRUD for all three
 	// scopes (platform/org/user). Optional — when nil, no MCP routes are
 	// registered (Epic 53).
@@ -1144,6 +1150,36 @@ func registerInternalPodRoutes(router *gin.Engine, cfg RouterConfig) {
 	if cfg.PodWorkspaceRenameHandler != nil {
 		router.POST("/internal/v1/workspace-rename", cfg.PodWorkspaceRenameHandler.Rename)
 	}
+
+	// Pod-identity automation CRUD (agentd trigger_/workflow_ MCP tools).
+	registerInternalAutomationRoutes(router, cfg)
+}
+
+// registerInternalAutomationRoutes mounts the pod-identity trigger +
+// workflow surface. TokenReview per-request (no JWT — the agent has no
+// user identity); the owner is resolved from the pod's workspace.
+func registerInternalAutomationRoutes(router *gin.Engine, cfg RouterConfig) {
+	if cfg.PodAutomationHandler == nil {
+		return
+	}
+	h := cfg.PodAutomationHandler
+	t := router.Group("/internal/v1/automation/triggers")
+	t.GET("", h.TriggerList)
+	t.POST("", h.TriggerCreate)
+	t.GET("/:id", h.TriggerGet)
+	t.PUT("/:id", h.TriggerUpdate)
+	t.DELETE("/:id", h.TriggerDelete)
+	t.GET("/:id/fires", h.TriggerFires)
+	t.POST("/:id/rotate-secret", h.TriggerRotateWebhookSecret)
+
+	w := router.Group("/internal/v1/automation/workflows")
+	w.GET("", h.WorkflowList)
+	w.POST("", h.WorkflowCreate)
+	w.GET("/:id", h.WorkflowGet)
+	w.PUT("/:id", h.WorkflowUpdate)
+	w.DELETE("/:id", h.WorkflowDelete)
+	w.POST("/:id/runs", h.WorkflowRun)
+	w.GET("/:id/runs", h.WorkflowRuns)
 }
 
 func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, services interfaces.Services, proxyHandler *handlers.ProxyHandler, cfg RouterConfig) {

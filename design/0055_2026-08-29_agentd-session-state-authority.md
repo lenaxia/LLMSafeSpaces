@@ -798,12 +798,25 @@ session-create routing).
   surface. US-69.11 retires the API-side DERIVATION, not statusz; the
   controller's scrape may later source cheaper data from the snapshot,
   decided there.
-- **Control-op concurrency matrix** — **Decision: no exceptions.** All
-  five action verbs serialize against delivery via the authority's
-  single-flight (US-69.9); session-create stays API-side (adapter CRUD)
-  per M1's explicit carve-out. The interrupt/admission-in-flight race is
+- **Control-op concurrency matrix** — **Decision: no exceptions for
+  transcript verbs.** The four transcript-mutating verbs (interrupt,
+  switch_model, switch_agent, compact) serialize against delivery via the
+  authority's single-flight (US-69.9); session-create stays API-side
+  (adapter CRUD) per M1's explicit carve-out. The interrupt/admission-in-flight race is
   settled by construction (I7: an admission completing during an
   interrupt lands a preserved queued row).
+  **Amendment (2026-09-16, #1396): answer forwards are exempt.** An
+  `AnswerQuestion` targets the harness ask registry, not the transcript,
+  and arrives exactly when the session is busy (asks exist only then) —
+  holding the sole-writer lock across the forward deadlocks the reply
+  behind the admission waiting on it (2m05s hangs → 502, issue #1396).
+  The forward runs lock-free under a 5s budget; the projection fold
+  (INPUT_RESOLVED / resolve-by-absence) takes `a.mu` briefly. Safe
+  because single-flight still admits one delivery per session and the
+  reply is the unblock that delivery waits on; agentd writes zero state
+  on a successful answer (the harness emits the resolved-ask event on
+  its own stream). Invariant L12 (#1312): answer latency ≤ 2s under a
+  busy session.
 
 ### Upstream dependencies
 

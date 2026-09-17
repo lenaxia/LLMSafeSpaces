@@ -136,7 +136,7 @@ func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, 
 	var envelope struct {
 		Data V2PromptResponse `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64<<10), &envelope); err != nil {
 		return nil, fmt.Errorf("decode V2 prompt response: %w", err)
 	}
 	return &envelope.Data, nil
@@ -289,7 +289,7 @@ func (c *Client) MessagesV2(ctx context.Context, sessionID string) ([]V2Message,
 	var envelope struct {
 		Data []V2Message `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&envelope); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 64<<20), &envelope); err != nil {
 		return nil, fmt.Errorf("decode V2 messages: %w", err)
 	}
 	return envelope.Data, nil

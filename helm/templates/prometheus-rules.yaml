@@ -152,8 +152,12 @@ spec:
               A restart-reason marker failed to persist — post-mortem evidence for
               that restart is lost. Check the workspace PVC and agentd logs.
 
-        # #901 G8: relay injector permanently degraded (free-model fetch
-        # deadline exhausted — terminal for this agent generation).
+        # #901 G8: relay injector degraded (free-model fetch terminally
+        # failed in the boot window). #910: the injector re-arms on a
+        # bounded 5m→30m backoff — a transient outage self-heals within
+        # minutes; this firing means watch the re-arm outcomes
+        # (llmsafespaces_rearm_outcome_total) for recovery (success) vs
+        # persistent failure.
         - alert: LLMSafeSpacesRelayInjectorDegraded
           expr: |
             sum(increase(llmsafespaces_relay_injector_total{job=~"{{ $agentdJob }}", outcome=~"fetch_failed|no_free_models"}[10m])) > 0
@@ -164,9 +168,14 @@ spec:
           annotations:
             summary: "Relay injector free-model fetch exhausted"
             description: >-
-              The relay injector gave up fetching free models for this agent
-              generation — free-tier model routing is unavailable until the next
-              agent restart. Check opencode /provider health.
+              The relay injector's boot-window free-model fetch terminally
+              failed — free-tier model routing is degraded and the injector
+              has entered its bounded re-arm loop (retrying every 5–30m;
+              #910). Recovery is automatic once the relay router/catalog
+              answers: watch llmsafespaces_rearm_outcome_total{loop="relay_injector"}
+              for a success tick. If re-arm failures persist for the pod's
+              whole life, check opencode /provider health and the relay
+              router.
 
         {{- /* US-70.3 (#1158 PR-5): a workspace whose secrets delivery is
               divergent for >15m pages — the reconcile loop's backoff
@@ -539,18 +548,23 @@ spec:
               Reconciliation errors are occurring at {{ `{{ $value | humanize }}` }}/s.
               Check controller logs for error_type breakdown.
 
+        # #760: replaces LLMSafeSpacesWorkspaceFailures, which queried the
+        # retired llmsafespaces_workspaces_failed_total — a counter whose
+        # only writer was SafeMode entry (worklog 0377 H7), i.e. it
+        # already measured recovery exhaustion, mislabeled. The new
+        # counter is the same signal under its honest name.
         - alert: LLMSafeSpacesWorkspaceFailures
           expr: |
-            sum(increase(llmsafespaces_workspaces_failed_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
+            sum(increase(llmsafespaces_workspace_recovery_exhausted_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
           for: 1m
           labels:
             severity: warning
             component: controller
           annotations:
-            summary: "LLMSafeSpaces workspaces entering Failed state"
+            summary: "LLMSafeSpaces recovery exhausted"
             description: >-
-              {{ `{{ $value }}` }} workspaces entered Failed state in the last hour.
-              Check reason label for root cause.
+              {{ `{{ $value }}` }} recovery episode(s) crossed their exhaustion threshold in the last hour.
+              Check failure_class label for root cause; suspend the workspace (spec.suspend=true) to halt the loop.
 
         - alert: LLMSafeSpacesWorkspaceCreationSlow
           expr: |
@@ -582,31 +596,13 @@ spec:
               Recovery backoff p99 is {{ `{{ $value | humanizeDuration }}` }}. Workspaces
               are taking a long time to recover from failures.
 
-        - alert: LLMSafeSpacesSafeModeActive
-          expr: |
-            llmsafespaces_workspace_safe_mode_active{job=~"{{ $ctrlJob }}"} > 0
-          for: 5m
-          labels:
-            severity: warning
-            component: controller
-          annotations:
-            summary: "LLMSafeSpaces safe mode is active"
-            description: >-
-              {{ `{{ $value }}` }} workspace(s) are currently in safe mode. This indicates
-              repeated failures triggering the safety threshold.
-
-        - alert: LLMSafeSpacesHighConsecutiveFailures
-          expr: |
-            llmsafespaces_workspace_consecutive_failures_max{job=~"{{ $ctrlJob }}"} > 3
-          for: 5m
-          labels:
-            severity: critical
-            component: controller
-          annotations:
-            summary: "LLMSafeSpaces consecutive workspace failures above 3"
-            description: >-
-              Maximum consecutive failures is {{ `{{ $value }}` }}. One or more workspaces
-              are stuck in a failure loop. Immediate investigation required.
+        # #760: LLMSafeSpacesHighConsecutiveFailures deleted — its query
+        # (llmsafespaces_workspace_consecutive_failures_max) referenced a
+        # metric with no writer anywhere in the tree (dead since its
+        # introduction; discovered while repointing the adjacent stanza).
+        # Its intent — "a workspace is stuck in a failure loop" — is now
+        # served honestly by the RecoveryExhausted condition + Event +
+        # recovery_exhausted_total counter (see LLMSafeSpacesWorkspaceFailures).
 
         - alert: LLMSafeSpacesStatusUpdateConflicts
           expr: |

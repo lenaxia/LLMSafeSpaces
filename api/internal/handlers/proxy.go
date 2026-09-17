@@ -42,6 +42,11 @@ const (
 )
 
 type ProxyHandler struct {
+
+	// User-timezone live push (get_datetime source: browser): set from
+	// app wiring; nil in tests that don't exercise the path.
+	timezonePusher    TimezonePusher
+	userTimezones     UserTimezoneReader
 	k8sClient         pkginterfaces.KubernetesClient
 	httpClient        *http.Client
 	logger            pkginterfaces.LoggerInterface
@@ -378,4 +383,10 @@ func (h *ProxyHandler) quotaCheckFailed(c *gin.Context, err error, userID, event
 		"user_id", userID, "event_type", eventType)
 	c.JSON(http.StatusServiceUnavailable, gin.H{"error": "quota check unavailable, please retry"})
 	return false
+}
+
+// SetTimezonePush wires the live browser-timezone push (SSE connect path).
+func (h *ProxyHandler) SetTimezonePush(p TimezonePusher, r UserTimezoneReader) {
+	h.timezonePusher = p
+	h.userTimezones = r
 }

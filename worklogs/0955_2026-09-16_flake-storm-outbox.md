@@ -91,4 +91,4 @@ Evidence that ruled out the alternative hypothesis (lock TTL expiry mid-critical
 
 - `api/internal/services/outbox/outbox.go` — Recover reads staging under the session lock (root-cause fix).
 - `api/internal/services/outbox/outbox_recover_race_test.go` — new deterministic regression pin (red-first).
-- `worklogs/NNNN_2026-09-16_flake-storm-outbox.md` — this worklog.
+- `worklogs/0955_2026-09-16_flake-storm-outbox.md` — this worklog.

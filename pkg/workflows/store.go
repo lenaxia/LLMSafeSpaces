@@ -5,7 +5,8 @@
 //
 // Pure data-access on the seven Epic 64 tables. Crypto (encrypt/decrypt of
 // webhook HMAC secrets) is NOT done here — handlers encrypt before calling
-// CreateWebhook; the webhook receiver decrypts after calling GetWebhook.
+// CreateWebhook; the webhook receiver decrypts after calling
+// GetWebhookByTriggerID (the public hook URL carries the trigger id).
 // This mirrors the pkg/secrets/mcp_store.go split exactly.
 package workflows
 
@@ -496,20 +497,6 @@ func (s *Store) GetWebhookByTriggerID(ctx context.Context, triggerID string) (*W
 		SELECT id, trigger_id, secret_cipher, key_version, allowed_ips, idempotency_mode, idempotency_header, created_at
 		FROM webhooks WHERE trigger_id = $1
 	`, triggerID)
-	r, err := scanWebhookRow(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return r, err
-}
-
-// GetWebhook returns a webhook by its own ID (the public webhook_id in the
-// receiver URL path). Used by POST /api/v1/hooks/:webhook_id.
-func (s *Store) GetWebhook(ctx context.Context, webhookID string) (*WebhookRow, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT id, trigger_id, secret_cipher, key_version, allowed_ips, idempotency_mode, idempotency_header, created_at
-		FROM webhooks WHERE id = $1
-	`, webhookID)
 	r, err := scanWebhookRow(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound

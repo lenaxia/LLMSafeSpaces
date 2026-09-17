@@ -1693,3 +1693,37 @@ func TestUS70Gvisor_VerifyBeforeExtractAndInstall(t *testing.T) {
 		t.Fatalf("ordering violated: verify=%d extract=%d install=%d — verification must precede extraction and installation", verify, extract, install)
 	}
 }
+
+// TestUS70GvisorBundle_InstallsSidecarTree: the release bundle's runsc
+// runs with --sidecar-usage-policy STRICT — sandbox creation requires
+// the staged gvisor_sentry at /usr/local/bin/gvisor-bin/ (pool run
+// 35169738298: "sidecar gvisor_sentry not usable ... no such file or
+// directory" — every gVisor pod sandbox failed, AC-13 wedged). The
+// provisioning must extract and install the bundle's gvisor-bin tree,
+// not just the two top-level binaries.
+func TestUS70GvisorBundle_InstallsSidecarTree(t *testing.T) {
+	src := mustRead(t, us70GvisorScript)
+	// The tar LINE itself must name the sidecar member (a substring window
+	// stays green when the member is dropped from the command — r1 mutation).
+	tarLine := ""
+	for _, ln := range strings.Split(src, "\n") {
+		if strings.Contains(ln, "tar --zstd -xf") {
+			tarLine = ln
+			break
+		}
+	}
+	if tarLine == "" {
+		t.Fatal("bundle extraction not found")
+	}
+	if !strings.Contains(tarLine, "gvisor-bin") {
+		t.Fatalf("the tar command must extract the gvisor-bin sidecar tree (pool 35169738298: sandbox create failed - gvisor_sentry not usable under STRICT policy): %s", tarLine)
+	}
+	if !strings.Contains(src, "/usr/local/bin/gvisor-bin") {
+		t.Fatal("the sidecar tree must be installed under /usr/local/bin/gvisor-bin (the STRICT policy lookup path)")
+	}
+	// The post-install executable guard: the wedge class fails LOUDLY at
+	// provisioning, not hours later in sandbox creation.
+	if !strings.Contains(src, "test -x /usr/local/bin/gvisor-bin/gvisor_sentry") {
+		t.Fatal("provisioning must verify the sentry exists and is executable after install (the pool 35169738298 silent-wedge class)")
+	}
+}

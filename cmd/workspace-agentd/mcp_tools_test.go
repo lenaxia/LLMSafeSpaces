@@ -654,15 +654,18 @@ func TestMCPCreateSession_TitleOptional(t *testing.T) {
 // --- get_datetime ---------------------------------------------------------
 
 func TestMCPGetDatetime(t *testing.T) {
-	out, err := mcpGetDatetime()
+	resetUserTimezone(t)
+	out, err := mcpGetDatetime("")
 	require.NoError(t, err)
 
 	var res map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &res))
-	for _, k := range []string{"utc", "local", "timezone", "utc_offset"} {
+	for _, k := range []string{"utc", "local", "utc_offset", "source"} {
 		require.Contains(t, res, k)
 		require.NotEmpty(t, res[k], "%s must be non-empty", k)
 	}
+	assert.Equal(t, "pod", res["source"])
+	assert.NotContains(t, res, "timezone", "pod fallback emits NO zone name — the key is absent, not empty-string faked")
 	utc, err := time.Parse(time.RFC3339, res["utc"].(string))
 	require.NoError(t, err, "utc must be RFC3339")
 	assert.Equal(t, time.UTC.String(), utc.Location().String())
@@ -885,9 +888,19 @@ func TestCallMCPTool_RenameSession_MissingID(t *testing.T) {
 }
 
 func TestCallMCPTool_GetDatetime(t *testing.T) {
+	resetUserTimezone(t)
 	out, err := callMCPTool(context.Background(), mcpTestPassword, "get_datetime", map[string]any{})
 	require.NoError(t, err)
 	assert.Contains(t, out, "utc")
+	assert.Contains(t, out, `"source":"pod"`)
+
+	out, err = callMCPTool(context.Background(), mcpTestPassword, "get_datetime", map[string]any{
+		"timezone": "Asia/Tokyo",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"source":"argument"`)
+	assert.Contains(t, out, "Asia/Tokyo")
+	assert.Contains(t, out, "+09:00")
 }
 
 func TestCallMCPTool_SessionMetadata(t *testing.T) {
@@ -932,6 +945,10 @@ func TestMCPHandler_ToolsList_IncludesNewTools(t *testing.T) {
 		"rename_session", "rename_workspace", "call_with_model",
 		"create_session", "send_message", "get_datetime", "session_metadata",
 		"compact", "abort_session",
+		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
+		"trigger_fires", "trigger_rotate_webhook_secret",
+		"workflow_list", "workflow_create", "workflow_update",
+		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		assert.True(t, names[want], "%s must be in tools/list", want)
 	}
@@ -943,6 +960,10 @@ func TestMCPHandler_EveryToolRequiresAuth(t *testing.T) {
 		"session_list", "session_read", "rename_session", "rename_workspace",
 		"call_with_model", "create_session", "send_message", "abort_session", "get_datetime",
 		"session_metadata", "compact", "secrets_resync", "dev_preview_url",
+		"trigger_list", "trigger_create", "trigger_update", "trigger_delete",
+		"trigger_fires", "trigger_rotate_webhook_secret",
+		"workflow_list", "workflow_create", "workflow_update",
+		"workflow_delete", "workflow_run", "workflow_runs",
 	} {
 		params, _ := json.Marshal(map[string]any{"name": tool, "arguments": map[string]any{}})
 		req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: params}
@@ -1328,4 +1349,386 @@ func TestMCPCompact_OmittedID_ResolvesRetryingSession(t *testing.T) {
 	assert.Contains(t, out, s1)
 	require.Eventually(t, func() bool { return f.lastSummary(s1) != nil }, 7*time.Second, 25*time.Millisecond,
 		"the detached summarize goroutine must complete before test end")
+}
+
+// --- get_datetime: user-timezone resolution ---------------------------------
+
+func resetUserTimezone(t *testing.T) {
+	t.Helper()
+	userTimezoneAtomic.Store("")
+}
+
+func TestMCPGetDatetime_FallbackPodZone(t *testing.T) {
+	resetUserTimezone(t)
+	out, err := mcpGetDatetime("")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "pod", res["source"])
+	assert.NotContains(t, res, "timezone", "no zone known — the key is absent, not empty-string faked")
+}
+
+func TestMCPGetDatetime_BrowserZoneWinsWhenNoArg(t *testing.T) {
+	resetUserTimezone(t)
+	userTimezoneAtomic.Store("America/Los_Angeles")
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	out, err := mcpGetDatetime("")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "browser", res["source"])
+	assert.Equal(t, "America/Los_Angeles", res["timezone"])
+	utc, err := time.Parse(time.RFC3339, res["utc"].(string))
+	require.NoError(t, err)
+	local, err := time.Parse(time.RFC3339, res["local"].(string))
+	require.NoError(t, err)
+	assert.WithinDuration(t, utc, local, 2*time.Minute)
+	assert.Contains(t, []string{"-07:00", "-08:00"}, res["utc_offset"], "PDT or PST")
+}
+
+func TestMCPGetDatetime_ArgumentOverridesBrowser(t *testing.T) {
+	resetUserTimezone(t)
+	userTimezoneAtomic.Store("America/Los_Angeles")
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	out, err := mcpGetDatetime("Europe/Berlin")
+	require.NoError(t, err)
+	var res map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	assert.Equal(t, "argument", res["source"])
+	assert.Equal(t, "Europe/Berlin", res["timezone"])
+	assert.Contains(t, []string{"+01:00", "+02:00"}, res["utc_offset"])
+}
+
+func TestMCPGetDatetime_UnknownZoneRejected(t *testing.T) {
+	resetUserTimezone(t)
+	_, err := mcpGetDatetime("Mars/Olympus_Mons")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown timezone")
+}
+
+func TestUserTimezoneHandler_AuthAndValidation(t *testing.T) {
+	h := userTimezoneHandler("cp-pw", "oc-pw")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"America/New_York"}`))
+	h(rr, req)
+	assert.Equal(t, http.StatusUnauthorized, rr.Code, "unauthenticated push must be rejected")
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"Not/AZone"}`))
+	req.SetBasicAuth("opencode", "oc-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Empty(t, userTimezone())
+
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"America/New_York"}`))
+	req.SetBasicAuth("opencode", "oc-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "America/New_York", userTimezone())
+	t.Cleanup(func() { userTimezoneAtomic.Store("") })
+
+	// The control-plane credential must also pass (the §D1 carve-out pair).
+	userTimezoneAtomic.Store("")
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/user-timezone", strings.NewReader(`{"timezone":"Europe/Berlin"}`))
+	req.SetBasicAuth("opencode", "cp-pw")
+	h(rr, req)
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, "Europe/Berlin", userTimezone())
+}
+
+// --- automation tools (trigger_* / workflow_*) ------------------------------
+
+// automationCallRecord captures one wire request to the fake automation API.
+type automationCallRecord struct {
+	method string
+	path   string
+	query  string
+	auth   string
+	body   string
+}
+
+// newAutomationAPI spins up a fake /internal/v1/automation backend that
+// records the last request and replies with the given status+body.
+func newAutomationAPI(t *testing.T, status int, reply string) (*httptest.Server, *automationCallRecord) {
+	t.Helper()
+	rec := &automationCallRecord{}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.method, rec.path, rec.query, rec.auth = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+		if r.Body != nil && r.ContentLength > 0 {
+			buf := make([]byte, r.ContentLength)
+			_, _ = r.Body.Read(buf)
+			rec.body = string(buf)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(reply))
+	}))
+	t.Cleanup(api.Close)
+	return api, rec
+}
+
+func TestMCPAutomation_ListWire(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"triggers":[]}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{"triggers":[]}`, out, "platform body passes through verbatim")
+	assert.Equal(t, http.MethodGet, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers", rec.path)
+	assert.Equal(t, "workspaceID=ws-1", rec.query)
+	assert.Equal(t, "Bearer sa-token", rec.auth)
+	assert.Empty(t, rec.body)
+}
+
+func TestMCPAutomation_CreateStampsWorkspace(t *testing.T) {
+	api, rec := newAutomationAPI(t, 201, `{"id":"t-1"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	// The schema-documented wrapper form: {"workflow": {...}}. The real
+	// delegated handler binds FLAT — the wire body must be the unwrapped
+	// object with the resolver-spelling workspace stamp.
+	out, err := mcpAutomation(context.Background(), "workflow_create", map[string]any{
+		"workflow": map[string]any{"name": "wf", "spec": map[string]any{"nodes": []any{}}},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"id":"t-1"`)
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/workflows", rec.path)
+
+	var wire map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(rec.body), &wire))
+	assert.Contains(t, wire, "workspaceID", "create body carries the resolver-spelling stamp")
+	assert.NotContains(t, wire, "workflow", "wrapper key must NOT reach the wire (real handler binds flat)")
+	assert.NotContains(t, wire, "trigger", "wrapper key must NOT reach the wire (real handler binds flat)")
+	var ws string
+	require.NoError(t, json.Unmarshal(wire["workspaceID"], &ws))
+	assert.Equal(t, "ws-1", ws)
+}
+
+func TestMCPAutomation_UpdatePatchPurity(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"id":"11111111-1111-1111-1111-111111111111"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "trigger_update", map[string]any{
+		"id":    "11111111-1111-1111-1111-111111111111",
+		"patch": map[string]any{"enabled": false},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodPut, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111", rec.path)
+	assert.Equal(t, `{"enabled":false}`, rec.body, "patch carries caller fields only — no id, no workspaceID")
+}
+
+func TestMCPAutomation_DeleteAndFiresWire(t *testing.T) {
+	api, rec := newAutomationAPI(t, 204, "")
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_delete", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	require.NoError(t, err)
+	assert.Equal(t, `{"status":204}`, out, "empty platform body degrades to status-only")
+	assert.Equal(t, http.MethodDelete, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111", rec.path)
+	assert.Equal(t, "workspaceID=ws-1", rec.query)
+
+	_, err = mcpAutomation(context.Background(), "trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"})
+	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/fires", rec.path)
+}
+
+func TestMCPAutomation_WorkflowRunInputWrapped(t *testing.T) {
+	api, rec := newAutomationAPI(t, 202, `{"runId":"r-9"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "workflow_run", map[string]any{
+		"id":    "11111111-1111-1111-1111-111111111111",
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"runId":"r-9"`)
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/workflows/11111111-1111-1111-1111-111111111111/runs", rec.path)
+	assert.Contains(t, rec.body, `"input"`)
+	assert.Contains(t, rec.body, `"topic"`)
+}
+
+func TestMCPAutomation_ErrorPassthrough(t *testing.T) {
+	api, _ := newAutomationAPI(t, 400, `{"error":{"message":"name is required"}}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "trigger_create", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trigger_create failed")
+	assert.Contains(t, err.Error(), "name is required", "platform error text surfaces verbatim")
+}
+
+func TestMCPAutomation_InvalidIDNeverDials(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	_, err := mcpAutomation(context.Background(), "workflow_runs", map[string]any{"id": "../../etc/passwd"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid automation id")
+	assert.Empty(t, rec.method, "hostile ID rejected before any dial")
+
+	_, err = mcpAutomation(context.Background(), "trigger_delete", map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid automation id")
+	assert.Empty(t, rec.method)
+}
+
+func TestMCPAutomation_MissingDeps(t *testing.T) {
+	api, _ := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	t.Setenv("WORKSPACE_ID", "")
+	_, err := mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WORKSPACE_ID")
+
+	t.Setenv("WORKSPACE_ID", "ws-1")
+	t.Setenv("LLMSAFESPACE_API_URL", "")
+	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LLMSAFESPACE_API_URL")
+
+	t.Setenv("LLMSAFESPACE_API_URL", api.URL)
+	t.Setenv("LLMSAFESPACE_BOOTSTRAP_TOKEN_FILE", filepath.Join(t.TempDir(), "missing"))
+	_, err = mcpAutomation(context.Background(), "trigger_list", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SA token unreadable")
+}
+
+func TestMCPAutomation_RotateWebhookSecret(t *testing.T) {
+	api, rec := newAutomationAPI(t, 200, `{"webhookSecret":"whs_x","webhookUrl":"/api/v1/hooks/11111111-1111-1111-1111-111111111111"}`)
+	setupRenameWorkspaceEnv(t, api)
+
+	out, err := mcpAutomation(context.Background(), "trigger_rotate_webhook_secret", map[string]any{
+		"id": "11111111-1111-1111-1111-111111111111",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, `"webhookSecret":"whs_x"`, "credential surfaces verbatim to the agent")
+	assert.Equal(t, http.MethodPost, rec.method)
+	assert.Equal(t, "/internal/v1/automation/triggers/11111111-1111-1111-1111-111111111111/rotate-secret", rec.path)
+}
+
+func TestMCPAutomation_UnknownTool(t *testing.T) {
+	api, _ := newAutomationAPI(t, 200, `{}`)
+	setupRenameWorkspaceEnv(t, api)
+	_, err := mcpAutomation(context.Background(), "trigger_deploy", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown automation tool")
+}
+
+// L1: full JSON-RPC through mcpHandler for a representative pair —
+// trigger_create then trigger_fires, the iterate-on-automation loop.
+func TestMCPHandler_AutomationFullStack(t *testing.T) {
+	// The fake API enforces the REAL delegated bind contract: flat
+	// CreateTriggerRequest (name required), wrapper bodies 400 — the
+	// exact contract the API-layer integration tests pin against the
+	// real TriggersHandler (import boundaries forbid mounting the real
+	// handler in-process here).
+	var createdName, createdPrompt string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/triggers"):
+			var fields map[string]json.RawMessage
+			_ = json.NewDecoder(r.Body).Decode(&fields)
+			if _, wrapped := fields["trigger"]; wrapped {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"Key: 'CreateTriggerRequest.Name' Error:Field validation for 'Name' failed on the 'required' tag"}`))
+				return
+			}
+			_ = json.Unmarshal(fields["name"], &createdName)
+			_ = json.Unmarshal(fields["prompt"], &createdPrompt)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"11111111-1111-1111-1111-111111111111"}`))
+		case strings.HasSuffix(r.URL.Path, "/fires"):
+			_, _ = w.Write([]byte(`{"fires":[{"status":"delivered"}]}`))
+		}
+	}))
+	defer api.Close()
+	setupRenameWorkspaceEnv(t, api)
+
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"trigger_create", map[string]any{"trigger": map[string]any{"name": "cron", "prompt": "ship it"}}},
+		{"trigger_fires", map[string]any{"id": "11111111-1111-1111-1111-111111111111"}},
+	} {
+		params, _ := json.Marshal(map[string]any{"name": call.name, "arguments": call.args})
+		req := mcpRequest{JSONRPC: "2.0", ID: 42, Method: "tools/call", Params: params}
+		body, _ := json.Marshal(req)
+		w := httptest.NewRecorder()
+		r := mcpAuthedRequest(body)
+		mcpHandler(mcpTestPassword)(w, r)
+
+		var resp mcpResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), "%s", call.name)
+		result := resp.Result.(map[string]any)
+		assert.Nil(t, result["isError"], "%s must succeed: %v", call.name, result)
+	}
+
+	assert.Equal(t, "cron", createdName, "unwrapped flat body reached the delegated bind")
+	assert.Equal(t, "ship it", createdPrompt)
+}
+
+// Every advertised tool must be dispatchable: table over tools/list,
+// each name probed through the real dispatcher. Catches the
+// advertised-but-uncallable class (a tool added to tools/list and the
+// executor but missing from the dispatcher's case list).
+func TestMCPHandler_EveryAdvertisedToolDispatches(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	tools := resp.Result.(map[string]any)["tools"].([]any)
+	require.NotEmpty(t, tools)
+
+	// Valid auth, empty args: every tool must get PAST the dispatcher
+	// (its own arg validation may error — but never "unknown tool").
+	for _, tool := range tools {
+		name := tool.(map[string]any)["name"].(string)
+		_, err := callMCPTool(context.Background(), mcpTestPassword, name, map[string]any{})
+		if err == nil {
+			continue
+		}
+		assert.NotContains(t, err.Error(), "unknown tool", "%s is advertised in tools/list but not dispatchable", name)
+	}
+}
+
+// L1: rotate through the full JSON-RPC surface — the rotated secret
+// must reach the tool response.
+func TestMCPHandler_RotateWebhookSecretFullStack(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"webhookSecret":"whs_l1","webhookUrl":"/api/v1/hooks/11111111-1111-1111-1111-111111111111"}`))
+	}))
+	defer api.Close()
+	setupRenameWorkspaceEnv(t, api)
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "trigger_rotate_webhook_secret",
+		"arguments": map[string]any{"id": "11111111-1111-1111-1111-111111111111"},
+	})
+	req := mcpRequest{JSONRPC: "2.0", ID: 77, Method: "tools/call", Params: params}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	rr := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, rr)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	assert.Nil(t, result["isError"], "%v", result)
+	content := result["content"].([]any)
+	assert.Contains(t, content[0].(map[string]any)["text"], `"webhookSecret":"whs_l1"`)
 }

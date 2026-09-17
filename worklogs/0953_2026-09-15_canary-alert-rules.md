@@ -99,7 +99,7 @@ None. Local env: promtool 3.4.1 + helm 3.22 installed to `/tmp/opencode/bin` (he
 - `helm/values.yaml` (canary comment rewrite)
 - `helm/MONITORING-OPERATIONAL.md` (new section)
 - `COORDINATE.md` (claim row)
-- `worklogs/NNNN_2026-09-15_canary-alert-rules.md` (new)
+- `worklogs/0953_2026-09-15_canary-alert-rules.md` (new)
 
 ---
 

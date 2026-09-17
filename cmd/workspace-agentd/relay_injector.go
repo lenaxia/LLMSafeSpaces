@@ -3,8 +3,8 @@
 
 package main
 
-// relay_injector.go implements the two-phase relay config injection for the
-// self-hosted InferenceRelay fleet (Epic 42).
+// relay injector: relay config injection for the self-hosted
+// InferenceRelay fleet (Epic 42), with bounded re-arm (#910 / US-72.0).
 //
 // After opencode boots with its default config (Phase 1), this module:
 //   1. Checks whether the user has a personal opencode API key — if yes, skips
@@ -22,9 +22,12 @@ package main
 //   5. Kills the opencode process — the agentd supervisor restarts it and
 //      opencode reads the merged config on boot.
 //
-// The injection is gated by a one-shot flag so it runs exactly once per pod
-// lifetime. On subsequent opencode restarts (crash recovery), agentd does NOT
-// overwrite the config.
+// The injection runs once in the boot window; on a terminal fetch failure
+// the SAME attempt re-arms on the generalized bounded-backoff loop
+// (rearm_loop.go) for the rest of the pod's lifetime — the 2026-08-16
+// incident class (workspace 946a442f: one dead boot window permanently
+// stranded the relay-only default) now recovers without pod recreation.
+// Once applied, HasRelay() short-circuits every later cycle.
 //
 // Bypass condition:
 //   If auth.json contains an "opencode" entry with key != "public", the user
@@ -83,12 +86,33 @@ func relayURLHost(rawURL string) string {
 
 // relayFreeModelsState tracks the injector's terminal fetch state for
 // this agent generation (#901 G8): 0 = not attempted/unknown, 1 = ok,
-// 2 = degraded (deadline exhausted — free-tier routing unavailable until
-// the next agent restart). Surfaced in /v1/statusz.
+// 2 = degraded (terminal fetch failure — free-tier routing unavailable
+// until a re-arm cycle applies, bounded by the 5m→30m backoff; #910).
+// Surfaced in /v1/statusz.
 var relayFreeModelsState atomic.Int32
 
 // RelayFreeModelsState reports the injector state (0 unknown, 1 ok, 2 degraded).
 func RelayFreeModelsState() int32 { return relayFreeModelsState.Load() }
+
+// Injector outcome strings — the boot-window ticks of
+// llmsafespaces_relay_injector_total AND the per-cycle ticks of the
+// re-arm loop's llmsafespaces_rearm_outcome_total share this taxonomy so
+// the two views of the same state machine stay comparable.
+const (
+	relayOutcomeUnhealthyTimeout   = "unhealthy_timeout"
+	relayOutcomeSkippedPersonalKey = "skipped_personal_key"
+	relayOutcomeFetchFailed        = "fetch_failed"
+	relayOutcomeNoFreeModels       = "no_free_models"
+	relayOutcomeConfigWriteFailed  = "config_write_failed"
+	relayOutcomeAuthWriteFailed    = "auth_write_failed"
+	relayOutcomeSuccess            = "success"
+	relayOutcomeSuccessNoRestart   = "success_no_restart"
+	// relayOutcomeWriterNil is the defensive nil-wiring guard (cannot
+	// happen in production — ensureBootAgentConfig always constructs
+	// the writer); non-retryable: a missing writer does not appear by
+	// retrying.
+	relayOutcomeWriterNil = "writer_nil"
+)
 
 var relayInjectorOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "llmsafespaces_relay_injector_total",
@@ -179,7 +203,7 @@ func fetchFreeModels(ctx context.Context, baseURL, password string) ([]opencode.
 			} `json:"models"`
 		} `json:"all"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4*1024*1024)).Decode(&providerResp); err != nil {
+	if err := decodeStrict(io.LimitReader(resp.Body, 4*1024*1024), &providerResp); err != nil {
 		return nil, fmt.Errorf("decode /provider: %w", err)
 	}
 
@@ -301,18 +325,56 @@ type relayInjectorConfig struct {
 	// (both errors and empty catalog). Zero → defaultFreeModelFetchRetryDelay.
 	FetchRetryDelay time.Duration
 	// FetchDeadline bounds the total time spent retrying the free-model
-	// fetch. Zero → defaultFreeModelFetchDeadline.
+	// fetch (per attempt — boot window and each re-arm cycle alike).
+	// Zero → defaultFreeModelFetchDeadline.
 	FetchDeadline time.Duration
+	// FetchFreeModels, when non-nil, overrides the free-model fetch
+	// (test seam). The real HTTP transport aborts the round trip with
+	// the ctx error the moment ctx dies, so a completed fetch against
+	// an already-dead ctx — the exact shutdown-window shape the
+	// post-fetch guard exists for — cannot be produced deterministically
+	// through a real server (measured: the transport delivers the
+	// response past a dead ctx only via a scheduling race). The seam
+	// lets a test cancel mid-fetch and still return a healthy catalog.
+	FetchFreeModels func(ctx context.Context, baseURL, password string) ([]opencode.RelayModel, error)
+	// Busy, when non-nil, gates re-arm cycles on session busyness (the
+	// tracker via trackerHasBusyOrUnknown): no attempt — no fetch, no
+	// apply, no restart — while any session is busy (#910: no mid-turn
+	// SSE drops).
+	Busy func() bool
+	// RestartDeferred, when non-nil, gates re-arm cycles on outstanding
+	// deferred restarts (anyRestartDeferred): a re-arm attempt must not
+	// stack a restart behind a deferred kill (#910's named constraint —
+	// the ≤restartIdleCheckInterval window between the last busy→idle
+	// transition and the deferred restart firing). Checked at TWO
+	// checkpoints: cycle entry (the loop's gate) AND immediately before
+	// the attempt's own restart trigger (a deferral can appear during
+	// the attempt's ≤FetchDeadline window — the pre-kill check skips
+	// the relay kill entirely; the outstanding deferred restart reads
+	// the config the attempt just wrote).
+	RestartDeferred func() bool
+	// RearmMinDelay/RearmMaxDelay bound the re-arm backoff after a
+	// terminal boot-window failure. Zero → 5m/30m (#910).
+	RearmMinDelay time.Duration
+	RearmMaxDelay time.Duration
 }
 
 const (
 	defaultFreeModelFetchRetryDelay = 5 * time.Second
 	defaultFreeModelFetchDeadline   = 30 * time.Second
+
+	// relayBootHealthWait bounds the boot window's wait for opencode to
+	// become healthy before the first attempt. Re-arm cycles pass 0 —
+	// mid-pod-life they probe once and let an unhealthy opencode report
+	// as a retryable outcome instead of blocking.
+	relayBootHealthWait = 5 * time.Minute
 )
 
 // startRelayInjector starts a background goroutine that waits for opencode to
-// be healthy, then applies the relay config (Phase 2 injection). It runs at
-// most once per pod lifetime.
+// be healthy, then applies the relay config (Phase 2 injection). The boot
+// window runs once; on a terminal fetch failure the attempt re-arms on the
+// generalized bounded-backoff loop (rearm_loop.go) instead of degrading for
+// the rest of the pod's lifetime (#910).
 //
 // If INFERENCE_RELAY_BASEURL is not set or the user has a personal opencode
 // API key, the goroutine exits without making any changes.
@@ -344,159 +406,232 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 	// test code that reassigns the package-level log variable.
 	lg := log
 	go func() {
-		// Wait up to 5 minutes for opencode to be healthy.
-		deadline := time.Now().Add(5 * time.Minute)
-		for time.Now().Before(deadline) {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			if cfg.HealthCheck() {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(2 * time.Second):
-			}
+		res := cfg.attempt(ctx, lg, relayBootHealthWait)
+		if res.outcome != rearmOutcomeCanceled {
+			relayInjectorOutcomes.WithLabelValues(res.outcome).Inc()
 		}
-		if !cfg.HealthCheck() {
-			lg.Warn("relay injector: opencode did not become healthy in time, skipping relay config")
-			relayInjectorOutcomes.WithLabelValues("unhealthy_timeout").Inc()
-			relayFreeModelsState.Store(2)
+		if res.applied || !res.retryable || ctx.Err() != nil {
 			return
 		}
-
-		// Check whether to skip relay.
-		if skip, reason := shouldSkipRelay(cfg.AuthJSONPath); skip {
-			lg.Info("relay injector: skipping relay injection", zap.String("reason", reason))
-			relayInjectorOutcomes.WithLabelValues("skipped_personal_key").Inc()
-			return
-		}
-		if cfg.AgentConfigWriter == nil {
-			lg.Warn("relay injector: ConfigWriter is nil, skipping relay injection")
-			return
-		}
-
-		// Fetch the live free model list from the running opencode. Retry for
-		// up to FetchDeadline on BOTH empty catalogs and transient errors —
-		// the catalog race (injector runs before opencode's provider catalog
-		// is initialized, ~16s after startup) AND boot-time network
-		// transients (e.g. "decode /provider: unexpected EOF" while
-		// models.dev is unreachable) previously skipped relay injection
-		// permanently, leaving free-tier sessions routing direct-to-Zen
-		// until the pod was recreated.
-		retryDelay := cfg.FetchRetryDelay
-		if retryDelay <= 0 {
-			retryDelay = defaultFreeModelFetchRetryDelay
-		}
-		fetchDeadline := time.Now().Add(cfg.FetchDeadline)
-		if cfg.FetchDeadline <= 0 {
-			fetchDeadline = time.Now().Add(defaultFreeModelFetchDeadline)
-		}
-		effectiveDeadline := time.Until(fetchDeadline)
-		var models []opencode.RelayModel
-		for {
-			var fetchErr error
-			models, fetchErr = fetchFreeModels(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
-			if fetchErr != nil {
-				if time.Now().After(fetchDeadline) {
-					// #901 G8: terminal for this generation — one-time
-					// Warn + state surfaced in statusz + alert (fetch_failed
-					// counter) so the degraded state is visible instead of
-					// silence.
-					lg.Warn("relay injector: free models UNAVAILABLE for this agent generation - free-tier routing degraded until next agent restart",
-						zap.Error(fetchErr),
-						zap.Duration("deadline", effectiveDeadline))
-					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
-					relayFreeModelsState.Store(2)
-					return
-				}
-				lg.Warn("relay injector: transient error fetching free models, retrying",
-					zap.Error(fetchErr),
-					zap.Duration("retryIn", retryDelay))
-			} else if len(models) > 0 {
-				break
-			}
-			// Catalog-empty terminal — ONLY for a clean fetch with an
-			// empty catalog (#906 F3: fetch ERRORS are fetch_failed, fired
-			// in the fetchErr branch above; without this guard a final-
-			// iteration error could tick both outcomes and conflate the
-			// two failure modes the counter exists to distinguish).
-			if fetchErr == nil && time.Now().After(fetchDeadline) {
-				lg.Warn("relay injector: no free opencode models found after deadline, skipping relay config")
-				relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
-				relayFreeModelsState.Store(2)
-				return
-			}
-			if fetchErr == nil {
-				lg.Info("relay injector: no free models yet (catalog still initializing), retrying")
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(retryDelay):
-			}
-		}
-		lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
-
-		// Build and write the relay config via the AgentConfigWriter
-		// seam. Apply merges the relay provider block into the
-		// existing config (providers + model) and writes atomically
-		// (temp + rename). The opencode adapter owns the deep-merge
-		// semantics, the opencode-relay provider block shape, and the
-		// disabled_providers entry — none of those leak through the
-		// agent.AgentConfigWriter interface.
-		restartRequired, err := cfg.AgentConfigWriter.Apply(agent.AgentConfigInput{
-			Relay: &agent.RelayState{
-				URL:    cfg.RelayURL,
-				Models: relayModelsToAgent(models),
+		lg.Warn("relay injector: terminal boot failure — entering bounded re-arm",
+			zap.String("outcome", res.outcome),
+			zap.Duration("firstRetryIn", cfg.rearmMinDelay()))
+		startRearmLoop(ctx, rearmLoopConfig{
+			Loop: rearmLoopRelayInjector,
+			Applied: func() bool {
+				return cfg.AgentConfigWriter != nil && cfg.AgentConfigWriter.HasRelay()
 			},
+			Busy:            cfg.Busy,
+			RestartDeferred: cfg.RestartDeferred,
+			Attempt: func(attemptCtx context.Context) rearmAttemptResult {
+				return cfg.attempt(attemptCtx, lg, 0)
+			},
+			MinDelay: cfg.RearmMinDelay,
+			MaxDelay: cfg.RearmMaxDelay,
 		})
-		if err != nil {
-			lg.Warn("relay injector: failed to write agent config", zap.Error(err))
-			relayInjectorOutcomes.WithLabelValues("config_write_failed").Inc()
-			relayFreeModelsState.Store(2)
-			return
-		}
-		// restartRequired is always true for the opencode adapter
-		// (no hot reload). The branch documents the seam contract —
-		// a future agent that hot-reloads returns false and the
-		// kill+restart is correctly skipped.
-		if !restartRequired {
-			lg.Info("relay injector: agent reports no restart required; skipping kill")
-			relayInjectorOutcomes.WithLabelValues("success_no_restart").Inc()
-			relayFreeModelsState.Store(1)
-			return
-		}
-		lg.Info("relay injector: wrote relay config",
-			zap.String("path", cfg.AgentConfigPath),
-			zap.Int("models", len(models)),
-			zap.String("relayHost", relayURLHost(cfg.RelayURL)))
-
-		// Update auth.json with the opencode-relay entry.
-		if err := updateAuthJSONForRelay(cfg.AuthJSONPath); err != nil {
-			lg.Warn("relay injector: failed to update auth.json", zap.Error(err))
-			relayInjectorOutcomes.WithLabelValues("auth_write_failed").Inc()
-			relayFreeModelsState.Store(2)
-			return
-		}
-		lg.Info("relay injector: updated auth.json with opencode-relay entry")
-
-		// Kill opencode — the supervisor restarts it and reads the new config.
-		// The relay state is already stored in the ConfigWriter (set above
-		// via SetRelay), so the secrets apply pipeline's Rebuild() will preserve it.
-		//
-		// Metric note: "success" counts config APPLICATIONS (relay block
-		// written + auth.json updated). The actual process restart may be
-		// deferred (unbounded while sessions progress; interrupt-first
-		// force path once every busy session stalls) by the
-		// session-aware kill decision
-		// while sessions are busy — the config takes effect at that restart.
-		cfg.KillOpenCode()
-		relayInjectorOutcomes.WithLabelValues("success").Inc()
-		relayFreeModelsState.Store(1)
-		lg.Info("relay injector: triggered opencode restart to apply relay config")
 	}()
+}
+
+func (cfg relayInjectorConfig) rearmMinDelay() time.Duration {
+	if cfg.RearmMinDelay > 0 {
+		return cfg.RearmMinDelay
+	}
+	return defaultRearmMinDelay
+}
+
+// attempt runs ONE full injection attempt: health gate → personal-key
+// bypass → bounded fetch loop → config apply → auth entry → restart
+// trigger. It is the shared body of the boot window (healthWait = the
+// 5-minute boot bound) and every re-arm cycle (healthWait = 0: probe
+// once; mid-pod-life an unhealthy opencode is a retryable outcome, not a
+// 5-minute block). The caller owns metric ticks and the re-arm decision —
+// the attempt only reports.
+func (cfg relayInjectorConfig) attempt(ctx context.Context, lg *zap.Logger, healthWait time.Duration) rearmAttemptResult {
+	// Wait for opencode to be healthy (bounded by healthWait).
+	deadline := time.Now().Add(healthWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+		default:
+		}
+		if cfg.HealthCheck() {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+		case <-time.After(2 * time.Second):
+		}
+	}
+	if !cfg.HealthCheck() {
+		lg.Warn("relay injector: opencode not healthy, skipping relay config this attempt")
+		relayFreeModelsState.Store(2)
+		return rearmAttemptResult{outcome: relayOutcomeUnhealthyTimeout, retryable: true}
+	}
+
+	// Check whether to skip relay.
+	if skip, reason := shouldSkipRelay(cfg.AuthJSONPath); skip {
+		lg.Info("relay injector: skipping relay injection", zap.String("reason", reason))
+		return rearmAttemptResult{outcome: relayOutcomeSkippedPersonalKey}
+	}
+	if cfg.AgentConfigWriter == nil {
+		lg.Warn("relay injector: ConfigWriter is nil, skipping relay injection")
+		return rearmAttemptResult{outcome: relayOutcomeWriterNil}
+	}
+
+	// Fetch the live free model list from the running opencode. Retry for
+	// up to FetchDeadline on BOTH empty catalogs and transient errors —
+	// the catalog race (injector runs before opencode's provider catalog
+	// is initialized, ~16s after startup) AND boot-time network
+	// transients (e.g. "decode /provider: unexpected EOF" while
+	// models.dev is unreachable). Each re-arm cycle runs this same
+	// bounded loop once (#910).
+	retryDelay := cfg.FetchRetryDelay
+	if retryDelay <= 0 {
+		retryDelay = defaultFreeModelFetchRetryDelay
+	}
+	fetchDeadline := time.Now().Add(cfg.FetchDeadline)
+	if cfg.FetchDeadline <= 0 {
+		fetchDeadline = time.Now().Add(defaultFreeModelFetchDeadline)
+	}
+	effectiveDeadline := time.Until(fetchDeadline)
+	fetch := fetchFreeModels
+	if cfg.FetchFreeModels != nil {
+		fetch = cfg.FetchFreeModels
+	}
+	var models []opencode.RelayModel
+	for {
+		var fetchErr error
+		models, fetchErr = fetch(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
+		if fetchErr != nil {
+			if time.Now().After(fetchDeadline) {
+				// #901 G8: terminal for this attempt — loud Warn +
+				// state surfaced in statusz + fetch_failed tick so the
+				// degraded state is visible instead of silence. The
+				// re-arm loop owns recovery from here (#910): bounded
+				// backoff, not a pod-lifetime sentence.
+				lg.Warn("relay injector: free models UNAVAILABLE this attempt - free-tier routing degraded, re-arm scheduled",
+					zap.Error(fetchErr),
+					zap.Duration("deadline", effectiveDeadline))
+				relayFreeModelsState.Store(2)
+				return rearmAttemptResult{outcome: relayOutcomeFetchFailed, retryable: true}
+			}
+			lg.Warn("relay injector: transient error fetching free models, retrying",
+				zap.Error(fetchErr),
+				zap.Duration("retryIn", retryDelay))
+		} else if len(models) > 0 {
+			break
+		}
+		// Catalog-empty terminal — ONLY for a clean fetch with an
+		// empty catalog (#906 F3: fetch ERRORS are fetch_failed, fired
+		// in the fetchErr branch above; without this guard a final-
+		// iteration error could tick both outcomes and conflate the
+		// two failure modes the counter exists to distinguish).
+		if fetchErr == nil && time.Now().After(fetchDeadline) {
+			lg.Warn("relay injector: no free opencode models found after deadline, skipping relay config this attempt")
+			relayFreeModelsState.Store(2)
+			return rearmAttemptResult{outcome: relayOutcomeNoFreeModels, retryable: true}
+		}
+		if fetchErr == nil {
+			lg.Info("relay injector: no free models yet (catalog still initializing), retrying")
+		}
+		select {
+		case <-ctx.Done():
+			return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+		case <-time.After(retryDelay):
+		}
+	}
+	lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
+
+	// Shutdown-window guard: ctx may have died during the fetch (the
+	// fetch loop only re-checks between retries). Do not write config
+	// or trigger a restart while the pod is going down — the next
+	// agentd generation re-runs the injector from scratch.
+	if ctx.Err() != nil {
+		return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+	}
+
+	// Build and write the relay config via the AgentConfigWriter
+	// seam. Apply merges the relay provider block into the
+	// existing config (providers + model) and writes atomically
+	// (temp + rename). The opencode adapter owns the deep-merge
+	// semantics, the opencode-relay provider block shape, and the
+	// disabled_providers entry — none of those leak through the
+	// agent.AgentConfigWriter interface.
+	restartRequired, err := cfg.AgentConfigWriter.Apply(agent.AgentConfigInput{
+		Relay: &agent.RelayState{
+			URL:    cfg.RelayURL,
+			Models: relayModelsToAgent(models),
+		},
+	})
+	if err != nil {
+		lg.Warn("relay injector: failed to write agent config", zap.Error(err))
+		relayFreeModelsState.Store(2)
+		return rearmAttemptResult{outcome: relayOutcomeConfigWriteFailed, retryable: true}
+	}
+	// restartRequired is always true for the opencode adapter
+	// (no hot reload). The branch documents the seam contract —
+	// a future agent that hot-reloads returns false and the
+	// kill+restart is correctly skipped.
+	if !restartRequired {
+		lg.Info("relay injector: agent reports no restart required; skipping kill")
+		relayFreeModelsState.Store(1)
+		return rearmAttemptResult{outcome: relayOutcomeSuccessNoRestart, applied: true}
+	}
+	lg.Info("relay injector: wrote relay config",
+		zap.String("path", cfg.AgentConfigPath),
+		zap.Int("models", len(models)),
+		zap.String("relayHost", relayURLHost(cfg.RelayURL)))
+
+	// Update auth.json with the opencode-relay entry. Non-retryable:
+	// Apply already set the writer's relay state, so a re-arm cycle
+	// would disarm via the HasRelay() short-circuit without ever
+	// retrying the auth write — retryable would buy one guaranteed
+	// wasted cycle and a misleading tick pair. Terminal for this
+	// generation, same as the one-shot injector; loud via the warn +
+	// degraded state.
+	if err := updateAuthJSONForRelay(cfg.AuthJSONPath); err != nil {
+		lg.Warn("relay injector: failed to update auth.json", zap.Error(err))
+		relayFreeModelsState.Store(2)
+		return rearmAttemptResult{outcome: relayOutcomeAuthWriteFailed}
+	}
+	lg.Info("relay injector: updated auth.json with opencode-relay entry")
+
+	// Second shutdown-window guard: the auth write is the last step
+	// before the restart trigger.
+	if ctx.Err() != nil {
+		return rearmAttemptResult{outcome: rearmOutcomeCanceled}
+	}
+
+	// Kill opencode — the supervisor restarts it and reads the new config.
+	// The relay state is already stored in the ConfigWriter (set above
+	// via SetRelay), so the secrets apply pipeline's Rebuild() will preserve it.
+	//
+	// Stacking guard (re-checked HERE, not just at cycle entry): if a
+	// session-aware deferred restart became outstanding while this
+	// attempt was fetching/writing (up to FetchDeadline of exposure),
+	// skip our own kill — the outstanding deferred restart will restart
+	// opencode at the idle transition and read the config we just
+	// wrote. Firing our kill anyway would stack a second deferred
+	// restart behind it (both firing on the same idle transition).
+	// Residual TOCTOU between this check and the kill decision's own
+	// defer spawn is microscopic and bounded the same way.
+	if cfg.RestartDeferred != nil && cfg.RestartDeferred() {
+		lg.Info("relay injector: deferred restart outstanding — skipping relay kill; the deferred restart will apply the new config",
+			zap.String("path", cfg.AgentConfigPath))
+		relayFreeModelsState.Store(1)
+		return rearmAttemptResult{outcome: relayOutcomeSuccess, applied: true}
+	}
+	//
+	// Metric note: "success" counts config APPLICATIONS (relay block
+	// written + auth.json updated). The actual process restart may be
+	// deferred (unbounded while sessions progress; interrupt-first
+	// force path once every busy session stalls) by the
+	// session-aware kill decision
+	// while sessions are busy — the config takes effect at that restart.
+	cfg.KillOpenCode()
+	relayFreeModelsState.Store(1)
+	lg.Info("relay injector: triggered opencode restart to apply relay config")
+	return rearmAttemptResult{outcome: relayOutcomeSuccess, applied: true}
 }

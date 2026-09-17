@@ -31,7 +31,7 @@ tests:
               component: agentd
             exp_annotations:
               summary: "Relay injector free-model fetch exhausted"
-              description: "The relay injector gave up fetching free models for this agent generation — free-tier model routing is unavailable until the next agent restart. Check opencode /provider health."
+              description: "The relay injector's boot-window free-model fetch terminally failed — free-tier model routing is degraded and the injector has entered its bounded re-arm loop (retrying every 5–30m; #910). Recovery is automatic once the relay router/catalog answers: watch llmsafespaces_rearm_outcome_total{loop=\"relay_injector\"} for a success tick. If re-arm failures persist for the pod's whole life, check opencode /provider health and the relay router."
 
   - interval: 1m
     input_series:
@@ -46,7 +46,7 @@ tests:
               component: agentd
             exp_annotations:
               summary: "Relay injector free-model fetch exhausted"
-              description: "The relay injector gave up fetching free models for this agent generation — free-tier model routing is unavailable until the next agent restart. Check opencode /provider health."
+              description: "The relay injector's boot-window free-model fetch terminally failed — free-tier model routing is degraded and the injector has entered its bounded re-arm loop (retrying every 5–30m; #910). Recovery is automatic once the relay router/catalog answers: watch llmsafespaces_rearm_outcome_total{loop=\"relay_injector\"} for a success tick. If re-arm failures persist for the pod's whole life, check opencode /provider health and the relay router."
 
   # ── US-69.12 session-state alerts (design 0055 R5/S4) ─────────────────
   # Seq stall WITH pending ledgered work → fires (the starvation signal;

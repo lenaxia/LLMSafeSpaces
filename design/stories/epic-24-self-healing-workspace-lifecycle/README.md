@@ -1,5 +1,14 @@
 # Epic 24: Self-Healing Workspace Lifecycle
 
+> **#760 amendment (2026-09-16):** the SafeMode machinery prescribed by
+> this epic (entry triggers, condition, metrics funnel, US-24.13 safe-mode
+> pod) was retired before the pod side was ever built — it was a
+> write-only signal. Escalation is now the derived `RecoveryExhausted`
+> condition + warning Event + `WorkspaceRecoveryExhaustedTotal` counter
+> with per-class thresholds (Infrastructure=10, Resource/Process=6,
+> Configuration=3). See `docs/architecture/lifecycle.md`. This README is
+> design history.
+
 **Status:** Planning
 **Created:** 2026-06-01
 **Priority:** Critical
@@ -195,6 +204,13 @@ type RecoveryPolicy struct {
     StabilityReset   time.Duration // how long healthy before counter resets
     SafeModeAfter    int           // enter safe mode after this many failures (0 = never)
 }
+
+// #760 (2026-09-16): SafeModeAfter and this whole SafeMode contract were
+// RETIRED. The live policy table replaces SafeModeAfter with
+// ExhaustionAfter (Infrastructure=10, Resource/Process=6,
+// Configuration=3) — a derived RecoveryExhausted condition + Event +
+// counter, no mode, no gate. See docs/architecture/lifecycle.md
+// ("Recovery exhaustion"). The snippets below are design history.
 
 var recoveryPolicies = map[FailureClass]RecoveryPolicy{
     FailureClassInfrastructure: {

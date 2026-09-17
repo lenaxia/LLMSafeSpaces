@@ -189,3 +189,31 @@ describe("QuestionPrompt", () => {
     });
   });
 });
+
+// #1365 regression set: clickability on surviving instances.
+describe("QuestionPrompt clickability (#1365)", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("re-enables submit after a SUCCESSFUL reply on a surviving instance", async () => {
+    const onResolved = vi.fn(); // removal misses; component stays mounted
+    render(<QuestionPrompt workspaceId="ws-1" request={singleQuestion} onResolved={onResolved} />);
+    fireEvent.click(screen.getByRole("button", { name: "Go" })); // select an option first
+    const submit = screen.getByRole("button", { name: "Submit answers" });
+    fireEvent.click(submit);
+    await waitFor(() => expect(mockReply).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(mockReply).toHaveBeenCalledTimes(2));
+  });
+
+  it("renders the error AND re-enables when questionReply rejects", async () => {
+    mockReply.mockRejectedValueOnce(new Error("nope"));
+    const onResolved = vi.fn();
+    render(<QuestionPrompt workspaceId="ws-1" request={singleQuestion} onResolved={onResolved} />);
+    fireEvent.click(screen.getByRole("button", { name: "Go" }));
+    const submit = screen.getByRole("button", { name: "Submit answers" });
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.getByText(/nope/i)).toBeInTheDocument());
+    expect(submit).not.toBeDisabled();
+  });
+});

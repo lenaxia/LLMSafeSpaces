@@ -93,13 +93,13 @@ RUN set -eux; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1; \
     esac; \
     GH_TARBALL="gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"; \
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_TARBALL}" \
         -o /tmp/gh.tar.gz; \
 # G9: Verify the gh CLI checksum. GitHub publishes a consolidated
 # checksums.txt per release (not per-asset .sha256). We download it,
 # extract the hash for our specific tarball, and compare.
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" \
         -o /tmp/gh_checksums.txt; \
     EXPECTED_HASH="$(grep "  ${GH_TARBALL}$" /tmp/gh_checksums.txt | cut -d' ' -f1)"; \
@@ -130,7 +130,7 @@ RUN set -eux; \
         arm64) MISE_ARCH=arm64 ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${MISE_ARCH}.tar.gz" \
         -o /tmp/mise.tar.gz; \
     tar -xzf /tmp/mise.tar.gz -C /tmp/; \
@@ -167,10 +167,10 @@ RUN set -eux; \
     EXPECTED_FPR="FB5DB77FD5C118B80511ADA8A6310ACC4672475C"; \
     ACTUAL_FPR="$(gpg --batch --with-colons --fingerprint aws-cli@amazon.com | awk -F: '/^fpr:/ {print $10; exit}')"; \
     [ "${ACTUAL_FPR}" = "${EXPECTED_FPR}" ] || { echo "FATAL: AWS CLI key fingerprint mismatch (got ${ACTUAL_FPR})" >&2; exit 1; }; \
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${AWSCLI_VERSION}.zip" \
         -o /tmp/awscliv2.zip; \
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${AWSCLI_VERSION}.zip.sig" \
         -o /tmp/awscliv2.zip.sig; \
     gpg --batch --verify /tmp/awscliv2.zip.sig /tmp/awscliv2.zip; \

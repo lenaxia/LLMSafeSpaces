@@ -4,20 +4,30 @@
 package chart_test
 
 // appVersion drift guard (2026-08-15 review of the floating-tag-default
-// PR): the chart's appVersion is the fallback tag for the base workspace
-// RuntimeEnvironment (runtimeEnvironments.base.image.tag | default
-// .Chart.AppVersion), and therefore the image new workspaces launch when
-// no operator pin and no instance setting exist. It drifted before —
-// bumped in lockstep with releases through v0.8.13, then v0.9.0 bumped
-// only chart version, leaving appVersion stale — which would have made
-// the tier-4 default launch a base image predating the current release.
+// PR): the chart's appVersion is the fallback tag for the platform
+// component images (api/controller/frontend/mcp — `tag | default
+// .Chart.AppVersion`), so a stale appVersion makes a default deploy run
+// mixed platform versions. It drifted before — bumped in lockstep with
+// releases through v0.8.13, then v0.9.0 bumped only chart version,
+// leaving appVersion stale.
+//
+// The base workspace RuntimeEnvironment used to fall back to appVersion
+// too. Design 0053 D5/S4 (2026-08-28) moved the base to content-
+// versioned CalVer `YYYY.MM.x` seeded from
+// api/internal/imagefactory/catalog.seed.yaml, OFF the platform release
+// train — from then on `base:<appVersion>` never existed, and the
+// fallback was a fleet-wide ImagePullBackOff waiting to happen
+// (incident 2026-09-02, issue #1237). The chart now mirrors the seed
+// row's tag (repolint's version-scheme check enforces the mirror) and
+// the template fails on an empty tag instead of substituting appVersion.
 //
 // Releases are cut by tag push, and the release notes are the CHANGELOG
 // section matching the tag — CHANGELOG.md is the source of truth for
 // "what is the latest released version". These tests assert:
 //
 //   - Chart.yaml appVersion == latest versioned section in CHANGELOG.md
-//   - the default-rendered base RuntimeEnvironment image tag == the same
+//   - the default-rendered base RuntimeEnvironment image tag == the
+//     catalog seed's default row version (CalVer), and never appVersion
 //
 // The CHANGELOG assertion runs unconditionally; the render test follows
 // this package's helm-on-PATH skip convention.
@@ -62,21 +72,64 @@ func readChartAppVersion(t *testing.T) string {
 	return m[1]
 }
 
+// seedDefaultBaseVersion returns the version of the catalog seed's
+// isDefault base row — the single source for the base image tag
+// (base-image.yml publishes exactly this value; see design 0053 D5/S4).
+// Scanned line-wise for the same no-YAML-lib reason as above; the seed
+// row shape (`- name:`, indented `version:`, `isDefault: true`) is
+// stable.
+func seedDefaultBaseVersion(t *testing.T) string {
+	t.Helper()
+	seedPath := filepath.Join(filepath.Dir(chartDir(t)), "api", "internal", "imagefactory", "catalog.seed.yaml")
+	data, err := os.ReadFile(seedPath)
+	require.NoError(t, err, "catalog.seed.yaml must be readable for the base-tag guard")
+
+	nameRe := regexp.MustCompile(`^  - name: (\S+)\s*$`)
+	fieldRe := regexp.MustCompile(`^    (version|isDefault): (.*)$`)
+	var version string
+	isDefault := false
+	reset := func() {
+		version, isDefault = "", false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if nameRe.MatchString(line) {
+			reset()
+			continue
+		}
+		if m := fieldRe.FindStringSubmatch(line); m != nil {
+			switch m[1] {
+			case "version":
+				version = strings.Trim(strings.TrimSpace(m[2]), `"`)
+			case "isDefault":
+				isDefault = strings.TrimSpace(m[2]) == "true"
+			}
+			if version != "" && isDefault {
+				return version
+			}
+		}
+	}
+	require.NotEmpty(t, version, "catalog.seed.yaml must have an isDefault base row with a version")
+	return version
+}
+
 func TestChart_AppVersion_MatchesLatestRelease(t *testing.T) {
 	want := latestReleasedVersion(t)
 	got := readChartAppVersion(t)
 	assert.Equal(t, want, got,
 		"helm/Chart.yaml appVersion drifted from the latest release (%s).\n"+
-			"appVersion is the fallback tag for the base workspace RuntimeEnvironment;\n"+
-			"a stale value makes default deployments launch an old base image.\n"+
+			"appVersion is the fallback tag for the platform component images\n"+
+			"(api/controller/frontend/mcp); a stale value makes default deployments\n"+
+			"run mixed platform versions.\n"+
 			"Bump appVersion in the same release commit that adds the CHANGELOG section.", want)
 }
 
-func TestChart_DefaultBaseRTE_TagMatchesLatestRelease(t *testing.T) {
+func TestChart_DefaultBaseRTE_TagIsSeedCalVer(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
 	}
-	want := latestReleasedVersion(t)
+	want := seedDefaultBaseVersion(t)
+	require.Regexp(t, `^\d{4}\.(0[1-9]|1[0-2])\.\d+$`, want,
+		"the catalog seed default row must be CalVer YYYY.MM.x (design 0053 D5/S4)")
 	docs := helmTemplate(t, "") // default values — the drift scenario
 	for _, d := range docs {
 		if d["kind"] != "RuntimeEnvironment" {
@@ -85,8 +138,11 @@ func TestChart_DefaultBaseRTE_TagMatchesLatestRelease(t *testing.T) {
 		spec, _ := d["spec"].(map[string]any)
 		img, _ := spec["image"].(string)
 		assert.True(t, strings.HasSuffix(img, ":"+want),
-			"default-rendered base RuntimeEnvironment image must be pinned to the latest release;\n"+
-				"got %q, want suffix :%s (appVersion drift?)", img, want)
+			"default-rendered base RuntimeEnvironment image must mirror the catalog seed row;\n"+
+				"got %q, want suffix :%s (values.yaml/seed drift?)", img, want)
+		assert.NotEqual(t, img, "ghcr.io/lenaxia/llmsafespaces/base:"+readChartAppVersion(t),
+			"the base must never resolve to the platform appVersion — design 0053 D5/S4 moved it\n"+
+				"off the release train (incident 2026-09-02, issue #1237)")
 		return
 	}
 	t.Fatal("no RuntimeEnvironment CR rendered")

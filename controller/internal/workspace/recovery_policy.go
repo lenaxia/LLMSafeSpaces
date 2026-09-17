@@ -2,8 +2,10 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -17,11 +19,17 @@ type RecoveryPolicy struct {
 	BackoffMax     time.Duration
 	BackoffFactor  int
 	StabilityReset time.Duration
-	SafeModeAfter  int32
+	// ExhaustionAfter is the ConsecutiveFailures count at which the
+	// recovery episode is flagged exhausted (#760): a RecoveryExhausted
+	// condition, a warning Event, and a
+	// WorkspaceRecoveryExhaustedTotal increment fire once, on the
+	// crossing. Retries are NOT halted — backoff continues, and
+	// spec.suspend=true (#699) is the operator's halt.
+	ExhaustionAfter int32
 }
 
 var recoveryPolicies = map[FailureClass]RecoveryPolicy{
-	FailureClassInfrastructure: {0, 5 * time.Second, 2 * time.Minute, 2, 2 * time.Minute, 0},
+	FailureClassInfrastructure: {0, 5 * time.Second, 2 * time.Minute, 2, 2 * time.Minute, 10},
 	FailureClassResource:       {0, 10 * time.Second, 5 * time.Minute, 2, 2 * time.Minute, 6},
 	FailureClassProcess:        {0, 10 * time.Second, 5 * time.Minute, 2, 2 * time.Minute, 6},
 	FailureClassConfiguration:  {0, 30 * time.Second, 5 * time.Minute, 2, 2 * time.Minute, 3},
@@ -45,8 +53,22 @@ func calculateBackoff(failures int32, policy RecoveryPolicy) time.Duration {
 	return backoff
 }
 
-func shouldEnterSafeMode(consecutiveFailures int32, policy RecoveryPolicy) bool {
-	return policy.SafeModeAfter > 0 && consecutiveFailures >= policy.SafeModeAfter
+// recoveryExhausted derives the exhaustion signal from the consecutive
+// failure count. Every class carries a non-zero threshold (#760): the
+// Infrastructure class previously had none and its failure loops (the
+// Longhorn silent-loop case) produced no operator signal at all.
+func recoveryExhausted(consecutiveFailures int32, policy RecoveryPolicy) bool {
+	return policy.ExhaustionAfter > 0 && consecutiveFailures >= policy.ExhaustionAfter
+}
+
+// recoveryExhaustedMessage is the single source for the condition and
+// Event text. It states what the signal means (retries continue), the
+// count/class that crossed, and the operator remedy (#699 Spec.Suspend
+// — the per-workspace halt for a loop that will not self-heal).
+func recoveryExhaustedMessage(failures int32, class FailureClass) string {
+	return fmt.Sprintf(
+		"recovery exhausted after %d consecutive %s failures; backoff retries continue — suspend the workspace (spec.suspend=true) to halt the loop and investigate",
+		failures, class)
 }
 
 func timeUntilNextRetry(ws *v1.Workspace) time.Duration {
@@ -58,6 +80,19 @@ func timeUntilNextRetry(ws *v1.Workspace) time.Duration {
 		return 0
 	}
 	return remaining
+}
+
+// clearRecoveryState returns the workspace to a fresh-start recovery
+// episode. Every path that zeroes ConsecutiveFailures MUST go through
+// this: the RecoveryExhausted condition is derived from the counters,
+// so it must never outlive them (#760).
+func clearRecoveryState(ws *v1.Workspace) {
+	ws.Status.ConsecutiveFailures = 0
+	ws.Status.LastFailureClass = ""
+	ws.Status.LastFailureAt = nil
+	ws.Status.NextRetryAt = nil
+	ws.Status.LastStableAt = nil
+	removeCondition(ws, v1.WorkspaceConditionRecoveryExhausted)
 }
 
 // maybeResetConsecutiveFailures clears recovery state after the workspace
@@ -81,16 +116,34 @@ func maybeResetConsecutiveFailures(ws *v1.Workspace) {
 	}
 	elapsed := time.Since(ws.Status.LastStableAt.Time)
 	if elapsed >= stabilityResetWindow {
-		ws.Status.ConsecutiveFailures = 0
-		ws.Status.LastFailureClass = ""
-		ws.Status.LastFailureAt = nil
-		ws.Status.NextRetryAt = nil
-		ws.Status.LastStableAt = nil
+		clearRecoveryState(ws)
 		ws.Status.ControllerRestartCount = 0
 	}
 }
 
 const stabilityResetWindow = 2 * time.Minute
+
+// markRecoveryExhausted derives the RecoveryExhausted condition from the
+// post-increment ConsecutiveFailures (#760). It returns true only on an
+// episode's not-exhausted → exhausted crossing — the single transition
+// that emits the Event and increments the counter — so a workspace
+// already flagged exhausted never double-fires while the episode
+// continues (including across a mid-episode failure-class switch: the
+// counters are class-agnostic, so the crossed condition stands until
+// the recovery state resets).
+func (r *WorkspaceReconciler) markRecoveryExhausted(ws *v1.Workspace, class FailureClass, policy RecoveryPolicy) bool {
+	if !recoveryExhausted(ws.Status.ConsecutiveFailures, policy) {
+		return false
+	}
+	for i := range ws.Status.Conditions {
+		if ws.Status.Conditions[i].Type == v1.WorkspaceConditionRecoveryExhausted {
+			return false
+		}
+	}
+	r.setCondition(ws, v1.WorkspaceConditionRecoveryExhausted, "True",
+		v1.ReasonRecoveryExhausted, recoveryExhaustedMessage(ws.Status.ConsecutiveFailures, class))
+	return true
+}
 
 func (r *WorkspaceReconciler) enterRecovery(ctx context.Context, ws *v1.Workspace, class FailureClass) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -100,7 +153,6 @@ func (r *WorkspaceReconciler) enterRecovery(ctx context.Context, ws *v1.Workspac
 	// enterRecovery call (a workspace can fail N times before recovering,
 	// but only Dec's once on success — so N Inc's would drift by N-1).
 	wasInRecovery := ws.Status.ConsecutiveFailures > 0
-	wasInSafeMode := ws.Status.SafeMode
 
 	ws.Status.ConsecutiveFailures++
 	ws.Status.LastFailureClass = string(class)
@@ -108,14 +160,7 @@ func (r *WorkspaceReconciler) enterRecovery(ctx context.Context, ws *v1.Workspac
 	ws.Status.LastFailureAt = &now
 
 	policy := recoveryPolicies[class]
-
-	if shouldEnterSafeMode(ws.Status.ConsecutiveFailures, policy) {
-		ws.Status.SafeMode = true
-		r.setCondition(ws, v1.WorkspaceConditionType("SafeMode"), "True", "RecoveryExhausted",
-			"Entering safe mode after repeated failures")
-		logger.Info("Entering safe mode",
-			"failures", ws.Status.ConsecutiveFailures, "class", class)
-	}
+	exhaustionCrossed := r.markRecoveryExhausted(ws, class, policy)
 
 	backoff := calculateBackoff(ws.Status.ConsecutiveFailures, policy)
 	if backoff > 0 {
@@ -129,13 +174,21 @@ func (r *WorkspaceReconciler) enterRecovery(ctx context.Context, ws *v1.Workspac
 
 	logger.Info("Recovery initiated",
 		"class", class, "failures", ws.Status.ConsecutiveFailures,
-		"backoff", backoff, "safeMode", ws.Status.SafeMode)
+		"backoff", backoff, "recoveryExhausted", exhaustionCrossed)
 
 	result := ctrl.Result{RequeueAfter: backoff}
 	if err := r.Status().Update(ctx, ws); err != nil {
 		recordStatusUpdateConflictOnError("enterRecovery", err)
 		return result, err
 	}
-	recordRecoveryMetrics(ws, class, wasInRecovery, wasInSafeMode)
+	if exhaustionCrossed {
+		logger.Info("Recovery exhausted",
+			"failures", ws.Status.ConsecutiveFailures, "class", class)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(ws, corev1.EventTypeWarning, string(v1.ReasonRecoveryExhausted),
+				"%s", recoveryExhaustedMessage(ws.Status.ConsecutiveFailures, class))
+		}
+	}
+	recordRecoveryMetrics(ws, class, wasInRecovery, exhaustionCrossed)
 	return result, nil
 }

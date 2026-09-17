@@ -7,7 +7,44 @@ import { workspacesApi } from "../api/workspaces";
 import type { InputRequest } from "../api/types";
 
 /** Provider-local extension: the envelope's whileAway marker rides the stored object (D3). */
-type StoredInputRequest = InputRequest & { whileAway?: boolean };
+// #1365: receivedAt is stamped on store entry — the whileAway staleness
+// bound in ChatPage keys off it, never off the (absent) event stream.
+type StoredInputRequest = InputRequest & { whileAway?: boolean; receivedAt?: number };
+
+// useWhileAwayStalenessSweep (#1365) drives the whileAway staleness bound
+// with a TIMER while any whileAway pill is pending. The fold-sync effect's
+// deps do not tick on a healthy-but-quiet stream (heartbeats mutate
+// nothing it watches), so a lazy in-effect check never fires — the frozen-
+// tab scenario the bound exists for. Dropping uses dropPendingAction (no
+// tombstone: a genuine re-presentation may re-add later).
+export const WHILE_AWAY_STALE_MS = 10 * 60 * 1000;
+
+export function useWhileAwayStalenessSweep(
+  questions: Array<StoredInputRequest>,
+  permissions: Array<StoredInputRequest>,
+  drop: (requestId: string) => void,
+  staleMs: number = WHILE_AWAY_STALE_MS,
+): void {
+  const has = questions.some((q) => q.whileAway) || permissions.some((p) => p.whileAway);
+  useEffect(() => {
+    if (!has) return;
+    const sweep = () => {
+      const now = Date.now();
+      for (const q of questions) {
+        if (q.whileAway && now - (q.receivedAt ?? 0) > staleMs) drop(q.id);
+      }
+      for (const p of permissions) {
+        if (p.whileAway && now - (p.receivedAt ?? 0) > staleMs) drop(p.id);
+      }
+    };
+    sweep();
+    const t = setInterval(sweep, Math.min(60_000, staleMs));
+    return () => clearInterval(t);
+    // questions/permissions/drop in deps: re-arms on list changes; the
+    // interval is what guarantees time passes even when nothing changes.
+  }, [has, staleMs, questions, permissions, drop]);
+}
+
 
 interface SessionActivityContextValue {
   isSessionBusy: (sessionId: string) => boolean;
@@ -827,7 +864,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingQuestionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);
@@ -838,7 +875,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     setPendingPermissionContent((prev) => {
       if (prev.has(req.id)) return prev;
       const next = new Map(prev);
-      next.set(req.id, req);
+      next.set(req.id, { ...req, receivedAt: Date.now() });
       return next;
     });
   }, [addPendingAction]);

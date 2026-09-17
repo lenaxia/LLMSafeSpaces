@@ -22,12 +22,19 @@ var (
 		prometheus.GaugeOpts{Name: "llmsafespaces_workspaces_running", Help: "Workspaces currently in Active phase"},
 		[]string{"runtime", "security_level"},
 	)
-	WorkspacesFailedTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspaces_failed_total", Help: "Workspaces entering SafeMode, by failure class (incremented once per episode on the failure that trips SafeMode)"},
-		[]string{"reason"},
-	)
 	WorkspaceRecoveryAttemptsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_recovery_attempts_total", Help: "Recovery state-machine entries by failure class"},
+		[]string{"failure_class"},
+	)
+	// #760: recovery episodes that crossed the per-class exhaustion
+	// threshold. Incremented once per episode (on the crossing), labeled
+	// by failure class — the alertable replacement for the retired
+	// SafeMode funnel. A non-zero rate means a workspace is stuck in a
+	// failure loop that will not self-heal (the Longhorn silent-loop
+	// class, which previously produced no signal at all);
+	// spec.suspend=true halts it.
+	WorkspaceRecoveryExhaustedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_recovery_exhausted_total", Help: "Recovery episodes that crossed the per-class consecutive-failure exhaustion threshold (#760), by failure class. Once per episode, on the crossing"},
 		[]string{"failure_class"},
 	)
 	WorkspaceRecoverySuccessTotal = prometheus.NewCounterVec(
@@ -42,19 +49,25 @@ var (
 		},
 		[]string{"failure_class"},
 	)
-	WorkspaceSafeModeActive = prometheus.NewGauge(
-		prometheus.GaugeOpts{Name: "llmsafespaces_workspace_safe_mode_active", Help: "Count of workspaces currently in SafeMode (aggregate, no per-workspace label per F18)"},
-	)
-	WorkspaceSafeModeEntriesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspace_safe_mode_entries_total", Help: "Total entries into SafeMode, labeled by trigger"},
-		[]string{"trigger"},
-	)
-	WorkspaceSafeModeExitsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspace_safe_mode_exits_total", Help: "Total exits from SafeMode, labeled by method"},
-		[]string{"method"},
-	)
 	WorkspaceControllerRestartsTotal = prometheus.NewCounter(
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_controller_restarts_total", Help: "Pod restarts initiated by the controller's health-check loop (distinct from user-initiated RestartGeneration bumps)"},
+	)
+	// #761 session-aware drain before controller-initiated pod deletion.
+	// Deferred: a deletion was postponed because sessions were busy (once
+	// per drain window, not per poll). Forced: deletion proceeded despite
+	// busy sessions stalled beyond the drain bound. FailedOpen: statusz was
+	// unreachable, so busy state was unknown and deletion proceeded.
+	WorkspaceDrainDeferredTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_deferred_total", Help: "Pod-deletion drains deferred behind busy sessions (#761), by deletion path. Once per drain window"},
+		[]string{"reason"},
+	)
+	WorkspaceDrainForcedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_forced_total", Help: "Pod deletions forced despite busy sessions stalled beyond the drain bound (#761), by deletion path"},
+		[]string{"reason"},
+	)
+	WorkspaceDrainFailedOpenTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_drain_failed_open_total", Help: "Pod-deletion drains that failed open because agentd statusz was unreachable (#761), by deletion path"},
+		[]string{"reason"},
 	)
 	WorkspacesInRecovery = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "llmsafespaces_workspaces_in_recovery", Help: "Workspaces currently in recovery backoff (ConsecutiveFailures > 0 and not Active)"},
@@ -97,6 +110,19 @@ var (
 			Help: "Optimistic-lock conflicts on workspace status updates, labeled by the calling site",
 		},
 		[]string{"site"},
+	)
+	// #772: workspace terminations where the explicit PVC delete failed and
+	// cleanup was delegated to owner-reference garbage collection, by API
+	// error reason (conflict = likely stuck CSI finalizer, forbidden = RBAC
+	// denial). Non-zero rate means physical volume reclaim may lag or stay
+	// blocked even though the Workspace object completed termination —
+	// alert-worthy, not page-on-any.
+	WorkspacePVCCleanupDelegatedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_workspace_pvc_cleanup_delegated_total",
+			Help: "Workspace terminations where the PVC delete failed and cleanup was delegated to owner-reference garbage collection, by API error reason",
+		},
+		[]string{"reason"},
 	)
 	WorkspaceCreateDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{Name: "llmsafespaces_workspace_create_duration_seconds", Help: "Wall-clock time from creation request to Active", Buckets: startupBuckets},
@@ -209,16 +235,18 @@ func collectors() []prometheus.Collector {
 // AllCollectors returns all registered metric collectors. Exported for testing.
 func AllCollectors() []prometheus.Collector {
 	return []prometheus.Collector{
-		WorkspacesCreatedTotal, WorkspacesDeletedTotal, WorkspacesRunning, WorkspacesFailedTotal,
+		WorkspacesCreatedTotal, WorkspacesDeletedTotal, WorkspacesRunning,
 		WorkspaceRecoveryAttemptsTotal, WorkspaceRecoverySuccessTotal,
+		WorkspaceRecoveryExhaustedTotal,
 		WorkspaceRecoveryBackoffDurationSeconds,
-		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
+		WorkspaceDrainDeferredTotal, WorkspaceDrainForcedTotal, WorkspaceDrainFailedOpenTotal,
 		WorkspaceAgentdVerifyFailuresTotal,
 		WorkspaceOpencodeVerifyFailuresTotal,
 		WorkspacePlatformBootFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,
+		WorkspacePVCCleanupDelegatedTotal,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,
 		WorkspaceInitContainerDurationSeconds,
 		ReconciliationDurationSeconds, ReconciliationErrorsTotal,

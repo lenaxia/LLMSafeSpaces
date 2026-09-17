@@ -242,13 +242,9 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 	assert.Equal(s.T(), []byte("encrypted-secret-blob"), got.SecretCipher)
 	assert.Equal(s.T(), []string{"192.168.1.0/24", "10.0.0.0/8"}, []string(got.AllowedIPs))
 
-	// Get by webhook ID (the public path used by POST /hooks/:id).
-	got2, err := s.store.GetWebhook(ctx, hookID)
-	require.NoError(s.T(), err)
-	assert.Equal(s.T(), triggerID, got2.TriggerID)
-
-	// Not found.
-	_, err = s.store.GetWebhook(ctx, uuid.New().String())
+	// Not found: an unknown trigger id resolves nothing (the public path
+	// POST /hooks/:webhookId carries the TRIGGER id).
+	_, err = s.store.GetWebhookByTriggerID(ctx, uuid.New().String())
 	assert.ErrorIs(s.T(), err, ErrNotFound)
 }
 
