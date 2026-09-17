@@ -236,15 +236,109 @@ func TestPodAutomation_DelegatedRotate(t *testing.T) {
 	assert.Equal(t, []byte("enc:"+resp.WebhookSecret), hook.SecretCipher, "store carries the encrypted new secret")
 }
 
-func TestForceTriggerWorkspace(t *testing.T) {
-	out, err := forceTriggerWorkspace([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
+func TestScopeTriggerCreateBody(t *testing.T) {
+	out, wfID, err := scopeTriggerCreateBody([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
 	require.NoError(t, err)
+	assert.Empty(t, wfID, "routine body carries no workflow target")
 	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "DTO spelling forced to this pod's workspace")
 	assert.NotContains(t, string(out), "ws-OTHER")
 	assert.Contains(t, string(out), `"prompt":"p"`, "sibling fields preserved verbatim")
 
-	_, err = forceTriggerWorkspace([]byte(`not json`), "ws-1")
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":"wf-9","prompt":"p","workspaceID":"ws-CALLER","workspaceId":"ws-CALLER2"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID, "workflow target surfaced for the scoping check")
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`, "workflow target preserved")
+	assert.NotContains(t, string(out), `"workspaceId"`, "routine stamp must NOT ride along — the DTO rejects both together")
+	assert.NotContains(t, string(out), `"workspaceID"`, "resolver spelling must not leak into the delegated body (case-insensitive DTO bind)")
+	assert.NotContains(t, string(out), "ws-CALLER", "caller-supplied workspace values never survive")
+
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-9","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID, "snake_case alias normalized onto the DTO spelling")
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
+	assert.NotContains(t, string(out), "workflow_id", "alias removed — one canonical spelling on the wire")
+
+	// Case-variant workspace key: the decoder binds DTO fields
+	// case-insensitively and map keys marshal sorted, so a surviving
+	// variant would override the forced stamp (review finding on #1412).
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workspaceid":"ws-EVIL","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant caller key stripped, stamp survives")
+	assert.NotContains(t, string(out), "ws-EVIL")
+
+	// Contradictory alias duplicates are an explicit error, not a pick.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-1","workflowId":"wf-2"}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different values")
+
+	// Non-string workflowId surfaces its specific error.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":123}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflowId must be a string")
+
+	// A JSON null body unmarshals to a nil map WITHOUT error — the guard
+	// must reject it before the stamp writes into the nil map (panic
+	// class; round-2 review finding).
+	_, _, err = scopeTriggerCreateBody([]byte(`null`), "ws-1")
+	require.Error(t, err, "null body must not reach the stamp (nil-map panic)")
+	assert.Contains(t, err.Error(), "trigger body must be a JSON object")
+
+	// An empty object is a valid (if minimal) body — no panic, stamped.
+	out, _, err = scopeTriggerCreateBody([]byte(`{}`), "ws-1")
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
+
+	_, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
 	assert.Error(t, err, "non-object bodies are an explicit error, not a silent skip")
+}
+
+// Workflow-targeted (DAG) triggers through the automation surface: the
+// workflow must exist, belong to the resolved owner, and target THIS
+// pod's workspace — the DAG equivalent of the routine workspace stamp.
+func TestPodAutomation_WorkflowTargetedTriggerCreate(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	other := "ws-OTHER"
+	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"dag-trigger",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-ok"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	require.Len(t, trigStore.triggers, 1)
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID, "trigger targets the workflow")
+		assert.Equal(t, "wf-ok", *row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID, "workflow-targeted trigger carries no routine workspace")
+	}
+
+	// Workflow targeting another workspace: the pod-scoping rule.
+	w = doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"cross-ws",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-away"
+	}`)
+	assert.Equal(t, http.StatusForbidden, w.Code, "cross-workspace DAG scheduling rejected")
+	assert.Contains(t, w.Body.String(), "does not target this workspace")
+
+	// Unknown workflow: distinguishable from the scoping rejection.
+	w = doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"ghost",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-nope"
+	}`)
+	assert.Equal(t, http.StatusNotFound, w.Code, "missing workflow reported explicitly")
 }
 
 func TestPodAutomation_LoggerWired(t *testing.T) {

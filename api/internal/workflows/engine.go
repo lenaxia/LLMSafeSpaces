@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sapiTypes "k8s.io/apimachinery/pkg/types"
@@ -511,9 +510,34 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
 	if err != nil {
+		// A deleted (or otherwise unresolvable) workflow must surface as
+		// a failed fire — not a silent tick (#1412). Without this the
+		// trigger spins forever with no audit trail and auto-disable
+		// never engages.
+		errMsg, _ := json.Marshal(map[string]string{"error": "workflow not found", "workflowId": workflowID})
+		completed := now
+		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "cron",
+			InputEnvelope: envelopeJSON, ActionType: "run_workflow",
+			ActionResult: errMsg, Status: "failed", FiredAt: now, CompletedAt: &completed,
+		})
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
+		logger.Error(err, "scheduler: workflow target not found", "triggerId", trigger.ID, "workflowId", workflowID)
 		return
 	}
 
+	// NOTE (#1425): trigger-fired runs deliberately bypass the workflow's
+	// inputSchema. The run input is the system envelope
+	// ({source:{type,id}, received_at}), which can never satisfy a
+	// user-authored schema with required non-envelope properties —
+	// validating here would break every DAG trigger against schemas that
+	// manual runs legitimately require. The cost is that trigger-fired
+	// runs of schema-bearing workflows surface late node failures
+	// instead of early validation; resolving that (trigger-carried static
+	// input, envelope mapping, or create-time wiring checks) is tracked
+	// in #1425.
 	inputForRun := json.RawMessage(envelopeJSON)
 
 	fireID := uuid.New().String()
@@ -832,23 +856,22 @@ func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	var cfg types.CronSourceConfig
 	_ = json.Unmarshal(trigger.SourceConfig, &cfg)
-	if cfg.Expr == "" {
-		return now.Add(time.Hour)
+	next, err := wf.NextCronFire(&cfg, now)
+	if err == nil {
+		return next
 	}
-
-	loc := time.UTC
+	// Legacy rows written before write-time validation (#1411): an
+	// unloadable tz falls back to UTC (the historical engine behavior —
+	// invalid tz was never meant to pause the trigger); an unparseable
+	// expr retries in an hour rather than spin every tick.
 	if cfg.TZ != "" {
-		if parsed, err := time.LoadLocation(cfg.TZ); err == nil {
-			loc = parsed
+		utcCfg := cfg
+		utcCfg.TZ = ""
+		if next, err := wf.NextCronFire(&utcCfg, now); err == nil {
+			return next
 		}
 	}
-
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	sched, err := parser.Parse(cfg.Expr)
-	if err != nil {
-		return now.Add(time.Hour)
-	}
-	return sched.Next(now.In(loc)).UTC()
+	return now.Add(time.Hour)
 }
 
 func topoSort(spec *wf.Spec) []int {
