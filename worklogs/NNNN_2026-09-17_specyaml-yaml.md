@@ -28,3 +28,5 @@ PR → review; ships with the batch release; the comprehensive live test authors
 
 ## Files Modified
 - api/internal/handlers/workflows.go (+tests)
+- sdks/openapi.yaml, docs/api/mcp.md (contract surfaces)
+- cmd/workspace-agentd/mcp_server.go (+pin), pkg/mcp/workflow_tools.go (+pin)
