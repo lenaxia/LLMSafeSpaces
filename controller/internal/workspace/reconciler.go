@@ -85,8 +85,9 @@ type WorkspaceReconciler struct {
 	APIPublicURL string
 	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
 	// digest-addressed image volume into every workspace pod and the
-	// entrypoint verifies the binary's sha256 against the per-arch pins
-	// before exec. All three fields must be set together (validated at
+	// supervisor self-verifies the binary's sha256 against the per-arch
+	// pins before exec (design 0053 — the deleted entrypoint's check
+	// moved into the binary). All three fields must be set together (validated at
 	// startup by validateAgentdDeliveryConfig). Empty AgentdImage = legacy
 	// mode (binary baked into runtimes/base; no volume, mount, or env).
 	AgentdImage             string

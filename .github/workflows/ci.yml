@@ -1593,9 +1593,9 @@ jobs:
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
-          # The chart pins the BINARY sha256 (the entrypoint verifies the
-          # file, not the image). Tag the arch image, copy the binary out
-          # of a stopped container, hash it.
+          # The chart pins the BINARY sha256 (the supervisor self-verifies
+          # the file, not the image — design 0053). Tag the arch image,
+          # copy the binary out of a stopped container, hash it.
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }}-${arch}"
           # outputs.digest already carries the sha256: prefix — reference
@@ -1784,9 +1784,9 @@ jobs:
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
-          # The chart pins the BINARY sha256 (the entrypoint verifies the
-          # file, not the image). Tag the arch image, copy the binary out
-          # of a stopped container, hash it.
+          # The chart pins the BINARY sha256 (the supervisor self-verifies
+          # the file, not the image — design 0053). Tag the arch image,
+          # copy the binary out of a stopped container, hash it.
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${{ github.sha }}-${arch}"
           # outputs.digest already carries the sha256: prefix — reference
