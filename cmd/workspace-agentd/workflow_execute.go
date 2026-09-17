@@ -361,10 +361,12 @@ func renderTemplateValue(v any) string {
 	return string(b)
 }
 
-// templateRefPattern matches {{.anything}} non-greedily — the charset
-// lives in the MATCHER (exact key hit first, then path walk), not the
-// pattern.
-var templateRefPattern = regexp.MustCompile(`(?s)\{\{\.(.+?)\}\}`)
+// templateRefPattern matches {{.anything}} non-greedily, per-line (NO
+// (?s): DOTALL let an unclosed {{.x swallow the NEXT valid ref across
+// a newline, suppressing its render. Multi-line keys are not
+// addressable anyway. The charset lives in the MATCHER (exact key hit
+// first, then path walk), not the pattern.
+var templateRefPattern = regexp.MustCompile(`\{\{\.(.+?)\}\}`)
 
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData

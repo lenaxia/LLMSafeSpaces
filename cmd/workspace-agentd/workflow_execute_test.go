@@ -504,3 +504,13 @@ func TestRenderTemplateRefs_InertControlShapedValues(t *testing.T) {
 		t.Fatalf("control-shaped value must pass through verbatim, got %q", got)
 	}
 }
+
+// DOTALL regression pin: an unclosed {{.x before a newline must not
+// swallow the NEXT valid ref — it renders independently.
+func TestRenderTemplateRefs_UnclosedRefDoesNotSwallow(t *testing.T) {
+	prompt := "x {{.a\nblah {{.b}} y"
+	got := renderTemplateRefs(prompt, map[string]any{"b": "RENDERED"})
+	if !strings.Contains(got, "RENDERED") {
+		t.Fatalf("the valid ref after an unclosed one must render, got %q", got)
+	}
+}
