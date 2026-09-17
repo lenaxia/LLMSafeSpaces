@@ -179,7 +179,7 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
-            --set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s" \
+            --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \
             --wait --timeout 5m
 
       - name: Wait for rollout
@@ -344,6 +344,22 @@ jobs:
           LLM_MODEL: ${{ vars.E2E_LLM_MODEL || 'litellm/glm-4.7' }}
           R1_STREAM_S: 40
         run: bash local/issue-1342-graceful-restart-e2e.sh
+
+      - name: Run automation trigger e2e rows (#1410/#1411/#1412/#1413)
+        # API-only rows for the automation defects the 2026-09-17 live
+        # session proved broken: cron create validation + first-occurrence
+        # slot (R1), reschedule moving nextFireAt immediately (R2), no-op
+        # enable keeping the slot (R3), missing-workflow fires recorded as
+        # failed with failure accounting instead of ticking silently (R4),
+        # and workflow-run input obeying inputSchema (R5). No LLM model —
+        # workflow-targeted triggers point at a nonexistent DAG.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18086
+          R4_WAIT_S: 150
+        run: bash local/issue-1410-1412-automation-e2e.sh
 
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
         # Two-tier-revision acceptance rows: v2 contract feature-detect

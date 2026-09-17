@@ -236,15 +236,109 @@ func TestPodAutomation_DelegatedRotate(t *testing.T) {
 	assert.Equal(t, []byte("enc:"+resp.WebhookSecret), hook.SecretCipher, "store carries the encrypted new secret")
 }
 
-func TestForceTriggerWorkspace(t *testing.T) {
-	out, err := forceTriggerWorkspace([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
+func TestScopeTriggerCreateBody(t *testing.T) {
+	out, wfID, err := scopeTriggerCreateBody([]byte(`{"name":"x","workspaceId":"ws-OTHER","prompt":"p"}`), "ws-1")
 	require.NoError(t, err)
+	assert.Empty(t, wfID, "routine body carries no workflow target")
 	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "DTO spelling forced to this pod's workspace")
 	assert.NotContains(t, string(out), "ws-OTHER")
 	assert.Contains(t, string(out), `"prompt":"p"`, "sibling fields preserved verbatim")
 
-	_, err = forceTriggerWorkspace([]byte(`not json`), "ws-1")
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":"wf-9","prompt":"p","workspaceID":"ws-CALLER","workspaceId":"ws-CALLER2"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID, "workflow target surfaced for the scoping check")
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`, "workflow target preserved")
+	assert.NotContains(t, string(out), `"workspaceId"`, "routine stamp must NOT ride along — the DTO rejects both together")
+	assert.NotContains(t, string(out), `"workspaceID"`, "resolver spelling must not leak into the delegated body (case-insensitive DTO bind)")
+	assert.NotContains(t, string(out), "ws-CALLER", "caller-supplied workspace values never survive")
+
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-9","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID, "snake_case alias normalized onto the DTO spelling")
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
+	assert.NotContains(t, string(out), "workflow_id", "alias removed — one canonical spelling on the wire")
+
+	// Case-variant workspace key: the decoder binds DTO fields
+	// case-insensitively and map keys marshal sorted, so a surviving
+	// variant would override the forced stamp (review finding on #1412).
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workspaceid":"ws-EVIL","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant caller key stripped, stamp survives")
+	assert.NotContains(t, string(out), "ws-EVIL")
+
+	// Contradictory alias duplicates are an explicit error, not a pick.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-1","workflowId":"wf-2"}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different values")
+
+	// Non-string workflowId surfaces its specific error.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":123}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflowId must be a string")
+
+	// A JSON null body unmarshals to a nil map WITHOUT error — the guard
+	// must reject it before the stamp writes into the nil map (panic
+	// class; round-2 review finding).
+	_, _, err = scopeTriggerCreateBody([]byte(`null`), "ws-1")
+	require.Error(t, err, "null body must not reach the stamp (nil-map panic)")
+	assert.Contains(t, err.Error(), "trigger body must be a JSON object")
+
+	// An empty object is a valid (if minimal) body — no panic, stamped.
+	out, _, err = scopeTriggerCreateBody([]byte(`{}`), "ws-1")
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
+
+	_, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
 	assert.Error(t, err, "non-object bodies are an explicit error, not a silent skip")
+}
+
+// Workflow-targeted (DAG) triggers through the automation surface: the
+// workflow must exist, belong to the resolved owner, and target THIS
+// pod's workspace — the DAG equivalent of the routine workspace stamp.
+func TestPodAutomation_WorkflowTargetedTriggerCreate(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	other := "ws-OTHER"
+	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"dag-trigger",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-ok"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	require.Len(t, trigStore.triggers, 1)
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID, "trigger targets the workflow")
+		assert.Equal(t, "wf-ok", *row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID, "workflow-targeted trigger carries no routine workspace")
+	}
+
+	// Workflow targeting another workspace: the pod-scoping rule.
+	w = doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"cross-ws",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-away"
+	}`)
+	assert.Equal(t, http.StatusForbidden, w.Code, "cross-workspace DAG scheduling rejected")
+	assert.Contains(t, w.Body.String(), "does not target this workspace")
+
+	// Unknown workflow: distinguishable from the scoping rejection.
+	w = doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"ghost",
+		"sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},
+		"workflowId":"wf-nope"
+	}`)
+	assert.Equal(t, http.StatusNotFound, w.Code, "missing workflow reported explicitly")
 }
 
 func TestPodAutomation_LoggerWired(t *testing.T) {
@@ -293,4 +387,191 @@ func TestPodAutomation_RotateIsAudited(t *testing.T) {
 	require.Len(t, audit.events, 1, "rotation leaves exactly one audit event")
 	assert.Equal(t, "triggers/user-7/trigger.rotate_webhook_secret/"+id, audit.events[0])
 	assert.NotContains(t, w.Body.String()+fmt.Sprint(audit.events), "whs_", "no secret material leaks into response or audit")
+}
+
+// --- #1426: the scoping rule holds on the update path too ---
+
+func TestScopeTriggerUpdateBody(t *testing.T) {
+	// Unrelated patch: verbatim passthrough.
+	out, wfID, err := scopeTriggerUpdateBody([]byte(`{"enabled":false,"prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.JSONEq(t, `{"enabled":false,"prompt":"p"}`, string(out), "no target keys -> untouched")
+
+	// Workspace retarget attempt: forced to THIS workspace.
+	out, _, err = scopeTriggerUpdateBody([]byte(`{"workspaceid":"ws-OTHER","enabled":true}`), "ws-1")
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant retarget forced to this pod's workspace")
+	assert.NotContains(t, string(out), "ws-OTHER")
+	assert.Contains(t, string(out), `"enabled":true`, "sibling fields ride along")
+
+	// DAG retarget: gated by the caller (workflowId returned), no stamp.
+	out, wfID, err = scopeTriggerUpdateBody([]byte(`{"workflowId":"wf-9","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Equal(t, "wf-9", wfID)
+	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
+	assert.NotContains(t, string(out), `"workspaceId"`)
+
+	// Clearing the DAG target without naming a workspace: becomes a
+	// routine HERE, never a targetless zombie.
+	out, wfID, err = scopeTriggerUpdateBody([]byte(`{"workflowId":""}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.Contains(t, string(out), `"workflowId":""`)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
+
+	// Same guards as create.
+	_, _, err = scopeTriggerUpdateBody([]byte(`null`), "ws-1")
+	require.Error(t, err)
+	_, _, err = scopeTriggerUpdateBody([]byte(`{"workflowId":123}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflowId must be a string")
+}
+
+// The full update chain: a routine trigger created for THIS workspace
+// cannot be retargeted to another workspace via the pod seam.
+func TestPodAutomation_TriggerUpdateCannotRetargetWorkspace(t *testing.T) {
+	r, trigStore, _ := newAutomationRouter(t, automationReviewer(), automationLookup())
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"hostage","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	id := created["id"].(string)
+
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workspaceId":"ws-EVIL","enabled":false}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	row := trigStore.triggers[id]
+	require.NotNil(t, row)
+	require.NotNil(t, row.WorkspaceID)
+	assert.Equal(t, "ws-1", *row.WorkspaceID, "retarget to another workspace silently forced back to this pod's")
+	assert.False(t, row.Enabled, "sibling patch fields still apply")
+}
+
+// The full update chain: DAG retarget is gated on existence + ownership +
+// THIS workspace, exactly like create.
+func TestPodAutomation_TriggerUpdateWorkflowTargetGating(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	other := "ws-OTHER"
+	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"gated","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	id := created["id"].(string)
+
+	// Retarget to a workflow in ANOTHER workspace: rejected.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-away"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "does not target this workspace")
+
+	// Retarget to a nonexistent workflow: rejected.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-nope"}`)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Retarget to THIS workspace's workflow: allowed, stored.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":"wf-ok"}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	row := trigStore.triggers[id]
+	require.NotNil(t, row.WorkflowID)
+	assert.Equal(t, "wf-ok", *row.WorkflowID)
+
+	// Clearing the DAG target lands the routine HERE.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"workflowId":""}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	row = trigStore.triggers[id]
+	assert.Nil(t, row.WorkflowID, "DAG target cleared")
+	require.NotNil(t, row.WorkspaceID, "routine target stamped")
+	assert.Equal(t, "ws-1", *row.WorkspaceID)
+}
+
+// --- #1426 review round 1: the workflow key folds case-insensitively ---
+
+func TestScopeTriggerUpdateBody_CaseVariantWorkflowKey(t *testing.T) {
+	// The decoder binds DTO fields case-insensitively — every case
+	// variant of workflowId must reach the gate, not just the exact
+	// spelling (review-validated bypass: {"WorkflowId": ...} stored a
+	// cross-workspace target with NO gating).
+	for _, body := range []string{
+		`{"WorkflowId":"wf-9"}`,
+		`{"workflowid":"wf-9"}`,
+		`{"WORKFLOWID":"wf-9"}`,
+		`{"WorkflowId":"wf-9","WorkflowID":"wf-9"}`, // agreeable duplicates fold
+	} {
+		_, wfID, err := scopeTriggerUpdateBody([]byte(body), "ws-1")
+		require.NoError(t, err, body)
+		assert.Equal(t, "wf-9", wfID, "variant must be gated: %s", body)
+	}
+
+	// Contradictory case-variant duplicates: explicit 400.
+	_, _, err := scopeTriggerUpdateBody([]byte(`{"workflowId":"wf-1","WorkflowId":"wf-2"}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different values")
+
+	// JSON null is neither set nor clear — refuse.
+	_, _, err = scopeTriggerUpdateBody([]byte(`{"workflowId":null}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `use "" to clear`)
+}
+
+// The demonstrated attack, end to end: a case-variant workflow key must
+// hit the same 403 gate as the canonical spelling.
+func TestPodAutomation_TriggerUpdateCaseVariantWorkflowGated(t *testing.T) {
+	r, _, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	other := "ws-OTHER"
+	wfStore.workflows["wf-away"] = &wf.WorkflowRow{ID: "wf-away", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"variant-bait","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"prompt":"p"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	id := created["id"].(string)
+
+	for _, body := range []string{`{"WorkflowId":"wf-away"}`, `{"workflowid":"wf-away"}`} {
+		w := doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok", body)
+		assert.Equal(t, http.StatusForbidden, w.Code, "case variant must be gated: %s → %s", body, w.Body.String())
+	}
+
+	// null workflowId: explicit 400, never silent preserve-and-stamp.
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok", `{"workflowId":null}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "to clear the target")
+}
+
+// Create with a case-variant workflow key: gated like the canonical
+// spelling (previously the stamp rode along and produced a misleading
+// both-set 400).
+func TestPodAutomation_TriggerCreateCaseVariantWorkflowKey(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	wfStore.workflows["wf-ok"] = &wf.WorkflowRow{ID: "wf-ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"variant-create","sourceType":"cron",
+		"sourceConfig":{"expr":"5 * * * *"},"WorkflowId":"wf-ok"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID)
+		assert.Equal(t, "wf-ok", *row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID, "no routine stamp alongside a gated DAG target")
+	}
 }

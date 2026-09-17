@@ -7,14 +7,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // PodAutomationHandler exposes the owner's trigger + workflow CRUD to
@@ -155,21 +159,148 @@ func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay [
 	fn(c)
 }
 
-// forceTriggerWorkspace rewrites the create body's workspaceId to this
-// pod's workspace (the automation scoping rule). All other fields pass
-// through as raw JSON — no re-formatting, no float64 round-trips.
-// Non-object bodies are an error (the seam always sends an object).
-func forceTriggerWorkspace(replay []byte, workspaceID string) ([]byte, error) {
-	var fields map[string]json.RawMessage
+// normalizeTriggerTargetKeys performs the shared body normalization for
+// the create and update scoping paths: rejects non-object/`null` bodies,
+// folds the workflow target key — the snake_case alias AND every
+// case-variant of workflowId (Go's decoder binds DTO fields
+// case-insensitively, so a "WorkflowId" variant would bind the DTO while
+// escaping this seam's gate entirely) — onto the canonical spelling,
+// rejects contradictory duplicates and JSON null explicitly, and strips
+// EVERY caller-supplied workspace key case-insensitively (map keys
+// marshal in sorted order, so any case variant of workspaceId left in
+// the body would deterministically override a forced stamp). Reports
+// whether any workspace key was present so the update path can
+// distinguish "caller tried to change the target" from an unrelated
+// patch.
+func normalizeTriggerTargetKeys(replay []byte) (fields map[string]json.RawMessage, workflowID string, hasWorkflowKey, hadWorkspaceKey bool, err error) {
 	if err := json.Unmarshal(replay, &fields); err != nil {
-		return nil, err
+		return nil, "", false, false, fmt.Errorf("trigger body must be a JSON object: %w", err)
+	}
+	// A JSON `null` body unmarshals into a nil map WITHOUT error — guard
+	// before any stamp writes into it (nil-map assignment panics, and Gin
+	// recovery would turn it into an opaque 500).
+	if fields == nil {
+		return nil, "", false, false, fmt.Errorf("trigger body must be a JSON object")
+	}
+	// The snake_case alias is forgiveness only — the decoder cannot bind
+	// it, so no escape is possible at that spelling.
+	if alias, ok := fields["workflow_id"]; ok {
+		if _, exists := fields["workflowId"]; exists {
+			var aliasVal, canonicalVal string
+			_ = json.Unmarshal(alias, &aliasVal)
+			_ = json.Unmarshal(fields["workflowId"], &canonicalVal)
+			if aliasVal != canonicalVal {
+				return nil, "", false, false, fmt.Errorf("workflow_id and workflowId both present with different values")
+			}
+		} else {
+			fields["workflowId"] = alias
+		}
+		delete(fields, "workflow_id")
+	}
+	// Fold every case-variant of the DTO spelling onto one canonical key.
+	// Sorted iteration keeps contradiction reporting deterministic.
+	variants := make([]string, 0, 2)
+	for k := range fields {
+		if strings.EqualFold(k, "workflowId") {
+			variants = append(variants, k)
+		}
+	}
+	sort.Strings(variants)
+	if len(variants) > 0 {
+		hasWorkflowKey = true
+		canonical := fields[variants[0]]
+		for _, v := range variants {
+			if string(fields[v]) != string(canonical) {
+				return nil, "", false, false, fmt.Errorf("workflowId specified multiple times with different values")
+			}
+			delete(fields, v)
+		}
+		// JSON null is neither set nor clear: the delegated DTO would bind
+		// it as "absent" (preserve the existing target) while this seam's
+		// update semantics treat "" as clear — refuse rather than guess.
+		if string(canonical) == "null" {
+			return nil, "", false, false, fmt.Errorf(`workflowId must be a string (use "" to clear the target)`)
+		}
+		if uerr := json.Unmarshal(canonical, &workflowID); uerr != nil {
+			return nil, "", false, false, fmt.Errorf("workflowId must be a string")
+		}
+		fields["workflowId"] = canonical
+	}
+	for k := range fields {
+		if strings.EqualFold(k, "workspaceId") {
+			delete(fields, k)
+			hadWorkspaceKey = true
+		}
+	}
+	return fields, workflowID, hasWorkflowKey, hadWorkspaceKey, nil
+}
+
+// scopeTriggerCreateBody applies the automation scoping rule to a trigger
+// create body (#1412). Routine triggers get `workspaceId` force-stamped to
+// this pod's workspace (unchanged behavior). Workflow-targeted triggers
+// (workflowId present — the snake_case workflow_id alias is normalized)
+// pass through WITHOUT the stamp: the create DTO rejects
+// workflowId+workspaceId together, which previously made DAG triggers
+// impossible to create from this surface. The returned workflowID lets the
+// caller enforce that the referenced workflow targets this workspace.
+// All other fields pass through as raw JSON — no re-formatting, no
+// float64 round-trips. Non-object bodies are an error (the seam always
+// sends an object).
+func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
+	fields, workflowID, _, _, err := normalizeTriggerTargetKeys(replay)
+	if err != nil {
+		return nil, "", err
+	}
+	if workflowID != "" {
+		out, err := json.Marshal(fields)
+		return out, workflowID, err
 	}
 	stamped, err := json.Marshal(workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	fields["workspaceId"] = stamped
-	return json.Marshal(fields)
+	out, err := json.Marshal(fields)
+	return out, "", err
+}
+
+// scopeTriggerUpdateBody applies the same scoping rule to a trigger
+// UPDATE patch (#1426 — the rule was create-only, so a caller could
+// retarget a trigger to another workspace or a cross-workflow DAG via the
+// update path):
+//   - a non-empty workflowId (any case-variant spelling, folded onto the
+//     canonical key) passes through for the caller's
+//     existence/ownership/target gating (404/403) — never stamped. A
+//     workspace key riding alongside it is dropped: the workflow target
+//     wins in the engine (fireWorkflowTarget), and the workflow itself is
+//     gated to this workspace, so the dropped value cannot smuggle a
+//     cross-workspace escape;
+//   - any attempt to set workspaceId is forced to THIS pod's workspace;
+//   - clearing workflowId ("") without naming a workspace stamps this
+//     workspace, so the trigger becomes a routine HERE instead of a
+//     targetless zombie (JSON null is rejected — the delegated DTO would
+//     bind it as "absent"/preserve, which contradicts the clear path);
+//   - a patch that touches neither key passes through verbatim.
+func scopeTriggerUpdateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
+	fields, workflowID, hasWorkflowKey, hadWorkspaceKey, err := normalizeTriggerTargetKeys(replay)
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case hasWorkflowKey && workflowID != "":
+		// Target switch to another DAG — caller gates it.
+	case hasWorkflowKey || hadWorkspaceKey:
+		// Clearing the DAG target and/or trying to change the workspace:
+		// the routine target is forced HERE (nil-map guard already passed;
+		// fields is non-nil).
+		stamped, merr := json.Marshal(workspaceID)
+		if merr != nil {
+			return nil, "", merr
+		}
+		fields["workspaceId"] = stamped
+	}
+	out, err := json.Marshal(fields)
+	return out, workflowID, err
 }
 
 // --- Trigger routes -------------------------------------------------------
@@ -180,14 +311,49 @@ func (h *PodAutomationHandler) TriggerList(c *gin.Context) {
 	}
 }
 
+// gateWorkflowTarget enforces the pod-scoping rule for workflow-targeted
+// triggers on both the create and update paths: the workflow must exist,
+// belong to the resolved owner, and target THIS pod's workspace. Writes
+// the auth-failure response itself; returns ok=false.
+func (h *PodAutomationHandler) gateWorkflowTarget(c *gin.Context, owner, ws, workflowID string) bool {
+	wfRow, gerr := h.workflows.GetWorkflowRow(c.Request.Context(), "user", owner, workflowID)
+	if gerr != nil {
+		if errors.Is(gerr, wf.ErrNotFound) {
+			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+			return false
+		}
+		if h.logger != nil {
+			h.logger.Error("automation: workflow lookup failed", gerr, "workflowID", workflowID)
+		}
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workflow lookup failed"})
+		return false
+	}
+	if wfRow.TargetWorkspaceID == nil || *wfRow.TargetWorkspaceID != ws {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "workflow does not target this workspace"})
+		return false
+	}
+	return true
+}
+
+// TriggerCreate delegates trigger creation as the resolved owner. Routine
+// triggers are workspace-stamped; workflow-targeted triggers additionally
+// require the referenced workflow to exist, belong to the owner, and
+// target THIS pod's workspace (the DAG equivalent of the routine scoping
+// rule — a pod must not schedule DAGs that run in other workspaces).
 func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
 	raw, ws, owner, ok := h.resolve(c)
 	if !ok {
 		return
 	}
-	forced, err := forceTriggerWorkspace(raw, ws)
+	forced, workflowID, err := scopeTriggerCreateBody(raw, ws)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
+		// Surface the specific scoping error (non-string workflowId,
+		// contradictory aliases, non-object body) — a generic message
+		// here misleads exactly the agents this surface serves.
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if workflowID != "" && !h.gateWorkflowTarget(c, owner, ws, workflowID) {
 		return
 	}
 	h.delegate(c, owner, forced, h.triggers.UserCreate)
@@ -199,10 +365,27 @@ func (h *PodAutomationHandler) TriggerGet(c *gin.Context) {
 	}
 }
 
+// TriggerUpdate delegates trigger updates as the resolved owner, under
+// the same scoping rule as create (#1426 — the rule was previously
+// create-only, so the update path could retarget a trigger to another
+// workspace or a cross-workspace DAG): workspace changes are forced to
+// THIS pod's workspace, workflow-target changes are gated on the
+// workflow existing, belonging to the owner, and targeting this
+// workspace, and patches touching neither key pass through verbatim.
 func (h *PodAutomationHandler) TriggerUpdate(c *gin.Context) {
-	if raw, _, owner, ok := h.resolve(c); ok {
-		h.delegate(c, owner, raw, h.triggers.UserUpdate)
+	raw, ws, owner, ok := h.resolve(c)
+	if !ok {
+		return
 	}
+	scoped, workflowID, err := scopeTriggerUpdateBody(raw, ws)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if workflowID != "" && !h.gateWorkflowTarget(c, owner, ws, workflowID) {
+		return
+	}
+	h.delegate(c, owner, scoped, h.triggers.UserUpdate)
 }
 
 func (h *PodAutomationHandler) TriggerDelete(c *gin.Context) {

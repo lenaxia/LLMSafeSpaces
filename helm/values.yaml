@@ -297,7 +297,8 @@ controller:
   # #863 agentd overlay delivery. When enabled, workspace pods receive the
   # workspace-agentd binary via a digest-pinned read-only image volume
   # (KEP-4639) instead of the copy baked into runtimes/base, and the
-  # entrypoint verifies its sha256 against the per-arch pins before exec.
+  # supervisor self-verifies its sha256 against the per-arch pins before exec
+  # (design 0053 — the deleted entrypoint's check moved into the binary).
   # Platform agentd fixes then reach every workspace on any pod
   # (re)creation without rebuilding the runtime base.
   #

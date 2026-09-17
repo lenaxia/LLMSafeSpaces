@@ -7,6 +7,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-09-17
+
+### Fixes — workflows
+
+- **specYaml accepts real YAML** (#1418, PR #1428): extractSpecJSON now
+  parses block- or flow-style YAML via yaml.v3 into the JSON shape the
+  validator expects (valid JSON still passes through untouched); exactly
+  one document is required — multi-doc and trailing YAML are rejected
+  rather than silently truncated, and neither-JSON-nor-YAML input fails
+  with a dialect-naming error instead of the old misleading JSON parse
+  message. Create and update paths both covered.
+- **inputSchema write gate requires object-rooted schemas** (#1433, PR
+  #1435): a schema that compiles but roots at string/number/array made
+  every subsequent run 400 ("got string, want object"); the write path
+  now rejects non-object roots with a named error. Explicit JSON null
+  normalizes to schema-less (create writes no schema; update keeps the
+  stored one), and a null/absent stored schema behaves schema-less at
+  run time.
+
+### Fixes — agentd
+
+- **Workflow agent-node harness POST is keyed** (#1327, PR #1436): the
+  execution identity (workflowID/nodeID/runID) now threads API→agentd
+  and keys the transcript POST (`msg_wf_<workflow>_<node>_<run>`) —
+  retries/reruns of the same logical node execution upsert instead of
+  appending duplicate transcript messages (the #1315 duplication class,
+  closed for the outbox path). Routine triggers key on
+  trigger/fire identity the same way.
+
+### Fixes — CI
+
+- **Nightly e2e unblocked** (#1437): the 8+-day nightly failure was a
+  sparse `api.extraEnv[2]` --set against the chart's empty default
+  rendering nulls at indexes 0-1 (template nil-pointer at chart
+  install). The nightly now rides dense index [0]; the US-70 lockstep
+  pin test asserts each workflow's dense layout separately.
+
+### Documentation
+
+- **Design 0059: trigger input mapping** (PR #1434): the merged design
+  for #1425/#1419 — per-trigger `inputFrom` (envelope | body | mapped)
+  plus a static `input` document, create/update wiring guards (V1-V7),
+  opt-in fire-time validation with redacted location-only violation
+  records (recursive 4 KiB cap), and byte-identical legacy defaults.
+  Implementation follows.
+
+## [0.33.0] - 2026-09-17
+
+### Features — secrets
+
+- **US-72.1: StagingProvider envelope (KMS/HPKE) + dynamic staged-key
+  redaction rules** (PR #1407): `pkg/secrets.StagingProvider` implements
+  the design-0058 §4.2 `stg:v1` envelope — wire format
+  `stg:v1:<alg>:<keyID>:<base64(payload)>` with `alg` ∈ {aes-256-gcm,
+  hpke} and the header (version + algorithm + plaintext keyID) bound as
+  AEAD AAD, so an envelope cannot claim an algorithm or key it was not
+  sealed under. KMS mode stores the 32-byte local KEK only KMS-wrapped
+  in `llm-relay-kek` — never plaintext bytes in any artifact. The
+  owner-directed redaction integration (§4.9 addendum) lands in
+  `pkg/redact` as dynamic staged-key rules: redaction (payload hygiene)
+  and staging (credential delivery) remain separate mechanisms meeting
+  at exactly one place — the seal/resolve seam. 1.7k lines incl.
+  dynamic-redaction and staging-provider suites plus benchmarks.
+
+### Fixes — automation (live e2e findings #1410–#1415, PR #1420)
+
+- **Cron triggers fire at the schedule they were given, not stale
+  slots** (#1410): `UpdateTrigger` gained a `NextFireAt` column, and the
+  update handler recomputes the slot the moment `sourceConfig` changes
+  (previously a rescheduled trigger kept firing at the OLD schedule's
+  time until that slot passed). A stale (past) slot is refreshed on
+  disabled→enabled re-enable — transition-guarded so a no-op
+  `enabled:true` never pushes an imminent-but-unclaimed fire.
+- **Create validates schedules and never fires immediately** (#1411):
+  cron exprs are parsed (five-field syntax) and tz validated (IANA) at
+  create/update — 400 on garbage instead of the silent hourly retry
+  loop — and `next_fire_at` initializes to the schedule's first real
+  occurrence instead of `now` (every newly created enabled trigger
+  previously fired ~7s after creation). Shared logic in the new
+  `pkg/workflows/schedule.go`; the engine keeps legacy fallbacks for
+  pre-validation rows.
+- **DAG triggers work from the pod automation surface** (#1412):
+  `workflowId` (camelCase — the snake_case alias is normalized,
+  contradictory duplicates 400) no longer collides with the forced
+  routine stamp; the pod handler gates the target on existence, owner,
+  and targeting THIS pod's workspace (404/403). Firing at a deleted
+  workflow now records a FAILED fire with a workflow-not-found payload
+  and drives the failure counter / auto-disable — previously a silent
+  forever-tick. All workspace/workflow keys fold case-insensitively
+  (the decoder binds DTO fields case-insensitively; exact-spelling
+  strips were bypassable via variants like `workspaceid`).
+- **Workflow runs enforce inputSchema** (#1413): run input is validated
+  against the workflow's `inputSchema` before queueing (400 with schema
+  detail — previously garbage inputs burned node executions and failed
+  deep in the DAG with confusing errors); schemas are compile-checked at
+  workflow create/update. Trigger-fired runs deliberately bypass (the
+  system envelope can never satisfy user schemas) — documented at the
+  site, design options tracked in #1425.
+- **Script failures name their cause** (#1414): script node language is
+  validated at spec time (`python|node`); pre-execution failures keep
+  their real error (`unsupported language: bash`) instead of the
+  swallowed `exit -1: ` with empty stderr; real process exits keep the
+  `exit N: stderr` shape.
+- **Agentd MCP tool descriptions match the contracts** (#1415): the
+  invented node vocabulary (transform/parallel/delay/mcp_call) is
+  replaced by the validated four (script/agent/http/condition) with the
+  script-node `handler(input) -> dict` contract, the `workflowId`
+  spelling, targetWorkspaceId requirements, and no-immediate-fire
+  semantics — content-pinned by drift tests so the class cannot
+  silently return.
+
+### Fixes — automation (pod seam, #1426 via PR #1431)
+
+- **The pod-scoping invariant holds on the update path**: the rule
+  above (a pod schedules work only in ITS workspace) was create-only —
+  `trigger_update` replayed caller `workspaceId`/`workflowId` verbatim,
+  allowing retargets to other workspaces or cross-workspace DAGs.
+  Update patches now scope exactly like create (workspace retargets
+  forced here; workflow retargets gated 404/403, folded
+  case-insensitively — a `WorkflowId` variant previously escaped the
+  gate entirely; clearing a DAG target lands the routine HERE; JSON
+  null is an explicit 400).
+
+### Fixes — platform
+
+- **Epic-71 test flakes** (PR #1408): outbox-verify persistFirst data
+  race fixed plus contended timing windows.
+- **CI: gVisor bundle sidecar tree** (PR #1406): install step stages
+  gvisor_sentry under STRICT policy.
+
+### Testing — automation e2e
+
+- Nightly kind-cluster rows R1–R5 (`local/issue-1410-1412-automation-
+  e2e.sh`): create validation + first-slot, immediate reschedule,
+  no-op-enable slot stability, missing-workflow failed fire with
+  failure accounting, and run-input schema enforcement — API-only and
+  LLM-free (ghost-workflow targets), with structural pins so rows
+  cannot silently drop. Real-PG `UpdateTrigger` next_fire_at
+  persistence row added to the integration suite.
+
 ## [0.32.1] - 2026-09-17
 
 ### Fixes — webhook triggers were unreachable at their advertised URL
