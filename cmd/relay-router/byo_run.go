@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -181,16 +182,27 @@ func runBYO(ctx context.Context) error {
 // The signal→drain WIRING lives here so a test can drive ctx-cancel the
 // way SIGTERM does.
 func serveBYO(ctx context.Context, cfg byoRunConfig, server *byoServer) error {
+	ln, err := net.Listen("tcp", cfg.listenAddr)
+	if err != nil {
+		return fmt.Errorf("byo-router: listen %s: %w", cfg.listenAddr, err)
+	}
+	return serveBYOOn(ctx, cfg, server, ln)
+}
+
+// serveBYOOn serves on the given listener until ctx is canceled, then
+// drains in-flight streams within the grace bound. The listener is
+// injected so the drain wiring is testable against the production path
+// (TestDrainWiringThroughServeBYO).
+func serveBYOOn(ctx context.Context, cfg byoRunConfig, server *byoServer, ln net.Listener) error {
 	httpServer := &http.Server{
-		Addr:              cfg.listenAddr,
 		Handler:           server.handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("byo-router: listening on %s (namespace=%s, retention=%s)", cfg.listenAddr, cfg.namespace, cfg.retention)
-		errCh <- httpServer.ListenAndServe()
+		log.Printf("byo-router: listening on %s (namespace=%s, retention=%s)", ln.Addr(), cfg.namespace, cfg.retention)
+		errCh <- httpServer.Serve(ln)
 	}()
 
 	select {

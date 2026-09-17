@@ -292,6 +292,39 @@ relayOnlyKeyDelivery:
 	}
 }
 
+// TestRelayOnlyKeyDelivery_GuardFailsRender (iteration 5): garbage or
+// negative numeric overrides must FAIL the render (a silent "0" would
+// disable the byte quota), while the legitimate minimum value 1 renders.
+func TestRelayOnlyKeyDelivery_GuardFailsRender(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		value  string
+		wantOK bool
+	}{
+		{"garbage string", `"abc"`, false},
+		{"negative", `-5`, false},
+		{"zero string", `"0"`, false},
+		{"minimum one", `1`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := "relayOnlyKeyDelivery:\n  enabled: true\n  router:\n    quota:\n      requestsPerWindow: " + tc.value + "\n"
+			if tc.wantOK {
+				docs := helmTemplate(t, values)
+				found := false
+				for _, d := range findDocs(t, docs, "Deployment") {
+					if docName(t, d) == "llm-relay-router" {
+						assert.Equal(t, "1", podEnv(t, d)["BYO_QUOTA_REQUESTS"])
+						found = true
+					}
+				}
+				require.True(t, found)
+				return
+			}
+			require.Error(t, helmTemplateErr(t, values), "render must fail for %s", tc.value)
+		})
+	}
+}
+
 func podEnv(t *testing.T, dep map[string]any) map[string]string {
 	t.Helper()
 	spec := dep["spec"].(map[string]any)

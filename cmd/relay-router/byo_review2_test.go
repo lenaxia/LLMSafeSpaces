@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -238,15 +237,14 @@ func TestDrainWiringThroughServeBYO(t *testing.T) {
 	cfg.listenAddr = "127.0.0.1:0"
 	cfg.drainGrace = 5 * time.Second
 	serveErr := make(chan error, 1)
-	addrCh := make(chan string, 1)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
 	go func() {
-		// Probe the ephemeral port serveBYO binds (log-free): serve, then
-		// hand the address over via the server's listener — simplest is to
-		// pre-bind and pass the fd-free listener address via cfg.
-		serveErr <- serveBYOWithListener(ctx, cfg, rig.svc, addrCh)
+		// The PRODUCTION drain path (serveBYOOn is serveBYO's body —
+		// listener injected) — deleting the drain block fails this test.
+		serveErr <- serveBYOOn(ctx, cfg, rig.svc, ln)
 	}()
-
-	addr := <-addrCh
+	addr := ln.Addr().String()
 	streamDone := make(chan string, 1)
 	go func() {
 		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/w/ws-1/zai/v1/chat/completions", strings.NewReader(`{"model":"glm-4.7"}`))
@@ -277,32 +275,5 @@ func TestDrainWiringThroughServeBYO(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("serveBYO never returned after drain")
-	}
-}
-
-// serveBYOWithListener is serveBYO with a pre-bound listener so the test
-// can learn the ephemeral address (production binds cfg.listenAddr).
-func serveBYOWithListener(ctx context.Context, cfg byoRunConfig, server *byoServer, addrCh chan<- string) error {
-	ln, err := net.Listen("tcp", cfg.listenAddr)
-	if err != nil {
-		return err
-	}
-	addrCh <- ln.Addr().String()
-	httpServer := &http.Server{Handler: server.handler(), ReadHeaderTimeout: 10 * time.Second}
-	errCh := make(chan error, 1)
-	go func() { errCh <- httpServer.Serve(ln) }()
-	select {
-	case <-ctx.Done():
-		drainCtx, cancel := context.WithTimeout(context.Background(), cfg.drainGrace)
-		defer cancel()
-		if err := httpServer.Shutdown(drainCtx); err != nil { //nolint:contextcheck // drain outlives the canceled parent by design
-			return err
-		}
-		return nil
-	case err := <-errCh:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return err
 	}
 }
