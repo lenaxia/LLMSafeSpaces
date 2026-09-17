@@ -624,22 +624,31 @@ if env_absent_from_child w "SD_X="; then echo absent; else echo not-absent; fi`
 // delivery script's RECONCILE_INTERVAL_S default the AC-8/AC-10 budgets
 // derive from, and the workflow step env must pass the same number.
 func TestUS70ReconcileInterval_WorkflowLockstep(t *testing.T) {
-	// Indexes 0/1 are the V2 delivery flags (OPENCODE_V2_DELIVERY /
-	// AGENTD_STATE_AUTHORITY — the pool runs the V2 regime, and
-	// local/authority-flip.sh's helm step owns that layout); the reconcile
-	// interval rides index 2.
-	const helmSet = `--set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s"`
-	for _, wf := range []string{
-		filepath.Join("..", ".github", "workflows", "e2e-nightly.yml"),
-		us70PoolWorkflow,
-	} {
+	// The reconcile interval rides ONE --set flag per workflow (name and
+	// value together — helm's mergeMaps CLOBBERS list entries across
+	// separate --set flags), and the index differs by workflow because
+	// the surrounding extraEnv layout differs:
+	//   - nightly: the chart default is extraEnv: [] (helm/values.yaml),
+	//     so the interval is the ONLY entry and MUST ride index 0 — a
+	//     sparse [2] against the empty default renders nulls at 0/1 and
+	//     the api-deployment template nil-pointers (the nightly was red
+	//     for 8+ days on exactly that).
+	//   - pool: indexes 0/1 are the V2 delivery flags (OPENCODE_V2_DELIVERY
+	//     / AGENTD_STATE_AUTHORITY — the pool runs the V2 regime densely,
+	//     cf. local/authority-flip.sh), so the interval rides index 2.
+	workflowSet := map[string]string{
+		filepath.Join("..", ".github", "workflows", "e2e-nightly.yml"): `--set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s"`,
+		us70PoolWorkflow: `--set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[2].value=5s"`,
+	}
+	for wf, helmSet := range workflowSet {
 		src := mustRead(t, wf)
 		if !strings.Contains(src, helmSet) {
 			t.Fatalf("%s must carry %s (single-flag form) — the reconcile loop period is the AC-8/AC-10 budget basis", wf, helmSet)
 		}
 		// A split form (name and value on separate --set flags) renders only
 		// the LAST list entry under helm's map-merge — refuse it explicitly.
-		if strings.Contains(src, "--set \"api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL\"") {
+		if strings.Contains(src, `--set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL"`) ||
+			strings.Contains(src, `--set "api.extraEnv[2].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL"`) {
 			t.Fatalf("%s splits the extraEnv set across --set flags — helm clobbers list entries that way", wf)
 		}
 		if !strings.Contains(src, "RECONCILE_INTERVAL_S: 5") {
