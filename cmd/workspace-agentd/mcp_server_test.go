@@ -948,7 +948,7 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"`body` (webhook only",                                        // spelling 2 + its source constraint
 			"posted payload becomes the run input",                        // body-mode semantics (#1419's fix)
 			"`mapped` (the static `input` document)",                      // spelling 3
-			"rejected with 400",                                           // the envelope-wiring guard (#1425)
+			"rejected with 400 — set `input`",                             // the envelope-wiring guard (#1425), uniquely pinned
 			"set `input`, use `inputFrom: \"body\"`, or relax the schema", // the three remedies
 		} {
 			assert.Contains(t, d, want)
@@ -963,6 +963,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "trigger_update in tools/list")
 		assert.Contains(t, d, "omitted = keep existing") // patch semantics
 		assert.Contains(t, d, "immutable after create")  // sourceType rule
+		// 0059 — the input-mapping fields are patchable here too.
+		assert.Contains(t, d, "`inputFrom` and `input`")
+		assert.Contains(t, d, "are patchable here too")
 	})
 
 	t.Run("trigger_delete guidance", func(t *testing.T) {
@@ -979,6 +982,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"input envelope", // what the trigger saw
 			"error payloads", // why it failed
 			"is not working", // the user-symptom it answers
+			// 0059 — the schema-mismatch trail is diagnosable here.
+			"`validation_error`",                   // the failed-fire status for input mismatches
+			"actionResult",                         // where the typed violations live
+			"schema_mismatch",                      // the actionResult code
+			"locations only, never payload values", // the §3.5 sanitization contract
 		} {
 			assert.Contains(t, d, want)
 		}
@@ -998,6 +1006,10 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.NotContains(t, d, "mcp_call")
 		assert.Contains(t, d, "handler(input) -> dict") // script handler is source, not a shell command
 		assert.Contains(t, d, "targetWorkspaceId")      // runs are rejected without it
+		// 0059 — the enforcement-claim correction: schema validation
+		// covers manual runs and mapped fired runs, not every run input.
+		assert.Contains(t, d, "enforced on manual runs and on fired runs that carry input mapping")
+		assert.NotContains(t, d, "enforced on every workflow_run input", "the #1419-disproved misconception may not return")
 	})
 
 	t.Run("workflow_update guidance", func(t *testing.T) {

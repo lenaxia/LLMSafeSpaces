@@ -28,6 +28,12 @@ Ship the agentd-facing half of design/0059: extend `trigger_create`'s tool descr
 ## Blockers
 None. R6 cannot run in-session (needs the live kind cluster + the sibling's API fields); it is structurally pinned (`bash -n` + row needles) and executes on the nightly after both PRs merge.
 
+## Review Iteration 1 (PR #1438, CHANGES_REQUESTED → addressed)
+- **Single-inflight race (findings 1+2):** R6c's deliveries raced `uq_workflow_run_single_inflight` — R5b's manual run (and R6c's own conforming run) hold the workflow's only inflight slot until the scheduler tick fast-fails them (~10s), so a delivery landing mid-flight 409s with a `skipped` fire instead of the asserted 202/`validation_error`. Fixed with `r6_wait_slot()` — polls the workflow runs until no run is `queued`/`running` before EACH signed delivery (drain-wait pinned structurally).
+- **R6b-bad cleanup leak (finding 3):** the mapped-`{}` leg captured no id, so an unexpected 201 (pre-core merge: `inputFrom` silently dropped by JSON binding) leaked a monthly-cron trigger every nightly. Fixed with the R6a-style id-capture + `created_triggers` append guard (pinned structurally).
+- **D7 agentd-side trio (Project Alignment):** delivered the remaining §3.7 agentd descriptions this half owns — `trigger_update` notes `inputFrom`/`input` are patchable; `workflow_create`'s "enforced on every workflow_run input" corrected to "enforced on manual runs and on fired runs that carry input mapping (`input`/`inputFrom`)" (with a NotContains anti-drift on the old misconception); `trigger_fires` names the `validation_error` status, its `actionResult` schema_mismatch trail, and the locations-only sanitization. ④ pkg/mcp pins and ⑤ openapi/docs belong to the core half.
+- Minor: the inert "rejected with 400" pin tightened to "rejected with 400 — set `input`" so it uniquely pins the wiring-guard sentence (it previously also matched the pre-existing cron-validation sentence).
+
 ## Tests Run
 - `bash -n local/issue-1410-1412-automation-e2e.sh` — clean.
 - `go test ./cmd/workspace-agentd/ ./local/ -count=1` — ok (includes TestMCPHandler_ToolDescriptionGuidance and TestIssue1410E2EScript_*).

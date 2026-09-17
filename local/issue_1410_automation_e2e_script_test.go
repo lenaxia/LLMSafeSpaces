@@ -73,6 +73,8 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`select(.status=="validation_error")`,                         // failed-fire status asserted
 		`*"schema_mismatch"*`,                                         // actionResult code asserted (no instance echo)
 		`R6c: violating payload queued no run`,                        // no run on schema mismatch
+		`select(.status=="queued" or .status=="running")`,             // single-inflight drain-wait before each delivery
+		`[[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")`,     // R6b-bad unexpected-success cleanup guard
 		// Cleanup so the nightly owner's trigger list stays clean.
 		`trap cleanup EXIT`,
 	} {

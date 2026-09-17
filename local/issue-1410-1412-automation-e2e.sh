@@ -224,6 +224,8 @@ else
     # R6b — mapped-mode static input is schema-validated at create.
     r6b_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
         '{name:"e2e-r6b-mapped-bad",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{}}')")
+    r6b_id=$(printf '%s' "${r6b_resp}" | jq -r '.id // empty')
+    [[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")
     if [[ "${api_status}" == "400" ]]; then
         ok "R6b: mapped input {} rejected (400, missing topic)"
     else
@@ -265,7 +267,28 @@ else
                 -d "${body}" "${R6_HOOK_URL}"
         }
 
+        # uq_workflow_run_single_inflight: a delivery while the workflow
+        # has a queued/running run 409s with a skipped fire. Wait for the
+        # slot to drain (the scheduler tick claims dummy-workspace runs
+        # and fast-fails them within ~10s) before EACH signed delivery.
+        r6_wait_slot() { # -> 0 once R6_WF has no queued/running run
+            local i
+            for i in $(seq 1 30); do
+                if [[ "$(api GET "/api/v1/me/workflows/${R6_WF}/runs" \
+                    | jq '[.runs[] | select(.status=="queued" or .status=="running")] | length')" -eq 0 ]]; then
+                    return 0
+                fi
+                sleep 2
+            done
+            return 1
+        }
+
         if [[ -n "${R6_SECRET}" && "${R6_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
+            if r6_wait_slot; then
+                ok "R6c: inflight slot drained before the conforming delivery"
+            else
+                note_fail "R6c: workflow inflight slot never drained (R5b run stuck)"
+            fi
             r6c_code=$(r6_hook_post '{"topic":"e2e"}')
             if [[ "${r6c_code}" == "202" ]]; then
                 ok "R6c: signed conforming payload accepted (202)"
@@ -296,6 +319,13 @@ else
 
             # Violating payload → 202 + validation_error fire with typed
             # violations only (no instance echo), and NO run queued.
+            # Drain again first: the conforming delivery's own run holds
+            # the single-inflight slot until the tick fast-fails it.
+            if r6_wait_slot; then
+                ok "R6c: inflight slot drained before the violating delivery"
+            else
+                note_fail "R6c: inflight slot never drained after the conforming delivery"
+            fi
             r6c_code=$(r6_hook_post '{"wrong":true}')
             if [[ "${r6c_code}" == "202" ]]; then
                 ok "R6c: signed violating payload answered 202 (delivery vs input-contract split)"

@@ -217,7 +217,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "trigger_update",
-						Description: "Partially update one trigger (id + the fields to change; omitted = keep existing). sourceType is immutable after create. Typical: flip enabled after a fire-storm, tweak a cron schedule, fix a prompt.",
+						Description: "Partially update one trigger (id + the fields to change; omitted = keep existing). sourceType is immutable after create. `inputFrom` and `input` (the trigger_create input-mapping fields) are patchable here too. Typical: flip enabled after a fire-storm, tweak a cron schedule, fix a prompt.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
 							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateTriggerRequest shape)"},
@@ -232,7 +232,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "trigger_fires",
-						Description: "The debugging gold: a trigger's fire audit - per-fire status, the input envelope (cron render / webhook body), error payloads, and the consecutive-failure trail behind consecutiveFailures/auto-disable. Use when a trigger 'is not working': this says whether it fired, what it saw, and why it failed.",
+						Description: "The debugging gold: a trigger's fire audit - per-fire status, the input envelope (cron render / webhook body), error payloads, and the consecutive-failure trail behind consecutiveFailures/auto-disable. A `validation_error` fire means the resolved run input failed the workflow's inputSchema: its actionResult carries the typed schema_mismatch violations (locations only, never payload values) and no run was queued. Use when a trigger 'is not working': this says whether it fired, what it saw, and why it failed.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id": map[string]any{"type": "string", "description": "Trigger ID (from trigger_list)"},
 						}, "required": []string{"id"}},
@@ -251,7 +251,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml is a STRINGIFIED spec - a JSON object string or YAML text (single document; the server converts YAML to the canonical JSON spec) - passed through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on every workflow_run input. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml is a STRINGIFIED spec - a JSON object string or YAML text (single document; the server converts YAML to the canonical JSON spec) - passed through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on manual runs and on fired runs that carry input mapping (`input`/`inputFrom`). Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},
