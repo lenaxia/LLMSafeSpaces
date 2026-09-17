@@ -328,6 +328,15 @@ type relayInjectorConfig struct {
 	// fetch (per attempt — boot window and each re-arm cycle alike).
 	// Zero → defaultFreeModelFetchDeadline.
 	FetchDeadline time.Duration
+	// FetchFreeModels, when non-nil, overrides the free-model fetch
+	// (test seam). The real HTTP transport aborts the round trip with
+	// the ctx error the moment ctx dies, so a completed fetch against
+	// an already-dead ctx — the exact shutdown-window shape the
+	// post-fetch guard exists for — cannot be produced deterministically
+	// through a real server (measured: the transport delivers the
+	// response past a dead ctx only via a scheduling race). The seam
+	// lets a test cancel mid-fetch and still return a healthy catalog.
+	FetchFreeModels func(ctx context.Context, baseURL, password string) ([]opencode.RelayModel, error)
 	// Busy, when non-nil, gates re-arm cycles on session busyness (the
 	// tracker via trackerHasBusyOrUnknown): no attempt — no fetch, no
 	// apply, no restart — while any session is busy (#910: no mid-turn
@@ -487,10 +496,14 @@ func (cfg relayInjectorConfig) attempt(ctx context.Context, lg *zap.Logger, heal
 		fetchDeadline = time.Now().Add(defaultFreeModelFetchDeadline)
 	}
 	effectiveDeadline := time.Until(fetchDeadline)
+	fetch := fetchFreeModels
+	if cfg.FetchFreeModels != nil {
+		fetch = cfg.FetchFreeModels
+	}
 	var models []opencode.RelayModel
 	for {
 		var fetchErr error
-		models, fetchErr = fetchFreeModels(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
+		models, fetchErr = fetch(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
 		if fetchErr != nil {
 			if time.Now().After(fetchDeadline) {
 				// #901 G8: terminal for this attempt — loud Warn +

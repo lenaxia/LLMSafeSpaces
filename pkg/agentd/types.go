@@ -177,10 +177,10 @@ type ReadyzResponse struct {
 	// Known corner (pre-existing, documented): a terminal auth.json
 	// write failure after a successful config apply leaves this true
 	// with the opencode-relay auth entry missing. Included here (readyz)
-	// rather than statusz because readyz
-	// is cache-based and lightweight (no synchronous opencode calls), and the
-	// API server needs this flag on every ListModels cache miss — using statusz
-	// (which has no latency upper bound) would be unsafe.
+	// rather than statusz: readyz is cache-based and lightweight (no
+	// synchronous opencode calls), and the API server needs this flag
+	// on every ListModels cache miss — using statusz (which has no
+	// latency upper bound) would be unsafe.
 	RelayInjected bool `json:"relay_injected"`
 }
 

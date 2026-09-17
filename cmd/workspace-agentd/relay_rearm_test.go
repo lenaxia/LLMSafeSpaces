@@ -633,10 +633,23 @@ func TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill(t *testing.T) {
 		"the in-attempt skip is not a restart_deferred cycle tick")
 }
 
-// TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill pins the
-// shutdown-window guard: ctx dying while the fetch is in flight (or
-// right as it completes) must land canceled with NO config write and NO
-// restart trigger — the next agentd generation re-runs the injector.
+// TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill pins the FIRST
+// shutdown-window guard (the post-fetch ctx check in relayAttempt): a
+// fetch that COMPLETES against an already-dead ctx must land canceled
+// with NO config write and NO restart trigger — the next agentd
+// generation re-runs the injector from scratch.
+//
+// Determinism (review-3 carried finding): the real HTTP transport can
+// rarely produce this shape — client.Do aborts with the ctx error the
+// moment ctx dies, winning the transport race ~98-99% of the time even
+// when the server writes the full body before canceling (measured with
+// a standalone probe: ~1-2% of round trips complete past a dead ctx,
+// scheduling-dependent). A real-server pin therefore greens a revert of
+// the guard almost always. The FetchFreeModels seam drives the exact
+// interleaving deterministically: the fake fetch cancels the attempt
+// ctx mid-flight, then returns a healthy catalog anyway. On pre-guard
+// code this path proceeds to Apply + kill and every assertion below
+// fails — a genuine discriminator.
 func TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill(t *testing.T) {
 	withTestLogger(t)
 	dir := t.TempDir()
@@ -649,25 +662,10 @@ func TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	var kills atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Write the FULL valid body first, then cancel: the small body
-		// is typically delivered and fully read before the cancel lands,
-		// so the fetch SUCCEEDS against a dead ctx and the post-fetch
-		// guard fires. If the transport loses the race (body read
-		// aborted by the cancel), the fetch errors and the attempt
-		// exits canceled via the retry loop's ctx select — the SAME
-		// terminal outcome, so the pin is race-proof either way, but
-		// the guard-discriminating path (fetch ok + ctx dead → no
-		// Apply, no kill) is the expected one.
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"connected":["opencode"],"all":[{"id":"opencode","models":{"free-model":{"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}}}]}`))
-		cancel()
-	}))
-	defer srv.Close()
 
 	res := relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
-		OpenCodeBaseURL:   srv.URL,
+		OpenCodeBaseURL:   "http://unused.test", // seam replaces the transport
 		OpenCodePassword:  "pw",
 		AgentConfigPath:   cfgPath,
 		AuthJSONPath:      authPath,
@@ -676,10 +674,73 @@ func TestRelayAttempt_CtxCanceledAfterFetch_NoApplyNoKill(t *testing.T) {
 		KillOpenCode:      func() { kills.Add(1) },
 		FetchRetryDelay:   5 * time.Millisecond,
 		FetchDeadline:     30 * time.Millisecond,
+		FetchFreeModels: func(_ context.Context, _, _ string) ([]opencode.RelayModel, error) {
+			cancel()                      // shutdown window opens mid-fetch…
+			return []opencode.RelayModel{ // …yet the fetch completes anyway
+				{ID: "free-model", Name: "Free Model", ContextLimit: 100000, OutputLimit: 10000},
+			}, nil
+		},
 	}.attempt(ctx, log, 0)
 
 	assert.Equal(t, rearmOutcomeCanceled, res.outcome, "a dead ctx must never proceed past the fetch")
 	assert.False(t, res.applied)
 	assert.False(t, writer.HasRelay(), "no config write in the shutdown window")
+	assert.Zero(t, kills.Load(), "no restart trigger in the shutdown window")
+}
+
+// cancelOnApplyWriter delegates to a real ConfigWriter but cancels the
+// attempt ctx after a successful Apply — the deterministic driver for
+// the SECOND shutdown-window guard (the post-auth-write ctx check):
+// ctx alive through the fetch and first guard, dead by the time the
+// writes complete and the kill decision runs.
+type cancelOnApplyWriter struct {
+	agent.AgentConfigWriter
+	cancel context.CancelFunc
+}
+
+func (w *cancelOnApplyWriter) Apply(in agent.AgentConfigInput) (bool, error) {
+	restart, err := w.AgentConfigWriter.Apply(in)
+	if err == nil {
+		w.cancel()
+	}
+	return restart, err
+}
+
+// TestRelayAttempt_CtxCanceledAfterAuthWrite_NoKill pins the second
+// shutdown-window guard: ctx dying between the config/auth writes and
+// the restart trigger must land canceled with NO kill. Driven
+// deterministically via a real healthy /provider server plus the
+// Apply-canceling writer wrapper — no transport race involved.
+func TestRelayAttempt_CtxCanceledAfterAuthWrite_NoKill(t *testing.T) {
+	withTestLogger(t)
+	okSrv := newProviderFaultServer(providerModeOK)
+	defer okSrv.close()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	authPath := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+	writer := opencode.NewConfigWriter(cfgPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var kills atomic.Int32
+
+	res := relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   okSrv.url(),
+		OpenCodePassword:  "pw",
+		AgentConfigPath:   cfgPath,
+		AuthJSONPath:      authPath,
+		AgentConfigWriter: &cancelOnApplyWriter{AgentConfigWriter: writer, cancel: cancel},
+		HealthCheck:       func() bool { return true },
+		KillOpenCode:      func() { kills.Add(1) },
+		FetchRetryDelay:   5 * time.Millisecond,
+		FetchDeadline:     30 * time.Millisecond,
+	}.attempt(ctx, log, 0)
+
+	assert.Equal(t, rearmOutcomeCanceled, res.outcome, "a dead ctx must never reach the restart trigger")
+	assert.False(t, res.applied, "the canceled result is bare — no applied/success tick for a cycle whose restart never fired")
+	assert.True(t, writer.HasRelay(), "the writes themselves DID complete before the window opened — the guard stops the restart, not the writes")
 	assert.Zero(t, kills.Load(), "no restart trigger in the shutdown window")
 }
