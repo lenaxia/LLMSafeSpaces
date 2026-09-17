@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -294,6 +295,50 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 	writeWorkflowSuccess(w, map[string]any{}, "otherwise")
 }
 
+// opencodeAddr is the harness endpoint the agent-node path talks to;
+// a var (not the const) so integration tests can point it at a stub.
+var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
+
+// renderTemplateRefs replaces {{.path}} references in an agent prompt
+// with values from the node input. Paths may be dotted (#1417):
+// {{.body.topic}} walks nested maps, matching the condition nodes'
+// expression depth — webhook-driven runs hand the fire envelope, whose
+// payload lives under body. Scalars render bare; composites (maps,
+// arrays) render as compact JSON. Unresolvable refs stay literal.
+func renderTemplateRefs(prompt string, input map[string]any) string {
+	return templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
+		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
+		if path == "" {
+			return ref
+		}
+		var cur any = input
+		for _, seg := range strings.Split(path, ".") {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				return ref
+			}
+			cur, ok = m[seg]
+			if !ok {
+				return ref
+			}
+		}
+		switch v := cur.(type) {
+		case string:
+			return v
+		case fmt.Stringer:
+			return v.String()
+		default:
+			b, err := json.Marshal(cur)
+			if err != nil {
+				return ref
+			}
+			return string(b)
+		}
+	})
+}
+
+var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.-]+\}\}`)
+
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData
 	if err := json.Unmarshal(req.Spec, &data); err != nil {
@@ -305,9 +350,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	if len(req.Input) > 0 {
 		var input map[string]any
 		_ = json.Unmarshal(req.Input, &input)
-		for k, v := range input {
-			prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", fmt.Sprintf("%v", v))
-		}
+		prompt = renderTemplateRefs(prompt, input)
 	}
 
 	sessionMode := data.Session
@@ -328,7 +371,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 
 	body := fmt.Sprintf(`{"agentID":%q,"parts":[{"type":"text","text":%q}]}`, data.Agent, prompt)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://127.0.0.1:%d/session/%s/message", agentd.AgentPort, sessionID),
+		fmt.Sprintf("http://%s/session/%s/message", opencodeAddr, sessionID),
 		strings.NewReader(body))
 	if err != nil {
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
@@ -446,7 +489,7 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 
 func createOpencodeSession(ctx context.Context, password string) string {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("http://127.0.0.1:%d/session", agentd.AgentPort),
+		fmt.Sprintf("http://%s/session", opencodeAddr),
 		strings.NewReader("{}"))
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
@@ -503,7 +546,7 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
-		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
+		fmt.Sprintf("http://%s/session/%s", opencodeAddr, sessionID), nil)
 	if err != nil {
 		// Malformed sessionID (control chars) makes the URL unparseable;
 		// req would be nil and SetBasicAuth would panic.
