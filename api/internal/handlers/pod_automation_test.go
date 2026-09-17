@@ -35,6 +35,7 @@ func newAutomationRouter(t *testing.T, reviewer TokenReviewer, lookup bootstrapW
 		lookup:            lookup,
 		triggers:          NewUserTriggersHandler(trigStore, nil, &mockEncryptor{}),
 		workflows:         NewUserWorkflowsHandler(wfStore, nil),
+		wfStore:           wfStore,
 		expectedNamespace: testRenameNamespace,
 	}
 	r := gin.New()
@@ -293,4 +294,73 @@ func TestPodAutomation_RotateIsAudited(t *testing.T) {
 	require.Len(t, audit.events, 1, "rotation leaves exactly one audit event")
 	assert.Equal(t, "triggers/user-7/trigger.rotate_webhook_secret/"+id, audit.events[0])
 	assert.NotContains(t, w.Body.String()+fmt.Sprint(audit.events), "whs_", "no secret material leaks into response or audit")
+}
+
+// --- #1412: workflow-firing triggers through the automation surface ------
+
+// Happy path: workflowId present → no workspace stamp (the user API
+// rejects both), trigger stored linked to the workflow.
+func TestPodAutomation_WorkflowTriggerCreate(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	wfStore.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"dag-hook","sourceType":"cron",
+		"sourceConfig":{"expr":"0 4 * * *"},
+		"workflowId":"wf-1"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+
+	require.Len(t, trigStore.triggers, 1)
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID, "linked to the workflow")
+		assert.Equal(t, "wf-1", *row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID, "routine workspace NOT stamped on DAG triggers")
+	}
+}
+
+// The snake_case alias must not silently vanish (#1412 defect 1).
+func TestPodAutomation_WorkflowTriggerSnakeAlias(t *testing.T) {
+	r, trigStore, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	target := "ws-1"
+	wfStore.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &target}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1",
+		"name":"dag-alias","sourceType":"cron",
+		"sourceConfig":{"expr":"0 4 * * *"},
+		"workflow_id":"wf-1"
+	}`)
+	require.Equal(t, http.StatusCreated, w.Code, "body: %s", w.Body.String())
+	for _, row := range trigStore.triggers {
+		require.NotNil(t, row.WorkflowID, "alias normalized onto the DTO field")
+	}
+}
+
+// Scoping: a workflow targeting ANOTHER workspace is refused — the pod
+// cannot schedule runs outside its own workspace.
+func TestPodAutomation_WorkflowTriggerWrongWorkspace(t *testing.T) {
+	r, _, wfStore := newAutomationRouter(t, automationReviewer(), automationLookup())
+	other := "ws-OTHER"
+	wfStore.workflows["wf-x"] = &wf.WorkflowRow{ID: "wf-x", OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", TargetWorkspaceID: &other}
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"dag-x","sourceType":"cron",
+		"sourceConfig":{"expr":"0 4 * * *"},"workflowId":"wf-x"
+	}`)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "different workspace")
+}
+
+// Unknown workflow target: named 400, not a silent create.
+func TestPodAutomation_WorkflowTriggerMissingWorkflow(t *testing.T) {
+	r, _, _ := newAutomationRouter(t, automationReviewer(), automationLookup())
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers", "tok", `{
+		"workspaceID":"ws-1","name":"dag-missing","sourceType":"cron",
+		"sourceConfig":{"expr":"0 4 * * *"},"workflowId":"wf-nope"
+	}`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "workflow not found")
 }

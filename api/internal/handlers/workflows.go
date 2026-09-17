@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -551,6 +552,20 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 		return
 	}
 
+	// #1413: a declared inputSchema is the contract a run must satisfy —
+	// reject at submission with named violations instead of letting the
+	// run fail opaquely inside nodes later. Empty input counts as {}.
+	if len(wfRow.InputSchema) > 0 {
+		input := req.Input
+		if len(input) == 0 {
+			input = json.RawMessage("{}")
+		}
+		if err := validateInputAgainstSchema(input, wfRow.InputSchema); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input does not satisfy the workflow's inputSchema: %v", err)})
+			return
+		}
+	}
+
 	workspaceID := ""
 	if req.WorkspaceID != "" {
 		workspaceID = req.WorkspaceID
@@ -581,6 +596,45 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 	}
 
 	c.JSON(http.StatusAccepted, workflowRunRowToResponse(run))
+}
+
+// validateInputAgainstSchema checks run input against the workflow's
+// declared inputSchema (draft 2020-12 / any resolved dialect).
+func validateInputAgainstSchema(input json.RawMessage, schemaJSON json.RawMessage) error {
+	var schemaDoc any
+	if err := json.Unmarshal(schemaJSON, &schemaDoc); err != nil {
+		return fmt.Errorf("inputSchema is not valid JSON: %v", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("inputSchema.json", schemaDoc); err != nil {
+		return fmt.Errorf("inputSchema does not compile: %v", err)
+	}
+	sch, err := compiler.Compile("inputSchema.json")
+	if err != nil {
+		// An unparseable schema is a workflow-authoring bug, not a run
+		// bug — refuse the run with the compile error named.
+		return fmt.Errorf("inputSchema does not compile: %v", err)
+	}
+	var value any
+	if err := json.Unmarshal(input, &value); err != nil {
+		return fmt.Errorf("input is not valid JSON: %v", err)
+	}
+	if err := sch.Validate(value); err != nil {
+		var verr *jsonschema.ValidationError
+		if errors.As(err, &verr) {
+			var causes []string
+			for _, u := range verr.BasicOutput().Errors {
+				if u.Error != nil {
+					causes = append(causes, u.Error.String())
+				}
+			}
+			if len(causes) > 0 {
+				return fmt.Errorf("%s", strings.Join(causes, "; "))
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // GetRun returns a single run by ID (GET /runs/:runId).

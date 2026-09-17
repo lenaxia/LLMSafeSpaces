@@ -240,6 +240,7 @@ func setupWorkflowRouter(t *testing.T, store workflowStore, quota workflowQuotaC
 	group.GET("/:id", h.UserGet)
 	group.PUT("/:id", h.UserUpdate)
 	group.DELETE("/:id", h.UserDelete)
+	group.POST("/:id/runs", h.UserRunWorkflow)
 
 	runs := r.Group("/api/v1/me/runs")
 	runs.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
@@ -651,4 +652,48 @@ func TestWorkflowUpdate_TargetWorkspaceID(t *testing.T) {
 	updated := store.workflows["wf-ws"]
 	require.NotNil(t, updated.TargetWorkspaceID)
 	assert.Equal(t, "ws-target-1", *updated.TargetWorkspaceID)
+}
+
+// --- #1413: a declared inputSchema is enforced at run submission ---------
+
+func TestWorkflowRun_InputSchemaEnforced(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`),
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	// Missing the required field: named 400, nothing queued.
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-schema/runs", map[string]any{
+		"input": map[string]any{"wrong": true},
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "inputSchema")
+	assert.Nil(t, store.lastRun, "no run row created")
+
+	// Wrong type: also rejected.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-schema/runs", map[string]any{
+		"input": map[string]any{"topic": 42},
+	})
+	assert.Equal(t, 400, w.Code)
+
+	// Valid input: accepted.
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-schema/runs", map[string]any{
+		"input": map[string]any{"topic": "ship"},
+	})
+	require.Equal(t, 202, w.Code, w.Body.String())
+	require.NotNil(t, store.lastRun)
+
+	// No schema declared: anything goes.
+	store.workflows["wf-free"] = &wf.WorkflowRow{
+		ID: "wf-free", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	w = doWFRequest(t, r, "POST", "/api/v1/me/workflows/wf-free/runs", map[string]any{
+		"input": map[string]any{"anything": true},
+	})
+	require.Equal(t, 202, w.Code)
 }

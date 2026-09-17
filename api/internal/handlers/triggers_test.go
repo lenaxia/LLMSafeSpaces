@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -17,9 +18,11 @@ import (
 
 // mockTriggerStore implements triggerStore for testing.
 type mockTriggerStore struct {
-	triggers  map[string]*wf.TriggerRow
-	webhooks  map[string]*wf.WebhookRow
-	createErr error
+	triggers     map[string]*wf.TriggerRow
+	webhooks     map[string]*wf.WebhookRow
+	createErr    error
+	lastUpdate   *wf.TriggerUpdate
+	lastUpdateID string
 }
 
 func newMockTriggerStore() *mockTriggerStore {
@@ -53,6 +56,7 @@ func (m *mockTriggerStore) GetTrigger(_ context.Context, ownerType, ownerID, tri
 }
 
 func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, triggerID string, upd *wf.TriggerUpdate) (*wf.TriggerRow, error) {
+	m.lastUpdate, m.lastUpdateID = upd, triggerID
 	r, ok := m.triggers[triggerID]
 	if !ok || r.OwnerType != ownerType || r.OwnerID != ownerID {
 		return nil, wf.ErrNotFound
@@ -608,4 +612,100 @@ func TestTriggerRotateWebhookSecret_NotFound(t *testing.T) {
 
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers/nonexistent/rotate-secret", nil)
 	assert.Equal(t, 404, w.Code)
+}
+
+// --- #1411: create validates the schedule and anchors to the real slot ---
+
+func TestTriggerCreate_CronValidation(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "bad-expr", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "not-a-cron"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "invalid cron expr")
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "bad-tz", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "Mars/Olympus_Mons"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "unknown timezone")
+}
+
+// A monthly trigger created now must anchor to the NEXT monthly slot —
+// never "now" (the pre-fix behavior fired instantly on creation).
+func TestTriggerCreate_CronAnchorsToNextSlot(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	before := time.Now().UTC().Add(-1 * time.Second)
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "monthly", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+
+	var resp struct {
+		NextFireAt *time.Time `json:"nextFireAt"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.NotNil(t, resp.NextFireAt, "cron create keeps next_fire_at")
+	next := *resp.NextFireAt
+	assert.True(t, next.After(before.Add(23*time.Hour)), "monthly schedule anchors to the next monthly slot, not now: %v", next)
+	assert.Equal(t, 3, next.Hour(), "3am slot")
+	assert.Equal(t, 1, next.Day(), "day 1")
+}
+
+// --- #1410: reschedule recomputes next_fire_at to the NEW schedule -------
+
+func TestTriggerUpdate_RescheduleRecomputesNextFire(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	old := time.Now().UTC().Add(10 * time.Hour)
+	store.triggers["trig-1"] = &wf.TriggerRow{
+		ID: "trig-1", OwnerType: "user", OwnerID: "test-user", Name: "old", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 9 * * *","tz":"America/Los_Angeles"}`),
+		NextFireAt: &old,
+	}
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/trig-1", map[string]any{
+		"sourceConfig": map[string]any{"expr": "42 4 * * *", "tz": "UTC"},
+	})
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.NotNil(t, store.lastUpdate, "update reached the store")
+	require.NotNil(t, store.lastUpdate.NextFireAt, "reschedule sets next_fire_at")
+	next := *store.lastUpdate.NextFireAt
+	assert.Equal(t, 4, next.Hour(), "NEW schedule's hour (UTC)")
+	assert.Equal(t, 42, next.Minute(), "NEW schedule's minute")
+	assert.True(t, next.After(time.Now().UTC().Add(-time.Minute)), "anchored from now")
+
+	// Invalid new schedule: rejected, nothing written.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/trig-1", map[string]any{
+		"sourceConfig": map[string]any{"expr": "still-not-cron"},
+	})
+	assert.Equal(t, 400, w.Code)
+}
+
+// Re-enabling a disabled cron trigger re-anchors (a stale past slot
+// would misfire on the next tick).
+func TestTriggerUpdate_ReenableRecomputesNextFire(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	stale := time.Now().UTC().Add(-24 * time.Hour)
+	store.triggers["trig-2"] = &wf.TriggerRow{
+		ID: "trig-2", OwnerType: "user", OwnerID: "test-user", Name: "paused", Enabled: false,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 5 * * *","tz":"UTC"}`),
+		NextFireAt: &stale,
+	}
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/trig-2", map[string]any{"enabled": true})
+	require.Equal(t, 200, w.Code, w.Body.String())
+	require.NotNil(t, store.lastUpdate.NextFireAt, "re-enable re-anchors next_fire_at")
+	assert.True(t, store.lastUpdate.NextFireAt.After(time.Now().UTC()), "no stale past slot")
 }

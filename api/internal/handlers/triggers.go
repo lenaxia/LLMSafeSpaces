@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	workflowengine "github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -254,12 +255,15 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cron source config"})
 			return
 		}
-		if cronCfg.Expr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "cron source requires 'expr'"})
+		// #1411: validate the schedule AND its timezone at write time, and
+		// anchor next_fire_at to the schedule's next real slot — an
+		// enabled daily trigger created at 15:46 must not fire at 15:46.
+		next, err := workflowengine.NextCronFire(cronCfg.Expr, cronCfg.TZ, now)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		nextFire := now
-		row.NextFireAt = &nextFire
+		row.NextFireAt = &next
 	}
 
 	if err := h.store.CreateTrigger(c.Request.Context(), row); err != nil {
@@ -370,6 +374,53 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	if req.AutoDisableAfter != nil && *req.AutoDisableAfter < 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auto_disable_after must be >= 1"})
 		return
+	}
+
+	// #1410: a cron trigger's next slot must follow its schedule. Fetch
+	// the current row so transitions are visible, then recompute on
+	// (a) a new sourceConfig — rescheduling anchors to the NEW schedule,
+	// never the old slot — and (b) re-enabling — a stale past slot would
+	// misfire on the next tick.
+	existing, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
+	if err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch trigger"})
+		return
+	}
+	if existing.SourceType == types.TriggerSourceCron {
+		reEnable := req.Enabled != nil && *req.Enabled && !existing.Enabled
+		if req.SourceConfig != nil || reEnable {
+			var cfg types.CronSourceConfig
+			source := existing.SourceConfig
+			if req.SourceConfig != nil {
+				source = req.SourceConfig
+			}
+			// A NEW config must parse and validate (authoring error: 400).
+			// An EMPTY existing config (legacy row, pre-validation) cannot
+			// be recomputed — the update proceeds untouched.
+			if len(source) == 0 {
+				if req.SourceConfig != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cron source config"})
+					return
+				}
+			} else {
+				if err := json.Unmarshal(source, &cfg); err != nil {
+					if req.SourceConfig != nil {
+						c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cron source config"})
+						return
+					}
+					// legacy malformed row: leave next_fire_at as-is
+				} else if next, err := workflowengine.NextCronFire(cfg.Expr, cfg.TZ, time.Now().UTC()); err == nil {
+					upd.NextFireAt = &next
+				} else if req.SourceConfig != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+					return
+				}
+			}
+		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)

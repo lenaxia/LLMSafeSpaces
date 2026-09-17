@@ -25,6 +25,7 @@ func TestPodAutomationHandler_LoggerWired(t *testing.T) {
 		fakeClientset, dbSvc,
 		handlers.NewUserTriggersHandler(nil, nil, nil),
 		handlers.NewUserWorkflowsHandler(nil, nil),
+		nil, // workflow-target lookup (wfStore) wired in app.go
 		"test-namespace",
 	)
 	if h.HasLogger() {

@@ -5,16 +5,19 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // PodAutomationHandler exposes the owner's trigger + workflow CRUD to
@@ -33,22 +36,33 @@ import (
 // `workspaceId` to this pod's workspace (a pod schedules routines that
 // run in ITS workspace, not arbitrary others).
 type PodAutomationHandler struct {
-	tokenReviewer     TokenReviewer
-	lookup            bootstrapWorkspaceLookup
-	triggers          *TriggersHandler
-	workflows         *WorkflowsHandler
+	tokenReviewer TokenReviewer
+	lookup        bootstrapWorkspaceLookup
+	triggers      *TriggersHandler
+	workflows     *WorkflowsHandler
+	// wfStore resolves workflow targets for trigger-create scoping (#1412):
+	// a workflow-firing trigger is only valid when the workflow exists,
+	// belongs to the resolved owner, and targets THIS pod's workspace.
+	wfStore           automationWorkflowGetter
 	expectedNamespace string
 	logger            interfaces.LoggerInterface
 }
 
+// automationWorkflowGetter is the narrow workflow lookup the create path
+// needs for target validation.
+type automationWorkflowGetter interface {
+	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
+}
+
 // NewPodAutomationHandlerFromClientset is the production constructor
 // (shares the TokenReview clientset with the pod-bootstrap family).
-func NewPodAutomationHandlerFromClientset(clientset kubernetes.Interface, lookup bootstrapWorkspaceLookup, triggers *TriggersHandler, workflows *WorkflowsHandler, expectedNamespace string) *PodAutomationHandler {
+func NewPodAutomationHandlerFromClientset(clientset kubernetes.Interface, lookup bootstrapWorkspaceLookup, triggers *TriggersHandler, workflows *WorkflowsHandler, wfStore automationWorkflowGetter, expectedNamespace string) *PodAutomationHandler {
 	return &PodAutomationHandler{
 		tokenReviewer:     &k8sTokenReviewer{clientset: clientset},
 		lookup:            lookup,
 		triggers:          triggers,
 		workflows:         workflows,
+		wfStore:           wfStore,
 		expectedNamespace: expectedNamespace,
 	}
 }
@@ -185,12 +199,84 @@ func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
 	if !ok {
 		return
 	}
-	forced, err := forceTriggerWorkspace(raw, ws)
+	body, err := normalizeTriggerCreateBody(raw)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	h.delegate(c, owner, forced, h.triggers.UserCreate)
+
+	// #1412: a workflow-firing trigger carries workflowId — no routine
+	// workspace stamp (the user API rejects both set), but the workflow
+	// MUST exist, belong to the resolved owner, and target THIS pod's
+	// workspace (the same pod-scoping rule routines get by forcing).
+	if workflowID := workflowIDOf(body); workflowID != "" {
+		if err := h.authorizeWorkflowTarget(c, owner, ws, workflowID); err != nil {
+			return // response written
+		}
+	} else {
+		if body, err = forceTriggerWorkspace(body, ws); err != nil {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
+			return
+		}
+	}
+	h.delegate(c, owner, body, h.triggers.UserCreate)
+}
+
+// authorizeWorkflowTarget enforces the pod-scoping rule for DAG-firing
+// triggers: the target workflow must exist, be owned by the resolved
+// owner, and run in THIS pod's workspace. Writes the failure response.
+func (h *PodAutomationHandler) authorizeWorkflowTarget(c *gin.Context, owner, workspaceID, workflowID string) error {
+	if h.wfStore == nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workflow lookup not configured"})
+		return errWorkflowLookupUnconfigured
+	}
+	row, err := h.wfStore.GetWorkflow(c.Request.Context(), "user", owner, workflowID)
+	switch {
+	case err != nil && errors.Is(err, wf.ErrNotFound):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workflow not found"})
+		return err
+	case err != nil:
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workflow lookup failed"})
+		return err
+	case row.TargetWorkspaceID == nil || *row.TargetWorkspaceID != workspaceID:
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "workflow targets a different workspace — this pod cannot schedule it"})
+		return errWorkflowTargetMismatch
+	}
+	return nil
+}
+
+var errWorkflowTargetMismatch = errors.New("workflow target workspace mismatch")
+var errWorkflowLookupUnconfigured = errors.New("workflow lookup not configured")
+
+// workflowIDOf reads the (normalized) workflowId from the create body.
+func workflowIDOf(body []byte) string {
+	var fields struct {
+		WorkflowID string `json:"workflowId"`
+	}
+	_ = json.Unmarshal(body, &fields)
+	return strings.TrimSpace(fields.WorkflowID)
+}
+
+// normalizeTriggerCreateBody prepares the create body for the delegated
+// user handler (#1412): (a) strips the resolver-spelling workspaceID —
+// it exists only for the identity sniff, and Go's case-insensitive
+// decoder would otherwise fold it into the DTO's workspaceId and
+// collide with workflowId ("cannot set both"); (b) aliases snake_case
+// workflow_id onto the DTO's workflowId — the decoder silently drops
+// unknown fields, so the caller's intent vanished without an error.
+func normalizeTriggerCreateBody(raw []byte) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	delete(fields, "workspaceID")
+	if snake, hasSnake := fields["workflow_id"]; hasSnake {
+		delete(fields, "workflow_id")
+		if _, exists := fields["workflowId"]; !exists {
+			fields["workflowId"] = snake
+		}
+	}
+	return json.Marshal(fields)
 }
 
 func (h *PodAutomationHandler) TriggerGet(c *gin.Context) {

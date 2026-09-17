@@ -409,6 +409,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var userMcpHandler *handlers.MCPServersHandler
 	// Epic 64: workflow + trigger handlers
 	var userWorkflowsHandler *handlers.WorkflowsHandler
+	// automationWFStore backs the pod-automation workflow-target checks
+	// (#1412) — same store the user workflows handler reads through.
+	var automationWFStore *workflows.Store
 	var orgWorkflowsHandler *handlers.WorkflowsHandler
 	var userTriggersHandler *handlers.TriggersHandler
 	var orgTriggersHandler *handlers.TriggersHandler
@@ -617,6 +620,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Epic 64: Workflow + trigger handlers. The workflows.Store wraps the
 		// secrets pgxpool (same connection pool, different table set).
 		wfStore := workflows.NewStore(secretsPool)
+		automationWFStore = wfStore
 		userWorkflowsHandler = handlers.NewUserWorkflowsHandler(wfStore, instanceSettings)
 		orgWorkflowsHandler = handlers.NewOrgWorkflowsHandler(wfStore, instanceSettings)
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
@@ -1410,7 +1414,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var podAutomationHandler *handlers.PodAutomationHandler
 	if userTriggersHandler != nil && userWorkflowsHandler != nil {
 		podAutomationHandler = handlers.NewPodAutomationHandlerFromClientset(
-			k8sClient.Clientset(), dbSvc, userTriggersHandler, userWorkflowsHandler, cfg.Kubernetes.Namespace,
+			k8sClient.Clientset(), dbSvc, userTriggersHandler, userWorkflowsHandler, automationWFStore, cfg.Kubernetes.Namespace,
 		)
 		podAutomationHandler.SetLogger(log)
 	}

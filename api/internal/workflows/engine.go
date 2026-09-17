@@ -511,6 +511,18 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
 	if err != nil {
+		// #1412: a missing/deleted target workflow is a FAILURE, never a
+		// silent no-op — record the fire, count it toward auto-disable.
+		errPayload, _ := json.Marshal(map[string]string{"error": "workflow_not_found"})
+		completed := now
+		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "cron",
+			ActionType: "run_workflow", ActionResult: errPayload,
+			Status: "failed", FiredAt: now, CompletedAt: &completed,
+		})
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
 		return
 	}
 
@@ -829,26 +841,53 @@ func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger
 	s.executeRoutine(ctx, logger, trigger, fire)
 }
 
+// computeNextFire is the SCHEDULER's lenient fallback: rows that
+// predate write-time validation must degrade, not vanish — an invalid
+// expr retries in an hour; an unknown timezone parses as UTC (the
+// pinned TestComputeNextFire_TimezoneInvalid semantics). Write paths
+// use strict NextCronFire and reject instead.
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	var cfg types.CronSourceConfig
 	_ = json.Unmarshal(trigger.SourceConfig, &cfg)
 	if cfg.Expr == "" {
 		return now.Add(time.Hour)
 	}
-
-	loc := time.UTC
-	if cfg.TZ != "" {
-		if parsed, err := time.LoadLocation(cfg.TZ); err == nil {
-			loc = parsed
-		}
-	}
-
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	sched, err := parser.Parse(cfg.Expr)
+	next, err := NextCronFire(cfg.Expr, "", now) // lenient: UTC
 	if err != nil {
 		return now.Add(time.Hour)
 	}
-	return sched.Next(now.In(loc)).UTC()
+	if cfg.TZ != "" {
+		if nextTZ, err := NextCronFire(cfg.Expr, cfg.TZ, now); err == nil {
+			return nextTZ
+		}
+		// unknown tz -> UTC slot already computed above
+	}
+	return next
+}
+
+// NextCronFire validates a 5-field cron expression (optional IANA tz)
+// and returns the next occurrence strictly after now, in UTC. Invalid
+// expressions or unknown timezones return an error — callers that
+// validate at write time use this; the scheduler's fallback wrapper
+// (computeNextFire) degrades to +1h for rows that predate validation.
+func NextCronFire(expr, tz string, now time.Time) (time.Time, error) {
+	if expr == "" {
+		return time.Time{}, fmt.Errorf("cron expr is required")
+	}
+	loc := time.UTC
+	if tz != "" {
+		parsed, err := time.LoadLocation(tz)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("unknown timezone %q", tz)
+		}
+		loc = parsed
+	}
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	sched, err := parser.Parse(expr)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid cron expr: %v", err)
+	}
+	return sched.Next(now.In(loc)).UTC(), nil
 }
 
 func topoSort(spec *wf.Spec) []int {
