@@ -705,6 +705,7 @@ func TestExtractSpecJSON_Table(t *testing.T) {
 		{"flow YAML converts", `{nodes: [], edges: []}`, `{"edges":[],"nodes":[]}`, ""},
 		{"bare scalar YAML", "just-a-string", `"just-a-string"`, ""},
 		{"multi-doc rejected", "nodes: []\n---\nedges: []", "", "single document"},
+		{"malformed second doc rejected", "nodes: []\n---\n: oops", "", "trailing YAML"},
 		{"garbage rejected", "}: not yaml [or json", "", "neither JSON nor YAML"},
 	}
 	for _, tc := range cases {
@@ -741,4 +742,28 @@ func TestWorkflowUpdate_YAMLSpec(t *testing.T) {
 	})
 	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "wf-y1")
+}
+
+// Update-path unhappy legs: multi-doc and malformed-second-doc YAML are
+// both rejected on PUT (no silent truncation to the first document).
+func TestWorkflowUpdate_YAMLRejections(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-y2"] = &wf.WorkflowRow{
+		ID: "wf-y2", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y2", map[string]any{
+		"specYaml": "nodes: []\n---\nedges: []\n",
+	})
+	require.Equal(t, 400, w.Code, "two valid documents rejected")
+	assert.Contains(t, w.Body.String(), "single document")
+
+	w = doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y2", map[string]any{
+		"specYaml": "nodes: []\n---\n: oops\n",
+	})
+	require.Equal(t, 400, w.Code, "malformed SECOND document rejected, not swallowed")
+	assert.Contains(t, w.Body.String(), "trailing YAML")
 }

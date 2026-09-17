@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -531,8 +532,11 @@ func extractSpecJSON(specYAML string) (string, error) {
 		return "", fmt.Errorf("spec is neither JSON nor YAML: %v", err)
 	}
 	var extra any
-	if err := dec.Decode(&extra); err == nil {
-		return "", fmt.Errorf("spec must be a single document (multi-document YAML rejected)")
+	if err := dec.Decode(&extra); err == nil || !errors.Is(err, io.EOF) {
+		// A second decodable document, OR a MALFORMED one (any non-EOF
+		// error) — both are multi-document input, both rejected; treating
+		// a parse error as end-of-stream silently truncated.
+		return "", fmt.Errorf("spec must be a single document (multi-document or trailing YAML rejected)")
 	}
 	out, err := json.Marshal(doc)
 	if err != nil {

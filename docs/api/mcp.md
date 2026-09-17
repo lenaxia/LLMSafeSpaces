@@ -153,7 +153,7 @@ openai_compatible
 | `workflow_status` | `run_id` | Get the status of a workflow run |
 | `workflow_cancel` | `run_id` | Cancel a running workflow |
 
-`spec_yaml` is the workflow DAG spec as a JSON document (`{"nodes":[...],"edges":[...]}`).
+`spec_yaml` is the workflow DAG spec: a JSON document (`{"nodes":[...],"edges":[...]}`) or YAML text (single document) — the server converts YAML to the canonical JSON spec.
 
 ### Triggers (Epic 64)
 
