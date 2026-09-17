@@ -528,6 +528,16 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 		return
 	}
 
+	// NOTE (#1425): trigger-fired runs deliberately bypass the workflow's
+	// inputSchema. The run input is the system envelope
+	// ({source:{type,id}, received_at}), which can never satisfy a
+	// user-authored schema with required non-envelope properties —
+	// validating here would break every DAG trigger against schemas that
+	// manual runs legitimately require. The cost is that trigger-fired
+	// runs of schema-bearing workflows surface late node failures
+	// instead of early validation; resolving that (trigger-carried static
+	// input, envelope mapping, or create-time wiring checks) is tracked
+	// in #1425.
 	inputForRun := json.RawMessage(envelopeJSON)
 
 	fireID := uuid.New().String()

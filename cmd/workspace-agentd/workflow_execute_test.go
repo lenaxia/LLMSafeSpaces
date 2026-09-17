@@ -306,6 +306,10 @@ func TestWorkflowExecute_ScriptUnsupportedLanguageKeepsDetail(t *testing.T) {
 // A real process failure (python that runs and exits non-zero) keeps the
 // exit code + stderr shape.
 func TestWorkflowExecute_ScriptProcessFailureKeepsExitCode(t *testing.T) {
+	// Same runtime-image dependency skip as TestWorkflowExecute_ScriptSuccess.
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; script-node runtime is a workspace-image dependency")
+	}
 	handler := "def handler(input):\n    raise RuntimeError('boom')"
 	bodyJSON, err := json.Marshal(map[string]any{
 		"nodeId": "s2", "nodeType": "script",
@@ -323,11 +327,4 @@ func TestWorkflowExecute_ScriptProcessFailureKeepsExitCode(t *testing.T) {
 	assert.Equal(t, "script_failed", resp.ErrorCode)
 	assert.Contains(t, resp.Detail, "exit 1", "real process exits keep the exit N: stderr shape")
 	assert.Contains(t, resp.Detail, "boom", "handler traceback surfaces in stderr")
-}
-
-// python3 availability guard — the process-failure test needs a real python.
-func TestPythonAvailable(t *testing.T) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		t.Skip("python3 not installed")
-	}
 }

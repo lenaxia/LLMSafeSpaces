@@ -761,3 +761,41 @@ func TestTriggerUpdate_EnableStaleSlotRecomputes(t *testing.T) {
 	assert.True(t, next.After(time.Now().UTC()), "re-enabling a stale trigger resumes on the next future occurrence, not the stale slot")
 	assert.Equal(t, 2, next.Hour())
 }
+
+func TestTriggerUpdate_NoopEnableKeepsFutureSlot(t *testing.T) {
+	// enabled:true on an ALREADY-enabled trigger must never move the
+	// slot — an imminent-but-unclaimed fire (the scheduler tick window)
+	// would otherwise be silently pushed to the next occurrence
+	// (review finding on #1410).
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "imminent", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"workspaceId":  "ws-1", "prompt": "x",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	// Put the stored slot just inside the claim window: due, but not yet
+	// claimed by the scheduler.
+	imminent := time.Now().UTC().Add(-2 * time.Second)
+	for _, row := range store.triggers {
+		row.NextFireAt = &imminent
+	}
+
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"enabled": true,
+	})
+	require.Equal(t, 200, w2.Code)
+
+	for _, row := range store.triggers {
+		require.NotNil(t, row.NextFireAt)
+		assert.WithinDuration(t, imminent, *row.NextFireAt, time.Second,
+			"no-op enable on an enabled trigger must not reschedule an imminent fire")
+	}
+}

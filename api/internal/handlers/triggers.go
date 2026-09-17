@@ -404,10 +404,15 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 					return
 				}
 				upd.NextFireAt = &next
-			case verr == nil && req.Enabled != nil && *req.Enabled &&
+			case verr == nil && req.Enabled != nil && *req.Enabled && !existing.Enabled &&
 				(existing.NextFireAt == nil || existing.NextFireAt.Before(now)):
-				// Re-enable with a stale slot; legacy unparseable configs
-				// (verr != nil) keep the engine's fallback behavior.
+				// Re-enable (disabled→enabled) with a stale slot; legacy
+				// unparseable configs (verr != nil) keep the engine's
+				// fallback behavior. The !existing.Enabled guard matters:
+				// a no-op enabled:true on an ALREADY-enabled trigger must
+				// never touch the slot — an imminent-but-unclaimed fire
+				// (the ≤tick-window race) would otherwise be pushed to the
+				// next occurrence.
 				upd.NextFireAt = &next
 			}
 		}

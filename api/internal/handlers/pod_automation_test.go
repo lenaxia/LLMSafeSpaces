@@ -258,6 +258,25 @@ func TestScopeTriggerCreateBody(t *testing.T) {
 	assert.Contains(t, string(out), `"workflowId":"wf-9"`)
 	assert.NotContains(t, string(out), "workflow_id", "alias removed — one canonical spelling on the wire")
 
+	// Case-variant workspace key: the decoder binds DTO fields
+	// case-insensitively and map keys marshal sorted, so a surviving
+	// variant would override the forced stamp (review finding on #1412).
+	out, wfID, err = scopeTriggerCreateBody([]byte(`{"name":"x","workspaceid":"ws-EVIL","prompt":"p"}`), "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, wfID)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`, "case-variant caller key stripped, stamp survives")
+	assert.NotContains(t, string(out), "ws-EVIL")
+
+	// Contradictory alias duplicates are an explicit error, not a pick.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflow_id":"wf-1","workflowId":"wf-2"}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "different values")
+
+	// Non-string workflowId surfaces its specific error.
+	_, _, err = scopeTriggerCreateBody([]byte(`{"name":"x","workflowId":123}`), "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workflowId must be a string")
+
 	_, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
 	assert.Error(t, err, "non-object bodies are an explicit error, not a silent skip")
 }

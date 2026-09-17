@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -171,28 +172,40 @@ func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay [
 func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(replay, &fields); err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("trigger body must be a JSON object: %w", err)
 	}
 	// Normalize the snake_case alias onto the DTO spelling — the json
 	// decoder ignores unknown fields, so a caller using workflow_id would
-	// otherwise lose the linkage silently.
+	// otherwise lose the linkage silently. Contradictory duplicates are
+	// an explicit error, never a silent pick.
 	if alias, ok := fields["workflow_id"]; ok {
-		if _, exists := fields["workflowId"]; !exists {
+		if _, exists := fields["workflowId"]; exists {
+			var aliasVal, canonicalVal string
+			_ = json.Unmarshal(alias, &aliasVal)
+			_ = json.Unmarshal(fields["workflowId"], &canonicalVal)
+			if aliasVal != canonicalVal {
+				return nil, "", fmt.Errorf("workflow_id and workflowId both present with different values")
+			}
+		} else {
 			fields["workflowId"] = alias
 		}
 		delete(fields, "workflow_id")
 	}
 	if raw, ok := fields["workflowId"]; ok {
 		if err := json.Unmarshal(raw, &workflowID); err != nil {
-			return nil, "", fmt.Errorf("workflowId must be a string: %w", err)
+			return nil, "", fmt.Errorf("workflowId must be a string")
 		}
 	}
-	// Strip EVERY caller-supplied workspace spelling. The resolver key
-	// (workspaceID) case-insensitively binds to the DTO's workspaceId, so
-	// leaving it would both trip the DTO's workflowId XOR check and let a
-	// caller-ordered key compete with the forced stamp.
-	delete(fields, "workspaceID")
-	delete(fields, "workspaceId")
+	// Strip EVERY caller-supplied workspace key, case-insensitively —
+	// Go's decoder binds DTO fields case-insensitively and map keys
+	// marshal in sorted order, so any case variant of workspaceId (e.g.
+	// "workspaceid") left in the body would deterministically override
+	// the forced stamp below (review finding on #1412).
+	for k := range fields {
+		if strings.EqualFold(k, "workspaceId") {
+			delete(fields, k)
+		}
+	}
 	if workflowID != "" {
 		out, err := json.Marshal(fields)
 		return out, workflowID, err
@@ -226,7 +239,10 @@ func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
 	}
 	forced, workflowID, err := scopeTriggerCreateBody(raw, ws)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
+		// Surface the specific scoping error (non-string workflowId,
+		// contradictory aliases, non-object body) — a generic message
+		// here misleads exactly the agents this surface serves.
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	if workflowID != "" {

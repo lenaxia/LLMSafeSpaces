@@ -258,10 +258,10 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change).",
+						Description: "Partially update one workflow (id + fields to change; omitted = keep existing). Patch shape = UpdateWorkflowRequest: specYaml (the DAG as a STRINGIFIED spec, re-validated - node types script/agent/http/condition), inputSchema (JSON Schema, compile-checked and enforced on workflow_run inputs), targetWorkspaceId (set this workspace or runs are rejected), defaults, status, name/slug/description. Spec re-validation fails closed with per-node details.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
-							"patch": map[string]any{"type": "object", "description": "Fields to change"},
+							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateWorkflowRequest shape)"},
 						}, "required": []string{"id", "patch"}},
 					},
 					{
