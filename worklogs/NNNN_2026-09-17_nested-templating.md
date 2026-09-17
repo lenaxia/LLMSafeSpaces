@@ -23,7 +23,7 @@ None.
 ## Tests Run
 - go test ./cmd/workspace-agentd/ -run 'TestRenderTemplateRefs|TestWorkflowExecuteHandler_AgentNode' -v — 9 templating tests (7 unit: nested/hyphen/any-charset+flat-dotted/no-double-render/inert-control/unclosed-cross-newline/unclosed-same-line; 2 handler-integration: happy render + unresolved-literal through the real wiring) — all PASS.
 - go test ./cmd/workspace-agentd/ -count=1 — full suite PASS.
-- E2E (in-repo, kind): local/issue-1417-templating-e2e.sh — a workflow run whose agent prompt carries {{.body.topic}} + {{.missing.path}} executes against a mock OpenAI upstream that echoes the prompt; T1 asserts the rendered nested value in the run output, T2 the literal unresolvable ref (same turn). Structural pins: TestIssue1417E2EScript_* (bash syntax, row assertions present).
+- E2E (in-repo, kind): local/issue-1417-templating-e2e.sh — a workflow run whose agent prompt carries {{.body.topic}} + {{.missing.path}} executes against a mock OpenAI upstream that echoes the prompt; T1 asserts the rendered nested value in the run output, T2 the literal unresolvable ref (same turn). Structural pins: TestIssue1417E2EScript_* (bash syntax, row assertions, nightly-workflow registration).
 
 ## Next Steps
 PR → review; live leg in the comprehensive test (#1427).
@@ -32,4 +32,5 @@ PR → review; live leg in the comprehensive test (#1427).
 - cmd/workspace-agentd/workflow_execute.go (+workflow_execute_test.go)
 - cmd/workspace-agentd/mcp_server.go (workflow_create templating documentation) + mcp_server_test.go (guidance pin)
 - local/issue-1417-templating-e2e.sh (+issue_1417_templating_e2e_script_test.go) — the kind-cluster e2e legs
+- .github/workflows/e2e-nightly.yml — the e2e step (registered; pin-enforced)
 - worklogs/this entry

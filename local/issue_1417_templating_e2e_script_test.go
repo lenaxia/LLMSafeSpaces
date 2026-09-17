@@ -50,3 +50,13 @@ func TestIssue1417E2EScript_RowAssertionsPresent(t *testing.T) {
 	assert.Contains(t, s, `die "${failures} templating e2e row(s) failed"`)
 	assert.NotContains(t, strings.ReplaceAll(s, "note_fail", ""), "TODO", "no stub rows")
 }
+
+// TestIssue1417E2EWorkflowRegistered pins the nightly workflow row so
+// the script cannot rot unexecuted (the #1420 precedent).
+func TestIssue1417E2EWorkflowRegistered(t *testing.T) {
+	raw, err := os.ReadFile("../.github/workflows/e2e-nightly.yml")
+	require.NoError(t, err)
+	src := string(raw)
+	assert.True(t, strings.Contains(src, "local/issue-1417-templating-e2e.sh"),
+		"the templating e2e script must be registered in the nightly workflow")
+}
