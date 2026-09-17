@@ -967,8 +967,17 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	t.Run("workflow_create guidance", func(t *testing.T) {
 		d, ok := descs["workflow_create"]
 		require.True(t, ok, "workflow_create in tools/list")
-		assert.Contains(t, d, "passes through to the platform verbatim") // schema-decoupled contract
-		assert.Contains(t, d, "workflow_list")                           // where shapes are learned
+		for _, want := range []string{
+			"exactly: script", // the REAL node vocabulary (#1415 — no invented types)
+			"condition",       // ...all four named
+			"otherwise",       // the default-branch edge rule
+			"one start node",  // single-entry DAG rule
+			"{{.body.topic}}", // dotted-path templating named (#1417)
+			"workflowId",      // camelCase DTO spelling (#1415)
+		} {
+			assert.Contains(t, d, want)
+		}
+		assert.NotContains(t, d, "transform/parallel", "invented node types must not be taught")
 	})
 
 	t.Run("workflow_run guidance", func(t *testing.T) {

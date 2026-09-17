@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -178,7 +179,17 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 			return
 		}
 		if exitCode != 0 {
-			writeWorkflowError(w, http.StatusOK, "script_failed", fmt.Sprintf("exit %d: %s", exitCode, stderr))
+			// #1414: the -1 sentinel marks PRE-execution failures where
+			// stderr is empty and the real cause rides in err ("unsupported
+			// language", "create temp dir: ..."). Never print a bare
+			// "exit -1: " — name the actual failure.
+			detail := strings.TrimSpace(stderr)
+			if detail == "" {
+				detail = err.Error()
+			} else if exitCode < 0 {
+				detail = fmt.Sprintf("%s (exit %d: %s)", detail, exitCode, err.Error())
+			}
+			writeWorkflowError(w, http.StatusOK, "script_failed", fmt.Sprintf("exit %d: %s", exitCode, detail))
 			return
 		}
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
@@ -289,6 +300,46 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 	writeWorkflowSuccess(w, map[string]any{}, "otherwise")
 }
 
+// renderTemplateRefs replaces {{.path}} references in an agent prompt
+// with values from the node input. Paths may be dotted (#1417):
+// {{.body.topic}} walks nested maps, matching the condition nodes'
+// expression depth — webhook-driven runs hand the fire envelope, whose
+// payload lives under body. Scalars render bare; composites (maps,
+// arrays) render as compact JSON. Unresolvable refs stay literal.
+func renderTemplateRefs(prompt string, input map[string]any) string {
+	return templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
+		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
+		if path == "" {
+			return ref
+		}
+		var cur any = input
+		for _, seg := range strings.Split(path, ".") {
+			m, ok := cur.(map[string]any)
+			if !ok {
+				return ref
+			}
+			cur, ok = m[seg]
+			if !ok {
+				return ref
+			}
+		}
+		switch v := cur.(type) {
+		case string:
+			return v
+		case fmt.Stringer:
+			return v.String()
+		default:
+			b, err := json.Marshal(cur)
+			if err != nil {
+				return ref
+			}
+			return string(b)
+		}
+	})
+}
+
+var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.]+\}\}`)
+
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData
 	if err := json.Unmarshal(req.Spec, &data); err != nil {
@@ -300,9 +351,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	if len(req.Input) > 0 {
 		var input map[string]any
 		_ = json.Unmarshal(req.Input, &input)
-		for k, v := range input {
-			prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", fmt.Sprintf("%v", v))
-		}
+		prompt = renderTemplateRefs(prompt, input)
 	}
 
 	sessionMode := data.Session

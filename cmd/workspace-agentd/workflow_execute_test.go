@@ -283,3 +283,60 @@ func TestWorkflowParse_WireDriftCorruption(t *testing.T) {
 		})
 	}
 }
+
+// #1417: dotted-path template refs walk nested maps — webhook-driven
+// runs hand the envelope whose payload lives under body.
+func TestRenderTemplateRefs_NestedPaths(t *testing.T) {
+	input := map[string]any{
+		"body": map[string]any{
+			"topic":   "ship-it",
+			"urgency": "high",
+			"meta":    map[string]any{"n": 1.0},
+		},
+		"received_at": "2026-09-17T00:00:00Z",
+	}
+	out := renderTemplateRefs("{{.body.topic}} / {{.body.urgency}} / {{.received_at}}", input)
+	if out != "ship-it / high / 2026-09-17T00:00:00Z" {
+		t.Fatalf("nested scalars must render: %q", out)
+	}
+	// Composites render as compact JSON.
+	if got := renderTemplateRefs("{{.body.meta}}", input); got != `{"n":1}` {
+		t.Fatalf("composite renders as JSON: %q", got)
+	}
+	// Unresolvable refs stay literal — never empty, never dropped.
+	if got := renderTemplateRefs("keep {{.body.missing}} and {{.not.a.map}}", input); got != "keep {{.body.missing}} and {{.not.a.map}}" {
+		t.Fatalf("unresolvable refs stay literal: %q", got)
+	}
+	// Top-level behavior unchanged (back-compat with schema-shaped runs).
+	if got := renderTemplateRefs("{{.topic}}", map[string]any{"topic": "x"}); got != "x" {
+		t.Fatalf("top-level refs still render: %q", got)
+	}
+}
+
+// #1414: pre-execution failures must NAME the cause — never a bare
+// "exit -1: ". The unsupported-language sentinel is the canonical case.
+func TestExecScriptNode_UnsupportedLanguageNamesCause(t *testing.T) {
+	var req workflowExecuteRequest
+	req.NodeID = "s1"
+	req.NodeType = "script"
+	req.Spec = json.RawMessage(`{"language":"bash","handler":"echo hi"}`)
+	w := httptest.NewRecorder()
+	execScriptNode(context.Background(), w, &req)
+
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.ErrorCode != "script_failed" {
+		t.Fatalf("code: %s", resp.ErrorCode)
+	}
+	if !strings.Contains(resp.Detail, "unsupported language: bash") {
+		t.Fatalf("the REAL cause must be named, got: %q", resp.Detail)
+	}
+	if strings.TrimSpace(resp.Detail) == "exit -1:" {
+		t.Fatalf("bare exit -1 regression")
+	}
+}

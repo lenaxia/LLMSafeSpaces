@@ -148,6 +148,12 @@ func validateNodeData(n *SpecNode) []ValidationError {
 		if d.Language == "" {
 			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: "script node missing required field 'language'"}}
 		}
+		// #1414: reject unsupported languages at SPEC time — the runtime
+		// sentinel used to surface as a bare "exit -1: " long after
+		// authoring. python|node are the executor's vocabulary.
+		if d.Language != "python" && d.Language != "node" {
+			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: fmt.Sprintf("unsupported script language %q (valid: python, node)", d.Language)}}
+		}
 	case types.NodeTypeAgent:
 		var d AgentNodeData
 		if err := json.Unmarshal(n.Data, &d); err != nil {

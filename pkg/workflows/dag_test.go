@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -536,4 +537,23 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// #1414: unsupported script languages are rejected at spec-validation
+// time — not at runtime with a sentinel error.
+func TestValidateSpec_ScriptLanguageValidated(t *testing.T) {
+	spec := &Spec{Nodes: []SpecNode{{
+		ID: "s1", Type: "script",
+		Data: json.RawMessage(`{"language":"bash","handler":"echo hi"}`),
+	}}}
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	found := false
+	for _, e := range errs {
+		if e.Code == "invalid_node_data" && strings.Contains(e.Detail, "unsupported script language") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("bash must be rejected at spec time, got %+v", errs)
+	}
 }
