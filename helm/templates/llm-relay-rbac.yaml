@@ -1,0 +1,74 @@
+{{- /* RBAC for relay-only key delivery (design 0058 §4.3):
+       - the router SA: get/list/watch Secrets in llm-relay, plus the
+         name-scoped WRITE carve-out for exactly the two HPKE keypair
+         Secrets (§4.2 bootstrap/rotation/DR needs it, and nothing else);
+       - the controller SA: create/update/delete the OTHER llm-relay
+         Secrets (staged envelopes, llm-relay-kek, llm-relay-mint-key) and
+         get on llm-relay-hpke-pub only — it never reads the private-key
+         Secret. */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+{{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: llm-relay-router
+  namespace: {{ $ns }}
+  labels:
+    {{- include "llmsafespaces.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llm-relay-router-secrets
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["llm-relay-hpke-key", "llm-relay-hpke-pub"]
+    verbs: ["create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llm-relay-router-secrets
+  namespace: {{ $ns }}
+subjects:
+  - kind: ServiceAccount
+    name: llm-relay-router
+    namespace: {{ $ns }}
+roleRef:
+  kind: Role
+  name: llm-relay-router-secrets
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: llmsafespaces-controller-llm-relay
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["llm-relay-hpke-pub"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: llmsafespaces-controller-llm-relay
+  namespace: {{ $ns }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llmsafespaces.controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: llmsafespaces-controller-llm-relay
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

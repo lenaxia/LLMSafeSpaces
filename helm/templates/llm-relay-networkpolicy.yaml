@@ -1,0 +1,24 @@
+{{- /* Workspace pods get exactly one egress carve-out (design 0058 §4.3):
+       DNS + the llm-relay-router Service — the relay-router-networkpolicy
+       namespaceSelector pattern applied to the BYO router. */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+{{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-relay-router-allow-workspaces
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: llm-relay-router
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 8090
+{{- end }}

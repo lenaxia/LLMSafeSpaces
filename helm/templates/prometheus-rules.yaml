@@ -844,4 +844,36 @@ spec:
             description: >-
               {{ `{{ $value }}` }} API keys are still stored in plaintext (pre-migration).
               Complete the key hashing migration to eliminate this security debt.
+{{- /* Relay-only key delivery alerts (Epic 72 / US-72.2): the exfil bound
+       and the credential-freshness signals. Metadata-only metrics (K7). */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+    - name: llmsafespaces.llm-relay
+    rules:
+        - alert: LlmRelayRouterRejectSpike
+          expr: |
+          sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"401|403|429"}[10m])) > 20
+          for: 5m
+          labels:
+            severity: warning
+            component: llm-relay
+          annotations:
+            summary: "BYO relay router rejecting a workspace's requests"
+            description: >-
+              Workspace {{ `{{ $labels.workspace }}` }} accumulated {{ `{{ $value }}` }}
+              rejections (401/403/429) in 10m — check CredentialStale/CredentialRejected
+              conditions and quota usage.
+        - alert: LlmRelayRouterUpstreamErrors
+          expr: |
+          sum by (workspace) (increase(llm_relay_byo_requests_total{status=~"5.."}[10m])) > 10
+          for: 5m
+          labels:
+            severity: warning
+            component: llm-relay
+          annotations:
+            summary: "BYO relay router upstream failures"
+            description: >-
+              Workspace {{ `{{ $labels.workspace }}` }} saw {{ `{{ $value }}` }} upstream-class
+              failures in 10m — resolve path or provider availability issue.
+{{- end }}
+
 {{- end }}
