@@ -174,6 +174,12 @@ func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, wor
 	if err := json.Unmarshal(replay, &fields); err != nil {
 		return nil, "", fmt.Errorf("trigger body must be a JSON object: %w", err)
 	}
+	// A JSON `null` body unmarshals into a nil map WITHOUT error — guard
+	// before the stamp below writes into it (nil-map assignment panics,
+	// and Gin recovery would turn it into an opaque 500).
+	if fields == nil {
+		return nil, "", fmt.Errorf("trigger body must be a JSON object")
+	}
 	// Normalize the snake_case alias onto the DTO spelling — the json
 	// decoder ignores unknown fields, so a caller using workflow_id would
 	// otherwise lose the linkage silently. Contradictory duplicates are

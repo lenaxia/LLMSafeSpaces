@@ -277,6 +277,18 @@ func TestScopeTriggerCreateBody(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "workflowId must be a string")
 
+	// A JSON null body unmarshals to a nil map WITHOUT error — the guard
+	// must reject it before the stamp writes into the nil map (panic
+	// class; round-2 review finding).
+	_, _, err = scopeTriggerCreateBody([]byte(`null`), "ws-1")
+	require.Error(t, err, "null body must not reach the stamp (nil-map panic)")
+	assert.Contains(t, err.Error(), "trigger body must be a JSON object")
+
+	// An empty object is a valid (if minimal) body — no panic, stamped.
+	out, _, err = scopeTriggerCreateBody([]byte(`{}`), "ws-1")
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"workspaceId":"ws-1"`)
+
 	_, _, err = scopeTriggerCreateBody([]byte(`not json`), "ws-1")
 	assert.Error(t, err, "non-object bodies are an explicit error, not a silent skip")
 }

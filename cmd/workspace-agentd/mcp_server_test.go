@@ -933,6 +933,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"you cannot schedule work into other workspaces", // the explicit cannot
 			"autoDisableAfter",                               // failure-policy field named
 			"trigger_fires",                                  // where failures show up
+			// #1415 drift pins — the description once invented a
+			// snake_case field and omitted validation semantics.
+			"workflowId (camelCase!)",   // DTO spelling (snake_case is silently dropped)
+			"does NOT fire immediately", // first-occurrence scheduling semantics
+			"both are validated",        // create-path validation surfaced
 		} {
 			assert.Contains(t, d, want)
 		}
@@ -969,6 +974,28 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "workflow_create in tools/list")
 		assert.Contains(t, d, "passes through to the platform verbatim") // schema-decoupled contract
 		assert.Contains(t, d, "workflow_list")                           // where shapes are learned
+		// #1415 drift pins — the description once invented a node
+		// vocabulary the validator rejects and never stated the
+		// script-node contract.
+		assert.Contains(t, d, "script, agent, http, condition") // the validated vocabulary, exactly
+		assert.NotContains(t, d, "transform")                   // no invented types may return
+		assert.NotContains(t, d, "mcp_call")
+		assert.Contains(t, d, "handler(input) -> dict") // script handler is source, not a shell command
+		assert.Contains(t, d, "targetWorkspaceId")      // runs are rejected without it
+	})
+
+	t.Run("workflow_update guidance", func(t *testing.T) {
+		d, ok := descs["workflow_update"]
+		require.True(t, ok, "workflow_update in tools/list")
+		for _, want := range []string{
+			"UpdateWorkflowRequest",       // the patch shape is named
+			"STRINGIFIED spec",            // specYaml is a string, not a nested object
+			"inputSchema",                 // compile-checked + enforced on runs
+			"targetWorkspaceId",           // runs are rejected without it
+			"script/agent/http/condition", // re-validation vocabulary
+		} {
+			assert.Contains(t, d, want)
+		}
 	})
 
 	t.Run("workflow_run guidance", func(t *testing.T) {

@@ -11,6 +11,7 @@
 Make the automation surface behave as its contracts promise: schedules that take effect when written (not at stale slots), DAG triggers creatable from the pod surface and loud when their workflow disappears, run inputs that obey declared schemas, script failures that name their cause, and tool descriptions that stop inventing vocabulary.
 
 ## Work Completed
+- Review r3: null-body guard in `scopeTriggerCreateBody` (JSON `null` unmarshals to a nil map without error — the stamp would panic; now an explicit 400, with null + empty-object probes); drift pins for the corrected #1415 descriptions (`workflow_update` guidance subtest; `trigger_create`/`workflow_create` pins on workflowId-camelCase, no-immediate-fire, validation semantics, the four-node vocabulary with NotContains on invented types, the script handler contract); follow-up issue #1426 filed for the create-only pod-seam scoping rule.
 - Shared cron logic: new `pkg/workflows/schedule.go` — `ValidateCronSourceConfig` / `NextCronFire` / `NextCronFireFromConfig`, single source of truth for the write path (handlers) and read path (engine).
 - #1411: create validates expr (five-field) + IANA tz (400 on bad) and initializes `next_fire_at` to the first real occurrence instead of `now` (no more immediate fire on create; no more hourly retry loops for garbage exprs). Engine keeps legacy fallbacks (UTC for unloadable tz, +1h for unparseable expr) for pre-validation rows.
 - #1410: `TriggerUpdate.NextFireAt` + `next_fire_at` SET clause in `UpdateTrigger`; the update handler recomputes the slot when `sourceConfig` changes and refreshes a stale slot on disabled→enabled re-enable — guarded to that transition (review r2: a no-op `enabled:true` on an already-enabled trigger must never push an imminent-but-unclaimed fire).
@@ -36,8 +37,9 @@ None. Follow-up design decision tracked in #1425 (trigger-carried static input v
 - Structural pins for the e2e script (bash -n, row assertions, nightly registration, no calendar-date rot).
 
 ## Next Steps
-- PR #1420 review round 2.
+- PR #1420 review rounds 2–3.
 - Nightly e2e exercises R1–R5 on the next kind run; #1425 design decision unblocks schema-bearing DAG triggers.
+- #1426 (review r2 follow-up): the pod seam's scoping rule is create-only — trigger_update still forwards caller workspaceId/workflowId unscoped.
 
 ## Files Modified
 - pkg/workflows/schedule.go (+_test), input_schema.go (+_test), store.go, dag.go (+_test)
