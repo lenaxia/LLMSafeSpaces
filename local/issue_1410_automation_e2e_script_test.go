@@ -29,10 +29,12 @@ func TestIssue1410E2EScript_BashSyntax(t *testing.T) {
 	require.NoError(t, err, "bash -n failed: %s", string(out))
 }
 
-// TestIssue1410E2EScript_RowsAndAssertions pins the five rows and their
+// TestIssue1410E2EScript_RowsAndAssertions pins the six rows and their
 // key assertions: create validation + first-occurrence slot (R1),
 // immediate reschedule (R2), no-op-enable slot stability (R3), the loud
-// missing-workflow fire (R4), and run-input schema enforcement (R5).
+// missing-workflow fire (R4), run-input schema enforcement (R5), and
+// trigger input mapping (R6 — envelope-wiring guard, mapped static input,
+// webhook body mode over the rotated HMAC secret).
 func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
@@ -58,6 +60,19 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`'{"input":{"wrong":true}}' >/dev/null`,    // non-conforming input attempted
 		`R5a: schema-violating run input rejected`, // 400 before queueing asserted
 		`R5b: conforming input passed schema validation`,
+		// R6 — trigger input mapping (#1425/#1419, design 0059).
+		`R6a: envelope-mode wiring to required-topic schema rejected`, // wiring guard row
+		`R6b: mapped input {} rejected`,                               // mapped static input validated (unhappy)
+		`R6b: mapped input {topic:\"nightly\"} accepted`,              // mapped static input validated (happy)
+		`inputFrom:"body"`,                                            // webhook body-mode wiring spelled
+		`inputFrom:"mapped"`,                                          // mapped-mode wiring spelled
+		`/rotate-secret`,                                              // HMAC secret rotation endpoint
+		`X-Hub-Signature-256: sha256=`,                                // deliveries are HMAC-signed
+		`.input.topic == "e2e"`,                                       // payload-as-top-level-run-input asserted
+		`R6c: payload arrived as top-level run input`,                 // body-mode row
+		`select(.status=="validation_error")`,                         // failed-fire status asserted
+		`*"schema_mismatch"*`,                                         // actionResult code asserted (no instance echo)
+		`R6c: violating payload queued no run`,                        // no run on schema mismatch
 		// Cleanup so the nightly owner's trigger list stays clean.
 		`trap cleanup EXIT`,
 	} {

@@ -938,9 +938,24 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"workflowId (camelCase!)",   // DTO spelling (snake_case is silently dropped)
 			"does NOT fire immediately", // first-occurrence scheduling semantics
 			"both are validated",        // create-path validation surfaced
+			// 0059 drift pins — the input-mapping contract: the three
+			// inputFrom spellings, the static-input document, and the
+			// envelope-wiring 400 with its three remedies.
+			"static run input", // `input` is the static run input document
+			"validated against the workflow's inputSchema when `inputFrom` is `mapped`", // mapped-mode create-time validation
+			"`envelope` (default",                                         // spelling 1 + the default
+			"{source, received_at, headers, body}",                        // the envelope shape named
+			"`body` (webhook only",                                        // spelling 2 + its source constraint
+			"posted payload becomes the run input",                        // body-mode semantics (#1419's fix)
+			"`mapped` (the static `input` document)",                      // spelling 3
+			"rejected with 400",                                           // the envelope-wiring guard (#1425)
+			"set `input`, use `inputFrom: \"body\"`, or relax the schema", // the three remedies
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The input-mapping fields keep the camelCase DTO spelling —
+		// snake_case is silently dropped (the workflowId lesson).
+		assert.NotContains(t, d, "input_from")
 	})
 
 	t.Run("trigger_update guidance", func(t *testing.T) {
