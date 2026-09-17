@@ -68,7 +68,7 @@ RUN set -eux; \
         arm64) OC_ARCH=arm64 ;; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl --fail --show-error --location \
+    curl --fail --show-error --location --retry 5 --retry-delay 3 --retry-all-errors \
         "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${OC_ARCH}.tar.gz" \
         -o /tmp/opencode.tar.gz; \
     mkdir -p /out; \
