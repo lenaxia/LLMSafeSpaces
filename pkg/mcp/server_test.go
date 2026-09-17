@@ -855,3 +855,14 @@ func TestRunResolve_NullAndEmptyArrayRepliesRejected(t *testing.T) {
 		assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "non-empty JSON array")
 	}
 }
+
+// #1424: the tool contracts teach both spec dialects.
+func TestWorkflowToolSpecDescriptions_TeachDialects(t *testing.T) {
+	b, err := json.Marshal(workflowCreateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "or YAML text", "create spec_yaml teaches YAML")
+	assert.NotContains(t, string(b), `spec (JSON)"`, "bare JSON-only wording gone")
+	b, err = json.Marshal(workflowUpdateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "or YAML text", "update spec_yaml teaches YAML")
+}
