@@ -1577,6 +1577,17 @@ jobs:
           test -s /tmp/ca-bundle.crt || (echo "FAIL: CA bundle missing/empty (#1416 regression)" && exit 1)
           grep -q "BEGIN CERTIFICATE" /tmp/ca-bundle.crt || (echo "FAIL: bundle carries no certificates" && exit 1)
           echo "CA bundle verified: $(grep -c 'BEGIN CERTIFICATE' /tmp/ca-bundle.crt) certificates, $(wc -c < /tmp/ca-bundle.crt) bytes"
+          # FUNCTIONAL acceptance (#1416): the extracted bundle must
+          # verify the real target's TLS chain — the same verification
+          # an http node performs. Any HTTP status proves the handshake;
+          # --cacert makes the bundle the ONLY trust source.
+          code=$(curl -s -o /dev/null -w "%{http_code}" --cacert /tmp/ca-bundle.crt \
+            https://api.safespaces.dev/api/v1/health --max-time 30 || echo "curl-failed")
+          if [ "$code" = "000" ] || [ "$code" = "curl-failed" ]; then
+            echo "FAIL: bundle did not verify the target's TLS chain (curl code $code)"
+            exit 1
+          fi
+          echo "functional acceptance: TLS-verified response HTTP $code from api.safespaces.dev"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
