@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-09-17
+
+### Fixes — webhook triggers were unreachable at their advertised URL
+
+- **Receiver resolved the wrong ID** (PR #1404): create/rotate advertise
+  `/api/v1/hooks/<triggerID>` but the webhook row gets an independent
+  `uuid.New()` id, and the receiver looked the path param up as
+  `webhooks.id` — two UUIDs that can never match, so every webhook
+  trigger ever created returned 404 at its advertised URL before HMAC
+  verification. The receiver now resolves by trigger_id
+  (`GetWebhookByTriggerID`), repairing all existing webhooks with zero
+  migration; delivery dedup keys on the resolved row identity. Dead
+  `Store.GetWebhook` removed; contract comments corrected. Guarded by a
+  cross-handler e2e (`TestWebhookE2E_AdvertisedURLDelivers`): real
+  create → advertised URL verbatim → rotate → signed POST → 202 + fire
+  + queued run, plus bad-signature/unknown-id/duplicate unhappy legs.
+
+### Features — agentd
+
+- **`trigger_rotate_webhook_secret`** (PR #1405): the automation
+  surface could create webhook triggers but never obtain a signing
+  secret (create doesn't return one; rotate lived only on the user
+  API). Delegates the existing rotate over pod identity; the response
+  `{webhookSecret, webhookUrl}` surfaces verbatim to the owner's agent.
+  Rotation is AUDITED — `trigger.rotate_webhook_secret` event with the
+  resolved owner as actor (previously rotate issued credentials with no
+  audit event while create was audited), the secret never enters the
+  audit row. Also adds `TestMCPHandler_EveryAdvertisedToolDispatches`
+  (every tools/list name must survive the dispatcher — kills the
+  advertised-but-uncallable class caught in review).
+
 ## [0.32.0] - 2026-09-16
 
 ### Features — agentd automation tools (trigger_* / workflow_*)
