@@ -275,6 +275,18 @@ rm -f "${S1A_BODY}"
 
 # --- S1b: abort PREEMPTS the in-flight turn --------------------------------
 log "S1b: abort returns while the slow turn still runs (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
+# Environment gate: the prior dispatch caught the harness mid-restart
+# (agentd healthz: opencode 4096 connection-refused right at S1b; the
+# send ate a spurious empty 400). Wait for harness health BEFORE arming
+# the row — a restarting opencode is a wait, not a row failure.
+for _ in $(seq 1 20); do
+    if kc exec "${S1_POD}" -c workspace -- curl -sfm 3 -o /dev/null \
+        "http://127.0.0.1:4096/global/health" >/dev/null 2>&1; then
+        break
+    fi
+    [[ "$_" == "20" ]] && note_fail "S1b pre-flight: harness unhealthy for 60s (environment — not row semantics)"
+    sleep 3
+done
 S1B_SEND_LOG=/tmp/e71s1_slow_send.out
 (S1B_CODE=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/message" \
     "{"parts":[{"type":"text","text":"S1-SLOW-TURN ${S1B_SLOW_TURN_S} take your time"}],"model":{"modelID":"mock-model-s1","providerID":"s1-stub"}}" /dev/null) \
@@ -294,7 +306,7 @@ if ! [[ -f "${S1B_SEND_LOG}" ]]; then S1B_INFLIGHT=1; fi
 if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} && ${S1B_INFLIGHT} == 1 ]]; then
     ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s, send still pending (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
 else
-    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send='$(head -c 400 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending); agentd-tail='$( { kc logs "${S1_POD}" -c agentd --tail=200 2>/dev/null || true; } | grep -aiE "act|send|abort|error" | tail -4 | tr "\n" "|" )'"
+    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send='$(head -c 400 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending); api-log='$( { kc logs deploy/llmsafespaces-api --since=3m --tail=500 2>/dev/null || true; } | grep -a '"status":400' | tail -3 | tr "\n" "|" )'; agentd-tail='$( { kc logs "${S1_POD}" -c agentd --tail=200 2>/dev/null || true; } | grep -aiE "act|send|abort|error" | tail -4 | tr "\n" "|" )'"
 fi
 
 # The interrupted session must not be WEDGED BUSY: after the turn's own
