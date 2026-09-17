@@ -48,6 +48,13 @@ paths = [
   # ob_ prefix is the platform's own namespace). Verified 2026-09-11
   # (PR #1323 review): the generic-api-key rule fires on its shape alone.
   '''cmd/workspace-agentd/admission_incident_repro_test\.go''',
+  # #832 byte-compat gate: the golden hex map inlines the pre-consolidation
+  # HKDF outputs for the deterministic fixture master (bytes 0x01..0x1f,
+  # pkg/secrets/testdata/derive_server_key_golden.txt). Every value in this
+  # file is reproducible by anyone from that public fixture — there is no
+  # secret material — but the `"purpose": "<hex>"` map shape trips
+  # generic-api-key. Verified 2026-09-17 (PR #1409).
+  '''api/internal/app/derive_server_key_golden_test\.go''',
   # Worklog 0030 documents a real e2e test run; the JWT shown is a
   # short-lived test token bound to localhost. Worklog 0089 is the
   # epic-17 phase-4 audit narrative — it cites secret patterns the
