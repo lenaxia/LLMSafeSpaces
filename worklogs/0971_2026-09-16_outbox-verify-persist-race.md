@@ -169,4 +169,4 @@ None.
 - `cmd/workspace-agentd/spawn_env_pull_test.go` — OversizedBody generous attempt/bound
 - `cmd/workspace-agentd/spawn_files_size_exec_test.go` — NearCap pull budgets via env + 45s Eventually windows
 - `COORDINATE.md` — claim row
-- `worklogs/NNNN_2026-09-16_outbox-verify-persist-race.md` — this entry
+- `worklogs/0971_2026-09-16_outbox-verify-persist-race.md` — this entry
