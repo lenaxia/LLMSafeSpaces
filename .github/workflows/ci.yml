@@ -1581,8 +1581,14 @@ jobs:
           # verify the real target's TLS chain — the same verification
           # an http node performs. Both modes call ONE function, so the
           # negative leg constrains the operative check itself.
+          # --capath pointed at an EMPTY dir is load-bearing: on this
+          # curl/OpenSSL build the default CA DIRECTORY is consulted
+          # alongside --cacert, which made any parseable CA "verify".
+          # Empty capath isolates --cacert as the sole trust source.
+          mkdir -p /tmp/empty-capath
           tls_ok() {
             code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$1" \
+              --capath /tmp/empty-capath \
               https://api.safespaces.dev/api/v1/health --max-time 30)" || return 1
             case "$code" in 2*|3*|4*|5*) return 0 ;; *) return 1 ;; esac
           }
