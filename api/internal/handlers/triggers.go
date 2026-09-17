@@ -441,6 +441,21 @@ func (h *TriggersHandler) logCreate(c *gin.Context, ownerType, ownerID, actorID,
 	}
 }
 
+// logRotateWebhookSecret records a webhook-secret rotation (never the
+// secret itself) — the credential-issuance audit counterpart of
+// logCreate.
+func (h *TriggersHandler) logRotateWebhookSecret(c *gin.Context, ownerType, ownerID, actorID, triggerID string) {
+	if h.audit == nil {
+		return
+	}
+	meta := map[string]any{"ownerType": ownerType}
+	if ownerType == types.WorkflowOwnerOrg {
+		_ = h.audit.LogOrgEvent(c.Request.Context(), ownerID, actorID, "trigger.rotate_webhook_secret", triggerID, meta)
+	} else {
+		_ = h.audit.LogAuditEvent(c.Request.Context(), "triggers", actorID, "trigger.rotate_webhook_secret", triggerID, nil, meta)
+	}
+}
+
 // --- helpers ---
 
 func triggerRowToResponse(r *wf.TriggerRow) types.TriggerResponse {
@@ -584,6 +599,12 @@ func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update webhook secret"})
 		return
 	}
+
+	// Credential issuance is auditable: every rotation leaves an event
+	// (actor + target), including rotations driven by the workspace pod
+	// via the automation surface. The secret itself is NEVER in the
+	// audit row.
+	h.logRotateWebhookSecret(c, ownerType, ownerID, c.GetString("userID"), triggerID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"webhookSecret": secret,

@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -251,4 +252,45 @@ func TestPodAutomation_LoggerWired(t *testing.T) {
 	assert.False(t, h.HasLogger())
 	h.SetLogger(lmocks.NewMockLogger())
 	assert.True(t, h.HasLogger())
+}
+
+// mockAutomationAudit captures audit events from the delegated handlers.
+type mockAutomationAudit struct {
+	events []string
+}
+
+func (m *mockAutomationAudit) LogAuditEvent(_ context.Context, domain, actorID, action, targetID string, _ *string, _ map[string]any) error {
+	m.events = append(m.events, domain+"/"+actorID+"/"+action+"/"+targetID)
+	return nil
+}
+func (m *mockAutomationAudit) LogOrgEvent(_ context.Context, _, _, _, _ string, _ map[string]any) error {
+	return nil
+}
+
+// Credential issuance must be auditable: rotation through the automation
+// surface leaves a trigger.rotate_webhook_secret event naming the
+// resolved owner as actor — and never the secret itself.
+func TestPodAutomation_RotateIsAudited(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	trigStore := newMockTriggerStore()
+	audit := &mockAutomationAudit{}
+	th := NewUserTriggersHandler(trigStore, nil, &mockEncryptor{})
+	th.SetAudit(audit)
+	h := &PodAutomationHandler{
+		tokenReviewer: automationReviewer(), lookup: automationLookup(),
+		triggers: th, workflows: NewUserWorkflowsHandler(newMockWorkflowStore(), nil),
+		expectedNamespace: testRenameNamespace,
+	}
+	r := gin.New()
+	r.POST("/internal/v1/automation/triggers/:id/rotate-secret", h.TriggerRotateWebhookSecret)
+
+	id := "trig-aud"
+	trigStore.triggers[id] = &wf.TriggerRow{ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7", Name: "hook", Enabled: true, SourceType: "webhook"}
+	require.NoError(t, trigStore.CreateWebhook(context.Background(), &wf.WebhookRow{ID: "wh-a", TriggerID: id, SecretCipher: []byte("old"), KeyVersion: 1}))
+
+	w := doAutomation(t, r, "POST", "/internal/v1/automation/triggers/"+id+"/rotate-secret?workspaceID=ws-1", "tok", "")
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Len(t, audit.events, 1, "rotation leaves exactly one audit event")
+	assert.Equal(t, "triggers/user-7/trigger.rotate_webhook_secret/"+id, audit.events[0])
+	assert.NotContains(t, w.Body.String()+fmt.Sprint(audit.events), "whs_", "no secret material leaks into response or audit")
 }

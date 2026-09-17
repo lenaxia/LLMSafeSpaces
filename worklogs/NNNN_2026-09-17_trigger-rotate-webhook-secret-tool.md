@@ -16,7 +16,7 @@ Expose webhook-secret rotation through the pod-identity automation surface so th
 - Tool: `trigger_rotate_webhook_secret` {id} — response {webhookSecret, webhookUrl} surfaces VERBATIM. The credential disclosure is deliberate and scoped: the owner's own secret, delivered to the owner's own agent over the pod-identity channel (identical to what the owner sees via the user API); description instructs handing it to the EXTERNAL sender and the X-Hub-Signature-256 signing shape.
 
 ## Key Decisions
-- Rotate (not create-returns-secret): matches the user API's existing security posture; every credential issuance is an explicit, audited action.
+- Rotate (not create-returns-secret): matches the user API's existing security posture; every credential issuance is an explicit action — and now an AUDITED one (review r2: rotateWebhookSecret had no audit event; added trigger.rotate_webhook_secret mirroring logCreate, actor = the resolved owner, never the secret itself).
 - No new domain logic anywhere — delegation only.
 
 ## Blockers
