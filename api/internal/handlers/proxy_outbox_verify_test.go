@@ -631,7 +631,7 @@ func TestOutboxDeliver_V2UnhappyPaths(t *testing.T) {
 	// The unhappy-path subtests need the admission POST to actually LAND
 	// on the fake backend so the exercised classification is the intended
 	// one (HTTP rejection / hijacked transport cut), not a pre-send
-	// starvation of the shrunk 40ms DeliveryTimeout under full-suite load.
+	// starvation of the shrunk 300ms DeliveryTimeout under full-suite load.
 	// A deadline that fires before the request is sent is equally
 	// ambiguous — the production classifier handles it correctly — but
 	// the #987 assertions here ("exactly one admission attempt") flake on
