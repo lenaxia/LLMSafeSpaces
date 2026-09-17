@@ -251,14 +251,14 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. The spec passes through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on every workflow_run input. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml is a STRINGIFIED spec - a JSON object string or YAML text (single document; the server converts YAML to the canonical JSON spec) - passed through to the platform verbatim - learn exact shapes from workflow_list entries. Node vocabulary is exactly four (validated): script, agent, http, condition. Script node data: {language: \"python\" or \"node\", handler: source string defining a handler(input) -> dict function} - NOT a shell command. Set targetWorkspaceId (this workspace) or runs are rejected with 'workspace_id is required'. inputSchema (JSON Schema) is enforced on every workflow_run input. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change; omitted = keep existing). Patch shape = UpdateWorkflowRequest: specYaml (the DAG as a STRINGIFIED spec, re-validated - node types script/agent/http/condition), inputSchema (JSON Schema, compile-checked and enforced on workflow_run inputs), targetWorkspaceId (set this workspace or runs are rejected), defaults, status, name/slug/description. Spec re-validation fails closed with per-node details.",
+						Description: "Partially update one workflow (id + fields to change; omitted = keep existing). Patch shape = UpdateWorkflowRequest: specYaml (the DAG as a STRINGIFIED spec - JSON object string or YAML text - re-validated, node types script/agent/http/condition), inputSchema (JSON Schema, compile-checked and enforced on workflow_run inputs), targetWorkspaceId (set this workspace or runs are rejected), defaults, status, name/slug/description. Spec re-validation fails closed with per-node details.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
 							"patch": map[string]any{"type": "object", "description": "Fields to change (UpdateWorkflowRequest shape)"},

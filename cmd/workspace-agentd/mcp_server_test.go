@@ -972,8 +972,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 	t.Run("workflow_create guidance", func(t *testing.T) {
 		d, ok := descs["workflow_create"]
 		require.True(t, ok, "workflow_create in tools/list")
-		assert.Contains(t, d, "passes through to the platform verbatim") // schema-decoupled contract
-		assert.Contains(t, d, "workflow_list")                           // where shapes are learned
+		assert.Contains(t, d, "passed through to the platform verbatim")
+		assert.Contains(t, d, "or YAML text", "#1418: both dialects taught") // schema-decoupled contract
+		assert.Contains(t, d, "workflow_list")                               // where shapes are learned
 		// #1415 drift pins — the description once invented a node
 		// vocabulary the validator rejects and never stated the
 		// script-node contract.
