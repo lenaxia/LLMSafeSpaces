@@ -457,3 +457,20 @@ func TestWorkflowExecuteHandler_AgentNodeUnresolvedRefsStayLiteral(t *testing.T)
 		}
 	}
 }
+
+// Back-compat: arbitrary-charset TOP-LEVEL keys still render (the
+// pre-#1417 behavior), and a flat key literally named "body.topic"
+// wins over path walking.
+func TestRenderTemplateRefs_TopLevelAnyCharsetAndFlatDotted(t *testing.T) {
+	input := map[string]any{
+		"my key":     "spaced",
+		"a/b":        "slashed",
+		"über":       "unicode",
+		"body.topic": "flat-wins",
+		"body":       map[string]any{"topic": "nested"},
+	}
+	out := renderTemplateRefs("{{.my key}} {{.a/b}} {{.über}} {{.body.topic}}", input)
+	if out != "spaced slashed unicode flat-wins" {
+		t.Fatalf("top-level any-charset + flat-dotted precedence: %q", out)
+	}
+}

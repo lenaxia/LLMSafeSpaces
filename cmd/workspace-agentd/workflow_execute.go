@@ -300,12 +300,21 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
 
 // renderTemplateRefs replaces {{.path}} references in an agent prompt
-// with values from the node input. Paths may be dotted (#1417):
-// {{.body.topic}} walks nested maps, matching the condition nodes'
-// expression depth — webhook-driven runs hand the fire envelope, whose
-// payload lives under body. Scalars render bare; composites (maps,
-// arrays) render as compact JSON. Unresolvable refs stay literal.
+// with values from the node input. TWO passes:
+//
+// Pass 1 (back-compat): every TOP-LEVEL key renders by exact-match
+// ReplaceAll — any key charset, exactly as the pre-#1417 code behaved
+// (a flat key literally named "body.topic" still wins over path
+// walking).
+//
+// Pass 2: dotted paths walk nested maps — {{.body.topic}} — matching
+// the condition nodes' expression depth; webhook-driven runs hand the
+// fire envelope whose payload lives under body. Scalars render bare;
+// composites render as compact JSON; unresolvable refs stay literal.
 func renderTemplateRefs(prompt string, input map[string]any) string {
+	for k, v := range input {
+		prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", renderTemplateValue(v))
+	}
 	return templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
 		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
 		if path == "" {
@@ -322,19 +331,23 @@ func renderTemplateRefs(prompt string, input map[string]any) string {
 				return ref
 			}
 		}
-		switch v := cur.(type) {
-		case string:
-			return v
-		case fmt.Stringer:
-			return v.String()
-		default:
-			b, err := json.Marshal(cur)
-			if err != nil {
-				return ref
-			}
-			return string(b)
-		}
+		return renderTemplateValue(cur)
 	})
+}
+
+func renderTemplateValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case fmt.Stringer:
+		return t.String()
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
 }
 
 var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.-]+\}\}`)

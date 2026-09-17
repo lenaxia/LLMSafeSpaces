@@ -982,6 +982,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.NotContains(t, d, "mcp_call")
 		assert.Contains(t, d, "handler(input) -> dict") // script handler is source, not a shell command
 		assert.Contains(t, d, "targetWorkspaceId")      // runs are rejected without it
+		assert.Contains(t, d, "{{.body.topic}}",        // #1417: the supported templating form is documented
+			"the tool-facing surface must teach dotted-path placeholders")
+		assert.Contains(t, d, "unresolvable refs stay literal") // render semantics documented
 	})
 
 	t.Run("workflow_update guidance", func(t *testing.T) {
