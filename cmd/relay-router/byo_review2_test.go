@@ -215,10 +215,11 @@ func netListen(addr string) (net.Listener, error) { return net.Listen("tcp", add
 
 func httpServerClient() *http.Client { return &http.Client{Timeout: 10 * time.Second} }
 
-// TestDrainWiringThroughServeBYO (iteration 4): the SIGNAL→DRAIN wiring —
-// serveBYO's ctx-cancel path runs http.Server.Shutdown under the grace
-// bound exactly as SIGTERM does at runtime. Deleting the drain block
-// fails this test (the stream or the serve call never returns cleanly).
+// TestDrainWiringThroughServeBYO: the SIGNAL→DRAIN wiring — serveBYOOn's
+// ctx-cancel path runs http.Server.Shutdown under the grace bound exactly
+// as SIGTERM does at runtime. Pins drain semantics (in-flight stream
+// completion) AND drain effect (the dial-refusal assertion — an abandoned,
+// undrained server leaves the listener open and fails here).
 func TestDrainWiringThroughServeBYO(t *testing.T) {
 	chunks := 8
 	rig := newByoTestRigWithUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
