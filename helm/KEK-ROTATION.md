@@ -35,8 +35,10 @@ rotate-kek \
 ```
 
 This reports how many rows across `provider_credentials`, `api_keys`,
-`org_sso_configs`, and `user_keys` will be re-wrapped, and prints the
-per-table `last-row-id` you can resume from. No writes occur.
+`org_sso_configs`, and `user_keys` will be re-wrapped, plus each table's
+last row id (informational). No writes occur — apply with a plain re-run
+(no `--resume-from`; that flag is only for resuming interrupted apply
+runs).
 
 ### 3. Mount the new key alongside the old (rotation window)
 
@@ -74,8 +76,10 @@ Each row is re-wrapped in its own transaction. If the CLI is interrupted:
 ### 5. Verify
 
 After the CLI completes:
-- `key_version = 2` on all rows across all three tables.
-- The Redis DEK cache is flushed (automatic on success).
+- `key_version = 2` on all rows across all four tables
+  (`provider_credentials`, `api_keys`, `org_sso_configs`, `user_keys`).
+- The Redis DEK cache is flushed (automatic on success — including
+  single-table runs; supply `--redis-url` so the flush has somewhere to go).
 - API credentials decrypt correctly (test a workspace boot).
 
 ### 6. Remove the old key

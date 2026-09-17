@@ -48,6 +48,12 @@ func main() {
 }
 
 func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer int, dryRun bool) error {
+	// --resume-from is a per-table cursor; RotateAll takes none. Silently
+	// ignoring the flag would strand pre-cursor rows (PR #1409 review).
+	if table == "all" && resumeFrom != "" {
+		return fmt.Errorf("--resume-from applies per table; pair it with --table <provider_credentials|api_keys|org_sso_configs|user_keys>")
+	}
+
 	// Load old + new master keys.
 	oldMaster, err := readMasterKeyFile(oldFile)
 	if err != nil {
@@ -144,11 +150,23 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	if result.Failed > 0 {
 		return fmt.Errorf("%d rows failed rotation", result.Failed)
 	}
+	// The runbook promises the Redis DEK cache is flushed automatically on
+	// success — for every invocation shape, including the documented
+	// per-table recovery path. RotateAll flushes inside the coordinator; a
+	// single-table run flushes here. With no --redis-url the store's flush
+	// is the pg-only no-op (operators who skipped --redis-url get the same
+	// no-flush behavior the all-tables path has).
+	if !dryRun {
+		if err := redisCacheStore.FlushDEKCache(ctx); err != nil {
+			return fmt.Errorf("flush DEK cache: %w", err)
+		}
+	}
 	return nil
 }
 
-// lastRowIDField renders the last-row-id=<id> report field. The runbook's
-// interrupted-run procedure consumes it: re-run with --resume-from <id>.
+// lastRowIDField renders the last-row-id=<id> report field. In an apply run
+// the operator can resume an interruption with --resume-from <id>; in a
+// dry-run the value is informational only (see printResumeHint).
 func lastRowIDField(id string) string {
 	if id == "" {
 		return ""
@@ -156,17 +174,21 @@ func lastRowIDField(id string) string {
 	return "last-row-id=" + id
 }
 
-// printResumeHint tells the operator exactly how to resume after this table —
-// the documented recovery path for interrupted runs (helm/KEK-ROTATION.md).
+// printResumeHint tells the operator how to continue after this table. For an
+// apply run that is the --resume-from recovery path for interruptions
+// (helm/KEK-ROTATION.md); for a dry-run nothing was written, so resuming from
+// the reported id on the apply run would SKIP every row before it — the hint
+// says to re-run plainly instead (already-rotated rows are filtered by
+// version, so a plain re-run is safe and complete).
 func printResumeHint(table, lastRowID string, dryRun bool) {
 	if lastRowID == "" {
 		return
 	}
-	prefix := "to resume this table if interrupted:"
 	if dryRun {
-		prefix = "to start applying from where the dry-run reported:"
+		fmt.Fprintf(os.Stderr, "  (to apply: re-run without --dry-run and without --resume-from — a plain re-run is safe; --resume-from is only for resuming interrupted apply runs)\n")
+		return
 	}
-	fmt.Fprintf(os.Stderr, "  (%s rotate-kek --table %s --resume-from %s ...)\n", prefix, table, lastRowID)
+	fmt.Fprintf(os.Stderr, "  (to resume this table if interrupted: rotate-kek --table %s --resume-from %s ...)\n", table, lastRowID)
 }
 
 // readMasterKeyFile reads a raw key value from a file (hex or raw bytes).

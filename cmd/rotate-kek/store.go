@@ -73,7 +73,10 @@ func (c pgPoolConn) Close() { c.pool.Close() }
 var _ pgRow = pgx.Row(nil)
 var _ pgRows = pgx.Rows(nil)
 
-const pgConnectTimeout = 10 * time.Second
+// dialPingTimeout bounds both the Postgres pool ping and the Redis client
+// ping at construction — both are "is the endpoint alive" probes with the
+// same budget.
+const dialPingTimeout = 10 * time.Second
 
 // rotationTableColumns maps each rotatable table to its row-id, ciphertext,
 // and owner-type column layout. The table name is the allowlist: queries
@@ -108,7 +111,7 @@ func newPgRotationStore(dbURL string) (*pgRotationStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct pgx pool: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pgConnectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), dialPingTimeout)
 	defer cancel()
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
@@ -200,7 +203,7 @@ func newRedisCacheFlusher(redisURL string) (*redisCacheFlusher, error) {
 		return nil, fmt.Errorf("parse redis URL: %w", err)
 	}
 	client := redis.NewClient(opts)
-	ctx, cancel := context.WithTimeout(context.Background(), pgConnectTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), dialPingTimeout)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		_ = client.Close()

@@ -101,3 +101,22 @@ None.
 - api/internal/app/secrets_adapters.go (delegation), derive_server_key_golden_test.go (new)
 - helm/KEK-ROTATION.md, helm/KEK-MIGRATION.md, docs/operator/runbook.md, docs/operator/upgrading.md (doc fixes)
 - .github/workflows/secrets-integration.yml (CI adoption)
+
+---
+
+## Review iteration 1 (PR #1409, AI reviewer: REQUEST CHANGES)
+
+All findings validated as REAL (Rule 11 Phase 2) and fixed with regression tests:
+
+1. **Single-table runs never flushed the DEK cache** (docs promise it unconditionally; the runbook's own interrupted-run recovery is per-table). Fixed: rotate-kek/migrate-kek `run()` flushes `redisCacheStore`/`store` after a successful single-table apply (non-dry-run). Regression: `TestIntegration_SingleTableRunFlushesDEKCache` drives the real `run()` with `--table api_keys --redis-url ...` and asserts `dek:*` gone + non-dek keys survive + a dry-run follow-up does not flush.
+2. **Dry-run resume hint could strand rows** (following "--resume-from <dry-run-cursor>" on the apply run skips everything before it). Fixed: dry-run hint now says to re-run plainly; `--resume-from` framed as interrupted-apply-only; KEK-ROTATION.md dry-run sentence corrected. Regression: `TestPrintResumeHint_DryRunNeverSuggestsResumeFrom`.
+3. **KEK-ROTATION.md verify step still said "three tables"** — fixed to four + flush note now scoped to all invocation shapes.
+4. Minor: `--table all` + `--resume-from` now a hard error at run() entry (was silently ignored) — `TestRun_TableAllWithResumeFromRejected` (+ migrate-kek symmetric guard). rotate-kek `run()` short-master fail-closed test added (`TestRun_MasterKeyFileTooShortFailsClosed`). Stale stub-era comment block removed from migrate-kek/main_test.go. Hand-rolled `itoa` → `strconv.Itoa`. `pgConnectTimeout` → `dialPingTimeout` (it bounds both pg and redis pings).
+
+Reviewer's out-of-scope note (pre-existing, loud-failing by design): `purposeForTable` routes ALL api_keys rows to `master-kek`, so legacy v1 `dek-cache`-wrapped rows fail rotation loudly — safe failure mode, coordinator logic explicitly out of scope per #830.
+
+## Tests Run (iteration 1)
+
+- `go test ./cmd/rotate-kek/ ./cmd/migrate-kek/ -tags=integration -race` — PASS (incl. new flush e2e, 20 rotate-kek tests).
+- Unit suites for cmd/, pkg/secrets, api/internal/app — PASS.
+- `golangci-lint run` — 0 issues.

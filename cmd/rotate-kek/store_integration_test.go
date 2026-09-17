@@ -18,13 +18,17 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 	"github.com/golang-migrate/migrate/v4"
 	pgxdriver "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -592,4 +596,50 @@ func TestIntegration_RotateE2E_ResumeFromInterruptedRun(t *testing.T) {
 		_, err = secrets.DecryptSecret(oldKey, stripStaticPrefix(t, gotCT))
 		assert.Error(t, err, "row %s must NOT decrypt under the old KEK", id)
 	}
+}
+
+// TestIntegration_SingleTableRunFlushesDEKCache is the PR #1409 review
+// Finding 1 regression: the runbook's interrupted-run recovery is a
+// PER-TABLE run, and the docs promise the Redis DEK cache is flushed
+// automatically on success — for every invocation shape. Drives the real
+// run() (the CLI's own code path) with --table and --redis-url against the
+// live Postgres + a miniredis, and asserts the stale DEK keys are gone.
+func TestIntegration_SingleTableRunFlushesDEKCache(t *testing.T) {
+	_, pool := newIntegrationStore(t)
+
+	oldMaster := integrationMasterKey(0x10)
+	newMaster := integrationMasterKey(0x20)
+	oldKey := secrets.DeriveServerKey(oldMaster, "master-kek")
+
+	dir := t.TempDir()
+	oldFile := filepath.Join(dir, "old.key")
+	newFile := filepath.Join(dir, "new.key")
+	require.NoError(t, os.WriteFile(oldFile, []byte(hex.EncodeToString(oldMaster)), 0o600))
+	require.NoError(t, os.WriteFile(newFile, []byte(hex.EncodeToString(newMaster)), 0o600))
+
+	userID := integrationID("u")
+	seedUser(t, pool, userID)
+	seedAPIKey(t, pool, userID, encryptFor(t, oldKey, "flush-me"), 1)
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	t.Cleanup(mr.Close)
+	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	require.NoError(t, rc.Set(context.Background(), "dek:stale-session", "wrapped", time.Hour).Err())
+	require.NoError(t, rc.Set(context.Background(), "ratelimit:keep", "1", time.Hour).Err())
+
+	// The exact invocation shape of the runbook's resume procedure (minus
+	// --resume-from, which is orthogonal to the flush).
+	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "api_keys", "", 2, false)
+	require.NoError(t, err, "per-table run must succeed and flush")
+
+	assert.False(t, mr.Exists("dek:stale-session"), "a successful per-table run must flush the DEK cache")
+	assert.True(t, mr.Exists("ratelimit:keep"), "non-dek keys must survive the flush")
+
+	// The dry-run counterpart: no writes of any kind, flush included.
+	require.NoError(t, rc.Set(context.Background(), "dek:dryrun-session", "wrapped", time.Hour).Err())
+	err = run(oldFile, newFile, testDSN(), "redis://"+mr.Addr(), "api_keys", "", 2, true)
+	require.NoError(t, err)
+	assert.True(t, mr.Exists("dek:dryrun-session"), "a dry-run must not flush (or write) anything")
+	_ = rc.Close()
 }

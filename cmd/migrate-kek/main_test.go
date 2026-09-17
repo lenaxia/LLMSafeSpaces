@@ -133,11 +133,10 @@ func TestRunAudit_ValidKms_ReachesPgConnection(t *testing.T) {
 			if strings.Contains(err.Error(), "--db-url is required") {
 				t.Fatalf("runAudit rejected non-empty db-url (regression): %v", err)
 			}
-			// Reaching the PG step means the error is whatever the stub
-			// (or real connection) produces. The current stub returns
-			// "postgres connection not yet wired"; a real connection would
-			// return a dial error. Either is acceptable proof that we got
-			// past kms validation.
+			// Reaching the PG step means the error is the real connection's
+			// dial failure ("connect to Postgres: ..."), which is the proof
+			// we got past kms validation. The live-Postgres audit behavior
+			// is covered by store_integration_test.go.
 		})
 	}
 }

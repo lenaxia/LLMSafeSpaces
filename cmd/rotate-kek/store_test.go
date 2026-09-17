@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/hex"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func TestRedisCacheFlusher_ManyKeysIsComplete(t *testing.T) {
 	ctx := context.Background()
 	const n = 1200
 	for i := 0; i < n; i++ {
-		require.NoError(t, flusher.client.Set(ctx, "dek:bulk-"+string(rune('a'+i%26))+time.Now().Format("150405.000000000")+itoa(i), "x", time.Hour).Err())
+		require.NoError(t, flusher.client.Set(ctx, "dek:bulk-"+string(rune('a'+i%26))+time.Now().Format("150405.000000000")+strconv.Itoa(i), "x", time.Hour).Err())
 	}
 	require.NoError(t, flusher.FlushDEKCache(ctx))
 	remaining := 0
@@ -82,18 +83,6 @@ func TestRedisCacheFlusher_ManyKeysIsComplete(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 0, remaining, "every dek:* key must be evicted, including across SCAN batches")
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	return string(b)
 }
 
 // TestRedisCacheFlusher_BadURLFails verifies the constructor surfaces parse

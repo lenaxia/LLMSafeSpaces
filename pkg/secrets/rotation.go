@@ -27,11 +27,13 @@ type KEKRotationResult struct {
 	// LastRowID is the ID of the last row the coordinator successfully
 	// processed (or skipped as already-rotated). The runbook's
 	// interrupted-run procedure prints it per table so the operator can
-	// resume with --resume-from <last-row-id>. The cursor deliberately does
-	// not advance past a failed row: resuming re-attempts every row after
-	// the cursor that is still below the target version (already-rotated
-	// rows are filtered out by the store, so nothing is double-rotated).
-	// Empty when no row was successfully processed.
+	// resume an interrupted APPLY run with --resume-from <last-row-id>. The
+	// cursor deliberately does not advance past a failed row: resuming
+	// re-attempts every row after the cursor that is still below the target
+	// version (already-rotated rows are filtered out by the store, so
+	// nothing is double-rotated). In a dry-run the value is informational
+	// only — nothing was written, so a subsequent apply run must NOT resume
+	// from it. Empty when no row was successfully processed.
 	LastRowID string
 }
 
