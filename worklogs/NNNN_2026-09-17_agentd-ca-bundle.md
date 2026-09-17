@@ -7,7 +7,7 @@
 ---
 
 ## Objective
-Make TLS egress from the agentd sidecar verify against real roots without disturbing the delivery image's contracts (binary-only image volume, per-arch sha256 pins, nothing executable, ~25MB pull budget).
+Make TLS egress from the agentd sidecar verify against real roots without disturbing the delivery image's contracts (binary-only image volume — now binary + one data file, per-arch sha256 pins, nothing executable, ~25MB pull budget).
 
 ## Work Completed
 - Dockerfile: COPY the bookworm builder's ca-certificates.crt to /etc/ssl/certs/ca-certificates.crt (Go's first default system-roots probe path, root_linux.go certFiles[0]).
@@ -35,7 +35,8 @@ Merge with the #1410-#1419 batch; live http-node leg in the comprehensive test (
 ## Files Modified
 - cmd/workspace-agentd/Dockerfile (CA COPY + header/sizing comments)
 - pkg/repolint/dockerfile_ca_bundle_test.go (3 fail-loud pins)
-- .github/workflows/ci.yml (built-image integration pin: presence + functional TLS acceptance, PR-gated)
-- docs/operator/agentd-delivery.md (contents clause, sizing, self-verify wording)
+- .github/workflows/ci.yml (built-image integration pin: presence, functional TLS acceptance with a guard self-test — all PR-gated; extract-step comments)
+- docs/operator/agentd-delivery.md (contents clause, sizing, self-verify wording + failure table)
 - helm/values.yaml (supervisor self-verify wording)
 - design/0053_2026-08-28_platform-overlay-delivery.md (trust-contract rows)
+- controller/internal/workspace/reconciler.go (AgentdImage doc comment: supervisor self-verify)

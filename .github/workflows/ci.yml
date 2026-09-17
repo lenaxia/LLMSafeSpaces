@@ -1589,6 +1589,16 @@ jobs:
             2*|3*|4*|5*) : ;;
             *) echo "FAIL: bundle did not verify the target's TLS chain (curl code '$code')"; exit 1 ;;
           esac
+          # Guard self-test (r7's silent-fail-open class): the SAME check
+          # must FAIL on a bogus trust source — proving the pipeline
+          # catches the regression, not just the reviewer.
+          printf 'not a certificate\n' > /tmp/bogus-bundle.crt
+          bogus="$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/bogus-bundle.crt \
+            https://api.safespaces.dev/api/v1/health --max-time 30)" || bogus="curl-failed"
+          case "$bogus" in
+            2*|3*|4*|5*) echo "FAIL: guard is vacuous - a bogus bundle verified the target (code '$bogus')"; exit 1 ;;
+            *) echo "guard self-test: bogus bundle correctly rejected ('$bogus')" ;;
+          esac
           echo "functional acceptance: TLS-verified response HTTP $code from api.safespaces.dev"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
