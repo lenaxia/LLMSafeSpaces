@@ -32,4 +32,4 @@ PR → review; implementation PRs (migration + resolver + handlers + MCP descrip
 
 ## Files Modified
 - design/0059_2026-09-17_trigger-input-mapping.md (new)
-- worklogs/NNNN_2026-09-17_trigger-input-mapping-design.md (new, this file — number bot-assigned at merge)
+- worklogs/0980_2026-09-17_trigger-input-mapping-design.md (new, this file — number bot-assigned at merge)
