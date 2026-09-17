@@ -1579,27 +1579,20 @@ jobs:
           echo "CA bundle verified: $(grep -c 'BEGIN CERTIFICATE' /tmp/ca-bundle.crt) certificates, $(wc -c < /tmp/ca-bundle.crt) bytes"
           # FUNCTIONAL acceptance (#1416): the extracted bundle must
           # verify the real target's TLS chain — the same verification
-          # an http node performs. Any HTTP status proves the handshake;
-          # --cacert makes the bundle the ONLY trust source.
-          # -w and a failing curl concatenate; capture the code with the
-          # fallback INSIDE the substitution so the guard can actually fire.
-          code="$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/ca-bundle.crt \
-            https://api.safespaces.dev/api/v1/health --max-time 30)" || code="curl-failed"
-          case "$code" in
-            2*|3*|4*|5*) : ;;
-            *) echo "FAIL: bundle did not verify the target's TLS chain (curl code '$code')"; exit 1 ;;
-          esac
-          # Guard self-test (r7's silent-fail-open class): the SAME check
-          # must FAIL on a bogus trust source — proving the pipeline
-          # catches the regression, not just the reviewer.
-          printf 'not a certificate\n' > /tmp/bogus-bundle.crt
-          bogus="$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/bogus-bundle.crt \
-            https://api.safespaces.dev/api/v1/health --max-time 30)" || bogus="curl-failed"
-          case "$bogus" in
-            2*|3*|4*|5*) echo "FAIL: guard is vacuous - a bogus bundle verified the target (code '$bogus')"; exit 1 ;;
-            *) echo "guard self-test: bogus bundle correctly rejected ('$bogus')" ;;
-          esac
-          echo "functional acceptance: TLS-verified response HTTP $code from api.safespaces.dev"
+          # an http node performs. Both modes call ONE function, so the
+          # negative leg constrains the operative check itself.
+          tls_ok() {
+            code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$1" \
+              https://api.safespaces.dev/api/v1/health --max-time 30)" || return 1
+            case "$code" in 2*|3*|4*|5*) return 0 ;; *) return 1 ;; esac
+          }
+          tls_ok /tmp/ca-bundle.crt || { echo "FAIL: real bundle rejected (#1416 regression)"; exit 1; }
+          # Negative leg with a PARSEABLE but untrusted CA: reaches real
+          # certificate verification (not just a CA-load failure).
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/bogus.key -out /tmp/bogus-ca.pem \
+            -days 1 -subj "/CN=guard-self-test" >/dev/null 2>&1
+          tls_ok /tmp/bogus-ca.pem && { echo "FAIL: guard is vacuous — bogus CA accepted"; exit 1; }
+          echo "functional acceptance: real bundle verifies; bogus CA rejected"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
