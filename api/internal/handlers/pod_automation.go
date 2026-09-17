@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // PodAutomationHandler exposes the owner's trigger + workflow CRUD to
@@ -155,21 +157,53 @@ func (h *PodAutomationHandler) delegate(c *gin.Context, ownerID string, replay [
 	fn(c)
 }
 
-// forceTriggerWorkspace rewrites the create body's workspaceId to this
-// pod's workspace (the automation scoping rule). All other fields pass
-// through as raw JSON — no re-formatting, no float64 round-trips.
-// Non-object bodies are an error (the seam always sends an object).
-func forceTriggerWorkspace(replay []byte, workspaceID string) ([]byte, error) {
+// scopeTriggerCreateBody applies the automation scoping rule to a trigger
+// create body (#1412). Routine triggers get `workspaceId` force-stamped to
+// this pod's workspace (unchanged behavior). Workflow-targeted triggers
+// (workflowId present — the snake_case workflow_id alias is normalized)
+// pass through WITHOUT the stamp: the create DTO rejects
+// workflowId+workspaceId together, which previously made DAG triggers
+// impossible to create from this surface. The returned workflowID lets the
+// caller enforce that the referenced workflow targets this workspace.
+// All other fields pass through as raw JSON — no re-formatting, no
+// float64 round-trips. Non-object bodies are an error (the seam always
+// sends an object).
+func scopeTriggerCreateBody(replay []byte, workspaceID string) (body []byte, workflowID string, err error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(replay, &fields); err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	// Normalize the snake_case alias onto the DTO spelling — the json
+	// decoder ignores unknown fields, so a caller using workflow_id would
+	// otherwise lose the linkage silently.
+	if alias, ok := fields["workflow_id"]; ok {
+		if _, exists := fields["workflowId"]; !exists {
+			fields["workflowId"] = alias
+		}
+		delete(fields, "workflow_id")
+	}
+	if raw, ok := fields["workflowId"]; ok {
+		if err := json.Unmarshal(raw, &workflowID); err != nil {
+			return nil, "", fmt.Errorf("workflowId must be a string: %w", err)
+		}
+	}
+	// Strip EVERY caller-supplied workspace spelling. The resolver key
+	// (workspaceID) case-insensitively binds to the DTO's workspaceId, so
+	// leaving it would both trip the DTO's workflowId XOR check and let a
+	// caller-ordered key compete with the forced stamp.
+	delete(fields, "workspaceID")
+	delete(fields, "workspaceId")
+	if workflowID != "" {
+		out, err := json.Marshal(fields)
+		return out, workflowID, err
 	}
 	stamped, err := json.Marshal(workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	fields["workspaceId"] = stamped
-	return json.Marshal(fields)
+	out, err := json.Marshal(fields)
+	return out, "", err
 }
 
 // --- Trigger routes -------------------------------------------------------
@@ -180,15 +214,38 @@ func (h *PodAutomationHandler) TriggerList(c *gin.Context) {
 	}
 }
 
+// TriggerCreate delegates trigger creation as the resolved owner. Routine
+// triggers are workspace-stamped; workflow-targeted triggers additionally
+// require the referenced workflow to exist, belong to the owner, and
+// target THIS pod's workspace (the DAG equivalent of the routine scoping
+// rule — a pod must not schedule DAGs that run in other workspaces).
 func (h *PodAutomationHandler) TriggerCreate(c *gin.Context) {
 	raw, ws, owner, ok := h.resolve(c)
 	if !ok {
 		return
 	}
-	forced, err := forceTriggerWorkspace(raw, ws)
+	forced, workflowID, err := scopeTriggerCreateBody(raw, ws)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "trigger body must be a JSON object"})
 		return
+	}
+	if workflowID != "" {
+		wfRow, gerr := h.workflows.GetWorkflowRow(c.Request.Context(), "user", owner, workflowID)
+		if gerr != nil {
+			if errors.Is(gerr, wf.ErrNotFound) {
+				c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+				return
+			}
+			if h.logger != nil {
+				h.logger.Error("automation: workflow lookup failed", gerr, "workflowID", workflowID)
+			}
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "workflow lookup failed"})
+			return
+		}
+		if wfRow.TargetWorkspaceID == nil || *wfRow.TargetWorkspaceID != ws {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "workflow does not target this workspace"})
+			return
+		}
 	}
 	h.delegate(c, owner, forced, h.triggers.UserCreate)
 }

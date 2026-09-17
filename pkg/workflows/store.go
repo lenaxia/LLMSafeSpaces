@@ -197,6 +197,9 @@ type TriggerUpdate struct {
 	CaptureMode      *string
 	PreserveSession  *string
 	AutoDisableAfter *int
+	// NextFireAt is set by the handler when a schedule change must take
+	// effect immediately (#1410) — nil keeps the stored slot.
+	NextFireAt *time.Time
 }
 
 // --- Workflow CRUD ----------------------------------------------------------
@@ -420,7 +423,8 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		    memory_max_runs = COALESCE($16, memory_max_runs),
 		    capture_mode = COALESCE($17, capture_mode),
 		    preserve_session = COALESCE($18, preserve_session),
-		    auto_disable_after = COALESCE($19, auto_disable_after)
+		    auto_disable_after = COALESCE($19, auto_disable_after),
+		    next_fire_at = COALESCE($20, next_fire_at)
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING `+triggerSelectColumns+`
 	`,
@@ -432,6 +436,7 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		toNullableStringArray(upd.ScriptArgs), nullableJSON(upd.ScriptEnv),
 		upd.MemoryMode, upd.MemoryMaxRuns, upd.CaptureMode, upd.PreserveSession,
 		upd.AutoDisableAfter,
+		nullableTimePtr(upd.NextFireAt),
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Description, &row.Enabled,
 		&row.SourceType, &row.SourceConfig,
@@ -1093,6 +1098,14 @@ func nullableStrPtr(s *string) any {
 		return nil
 	}
 	return *s
+}
+
+// nullableTimePtr dereferences a *time.Time for SQL, returning nil for nil.
+func nullableTimePtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return *t
 }
 
 // toNullableStringArray converts a []string to a pgx-compatible value for text[]

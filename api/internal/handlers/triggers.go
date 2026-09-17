@@ -14,7 +14,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -249,16 +248,15 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	}
 
 	if req.SourceType == types.TriggerSourceCron {
-		var cronCfg types.CronSourceConfig
-		if err := json.Unmarshal(req.SourceConfig, &cronCfg); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid cron source config"})
+		// Validate the schedule up front and start at the first real
+		// occurrence (#1411): initializing next_fire_at to "now" made
+		// every newly created enabled trigger fire immediately, and
+		// unparseable exprs fell into the engine's hourly retry loop.
+		_, nextFire, err := wf.NextCronFireFromConfig(req.SourceConfig, now)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if cronCfg.Expr == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "cron source requires 'expr'"})
-			return
-		}
-		nextFire := now
 		row.NextFireAt = &nextFire
 	}
 
@@ -370,6 +368,49 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	if req.AutoDisableAfter != nil && *req.AutoDisableAfter < 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "auto_disable_after must be >= 1"})
 		return
+	}
+	if (req.WorkflowID != nil && *req.WorkflowID != "") && (req.WorkspaceID != nil && *req.WorkspaceID != "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and workspaceId"})
+		return
+	}
+
+	// Cron triggers: a changed schedule must take effect immediately, not
+	// at the previously stored slot (#1410) — recompute next_fire_at from
+	// the new config. Also recompute on re-enable when the stored slot is
+	// already in the past, so a long-disabled trigger resumes on the next
+	// future occurrence instead of emitting a backdated skip.
+	now := time.Now().UTC()
+	if req.SourceConfig != nil || req.Enabled != nil {
+		existing, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
+		if err != nil {
+			if errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch trigger"})
+			return
+		}
+		if existing.SourceType == types.TriggerSourceCron {
+			cfg := existing.SourceConfig
+			if req.SourceConfig != nil {
+				cfg = req.SourceConfig
+			}
+			_, next, verr := wf.NextCronFireFromConfig(cfg, now)
+			switch {
+			case req.SourceConfig != nil:
+				// An explicitly supplied config must validate.
+				if verr != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": verr.Error()})
+					return
+				}
+				upd.NextFireAt = &next
+			case verr == nil && req.Enabled != nil && *req.Enabled &&
+				(existing.NextFireAt == nil || existing.NextFireAt.Before(now)):
+				// Re-enable with a stale slot; legacy unparseable configs
+				// (verr != nil) keep the engine's fallback behavior.
+				upd.NextFireAt = &next
+			}
+		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)

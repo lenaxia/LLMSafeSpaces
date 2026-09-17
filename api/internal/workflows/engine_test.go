@@ -579,6 +579,44 @@ func TestScheduler_FiresDueTrigger(t *testing.T) {
 	}
 }
 
+func TestScheduler_MissingWorkflowRecordsFailedFire(t *testing.T) {
+	// A trigger whose workflow was deleted must surface a failed fire and
+	// drive the auto-disable counter — not tick silently forever (#1412).
+	store := newMockSchedulerStore()
+	// No workflow "wf-gone" in the store.
+	store.triggers = []*wf.TriggerRow{makeDueTrigger("trig-1", "wf-gone", "ws-1")}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if len(store.fires) != 1 || store.fires[0].Status != "failed" {
+		t.Fatalf("expected 1 failed fire, got %+v", store.fires)
+	}
+	if store.fires[0].ActionResult == nil || !strings.Contains(string(store.fires[0].ActionResult), "workflow not found") {
+		t.Fatalf("expected workflow_not_found detail in action result, got %s", store.fires[0].ActionResult)
+	}
+	if len(store.runs) != 0 {
+		t.Fatalf("no run may be created for a missing workflow, got %d", len(store.runs))
+	}
+	if store.triggerFail["trig-1"] != 1 {
+		t.Fatalf("failure counter must increment, got %d", store.triggerFail["trig-1"])
+	}
+}
+
+func TestScheduler_MissingWorkflowAutoDisables(t *testing.T) {
+	store := newMockSchedulerStore()
+	trig := makeDueTrigger("trig-2", "wf-gone", "ws-1")
+	trig.AutoDisableAfter = 1
+	store.triggers = []*wf.TriggerRow{trig}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if !store.disabled["trig-2"] {
+		t.Fatal("auto_disable_after=1 must disable the trigger after one failed fire")
+	}
+}
+
 func TestScheduler_MissedFireSkipped(t *testing.T) {
 	store := newMockSchedulerStore()
 	store.workflows["wf-1"] = &wf.WorkflowRow{

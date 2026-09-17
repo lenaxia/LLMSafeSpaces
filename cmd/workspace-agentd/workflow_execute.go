@@ -177,7 +177,12 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 			writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", "script execution timed out or was canceled")
 			return
 		}
-		if exitCode != 0 {
+		// exitCode is the real process exit only when a process ran;
+		// scriptwrap's sentinel -1 marks pre-execution failures whose
+		// detail lives in err (e.g. "unsupported language: bash").
+		// Reporting "exit -1: <empty stderr>" dropped exactly that
+		// detail (#1414).
+		if exitCode > 0 {
 			writeWorkflowError(w, http.StatusOK, "script_failed", fmt.Sprintf("exit %d: %s", exitCode, stderr))
 			return
 		}

@@ -74,6 +74,14 @@ func NewOrgWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *Wo
 // SetAudit wires the audit logger (deferred injection — may be nil at construction).
 func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
 
+// GetWorkflowRow exposes the owner-scoped workflow lookup to co-located
+// handlers: pod automation's DAG-trigger creation uses it to enforce the
+// pod-scoping rule (a workflow-targeted trigger must reference a workflow
+// whose target workspace is THIS pod's workspace).
+func (h *WorkflowsHandler) GetWorkflowRow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
+	return h.store.GetWorkflow(ctx, ownerType, ownerID, workflowID)
+}
+
 // ListSessionOrigins returns session origin mappings for a workspace.
 func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
 	workspaceID := c.Param("id")
@@ -248,6 +256,13 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
+	// A declared inputSchema must at least compile (#1413) — a malformed
+	// schema would otherwise turn every run into a validation error.
+	if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal validated spec"})
@@ -342,6 +357,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	if req.OnMissingWorkspace != nil {
 		if !types.ValidOnMissingWorkspace(*req.OnMissingWorkspace) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid onMissingWorkspace (must be 'abort' or 'create')"})
+			return
+		}
+	}
+	if req.InputSchema != nil {
+		if err := wf.ValidateInputSchema(req.InputSchema); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 	}
@@ -548,6 +569,14 @@ func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get workflow"})
+		return
+	}
+
+	// Run input must satisfy the workflow's declared inputSchema (#1413) —
+	// before this check, missing required fields sailed through and only
+	// surfaced as opaque node failures deep in the DAG.
+	if verr := wf.ValidateRunInput(wfRow.InputSchema, req.Input); verr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input does not satisfy the workflow's inputSchema: %v", verr)})
 		return
 	}
 

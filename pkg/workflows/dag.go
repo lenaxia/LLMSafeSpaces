@@ -10,6 +10,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows/exprlang"
+	"github.com/lenaxia/llmsafespaces/pkg/workflows/scriptwrap"
 )
 
 // ValidationError describes a single problem found during DAG validation.
@@ -136,6 +137,12 @@ func ValidateSpec(spec *Spec, predecessorSchemas map[string]json.RawMessage, def
 }
 
 func validateNodeData(n *SpecNode) []ValidationError {
+	// validScriptLanguage mirrors the runtimes pkg/workflows/scriptwrap can
+	// execute — an unsupported language must fail at spec time with a
+	// readable error instead of at run time (#1414).
+	validScriptLanguage := func(lang string) bool {
+		return lang == string(scriptwrap.LanguagePython) || lang == string(scriptwrap.LanguageNode)
+	}
 	switch n.Type {
 	case types.NodeTypeScript:
 		var d ScriptNodeData
@@ -147,6 +154,9 @@ func validateNodeData(n *SpecNode) []ValidationError {
 		}
 		if d.Language == "" {
 			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: "script node missing required field 'language'"}}
+		}
+		if !validScriptLanguage(d.Language) {
+			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: fmt.Sprintf("script node language %q is not supported (valid: python, node)", d.Language)}}
 		}
 	case types.NodeTypeAgent:
 		var d AgentNodeData

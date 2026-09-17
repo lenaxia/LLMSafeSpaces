@@ -283,3 +283,51 @@ func TestWorkflowParse_WireDriftCorruption(t *testing.T) {
 		})
 	}
 }
+
+// --- #1414: script failure detail must survive ---
+
+// An unsupported language is a pre-execution failure (scriptwrap sentinel
+// exit -1, empty stderr): the real error ("unsupported language") must
+// reach the caller — not "exit -1: ".
+func TestWorkflowExecute_ScriptUnsupportedLanguageKeepsDetail(t *testing.T) {
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"bash","handler":"echo hi"},"input":{}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "script failures report on the 200 error envelope")
+
+	var resp workflowExecuteError
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Contains(t, resp.Detail, "unsupported language: bash", "the pre-execution error must not be swallowed")
+	assert.NotContains(t, resp.Detail, "exit -1", "the sentinel exit code with empty stderr is not a usable message")
+}
+
+// A real process failure (python that runs and exits non-zero) keeps the
+// exit code + stderr shape.
+func TestWorkflowExecute_ScriptProcessFailureKeepsExitCode(t *testing.T) {
+	handler := "def handler(input):\n    raise RuntimeError('boom')"
+	bodyJSON, err := json.Marshal(map[string]any{
+		"nodeId": "s2", "nodeType": "script",
+		"spec":  map[string]any{"language": "python", "handler": handler},
+		"input": map[string]any{},
+	})
+	require.NoError(t, err)
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(string(bodyJSON)))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp workflowExecuteError
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Contains(t, resp.Detail, "exit 1", "real process exits keep the exit N: stderr shape")
+	assert.Contains(t, resp.Detail, "boom", "handler traceback surfaces in stderr")
+}
+
+// python3 availability guard — the process-failure test needs a real python.
+func TestPythonAvailable(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+}
