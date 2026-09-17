@@ -126,8 +126,9 @@ Confirm the counts match your expectations.
 
 Then run for real (drop `--dry-run`). Each row is re-wrapped in its own
 transaction. If the CLI is interrupted, re-run with `--resume-from
-<last-row-id>` (the CLI prints the last processed row ID per table on
-exit). The Redis DEK cache is flushed automatically on success.
+<last-row-id>` (the CLI prints `last-row-id=<id>` per table on exit, plus
+the exact resume command). The Redis DEK cache is flushed automatically on
+success.
 
 ### 5. Audit (the safe-to-remove-fallback gate)
 

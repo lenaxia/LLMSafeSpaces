@@ -104,15 +104,13 @@ func TestRunAudit_InvalidKms_ReturnsMappingError(t *testing.T) {
 
 // TestRunAudit_ValidKms_ReachesPgConnection verifies that with a valid kms
 // flag and a non-empty db-url, runAudit gets past validation and fails at
-// the (pre-existing stub) Postgres connection step — not at flag parsing.
-// This is the positive control for the C1 fix: the audit CLI no longer
-// rejects valid --kms values before even attempting the database connection.
-//
-// Note: when newPgMigrationStore is wired to a real connection (currently
-// a stub), this test's assertion will need to change from "postgres connection"
-// to whatever the real connection error looks like, or set up a real PG
-// container. The point of this test today is to prove runAudit gets past
-// kms validation; the PG stub's error string is the proxy for that.
+// the Postgres connection step — not at flag parsing. This is the positive
+// control for the C1 fix: the audit CLI no longer rejects valid --kms values
+// before even attempting the database connection. The store is wired to a
+// real pgx pool (#830); against an unreachable host the failure is the dial
+// error wrapped as "connect to Postgres", which is the proof we reached the
+// connection step. The live-Postgres audit behavior is covered by
+// store_integration_test.go.
 func TestRunAudit_ValidKms_ReachesPgConnection(t *testing.T) {
 	tests := []struct {
 		name string

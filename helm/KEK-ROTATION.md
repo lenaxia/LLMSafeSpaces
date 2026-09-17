@@ -34,8 +34,9 @@ rotate-kek \
   --dry-run
 ```
 
-This reports how many rows across `provider_credentials`, `api_keys`, and
-`org_sso_configs` will be re-wrapped. No writes occur.
+This reports how many rows across `provider_credentials`, `api_keys`,
+`org_sso_configs`, and `user_keys` will be re-wrapped, and prints the
+per-table `last-row-id` you can resume from. No writes occur.
 
 ### 3. Mount the new key alongside the old (rotation window)
 
@@ -66,8 +67,9 @@ rotate-kek \
 
 Each row is re-wrapped in its own transaction. If the CLI is interrupted:
 
-- Resume with `--resume-from <last-row-id>` (the CLI prints the last processed
-  row ID per table on exit).
+- Resume with `--resume-from <last-row-id>` (the CLI prints `last-row-id=<id>`
+  per table on exit, plus the exact resume command). Already-rotated rows are
+  at the target version and filtered out, so resuming never double-rotates.
 
 ### 5. Verify
 
@@ -95,6 +97,7 @@ The CLI automatically selects the correct HKDF purpose string for each table:
 | `provider_credentials` (owner_type='org') | `org-credentials` | Same table, different purpose |
 | `api_keys.key_ciphertext` | `master-kek` (post-US-50.7) | |
 | `org_sso_configs.oidc_client_secret` | `dek-cache` | Same provider as api_keys pre-US-50.7 |
+| `user_keys.wrapped_dek` | `master-kek` | Server-KEK-wrapped user DEKs re-wrap like api_keys |
 
 ## Troubleshooting
 

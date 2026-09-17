@@ -779,16 +779,15 @@ func activeMasterSecret() []byte {
 // This function is intentionally side-effect-free (no logging). It is passed
 // by reference as secrets.AdminKeyDeriver; callers that need diagnostics must
 // inspect the sources independently (see validateMasterSecret in app.go).
+// The derivation itself is secrets.DeriveServerKey — the single HKDF export
+// shared with the rotate-kek / migrate-kek CLIs (issue #832), pinned
+// byte-for-byte by the golden fixtures in pkg/secrets/testdata.
 func deriveServerKey(purpose string) []byte {
 	master := activeMasterSecret()
 	if master == nil {
 		return nil
 	}
-	key, err := secrets.DeriveKEKFromKey(master, []byte("llmsafespaces-server"), purpose)
-	if err != nil {
-		return nil
-	}
-	return key
+	return secrets.DeriveServerKey(master, purpose)
 }
 
 // k8sWorkspaceGetterAdapter adapts the K8s client to the handlers.WorkspaceGetter interface.

@@ -24,6 +24,15 @@ type KEKRotationResult struct {
 	Skipped   int // rows already at target version
 	Failed    int
 	Errors    []KEKRotationError
+	// LastRowID is the ID of the last row the coordinator successfully
+	// processed (or skipped as already-rotated). The runbook's
+	// interrupted-run procedure prints it per table so the operator can
+	// resume with --resume-from <last-row-id>. The cursor deliberately does
+	// not advance past a failed row: resuming re-attempts every row after
+	// the cursor that is still below the target version (already-rotated
+	// rows are filtered out by the store, so nothing is double-rotated).
+	// Empty when no row was successfully processed.
+	LastRowID string
 }
 
 // KEKRotationError records a per-row failure.
@@ -99,6 +108,10 @@ func NewRotationCoordinator(store RotationStore, oldProviders, newProviders map[
 func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFromID string, targetVersion int, dryRun bool) (KEKRotationResult, error) {
 	result := KEKRotationResult{}
 	batchSize := 100
+	// cursorFrozen freezes LastRowID at the last success before the first
+	// failure. Without it, a later success would push the cursor past a
+	// failed row and --resume-from would never re-attempt it.
+	cursorFrozen := false
 
 	for {
 		rows, err := c.store.ListRotationRows(ctx, table, resumeFromID, targetVersion, batchSize)
@@ -113,6 +126,9 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 			resumeFromID = row.ID
 
 			if row.KeyVersion >= targetVersion {
+				if !cursorFrozen {
+					result.LastRowID = row.ID
+				}
 				result.Skipped++
 				continue
 			}
@@ -120,6 +136,7 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 			purpose := purposeForTable(row)
 			oldProv, ok := c.oldProviders[purpose]
 			if !ok || oldProv == nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKRotationError{
 					RowID: row.ID, Table: table,
@@ -129,6 +146,7 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 			}
 			newProv, ok := c.newProviders[purpose]
 			if !ok || newProv == nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKRotationError{
 					RowID: row.ID, Table: table,
@@ -139,6 +157,7 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 
 			plaintext, err := oldProv.Decrypt(ctx, row.Ciphertext)
 			if err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKRotationError{
 					RowID: row.ID, Table: table,
@@ -148,12 +167,16 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 			}
 
 			if dryRun {
+				if !cursorFrozen {
+					result.LastRowID = row.ID
+				}
 				result.Processed++
 				continue
 			}
 
 			newCT, err := newProv.Encrypt(ctx, plaintext)
 			if err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKRotationError{
 					RowID: row.ID, Table: table,
@@ -163,12 +186,16 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 			}
 
 			if err := c.store.UpdateRotationRow(ctx, table, row.ID, newCT, targetVersion); err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKRotationError{
 					RowID: row.ID, Table: table,
 					Error: fmt.Errorf("update row: %w", err),
 				})
 				continue
+			}
+			if !cursorFrozen {
+				result.LastRowID = row.ID
 			}
 			result.Processed++
 		}

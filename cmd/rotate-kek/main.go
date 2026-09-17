@@ -63,8 +63,14 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	oldProviders := make(map[string]secrets.RootKeyProvider, len(purposes))
 	newProviders := make(map[string]secrets.RootKeyProvider, len(purposes))
 	for _, p := range purposes {
-		oldKey := deriveKey(oldMaster, p)
-		newKey := deriveKey(newMaster, p)
+		oldKey := secrets.DeriveServerKey(oldMaster, p)
+		if oldKey == nil {
+			return fmt.Errorf("old master key is shorter than 32 bytes (got %d)", len(oldMaster))
+		}
+		newKey := secrets.DeriveServerKey(newMaster, p)
+		if newKey == nil {
+			return fmt.Errorf("new master key is shorter than 32 bytes (got %d)", len(newMaster))
+		}
 		op, err := secrets.NewStaticKeyProvider(oldKey)
 		if err != nil {
 			return fmt.Errorf("old provider for %s: %w", p, err)
@@ -78,8 +84,8 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	}
 
 	// Connect to Postgres.
-	pgStore, err := newPgRotationStore(dbURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
-	if err != nil {                           // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
+	pgStore, err := newPgRotationStore(dbURL)
+	if err != nil {
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -87,8 +93,8 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	// Connect to Redis for DEK cache flush.
 	var redisCacheStore secrets.RotationStore = pgStore
 	if redisURL != "" {
-		rc, err := newRedisCacheFlusher(redisURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
-		if err != nil {                           // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
+		rc, err := newRedisCacheFlusher(redisURL)
+		if err != nil {
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
 		defer rc.Close()
@@ -113,10 +119,11 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 			r := results[tbl]
 			totalProcessed += r.Processed
 			totalFailed += r.Failed
-			fmt.Fprintf(os.Stderr, "  %s: processed=%d skipped=%d failed=%d\n", tbl, r.Processed, r.Skipped, r.Failed)
+			fmt.Fprintf(os.Stderr, "  %s: processed=%d skipped=%d failed=%d %s\n", tbl, r.Processed, r.Skipped, r.Failed, lastRowIDField(r.LastRowID))
 			for _, e := range r.Errors {
 				fmt.Fprintf(os.Stderr, "    ERROR %s/%s: %v\n", tbl, e.RowID, e.Error)
 			}
+			printResumeHint(tbl, r.LastRowID, dryRun)
 		}
 		fmt.Fprintf(os.Stderr, "\nTotal: processed=%d failed=%d\n", totalProcessed, totalFailed)
 		if totalFailed > 0 {
@@ -129,14 +136,37 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%s: processed=%d skipped=%d failed=%d\n", table, result.Processed, result.Skipped, result.Failed)
+	fmt.Fprintf(os.Stderr, "%s: processed=%d skipped=%d failed=%d %s\n", table, result.Processed, result.Skipped, result.Failed, lastRowIDField(result.LastRowID))
 	for _, e := range result.Errors {
 		fmt.Fprintf(os.Stderr, "  ERROR %s/%s: %v\n", table, e.RowID, e.Error)
 	}
+	printResumeHint(table, result.LastRowID, dryRun)
 	if result.Failed > 0 {
 		return fmt.Errorf("%d rows failed rotation", result.Failed)
 	}
 	return nil
+}
+
+// lastRowIDField renders the last-row-id=<id> report field. The runbook's
+// interrupted-run procedure consumes it: re-run with --resume-from <id>.
+func lastRowIDField(id string) string {
+	if id == "" {
+		return ""
+	}
+	return "last-row-id=" + id
+}
+
+// printResumeHint tells the operator exactly how to resume after this table —
+// the documented recovery path for interrupted runs (helm/KEK-ROTATION.md).
+func printResumeHint(table, lastRowID string, dryRun bool) {
+	if lastRowID == "" {
+		return
+	}
+	prefix := "to resume this table if interrupted:"
+	if dryRun {
+		prefix = "to start applying from where the dry-run reported:"
+	}
+	fmt.Fprintf(os.Stderr, "  (%s rotate-kek --table %s --resume-from %s ...)\n", prefix, table, lastRowID)
 }
 
 // readMasterKeyFile reads a raw key value from a file (hex or raw bytes).

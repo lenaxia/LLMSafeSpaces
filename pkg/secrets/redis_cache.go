@@ -12,7 +12,11 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-const dekCachePrefix = "dek:"
+// DEKCachePrefix is the Redis key prefix for cached DEKs (dek:<session>).
+// The rotate-kek and migrate-kek CLIs import it so their post-rotation cache
+// flush deletes exactly these keys — never the rate-limit, session, or
+// revocation keys sharing the Redis instance.
+const DEKCachePrefix = "dek:"
 
 // RedisDEKCache implements DEKCache using Redis.
 // If a master key is provided, DEKs are encrypted before storage in Redis.
@@ -32,7 +36,7 @@ func NewRedisDEKCache(client *redis.Client, masterKey ...[]byte) *RedisDEKCache 
 }
 
 func (c *RedisDEKCache) CacheDEK(ctx context.Context, sessionID string, dek []byte, ttl time.Duration) error {
-	key := dekCachePrefix + sessionID
+	key := DEKCachePrefix + sessionID
 	var val string
 	if c.masterKey != nil {
 		wrapped, err := EncryptSecret(c.masterKey, dek)
@@ -47,7 +51,7 @@ func (c *RedisDEKCache) CacheDEK(ctx context.Context, sessionID string, dek []by
 }
 
 func (c *RedisDEKCache) GetDEK(ctx context.Context, sessionID string) ([]byte, error) {
-	key := dekCachePrefix + sessionID
+	key := DEKCachePrefix + sessionID
 	val, err := c.client.Get(ctx, key).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -70,6 +74,6 @@ func (c *RedisDEKCache) GetDEK(ctx context.Context, sessionID string) ([]byte, e
 }
 
 func (c *RedisDEKCache) EvictDEK(ctx context.Context, sessionID string) error {
-	key := dekCachePrefix + sessionID
+	key := DEKCachePrefix + sessionID
 	return c.client.Del(ctx, key).Err()
 }
