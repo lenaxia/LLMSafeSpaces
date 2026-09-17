@@ -922,3 +922,13 @@ func toolText(r *mcp.CallToolResult) string {
 	}
 	return ""
 }
+
+// #1428: the tool contracts teach both spec dialects.
+func TestWorkflowToolSpecDescriptions_TeachDialects(t *testing.T) {
+	b, err := json.Marshal(workflowCreateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "or YAML text", "create spec_yaml teaches YAML")
+	b, err = json.Marshal(workflowUpdateTool.InputSchema)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "or YAML text", "update spec_yaml teaches YAML")
+}

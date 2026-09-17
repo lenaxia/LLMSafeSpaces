@@ -32,7 +32,7 @@ var workflowGetTool = mcp.NewTool("workflow_get",
 var workflowCreateTool = mcp.NewTool("workflow_create",
 	mcp.WithDescription("Create a new workflow definition"),
 	mcp.WithString("name", mcp.Required(), mcp.Description("Workflow name")),
-	mcp.WithString("spec_yaml", mcp.Required(), mcp.Description("Workflow DAG spec (JSON)")),
+	mcp.WithString("spec_yaml", mcp.Required(), mcp.Description("Workflow DAG spec — a JSON document string or YAML text (single document); YAML is converted server-side")),
 	mcp.WithString("status", mcp.Description("Workflow status: draft (default), active, archived")),
 )
 
@@ -41,7 +41,7 @@ var workflowUpdateTool = mcp.NewTool("workflow_update",
 	mcp.WithString("workflow_id", mcp.Required(), mcp.Description("Workflow ID")),
 	mcp.WithString("name", mcp.Description("New name")),
 	mcp.WithString("status", mcp.Description("New status")),
-	mcp.WithString("spec_yaml", mcp.Description("New spec (JSON)")),
+	mcp.WithString("spec_yaml", mcp.Description("New spec — a JSON document string or YAML text (single document)")),
 )
 
 var workflowRunTool = mcp.NewTool("workflow_run",
