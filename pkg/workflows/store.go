@@ -81,6 +81,8 @@ type TriggerRow struct {
 	SourceConfig        json.RawMessage
 	WorkspaceID         *string
 	WorkflowID          *string
+	InputFrom           string // 0059: envelope (legacy default) | body | mapped
+	Input               json.RawMessage
 	Prompt              string
 	Agent               string
 	ScriptPath          string
@@ -181,12 +183,18 @@ type WorkflowUpdate struct {
 // fields: nil means "keep existing". source_type is NOT in this struct — it's
 // immutable after create (the source defines the trigger's identity).
 type TriggerUpdate struct {
-	Name             *string
-	Description      *string
-	Enabled          *bool
-	SourceConfig     json.RawMessage
-	WorkspaceID      *string
-	WorkflowID       *string
+	Name         *string
+	Description  *string
+	Enabled      *bool
+	SourceConfig json.RawMessage
+	WorkspaceID  *string
+	WorkflowID   *string
+	// InputFrom (0059): nil keeps the stored mode. Input follows the
+	// jsonb CASE shape — a non-nil RawMessage (including the JSON
+	// literal null, which lands as jsonb null = "no static input")
+	// replaces the stored document; nil keeps it.
+	InputFrom        *string
+	Input            json.RawMessage
 	Prompt           *string
 	Agent            *string
 	ScriptPath       *string
@@ -334,23 +342,24 @@ func (s *Store) CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID st
 // UUID. For webhook triggers, an accompanying webhooks row is created via
 // CreateWebhook in the same transaction by the handler (US-64.5).
 const triggerSelectColumns = `id, owner_type, owner_id, name, description, enabled, source_type, source_config,
-	workspace_id, workflow_id, prompt, agent, script_path, script_args, script_env,
+	workspace_id, workflow_id, input, input_from, prompt, agent, script_path, script_args, script_env,
 	memory_mode, memory_max_runs, capture_mode, preserve_session,
 	consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at`
 
 func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config,
-			workspace_id, workflow_id, prompt, agent, script_path, script_args, script_env,
+			workspace_id, workflow_id, input, input_from, prompt, agent, script_path, script_args, script_env,
 			memory_mode, memory_max_runs, capture_mode, preserve_session,
 			consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb),
-			$9, $10, COALESCE($11, ''), COALESCE($12, ''), COALESCE($13, ''), COALESCE($14, ARRAY[]::text[]), COALESCE($15, '{}'::jsonb),
-			COALESCE(NULLIF($16, ''), 'none'), COALESCE(NULLIF($17, 0), 1), COALESCE(NULLIF($18, ''), 'errors_only'), COALESCE(NULLIF($19, ''), 'never'),
-			COALESCE($20, 0), COALESCE($21, 10), $22, $23, $24, $25)
+			$9, $10, $11, COALESCE(NULLIF($12, ''), 'envelope'), COALESCE($13, ''), COALESCE($14, ''), COALESCE($15, ''), COALESCE($16, ARRAY[]::text[]), COALESCE($17, '{}'::jsonb),
+			COALESCE(NULLIF($18, ''), 'none'), COALESCE(NULLIF($19, 0), 1), COALESCE(NULLIF($20, ''), 'errors_only'), COALESCE(NULLIF($21, ''), 'never'),
+			COALESCE($22, 0), COALESCE($23, 10), $24, $25, $26, $27)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Description, row.Enabled,
 		row.SourceType, nullableJSON(row.SourceConfig),
 		nullableStrPtr(row.WorkspaceID), nullableStrPtr(row.WorkflowID),
+		nullableJSON(row.Input), row.InputFrom,
 		row.Prompt, row.Agent, row.ScriptPath, toNullableStringArray(row.ScriptArgs), nullableJSON(row.ScriptEnv),
 		row.MemoryMode, row.MemoryMaxRuns, row.CaptureMode, row.PreserveSession,
 		row.ConsecutiveFailures, row.AutoDisableAfter, row.LastFiredAt, row.NextFireAt,
@@ -414,17 +423,19 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		    source_config = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE source_config END,
 		    workspace_id = CASE WHEN $8::text IS NULL THEN workspace_id ELSE NULLIF($8, '')::uuid END,
 		    workflow_id = CASE WHEN $9::text IS NULL THEN workflow_id ELSE NULLIF($9, '')::uuid END,
-		    prompt = COALESCE($10, prompt),
-		    agent = COALESCE($11, agent),
-		    script_path = COALESCE($12, script_path),
-		    script_args = CASE WHEN $13::text[] IS NULL THEN script_args ELSE $13 END,
-		    script_env = CASE WHEN $14::jsonb IS NOT NULL THEN $14 ELSE script_env END,
-		    memory_mode = COALESCE($15, memory_mode),
-		    memory_max_runs = COALESCE($16, memory_max_runs),
-		    capture_mode = COALESCE($17, capture_mode),
-		    preserve_session = COALESCE($18, preserve_session),
-		    auto_disable_after = COALESCE($19, auto_disable_after),
-		    next_fire_at = COALESCE($20, next_fire_at)
+		    input = CASE WHEN $10::jsonb IS NOT NULL THEN $10 ELSE input END,
+		    input_from = CASE WHEN $11::text IS NULL THEN input_from ELSE $11 END,
+		    prompt = COALESCE($12, prompt),
+		    agent = COALESCE($13, agent),
+		    script_path = COALESCE($14, script_path),
+		    script_args = CASE WHEN $15::text[] IS NULL THEN script_args ELSE $15 END,
+		    script_env = CASE WHEN $16::jsonb IS NOT NULL THEN $16 ELSE script_env END,
+		    memory_mode = COALESCE($17, memory_mode),
+		    memory_max_runs = COALESCE($18, memory_max_runs),
+		    capture_mode = COALESCE($19, capture_mode),
+		    preserve_session = COALESCE($20, preserve_session),
+		    auto_disable_after = COALESCE($21, auto_disable_after),
+		    next_fire_at = COALESCE($22, next_fire_at)
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING `+triggerSelectColumns+`
 	`,
@@ -432,6 +443,7 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		upd.Name, upd.Description, upd.Enabled,
 		nullableJSON(upd.SourceConfig),
 		nullableStrPtr(upd.WorkspaceID), nullableStrPtr(upd.WorkflowID),
+		nullableJSON(upd.Input), nullableStrPtr(upd.InputFrom),
 		upd.Prompt, upd.Agent, upd.ScriptPath,
 		toNullableStringArray(upd.ScriptArgs), nullableJSON(upd.ScriptEnv),
 		upd.MemoryMode, upd.MemoryMaxRuns, upd.CaptureMode, upd.PreserveSession,
@@ -440,7 +452,7 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Description, &row.Enabled,
 		&row.SourceType, &row.SourceConfig,
-		&row.WorkspaceID, &row.WorkflowID, &row.Prompt, &row.Agent,
+		&row.WorkspaceID, &row.WorkflowID, &row.Input, &row.InputFrom, &row.Prompt, &row.Agent,
 		&row.ScriptPath, &row.ScriptArgs, &row.ScriptEnv,
 		&row.MemoryMode, &row.MemoryMaxRuns, &row.CaptureMode, &row.PreserveSession,
 		&row.ConsecutiveFailures, &row.AutoDisableAfter, &row.LastFiredAt, &row.NextFireAt,
@@ -971,7 +983,7 @@ func scanTriggerRow(row pgx.Row) (*TriggerRow, error) {
 	err := row.Scan(
 		&r.ID, &r.OwnerType, &r.OwnerID, &r.Name, &r.Description, &r.Enabled,
 		&r.SourceType, &r.SourceConfig,
-		&r.WorkspaceID, &r.WorkflowID, &r.Prompt, &r.Agent,
+		&r.WorkspaceID, &r.WorkflowID, &r.Input, &r.InputFrom, &r.Prompt, &r.Agent,
 		&r.ScriptPath, &r.ScriptArgs, &r.ScriptEnv,
 		&r.MemoryMode, &r.MemoryMaxRuns, &r.CaptureMode, &r.PreserveSession,
 		&r.ConsecutiveFailures, &r.AutoDisableAfter, &r.LastFiredAt, &r.NextFireAt,

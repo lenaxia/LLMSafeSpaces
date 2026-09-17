@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -21,20 +22,26 @@ import (
 
 // mockWebhookReceiverStore implements webhookReceiverStore.
 type mockWebhookReceiverStore struct {
-	webhooks  map[string]*wf.WebhookRow
-	triggers  map[string]*wf.TriggerRow
-	workflows map[string]*wf.WorkflowRow
-	delivered map[string]bool
-	fireCount int
-	runErr    error
+	webhooks      map[string]*wf.WebhookRow
+	triggers      map[string]*wf.TriggerRow
+	workflows     map[string]*wf.WorkflowRow
+	delivered     map[string]bool
+	fireCount     int
+	runErr        error
+	triggerFail   map[string]int
+	disabled      map[string]bool
+	recordedFires []*wf.TriggerFireRow
+	recordedRuns  []*wf.WorkflowRunRow
 }
 
 func newMockWebhookReceiverStore() *mockWebhookReceiverStore {
 	return &mockWebhookReceiverStore{
-		webhooks:  make(map[string]*wf.WebhookRow),
-		triggers:  make(map[string]*wf.TriggerRow),
-		workflows: make(map[string]*wf.WorkflowRow),
-		delivered: make(map[string]bool),
+		webhooks:    make(map[string]*wf.WebhookRow),
+		triggers:    make(map[string]*wf.TriggerRow),
+		workflows:   make(map[string]*wf.WorkflowRow),
+		delivered:   make(map[string]bool),
+		triggerFail: make(map[string]int),
+		disabled:    make(map[string]bool),
 	}
 }
 
@@ -77,11 +84,24 @@ func (m *mockWebhookReceiverStore) CreateWorkflowRunWithFire(_ context.Context, 
 		return m.runErr
 	}
 	m.fireCount++
+	m.recordedFires = append(m.recordedFires, fire)
+	m.recordedRuns = append(m.recordedRuns, run)
 	return nil
 }
 
 func (m *mockWebhookReceiverStore) CreateTriggerFire(_ context.Context, row *wf.TriggerFireRow) error {
 	m.fireCount++
+	m.recordedFires = append(m.recordedFires, row)
+	return nil
+}
+
+func (m *mockWebhookReceiverStore) IncrementTriggerFailures(_ context.Context, triggerID string) (int, error) {
+	m.triggerFail[triggerID]++
+	return m.triggerFail[triggerID], nil
+}
+
+func (m *mockWebhookReceiverStore) DisableTrigger(_ context.Context, triggerID string) error {
+	m.disabled[triggerID] = true
 	return nil
 }
 
@@ -407,4 +427,153 @@ func TestComputeHashDedupKey_SameBodyAdjacentTimestampsSameWindow(t *testing.T) 
 	key1 := computeHashDedupKey(body, "1700000001")
 	key2 := computeHashDedupKey(body, "1700000099")
 	assert.Equal(t, key1, key2, "timestamps within same 5-min window = same key")
+}
+
+// --- 0059: inputFrom mapping on the webhook fire path ------------------------
+
+// setupBodyMode wires one webhook trigger (inputFrom:body) on a
+// schema-bearing workflow and returns its router + store.
+func setupBodyMode(t *testing.T, schema string) (*gin.Engine, *mockWebhookReceiverStore, string) {
+	t.Helper()
+	store := newMockWebhookReceiverStore()
+	secret := "s"
+	store.webhooks["hook-body"] = &wf.WebhookRow{
+		ID: "hook-body", TriggerID: "trig-body",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["trig-body"] = &wf.TriggerRow{
+		ID: "trig-body", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: "webhook",
+		WorkflowID: strPtrWF("wf-schema"), InputFrom: "body",
+		AutoDisableAfter: 10,
+	}
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
+		InputSchema: json.RawMessage(schema),
+	}
+	return setupWebhookRouter(t, store, &mockDecryptor{secret: secret}), store, secret
+}
+
+func postSigned(t *testing.T, r *gin.Engine, secret, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/hooks/trig-body", bytes.NewBufferString(body))
+	req.Header.Set("X-Hub-Signature-256", makeHMAC([]byte(body), []byte(secret)))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestWebhookReceiver_BodyModeRunInput: the posted payload becomes the
+// run input at the TOP LEVEL — the #1419 fix.
+func TestWebhookReceiver_BodyModeRunInput(t *testing.T) {
+	r, store, secret := setupBodyMode(t, `{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`)
+
+	w := postSigned(t, r, secret, `{"topic":"e2e","nested":{"a":1}}`)
+	require.Equal(t, 202, w.Code)
+	require.Len(t, store.recordedRuns, 1)
+	assert.JSONEq(t, `{"topic":"e2e","nested":{"a":1}}`, string(store.recordedRuns[0].Input),
+		"body mode: the posted document is the run input verbatim")
+	// The audit row keeps the full raw envelope.
+	assert.NotNil(t, store.recordedFires[0].InputEnvelope)
+	assert.Equal(t, 0, store.triggerFail["trig-body"])
+}
+
+// TestWebhookReceiver_BodyModeValidationFailure: a violating body answers
+// 202 (delivery succeeded — a non-2xx would make GitHub-style senders
+// retry a permanently invalid payload), records a validation_error fire
+// with typed violations only (no instance echo), creates NO run, and
+// counts toward auto-disable.
+func TestWebhookReceiver_BodyModeValidationFailure(t *testing.T) {
+	r, store, secret := setupBodyMode(t, `{"type":"object","required":["topic"],"additionalProperties":false}`)
+
+	const instanceValue = "SECRET-BODY-VALUE"
+	w := postSigned(t, r, secret, `{"wrong":"`+instanceValue+`"}`)
+	require.Equal(t, 202, w.Code)
+	assert.Len(t, store.recordedRuns, 0, "no run may be created for a failing input")
+
+	require.Len(t, store.recordedFires, 1)
+	fire := store.recordedFires[0]
+	assert.Equal(t, types.TriggerFireValidationError, fire.Status)
+	payload := string(fire.ActionResult)
+	assert.Contains(t, payload, `"code":"schema_mismatch"`)
+	assert.Contains(t, payload, `"inputFrom":"body"`)
+	assert.Contains(t, payload, `"/topic"`)
+	assert.NotContains(t, payload, instanceValue, "actionResult must never echo instance values")
+	assert.NotContains(t, payload, `"wrong"`, "additionalProperties names are instance-derived and must not appear")
+	assert.Equal(t, 1, store.triggerFail["trig-body"])
+}
+
+// TestWebhookReceiver_BodyModeAutoDisables: the accounting honors
+// auto_disable_after on validation failures.
+func TestWebhookReceiver_BodyModeAutoDisables(t *testing.T) {
+	r, store, secret := setupBodyMode(t, `{"type":"object","required":["topic"]}`)
+	store.triggers["trig-body"].AutoDisableAfter = 1
+
+	w := postSigned(t, r, secret, `{"wrong":true}`)
+	require.Equal(t, 202, w.Code)
+	assert.True(t, store.disabled["trig-body"], "auto_disable_after=1 must disable after one validation_error fire")
+}
+
+// TestWebhookReceiver_EnvelopeStaticMerge: envelope mode + static input
+// merges the overlay onto the envelope (static wins) — schema-driven
+// authoring works without reaching into input.body.*.
+func TestWebhookReceiver_EnvelopeStaticMerge(t *testing.T) {
+	store := newMockWebhookReceiverStore()
+	secret := "s"
+	store.webhooks["hook-merge"] = &wf.WebhookRow{
+		ID: "hook-merge", TriggerID: "trig-merge",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["trig-merge"] = &wf.TriggerRow{
+		ID: "trig-merge", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: "webhook",
+		WorkflowID: strPtrWF("wf-schema"), InputFrom: "envelope",
+		Input:            json.RawMessage(`{"topic":"nightly"}`),
+		AutoDisableAfter: 10,
+	}
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"]}`),
+	}
+	r := setupWebhookRouter(t, store, &mockDecryptor{secret: secret})
+
+	w := postSignedTo(t, r, "/api/v1/hooks/trig-merge", secret, `{"anything":"goes"}`)
+	require.Equal(t, 202, w.Code)
+	require.Len(t, store.recordedRuns, 1)
+	var runInput map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(store.recordedRuns[0].Input, &runInput))
+	assert.Equal(t, `"nightly"`, string(runInput["topic"]), "static overlay wins at the top level")
+	assert.NotNil(t, runInput["body"], "the envelope stays reachable under its keys")
+	assert.NotNil(t, runInput["headers"])
+}
+
+func postSignedTo(t *testing.T, r *gin.Engine, path, secret, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", path, bytes.NewBufferString(body))
+	req.Header.Set("X-Hub-Signature-256", makeHMAC([]byte(body), []byte(secret)))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestWebhookReceiver_NonJSONFallbackShape: a non-JSON body is wrapped in
+// the epic's {raw, content_type} shape (documented behavior, not coerced)
+// — visible in the envelope and in body-mode run input.
+func TestWebhookReceiver_NonJSONFallbackShape(t *testing.T) {
+	r, store, secret := setupBodyMode(t, `{"type":"object"}`)
+
+	w := postSigned(t, r, secret, `topic=nightly&urgent=1`)
+	require.Equal(t, 202, w.Code)
+	require.Len(t, store.recordedRuns, 1)
+
+	var runInput map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(store.recordedRuns[0].Input, &runInput))
+	var raw string
+	require.NoError(t, json.Unmarshal(runInput["raw"], &raw))
+	assert.Equal(t, "topic=nightly&urgent=1", raw)
+	ct, ok := runInput["content_type"]
+	require.True(t, ok, "the fallback doc must carry content_type: %s", store.recordedRuns[0].Input)
+	assert.NotEmpty(t, string(ct))
 }

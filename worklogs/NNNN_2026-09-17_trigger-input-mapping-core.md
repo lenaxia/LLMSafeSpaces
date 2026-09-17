@@ -1,0 +1,43 @@
+# Worklog: #1425/#1419 — trigger input mapping CORE (0059)
+
+**Date:** 2026-09-17
+**Session:** Core implementation of design 0059 (API + engine + webhook): per-trigger input mapping so fired runs can satisfy the workflow's inputSchema.
+**Status:** Complete (this worklog covers the core PR; agentd MCP descriptions + local e2e R6 are a sibling session's scope)
+
+---
+
+## Objective
+Implement design/0059 (merged @ b0664d50): migrations + store/DTO plumbing + create/update validation (V1–V7) + one shared fire-path input resolver with fire-time validation for opted-in triggers + sanitized, capped validation_error payloads. Closes #1425 (cron/DAG runs bypass inputSchema) and #1419 (webhook payload buried under `input.body`).
+
+## Work Completed
+- **Migration 000031** (`api/migrations/` + `helm/migrations/` mirror): `triggers.input jsonb NULL`, `triggers.input_from text NOT NULL DEFAULT 'envelope'` + `triggers_input_from_check` (envelope|body|mapped). The DEFAULT *is* the backfill (§3.6); down drops constraint + columns.
+- **pkg/types/workflows.go**: `TriggerInputFrom{Envelope,Body,Mapped}` constants, `ValidTriggerInputFrom` (sibling of `ValidMemoryMode`), `MaxTriggerStaticInputBytes` (64 KiB), create DTO (`InputFrom string`, `Input json.RawMessage`), update DTO (pointer/rawmessage key-presence form), response fields (`inputFrom` always reported, `input` when set).
+- **pkg/workflows/store.go**: `TriggerRow`/`TriggerUpdate` gain `InputFrom`/`Input`; `triggerSelectColumns`, `CreateTrigger` (`COALESCE(NULLIF(…,''),'envelope')`), `UpdateTrigger` (`CASE WHEN $n IS NULL THEN keep` for `input_from`, jsonb-IS-NOT-NULL discrimination for `input` — an explicit JSON null lands as jsonb null = "no static input"), `scanTriggerRow`.
+- **pkg/workflows/trigger_input.go** (new, D6 — one resolver, both fire paths): `ResolveTriggerInput` (envelope default returns the envelope BYTES verbatim; body = parsed payload verbatim incl. the `{"raw","content_type"}` fallback; mapped = static doc; static overlay = shallow top-level merge, static wins; non-object body base → static verbatim), `TriggerOptedIn` (D3 scope), `StaticInputPresent` (JSON null = absent), `NormalizeTriggerInputFrom`, `RequiredNonEnvelopeProperties` (V6 predicate: top-level `required` ⊄ the source's envelope key set; unparseable schema ⇒ guard skips).
+- **pkg/workflows/input_schema.go**: `ErrInvalidInputSchema` sentinel (compile failures wrap it — fire path distinguishes workflow defect from input defect); `ExtractSchemaViolations` (typed `{jsonPointer, keyword, message}` records from the jsonschema v6 error's typed trail — InstanceLocation + KeywordPath + schema-side kind fields only; container kinds (Schema/Group/Reference) skipped; `additionalProperties`/`propertyNames`/enum/const/format/type messages degrade to schema-side/static text, NEVER the instance); `SchemaMismatchPayload` with the design's recursive 4 KiB cap (append while ≤ 4096; per record: full → messageless → drop+count; final `{"keyword":"truncated","message":"N more violations omitted"}` marker that must itself fit — records are popped if the retained set filled the budget; bare `{"code","inputFrom"}` skeleton floor).
+- **api/internal/handlers/triggers.go**: `triggerStore` gains owner-scoped `GetWorkflow` (the gateWorkflowTarget precedent); `validateTriggerInputMapping` enforces V1–V6 on create and on the post-patch merged view for update (V7 — only patches touching `workflowId`/`input`/`inputFrom` re-run the rules; clearing an opt-in re-trips V6); V6 400 names the missing properties + the three remedies; ghost-workflow un-opted wiring still creatable (#1412 R4 parity); response mapping reports the effective mode.
+- **api/internal/workflows/engine.go** `fireWorkflowTarget`: the deliberate-bypass NOTE (#1425 comment) is REMOVED; input resolved per mapping; opted-in triggers validated with `wf.ValidateRunInput` BEFORE `CreateWorkflowRunWithFire`; mismatch → `validation_error` fire + typed capped payload + `IncrementTriggerFailures`/auto-disable (#1412 pattern); non-compiling schema → `failed` fire `{"code":"invalid_input_schema"}`; `input_envelope` keeps recording the raw envelope in every mode.
+- **api/internal/handlers/webhook_receiver.go**: `webhookReceiverStore` gains the #1412 accounting methods; the non-JSON fallback is aligned to the epic's `{raw, content_type}` shape; body/envelope/mapped resolution + fire-time validation identical to the cron path; validation failure answers **202 `{"status":"fired"}`** (retry-storm rationale) with the failure surfaced via `trigger_fires`.
+- **Tests** (regression-style, all fail pre-change): `TestResolveTriggerInput` matrix (modes × static × body-kind × nil-static, byte-identical envelope, overlay-wins, shallow-not-deep merge), `TestTriggerOptedIn`, `TestRequiredNonEnvelopeProperties`, `TestNormalizeTriggerInputFrom`; `TestExtractSchemaViolations_NoInstanceValues` (pattern/format/enum/additionalProperties leak vectors), `TestViolationsForKind_LeakVectors`, cap semantics (`CapInvariant`, `DropMessageThenRecord` with empirically sized records, `SkeletonFloor`, `EmptyInputFromNormalizes`, `NonValidationError`), `TestValidateRunInput_InvalidSchemaSentinel`; handler matrix `TestValidTriggerInputFrom` + V1/V2/V3/V4/V5/size-cap/invalid-mode/V6 hit-miss-ghost-opt-in/V7 scope (rename + enable + schedule never re-trip; input:null and workflowId patches do; V2 on stored cron) + response fields; scheduler fire tests (mapped conforming → resolved input; divergent → no run + validation_error + accounting + auto-disable; invalid schema → failed fire; envelope+static merge with raw envelope audit; legacy byte-identical); webhook receiver tests (body mode top-level input, violating body → 202 + typed-only payload + no run + auto-disable, envelope+static merge, `{"raw","content_type"}` fallback); store integration roundtrip (create/read, default 'envelope', keep-vs-null-vs-replace discrimination, CHECK rejects unknown modes). Mocks extended (`GetWorkflow` on trigger mocks; accounting on webhook mocks; fakeTriggerStore in server tests).
+
+## Key Decisions
+- Fire-time validation only for opted-in triggers (D3) — unconditional validation would brick every legacy schema-bearing DAG trigger (§3.6).
+- Violation payloads are typed records derived from the library's typed trail, never `ValidationError.Error()` (the library's messages provably embed instance values; under `inputFrom:body` the instance is an external sender's payload and `action_result` is a persisted, rendered field).
+- The 4 KiB cap is an invariant: the truncation marker must fit alongside retained records (records are popped if needed), down to the bare skeleton + marker.
+- Update `input` discrimination stays handler-level: the store keeps the plain `CASE WHEN NULL THEN keep` shape; a present JSON null lands as jsonb null which reads back as the literal (absent-equivalent).
+- V6 on update runs against the post-patch merged view only when the patch touches `workflowId`/`input`/`inputFrom` (V7).
+- D7's contract-surface text updates (agentd MCP descriptions, sdks/openapi.yaml, docs/api/mcp.md, pkg/mcp pins) are NOT in this PR — the agentd + e2e scope belongs to the sibling session.
+
+## Blockers
+None. (Local docker unavailable: migration up/down round-trip + store integration run in CI, which has TEST_DATABASE_URL + the migration-safety job.)
+
+## Tests Run
+`go build ./...` clean; `go test ./pkg/workflows/ ./api/internal/handlers/ ./api/internal/workflows/ ./api/internal/server/` green; `gofmt` clean; `golangci-lint run` (touched packages, `--new-from-merge-base=origin/main`) 0 issues; `make repolint` passes (migration 000031 api/helm mirror, worklog sentinel).
+
+## Files Modified
+- api/migrations/000031_trigger_input_mapping.{up,down}.sql (new) + helm/migrations/ mirror (new)
+- pkg/types/workflows.go
+- pkg/workflows/store.go, input_schema.go, trigger_input.go (new)
+- api/internal/handlers/triggers.go, webhook_receiver.go
+- api/internal/workflows/engine.go
+- Tests: pkg/workflows/{trigger_input_test.go (new), input_schema_test.go, store_integration_test.go}; api/internal/handlers/{triggers_test.go, webhook_receiver_test.go, webhook_e2e_test.go}; api/internal/workflows/engine_test.go; api/internal/server/mcp_router_integration_test.go (fake store interface impl only)

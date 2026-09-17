@@ -30,6 +30,21 @@ const (
 	TriggerSourceWebhook = "webhook"
 )
 
+// TriggerInputFrom selects what a fired run's input is (design 0059):
+// envelope (the system envelope — the pre-0059 default), body (webhook
+// only — the posted payload becomes the run input), mapped (the static
+// input document IS the run input).
+const (
+	TriggerInputFromEnvelope = "envelope"
+	TriggerInputFromBody     = "body"
+	TriggerInputFromMapped   = "mapped"
+)
+
+// MaxTriggerStaticInputBytes caps the static input document a trigger may
+// carry: authored config, not transport (webhook bodies are separately
+// capped at 1 MiB).
+const MaxTriggerStaticInputBytes = 64 << 10
+
 // OnMissingWorkspace controls behavior when a workflow's target workspace
 // is gone or never existed at run time.
 const (
@@ -170,6 +185,16 @@ func ValidWorkflowOwnerType(t string) bool {
 func ValidTriggerSourceType(t string) bool {
 	switch t {
 	case TriggerSourceCron, TriggerSourceWebhook:
+		return true
+	}
+	return false
+}
+
+// ValidTriggerInputFrom reports whether f is a supported trigger input
+// source (design 0059 D1).
+func ValidTriggerInputFrom(f string) bool {
+	switch f {
+	case TriggerInputFromEnvelope, TriggerInputFromBody, TriggerInputFromMapped:
 		return true
 	}
 	return false
@@ -352,6 +377,10 @@ type TriggerResponse struct {
 	NextFireAt          *time.Time      `json:"nextFireAt,omitempty"`
 	CreatedAt           time.Time       `json:"createdAt"`
 	UpdatedAt           time.Time       `json:"updatedAt"`
+	// InputFrom selects the fired run's input source (0059); always set in
+	// responses — legacy rows read as "envelope" via the column default.
+	InputFrom string          `json:"inputFrom"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 // CreateTriggerRequest is the body for POST .../triggers.
@@ -375,6 +404,12 @@ type CreateTriggerRequest struct {
 	CaptureMode      string          `json:"captureMode,omitempty"`
 	PreserveSession  string          `json:"preserveSession,omitempty"`
 	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
+	// Input mapping (0059): InputFrom selects what a fired run's input is
+	// (envelope default | body | mapped); Input is the optional static
+	// input document (DAG-mode only — V1). The JSON literal null means
+	// "no static input", same as an absent key, at create time.
+	InputFrom string          `json:"inputFrom,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 	// Webhook-specific (required when sourceType == 'webhook'):
 	WebhookAllowedIPs        []string `json:"webhookAllowedIps,omitempty"`
 	WebhookIdempotencyMode   string   `json:"webhookIdempotencyMode,omitempty"`
@@ -400,6 +435,12 @@ type UpdateTriggerRequest struct {
 	CaptureMode      *string         `json:"captureMode,omitempty"`
 	PreserveSession  *string         `json:"preserveSession,omitempty"`
 	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
+	// Input mapping (0059, V7): InputFrom nil = keep. Input is
+	// key-presence discriminated — absent keeps the stored document, a
+	// present value (including the JSON literal null, which clears the
+	// column back to "no static input") replaces it.
+	InputFrom *string         `json:"inputFrom,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 // WorkflowRunResponse is the API response shape for a workflow run.

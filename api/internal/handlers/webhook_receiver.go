@@ -43,6 +43,9 @@ type webhookReceiverStore interface {
 	RecordWebhookDelivery(ctx context.Context, webhookID, dedupKey string) error
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
+	// #1412 accounting, reused for validation_error fires (0059 D3).
+	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
+	DisableTrigger(ctx context.Context, triggerID string) error
 }
 
 // webhookDecryptor decrypts webhook HMAC secrets.
@@ -189,11 +192,14 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		}
 	}
 
-	// 6. Build the trigger envelope.
+	// 6. Build the trigger envelope. A non-JSON body is NOT coerced: the
+	// epic's {raw, content_type} fallback shape keeps the delivery
+	// explainable in the fire audit and in inputFrom:"body" validation
+	// failures (0059 D5).
 	var bodyJSON any
 	if len(rawBody) > 0 {
 		if json.Unmarshal(rawBody, &bodyJSON) != nil {
-			bodyJSON = map[string]any{"raw": string(rawBody)}
+			bodyJSON = map[string]any{"raw": string(rawBody), "content_type": c.ContentType()}
 		}
 	}
 
@@ -223,6 +229,42 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 			return
 		}
 
+		// Input mapping (0059): resolve the run's input per the trigger's
+		// mapping — the SAME resolver the scheduler's cron path uses (D6)
+		// — and, for opted-in triggers, validate it against the workflow's
+		// inputSchema BEFORE any run is queued. A mismatch records a
+		// validation_error fire with typed, location-only violations
+		// (never instance values — the body is an external sender's
+		// payload) and drives the #1412 accounting; the sender still gets
+		// a 202 (delivery succeeded; a non-2xx would make GitHub-style
+		// senders retry a permanently invalid payload into a storm).
+		runInput, rerr := wf.ResolveTriggerInput(wf.TriggerInputSpec{InputFrom: trigger.InputFrom, Input: trigger.Input}, envelopeJSON)
+		if rerr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve run input"})
+			return
+		}
+		if wf.TriggerOptedIn(trigger.InputFrom, trigger.Input) {
+			if verr := wf.ValidateRunInput(wfRow.InputSchema, runInput); verr != nil {
+				fireStatus := types.TriggerFireValidationError
+				actionResult := wf.SchemaMismatchPayload(trigger.InputFrom, verr)
+				if errors.Is(verr, wf.ErrInvalidInputSchema) {
+					fireStatus = types.TriggerFireFailed
+					actionResult = json.RawMessage(`{"code":"invalid_input_schema"}`)
+				}
+				completed := now
+				_ = h.store.CreateTriggerFire(c.Request.Context(), &wf.TriggerFireRow{
+					ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "webhook",
+					InputEnvelope: envelopeJSON, ActionType: "run_workflow",
+					ActionResult: actionResult, Status: fireStatus, FiredAt: now, CompletedAt: &completed,
+				})
+				if n, ferr := h.store.IncrementTriggerFailures(c.Request.Context(), trigger.ID); ferr == nil && n >= trigger.AutoDisableAfter {
+					_ = h.store.DisableTrigger(c.Request.Context(), trigger.ID)
+				}
+				c.JSON(http.StatusAccepted, gin.H{"status": "fired"})
+				return
+			}
+		}
+
 		fire := &wf.TriggerFireRow{
 			ID: fireID, TriggerID: trigger.ID, SourceType: "webhook",
 			InputEnvelope: envelopeJSON, ActionType: "run_workflow",
@@ -236,7 +278,7 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 
 		run := &wf.WorkflowRunRow{
 			ID: uuid.New().String(), WorkflowID: workflowID,
-			SpecSnapshot: wfRow.SpecJSON, Input: envelopeJSON,
+			SpecSnapshot: wfRow.SpecJSON, Input: runInput,
 			Status: "queued", TriggerID: &trigger.ID,
 			WorkspaceID: workspaceID,
 			CreatedAt:   now, UpdatedAt: now,

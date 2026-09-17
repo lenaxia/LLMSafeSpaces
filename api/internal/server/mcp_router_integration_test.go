@@ -295,6 +295,13 @@ func (s *fakeTriggerStore) ListTriggerFires(_ context.Context, _ string, _, _ in
 	return nil, nil
 }
 
+// GetWorkflow backs the 0059 input-mapping validation fetch (V3/V4/V6);
+// the MCP trigger tools under test never wire input mapping, so the
+// lookup simply answers from the same empty world.
+func (s *fakeTriggerStore) GetWorkflow(_ context.Context, _, _, _ string) (*wf.WorkflowRow, error) {
+	return nil, wf.ErrNotFound
+}
+
 // fakeQuotaChecker satisfies the handlers' workflowQuotaChecker with an
 // effectively-unbounded limit.
 type fakeQuotaChecker struct{}

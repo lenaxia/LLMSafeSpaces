@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
@@ -20,11 +22,16 @@ import (
 type mockTriggerStore struct {
 	triggers  map[string]*wf.TriggerRow
 	webhooks  map[string]*wf.WebhookRow
+	workflows map[string]*wf.WorkflowRow
 	createErr error
 }
 
 func newMockTriggerStore() *mockTriggerStore {
-	return &mockTriggerStore{triggers: make(map[string]*wf.TriggerRow), webhooks: make(map[string]*wf.WebhookRow)}
+	return &mockTriggerStore{
+		triggers:  make(map[string]*wf.TriggerRow),
+		webhooks:  make(map[string]*wf.WebhookRow),
+		workflows: make(map[string]*wf.WorkflowRow),
+	}
 }
 
 func (m *mockTriggerStore) CreateTrigger(_ context.Context, row *wf.TriggerRow) error {
@@ -98,6 +105,12 @@ func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, 
 	if upd.SourceConfig != nil {
 		r.SourceConfig = upd.SourceConfig
 	}
+	if upd.InputFrom != nil {
+		r.InputFrom = *upd.InputFrom
+	}
+	if upd.Input != nil {
+		r.Input = upd.Input
+	}
 	if upd.NextFireAt != nil {
 		r.NextFireAt = upd.NextFireAt
 	}
@@ -149,6 +162,16 @@ func (m *mockTriggerStore) UpdateWebhookSecret(_ context.Context, triggerID stri
 	hook.SecretCipher = secretCipher
 	hook.KeyVersion = keyVersion
 	return nil
+}
+
+// GetWorkflow backs the 0059 input-mapping validation (V3/V4/V6):
+// owner-scoped, schema-bearing rows live here.
+func (m *mockTriggerStore) GetWorkflow(_ context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error) {
+	r, ok := m.workflows[workflowID]
+	if !ok || r.OwnerType != ownerType || r.OwnerID != ownerID {
+		return nil, wf.ErrNotFound
+	}
+	return r, nil
 }
 
 // mockEncryptor implements triggerEncryptor.
@@ -798,4 +821,346 @@ func TestTriggerUpdate_NoopEnableKeepsFutureSlot(t *testing.T) {
 		assert.WithinDuration(t, imminent, *row.NextFireAt, time.Second,
 			"no-op enable on an enabled trigger must not reschedule an imminent fire")
 	}
+}
+
+// --- 0059: trigger input mapping validation (V1–V7) ---------------------------
+
+func TestValidTriggerInputFrom(t *testing.T) {
+	for _, ok := range []string{"envelope", "body", "mapped"} {
+		assert.True(t, types.ValidTriggerInputFrom(ok), "%s must be valid", ok)
+	}
+	for _, bad := range []string{"", "Envelope", "json", "envelopes"} {
+		assert.False(t, types.ValidTriggerInputFrom(bad), "%s must be invalid", bad)
+	}
+}
+
+const schemaRequiringTopic = `{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`
+
+func seedWorkflowWithSchema(t *testing.T, store *mockTriggerStore, id, schema string) {
+	t.Helper()
+	store.workflows[id] = &wf.WorkflowRow{
+		ID: id, OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{}`), InputSchema: json.RawMessage(schema),
+	}
+}
+
+// V1: input mapping is DAG-mode only — routine triggers keep the
+// envelope-fed {{.input}} prompt contract.
+func TestTriggerInputMapping_V1_RequiresWorkflowTarget(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "routine-body", "sourceType": "webhook",
+		"sourceConfig": map[string]any{}, "workspaceId": "ws-1",
+		"inputFrom": "body",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "input mapping requires a workflow target")
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "routine-static", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workspaceId": "ws-1",
+		"input": map[string]any{"topic": "x"},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "input mapping requires a workflow target")
+	assert.Empty(t, store.triggers, "rejected wiring must not be stored")
+}
+
+// V2: inputFrom body requires a webhook source (cron envelopes carry no
+// body key).
+func TestTriggerInputMapping_V2_BodyRequiresWebhook(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "cron-body", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"inputFrom": "body",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "requires a webhook source")
+}
+
+// V3: an opted-in wiring must be able to reach its schema — a missing
+// target workflow cannot be validated at all (distinct from the fire-time
+// ghost, which stays loud for un-opted wiring).
+func TestTriggerInputMapping_V3_MissingWorkflowCannotValidate(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "mapped-ghost", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-gone",
+		"inputFrom": "mapped", "input": map[string]any{"topic": "x"},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "target workflow not found")
+}
+
+// V4: mapped mode validates the static document against the workflow's
+// inputSchema at wiring time.
+func TestTriggerInputMapping_V4_MappedValidatesSchema(t *testing.T) {
+	store := newMockTriggerStore()
+	seedWorkflowWithSchema(t, store, "wf-schema", schemaRequiringTopic)
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "mapped-divergent", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-schema",
+		"inputFrom": "mapped", "input": map[string]any{},
+	})
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "does not satisfy the workflow's inputSchema")
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "mapped-conforming", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-schema",
+		"inputFrom": "mapped", "input": map[string]any{"topic": "nightly"},
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+}
+
+// V5: the static overlay merges into an object base (envelope, or an
+// object body) — it must itself be an object.
+func TestTriggerInputMapping_V5_StaticMustBeObject(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "array-static", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"input": []any{1, 2},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "static input must be a JSON object in envelope/body modes")
+
+	// mapped mode has no base to overlay — any JSON document is fine.
+	seedWorkflowWithSchema(t, store, "wf-free", `{"type":"object"}`)
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "array-mapped", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-free",
+		"inputFrom": "mapped", "input": []any{1, 2},
+	})
+	// The schema demands an object, so this 400s on V4 — not on V5.
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "does not satisfy the workflow's inputSchema")
+}
+
+func TestTriggerInputMapping_StaticSizeCap(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	huge := strings.Repeat("x", types.MaxTriggerStaticInputBytes)
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "huge-static", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"input": map[string]any{"topic": huge},
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "static-input cap")
+}
+
+func TestTriggerInputMapping_InvalidInputFrom(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "bad-mode", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"inputFrom": "template",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid inputFrom")
+}
+
+// V6: new un-opted wiring against a schema requiring non-envelope
+// properties is the #1425 mis-wiring — 400 naming the violation and the
+// three remedies. Wiring whose schema only requires envelope keys passes;
+// a ghost workflow skips the guard (the #1412 R4 fixture stays creatable).
+func TestTriggerInputMapping_V6_WiringGuard(t *testing.T) {
+	store := newMockTriggerStore()
+	seedWorkflowWithSchema(t, store, "wf-topic", schemaRequiringTopic)
+	seedWorkflowWithSchema(t, store, "wf-envelope-only", `{"type":"object","required":["source","received_at"]}`)
+	seedWorkflowWithSchema(t, store, "wf-webhook-keys", `{"type":"object","required":["body","headers"]}`)
+	seedWorkflowWithSchema(t, store, "wf-schemaless", `null`)
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	// Hit: cron + required topic, no opt-in.
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "miswired", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-topic",
+	})
+	require.Equal(t, 400, w.Code)
+	body := w.Body.String()
+	assert.Contains(t, body, "topic")
+	assert.Contains(t, body, "set")
+	assert.Contains(t, body, "body")
+	assert.Contains(t, body, "relax")
+
+	// Miss: schema requiring only envelope keys.
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "envelope-ok", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-envelope-only",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+
+	// Miss: webhook + schema requiring body/headers (the webhook envelope
+	// provides both).
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "webhook-ok", "sourceType": "webhook",
+		"sourceConfig": map[string]any{}, "workflowId": "wf-webhook-keys",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+
+	// Miss: schema-less workflow.
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "schemaless-ok", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-schemaless",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+
+	// Ghost: missing workflow + un-opted → guard skipped, still creatable.
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "ghost-ok", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-gone",
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+
+	// Opt-in suppresses the guard: static input satisfies the schema via
+	// the overlay, so the wiring is creatable.
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "opted-in", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-topic",
+		"input": map[string]any{"topic": "nightly"},
+	})
+	require.Equal(t, 201, w.Code, w.Body.String())
+}
+
+// V7: only patches touching workflowId/input/inputFrom re-run the rules —
+// against the post-patch merged view. A rename never trips V6; removing
+// an opt-in re-exposes the wiring and re-trips the guard.
+func TestTriggerInputMapping_V7_UpdateScope(t *testing.T) {
+	store := newMockTriggerStore()
+	seedWorkflowWithSchema(t, store, "wf-topic", schemaRequiringTopic)
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	// A legacy trigger: schema-bearing workflow wired pre-0059 (envelope
+	// mode, no static input) — exactly what migration 000031 backfills.
+	legacyID := "trig-legacy"
+	wfID := "wf-topic"
+	store.triggers[legacyID] = &wf.TriggerRow{
+		ID: legacyID, OwnerType: "user", OwnerID: "test-user",
+		Name: "legacy", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+		WorkflowID:   &wfID, InputFrom: "envelope",
+		AutoDisableAfter: 10,
+	}
+
+	// Rename-only patch: re-runs NONE of V1–V6.
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, map[string]any{
+		"name": "legacy-renamed",
+	})
+	require.Equal(t, 200, w.Code, "rename-only patch must not re-trip V6: %s", w.Body.String())
+
+	// Enable flip + schedule change: still none of V1–V6.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, map[string]any{
+		"enabled": true, "sourceConfig": map[string]any{"expr": "0 3 * * *", "tz": "UTC"},
+	})
+	require.Equal(t, 200, w.Code, w.Body.String())
+
+	// Retargeting the workflow key re-trips the guard against the new
+	// target's schema.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, map[string]any{
+		"workflowId": "wf-topic",
+	})
+	require.Equal(t, 400, w.Code, "a workflowId patch must re-run V6")
+	assert.Contains(t, w.Body.String(), "relax")
+
+	// Opting in via static input is allowed (V6 does not apply to
+	// opted-in wiring).
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, map[string]any{
+		"input": map[string]any{"topic": "nightly"},
+	})
+	require.Equal(t, 200, w.Code, w.Body.String())
+	for _, row := range store.triggers {
+		if row.ID == legacyID {
+			require.NotNil(t, row.Input)
+			assert.JSONEq(t, `{"topic":"nightly"}`, string(row.Input))
+		}
+	}
+
+	// Removing the opt-in (input → JSON null) re-exposes the wiring and
+	// re-trips the guard.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, json.RawMessage(`{"input":null}`))
+	require.Equal(t, 400, w.Code, "clearing the opt-in must re-run V6")
+	assert.Contains(t, w.Body.String(), "relax")
+
+	// Clearing the workflow target while an opt-in remains trips V1.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+legacyID, map[string]any{
+		"workflowId": "",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "input mapping requires a workflow target")
+}
+
+// V7 continued: a patch switching inputFrom to body on a stored cron
+// trigger trips V2 against the stored (immutable) source type.
+func TestTriggerInputMapping_V7_BodyOnCronUpdateRejected(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "plain-cron", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-any",
+	})
+	require.Equal(t, 201, w.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	triggerID := created["id"].(string)
+
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"inputFrom": "body",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "requires a webhook source")
+}
+
+// Response contract: inputFrom is always reported (envelope default) and
+// input echoes when set.
+func TestTriggerInputMapping_ResponseFields(t *testing.T) {
+	store := newMockTriggerStore()
+	seedWorkflowWithSchema(t, store, "wf-1", `null`)
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "resp-default", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+	})
+	require.Equal(t, 201, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "envelope", resp["inputFrom"])
+	assert.NotContains(t, resp, "input")
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "resp-mapped", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"inputFrom": "body",
+	})
+	require.Equal(t, 400, w.Code) // body on cron — V2
+
+	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "resp-static", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-1",
+		"input": map[string]any{"topic": "x"},
+	})
+	require.Equal(t, 201, w.Code)
+	resp = map[string]any{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "envelope", resp["inputFrom"])
+	input, ok := resp["input"].(map[string]any)
+	require.True(t, ok, "input must be echoed: %v", resp["input"])
+	assert.Equal(t, "x", input["topic"])
 }
