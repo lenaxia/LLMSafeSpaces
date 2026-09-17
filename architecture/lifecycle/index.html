@@ -1452,10 +1452,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#safe-mode" class="md-nav__link">
+  <a href="#recovery-exhaustion-760" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Safe mode
+        Recovery exhaustion (#760)
       
     </span>
   </a>
@@ -2363,10 +2363,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#safe-mode" class="md-nav__link">
+  <a href="#recovery-exhaustion-760" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Safe mode
+        Recovery exhaustion (#760)
       
     </span>
   </a>
@@ -2644,18 +2644,22 @@
 <pre class="mermaid"><code>flowchart TD
     DEATH["Pod death detected&lt;br/&gt;(health check fail / pod Failed)"]
     DEATH --&gt; CLASS{Classify failure}
-    CLASS --&gt;|kubelet/PVC/image pull| INF["Infrastructure&lt;br/&gt;MaxAttempts: 0&lt;br/&gt;backoff 5s→2m"]
-    CLASS --&gt;|resource limits| RES["Resource&lt;br/&gt;SafeModeAfter: 6&lt;br/&gt;backoff 10s→5m"]
-    CLASS --&gt;|opencode exit| PRC["Process&lt;br/&gt;SafeModeAfter: 6&lt;br/&gt;backoff 10s→5m"]
-    CLASS --&gt;|bad config / secret| CFG["Configuration&lt;br/&gt;SafeModeAfter: 3&lt;br/&gt;backoff 30s→5m"]
+    CLASS --&gt;|kubelet/PVC/image pull| INF["Infrastructure&lt;br/&gt;exhaustion: 10&lt;br/&gt;backoff 5s→2m"]
+    CLASS --&gt;|resource limits| RES["Resource&lt;br/&gt;exhaustion: 6&lt;br/&gt;backoff 10s→5m"]
+    CLASS --&gt;|opencode exit| PRC["Process&lt;br/&gt;exhaustion: 6&lt;br/&gt;backoff 10s→5m"]
+    CLASS --&gt;|bad config / secret| CFG["Configuration&lt;br/&gt;exhaustion: 3&lt;br/&gt;backoff 30s→5m"]
     INF --&gt; REC[enterRecovery]
     RES --&gt; REC
     PRC --&gt; REC
     CFG --&gt; REC
     REC --&gt; BK["ConsecutiveFailures++&lt;br/&gt;NextRetryAt = now + backoff&lt;br/&gt;Phase → Creating"]
-    BK --&gt; WAIT{Stable for 2m?}
-    WAIT --&gt;|yes| RESET[Reset counters]
-    WAIT --&gt;|no| BK2[Requeue after backoff]
+    BK --&gt; EXH{Crossed class threshold?}
+    EXH --&gt;|yes, first time| SIG["RecoveryExhausted condition&lt;br/&gt;+ warning Event + counter"]
+    EXH --&gt;|no / already flagged| BK2[Requeue after backoff]
+    SIG --&gt; BK2
+    BK2 --&gt; WAIT{Stable for 2m?}
+    WAIT --&gt;|yes| RESET[Reset counters&lt;br/&gt;clear condition]
+    WAIT --&gt;|no| BK2
     BK2 --&gt; RETRY[Re-create pod]</code></pre>
 <p>The four failure classes and their policies:</p>
 <table>
@@ -2664,7 +2668,7 @@
 <th>Class</th>
 <th>Examples</th>
 <th>Backoff base / max / factor</th>
-<th>Safe mode after</th>
+<th>Exhaustion threshold</th>
 </tr>
 </thead>
 <tbody>
@@ -2672,7 +2676,7 @@
 <td><code>Infrastructure</code></td>
 <td>kubelet unreachable, PVC bind, image pull</td>
 <td>5s / 2m / 2x</td>
-<td>0 (never safe-modes)</td>
+<td>10 failures</td>
 </tr>
 <tr>
 <td><code>Resource</code></td>
@@ -2694,15 +2698,18 @@
 </tr>
 </tbody>
 </table>
-<p><code>MaxAttempts: 0</code> means no hard cap on retries — the controller backs off exponentially and will keep trying, but safe mode kicks in for repeated same-class failures.</p>
-<h3 id="safe-mode">Safe mode<a class="headerlink" href="#safe-mode" title="Permanent link">&para;</a></h3>
-<p>When <code>ConsecutiveFailures</code> hits the class threshold, the workspace enters <strong>safe mode</strong> (<code>status.safeMode: true</code>, <code>SafeMode</code> condition). Safe mode is a signal to operators and the frontend that something is wrong; it doesn't change reconciliation behavior directly. Safe mode exits when:</p>
+<p><code>MaxAttempts: 0</code> means no hard cap on retries — the controller backs off exponentially and will keep trying. There is no behavioral gate: nothing halts reconciliation. The operator's halt is <code>spec.suspend: true</code> (#699).</p>
+<h3 id="recovery-exhaustion-760">Recovery exhaustion (#760)<a class="headerlink" href="#recovery-exhaustion-760" title="Permanent link">&para;</a></h3>
+<p>When <code>ConsecutiveFailures</code> crosses the class's exhaustion threshold, the workspace is flagged <strong>recovery exhausted</strong>: a <code>RecoveryExhausted</code> condition, a Kubernetes warning Event (<code>ReasonRecoveryExhausted</code>), and one increment of <code>WorkspaceRecoveryExhaustedTotal{failure_class}</code> — all fired once, on the crossing. This is a derived signal, not a mode: backoff retries continue, and the condition clears wherever the recovery counters reset:</p>
 <ul>
-<li>The workspace stabilizes (2 minutes of health → counters reset), or</li>
-<li>The workspace is terminated (<code>SafeModeExitsTotal{reason="termination"}</code>).</li>
+<li>2 minutes of stability (<code>maybeResetConsecutiveFailures</code>),</li>
+<li>a <code>restartGeneration</code> bump (the user-initiated retry),</li>
+<li>suspend, or</li>
+<li>the workspace entering the terminal Failed path.</li>
 </ul>
+<p>Every class carries a non-zero threshold. <code>Infrastructure</code> gets 10 (vs 6 for Resource/Process) because infra failures back off faster (5s base → 2m cap): 10 failures span roughly 12 minutes of retries, long enough to ride out transient kubelet/PVC hiccups while still escalating the silent permanent loops (the Longhorn case that previously retried forever with no signal at all). A per-class threshold of <code>0</code> disables the signal for that class — no shipped class uses it.</p>
 <h3 id="counter-reset">Counter reset<a class="headerlink" href="#counter-reset" title="Permanent link">&para;</a></h3>
-<p>After 2 minutes of stability (<code>maybeResetConsecutiveFailures</code>), the controller clears <code>ConsecutiveFailures</code>, <code>LastFailureClass</code>, <code>LastFailureAt</code>, <code>NextRetryAt</code>, <code>LastStableAt</code>, and <code>ControllerRestartCount</code>. This prevents a workspace that had one bad day from carrying recovery baggage forever. The guard checks <strong>both</strong> <code>ConsecutiveFailures</code> and <code>ControllerRestartCount</code> because a health-check restart bumps the latter without touching the former (worklog 0372 C1).</p>
+<p>After 2 minutes of stability (<code>maybeResetConsecutiveFailures</code>), the controller clears <code>ConsecutiveFailures</code>, <code>LastFailureClass</code>, <code>LastFailureAt</code>, <code>NextRetryAt</code>, <code>LastStableAt</code>, the derived <code>RecoveryExhausted</code> condition, and <code>ControllerRestartCount</code>. This prevents a workspace that had one bad day from carrying recovery baggage forever. The guard checks <strong>both</strong> <code>ConsecutiveFailures</code> and <code>ControllerRestartCount</code> because a health-check restart bumps the latter without touching the former (worklog 0372 C1).</p>
 <h3 id="transient-pod-loss">Transient pod loss<a class="headerlink" href="#transient-pod-loss" title="Permanent link">&para;</a></h3>
 <p>A specific, recoverable case: the pod disappeared but the PVC and configuration are intact (node drain, spot interruption, kubelet restart). <code>FailureReason: TransientPodLoss</code> skips the heavy recovery machinery and just recreates the pod — the PVC reattaches, init containers re-run, and the workspace comes back. This is the common case in production.</p>
 <h2 id="auto-suspend">Auto-suspend<a class="headerlink" href="#auto-suspend" title="Permanent link">&para;</a></h2>
@@ -2746,7 +2753,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 1, 2026 23:06:45 UTC"><span class="timeago" datetime="2026-09-01T23:06:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 1, 2026 23:06:45 UTC">2026-09-01</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 17, 2026 01:57:42 UTC"><span class="timeago" datetime="2026-09-17T01:57:42+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 17, 2026 01:57:42 UTC">2026-09-17</span>
   </span>
 
     
