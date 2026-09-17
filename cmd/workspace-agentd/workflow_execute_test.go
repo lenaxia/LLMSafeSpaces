@@ -491,3 +491,16 @@ func TestRenderTemplateRefs_NoDoubleRender(t *testing.T) {
 		t.Fatalf("walked values must not re-expand, got %q", got)
 	}
 }
+
+// Sentinel-collision variant: values containing token/control shapes
+// stay inert (single-pass builder — no restoration phase to collide).
+func TestRenderTemplateRefs_InertControlShapedValues(t *testing.T) {
+	input := map[string]any{
+		"a": "prefix",
+		"b": "real",
+		"x": "\x00\x31\x00", // shaped like a hypothetical restore token
+	}
+	if got := renderTemplateRefs("[{{.x}}] {{.a}}-{{.b}}", input); got != "[\x00\x31\x00] prefix-real" {
+		t.Fatalf("control-shaped value must pass through verbatim, got %q", got)
+	}
+}

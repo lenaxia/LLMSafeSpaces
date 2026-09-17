@@ -19,7 +19,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -301,68 +300,71 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 var opencodeAddr = fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)
 
 // renderTemplateRefs replaces {{.path}} references in an agent prompt
-// with values from the node input, in ONE expansion pass:
+// with values from the node input, in ONE left-to-right pass —
+// replacements are emitted straight to the output builder and are
+// never re-scanned, so a VALUE shaped like a ref (or like a sentinel)
+// cannot trigger further expansion: an externally-supplied webhook
+// payload field cannot pull other fields into the prompt.
 //
-// Top-level keys substitute by exact match (any key charset — KEY
-// matching is the pre-#1417 behavior; value rendering improved:
-// composites render as JSON, nil as null). Substituted values are
-// held behind sentinel tokens until after the dotted-path scan, so a
-// VALUE that itself looks like a ref is never re-expanded (the
-// double-render class: an externally-supplied webhook payload field
-// containing {{.headers.authorization}} must not pull other fields
-// into the prompt).
-//
-// Dotted paths ({{.body.topic}}) then walk nested maps — matching the
-// condition nodes' expression depth; webhook-driven runs hand the
-// fire envelope whose payload lives under body. A flat key literally
-// named "body.topic" wins over path walking (exact match first).
+// At each match: an exact top-level key hit wins first (any key
+// charset — KEY matching is the pre-#1417 behavior; value rendering
+// improved: composites as JSON, nil as null; a flat key literally
+// named "body.topic" beats path walking), then dotted paths walk
+// nested maps — matching the condition nodes' expression depth
+// (webhook runs put the payload under body; hyphens allowed).
 // Scalars render bare; composites as compact JSON; unresolvable refs
 // stay literal.
 func renderTemplateRefs(prompt string, input map[string]any) string {
-	var restored []string
-	for k, v := range input {
-		tok := "\x00" + strconv.Itoa(len(restored)) + "\x00"
-		restored = append(restored, renderTemplateValue(v))
-		prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", tok)
-	}
-	prompt = templateRefPattern.ReplaceAllStringFunc(prompt, func(ref string) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range templateRefPattern.FindAllStringIndex(prompt, -1) {
+		b.WriteString(prompt[last:loc[0]])
+		ref := prompt[loc[0]:loc[1]]
 		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
-		if path == "" {
-			return ref
+		if v, ok := input[path]; ok {
+			b.WriteString(renderTemplateValue(v))
+		} else if v, ok := walkTemplatePath(input, path); ok {
+			b.WriteString(renderTemplateValue(v))
+		} else {
+			b.WriteString(ref)
 		}
-		var cur any = input
-		for _, seg := range strings.Split(path, ".") {
-			m, ok := cur.(map[string]any)
-			if !ok {
-				return ref
-			}
-			cur, ok = m[seg]
-			if !ok {
-				return ref
-			}
-		}
-		return renderTemplateValue(cur)
-	})
-	for i, v := range restored {
-		prompt = strings.ReplaceAll(prompt, "\x00"+strconv.Itoa(i)+"\x00", v)
+		last = loc[1]
 	}
-	return prompt
+	b.WriteString(prompt[last:])
+	return b.String()
+}
+
+// walkTemplatePath resolves a dotted path through nested maps.
+func walkTemplatePath(input map[string]any, path string) (any, bool) {
+	var cur any = input
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 func renderTemplateValue(v any) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("%v", v)
-		}
-		return string(b)
+	if str, ok := v.(string); ok {
+		return str
 	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }
 
-var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.-]+\}\}`)
+// templateRefPattern matches {{.anything}} non-greedily — the charset
+// lives in the MATCHER (exact key hit first, then path walk), not the
+// pattern.
+var templateRefPattern = regexp.MustCompile(`(?s)\{\{\.(.+?)\}\}`)
 
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData
