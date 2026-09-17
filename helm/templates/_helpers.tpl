@@ -172,7 +172,7 @@ this replaces.
 {{- define "llmsafespaces.positiveIntEnv" -}}
 {{- $n := (. | float64 | int64) -}}
 {{- if lt $n 1 -}}
-{{- fail (printf "value %v must coerce to an integer > 1 (got %d)" . $n) -}}
+{{- fail (printf "value %v must coerce to an integer >= 1 (got %d)" . $n) -}}
 {{- end -}}
 {{- $n | quote -}}
 {{- end }}

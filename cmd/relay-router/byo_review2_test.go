@@ -234,7 +234,6 @@ func TestDrainWiringThroughServeBYO(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cfg := loadByoRunConfig()
-	cfg.listenAddr = "127.0.0.1:0"
 	cfg.drainGrace = 5 * time.Second
 	serveErr := make(chan error, 1)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
