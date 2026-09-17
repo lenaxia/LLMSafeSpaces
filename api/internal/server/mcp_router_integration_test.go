@@ -1115,3 +1115,60 @@ func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ok, &runOut), string(ok))
 	require.NotEmpty(t, runOut.ID, "run queued: %s", string(ok))
 }
+
+// #1421 r5: unhappy e2e legs for the remaining workflows — trigger
+// create (invalid schedule) and trigger reschedule (invalid NEW
+// schedule) through the production routes.
+func TestMCPRouterTriggerCRUD_UnhappyLegs(t *testing.T) {
+	f := newMCPRouterFixture(t)
+
+	// Create with a junk schedule: named 400.
+	body, _ := json.Marshal(map[string]any{
+		"name": "bad", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "not-a-cron"},
+		"workspaceId":  mcpTestWSID, "prompt": "x",
+	})
+	req, _ := http.NewRequest(http.MethodPost, f.apiSrv.URL+"/api/v1/me/triggers", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+f.client.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := f.apiSrv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(respBody))
+	assert.Contains(t, string(respBody), "invalid cron expr")
+
+	// Reschedule to a junk schedule: named 400, nothing written.
+	seedTrigger(t, f, "trg_bad_resched")
+	f.trgStore.mu.Lock()
+	f.trgStore.triggers["trg_bad_resched"].SourceType = "cron"
+	f.trgStore.triggers["trg_bad_resched"].SourceConfig = json.RawMessage(`{"expr":"0 9 * * *","tz":"UTC"}`)
+	f.trgStore.mu.Unlock()
+	body, _ = json.Marshal(map[string]any{"sourceConfig": map[string]any{"expr": "still-not-cron"}})
+	req, _ = http.NewRequest(http.MethodPut, f.apiSrv.URL+"/api/v1/me/triggers/trg_bad_resched", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+f.client.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = f.apiSrv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ = io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(respBody))
+	assert.Contains(t, string(respBody), "invalid cron expr")
+
+	// Workflow create with a non-object inputSchema: named 400.
+	wfBody, _ := json.Marshal(map[string]any{
+		"name":              "bad-schema-wf",
+		"specYaml":          `{"nodes":[{"id":"a","type":"agent","data":{"prompt":"p"}}],"edges":[]}`,
+		"targetWorkspaceId": mcpTestWSID,
+		"inputSchema":       map[string]any{"type": "string"},
+	})
+	req, _ = http.NewRequest(http.MethodPost, f.apiSrv.URL+"/api/v1/me/workflows", bytes.NewReader(wfBody))
+	req.Header.Set("Authorization", "Bearer "+f.client.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = f.apiSrv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ = io.ReadAll(resp.Body)
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, string(respBody))
+	assert.Contains(t, string(respBody), "root type must be object")
+}

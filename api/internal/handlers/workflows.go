@@ -234,7 +234,9 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 
 	// #1413 (write-time half): a malformed or non-object inputSchema
 	// would make EVERY future run 400 — reject it at authoring time.
-	// A literal null CLEARS the schema (legacy-clear semantics).
+	// A literal null is a no-op that KEEPS the stored schema (nil param
+	// -> the store's CASE-keep); pre-PR it stored jsonb 'null', which
+	// now behaves as schema-less either way.
 	if hasInputSchema(req.InputSchema) {
 		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
@@ -338,7 +340,7 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	// #1413 (write-time half): a malformed or non-object inputSchema
 	// would make EVERY future run 400 — reject it at authoring time, on
 	// ANY update shape (schema-only PATCHes included, not just spec
-	// rewrites). A literal null CLEARS the schema.
+	// rewrites). A literal null is a no-op that KEEPS the stored schema.
 	if hasInputSchema(req.InputSchema) {
 		if err := validateInputSchemaDeclarable(req.InputSchema); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid inputSchema: %v", err)})
