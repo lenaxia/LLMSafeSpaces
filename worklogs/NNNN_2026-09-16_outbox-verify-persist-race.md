@@ -108,7 +108,7 @@ The exec harness re-execs the REAL `supervise-opencode`, whose `preSpawn` pulls 
 **Fix** — production gains an env-var seam following the file's established pattern (`LLMSAFESPACES_SPAWN_ENV_PULL_ADDR`, staged-files dir, delivery roots, ledger):
 
 - `spawnPullBudgets()` in `spawn_env_pull.go` resolves `(bound, attempt)` from `LLMSAFESPACES_SPAWN_ENV_PULL_BOUND` / `LLMSAFESPACES_SPAWN_ENV_PULL_ATTEMPT`; absent/unparsable/non-positive values keep the production defaults — a typo can only fail to widen, never narrow. Both `newSpawnEnvPuller` and `newSpawnFilesPuller` consume it; `fastPuller` (unit tests) overrides afterwards as before. **Production runtime behavior with no env set is byte-for-byte the prior behavior.**
-- The size test passes `BOUND=12s ATTEMPT=10s` and raises its two `Eventually` windows 15s→45s (worst-case preSpawn ≈ bound+attempt ≈ 22s — a load-independent ceiling, inside the windows; typical uncontended runs complete in ~2s).
+- The size test passes `BOUND=8s ATTEMPT=8s` and raises its two `Eventually` windows 15s→45s. Window math: worst-case preSpawn is 2 pullers × (bound + one trailing attempt) ≈ 33s including subprocess boot — inside the 45s windows with scheduler headroom. (An earlier 12s/10s draft overran them: 2×22s ≈ 44s — the storm caught it, see round 1.) The NearCap control client also gets `cc.timeout = 30s` (the 2s default cannot absorb a starved status round-trip; every sibling exec test already sets it).
 
 Assertions byte-identical (byte-complete size, content spot-check, `0o600` mode contract). `TestSupervisorSubprocess_SpawnFiles_RefusedBatch_KeepsDeliveredSet` (same file, same machinery) stayed **0/150 green through every storm** — left unchanged per dispatch rules. The deliberate-degrade test (`spawn_files_exec_test.go:205`, unreachable addr) keeps default budgets — its timing depends on them.
 
@@ -137,6 +137,8 @@ None.
 
 ## Tests Run (final tree unless noted)
 
+- r1 review (PR #1408, CHANGES_REQUESTED): all four target fixes VERIFIED correct by the reviewer; four findings — (F1) `spawnPullBudgets()` shipped without unit tests (Rule 0 hard gate), (F2) worklog cited the superseded 12s/10s budgets, (F3) `freeTCPPort` deferred-finding citation pointed at the wrong file, (F4) the seam comment's "never narrow" overclaimed (a valid-but-small value does narrow; the guarantee is fail-open on unparsable/non-positive only). Fixed: `TestSpawnPullBudgets_DefaultsOverrideAndFailOpen` added (unset → consts; valid widen; one-var-only; `abc`/`30`/`0s`/`-5s` fail open) — RED-first proven by dropping the `d > 0` guard (test FAILs) and restoring (green); worklog numbers corrected to the shipped 8s/8s ≈33s math; citation corrected to `managed_process_test.go:338-348`; comment rewritten to the actual guarantee.
+
 - Pristine-tree primary reproduction: `-race -count=1/-count=30` — RED + race report (above).
 - Post-fix primary: `-race -count=50 -run 'TestOutboxVerify|TestOutboxDeliver' ./api/internal/handlers/` ×2 — ok 96.7s / ok 96.6s.
 - Pristine-tree secondary reproduction storms (3 loops × count=50 + 6 hogs, some with pinned/heavier variants): Mixed **17/150 RED**, OversizedBody **0/150 + 0/40 + 0/60, then 11/148 RED** at max load, NearCap **55/150 RED** (and 148/150 under max load via diagnostic variant), RefusedBatch **0/150** (unchanged).
@@ -154,7 +156,7 @@ None.
 
 ## Deferred findings (out of scope, recorded for the board)
 
-1. **`freeTCPPort` close-then-bind race** (`supervisor_subprocess_test.go:334-345`, shared exec harness): under ≥2 concurrent package loops the chosen port can be taken between the probe-listener close and the subprocess bind → subprocess FATAL-exits and the control client hand-shakes with the port's new owner. Observed 1/~450 storm iterations (round 6, exact evidence in `/tmp/opencode/flake3/myproof6-agentd-1.log`). Pre-existing on origin/main; file unclaimed; a fix (bind-failure detection + supervised retry, or a hello-identity check) belongs to its own claim.
+1. **`freeTCPPort` close-then-bind race** (`managed_process_test.go:338-348`, shared exec harness; called from `supervisor_subprocess_test.go:88`): under ≥2 concurrent package loops the chosen port can be taken between the probe-listener close and the subprocess bind → subprocess FATAL-exits and the control client hand-shakes with the port's new owner. Observed 1/~450 storm iterations (round 6, exact evidence in `/tmp/opencode/flake3/myproof6-agentd-1.log`). Pre-existing on origin/main; file unclaimed; a fix (bind-failure detection + supervised retry, or a hello-identity check) belongs to its own claim.
 2. **Nil package `log` in the exec subprocess** (`main.go:47` — `main()` never runs in the re-exec'd helper): every `log.Warn/Info` on the package-level logger inside `preSpawn`/`refreshFiles`/`managedProcess` is a silent no-op there (zap's nil-receiver guard). The machine-readable control-socket status carries the degrade correctly, so no observability contract is broken in production; but exec-harness failure diagnostics lose these lines. Cosmetic-to-harness-only; noted, not fixed.
 
 ## Files Modified

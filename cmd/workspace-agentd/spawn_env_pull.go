@@ -72,13 +72,17 @@ const (
 )
 
 // spawnPullBudgets resolves the bounded-wait budgets both spawn pullers
-// (env + files) run with. Production keeps the consts above — the
+// (env + files — the vars govern the pair; both share this struct's
+// machinery) run with. Production keeps the consts above — the
 // sidecar's healthy response is single-digit milliseconds on loopback.
 // The env overrides are the exec-level test seam (same pattern as
 // spawnEnvPullAddr): the re-exec'd supervisor harness runs on contended
 // CI runners where a multi-MiB staged-manifest read can outgrow the
-// in-pod budgets. Absent, unparsable, or non-positive values keep the
-// defaults — a typo can only fail to widen, never narrow.
+// in-pod budgets. Guarantee: unparsable, zero, or negative values fail
+// OPEN to the defaults — a typo cannot change the budget silently. A
+// valid-but-small value DOES narrow (no floor/ceiling); on a real pod
+// nothing sets these vars, so unset behavior is byte-identical
+// production behavior.
 func spawnPullBudgets() (bound, attempt time.Duration) {
 	bound, attempt = spawnEnvPullBound, spawnEnvPullAttempt
 	if v := os.Getenv(spawnEnvPullBoundEnvVar); v != "" {
