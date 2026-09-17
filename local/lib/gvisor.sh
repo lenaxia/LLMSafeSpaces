@@ -100,6 +100,10 @@ gvisor_install_on_node() { # node
       install -m 0755 /tmp/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
       rm -rf /usr/local/bin/gvisor-bin
       cp -a /tmp/gvisor-bin /usr/local/bin/gvisor-bin
+      # Loud at provisioning, not hours later in sandbox creation (the
+      # pool 35169738298 wedge class): the STRICT policy looks up the
+      # sentry HERE — fail now if it is missing or not executable.
+      test -x /usr/local/bin/gvisor-bin/gvisor_sentry
       rm -rf /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS /tmp/runsc /tmp/containerd-shim-runsc-v1 /tmp/gvisor-bin
       /usr/local/bin/runsc --version >/dev/null
       # Register the handler in containerd (config_v2 runtime table);

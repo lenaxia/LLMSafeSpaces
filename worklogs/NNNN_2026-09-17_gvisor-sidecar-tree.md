@@ -16,3 +16,13 @@
 ## Files modified
 
 - `local/lib/gvisor.sh`, `local/us70_harness_script_test.go`, this worklog
+
+## Review r1 remediation
+
+- **Pin hardened:** the tar LINE is now pinned (regex-equivalent Contains on the matched line) — the r1 mutation (drop the member from the command, keep an unrelated mention) went green through the window check; it fails now.
+- **Loud guard:** `test -x /usr/local/bin/gvisor-bin/gvisor_sentry` after install — the exact silent-wedge class fails at provisioning instead of hours into a pool run; pinned.
+- **Bundle-layout validation recorded:** reviewer verified against the LIVE upstream (`release-20260914.0` bundle: exactly `runsc`, `containerd-shim-runsc-v1`, `gvisor-bin/` with 5 files incl. `gvisor_sentry`); the PR's own tar+cp reproduction produced the sentry at 0755. This worklog now records that the layout assumption is live-validated, not assumed from the 2026-09-07 inspection.
+
+## Tests run (r1)
+
+- `go test -timeout 300s ./local/` — ok; `bash -n` clean; repolint passed.
