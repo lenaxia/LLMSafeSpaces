@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
@@ -224,7 +225,12 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
-	spec, err := wf.ParseSpec(json.RawMessage(extractSpecJSON(req.SpecYAML)))
+	specJSON, err := extractSpecJSON(req.SpecYAML)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	spec, err := wf.ParseSpec(json.RawMessage(specJSON))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 		return
@@ -248,7 +254,7 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		return
 	}
 
-	specJSON, err := json.Marshal(spec)
+	specJSONBytes, err := json.Marshal(spec)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to marshal validated spec"})
 		return
@@ -272,7 +278,7 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 	row := &wf.WorkflowRow{
 		ID: uuid.New().String(), OwnerType: ownerType, OwnerID: ownerID,
 		Name: req.Name, Slug: slug, Description: req.Description,
-		SpecYAML: req.SpecYAML, SpecJSON: specJSON,
+		SpecYAML: req.SpecYAML, SpecJSON: specJSONBytes,
 		InputSchema: req.InputSchema, TargetWorkspaceID: targetWS,
 		OnMissingWorkspace: onMissing,
 		Status:             status, Defaults: req.Defaults,
@@ -357,7 +363,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch existing workflow"})
 			return
 		}
-		spec, err := wf.ParseSpec(json.RawMessage(extractSpecJSON(*req.SpecYAML)))
+		updateSpecJSON, err := extractSpecJSON(*req.SpecYAML)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		spec, err := wf.ParseSpec(json.RawMessage(updateSpecJSON))
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid workflow spec: %v", err)})
 			return
@@ -497,17 +508,27 @@ func slugify(name string) string {
 // In v1, spec_yaml is expected to be JSON (the YAML editor sends JSON via the
 // API). If the content is already valid JSON, it passes through; if it's YAML,
 // it will fail ParseSpec with a clear error (YAML parsing is a frontend concern).
-func extractSpecJSON(specYAML string) string {
+func extractSpecJSON(specYAML string) (string, error) {
 	trimmed := strings.TrimSpace(specYAML)
 	if trimmed == "" {
-		return "{}"
+		return "{}", nil
 	}
-	// If it starts with { or [, it's JSON — pass through.
+	// JSON passes through untouched (YAML is a JSON superset, but why
+	// round-trip what is already canonical).
 	if trimmed[0] == '{' || trimmed[0] == '[' {
-		return trimmed
+		return trimmed, nil
 	}
-	// Not JSON — wrap in a minimal object so ParseSpec produces a clear error.
-	return trimmed
+	// #1418: the field is named specYaml — honor it. Convert YAML to
+	// JSON so ParseSpec sees the same shape either dialect produces.
+	var doc any
+	if err := yaml.Unmarshal([]byte(trimmed), &doc); err != nil {
+		return "", fmt.Errorf("spec is neither JSON nor YAML: %v", err)
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("cannot normalize YAML spec: %v", err)
+	}
+	return string(out), nil
 }
 
 func isWorkflowUniqueViolation(err error) bool {

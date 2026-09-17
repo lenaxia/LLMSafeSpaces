@@ -652,3 +652,37 @@ func TestWorkflowUpdate_TargetWorkspaceID(t *testing.T) {
 	require.NotNil(t, updated.TargetWorkspaceID)
 	assert.Equal(t, "ws-target-1", *updated.TargetWorkspaceID)
 }
+
+// --- #1418: specYaml accepts actual YAML -----------------------------------
+
+func TestWorkflowCreate_YAMLSpec(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	yamlSpec := `nodes:
+  - id: say
+    type: agent
+    data:
+      prompt: "hello"
+edges: []
+`
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "yaml-spec", "specYaml": yamlSpec,
+		"targetWorkspaceId": "ws-1",
+	})
+	require.Equal(t, 201, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, store.lastCreated)
+	assert.NotNil(t, store.lastCreated.SpecJSON, "YAML normalized to the JSON spec column")
+	assert.Contains(t, string(store.lastCreated.SpecJSON), `"hello"`, "content preserved through the dialect conversion")
+}
+
+func TestWorkflowCreate_NeitherJSONNorYAML(t *testing.T) {
+	store := newMockWorkflowStore()
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name": "garbage", "specYaml": "}: not yaml [or json", "targetWorkspaceId": "ws-1",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "neither JSON nor YAML", "the error names the dialect problem, not a JSON parse artifact")
+}
