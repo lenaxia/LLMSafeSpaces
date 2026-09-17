@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -685,4 +686,59 @@ func TestWorkflowCreate_NeitherJSONNorYAML(t *testing.T) {
 	})
 	require.Equal(t, 400, w.Code)
 	assert.Contains(t, w.Body.String(), "neither JSON nor YAML", "the error names the dialect problem, not a JSON parse artifact")
+}
+
+// #1418: direct table-driven coverage of extractSpecJSON across its
+// input classes.
+func TestExtractSpecJSON_Table(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr string
+	}{
+		{"empty -> empty object", "", "{}", ""},
+		{"whitespace-only", "   \n\t", "{}", ""},
+		{"JSON object passes through", `{"nodes":[]}`, `{"nodes":[]}`, ""},
+		{"JSON array passes through", `[1,2]`, `[1,2]`, ""},
+		{"block YAML converts", "nodes: []\nedges: []", `{"edges":[],"nodes":[]}`, ""},
+		{"flow YAML converts", `{nodes: [], edges: []}`, `{"edges":[],"nodes":[]}`, ""},
+		{"bare scalar YAML", "just-a-string", `"just-a-string"`, ""},
+		{"multi-doc rejected", "nodes: []\n---\nedges: []", "", "single document"},
+		{"garbage rejected", "}: not yaml [or json", "", "neither JSON nor YAML"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractSpecJSON(tc.in)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("want error containing %q, got %v (out %s)", tc.wantErr, err, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("want %s, got %s", tc.want, got)
+			}
+		})
+	}
+}
+
+// The update path shares the dialect handling — YAML specs update too.
+func TestWorkflowUpdate_YAMLSpec(t *testing.T) {
+	store := newMockWorkflowStore()
+	target := "ws-1"
+	store.workflows["wf-y1"] = &wf.WorkflowRow{
+		ID: "wf-y1", OwnerType: "user", OwnerID: "test-user",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`), TargetWorkspaceID: &target,
+	}
+	r := setupWorkflowRouter(t, store, &mockQuotaChecker{values: map[string]int{}})
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-y1", map[string]any{
+		"specYaml": "nodes:\n  - id: a\n    type: agent\n    data:\n      prompt: hi\nedges: []\n",
+	})
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "wf-y1")
 }

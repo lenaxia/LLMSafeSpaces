@@ -10,6 +10,7 @@ package handlers
 // middleware chain (OrgAdminGuard / auth).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -504,25 +505,34 @@ func slugify(name string) string {
 	return s
 }
 
-// extractSpecJSON wraps a YAML spec string as a JSON string for ParseSpec.
-// In v1, spec_yaml is expected to be JSON (the YAML editor sends JSON via the
-// API). If the content is already valid JSON, it passes through; if it's YAML,
-// it will fail ParseSpec with a clear error (YAML parsing is a frontend concern).
+// extractSpecJSON normalizes the specYaml field for ParseSpec (#1418).
+// Valid JSON passes through untouched (canonical stays canonical).
+// Anything else is parsed as YAML — block OR flow style — and emitted
+// as the equivalent JSON so both dialects feed the validator the same
+// shape. Exactly one document is required: multi-document YAML is a
+// spec-authoring error and is rejected rather than silently truncated
+// to its first document.
 func extractSpecJSON(specYAML string) (string, error) {
 	trimmed := strings.TrimSpace(specYAML)
 	if trimmed == "" {
 		return "{}", nil
 	}
-	// JSON passes through untouched (YAML is a JSON superset, but why
-	// round-trip what is already canonical).
-	if trimmed[0] == '{' || trimmed[0] == '[' {
+	if json.Valid([]byte(trimmed)) {
 		return trimmed, nil
 	}
 	// #1418: the field is named specYaml — honor it. Convert YAML to
 	// JSON so ParseSpec sees the same shape either dialect produces.
+	// Flow-style YAML ({nodes: ...}) also lands here: it starts with {
+	// but is not valid JSON, and must NOT fall back to the old
+	// misleading JSON-parse error.
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(trimmed)))
 	var doc any
-	if err := yaml.Unmarshal([]byte(trimmed), &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return "", fmt.Errorf("spec is neither JSON nor YAML: %v", err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err == nil {
+		return "", fmt.Errorf("spec must be a single document (multi-document YAML rejected)")
 	}
 	out, err := json.Marshal(doc)
 	if err != nil {
