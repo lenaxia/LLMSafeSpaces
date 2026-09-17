@@ -9465,7 +9465,7 @@ components:
           type: string
         specYaml:
           type: string
-          description: Workflow DAG spec (JSON document serialized as a string in v1)
+          description: Workflow DAG spec — a JSON document serialized as a string, or YAML text (single document); converted to the canonical JSON spec server-side
         inputSchema:
           type: object
         targetWorkspaceId:
@@ -9497,6 +9497,7 @@ components:
           type: string
         specYaml:
           type: string
+          description: Workflow DAG spec — JSON document string or YAML text (single document); converted server-side
         inputSchema:
           type: object
         targetWorkspaceId:
@@ -9521,6 +9522,7 @@ components:
           type: string
         specYaml:
           type: string
+          description: Workflow DAG spec — JSON document string or YAML text (single document); converted server-side
         inputSchema:
           type: object
         targetWorkspaceId:

@@ -1563,12 +1563,48 @@ jobs:
             COMMIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
+      # #1416/#1423: integration-level pin on the BUILT image — the CA
+      # bundle must exist and carry real roots (unit-level Dockerfile
+      # pins cannot see the assembled filesystem).
+      - name: Verify image contents (CA bundle)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker buildx build --platform linux/amd64 -f ./cmd/workspace-agentd/Dockerfile --load -t agentd-verify .
+          cid="agentd-verify-$GITHUB_RUN_ID"
+          docker create --platform linux/amd64 --name "$cid" agentd-verify /usr/local/bin/workspace-agentd >/dev/null
+          docker cp "$cid":/etc/ssl/certs/ca-certificates.crt /tmp/ca-bundle.crt
+          docker rm -f "$cid" >/dev/null
+          test -s /tmp/ca-bundle.crt || (echo "FAIL: CA bundle missing/empty (#1416 regression)" && exit 1)
+          grep -q "BEGIN CERTIFICATE" /tmp/ca-bundle.crt || (echo "FAIL: bundle carries no certificates" && exit 1)
+          echo "CA bundle verified: $(grep -c 'BEGIN CERTIFICATE' /tmp/ca-bundle.crt) certificates, $(wc -c < /tmp/ca-bundle.crt) bytes"
+          # FUNCTIONAL acceptance (#1416): the extracted bundle must
+          # verify the real target's TLS chain — the same verification
+          # an http node performs. Both modes call ONE function, so the
+          # negative leg constrains the operative check itself.
+          # --capath pointed at an EMPTY dir is load-bearing: on this
+          # curl/OpenSSL build the default CA DIRECTORY is consulted
+          # alongside --cacert, which made any parseable CA "verify".
+          # Empty capath isolates --cacert as the sole trust source.
+          mkdir -p /tmp/empty-capath
+          tls_ok() {
+            code="$(curl -s -o /dev/null -w '%{http_code}' --cacert "$1" \
+              --capath /tmp/empty-capath \
+              https://api.safespaces.dev/api/v1/health --max-time 30)" || return 1
+            case "$code" in 2*|3*|4*|5*) return 0 ;; *) return 1 ;; esac
+          }
+          tls_ok /tmp/ca-bundle.crt || { echo "FAIL: real bundle rejected (#1416 regression)"; exit 1; }
+          # Negative leg with a PARSEABLE but untrusted CA: reaches real
+          # certificate verification (not just a CA-load failure).
+          openssl req -x509 -newkey rsa:2048 -nodes -keyout /tmp/bogus.key -out /tmp/bogus-ca.pem \
+            -days 1 -subj "/CN=guard-self-test" >/dev/null 2>&1
+          tls_ok /tmp/bogus-ca.pem && { echo "FAIL: guard is vacuous — bogus CA accepted"; exit 1; }
+          echo "functional acceptance: real bundle verifies; bogus CA rejected"
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
-          # The chart pins the BINARY sha256 (the entrypoint verifies the
-          # file, not the image). Tag the arch image, copy the binary out
-          # of a stopped container, hash it.
+          # The chart pins the BINARY sha256 (the supervisor self-verifies
+          # the file, not the image — design 0053). Tag the arch image,
+          # copy the binary out of a stopped container, hash it.
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }}-${arch}"
           # outputs.digest already carries the sha256: prefix — reference
@@ -1757,9 +1793,9 @@ jobs:
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
-          # The chart pins the BINARY sha256 (the entrypoint verifies the
-          # file, not the image). Tag the arch image, copy the binary out
-          # of a stopped container, hash it.
+          # The chart pins the BINARY sha256 (the supervisor self-verifies
+          # the file, not the image — design 0053). Tag the arch image,
+          # copy the binary out of a stopped container, hash it.
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }}:sha-${{ github.sha }}-${arch}"
           # outputs.digest already carries the sha256: prefix — reference
