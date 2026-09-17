@@ -115,3 +115,14 @@ func Execute(ctx context.Context, language Language, handlerSource string, input
 
 	return json.RawMessage(stdout.Bytes()), stderr, exitCode, nil
 }
+
+// ValidLanguage reports whether spec-side validation should accept the
+// language — the single vocabulary anchor shared by the DAG validator
+// and this executor (the drift class #1414/#1422 exists to kill).
+func ValidLanguage(lang string) bool {
+	switch Language(lang) {
+	case LanguagePython, LanguageNode:
+		return true
+	}
+	return false
+}

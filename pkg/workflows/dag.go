@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lenaxia/llmsafespaces/pkg/workflows/scriptwrap"
+
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows/exprlang"
 )
@@ -150,9 +152,10 @@ func validateNodeData(n *SpecNode) []ValidationError {
 		}
 		// #1414: reject unsupported languages at SPEC time — the runtime
 		// sentinel used to surface as a bare "exit -1: " long after
-		// authoring. python|node are the executor's vocabulary.
-		if d.Language != "python" && d.Language != "node" {
-			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: fmt.Sprintf("unsupported script language %q (valid: python, node)", d.Language)}}
+		// authoring. Anchored to scriptwrap's constants so the executor
+		// and the validator can never drift apart.
+		if !scriptwrap.ValidLanguage(d.Language) {
+			return []ValidationError{{Code: "invalid_node_data", NodeID: n.ID, Detail: fmt.Sprintf("unsupported script language %q (valid: %s, %s)", d.Language, scriptwrap.LanguagePython, scriptwrap.LanguageNode)}}
 		}
 	case types.NodeTypeAgent:
 		var d AgentNodeData

@@ -212,7 +212,7 @@ func mcpHandler(password string) http.HandlerFunc {
 						Name:        "trigger_create",
 						Description: "Create an automation trigger owned by this workspace's user. sourceType is cron or webhook. cron sourceConfig: {expr: <5-field cron, required, validated>, tz: <IANA name, optional>}; the first fire is the schedule's NEXT slot - a trigger never fires at creation moment. With workflowId (camelCase) the trigger fires that DAG - the workflow must exist and target THIS workspace; without it the trigger fires a routine - a single agent turn (prompt, optional agent/script) IN THIS WORKSPACE (the platform forces this workspace as the target - you cannot schedule work into other workspaces). autoDisableAfter N consecutive failures disables the trigger - find failures via trigger_fires.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflow_id (DAG)"},
+							"trigger": map[string]any{"type": "object", "description": "The trigger body - same shape as trigger_list entries minus server fields. Minimum: name, sourceType, sourceConfig; plus prompt (routine) or workflowId (DAG workflow id - camelCase; snake_case is silently dropped)"},
 						}, "required": []string{"trigger"}},
 					},
 					{
@@ -251,14 +251,14 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "workflow_create",
-						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml: a JSON-object string {nodes:[{id,type,data,...}],edges:[{source,target,sourceHandle?}]}. Node types are exactly: script (data: language python|node + handler source), agent (data: prompt; {{.path}} placeholders fill from node input, dotted paths walk nested objects e.g. {{.body.topic}}), http (data: url, method...), condition (data: conditions[{id,expression}]; expressions see input.* with dotted paths; every branch id needs an edge with sourceHandle=id plus an 'otherwise' edge). Exactly one start node (no incoming edges); all nodes reachable; no cycles. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
+						Description: "Create a workflow (DAG spec) owned by this workspace's user. specYaml: a JSON-object string {nodes:[{id,type,data,...}],edges:[{source,target,sourceHandle?}]}. Node types are exactly: script (data: language python|node + handler SOURCE defining handler(input) -> dict - a function, not a shell command), agent (data: prompt; {{.path}} placeholders fill from node input, dotted paths walk nested objects e.g. {{.body.topic}}), http (data: url, method...), condition (data: conditions[{id,expression}]; expressions see input.* with dotted paths; every branch id needs an edge with sourceHandle=id plus an 'otherwise' edge). Exactly one start node (no incoming edges); all nodes reachable; no cycles. Wire triggers via trigger_create {workflowId} or fire manually with workflow_run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"workflow": map[string]any{"type": "object", "description": "The workflow body - same shape as workflow_list entries minus server fields"},
 						}, "required": []string{"workflow"}},
 					},
 					{
 						Name:        "workflow_update",
-						Description: "Partially update one workflow (id + fields to change).",
+						Description: "Partially update one workflow (id + fields to change). patch fields follow workflow_create: specYaml is a STRINGIFIED spec (JSON object or YAML text) with the same node vocabulary and rules; inputSchema (if set) must compile and be object-rooted; runs need a target workspace (targetWorkspaceId) or an explicit workspace_id per run.",
 						InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 							"id":    map[string]any{"type": "string", "description": "Workflow ID (from workflow_list)"},
 							"patch": map[string]any{"type": "object", "description": "Fields to change"},

@@ -340,3 +340,31 @@ func TestExecScriptNode_UnsupportedLanguageNamesCause(t *testing.T) {
 		t.Fatalf("bare exit -1 regression")
 	}
 }
+
+// #1417: hyphenated path segments (e.g. {{.headers.content-type}}) resolve.
+func TestRenderTemplateRefs_HyphenatedKeys(t *testing.T) {
+	input := map[string]any{"headers": map[string]any{"content-type": "application/json"}}
+	if got := renderTemplateRefs("type={{.headers.content-type}}", input); got != "type=application/json" {
+		t.Fatalf("hyphenated keys must resolve: %q", got)
+	}
+}
+
+// #1414 through the REAL wiring: the handler names the cause.
+func TestWorkflowExecuteHandler_UnsupportedLanguageThroughHandler(t *testing.T) {
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"sh","handler":"x"},"input":{}}`
+	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse: %v (%s)", err, w.Body.String())
+	}
+	if !strings.Contains(resp.Detail, "unsupported language: sh") {
+		t.Fatalf("named cause through the handler wiring, got: %q", resp.Detail)
+	}
+}

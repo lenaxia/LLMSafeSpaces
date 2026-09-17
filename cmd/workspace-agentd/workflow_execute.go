@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/expr-lang/expr"
+
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows/scriptwrap"
@@ -338,7 +339,7 @@ func renderTemplateRefs(prompt string, input map[string]any) string {
 	})
 }
 
-var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.]+\}\}`)
+var templateRefPattern = regexp.MustCompile(`\{\{\.[a-zA-Z0-9_.-]+\}\}`)
 
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData

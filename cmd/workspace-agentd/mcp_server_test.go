@@ -924,6 +924,29 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		}
 	})
 
+	t.Run("trigger_create property contract", func(t *testing.T) {
+		_, ok := descs["trigger_create"]
+		require.True(t, ok, "trigger_create in tools/list")
+		// The DTO spelling, pinned at the property level (#1415: the
+		// property text taught snake_case, which the decoder drops).
+		triggerProp, ok := schemaDescs["trigger_create/trigger"]
+		require.True(t, ok, "trigger property documented")
+		assert.Contains(t, triggerProp, "workflowId (DAG workflow id - camelCase")
+		assert.NotContains(t, triggerProp, "workflow_id", "property text must not teach the dropped spelling")
+	})
+
+	t.Run("workflow_update guidance", func(t *testing.T) {
+		d, ok := descs["workflow_update"]
+		require.True(t, ok, "workflow_update in tools/list")
+		for _, want := range []string{
+			"STRINGIFIED spec",  // specYaml is a string field (#1415 drift 4)
+			"object-rooted",     // write-time schema rule
+			"targetWorkspaceId", // runs need a target workspace
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
 	t.Run("trigger_create guidance", func(t *testing.T) {
 		d, ok := descs["trigger_create"]
 		require.True(t, ok, "trigger_create in tools/list")

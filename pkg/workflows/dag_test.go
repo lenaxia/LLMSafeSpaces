@@ -556,4 +556,32 @@ func TestValidateSpec_ScriptLanguageValidated(t *testing.T) {
 	if !found {
 		t.Fatalf("bash must be rejected at spec time, got %+v", errs)
 	}
+
+	// Table: casing and shell dialects are all outside the vocabulary.
+	for _, lang := range []string{"bash", "sh", "Python", "PYTHON", "javascript", "js", "go"} {
+		spec := &Spec{Nodes: []SpecNode{{
+			ID: "s1", Type: "script",
+			Data: json.RawMessage(`{"language":"` + lang + `","handler":"x"}`),
+		}}}
+		errs := ValidateSpec(spec, nil, DefaultsBlock{})
+		rejected := false
+		for _, e := range errs {
+			if strings.Contains(e.Detail, "unsupported script language") {
+				rejected = true
+			}
+		}
+		if !rejected {
+			t.Fatalf("language %q must be rejected", lang)
+		}
+	}
+	// The two real languages pass spec validation.
+	for _, lang := range []string{"python", "node"} {
+		spec := &Spec{Nodes: []SpecNode{{
+			ID: "s1", Type: "script",
+			Data: json.RawMessage(`{"language":"` + lang + `","handler":"def h(i): return {}"}`),
+		}}}
+		if errs := ValidateSpec(spec, nil, DefaultsBlock{}); len(errs) != 0 {
+			t.Fatalf("language %q must validate, got %+v", lang, errs)
+		}
+	}
 }
