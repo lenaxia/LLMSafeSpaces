@@ -1078,3 +1078,31 @@ func TestMCPRouterWorkflowRun_SchemaRejection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(ok, &runOut), string(ok))
 	require.NotEmpty(t, runOut.ID, "run queued: %s", string(ok))
 }
+
+// #1429: the workflow_run TOOL through the real mcp-go wiring (server,
+// client, production router) — the boundary that caused the bug.
+func TestMCPRouterWorkflowRunTool_FullChain(t *testing.T) {
+	f := newMCPRouterFixture(t)
+	seedWorkflow(t, f, "wfl_chain")
+	f.wfStore.mu.Lock()
+	f.wfStore.workflows["wfl_chain"].InputSchema = json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`)
+	target := mcpTestWSID
+	f.wfStore.workflows["wfl_chain"].TargetWorkspaceID = &target
+	f.wfStore.mu.Unlock()
+
+	// Happy: an OBJECT input rides the full chain and queues the run.
+	result := callMCPTool(t, f.client, "workflow_run", map[string]any{
+		"workflow_id": "wfl_chain",
+		"input":       map[string]any{"topic": "chain"},
+	})
+	out := toolText(t, result)
+	assert.Contains(t, out, "wfl_chain", "run started through the tool wiring: %s", out)
+
+	// Unhappy: a present-but-non-object input is a loud TOOL error.
+	bad := callMCPTool(t, f.client, "workflow_run", map[string]any{
+		"workflow_id": "wfl_chain",
+		"input":       `{"topic":"still-a-string"}`,
+	})
+	require.True(t, bad.IsError, "legacy string input must be a loud tool error, not a silent {}", toolResultText(bad))
+	assert.Contains(t, toolResultText(bad), "must be an object")
+}
