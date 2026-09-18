@@ -43,7 +43,9 @@ func New(db interfaces.DatabaseService, log *logger.Logger) *Service {
 func (s *Service) Start() error {
 	s.wg.Add(1)
 	go s.drain()
-	s.logger.Info("SessionIndexService started")
+	if s.logger != nil {
+		s.logger.Info("SessionIndexService started")
+	}
 	return nil
 }
 
@@ -51,7 +53,9 @@ func (s *Service) Start() error {
 func (s *Service) Stop() error {
 	close(s.closeC)
 	s.wg.Wait()
-	s.logger.Info("SessionIndexService stopped")
+	if s.logger != nil {
+		s.logger.Info("SessionIndexService stopped")
+	}
 	return nil
 }
 

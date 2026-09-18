@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixes — session surface
+
+- **Preserved routine sessions appear in the workspace session list
+  (#1452)**: a `preserveSession=always` routine session existed pod-side
+  (row + transcript, listed by opencode) but never appeared in the
+  sidebar — `GET /workspaces/:id/sessions` serves the PostgreSQL
+  `session_index` only, and every index write site was adapter-route or
+  usage-stream-gated (30s idle drop), so unattended fires produced zero
+  index rows and visibility raced on recent interactive traffic.
+  `executeRoutine` now writes the index row at fire completion, at the
+  same site and under the same condition as the `session_origins` write:
+  trigger name as title (sync, best-effort), `last_message_at` via the
+  session-index service's non-blocking queue. Deterministic, no wire
+  change; also fixes a `sessionindex` nil-logger segfault in
+  `Start`/`Stop`.
+
 ## [0.34.3] - 2026-09-18
 
 ### Fixes — routine fire resilience

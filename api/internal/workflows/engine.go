@@ -80,6 +80,16 @@ type SchedulerStore interface {
 	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
 }
 
+// --- SessionIndexWriter interface ---
+
+// SessionIndexWriter is the scheduler's slice of the session-index seam
+// (interface segregation: the engine only writes rows, it never lists or
+// deletes them). Satisfied by *sessionindex.Service; wired in app.go.
+type SessionIndexWriter interface {
+	RecordMessage(workspaceID, sessionID, title string, at time.Time)
+	UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error
+}
+
 // --- AgentdExecutor interface ---
 
 // AgentdExecutor dispatches a single node execution to the agentd user mux
@@ -487,6 +497,10 @@ type Scheduler struct {
 	// PasswordProvider resolves the per-workspace agentd Basic-auth
 	// password for the PreserveOnFailure session-delete call (#762).
 	PasswordProvider apiinterfaces.WorkspacePasswordProvider
+	// SessionIndex writes the session_index row for preserved routine
+	// sessions (#1452) — without it they are invisible on
+	// GET /workspaces/:id/sessions, which serves the index only.
+	SessionIndex SessionIndexWriter
 	// AgentdPort overrides the agentd user-mux port for the
 	// PreserveOnFailure session-delete call. Zero → default (4097).
 	// Tests inject an httptest server port; mirrors HTTPAgentExecutor.Port.
@@ -854,6 +868,12 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			}); err != nil {
 				logger.Error(err, "routine: failed to record session origin", "sessionId", sessionID, "triggerId", trigger.ID)
 			}
+			// #1452: the sidebar list (GET /workspaces/:id/sessions)
+			// serves the session_index only — origins decorate rows
+			// already present — so a preserved routine session without
+			// an index row is invisible platform-side. Index at fire
+			// completion, under the same condition as the origin write.
+			s.indexRoutineSession(ctx, logger, workspaceID, sessionID, trigger.Name)
 		}
 	}
 
@@ -868,6 +888,26 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	}
 
 	logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
+}
+
+// indexRoutineSession writes the session_index row for a preserved
+// routine session (#1452). The title write is a synchronous upsert whose
+// failure is logged, not fatal — same best-effort class as
+// RecordSessionOrigin; the ordering write goes through the service's
+// non-blocking queue and stamps last_message_at (ListSessionIndex orders
+// by last_message_at DESC NULLS LAST).
+func (s *Scheduler) indexRoutineSession(ctx context.Context, logger Logger, workspaceID, sessionID, title string) {
+	if s.SessionIndex == nil {
+		logger.Error(fmt.Errorf("no SessionIndex configured"),
+			"routine: session will be missing from the workspace session list",
+			"sessionId", sessionID, "workspaceID", workspaceID)
+		return
+	}
+	if err := s.SessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
+		logger.Error(err, "routine: failed to index session title",
+			"sessionId", sessionID, "workspaceID", workspaceID)
+	}
+	s.SessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now().UTC())
 }
 
 func buildRoutineScriptSpec(trigger *wf.TriggerRow) json.RawMessage {
