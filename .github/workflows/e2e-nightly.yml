@@ -276,13 +276,21 @@ jobs:
           done
 
           RESULT=$(kubectl -n "$NS" logs valkey-migrate-probe 2>/dev/null || echo "")
-          kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
 
           if [[ "$RESULT" != *"REACHABLE"* ]]; then
+            # Diagnostics BEFORE the delete — a delete-first dump
+            # describes a corpse (#1459 withdrawal delta 2).
+            echo "=== probe pod (pre-delete) ==="
+            kubectl -n "$NS" describe pod valkey-migrate-probe || true
+            echo "=== probe pod events ==="
+            kubectl -n "$NS" get events \
+              --field-selector involvedObject.name=valkey-migrate-probe || true
             echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate Job)"
             echo "Result: $RESULT"
+            kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
             exit 1
           fi
+          kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
           echo "OK: migrate-labeled pod reached Valkey:6379 (F8)"
 
       - name: Run e2e test suite

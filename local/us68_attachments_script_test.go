@@ -243,6 +243,41 @@ func runUS68F8Step(t *testing.T, svc, phase, logs string) (string, string, error
 	return string(out), string(traceRaw), err
 }
 
+// TestUS68NightlyF8_DiagnosticsBeforeDelete pins the #1459 withdrawal
+// delta 2: on a failing verdict the step must dump describe + events
+// BEFORE deleting the probe pod — a delete-first dump describes a corpse
+// (in the pre-hardening step the delete preceded all diagnostics, making
+// them dead weight).
+func TestUS68NightlyF8_DiagnosticsBeforeDelete(t *testing.T) {
+	t.Run("blocked: describe + events run, both before the delete", func(t *testing.T) {
+		out, trace, err := runUS68F8Step(t, "present", "Succeeded", "BLOCKED")
+		if err == nil {
+			t.Fatalf("blocked must still fail the step, got: %q", out)
+		}
+		for _, want := range []string{"DESCRIBE-OUTPUT", "EVENTS-OUTPUT"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("failing verdict must dump %q before cleanup, got: %q", want, out)
+			}
+		}
+		describe := strings.Index(trace, "describe pod valkey-migrate-probe")
+		events := strings.Index(trace, "get events")
+		del := strings.Index(trace, "delete pod valkey-migrate-probe")
+		if describe < 0 || events < 0 || del < 0 || describe > del || events > del {
+			t.Fatalf("describe(%d) and events(%d) must be invoked before delete(%d); trace:\n%s", describe, events, del, trace)
+		}
+	})
+
+	t.Run("reachable: probe pod still cleaned up", func(t *testing.T) {
+		out, trace, err := runUS68F8Step(t, "present", "Succeeded", "REACHABLE")
+		if err != nil {
+			t.Fatalf("reachable must exit 0, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(trace, "delete pod valkey-migrate-probe") {
+			t.Fatalf("a green verdict must still delete the probe pod, trace:\n%s", trace)
+		}
+	})
+}
+
 // TestUS68NightlyF8_StepExecutes runs the REAL F8 step script against a
 // fake kubectl across the reachable / blocked / absent-Service outcomes —
 // the step's verdict logic executed, not re-implemented (the r2/r4 lesson).
