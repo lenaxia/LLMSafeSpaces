@@ -103,4 +103,4 @@ None. (Noted: `golangci-lint` was not installed in the pod; installed to `/tmp/o
 - `cmd/relay-router/byo_review1_test.go` — TestMetricsScrape async-settle fix (CI flake, #1432)
 - `cmd/relay-router/byo_review2_test.go` — TestDRAfterRotationStaysMonotonic async-settle fix (CI flake, #1432)
 - `local/issue-1417-templating-e2e.sh` — T7 wiring-pin list extended
-- `worklogs/NNNN_2026-09-18_retry-coverage-session-create-script-leg.md` — this worklog
+- `worklogs/0995_2026-09-18_retry-coverage-session-create-script-leg.md` — this worklog
