@@ -26,7 +26,7 @@
 # 0644 data). The whole point of the sha256 pin is that one file's
 # integrity — the binary — is the contract.
 
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS builder
 
 ARG TARGETARCH
 WORKDIR /src

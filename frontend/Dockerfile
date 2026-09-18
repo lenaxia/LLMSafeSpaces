@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -17,7 +17,7 @@ RUN npm run build
 # "Permission denied" because root copied the dist files in but
 # nginx (UID 101) needs to overwrite env.json on every container
 # start.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
 USER root
 # Patch system libraries (openssl, libpng, libxml2, musl, nghttp2, zlib) to
 # their fixed versions. The nginx-unprivileged:1.27-alpine base lags

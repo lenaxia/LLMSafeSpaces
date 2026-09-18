@@ -44,7 +44,7 @@
 # migration. Jump .15 → .19+ in one hop if a later bump is ever needed.
 ARG OPENCODE_VERSION=1.18.15
 
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS fetch
+FROM --platform=$BUILDPLATFORM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 AS fetch
 
 ARG TARGETARCH
 ARG OPENCODE_VERSION
