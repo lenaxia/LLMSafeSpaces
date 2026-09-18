@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Build the API server binary.
 # Build context MUST be the repository root (single Go module at root).
 #

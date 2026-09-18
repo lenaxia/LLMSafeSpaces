@@ -58,6 +58,12 @@ New `pkg/repolint/dockerfile_digest_pin_test.go` — `TestDockerfiles_BaseImages
 
 Line 787 technology-stack row edited minimally: "Debian bookworm-slim (digest-pinned; every Dockerfile base is, enforced by `pkg/repolint` — #1330)" — the previously false claim is now true and points at the enforcement test.
 
+### Review r1 on PR #1447 (github-actions REQUEST_CHANGES) — all findings addressed in r2
+
+- **Finding 1 (hard gate) — `# syntax=docker/dockerfile:*` directives are a second docker.io dependency.** 6 Dockerfiles (api, controller, relay-proxy, relay-router `:1.7`; workspace-agentd, runtimes/opencode `:1`) carried the directive, forcing a docker/dockerfile frontend-image fetch from docker.io on every fresh CI runner — the exact outage class of the issue. **Disposition: REMOVED**, following the prior attempt documented in the issue thread (2026-09-11, verified by full buildx 0.37 builds of agentd + relay-router). Independently re-verified before removal: targeted grep over all 8 Dockerfiles finds zero post-builtin-frontend features (no heredocs, `RUN --mount`, `COPY --parents`, `ADD --checksum`, `--network`); the only frontend features used are `COPY --chmod/--chown` and `--platform=$BUILDPLATFORM`, supported by the builtin frontend in CI's buildx. Chose removal over pinning (`# syntax=...@sha256:...`): removal eliminates the registry fetch entirely, where a pinned directive would still fetch from docker.io (digest pulls still need auth.docker.io tokens). Enforcement extended: any future `# syntax=` directive referencing a registry image must be digest-pinned (pin-if-present, same bar as FROM) — red-first committed (6 findings), then directives removed → green. The PR's Build jobs (amd64+arm64 per image) are the empirical re-verification that the builtin frontend suffices.
+- **Finding 2 (hard gate) — thin tests.** Extracted the lint pass into pure `lintDockerfileContent(content) []string`; added `TestLintDockerfileContent` — 18 table-driven cases covering: bare/digest-pinned tags, `--platform` flags, scratch (incl. mixed case), stage-alias exemption (incl. case-insensitivity; not exercised by any live Dockerfile) and unknown-alias findings, lowercase `from`, truncated/uppercase-hex/sha512 digests, digest-without-tag, bare-digest ref, `${VAR}` base, comment/blank lines, and the three syntax-directive variants. The full exemption path now runs under test, not just helpers.
+- **Finding 3 (minor) — walker gap + premature DONE.** Walker now also matches `*.Dockerfile`-suffixed files; digest-without-tag is its own finding (keep-the-tag policy from the issue). COORDINATE.md row moved from DONE to an honest "In review — r2 pushed" state.
+
 ---
 
 ## Key Decisions
@@ -67,6 +73,7 @@ Line 787 technology-stack row edited minimally: "Debian bookworm-slim (digest-pi
 - **Scratch and stage-local aliases exempt** (the only exemptions): scratch has no registry fetch; `FROM builder` is intra-file. No allowlist mechanism added — a future `${VAR}` base or new image without a digest should fail loudly and be pin-exempted deliberately, not silently.
 - **Tags kept in front of `@sha256:`** for readability, per issue requirement.
 - **Grouped digest bumps in renovate instead of automerge**: see renovate disposition above.
+- **Syntax directives removed, not pinned** (r2): removal eliminates the docker.io frontend fetch entirely; a pinned directive would still fetch from docker.io (digest pulls still need auth.docker.io tokens) — the availability dependency the issue was filed for. Pin-if-present enforcement keeps future re-introductions honest.
 - **Not addressing the ghcr.io mirroring half of the issue's ask**: mirroring bases into ghcr.io is an infra/registry change (credentials, cache hygiene) out of scope for a Dockerfile+enforcement PR; digest-pinning alone removes the tag-move class. Noted as follow-up.
 
 ---
@@ -80,6 +87,9 @@ None.
 ## Tests Run
 
 - `go test ./pkg/repolint/ -run TestDockerfiles_BaseImagesDigestPinned -count=1` → RED pre-pin (13 findings), GREEN post-pin.
+- r2: `-run 'TestLintDockerfileContent|TestDockerfiles_BaseImagesDigestPinned'` → RED on exactly the 6 syntax directives (after test hardening commit 3b566259), GREEN after directive removal; all 18 `TestLintDockerfileContent` cases pass at both points.
+- r2: full `go test ./pkg/repolint/ ./local/ -count=1` → ok post-removal.
+- Targeted feature grep over all 8 Dockerfiles (heredocs / `--mount` / `--parents` / `--checksum` / `--network`) → zero hits (evidence for directive removal).
 - `go test ./pkg/repolint/ -count=1` → ok (full package: no regressions to arch/CA-bundle pins).
 - `go test ./local/ -count=1` → ok (runtime-dockerfile retry pins unaffected).
 - `go build ./...` → exit 0 (no Go changes; test-only + Dockerfile/JSON/MD edits).

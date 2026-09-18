@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Build the relay-proxy binary (runs on relay VMs, NOT in-cluster).
 # This image is pushed to the registry so cloud-init can pull it.
 #
