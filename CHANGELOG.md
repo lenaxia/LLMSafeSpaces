@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-09-17
+
+### Fixes — workflows
+
+- **specYaml accepts real YAML** (#1418, PR #1428): extractSpecJSON now
+  parses block- or flow-style YAML via yaml.v3 into the JSON shape the
+  validator expects (valid JSON still passes through untouched); exactly
+  one document is required — multi-doc and trailing YAML are rejected
+  rather than silently truncated, and neither-JSON-nor-YAML input fails
+  with a dialect-naming error instead of the old misleading JSON parse
+  message. Create and update paths both covered.
+- **inputSchema write gate requires object-rooted schemas** (#1433, PR
+  #1435): a schema that compiles but roots at string/number/array made
+  every subsequent run 400 ("got string, want object"); the write path
+  now rejects non-object roots with a named error. Explicit JSON null
+  normalizes to schema-less (create writes no schema; update keeps the
+  stored one), and a null/absent stored schema behaves schema-less at
+  run time.
+
+### Fixes — agentd
+
+- **Workflow agent-node harness POST is keyed** (#1327, PR #1436): the
+  execution identity (workflowID/nodeID/runID) now threads API→agentd
+  and keys the transcript POST (`msg_wf_<workflow>_<node>_<run>`) —
+  retries/reruns of the same logical node execution upsert instead of
+  appending duplicate transcript messages (the #1315 duplication class,
+  closed for the outbox path). Routine triggers key on
+  trigger/fire identity the same way.
+
+### Fixes — CI
+
+- **Nightly e2e unblocked** (#1437): the 8+-day nightly failure was a
+  sparse `api.extraEnv[2]` --set against the chart's empty default
+  rendering nulls at indexes 0-1 (template nil-pointer at chart
+  install). The nightly now rides dense index [0]; the US-70 lockstep
+  pin test asserts each workflow's dense layout separately.
+
+### Documentation
+
+- **Design 0059: trigger input mapping** (PR #1434): the merged design
+  for #1425/#1419 — per-trigger `inputFrom` (envelope | body | mapped)
+  plus a static `input` document, create/update wiring guards (V1-V7),
+  opt-in fire-time validation with redacted location-only violation
+  records (recursive 4 KiB cap), and byte-identical legacy defaults.
+  Implementation follows.
+
 ## [0.33.0] - 2026-09-17
 
 ### Features — secrets

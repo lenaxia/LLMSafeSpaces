@@ -938,9 +938,24 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"workflowId (camelCase!)",   // DTO spelling (snake_case is silently dropped)
 			"does NOT fire immediately", // first-occurrence scheduling semantics
 			"both are validated",        // create-path validation surfaced
+			// 0059 drift pins — the input-mapping contract: the three
+			// inputFrom spellings, the static-input document, and the
+			// envelope-wiring 400 with its three remedies.
+			"static run input", // `input` is the static run input document
+			"validated against the workflow's inputSchema when `inputFrom` is `mapped`", // mapped-mode create-time validation
+			"`envelope` (default",                                         // spelling 1 + the default
+			"{source, received_at, headers, body}",                        // the envelope shape named
+			"`body` (webhook only",                                        // spelling 2 + its source constraint
+			"posted payload becomes the run input",                        // body-mode semantics (#1419's fix)
+			"`mapped` (the static `input` document)",                      // spelling 3
+			"rejected with 400 — set `input`",                             // the envelope-wiring guard (#1425), uniquely pinned
+			"set `input`, use `inputFrom: \"body\"`, or relax the schema", // the three remedies
 		} {
 			assert.Contains(t, d, want)
 		}
+		// The input-mapping fields keep the camelCase DTO spelling —
+		// snake_case is silently dropped (the workflowId lesson).
+		assert.NotContains(t, d, "input_from")
 	})
 
 	t.Run("trigger_update guidance", func(t *testing.T) {
@@ -948,6 +963,9 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		require.True(t, ok, "trigger_update in tools/list")
 		assert.Contains(t, d, "omitted = keep existing") // patch semantics
 		assert.Contains(t, d, "immutable after create")  // sourceType rule
+		// 0059 — the input-mapping fields are patchable here too.
+		assert.Contains(t, d, "`inputFrom` and `input`")
+		assert.Contains(t, d, "are patchable here too")
 	})
 
 	t.Run("trigger_delete guidance", func(t *testing.T) {
@@ -964,6 +982,11 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 			"input envelope", // what the trigger saw
 			"error payloads", // why it failed
 			"is not working", // the user-symptom it answers
+			// 0059 — the schema-mismatch trail is diagnosable here.
+			"`validation_error`",                   // the failed-fire status for input mismatches
+			"actionResult",                         // where the typed violations live
+			"schema_mismatch",                      // the actionResult code
+			"locations only, never payload values", // the §3.5 sanitization contract
 		} {
 			assert.Contains(t, d, want)
 		}
@@ -986,6 +1009,10 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		assert.Contains(t, d, "{{.body.topic}}",        // #1417: the supported templating form is documented
 			"the tool-facing surface must teach dotted-path placeholders")
 		assert.Contains(t, d, "unresolvable refs stay literal") // render semantics documented
+		// 0059 — the enforcement-claim correction: schema validation
+		// covers manual runs and mapped fired runs, not every run input.
+		assert.Contains(t, d, "enforced on manual runs and on fired runs that carry input mapping")
+		assert.NotContains(t, d, "enforced on every workflow_run input", "the #1419-disproved misconception may not return")
 	})
 
 	t.Run("workflow_update guidance", func(t *testing.T) {
