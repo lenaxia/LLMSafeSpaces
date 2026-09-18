@@ -117,13 +117,13 @@ func lintDockerfileContent(content string) []string {
 	for lineNum, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// `# syntax=<image ref>` — a registry fetch, same pin bar as FROM.
-		// Matched per BuildKit's directive grammar (r2/r3 review findings):
-		// '#' prefix, any leading whitespace (space/tab), `=`-padded value —
-		// and the key is case-INSENSITIVE because BuildKit lowercases it
-		// before validating (`k := strings.ToLower(...)` in
-		// frontend/dockerfile/parser/directives.go), so `#SYNTAX=` is
-		// build-honored too. The lint scans ALL lines (BuildKit stops
-		// directive parsing at the first instruction) — deliberate
+		// Both comment forms BuildKit's DetectSyntax honors are matched:
+		// the `#` parser-directive form (`#syntax=`, `#<tab>syntax=`,
+		// `=`-padded, case-insensitive key — BuildKit lowercases it) and
+		// the `//`-prefix fallback (anyFormat). The whole-file-JSON
+		// fallback is a documented scope bound (see
+		// buildkitSyntaxDirective). The lint scans ALL lines (BuildKit
+		// stops directive parsing at the first instruction) — deliberate
 		// over-enforcement in the safe direction.
 		if ref, isDirective := buildkitSyntaxDirective(trimmed); isDirective {
 			if !pinnedImageRef(ref) {
@@ -172,19 +172,42 @@ func pinnedImageRef(ref string) bool {
 var buildkitDirectiveRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
 
 // buildkitSyntaxDirective reports whether line is a build-honored
-// `syntax` directive and returns its image reference. The key is
-// compared case-insensitively: BuildKit lowercases the captured name
-// before matching ("SYNTAX", "Syntax", … are all honored).
+// `syntax` directive and returns its image reference. Covers BOTH
+// comment forms BuildKit's DetectSyntax honors: the `#` parser-directive
+// form and the `//`-prefix fallback (anyFormat=true,
+// frontend/dockerfile/parser/directives.go). The key is compared
+// case-insensitively: BuildKit lowercases the captured name before
+// matching ("SYNTAX", "Syntax", … are all honored).
+//
+// Known, deliberate scope bound: DetectSyntax's whole-file-JSON fallback
+// ({"syntax": …}) is NOT matched — a Dockerfile that parses as pure JSON
+// is not a realistic Dockerfile (no instructions), so it cannot carry a
+// build. Flagging `//` lines is over-enforcement (they are unknown
+// instructions = hard parse errors in a real build) chosen deliberately
+// in the safe direction: they must not slip through PR CI, which builds
+// only the frontend image.
 func buildkitSyntaxDirective(line string) (ref string, ok bool) {
-	if !strings.HasPrefix(line, "#") {
+	rest, ok := cutDirectiveComment(line)
+	if !ok {
 		return "", false
 	}
-	rest := strings.TrimLeftFunc(line[1:], unicode.IsSpace)
+	rest = strings.TrimLeftFunc(rest, unicode.IsSpace)
 	m := buildkitDirectiveRe.FindStringSubmatch(rest)
 	if m == nil || !strings.EqualFold(m[1], "syntax") {
 		return "", false
 	}
 	return m[2], true
+}
+
+// cutDirectiveComment strips a leading `#` or `//` comment prefix.
+func cutDirectiveComment(line string) (rest string, ok bool) {
+	switch {
+	case strings.HasPrefix(line, "#"):
+		return line[1:], true
+	case strings.HasPrefix(line, "//"):
+		return line[2:], true
+	}
+	return "", false
 }
 
 // fromBase parses a Dockerfile FROM line and returns the base image

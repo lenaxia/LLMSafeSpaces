@@ -82,6 +82,16 @@ r3 verified all r2 findings closed (digests re-resolved a third time, byte-exact
 - **Gating — `#SYNTAX=` IS build-honored.** BuildKit's directive parser lowercases the captured key (`k := strings.ToLower(...)` in frontend/dockerfile/parser/directives.go, verified by the reviewer on master + v0.12.0) before matching `syntax` — so `#SYNTAX=docker/dockerfile:1.7` fetches the frontend from docker.io, while the r3 matcher treated it as a plain comment AND a table case enshrined that wrong expectation. **Correction (append-only): the r3-closure note above claiming "#SYNTAX= stays a plain comment (BuildKit matches lowercase)" was WRONG.** Fixed: key compared case-insensitively (`strings.EqualFold`), the case flipped to want:1 (committed red-first at 93dd18e2), comments corrected, and a lock-in case added for the deliberate all-lines directive superset (BuildKit stops directive parsing at the first instruction; the lint scans every line — over-enforcement in the safe direction).
 - Non-gating, noted: branch behind main by a few commits — merge-tree clean; orchestrator merges, current-CI-signal refresh optional.
 
+### Review r4 on PR #1447 (REQUEST_CHANGES) — closed in r5
+
+r4 verified the `#SYNTAX=` fix closed (BuildKit premise re-verified from source; digests re-resolved a FOURTH time, byte-exact; all CI green; merge-tree clean vs moved main). Three findings in the r4 delta itself, fixed in r5:
+
+- **Gating — undisclosed deletion of the port-with-tag lock case.** The 93dd18e2 edit was supposed to flip the `#SYNTAX=` case but ALSO deleted the "registry port WITH a tag is clean" case (added in r3) while leaving the stale `#SYNTAX=` want:0 case in place until 0be33b13 removed it. **Disclosure (append-only): the deletion was unintentional — an edit-tool block-match mishap, not a judgment call; nothing was masked (the case passes when restored).** Restored in ec430054 with a comment recording the history.
+- **Gating — `//` directive form.** BuildKit's `DetectSyntax` (`anyFormat=true`, directives.go :153-159) honors `// syntax=…` too. A `//` line is a hard parse error in a real build, BUT PR CI builds only the frontend image — a `//` directive in a Go-image Dockerfile would pass PR CI AND the lint and surface only at release build. Disposition chosen: **flag it** (matcher extended via `cutDirectiveComment`), 3 new table cases (unpinned spaced/unspaced → findings; pinned → clean). The whole-file-JSON fallback is documented as a deliberate scope bound (a Dockerfile that parses as pure JSON carries no instructions — cannot produce a build).
+- **Minor — case count.** COORDINATE/commit said 26 while HEAD had 25 (counted at the transient 93dd18e2 state). Corrected: HEAD now has exactly **30** cases (25 + 1 restored port-with-tag + 3 `//`-form cases + 1 — recount verified by execution: 30 passing subtests; the r4-era "26" and r5-commit-message arithmetic are superseded by this number).
+
+CI: all checks green on the r4 head (the earlier Playwright/race flakes did not recur; `gh run rerun --failed` history recorded above).
+
 ---
 
 ## Key Decisions
