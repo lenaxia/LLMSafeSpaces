@@ -360,6 +360,36 @@ func TestLintDockerfileContent(t *testing.T) {
 			want:    1,
 		},
 		{
+			// The positive half of the port-vs-tag decision (r2: "a case
+			// locks whichever answer is chosen") — accidentally dropped in
+			// 93dd18e2, restored in r5 (r4 review finding 1).
+			name:    "registry port WITH a tag is clean",
+			content: "FROM registry:5000/img:1.2.3@sha256:" + d64 + "\n",
+			want:    0,
+		},
+		{
+			// r4 review finding 2: BuildKit's DetectSyntax (anyFormat=true)
+			// also honors '//'-prefixed directives (directives.go :153-159).
+			// A '//' line is an unknown instruction (hard parse error), but
+			// PR CI builds only the frontend image — a '//'-directive in a
+			// Go-image Dockerfile would pass PR CI AND this lint, landing on
+			// main to surface only at release build. Flag it (over-
+			// enforcement in the safe direction).
+			name:    "slash-slash syntax directive is a finding (DetectSyntax anyFormat honors it)",
+			content: "// syntax=docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "unspaced slash-slash syntax directive is a finding",
+			content: "//syntax=docker/dockerfile:1.8\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "digest-pinned slash-slash syntax directive is clean",
+			content: "// syntax=docker/dockerfile:1.7@sha256:" + d64 + "\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    0,
+		},
+		{
 			// r3 review finding 1: BuildKit LOWERCASES the directive key
 			// (directives.go: `k := strings.ToLower(...)`) — #SYNTAX= is
 			// build-honored and fetches the frontend from docker.io.
