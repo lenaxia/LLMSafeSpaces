@@ -699,22 +699,30 @@ EOF
           # ranges); CONTAINERS_CONF carries only ignore_chown_errors
           # (image-layer chowns to unmapped uids cannot succeed in
           # identity mode); netns=host still merges from the /etc slot.
+          # Run-7 lesson: TMPDIR got the pull past blob staging, and the
+          # failure moved to the fundamental identity-mode trade-off —
+          # layer apply lchowns files to image ownerships (0:42 for
+          # /etc/shadow) which have no mapping in a single-identity
+          # userns → EINVAL. ignore_chown_errors is a STORAGE option
+          # (run 7 had it in [containers] — wrong section); it rides
+          # CONTAINERS_STORAGE_CONF, which REPLACES the config chain, so
+          # the baked vfs/runroot/graphroot keys are repeated in it.
           GVID_SETUP=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; printf "%s\n" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf && if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; printf "%s\n" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf; printf "%s\n" "[storage]" "driver = \"vfs\"" "runroot = \"/sandbox-runtime/containers/run\"" "graphroot = \"/home/sandbox/.local/share/containers/storage\"" "[storage.options]" "ignore_chown_errors = true" > /tmp/podman-idmode-storage.conf; if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
           if echo "$GVID_SETUP" | grep -q setup-ok; then
-            pass S5.7g2 "identity-mode image (no subuid ranges) boots podman under runsc; info ok"
+            pass S5.7g2 "identity-mode image (no subuid ranges) boots podman under runsc; info ok (storage ignore_chown_errors)"
           else
             fail S5.7g2 "identity-mode setup: ${GVID_SETUP:-<no output>}"
           fi
           GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
           if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
             pass S5.7h "identity-mode nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
           else
             fail S5.7h "identity-mode nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
           if [ "$GCOMPOSE_RC" = "200" ]; then
             pass S5.7i "identity-mode podman-compose service up under gVisor, served HTTP 200, torn down"
           else
