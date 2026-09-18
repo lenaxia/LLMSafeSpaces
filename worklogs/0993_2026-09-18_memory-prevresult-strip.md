@@ -109,4 +109,4 @@ None.
 - `api/internal/workflows/engine.go` — memory block in `executeRoutine` + `routinePrevResultInjection` helper + `routinePrevResultPayload` type
 - `api/internal/workflows/engine_test.go` — mock `recentRoutineResults` field + `GetRecentRoutineResults` returns it; real-envelope fixture in `TestExecuteRoutine_MemoryLastResult_InjectsPrevResult` + prompt-leak pin
 - `api/internal/workflows/engine_memory_test.go` — new: 6 test funcs (pins + tables + mixed shapes) + `recordingLogger`
-- `worklogs/NNNN_2026-09-18_memory-prevresult-strip.md` — this worklog
+- `worklogs/0993_2026-09-18_memory-prevresult-strip.md` — this worklog
