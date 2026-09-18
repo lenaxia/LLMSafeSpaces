@@ -133,23 +133,36 @@ func TestDRAfterRotationStaysMonotonic(t *testing.T) {
 	require.NoError(t, store.cs.CoreV1().Secrets("llm-relay").Delete(context.Background(), byoKeyPairSecretName, metav1.DeleteOptions{}))
 	byoWatchDelete(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: byoKeyPairSecretName}}, m, newByoEnvelopeCache())
 
+	// Recovery is ASYNCHRONOUS (byoWatchDelete runs Bootstrap in a
+	// goroutine) and the pub-Secret rewrite lands AFTER the keypair
+	// write inside it — waiting only for the keypair Secret to exist
+	// races the pub publish on slow runners (observed twice on CI:
+	// kp at 3, pub still 2). Settle BOTH secrets before asserting.
+	var kpGen, pubGen int64
 	require.Eventually(t, func() bool {
-		_, err := store.Get(context.Background(), byoKeyPairSecretName)
-		return err == nil
-	}, 3*time.Second, 10*time.Millisecond)
+		sec, err := store.Get(context.Background(), byoKeyPairSecretName)
+		if err != nil {
+			return false
+		}
+		kp, err := secrets.ParseHPKEKeyPairPayload(sec.Data[byoPayloadKey])
+		if err != nil {
+			return false
+		}
+		pubSec, err := store.Get(context.Background(), byoPubSecretName)
+		if err != nil {
+			return false
+		}
+		var pub secrets.HPKEPubPayload
+		if err := json.Unmarshal(pubSec.Data[byoPayloadKey], &pub); err != nil {
+			return false
+		}
+		kpGen, pubGen = kp.Generation, pub.Generation
+		return kp.Generation > 2 && pub.Generation == kp.Generation
+	}, 10*time.Second, 10*time.Millisecond, "async recovery must settle both secrets: keypair above the high-water mark AND pub rewritten to match")
 
-	sec, err := store.Get(context.Background(), byoKeyPairSecretName)
-	require.NoError(t, err)
-	kp, err := secrets.ParseHPKEKeyPairPayload(sec.Data[byoPayloadKey])
-	require.NoError(t, err)
-	assert.Greater(t, kp.Generation, int64(2), "recovery seeds from the loaded highwater — keyIDs stay monotonic")
-
-	pubSec, err := store.Get(context.Background(), byoPubSecretName)
-	require.NoError(t, err)
-	var pub secrets.HPKEPubPayload
-	require.NoError(t, json.Unmarshal(pubSec.Data[byoPayloadKey], &pub))
-	assert.Greater(t, pub.Generation, int64(2), "pub never rewinds")
-	assert.Equal(t, kp.Generation, pub.Generation)
+	assert.Greater(t, kpGen, int64(2), "recovery seeds from the loaded highwater — keyIDs stay monotonic")
+	assert.Greater(t, pubGen, int64(2), "pub never rewinds")
+	assert.Equal(t, kpGen, pubGen)
 }
 
 // TestDrainUsesShutdownWithinGrace (iteration 2): the drain path exercised

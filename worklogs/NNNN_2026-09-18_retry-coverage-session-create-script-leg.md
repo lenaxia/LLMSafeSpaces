@@ -39,6 +39,12 @@
 - The reviewer traced (and live-reproduced) that a 200 create body of `{}` or `{"id":""}` passes `decodeStrict` (single-JSON-value check only) → `parseCreatedSessionID` returns `("", nil)` → the split returned `("", "", "")` → the engine read `ErrorCode==""` as SUCCESS → fire "delivered", failure counter reset. A silent phantom success — strictly worse than the pre-PR `session_not_found` visible failure. Validated independently (RED reproduced on all four new subtests), then fixed: empty parsed ID now returns `session_create_failed` / `cannot parse created session: empty id`. Docstring invariant updated to name the empty-ID shape. Mutation-verified: removing the one-line guard fails 6 test lines (unit + handler, both bodies).
 - Reviewer Finding 2 (non-blocking, acknowledged): a 502-after-commit create retried 3× can leak up to three orphan sessions (`deleteOpencodeSession` runs only on the success path). Pre-PR leaked one per fire attempt cycle as well (next tick re-fired the create); the create POST carries no idempotency key to dedupe on. No double-execution risk (reviewer verified: create failure precedes any message POST). Documented here as known behavior; mitigation needs an upstream idempotent-create surface — out of scope for this PR.
 
+### CI flake fix (out-of-lane, flagged to orchestrator)
+- The required "Test (full suite, race detector)" check failed twice on this PR from `cmd/relay-router` tests landed with #1432 (US-72.2) — this branch's diff cannot reach that package. Both are test-side async races, fixed test-only:
+  - `TestDRAfterRotationStaysMonotonic` (byo_review2_test.go): `byoWatchDelete` runs `Bootstrap` in a goroutine and the pub-Secret rewrite lands AFTER the keypair write inside it; the test's `Eventually` settled only the keypair secret, then asserted pub generation — read the stale pub (CI: kp=3, pub=2, twice). Now waits for BOTH secrets to settle (kp > 2 AND pub == kp) before asserting.
+  - `TestMetricsScrape` (byo_review1_test.go): the request counter incs after the server's stream copy loop completes; the test closed the response body without draining and scraped /metrics once, immediately. Now drains to EOF and settle-polls the scrape (bounded 5s).
+  - Verified: 20× `-race` runs of the DR test, 10× of MetricsScrape, plus the full `./cmd/relay-router/` package under `-race` — all green. Production code untouched.
+
 ---
 
 ## Key Decisions
@@ -92,7 +98,9 @@ None. (Noted: `golangci-lint` was not installed in the pod; installed to `/tmp/o
 
 - `api/internal/workflows/engine.go` — retryableAgentdFailure learns session_create_failed; comment
 - `api/internal/workflows/engine_test.go` — 6 new tests (classifier unit ×2, wiring pins/guards ×4)
-- `cmd/workspace-agentd/workflow_execute.go` — createOpencodeSession split + execAgentNode passthrough + body-close fix
-- `cmd/workspace-agentd/workflow_execute_test.go` — 5 new tests + `withStubAgentAddr` helper (t.Cleanup)
+- `cmd/workspace-agentd/workflow_execute.go` — createOpencodeSession split + execAgentNode passthrough + body-close fix + r1 empty-ID guard
+- `cmd/workspace-agentd/workflow_execute_test.go` — 6 new tests + `withStubAgentAddr` helper (t.Cleanup) + r1 empty-ID rows
+- `cmd/relay-router/byo_review1_test.go` — TestMetricsScrape async-settle fix (CI flake, #1432)
+- `cmd/relay-router/byo_review2_test.go` — TestDRAfterRotationStaysMonotonic async-settle fix (CI flake, #1432)
 - `local/issue-1417-templating-e2e.sh` — T7 wiring-pin list extended
 - `worklogs/NNNN_2026-09-18_retry-coverage-session-create-script-leg.md` — this worklog

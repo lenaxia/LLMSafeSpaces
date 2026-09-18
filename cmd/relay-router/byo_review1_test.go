@@ -84,16 +84,29 @@ func TestMetricsScrape(t *testing.T) {
 	token := rig.mint(t, nil)
 	resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, `{"model":"glm-4.7"}`, nil)
 	require.NoError(t, err)
+	// Drain to EOF: recordRequest fires after the server's copy loop
+	// finishes — closing early races the inc on slow runners.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 
-	metricsResp, err := rig.do(http.MethodGet, "/metrics", "", "", nil)
-	require.NoError(t, err)
-	defer metricsResp.Body.Close()
-	require.Equal(t, 200, metricsResp.StatusCode)
-	body, err := io.ReadAll(metricsResp.Body)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), "llm_relay_byo_requests_total")
-	assert.Contains(t, string(body), `workspace="ws-1"`)
+	// The counter lands once the server's stream loop observed EOF;
+	// settle-bounded scrape instead of a single immediate read.
+	require.Eventually(t, func() bool {
+		metricsResp, err := rig.do(http.MethodGet, "/metrics", "", "", nil)
+		if err != nil {
+			return false
+		}
+		defer metricsResp.Body.Close()
+		if metricsResp.StatusCode != 200 {
+			return false
+		}
+		body, err := io.ReadAll(metricsResp.Body)
+		if err != nil {
+			return false
+		}
+		return strings.Contains(string(body), "llm_relay_byo_requests_total") &&
+			strings.Contains(string(body), `workspace="ws-1"`)
+	}, 5*time.Second, 25*time.Millisecond, "request counter must be exposed after the stream completes")
 }
 
 // TestRedactedResponseFramingIsValid (review R4): an upstream that sets
