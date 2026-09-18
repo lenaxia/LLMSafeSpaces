@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	byoKeyPairSecretName = "llm-relay-hpke-key"
-	byoPubSecretName     = "llm-relay-hpke-pub"
+	byoKeyPairSecretName = secrets.RelayKeyPairSecretName
+	byoPubSecretName     = secrets.RelayPubSecretName
 	byoPayloadKey        = "payload"
 	byoDefaultRetention  = 10 * time.Minute
 )

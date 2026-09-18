@@ -4,13 +4,18 @@
 package controller
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/lenaxia/llmsafespaces/controller/internal/relay"
 	"github.com/lenaxia/llmsafespaces/controller/internal/workspace"
+	"github.com/lenaxia/llmsafespaces/pkg/redact"
+	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	// opencode import removed; registration happens in controller main.
 )
 
@@ -42,7 +47,7 @@ type AgentdDelivery = workspace.AgentdDeliveryConfig
 // contract at startup.
 type OpencodeDelivery = workspace.OpencodeDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPublicURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, opencodeDelivery OpencodeDelivery, agentdSidecarEnabled bool, maxConcurrentReconciles int, relayStaging *workspace.RelayStagingConfig) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -78,6 +83,9 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiPub
 		// Clamped upstream (main.go, 1..64); <=0 keeps controller-runtime's
 		// fully-serial default so unit tests that don't set it are unchanged.
 		MaxConcurrentReconciles: maxConcurrentReconciles,
+		// Epic 72 / US-72.3: nil (the default, --relay-only-key-delivery
+		// off) means the staging pass is a no-op — zero behavior change.
+		RelayStaging: relayStaging,
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
 		return err
@@ -99,6 +107,60 @@ type RelayArtifactConfig struct {
 	SHA256Arm64 string
 	// SHA256Amd64 is the hex SHA-256 of the amd64 relay-proxy binary.
 	SHA256Amd64 string
+}
+
+// SetupRelayStaging constructs the US-72.3 relay staging config from the
+// deployment flags and runs the FAIL-LOUD startup guard (the
+// rbac.scope=cluster gate precedent): enabled without a reachable,
+// bootstrapped router is a deployment misconfiguration that must surface
+// at boot. Returns (nil, nil) when the flag is off — zero behavior change.
+// The direct (non-cached) client is used because the manager's cache is
+// not started this early, and the llm-relay namespace may sit outside the
+// controller's watch scope.
+func SetupRelayStaging(mgr ctrl.Manager, enabled bool, routerURL, namespace string, tokenTTL time.Duration, apiServiceURL, apiInternalToken string) (*workspace.RelayStagingConfig, error) {
+	if !enabled {
+		return nil, nil
+	}
+	if tokenTTL < time.Second || tokenTTL > 7*24*time.Hour {
+		return nil, fmt.Errorf("--relay-token-ttl must be within 1s..7d, got %s", tokenTTL)
+	}
+	if err := workspace.ValidateRelayStagingFlags(true, routerURL, apiServiceURL, namespace); err != nil {
+		return nil, err
+	}
+	redactor, err := redact.NewRedactor(nil)
+	if err != nil {
+		return nil, fmt.Errorf("relay staging redactor: %w", err)
+	}
+	// Every llm-relay READ goes through the direct API reader: the cached
+	// client cannot serve the llm-relay namespace (out-of-scope namespaces
+	// fail without an API call; an in-scope informer would need LIST+WATCH
+	// the Role withholds — review r3 finding 1). Writes bypass the cache
+	// and stay on the reconciler client. The reader is REQUIRED at
+	// construction — no cached-client fallback exists.
+	cfg, err := workspace.NewRelayStagingConfig(
+		routerURL,
+		namespace,
+		tokenTTL,
+		workspace.NewCachedLLMProviderSource(apiServiceURL, apiInternalToken, 0),
+		workspace.NewHTTPRelayRouterClient(routerURL, namespace, mgr.GetAPIReader()),
+		secrets.RedactStagedKeys{Redactor: redactor},
+		mgr.GetAPIReader(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		return nil, fmt.Errorf("building startup-guard client: %w", err)
+	}
+	guardCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := workspace.ValidateRelayStagingStartup(guardCtx, cfg, directClient); err != nil {
+		return nil, fmt.Errorf("startup guard FAILED — refusing to start (fix the router/namespace/RBAC configuration or disable --relay-only-key-delivery): %w", err)
+	}
+	log.Log.WithName("controller").Info("relay-only key delivery enabled",
+		"routerURL", routerURL, "namespace", namespace, "tokenTTL", tokenTTL)
+	return cfg, nil
 }
 
 // SetupRelayController registers the InferenceRelay reconciler and the

@@ -122,6 +122,25 @@ spec:
                   authenticates the controller→API call (the endpoint fails
                   closed without it). */}}
             - --api-service-url={{ $apiServiceURL }}
+            {{- /* Epic 72 / US-72.3 (design 0058): relay-only key delivery.
+                    One flag enables the controller staging pass; the same
+                    Service URL serves the router's internal mint/rotate API
+                    and the workspace-facing router URL staged into tokens.
+                    The controller FAILS LOUD at startup when the flag is on
+                    without a reachable, bootstrapped router (values gate:
+                    an enabled release with no router URL refuses to RENDER,
+                    so the misconfiguration surfaces at install time, one
+                    step earlier than the runtime guard). */}}
+            {{- if .Values.relayOnlyKeyDelivery.enabled }}
+            {{- $relayURL := .Values.relayOnlyKeyDelivery.workspaceRouterURL | default "" }}
+            {{- if not $relayURL }}
+            {{- fail "relayOnlyKeyDelivery.enabled requires relayOnlyKeyDelivery.workspaceRouterURL (the llm-relay router Service URL)" }}
+            {{- end }}
+            - --relay-only-key-delivery=true
+            - --llm-relay-router-url={{ $relayURL }}
+            - --llm-relay-namespace={{ .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+            - --relay-token-ttl={{ .Values.relayOnlyKeyDelivery.tokenTTL | default "24h" }}
+            {{- end }}
             {{- /* Epic 66 Phase 1: per-workspace preview origins. When
                     previewOrigin is enabled the controller stamps
                     PREVIEW_ORIGIN_BASE_DOMAIN into workspace pods so

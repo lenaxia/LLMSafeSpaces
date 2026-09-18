@@ -140,6 +140,16 @@ type WorkspaceReconciler struct {
 	// resume linear (~8s per workspace — 40 workspaces ≈ 5+ minutes, run
 	// 33811397260); main.go clamps this to 1..64 to bound apiserver load.
 	MaxConcurrentReconciles int
+
+	// RelayStaging (Epic 72 / design 0058, US-72.3): when non-nil, every
+	// Creating/Active reconcile runs the staging pass — seal bound BYO
+	// llm-provider credentials into llm-relay envelope Secrets, mint scoped
+	// tokens, write the workspace-namespace handoff Secret, maintain the
+	// CredentialsStaged/CredentialStale/CredentialRejected conditions, and
+	// run the §4.2 DR/residual-window terminator. NIL (the default —
+	// --relay-only-key-delivery=false) means zero behavior change: the
+	// legacy raw-key path and byte-identical batches.
+	RelayStaging *RelayStagingConfig
 }
 
 func (r *WorkspaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

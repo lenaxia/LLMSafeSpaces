@@ -41,6 +41,14 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return r.suspendFromPreActive(ctx, workspace)
 	}
 
+	// Epic 72 / US-72.3: relay staging pass (nil-config no-op when the
+	// deployment flag is off) — before pod build so the handoff Secret is
+	// staged by the time a (post-US-72.4) token batch is first requested.
+	if err := r.reconcileRelayStaging(ctx, workspace); err != nil {
+		logger.Error(err, "relay staging reconcile failed; requeueing")
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// F19: restartGeneration bump bypasses backoff — user wants immediate retry.
 	restartGenBumped := false
 	if workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration {
