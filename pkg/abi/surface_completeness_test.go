@@ -36,9 +36,13 @@ func TestSchemaSurfaceCompleteness(t *testing.T) {
 		"ActionRequest": false, "InterruptAction": false,
 		"SwitchModelAction": false, "SwitchAgentAction": false,
 		"AnswerInputAction": false, "CompactAction": false,
+		"CreateSessionAction": false, "SendAction": false,
+		"DeleteSessionAction": false, "RenameSessionAction": false,
 		"ActionResult": false, "InterruptResult": false,
 		"SwitchModelResult": false, "SwitchAgentResult": false,
 		"AnswerInputResult": false, "CompactResult": false,
+		"CreateSessionResult": false, "SendResult": false,
+		"DeleteSessionResult": false, "RenameSessionResult": false,
 		// Capability report (rides the snapshot frame; provenance per M4).
 		"CapabilityReport": false, "NotSupported": false,
 		// Opaque cursor + history (defined in the ABI, wired at S5).
@@ -158,9 +162,16 @@ func assertClosedUnions(t *testing.T, files []protoreflect.FileDescriptor) {
 	}
 
 	actionValues := enumNonZeroNames(t, files, "ActionType")
-	wantActions := map[string]bool{"ACTION_TYPE_INTERRUPT": true, "ACTION_TYPE_SWITCH_MODEL": true, "ACTION_TYPE_SWITCH_AGENT": true, "ACTION_TYPE_ANSWER_QUESTION": true, "ACTION_TYPE_COMPACT": true}
+	wantActions := map[string]bool{
+		"ACTION_TYPE_INTERRUPT": true, "ACTION_TYPE_SWITCH_MODEL": true, "ACTION_TYPE_SWITCH_AGENT": true,
+		"ACTION_TYPE_ANSWER_QUESTION": true, "ACTION_TYPE_COMPACT": true,
+		// #1372 (S1 completion): the sessions-cluster verbs — additive
+		// members of the op-5 union, capability-declared like the rest.
+		"ACTION_TYPE_CREATE_SESSION": true, "ACTION_TYPE_SEND": true,
+		"ACTION_TYPE_DELETE_SESSION": true, "ACTION_TYPE_RENAME_SESSION": true,
+	}
 	if !equalSets(actionValues, wantActions) {
-		t.Errorf("ActionType must match the M1 op-5 union exactly, got %v", actionValues)
+		t.Errorf("ActionType must match the op-5 union + the #1372 sessions verbs exactly, got %v", actionValues)
 	}
 }
 

@@ -552,17 +552,55 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 		return
 	}
 
-	// NOTE (#1425): trigger-fired runs deliberately bypass the workflow's
-	// inputSchema. The run input is the system envelope
-	// ({source:{type,id}, received_at}), which can never satisfy a
-	// user-authored schema with required non-envelope properties —
-	// validating here would break every DAG trigger against schemas that
-	// manual runs legitimately require. The cost is that trigger-fired
-	// runs of schema-bearing workflows surface late node failures
-	// instead of early validation; resolving that (trigger-carried static
-	// input, envelope mapping, or create-time wiring checks) is tracked
-	// in #1425.
-	inputForRun := json.RawMessage(envelopeJSON)
+	// Input mapping (0059): resolve what the fired run's input is per the
+	// trigger's mapping — envelope (legacy default, byte-identical to the
+	// pre-0059 behavior), body (webhook payload), mapped (static document),
+	// with an optional static overlay. One resolver, shared with the
+	// webhook fire path (D6).
+	runInput, rerr := wf.ResolveTriggerInput(wf.TriggerInputSpec{InputFrom: trigger.InputFrom, Input: trigger.Input}, envelopeJSON)
+	if rerr != nil {
+		// Unreachable by construction (the envelope above is marshaled in
+		// this function); fail the tick, not the audit trail.
+		logger.Error(rerr, "scheduler: input resolution failed", "triggerId", trigger.ID, "workflowId", workflowID)
+		return
+	}
+
+	// Fire-time validation only for opted-in triggers (D3): the envelope
+	// can never satisfy a schema with required non-envelope properties, so
+	// validating unconditionally would brick every legacy schema-bearing
+	// DAG trigger. A mismatch records a validation_error fire with typed,
+	// location-only violations (§3.5) and drives the #1412 accounting —
+	// no run is queued, zero node executions burned. A stored schema that
+	// no longer compiles is a workflow defect: failed fire with
+	// {"code":"invalid_input_schema"}.
+	if wf.TriggerOptedIn(trigger.InputFrom, trigger.Input) {
+		if verr := wf.ValidateRunInput(wfRow.InputSchema, runInput); verr != nil {
+			fireStatus := types.TriggerFireValidationError
+			var actionResult json.RawMessage
+			if goerrors.Is(verr, wf.ErrInvalidInputSchema) {
+				fireStatus = types.TriggerFireFailed
+				actionResult = json.RawMessage(`{"code":"invalid_input_schema"}`)
+			} else {
+				actionResult = wf.SchemaMismatchPayload(trigger.InputFrom, verr)
+			}
+			completed := now
+			_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
+				ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "cron",
+				InputEnvelope: envelopeJSON, ActionType: "run_workflow",
+				ActionResult: actionResult, Status: fireStatus, FiredAt: now, CompletedAt: &completed,
+			})
+			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+				_ = s.Store.DisableTrigger(ctx, trigger.ID)
+			}
+			// Log locations only — the raw ValidateRunInput error can embed
+			// instance-derived content (the §3.5 sanitization rationale); the
+			// sanitized payload on the fire row is the auditable detail.
+			logger.Error(fmt.Errorf("fired input failed schema validation (%s)", fireStatus),
+				"scheduler: fired input failed schema validation",
+				"triggerId", trigger.ID, "workflowId", workflowID, "status", fireStatus)
+			return
+		}
+	}
 
 	fireID := uuid.New().String()
 	runID := uuid.New().String()
@@ -579,7 +617,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 	}
 	run := &wf.WorkflowRunRow{
 		ID: runID, WorkflowID: workflowID, SpecSnapshot: wfRow.SpecJSON,
-		Input: inputForRun, Status: "queued", TriggerID: &trigger.ID,
+		Input: runInput, Status: "queued", TriggerID: &trigger.ID,
 		WorkspaceID: workspaceID, CreatedAt: now, UpdatedAt: now,
 	}
 
@@ -598,7 +636,24 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
 	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
-		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no workspace_id", "triggerId", trigger.ID)
+		// #1440: a trigger with NO reachable target must never tick
+		// silently. The common route here is a workflow-targeted trigger
+		// whose workflow was DELETED — the workflow_id FK is ON DELETE
+		// SET NULL (migration 000020), so by the time the scheduler sees
+		// the row, both targets are nil and the loud missing-workflow
+		// path in fireWorkflowTarget is unreachable. Record the failure
+		// and honor auto-disable, exactly like a missing workflow.
+		errPayload, _ := json.Marshal(map[string]string{"reason": "trigger_has_no_target", "hint": "workflow deleted (FK set null) or routine missing workspace_id"})
+		completed := now
+		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: trigger.SourceType,
+			InputEnvelope: envelopeJSON, ActionType: "routine", ActionResult: errPayload,
+			Status: "failed", FiredAt: now, CompletedAt: &completed,
+		})
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
+		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no target (workflow deleted or workspace missing); failed fire recorded", "triggerId", trigger.ID)
 		return
 	}
 

@@ -35,11 +35,26 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 	}
 	defer h.releaseConnection(wid)
 
-	s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
-	if err != nil {
-		h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
-		return
+	// #1372 (S1): writes go through agentd Act in the authority regime;
+	// the typed adapter method survives flag-off. The handler stamps the
+	// workspace id — agentd cannot know it.
+	var s *session.Session
+	var err error
+	if h.agentdTerminus {
+		s, err = h.actCreateSession(c.Request.Context(), wid, "")
+		if err != nil {
+			h.logger.Error("CreateSession: Act failed", err, "workspaceID", wid)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
+			return
+		}
+		s.WorkspaceID = wid
+	} else {
+		s, err = h.adapter.CreateSession(c.Request.Context(), "", wid, "")
+		if err != nil {
+			h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
+			return
+		}
 	}
 	// Index at creation (design 0054 R5): the session index is
 	// otherwise event-fed, and V2-mode sessions don't emit the V1
@@ -134,20 +149,31 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-		Model: modelOverride,
-	})
-	if err != nil {
-		// #817: log the underlying adapter error — without this the
+	// #1372 (S1): the write goes through agentd Act in the authority
+	// regime (serializing against outbox deliveries pod-side via the
+	// session single-flight); flag-off keeps the adapter call.
+	var msg *session.Message
+	var sendErr error
+	sendLog := "SendMessage: adapter failed"
+	if h.agentdTerminus {
+		sendLog = "SendMessage: Act failed"
+		msg, sendErr = h.actSend(c.Request.Context(), wid, sid, text, modelOverride)
+	} else {
+		msg, sendErr = h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: modelOverride,
+		})
+	}
+	if sendErr != nil {
+		// #817: log the underlying error — without this the
 		// 502 body says only "failed to send message" and the root
 		// cause (context deadline, connection reset, decode failure)
 		// is invisible in production.
-		h.logger.Error("SendMessage: adapter failed", err,
+		h.logger.Error(sendLog, sendErr,
 			"workspaceID", wid, "sessionID", sid)
 		if sid != "" {
 			h.removeActiveSession(c.Request.Context(), wid, sid)
 		}
-		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		if isTextOnlyWedgeSendErr(sendErr) {
 			writeTextOnlyWedgeBody(c)
 			return
 		}
@@ -289,6 +315,24 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	// when its persisted default model is unresolvable (incident
 	// 2026-08-16).
 	h.syncSend(c, wid, sid, text, extractPromptModel(bodyBytes))
+}
+
+// isTextOnlyWedgeSendErr classifies the #1307 wedge across BOTH regimes:
+// flag-off the adapter wraps agent.ErrImageInTextOnlyHistory; authority
+// the Act path surfaces the harness 400 inside a connect error message
+// (agentd's actor embeds the body verbatim) — the same marker either way.
+func isTextOnlyWedgeSendErr(err error) bool {
+	if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		return true
+	}
+	var cce *connectCodeError
+	if errors.As(err, &cce) {
+		// Strict parity with main's gate (harness 400 only): the Act path
+		// classifies solely invalid_argument — the connect mapping of the
+		// wedge's harness 400 — never a marker that rides another code.
+		return cce.code == "invalid_argument" && agent.IsImageInTextOnlyHistoryMessage(cce.msg)
+	}
+	return false
 }
 
 // extractMessageText reads the request body and extracts the
@@ -656,8 +700,19 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	// which was removed in 1.18.10. (A former "clear pending tracking"
 	// step died with the V2 path; stranded-input recovery is the
 	// outbox ledger's concern.)
-	if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
-		h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
+	// #1372 (S1): the write rides Act's interrupt verb in the authority
+	// regime (the actor posts the SAME V1 abort route); flag-off keeps
+	// the adapter call.
+	var err error
+	abortLog := "AbortSession: adapter abort failed"
+	if h.agentdTerminus {
+		abortLog = "AbortSession: Act abort failed"
+		err = h.actAbort(c.Request.Context(), wid, sid)
+	} else {
+		err = h.adapter.Abort(c.Request.Context(), "", wid, sid)
+	}
+	if err != nil {
+		h.logger.Error(abortLog, err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 		return
 	}
@@ -681,11 +736,20 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	}
 	defer h.releaseConnection(workspaceID)
 
-	// Delegate to the adapter, then run the post-delete side effects
+	// Delegate the write (Act in the authority regime, #1372 S1; the
+	// adapter flag-off), then run the post-delete side effects
 	// (tombstone, session index cleanup, SSE tombstone publish).
-	if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
+	var err error
+	delLog := "DeleteSession: adapter failed"
+	if h.agentdTerminus {
+		delLog = "DeleteSession: Act failed"
+		err = h.actDeleteSession(c.Request.Context(), workspaceID, sid)
+	} else {
+		err = h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid)
+	}
+	if err != nil {
 		// #817: same observability gap — log the underlying error.
-		h.logger.Error("DeleteSession: adapter failed", err,
+		h.logger.Error(delLog, err,
 			"workspaceID", workspaceID, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
 		return
@@ -736,6 +800,11 @@ func (h *ProxyHandler) RenameSessionInAgent(ctx context.Context, workspaceID, se
 		return fmt.Errorf("invalid sessionId: %w", err)
 	}
 
+	// #1372 (S1): the write rides Act in the authority regime; flag-off
+	// keeps the typed adapter method.
+	if h.agentdTerminus {
+		return h.actRenameSession(ctx, workspaceID, sessionID, title)
+	}
 	return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
 }
 
@@ -900,11 +969,21 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		return
 	}
 
-	msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-		Model: modelOverride,
-	})
+	// #1372 (S1): no carve-outs for the fallback — the sync send rides
+	// Act in the authority regime too.
+	var msg *session.Message
+	var err error
+	syncLog := "syncSend: adapter failed"
+	if h.agentdTerminus {
+		syncLog = "syncSend: Act failed"
+		msg, err = h.actSend(c.Request.Context(), wid, sid, text, modelOverride)
+	} else {
+		msg, err = h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: modelOverride,
+		})
+	}
 	if err != nil {
-		h.logger.Error("syncSend: adapter failed", err,
+		h.logger.Error(syncLog, err,
 			"workspaceID", wid, "sessionID", sid)
 		if sid != "" {
 			h.removeActiveSession(c.Request.Context(), wid, sid)
@@ -918,7 +997,7 @@ func (h *ProxyHandler) syncSend(c *gin.Context, wid, sid, text string, modelOver
 		// incident's generic 502 rendered as a bare "Failed to fetch"
 		// with no cause. Below critical, unrelated provider/pod errors
 		// keep the generic 502.
-		if errors.Is(err, agent.ErrImageInTextOnlyHistory) {
+		if isTextOnlyWedgeSendErr(err) {
 			writeTextOnlyWedgeBody(c)
 			return
 		}

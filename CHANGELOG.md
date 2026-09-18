@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-09-18
+
+### Fixes — scheduler
+
+- **Targetless triggers fail loudly (#1440, PR #1443)**: deleting a
+  workflow SET NULLs the referencing trigger's target (FK, migration
+  000020) — the trigger then ticked silently forever: no fire rows, no
+  failure count, no auto-disable, and the loud missing-workflow path
+  was unreachable for real deletes. The nil-target guard now records a
+  FAILED fire (`trigger_has_no_target`), increments
+  `consecutiveFailures`, and honors `autoDisableAfter` — route-agnostic
+  (covers the FK route and the #1442 create-anomaly consequence).
+  Store integration test pins the FK semantics; nightly R4d covers the
+  delete route end to end.
+
+## [0.34.0] - 2026-09-18
+
+### Features — automation (design 0059: trigger input mapping)
+
+- **Triggered runs can finally satisfy schemas — #1425 + #1419 closed**
+  (PRs #1439 + #1438): workflow-mode triggers gain `inputFrom`
+  (envelope | body | mapped, default envelope — existing triggers keep
+  byte-identical behavior) and an optional static `input` document.
+  `inputFrom: "body"` (webhook sources) makes the posted payload the
+  run input directly — schema-authored workflows stop reaching into
+  `input.body.*`; `mapped` validates the static document against the
+  workflow's inputSchema at trigger create; new un-opted envelope
+  wiring against a schema requiring non-envelope properties is rejected
+  with a remediation 400 (the V1-V7 create/update matrix; update runs
+  only the rules whose inputs the patch touches).
+- **Opt-in fire-time validation with redacted failure records**: fired
+  runs carrying input mapping are validated before queueing; a mismatch
+  records a `validation_error` fire with TYPED violations
+  ({jsonPointer, keyword, message} — locations only, never instance
+  values, recursively capped at 4 KiB with a truncation marker) and
+  drives the failure counter/auto-disable; a non-compiling stored schema
+  records `{"code":"invalid_input_schema"}` instead. Zero node
+  executions burned on invalid input.
+- **Webhook non-JSON fallback aligned** to the {raw, content_type}
+  shape; migration 000031 (additive + reversible) carries the new
+  triggers columns; agentd trigger_create/trigger_update/
+  workflow_create/trigger_fires descriptions teach the contract
+  (drift-pinned); nightly e2e rows R6a-c cover the wiring 400, the
+  mapped-doc validation pair, and signed webhook deliveries — payload
+  as top-level run input on the happy leg, redacted validation_error
+  fire (no instance echo) on the unhappy leg.
+
+## [0.33.2] - 2026-09-17
+
+## [0.33.2] - 2026-09-18
+
+### Fixes — agent prompts
+
+- **Dotted-path agent-prompt templating (#1417, PR #1430)**:
+  `{{.body.topic}}` resolves through nested maps — parity with
+  condition-node expression depth; webhook-driven prompts address the
+  payload directly instead of inlining `{{.body}}`. Single-pass
+  rendering: substituted values are never re-expanded (payload fields
+  cannot smuggle refs into the prompt), unclosed refs never swallow
+  valid ones (cross-newline or same-line), unresolvable refs stay
+  literal. Back-compat preserved: any-charset top-level keys and flat
+  dotted keys keep their pre-change rendering. Documented on the
+  workflow_create tool surface; a registered nightly e2e (echo-upstream
+  rows, happy + unhappy) pins it end to end.
+
 ## [0.33.1] - 2026-09-17
 
 ### Fixes — workflows

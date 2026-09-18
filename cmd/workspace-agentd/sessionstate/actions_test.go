@@ -72,6 +72,14 @@ func verbOf(m *abiv1.ActionRequest) string {
 		return "answer_question"
 	case *abiv1.ActionRequest_Compact:
 		return "compact"
+	case *abiv1.ActionRequest_CreateSession:
+		return "create_session"
+	case *abiv1.ActionRequest_Send:
+		return "send"
+	case *abiv1.ActionRequest_DeleteSession:
+		return "delete_session"
+	case *abiv1.ActionRequest_RenameSession:
+		return "rename_session"
 	default:
 		return "unknown"
 	}
@@ -89,6 +97,14 @@ func verbResult(verb string, m *abiv1.ActionRequest) *abiv1.ActionResult {
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputResult{InputId: m.GetAnswerQuestion().GetInputId()}}}
 	case "compact":
 		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Compact{Compact: &abiv1.CompactResult{}}}
+	case "create_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_CreateSession{CreateSession: &abiv1.CreateSessionResult{}}}
+	case "send":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}
+	case "delete_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_DeleteSession{DeleteSession: &abiv1.DeleteSessionResult{}}}
+	case "rename_session":
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_RenameSession{RenameSession: &abiv1.RenameSessionResult{}}}
 	}
 	return &abiv1.ActionResult{}
 }
@@ -100,6 +116,10 @@ func allActions() []abiv1.ActionType {
 		abiv1.ActionType_ACTION_TYPE_SWITCH_AGENT,
 		abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION,
 		abiv1.ActionType_ACTION_TYPE_COMPACT,
+		abiv1.ActionType_ACTION_TYPE_CREATE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_SEND,
+		abiv1.ActionType_ACTION_TYPE_DELETE_SESSION,
+		abiv1.ActionType_ACTION_TYPE_RENAME_SESSION,
 	}
 }
 
@@ -146,17 +166,24 @@ func TestActOp_UnionMembers(t *testing.T) {
 		{SessionId: "s1", Action: &abiv1.ActionRequest_SwitchAgent{SwitchAgent: &abiv1.SwitchAgentAction{AgentId: "plan"}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1", OptionIds: []string{"Go"}}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_Compact{Compact: &abiv1.CompactAction{}}},
+		// #1372: the sessions-cluster verbs. create_session carries no
+		// session id (the harness mints it) — the row proves the empty
+		// session_id path dispatches like any other member.
+		{Action: &abiv1.ActionRequest_CreateSession{CreateSession: &abiv1.CreateSessionAction{Title: "T"}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "hi"}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_DeleteSession{DeleteSession: &abiv1.DeleteSessionAction{}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{Title: "T"}}},
 	}
 	for _, req := range cases {
 		res, err := c.Act(ctx, connect.NewRequest(req))
 		require.NoError(t, err, "verb %s", verbOf(req))
-		assert.Equal(t, "s1", res.Msg.GetSessionId())
+		assert.Equal(t, req.GetSessionId(), res.Msg.GetSessionId())
 		assert.NotNil(t, res.Msg.GetResult(), "typed result set for %s", verbOf(req))
 		assert.Zero(t, res.Msg.GetEffectSeq(), "effect_seq unset: not knowable before the response returns")
 	}
 	actor.mu.Lock()
 	defer actor.mu.Unlock()
-	assert.Equal(t, []string{"interrupt", "switch_model", "switch_agent", "answer_question", "compact"}, actor.verbs)
+	assert.Equal(t, []string{"interrupt", "switch_model", "switch_agent", "answer_question", "compact", "create_session", "send", "delete_session", "rename_session"}, actor.verbs)
 }
 
 // TestActOp_NotSupportedTyped: an undeclared verb is a TYPED
@@ -245,6 +272,14 @@ func TestActOp_Validation(t *testing.T) {
 		{SessionId: "s1", Action: &abiv1.ActionRequest_SwitchAgent{SwitchAgent: &abiv1.SwitchAgentAction{}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{}}},
 		{SessionId: "s1", Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{InputId: "q1"}}},
+		// #1372: send requires text AND a session; rename requires a
+		// session and a title; delete requires a session. create_session
+		// has no requirements (title optional, no session yet).
+		{SessionId: "s1", Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{}}},
+		{Action: &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "hi"}}},
+		{Action: &abiv1.ActionRequest_DeleteSession{DeleteSession: &abiv1.DeleteSessionAction{}}},
+		{SessionId: "s1", Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{}}},
+		{Action: &abiv1.ActionRequest_RenameSession{RenameSession: &abiv1.RenameSessionAction{Title: "T"}}},
 	}
 	for _, req := range bad {
 		_, err := c.Act(ctx, connect.NewRequest(req))
@@ -258,9 +293,12 @@ func TestActOp_Validation(t *testing.T) {
 	actor.mu.Unlock()
 }
 
-// TestActOp_SerializesAgainstDelivery (golden): actions and admissions
-// share the per-session single-flight — no interleave, in BOTH directions,
-// and no lost interrupt while an admission holds the lock.
+// TestActOp_SerializesAgainstDelivery (golden): mutating actions and
+// admissions share the per-session single-flight — no interleave, in BOTH
+// directions. (Interrupt is the #1372-r2 carve-out — it PREEMPTS rather
+// than queues, pinned by TestActOp_InterruptPreemptsInFlightSend; the
+// admission-completing-during-interrupt preservation stays pinned by
+// TestActOp_InterruptAdmissionRace.)
 func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 	t.Run("action waits for in-flight admission", func(t *testing.T) {
 		admitter := newBlockingAdmitter()
@@ -284,7 +322,7 @@ func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 		go func() {
 			_, err := c.Act(context.Background(), connect.NewRequest(&abiv1.ActionRequest{
 				SessionId: "s1",
-				Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+				Action:    &abiv1.ActionRequest_Compact{Compact: &abiv1.CompactAction{}},
 			}))
 			resCh <- err
 		}()
@@ -297,9 +335,9 @@ func TestActOp_SerializesAgainstDelivery(t *testing.T) {
 
 		close(admitter.release) // admission completes, lock frees
 		select {
-		case <-actor.enter: // the interrupt was NOT lost
+		case <-actor.enter: // the queued action was NOT lost
 		case <-time.After(2 * time.Second):
-			t.Fatal("interrupt never executed after admission released")
+			t.Fatal("action never executed after admission released")
 		}
 		close(actor.relead)
 		require.NoError(t, <-resCh)
@@ -403,4 +441,215 @@ func TestActOp_InterruptAdmissionRace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, abiv1.LedgerState_LEDGER_STATE_ADMITTED, st.Msg.GetState(),
 		"admission completing during the interrupt is preserved — no superseded-by-interrupt state exists")
+}
+
+// TestActOp_InterruptPreemptsInFlightSend (#1372 r2): the send action
+// executes a BLOCKING full-turn harness POST under the session lock — an
+// interrupt fired mid-turn must preempt (return while the turn still
+// runs), not queue behind it. Flag-off parity: adapter.Abort stops the
+// live turn within seconds (live-verified). Red pre-fix: the interrupt
+// blocked on the single-flight until the parked send released.
+func TestActOp_InterruptPreemptsInFlightSend(t *testing.T) {
+	actor := &parkingSendActor{entered: make(chan struct{}), release: make(chan struct{})}
+	a := actionsAuthority(t, actor, allActions(), &recordingAdmitter{})
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		_, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "long turn"}},
+		}))
+		sendDone <- err
+	}()
+	select {
+	case <-actor.entered: // the send holds the session single-flight
+	case <-time.After(2 * time.Second):
+		t.Fatal("send never started")
+	}
+
+	// The parked goroutine must never outlive the test (a fatal verdict
+	// before release would hang the suite's cleanup on the parked actor).
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(actor.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Interrupt{Interrupt: &abiv1.InterruptAction{}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		require.NotNil(t, res.GetInterrupt(), "the interrupt preempts the in-flight turn")
+	case err := <-errCh:
+		t.Fatalf("interrupt failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("interrupt queued behind the in-flight send — abort must preempt the turn it exists to stop")
+	}
+
+	select {
+	case err := <-sendDone:
+		t.Fatalf("the send finished before release — the park did not hold: %v", err)
+	default:
+	}
+	releaseOnce.Do(func() { close(actor.release) })
+	require.NoError(t, <-sendDone)
+}
+
+// parkingSendActor parks inside the send verb (the full-turn POST) and
+// answers every other verb immediately.
+type parkingSendActor struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *parkingSendActor) Act(ctx context.Context, sessionID string, req *abiv1.ActionRequest) (*abiv1.ActionResult, error) {
+	if req.GetInterrupt() != nil {
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_Interrupt{Interrupt: &abiv1.InterruptResult{}}}, nil
+	}
+	if ans := req.GetAnswerQuestion(); ans != nil {
+		return &abiv1.ActionResult{Result: &abiv1.ActionResult_AnswerQuestion{
+			AnswerQuestion: &abiv1.AnswerInputResult{InputId: ans.GetInputId()},
+		}}, nil
+	}
+	if req.GetSend() == nil {
+		return &abiv1.ActionResult{}, nil
+	}
+	close(p.entered)
+	<-p.release
+	return &abiv1.ActionResult{Result: &abiv1.ActionResult_Send{Send: &abiv1.SendResult{}}}, nil
+}
+
+// TestActOp_AnswerPreemptsInFlightSend (r4, re-scoped at #1396): a
+// mid-turn ask must be answerable WHILE the asking turn holds the
+// sync-send HTTP response — the harness blocks the turn on the ask, so
+// queueing the answer behind the turn deadlocks the ask-answer cycle
+// (the flag-off adapter answers mid-turn; S6/L2 demand it). Since
+// #1396, answers bypass the session lock via actAnswer unconditionally,
+// so this row pins THAT dispatch; the send-side carve-out it originally
+// proved is pinned separately by TestActOp_SendDoesNotQueueBehind
+// InFlightAdmission (mutation-verified).
+func TestActOp_AnswerPreemptsInFlightSend(t *testing.T) {
+	actor := &parkingSendActor{entered: make(chan struct{}), release: make(chan struct{})}
+	a := actionsAuthority(t, actor, allActions(), &recordingAdmitter{})
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	go func() {
+		_, _ = c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "long turn"}},
+		}))
+	}()
+	select {
+	case <-actor.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("send never started")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(actor.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action: &abiv1.ActionRequest_AnswerQuestion{AnswerQuestion: &abiv1.AnswerInputAction{
+				InputId: "que_live1", OptionIds: []string{"Yes"},
+			}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		assert.NotNil(t, res.GetAnswerQuestion(), "the answer lands while the turn still runs")
+	case err := <-errCh:
+		t.Fatalf("answer failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("answer queued behind the in-flight send — the ask-answer cycle deadlocks")
+	}
+	releaseOnce.Do(func() { close(actor.release) })
+}
+
+// TestActOp_SendDoesNotQueueBehindInFlightAdmission (#1372 r4, the
+// send carve-out's discriminating pin — mutation-verified): the send
+// action must NOT take the session single-flight. The harness
+// serializes per-session message writes itself (busy sessions block
+// incoming messages, B1) and S2 (#1315) dedupes admissions at the
+// harness write, so the lock adds no write protection — while HOLDING it
+// across a full LLM turn re-creates the r1-f1 class: a send queueing
+// behind a slow/parked admission inherits the holder's full duration
+// (an outbox admission can legally take ~3 minutes under the admitter's
+// retry budget). With `&& m.GetSend() == nil` reverted, this row FAILS
+// (the send parks on the admission's lock); at HEAD it returns while
+// the admission is still parked.
+func TestActOp_SendDoesNotQueueBehindInFlightAdmission(t *testing.T) {
+	admitter := newBlockingAdmitter()
+	actor := &recordingActor{}
+	a := actionsAuthority(t, actor, allActions(), admitter)
+	_, h := a.Handler()
+	c := newAuthedServer(t, h)
+	ctx := context.Background()
+
+	go func() {
+		_, _ = c.Deliver(ctx, connect.NewRequest(&abiv1.DeliveryRequest{
+			SessionId: "s1", EntryId: "e-1", Attempt: 1,
+			Parts: []*abiv1.DeliveryPart{{Part: &abiv1.DeliveryPart_Text{Text: "hello"}}},
+		}))
+	}()
+	select {
+	case <-admitter.entered: // the admission is in flight, holding the session lock
+	case <-time.After(2 * time.Second):
+		t.Fatal("admission never started")
+	}
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(admitter.release) }) })
+
+	resCh := make(chan *abiv1.ActionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := c.Act(ctx, connect.NewRequest(&abiv1.ActionRequest{
+			SessionId: "s1",
+			Action:    &abiv1.ActionRequest_Send{Send: &abiv1.SendAction{Text: "mid-admission send"}},
+		}))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res.Msg
+	}()
+
+	select {
+	case res := <-resCh:
+		assert.NotNil(t, res.GetSend(), "the send executed without the session lock")
+	case err := <-errCh:
+		t.Fatalf("send failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("send queued behind the in-flight admission — the carve-out is reverted (the r1-f1 duration-inheritance class)")
+	}
+
+	// The admission is STILL parked: the send genuinely did not wait.
+	select {
+	case <-admitter.release:
+		t.Fatal("the admission was released — the choreography broke")
+	default:
+	}
+	releaseOnce.Do(func() { close(admitter.release) })
 }

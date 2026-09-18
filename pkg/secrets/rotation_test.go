@@ -332,3 +332,75 @@ func TestRotationCoordinator_ResumeFromCursor_ContinuesFromLastRow(t *testing.T)
 }
 
 var _ = fmt.Sprintf // keep import if unused
+
+// TestRotationCoordinator_ReportsLastRowID verifies the runbook contract
+// (helm/KEK-ROTATION.md: "the CLI prints the last processed row ID per table
+// on exit"): the result carries the last row the coordinator examined so an
+// interrupted run can resume with --resume-from. Issue #830.
+func TestRotationCoordinator_ReportsLastRowID(t *testing.T) {
+	store := newMockRotationStore()
+	oldKey := make([]byte, 32)
+	for i := range oldKey {
+		oldKey[i] = byte(i + 1)
+	}
+	store.addRow("api_keys", "key-1", "", encryptWithKey(t, oldKey, []byte("s1")), 1)
+	store.addRow("api_keys", "key-2", "", encryptWithKey(t, oldKey, []byte("s2")), 1)
+
+	store2 := newMockRotationStore()
+	store2.addRow("api_keys", "key-1", "", encryptWithKey(t, oldKey, []byte("s1")), 1)
+
+	oldProv, newProv := buildProviderSets(t)
+	coord := NewRotationCoordinator(store, oldProv, newProv)
+
+	res, err := coord.RotateTable(context.Background(), "api_keys", "", 2, false)
+	require.NoError(t, err)
+	assert.Equal(t, "key-2", res.LastRowID, "LastRowID must be the last row examined")
+
+	// Dry-run must report the cursor too — the operator previews the same
+	// resume point without writes.
+	res2, err := NewRotationCoordinator(store2, oldProv, newProv).RotateTable(context.Background(), "api_keys", "", 2, true)
+	require.NoError(t, err)
+	assert.Equal(t, "key-1", res2.LastRowID, "dry-run must also report the resume cursor")
+}
+
+// TestRotationCoordinator_LastRowIDEmptyWhenNoRows verifies the cursor is
+// empty (not garbage) when the table has nothing to do.
+func TestRotationCoordinator_LastRowIDEmptyWhenNoRows(t *testing.T) {
+	store := newMockRotationStore()
+	oldProv, newProv := buildProviderSets(t)
+	coord := NewRotationCoordinator(store, oldProv, newProv)
+
+	res, err := coord.RotateTable(context.Background(), "user_keys", "", 2, false)
+	require.NoError(t, err)
+	assert.Empty(t, res.LastRowID)
+}
+
+// TestRotationCoordinator_LastRowIDStopsAtFailedRow pins the resume-cursor
+// contract: the cursor never advances past a failed row, so --resume-from
+// re-attempts it (and every later row). Advancing on failure would strand
+// pre-cursor rows that are still un-rotated. Found while wiring the CLI
+// stores (#830).
+func TestRotationCoordinator_LastRowIDStopsAtFailedRow(t *testing.T) {
+	store := newMockRotationStore()
+	rogueKey := make([]byte, 32)
+	for i := range rogueKey {
+		rogueKey[i] = byte(i + 99)
+	}
+	oldKey := make([]byte, 32)
+	for i := range oldKey {
+		oldKey[i] = byte(i + 1)
+	}
+	// mid row is undecryptable (wrong key); bad + after flank it.
+	store.addRow("api_keys", "aaa-bad", "", encryptWithKey(t, rogueKey, []byte("rogue")), 1)
+	store.addRow("api_keys", "bbb-good", "", encryptWithKey(t, oldKey, []byte("ok1")), 1)
+	store.addRow("api_keys", "ccc-good", "", encryptWithKey(t, oldKey, []byte("ok2")), 1)
+
+	oldProv, newProv := buildProviderSets(t)
+	coord := NewRotationCoordinator(store, oldProv, newProv)
+
+	res, err := coord.RotateTable(context.Background(), "api_keys", "", 2, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Failed)
+	assert.Equal(t, 2, res.Processed)
+	assert.Empty(t, res.LastRowID, "a run whose FIRST row fails must report an empty cursor (resume restarts the table)")
+}

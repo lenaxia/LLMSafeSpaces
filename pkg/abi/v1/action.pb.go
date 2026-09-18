@@ -41,6 +41,10 @@ type ActionRequest struct {
 	//	*ActionRequest_SwitchAgent
 	//	*ActionRequest_AnswerQuestion
 	//	*ActionRequest_Compact
+	//	*ActionRequest_CreateSession
+	//	*ActionRequest_Send
+	//	*ActionRequest_DeleteSession
+	//	*ActionRequest_RenameSession
 	Action        isActionRequest_Action `protobuf_oneof:"action"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -135,6 +139,42 @@ func (x *ActionRequest) GetCompact() *CompactAction {
 	return nil
 }
 
+func (x *ActionRequest) GetCreateSession() *CreateSessionAction {
+	if x != nil {
+		if x, ok := x.Action.(*ActionRequest_CreateSession); ok {
+			return x.CreateSession
+		}
+	}
+	return nil
+}
+
+func (x *ActionRequest) GetSend() *SendAction {
+	if x != nil {
+		if x, ok := x.Action.(*ActionRequest_Send); ok {
+			return x.Send
+		}
+	}
+	return nil
+}
+
+func (x *ActionRequest) GetDeleteSession() *DeleteSessionAction {
+	if x != nil {
+		if x, ok := x.Action.(*ActionRequest_DeleteSession); ok {
+			return x.DeleteSession
+		}
+	}
+	return nil
+}
+
+func (x *ActionRequest) GetRenameSession() *RenameSessionAction {
+	if x != nil {
+		if x, ok := x.Action.(*ActionRequest_RenameSession); ok {
+			return x.RenameSession
+		}
+	}
+	return nil
+}
+
 type isActionRequest_Action interface {
 	isActionRequest_Action()
 }
@@ -159,6 +199,22 @@ type ActionRequest_Compact struct {
 	Compact *CompactAction `protobuf:"bytes,6,opt,name=compact,proto3,oneof"`
 }
 
+type ActionRequest_CreateSession struct {
+	CreateSession *CreateSessionAction `protobuf:"bytes,7,opt,name=create_session,json=createSession,proto3,oneof"`
+}
+
+type ActionRequest_Send struct {
+	Send *SendAction `protobuf:"bytes,8,opt,name=send,proto3,oneof"`
+}
+
+type ActionRequest_DeleteSession struct {
+	DeleteSession *DeleteSessionAction `protobuf:"bytes,9,opt,name=delete_session,json=deleteSession,proto3,oneof"`
+}
+
+type ActionRequest_RenameSession struct {
+	RenameSession *RenameSessionAction `protobuf:"bytes,10,opt,name=rename_session,json=renameSession,proto3,oneof"`
+}
+
 func (*ActionRequest_Interrupt) isActionRequest_Action() {}
 
 func (*ActionRequest_SwitchModel) isActionRequest_Action() {}
@@ -168,6 +224,14 @@ func (*ActionRequest_SwitchAgent) isActionRequest_Action() {}
 func (*ActionRequest_AnswerQuestion) isActionRequest_Action() {}
 
 func (*ActionRequest_Compact) isActionRequest_Action() {}
+
+func (*ActionRequest_CreateSession) isActionRequest_Action() {}
+
+func (*ActionRequest_Send) isActionRequest_Action() {}
+
+func (*ActionRequest_DeleteSession) isActionRequest_Action() {}
+
+func (*ActionRequest_RenameSession) isActionRequest_Action() {}
 
 // InterruptAction aborts the in-flight turn. Non-destructive (I7): it
 // mutates turn projection state only and NEVER entry states — admitted
@@ -419,6 +483,190 @@ func (*CompactAction) Descriptor() ([]byte, []int) {
 	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{5}
 }
 
+// The sessions-cluster verbs (#1372, S1 completion): the API's five
+// session-write sites ride Act in the authority regime. session_id is
+// unset for create_session (the session does not exist yet — opencode
+// mints the id); send/delete/rename target the request's session_id.
+// All four harness routes are the production adapter path's own V1
+// routes (POST /session, POST /session/:id/message, DELETE
+// /session/:id, PATCH /session/:id) — declared unconditionally in the
+// boot capability report (same confidence class as interrupt).
+type CreateSessionAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Title         string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSessionAction) Reset() {
+	*x = CreateSessionAction{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSessionAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSessionAction) ProtoMessage() {}
+
+func (x *CreateSessionAction) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSessionAction.ProtoReflect.Descriptor instead.
+func (*CreateSessionAction) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateSessionAction) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+type SendAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	Model         *ModelRef              `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendAction) Reset() {
+	*x = SendAction{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendAction) ProtoMessage() {}
+
+func (x *SendAction) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendAction.ProtoReflect.Descriptor instead.
+func (*SendAction) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *SendAction) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *SendAction) GetModel() *ModelRef {
+	if x != nil {
+		return x.Model
+	}
+	return nil
+}
+
+type DeleteSessionAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSessionAction) Reset() {
+	*x = DeleteSessionAction{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSessionAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSessionAction) ProtoMessage() {}
+
+func (x *DeleteSessionAction) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSessionAction.ProtoReflect.Descriptor instead.
+func (*DeleteSessionAction) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{8}
+}
+
+type RenameSessionAction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Title         string                 `protobuf:"bytes,1,opt,name=title,proto3" json:"title,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameSessionAction) Reset() {
+	*x = RenameSessionAction{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameSessionAction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameSessionAction) ProtoMessage() {}
+
+func (x *RenameSessionAction) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameSessionAction.ProtoReflect.Descriptor instead.
+func (*RenameSessionAction) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *RenameSessionAction) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
 type ActionResult struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -429,6 +677,10 @@ type ActionResult struct {
 	//	*ActionResult_SwitchAgent
 	//	*ActionResult_AnswerQuestion
 	//	*ActionResult_Compact
+	//	*ActionResult_CreateSession
+	//	*ActionResult_Send
+	//	*ActionResult_DeleteSession
+	//	*ActionResult_RenameSession
 	Result isActionResult_Result `protobuf_oneof:"result"`
 	// effect_seq is the seq of the event the action produced, when knowable
 	// before the response returns (action-result ↔ event causal linkage is a
@@ -440,7 +692,7 @@ type ActionResult struct {
 
 func (x *ActionResult) Reset() {
 	*x = ActionResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[6]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -452,7 +704,7 @@ func (x *ActionResult) String() string {
 func (*ActionResult) ProtoMessage() {}
 
 func (x *ActionResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[6]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -465,7 +717,7 @@ func (x *ActionResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ActionResult.ProtoReflect.Descriptor instead.
 func (*ActionResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{6}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ActionResult) GetSessionId() string {
@@ -527,6 +779,42 @@ func (x *ActionResult) GetCompact() *CompactResult {
 	return nil
 }
 
+func (x *ActionResult) GetCreateSession() *CreateSessionResult {
+	if x != nil {
+		if x, ok := x.Result.(*ActionResult_CreateSession); ok {
+			return x.CreateSession
+		}
+	}
+	return nil
+}
+
+func (x *ActionResult) GetSend() *SendResult {
+	if x != nil {
+		if x, ok := x.Result.(*ActionResult_Send); ok {
+			return x.Send
+		}
+	}
+	return nil
+}
+
+func (x *ActionResult) GetDeleteSession() *DeleteSessionResult {
+	if x != nil {
+		if x, ok := x.Result.(*ActionResult_DeleteSession); ok {
+			return x.DeleteSession
+		}
+	}
+	return nil
+}
+
+func (x *ActionResult) GetRenameSession() *RenameSessionResult {
+	if x != nil {
+		if x, ok := x.Result.(*ActionResult_RenameSession); ok {
+			return x.RenameSession
+		}
+	}
+	return nil
+}
+
 func (x *ActionResult) GetEffectSeq() uint64 {
 	if x != nil && x.EffectSeq != nil {
 		return *x.EffectSeq
@@ -558,6 +846,22 @@ type ActionResult_Compact struct {
 	Compact *CompactResult `protobuf:"bytes,6,opt,name=compact,proto3,oneof"`
 }
 
+type ActionResult_CreateSession struct {
+	CreateSession *CreateSessionResult `protobuf:"bytes,8,opt,name=create_session,json=createSession,proto3,oneof"`
+}
+
+type ActionResult_Send struct {
+	Send *SendResult `protobuf:"bytes,9,opt,name=send,proto3,oneof"`
+}
+
+type ActionResult_DeleteSession struct {
+	DeleteSession *DeleteSessionResult `protobuf:"bytes,10,opt,name=delete_session,json=deleteSession,proto3,oneof"`
+}
+
+type ActionResult_RenameSession struct {
+	RenameSession *RenameSessionResult `protobuf:"bytes,11,opt,name=rename_session,json=renameSession,proto3,oneof"`
+}
+
 func (*ActionResult_Interrupt) isActionResult_Result() {}
 
 func (*ActionResult_SwitchModel) isActionResult_Result() {}
@@ -568,6 +872,14 @@ func (*ActionResult_AnswerQuestion) isActionResult_Result() {}
 
 func (*ActionResult_Compact) isActionResult_Result() {}
 
+func (*ActionResult_CreateSession) isActionResult_Result() {}
+
+func (*ActionResult_Send) isActionResult_Result() {}
+
+func (*ActionResult_DeleteSession) isActionResult_Result() {}
+
+func (*ActionResult_RenameSession) isActionResult_Result() {}
+
 type InterruptResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -576,7 +888,7 @@ type InterruptResult struct {
 
 func (x *InterruptResult) Reset() {
 	*x = InterruptResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[7]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -588,7 +900,7 @@ func (x *InterruptResult) String() string {
 func (*InterruptResult) ProtoMessage() {}
 
 func (x *InterruptResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[7]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -601,7 +913,7 @@ func (x *InterruptResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InterruptResult.ProtoReflect.Descriptor instead.
 func (*InterruptResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{7}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{11}
 }
 
 type SwitchModelResult struct {
@@ -613,7 +925,7 @@ type SwitchModelResult struct {
 
 func (x *SwitchModelResult) Reset() {
 	*x = SwitchModelResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[8]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -625,7 +937,7 @@ func (x *SwitchModelResult) String() string {
 func (*SwitchModelResult) ProtoMessage() {}
 
 func (x *SwitchModelResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[8]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -638,7 +950,7 @@ func (x *SwitchModelResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchModelResult.ProtoReflect.Descriptor instead.
 func (*SwitchModelResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{8}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SwitchModelResult) GetModel() *ModelRef {
@@ -657,7 +969,7 @@ type SwitchAgentResult struct {
 
 func (x *SwitchAgentResult) Reset() {
 	*x = SwitchAgentResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[9]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -669,7 +981,7 @@ func (x *SwitchAgentResult) String() string {
 func (*SwitchAgentResult) ProtoMessage() {}
 
 func (x *SwitchAgentResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[9]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -682,7 +994,7 @@ func (x *SwitchAgentResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchAgentResult.ProtoReflect.Descriptor instead.
 func (*SwitchAgentResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{9}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SwitchAgentResult) GetAgentId() string {
@@ -701,7 +1013,7 @@ type AnswerInputResult struct {
 
 func (x *AnswerInputResult) Reset() {
 	*x = AnswerInputResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[10]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -713,7 +1025,7 @@ func (x *AnswerInputResult) String() string {
 func (*AnswerInputResult) ProtoMessage() {}
 
 func (x *AnswerInputResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[10]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -726,7 +1038,7 @@ func (x *AnswerInputResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AnswerInputResult.ProtoReflect.Descriptor instead.
 func (*AnswerInputResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{10}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AnswerInputResult) GetInputId() string {
@@ -744,7 +1056,7 @@ type CompactResult struct {
 
 func (x *CompactResult) Reset() {
 	*x = CompactResult{}
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[11]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -756,7 +1068,7 @@ func (x *CompactResult) String() string {
 func (*CompactResult) ProtoMessage() {}
 
 func (x *CompactResult) ProtoReflect() protoreflect.Message {
-	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[11]
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -769,14 +1081,177 @@ func (x *CompactResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CompactResult.ProtoReflect.Descriptor instead.
 func (*CompactResult) Descriptor() ([]byte, []int) {
-	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{11}
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{15}
+}
+
+type CreateSessionResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Session       *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateSessionResult) Reset() {
+	*x = CreateSessionResult{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateSessionResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateSessionResult) ProtoMessage() {}
+
+func (x *CreateSessionResult) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateSessionResult.ProtoReflect.Descriptor instead.
+func (*CreateSessionResult) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *CreateSessionResult) GetSession() *Session {
+	if x != nil {
+		return x.Session
+	}
+	return nil
+}
+
+// SendResult carries the completed assistant message — the synchronous
+// send contract (V1 POST /session/:id/message returns the finished
+// message; the API's REST response is this message verbatim).
+type SendResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Message       *Message               `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SendResult) Reset() {
+	*x = SendResult{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SendResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SendResult) ProtoMessage() {}
+
+func (x *SendResult) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SendResult.ProtoReflect.Descriptor instead.
+func (*SendResult) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *SendResult) GetMessage() *Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+type DeleteSessionResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteSessionResult) Reset() {
+	*x = DeleteSessionResult{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteSessionResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteSessionResult) ProtoMessage() {}
+
+func (x *DeleteSessionResult) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteSessionResult.ProtoReflect.Descriptor instead.
+func (*DeleteSessionResult) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{18}
+}
+
+type RenameSessionResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameSessionResult) Reset() {
+	*x = RenameSessionResult{}
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameSessionResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameSessionResult) ProtoMessage() {}
+
+func (x *RenameSessionResult) ProtoReflect() protoreflect.Message {
+	mi := &file_llmsafespaces_abi_v1_action_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameSessionResult.ProtoReflect.Descriptor instead.
+func (*RenameSessionResult) Descriptor() ([]byte, []int) {
+	return file_llmsafespaces_abi_v1_action_proto_rawDescGZIP(), []int{19}
 }
 
 var File_llmsafespaces_abi_v1_action_proto protoreflect.FileDescriptor
 
 const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\n" +
-	"!llmsafespaces/abi/v1/action.proto\x12\x14llmsafespaces.abi.v1\x1a#llmsafespaces/abi/v1/contract.proto\"\xb0\x03\n" +
+	"!llmsafespaces/abi/v1/action.proto\x12\x14llmsafespaces.abi.v1\x1a#llmsafespaces/abi/v1/contract.proto\"\xe4\x05\n" +
 	"\rActionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12E\n" +
@@ -784,7 +1259,12 @@ const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\fswitch_model\x18\x03 \x01(\v2'.llmsafespaces.abi.v1.SwitchModelActionH\x00R\vswitchModel\x12L\n" +
 	"\fswitch_agent\x18\x04 \x01(\v2'.llmsafespaces.abi.v1.SwitchAgentActionH\x00R\vswitchAgent\x12R\n" +
 	"\x0fanswer_question\x18\x05 \x01(\v2'.llmsafespaces.abi.v1.AnswerInputActionH\x00R\x0eanswerQuestion\x12?\n" +
-	"\acompact\x18\x06 \x01(\v2#.llmsafespaces.abi.v1.CompactActionH\x00R\acompactB\b\n" +
+	"\acompact\x18\x06 \x01(\v2#.llmsafespaces.abi.v1.CompactActionH\x00R\acompact\x12R\n" +
+	"\x0ecreate_session\x18\a \x01(\v2).llmsafespaces.abi.v1.CreateSessionActionH\x00R\rcreateSession\x126\n" +
+	"\x04send\x18\b \x01(\v2 .llmsafespaces.abi.v1.SendActionH\x00R\x04send\x12R\n" +
+	"\x0edelete_session\x18\t \x01(\v2).llmsafespaces.abi.v1.DeleteSessionActionH\x00R\rdeleteSession\x12R\n" +
+	"\x0erename_session\x18\n" +
+	" \x01(\v2).llmsafespaces.abi.v1.RenameSessionActionH\x00R\rrenameSessionB\b\n" +
 	"\x06action\"\x11\n" +
 	"\x0fInterruptAction\"I\n" +
 	"\x11SwitchModelAction\x124\n" +
@@ -803,7 +1283,16 @@ const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\x06_replyB\n" +
 	"\n" +
 	"\b_message\"\x0f\n" +
-	"\rCompactAction\"\xe2\x03\n" +
+	"\rCompactAction\"+\n" +
+	"\x13CreateSessionAction\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\"V\n" +
+	"\n" +
+	"SendAction\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x124\n" +
+	"\x05model\x18\x02 \x01(\v2\x1e.llmsafespaces.abi.v1.ModelRefR\x05model\"\x15\n" +
+	"\x13DeleteSessionAction\"+\n" +
+	"\x13RenameSessionAction\x12\x14\n" +
+	"\x05title\x18\x01 \x01(\tR\x05title\"\x96\x06\n" +
 	"\fActionResult\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12E\n" +
@@ -811,7 +1300,12 @@ const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\fswitch_model\x18\x03 \x01(\v2'.llmsafespaces.abi.v1.SwitchModelResultH\x00R\vswitchModel\x12L\n" +
 	"\fswitch_agent\x18\x04 \x01(\v2'.llmsafespaces.abi.v1.SwitchAgentResultH\x00R\vswitchAgent\x12R\n" +
 	"\x0fanswer_question\x18\x05 \x01(\v2'.llmsafespaces.abi.v1.AnswerInputResultH\x00R\x0eanswerQuestion\x12?\n" +
-	"\acompact\x18\x06 \x01(\v2#.llmsafespaces.abi.v1.CompactResultH\x00R\acompact\x12\"\n" +
+	"\acompact\x18\x06 \x01(\v2#.llmsafespaces.abi.v1.CompactResultH\x00R\acompact\x12R\n" +
+	"\x0ecreate_session\x18\b \x01(\v2).llmsafespaces.abi.v1.CreateSessionResultH\x00R\rcreateSession\x126\n" +
+	"\x04send\x18\t \x01(\v2 .llmsafespaces.abi.v1.SendResultH\x00R\x04send\x12R\n" +
+	"\x0edelete_session\x18\n" +
+	" \x01(\v2).llmsafespaces.abi.v1.DeleteSessionResultH\x00R\rdeleteSession\x12R\n" +
+	"\x0erename_session\x18\v \x01(\v2).llmsafespaces.abi.v1.RenameSessionResultH\x00R\rrenameSession\x12\"\n" +
 	"\n" +
 	"effect_seq\x18\a \x01(\x04H\x01R\teffectSeq\x88\x01\x01B\b\n" +
 	"\x06resultB\r\n" +
@@ -823,7 +1317,14 @@ const file_llmsafespaces_abi_v1_action_proto_rawDesc = "" +
 	"\bagent_id\x18\x01 \x01(\tR\aagentId\".\n" +
 	"\x11AnswerInputResult\x12\x19\n" +
 	"\binput_id\x18\x01 \x01(\tR\ainputId\"\x0f\n" +
-	"\rCompactResultB1Z/github.com/lenaxia/llmsafespaces/pkg/abi/v1;abib\x06proto3"
+	"\rCompactResult\"N\n" +
+	"\x13CreateSessionResult\x127\n" +
+	"\asession\x18\x01 \x01(\v2\x1d.llmsafespaces.abi.v1.SessionR\asession\"E\n" +
+	"\n" +
+	"SendResult\x127\n" +
+	"\amessage\x18\x01 \x01(\v2\x1d.llmsafespaces.abi.v1.MessageR\amessage\"\x15\n" +
+	"\x13DeleteSessionResult\"\x15\n" +
+	"\x13RenameSessionResultB1Z/github.com/lenaxia/llmsafespaces/pkg/abi/v1;abib\x06proto3"
 
 var (
 	file_llmsafespaces_abi_v1_action_proto_rawDescOnce sync.Once
@@ -837,21 +1338,31 @@ func file_llmsafespaces_abi_v1_action_proto_rawDescGZIP() []byte {
 	return file_llmsafespaces_abi_v1_action_proto_rawDescData
 }
 
-var file_llmsafespaces_abi_v1_action_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_llmsafespaces_abi_v1_action_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_llmsafespaces_abi_v1_action_proto_goTypes = []any{
-	(*ActionRequest)(nil),     // 0: llmsafespaces.abi.v1.ActionRequest
-	(*InterruptAction)(nil),   // 1: llmsafespaces.abi.v1.InterruptAction
-	(*SwitchModelAction)(nil), // 2: llmsafespaces.abi.v1.SwitchModelAction
-	(*SwitchAgentAction)(nil), // 3: llmsafespaces.abi.v1.SwitchAgentAction
-	(*AnswerInputAction)(nil), // 4: llmsafespaces.abi.v1.AnswerInputAction
-	(*CompactAction)(nil),     // 5: llmsafespaces.abi.v1.CompactAction
-	(*ActionResult)(nil),      // 6: llmsafespaces.abi.v1.ActionResult
-	(*InterruptResult)(nil),   // 7: llmsafespaces.abi.v1.InterruptResult
-	(*SwitchModelResult)(nil), // 8: llmsafespaces.abi.v1.SwitchModelResult
-	(*SwitchAgentResult)(nil), // 9: llmsafespaces.abi.v1.SwitchAgentResult
-	(*AnswerInputResult)(nil), // 10: llmsafespaces.abi.v1.AnswerInputResult
-	(*CompactResult)(nil),     // 11: llmsafespaces.abi.v1.CompactResult
-	(*ModelRef)(nil),          // 12: llmsafespaces.abi.v1.ModelRef
+	(*ActionRequest)(nil),       // 0: llmsafespaces.abi.v1.ActionRequest
+	(*InterruptAction)(nil),     // 1: llmsafespaces.abi.v1.InterruptAction
+	(*SwitchModelAction)(nil),   // 2: llmsafespaces.abi.v1.SwitchModelAction
+	(*SwitchAgentAction)(nil),   // 3: llmsafespaces.abi.v1.SwitchAgentAction
+	(*AnswerInputAction)(nil),   // 4: llmsafespaces.abi.v1.AnswerInputAction
+	(*CompactAction)(nil),       // 5: llmsafespaces.abi.v1.CompactAction
+	(*CreateSessionAction)(nil), // 6: llmsafespaces.abi.v1.CreateSessionAction
+	(*SendAction)(nil),          // 7: llmsafespaces.abi.v1.SendAction
+	(*DeleteSessionAction)(nil), // 8: llmsafespaces.abi.v1.DeleteSessionAction
+	(*RenameSessionAction)(nil), // 9: llmsafespaces.abi.v1.RenameSessionAction
+	(*ActionResult)(nil),        // 10: llmsafespaces.abi.v1.ActionResult
+	(*InterruptResult)(nil),     // 11: llmsafespaces.abi.v1.InterruptResult
+	(*SwitchModelResult)(nil),   // 12: llmsafespaces.abi.v1.SwitchModelResult
+	(*SwitchAgentResult)(nil),   // 13: llmsafespaces.abi.v1.SwitchAgentResult
+	(*AnswerInputResult)(nil),   // 14: llmsafespaces.abi.v1.AnswerInputResult
+	(*CompactResult)(nil),       // 15: llmsafespaces.abi.v1.CompactResult
+	(*CreateSessionResult)(nil), // 16: llmsafespaces.abi.v1.CreateSessionResult
+	(*SendResult)(nil),          // 17: llmsafespaces.abi.v1.SendResult
+	(*DeleteSessionResult)(nil), // 18: llmsafespaces.abi.v1.DeleteSessionResult
+	(*RenameSessionResult)(nil), // 19: llmsafespaces.abi.v1.RenameSessionResult
+	(*ModelRef)(nil),            // 20: llmsafespaces.abi.v1.ModelRef
+	(*Session)(nil),             // 21: llmsafespaces.abi.v1.Session
+	(*Message)(nil),             // 22: llmsafespaces.abi.v1.Message
 }
 var file_llmsafespaces_abi_v1_action_proto_depIdxs = []int32{
 	1,  // 0: llmsafespaces.abi.v1.ActionRequest.interrupt:type_name -> llmsafespaces.abi.v1.InterruptAction
@@ -859,18 +1370,29 @@ var file_llmsafespaces_abi_v1_action_proto_depIdxs = []int32{
 	3,  // 2: llmsafespaces.abi.v1.ActionRequest.switch_agent:type_name -> llmsafespaces.abi.v1.SwitchAgentAction
 	4,  // 3: llmsafespaces.abi.v1.ActionRequest.answer_question:type_name -> llmsafespaces.abi.v1.AnswerInputAction
 	5,  // 4: llmsafespaces.abi.v1.ActionRequest.compact:type_name -> llmsafespaces.abi.v1.CompactAction
-	12, // 5: llmsafespaces.abi.v1.SwitchModelAction.model:type_name -> llmsafespaces.abi.v1.ModelRef
-	7,  // 6: llmsafespaces.abi.v1.ActionResult.interrupt:type_name -> llmsafespaces.abi.v1.InterruptResult
-	8,  // 7: llmsafespaces.abi.v1.ActionResult.switch_model:type_name -> llmsafespaces.abi.v1.SwitchModelResult
-	9,  // 8: llmsafespaces.abi.v1.ActionResult.switch_agent:type_name -> llmsafespaces.abi.v1.SwitchAgentResult
-	10, // 9: llmsafespaces.abi.v1.ActionResult.answer_question:type_name -> llmsafespaces.abi.v1.AnswerInputResult
-	11, // 10: llmsafespaces.abi.v1.ActionResult.compact:type_name -> llmsafespaces.abi.v1.CompactResult
-	12, // 11: llmsafespaces.abi.v1.SwitchModelResult.model:type_name -> llmsafespaces.abi.v1.ModelRef
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	6,  // 5: llmsafespaces.abi.v1.ActionRequest.create_session:type_name -> llmsafespaces.abi.v1.CreateSessionAction
+	7,  // 6: llmsafespaces.abi.v1.ActionRequest.send:type_name -> llmsafespaces.abi.v1.SendAction
+	8,  // 7: llmsafespaces.abi.v1.ActionRequest.delete_session:type_name -> llmsafespaces.abi.v1.DeleteSessionAction
+	9,  // 8: llmsafespaces.abi.v1.ActionRequest.rename_session:type_name -> llmsafespaces.abi.v1.RenameSessionAction
+	20, // 9: llmsafespaces.abi.v1.SwitchModelAction.model:type_name -> llmsafespaces.abi.v1.ModelRef
+	20, // 10: llmsafespaces.abi.v1.SendAction.model:type_name -> llmsafespaces.abi.v1.ModelRef
+	11, // 11: llmsafespaces.abi.v1.ActionResult.interrupt:type_name -> llmsafespaces.abi.v1.InterruptResult
+	12, // 12: llmsafespaces.abi.v1.ActionResult.switch_model:type_name -> llmsafespaces.abi.v1.SwitchModelResult
+	13, // 13: llmsafespaces.abi.v1.ActionResult.switch_agent:type_name -> llmsafespaces.abi.v1.SwitchAgentResult
+	14, // 14: llmsafespaces.abi.v1.ActionResult.answer_question:type_name -> llmsafespaces.abi.v1.AnswerInputResult
+	15, // 15: llmsafespaces.abi.v1.ActionResult.compact:type_name -> llmsafespaces.abi.v1.CompactResult
+	16, // 16: llmsafespaces.abi.v1.ActionResult.create_session:type_name -> llmsafespaces.abi.v1.CreateSessionResult
+	17, // 17: llmsafespaces.abi.v1.ActionResult.send:type_name -> llmsafespaces.abi.v1.SendResult
+	18, // 18: llmsafespaces.abi.v1.ActionResult.delete_session:type_name -> llmsafespaces.abi.v1.DeleteSessionResult
+	19, // 19: llmsafespaces.abi.v1.ActionResult.rename_session:type_name -> llmsafespaces.abi.v1.RenameSessionResult
+	20, // 20: llmsafespaces.abi.v1.SwitchModelResult.model:type_name -> llmsafespaces.abi.v1.ModelRef
+	21, // 21: llmsafespaces.abi.v1.CreateSessionResult.session:type_name -> llmsafespaces.abi.v1.Session
+	22, // 22: llmsafespaces.abi.v1.SendResult.message:type_name -> llmsafespaces.abi.v1.Message
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_llmsafespaces_abi_v1_action_proto_init() }
@@ -885,14 +1407,22 @@ func file_llmsafespaces_abi_v1_action_proto_init() {
 		(*ActionRequest_SwitchAgent)(nil),
 		(*ActionRequest_AnswerQuestion)(nil),
 		(*ActionRequest_Compact)(nil),
+		(*ActionRequest_CreateSession)(nil),
+		(*ActionRequest_Send)(nil),
+		(*ActionRequest_DeleteSession)(nil),
+		(*ActionRequest_RenameSession)(nil),
 	}
 	file_llmsafespaces_abi_v1_action_proto_msgTypes[4].OneofWrappers = []any{}
-	file_llmsafespaces_abi_v1_action_proto_msgTypes[6].OneofWrappers = []any{
+	file_llmsafespaces_abi_v1_action_proto_msgTypes[10].OneofWrappers = []any{
 		(*ActionResult_Interrupt)(nil),
 		(*ActionResult_SwitchModel)(nil),
 		(*ActionResult_SwitchAgent)(nil),
 		(*ActionResult_AnswerQuestion)(nil),
 		(*ActionResult_Compact)(nil),
+		(*ActionResult_CreateSession)(nil),
+		(*ActionResult_Send)(nil),
+		(*ActionResult_DeleteSession)(nil),
+		(*ActionResult_RenameSession)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -900,7 +1430,7 @@ func file_llmsafespaces_abi_v1_action_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_llmsafespaces_abi_v1_action_proto_rawDesc), len(file_llmsafespaces_abi_v1_action_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

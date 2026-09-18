@@ -29,10 +29,12 @@ func TestIssue1410E2EScript_BashSyntax(t *testing.T) {
 	require.NoError(t, err, "bash -n failed: %s", string(out))
 }
 
-// TestIssue1410E2EScript_RowsAndAssertions pins the five rows and their
+// TestIssue1410E2EScript_RowsAndAssertions pins the six rows and their
 // key assertions: create validation + first-occurrence slot (R1),
 // immediate reschedule (R2), no-op-enable slot stability (R3), the loud
-// missing-workflow fire (R4), and run-input schema enforcement (R5).
+// missing-workflow fire (R4), run-input schema enforcement (R5), and
+// trigger input mapping (R6 — envelope-wiring guard, mapped static input,
+// webhook body mode over the rotated HMAC secret).
 func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
@@ -49,15 +51,33 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		// R3 — no-op enable keeps the slot (review guard on #1410).
 		`'{"enabled":true}' >/dev/null`,
 		`R3: no-op enabled:true kept the slot`,
-		// R4 — missing workflow is loud (#1412).
+		// R4 — missing workflow is loud (#1412); R4d — the DELETE route
+		// (FK SET NULL) is loud too (#1440).
 		`GHOST_WF="deadbeef-0000-4000-8000-000000000000"`, // nonexistent DAG target
 		`select(.status=="failed")`,                       // failed fire asserted
-		`*"workflow not found"*`,                          // payload asserted
+		`*"workflow not found"*`,                          // payload asserted (never-existed route)
+		`*"trigger_has_no_target"*`,                       // payload asserted (delete route, #1440)
+		"silent zombie regression",                        // R4d auto-disable assertion present
 		`R4c: consecutiveFailures incremented`,            // failure counter asserted
 		// R5 — run input obeys inputSchema (#1413).
 		`'{"input":{"wrong":true}}' >/dev/null`,    // non-conforming input attempted
 		`R5a: schema-violating run input rejected`, // 400 before queueing asserted
 		`R5b: conforming input passed schema validation`,
+		// R6 — trigger input mapping (#1425/#1419, design 0059).
+		`R6a: envelope-mode wiring to required-topic schema rejected`, // wiring guard row
+		`R6b: mapped input {} rejected`,                               // mapped static input validated (unhappy)
+		`R6b: mapped input {topic:\"nightly\"} accepted`,              // mapped static input validated (happy)
+		`inputFrom:"body"`,                                            // webhook body-mode wiring spelled
+		`inputFrom:"mapped"`,                                          // mapped-mode wiring spelled
+		`/rotate-secret`,                                              // HMAC secret rotation endpoint
+		`X-Hub-Signature-256: sha256=`,                                // deliveries are HMAC-signed
+		`.input.topic == "e2e"`,                                       // payload-as-top-level-run-input asserted
+		`R6c: payload arrived as top-level run input`,                 // body-mode row
+		`select(.status=="validation_error")`,                         // failed-fire status asserted
+		`*"schema_mismatch"*`,                                         // actionResult code asserted (no instance echo)
+		`R6c: violating payload queued no run`,                        // no run on schema mismatch
+		`select(.status=="queued" or .status=="running")`,             // single-inflight drain-wait before each delivery
+		`[[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")`,     // R6b-bad unexpected-success cleanup guard
 		// Cleanup so the nightly owner's trigger list stays clean.
 		`trap cleanup EXIT`,
 	} {

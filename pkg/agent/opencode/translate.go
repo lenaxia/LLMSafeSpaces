@@ -855,6 +855,20 @@ func ParseSessionWire(body []byte, workspaceID string) (*session.Session, error)
 	return &s, nil
 }
 
+// ParseMessageWire is the single-message boundary for the synchronous
+// send response (POST /session/:id/message): bytes in, contract message +
+// changed-file list out. Exported so the agentd actor seam (#1372) and the
+// adapter path share ONE translation — the REST response is identical
+// bytes in both regimes.
+func ParseMessageWire(body []byte) (session.Message, []string, error) {
+	var m ocMessage
+	if err := decodeStrict(bytes.NewReader(body), &m); err != nil {
+		return session.Message{}, nil, fmt.Errorf("opencode message: parse: %w", err)
+	}
+	msg, files := translateMessage(m)
+	return msg, files, nil
+}
+
 // translateV2Message converts one V2-store message (design 0052) into
 // the contract Message. Reuses translatePart's semantics per content
 // item; unknown content types ride the Custom pressure-relief valve

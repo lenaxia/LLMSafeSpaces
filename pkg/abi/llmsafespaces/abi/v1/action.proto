@@ -23,6 +23,10 @@ message ActionRequest {
     SwitchAgentAction switch_agent = 4;
     AnswerInputAction answer_question = 5;
     CompactAction compact = 6;
+    CreateSessionAction create_session = 7;
+    SendAction send = 8;
+    DeleteSessionAction delete_session = 9;
+    RenameSessionAction rename_session = 10;
   }
 }
 
@@ -60,6 +64,29 @@ message AnswerInputAction {
 
 message CompactAction {}
 
+// The sessions-cluster verbs (#1372, S1 completion): the API's five
+// session-write sites ride Act in the authority regime. session_id is
+// unset for create_session (the session does not exist yet — opencode
+// mints the id); send/delete/rename target the request's session_id.
+// All four harness routes are the production adapter path's own V1
+// routes (POST /session, POST /session/:id/message, DELETE
+// /session/:id, PATCH /session/:id) — declared unconditionally in the
+// boot capability report (same confidence class as interrupt).
+message CreateSessionAction {
+  string title = 1;
+}
+
+message SendAction {
+  string text = 1;
+  ModelRef model = 2;
+}
+
+message DeleteSessionAction {}
+
+message RenameSessionAction {
+  string title = 1;
+}
+
 message ActionResult {
   string session_id = 1;
   oneof result {
@@ -68,6 +95,10 @@ message ActionResult {
     SwitchAgentResult switch_agent = 4;
     AnswerInputResult answer_question = 5;
     CompactResult compact = 6;
+    CreateSessionResult create_session = 8;
+    SendResult send = 9;
+    DeleteSessionResult delete_session = 10;
+    RenameSessionResult rename_session = 11;
   }
   // effect_seq is the seq of the event the action produced, when knowable
   // before the response returns (action-result ↔ event causal linkage is a
@@ -90,3 +121,18 @@ message AnswerInputResult {
 }
 
 message CompactResult {}
+
+message CreateSessionResult {
+  Session session = 1;
+}
+
+// SendResult carries the completed assistant message — the synchronous
+// send contract (V1 POST /session/:id/message returns the finished
+// message; the API's REST response is this message verbatim).
+message SendResult {
+  Message message = 1;
+}
+
+message DeleteSessionResult {}
+
+message RenameSessionResult {}

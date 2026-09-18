@@ -55,6 +55,14 @@ func actVerb(m *abiv1.ActionRequest) (abiv1.ActionType, string, bool) {
 		return abiv1.ActionType_ACTION_TYPE_ANSWER_QUESTION, "action.answer_question", true
 	case *abiv1.ActionRequest_Compact:
 		return abiv1.ActionType_ACTION_TYPE_COMPACT, "action.compact", true
+	case *abiv1.ActionRequest_CreateSession:
+		return abiv1.ActionType_ACTION_TYPE_CREATE_SESSION, "action.create_session", true
+	case *abiv1.ActionRequest_Send:
+		return abiv1.ActionType_ACTION_TYPE_SEND, "action.send", true
+	case *abiv1.ActionRequest_DeleteSession:
+		return abiv1.ActionType_ACTION_TYPE_DELETE_SESSION, "action.delete_session", true
+	case *abiv1.ActionRequest_RenameSession:
+		return abiv1.ActionType_ACTION_TYPE_RENAME_SESSION, "action.rename_session", true
 	default:
 		return abiv1.ActionType_ACTION_TYPE_UNSPECIFIED, "action.unknown", false
 	}
@@ -85,23 +93,34 @@ func (a *Authority) act(ctx context.Context, m *abiv1.ActionRequest) (*abiv1.Act
 		return nil, err
 	}
 
-	// Verb classification (#1396, the M1/W4 amendment): ANSWER_QUESTION
-	// forwards target the ask REGISTRY — harness-side ephemeral state
-	// disjoint from the transcript an admission writes. The two write
-	// sets do not overlap, so the answer COMMUTES with any in-flight
-	// admission and executes without the session admission lock (a
-	// user's reply must never queue behind the turn waiting on it).
+	// Verb classification (#1396 M1/W4 amendment + #1372 r2/r4): three
+	// verbs execute OUTSIDE the session single-flight, each with its own
+	// recorded rationale:
+	//
+	//   - answer_question (#1396): forwards target the ask REGISTRY —
+	//     harness-side ephemeral state disjoint from the transcript an
+	//     admission writes; the answer COMMUTES with any in-flight
+	//     admission, and a user's reply must never queue behind the
+	//     turn waiting on it (own forward-budget context).
+	//   - interrupt (#1372 r2): mutates no projected records (I7), and
+	//     its purpose is to preempt the lock HOLDER's in-flight turn —
+	//     queueing it behind that turn would make abort a delayed no-op
+	//     (the flag-off adapter abort stops the live turn within
+	//     seconds, live-verified).
+	//   - send (#1372 r4): the harness itself serializes per-session
+	//     message writes (a busy session blocks incoming messages, B1)
+	//     and S2 (#1315) dedupes admissions at the harness write — the
+	//     single-flight adds no write protection here, and holding it
+	//     across a full LLM turn DEADLOCKS the ask-answer cycle the
+	//     #1396 answer carve-out exists to keep open.
 	if m.GetAnswerQuestion() != nil {
 		return a.actAnswer(ctx, m)
 	}
-
-	// Sole-writer serialization (M1/W4 + the no-exceptions matrix for
-	// transcript verbs): the action holds the session's single-flight
-	// lock across execution — the SAME lock admissions take, so a
-	// delivery in flight and a transcript action can never interleave.
-	lock := a.sessionLock(m.GetSessionId())
-	lock.Lock()
-	defer lock.Unlock()
+	if m.GetInterrupt() == nil && m.GetSend() == nil {
+		lock := a.sessionLock(m.GetSessionId())
+		lock.Lock()
+		defer lock.Unlock()
+	}
 
 	res, err := a.cfg.Actor.Act(ctx, m.GetSessionId(), m)
 	if err != nil {
@@ -245,6 +264,26 @@ func validateAction(m *abiv1.ActionRequest) error {
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question requires option_ids and/or custom_text, or reply"))
 		case ans.GetMessage() != "" && ans.GetReply() == "":
 			return connect.NewError(connect.CodeInvalidArgument, errText("answer_question message requires reply (deny feedback)"))
+		}
+	case *abiv1.ActionRequest_Send:
+		// #1372: the session-scoped sessions verbs require their target;
+		// create_session is exempt (the harness mints the id).
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("send requires session_id"))
+		}
+		if a.Send.GetText() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("send requires text"))
+		}
+	case *abiv1.ActionRequest_DeleteSession:
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("delete_session requires session_id"))
+		}
+	case *abiv1.ActionRequest_RenameSession:
+		if m.GetSessionId() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("rename_session requires session_id"))
+		}
+		if a.RenameSession.GetTitle() == "" {
+			return connect.NewError(connect.CodeInvalidArgument, errText("rename_session requires title"))
 		}
 	}
 	return nil

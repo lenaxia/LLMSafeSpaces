@@ -496,6 +496,21 @@ jobs:
           PORTFWD_PORT: 18090
         run: bash local/epic71-3a-walkaway-e2e.sh
 
+      - name: Run epic71/s1-sessions rows (sessions-cluster writes through Act)
+        if: ${{ always() }}
+        # #1372 (epic-71 / s1-sessions) merge-gate rows: the pool arms
+        # AGENTD_STATE_AUTHORITY, so the platform sessions routes here ARE
+        # the Act path — happy sync send, abort preempting an in-flight
+        # turn, agent-side rename/delete truth, and the pinned unhappy
+        # 502 bodies. SEAM-INERT — runs before the fault seam arms (pin:
+        # epic71_s1_sessions_script_test).
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18091
+        run: bash local/epic71-s1-sessions-act-e2e.sh
+
       - name: Arm fault seam (fresh API process, after the delivery suite)
         # if: always() — r21: without it, any delivery/revisions-leg
         # failure SKIPS the fault leg, structurally starving F6 (zero

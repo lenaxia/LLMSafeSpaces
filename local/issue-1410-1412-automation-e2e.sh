@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Issues #1410/#1411/#1412/#1413 — automation trigger + workflow-run e2e
-# rows for the defects the 2026-09-17 live session proved broken. All rows
-# are API-only (no LLM turns, no workspace pods): the cron/trigger surfaces
-# under test resolve server-side, and the workflow-targeted triggers point
-# at a deliberately nonexistent workflow so no DAG ever executes.
+# Issues #1410/#1411/#1412/#1413/#1425/#1419 — automation trigger +
+# workflow-run e2e rows for the defects the 2026-09-17 live session proved
+# broken. Rows are API-only (no LLM turns, no workspace pods): the
+# cron/trigger surfaces under test resolve server-side. R1-R4 point at a
+# deliberately nonexistent workflow; R5/R6 use a REAL schema-authored
+# workflow whose targetWorkspaceId is the dummy workspace, so runs queue
+# but no pod ever executes a DAG node.
 #
 #   R1 — create validation (#1411): invalid cron expr is rejected with 400
 #        (never stored), and a valid create's nextFireAt is the first real
@@ -21,6 +23,14 @@
 #   R5 — run input obeys inputSchema (#1413): a workflow with a required
 #        field rejects non-conforming run input with 400 BEFORE queueing;
 #        conforming input progresses past schema validation.
+#   R6 — trigger input mapping (#1425/#1419, design 0059): R6a — an
+#        envelope-mode cron trigger wired to a schema-bearing workflow is
+#        rejected with 400 at create; R6b — mapped-mode static input is
+#        schema-validated at create ({} 400s, {topic} 201s); R6c — a
+#        webhook trigger with inputFrom "body" makes the posted payload
+#        the run input (top level), and a violating payload records a
+#        validation_error fire (schema_mismatch, typed violations only)
+#        with NO run — signed HMAC delivery on the rotated secret.
 #
 # Environment: same conventions as local/issue-1342-graceful-restart-e2e.sh
 # (see local/lib/us70-common.sh). Runs on the pool/nightly kind cluster.
@@ -154,6 +164,40 @@ else
     note_fail "R4c: consecutiveFailures not incremented: '${r4_cf}'"
 fi
 
+# R4d — the DELETE route (#1440): deleting an EXISTING target workflow
+# SET NULLs the trigger's workflow_id (migration 000020 FK), so the
+# scheduler sees a targetless row — which must ALSO fail loudly
+# (trigger_has_no_target) and auto-disable, not tick silently.
+R4D_WF=$(api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')")
+[[ "${api_status}" == "201" ]] || die "R4d setup: workflow create failed: ${api_status} ${R4D_WF}"
+R4D_WF_ID=$(printf '%s' "${R4D_WF}" | jq -r '.id')
+created_workflows+=("${R4D_WF_ID}")
+R4D_BODY=$(jq -nc --arg w "${R4D_WF_ID}"   '{name:"e2e-r4d-ghost",sourceType:"cron",sourceConfig:{expr:"* * * * *",tz:"UTC"},workflowId:$w,autoDisableAfter:2}')
+R4D_RESP=$(api POST /api/v1/me/triggers "${R4D_BODY}")
+[[ "${api_status}" == "201" ]] || die "R4d setup: trigger create failed: ${api_status} ${R4D_RESP}"
+R4D_ID=$(printf '%s' "${R4D_RESP}" | jq -r '.id')
+created_triggers+=("${R4D_ID}")
+api DELETE "/api/v1/me/workflows/${R4D_WF_ID}" >/dev/null   # FK SET NULL -> targetless
+r4d_status=""
+for ((i = 0; i < R4_WAIT_S; i += 10)); do
+    r4d_status=$(trigger_field "${R4D_ID}" enabled)
+    [[ "${r4d_status}" == "false" ]] && break
+    sleep 10
+done
+if [[ "${r4d_status}" == "false" ]]; then
+    ok "R4d: targetless trigger auto-disabled after workflow delete"
+else
+    note_fail "R4d: targetless trigger still enabled — silent zombie regression (#1440)"
+fi
+r4d_result=$(api GET "/api/v1/me/triggers/${R4D_ID}/fires"     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
+if [[ "${r4d_result}" == *"trigger_has_no_target"* ]]; then
+    ok "R4d: failed fire carries the targetless payload"
+else
+    note_fail "R4d: targetless payload wrong: '${r4d_result}'"
+fi
+
 # --- R5: run input obeys inputSchema (#1413) ------------------------------
 
 R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",
@@ -183,9 +227,179 @@ else
     fi
 fi
 
+# --- R6: trigger input mapping (#1425/#1419, design 0059) ------------------
+
+# R6 reuses the R5 schema workflow (required `topic`); if R5's create
+# failed, stand one up standalone so the input-mapping rows still run.
+R6_WF="${R5_ID:-}"
+if [[ -z "${R6_WF}" ]]; then
+    r6_wf_resp=$(api POST /api/v1/me/workflows "${R5_BODY}")
+    if [[ "${api_status}" == "201" ]]; then
+        R6_WF=$(printf '%s' "${r6_wf_resp}" | jq -r '.id')
+        created_workflows+=("${R6_WF}")
+    fi
+fi
+if [[ -z "${R6_WF}" ]]; then
+    note_fail "R6 setup: no schema workflow available (R5 create failed)"
+else
+    # R6a — wiring guard: envelope-mode cron wiring (no input, no
+    # inputFrom) to a workflow whose schema requires non-envelope fields
+    # is rejected with 400 at create.
+    r6a_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6a-guard",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w}')")
+    r6a_id=$(printf '%s' "${r6a_resp}" | jq -r '.id // empty')
+    [[ -n "${r6a_id}" ]] && created_triggers+=("${r6a_id}")
+    if [[ "${api_status}" == "400" ]]; then
+        ok "R6a: envelope-mode wiring to required-topic schema rejected (400)"
+    else
+        note_fail "R6a: envelope wiring returned ${api_status}, expected 400 (${r6a_resp})"
+    fi
+
+    # R6b — mapped-mode static input is schema-validated at create.
+    r6b_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6b-mapped-bad",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{}}')")
+    r6b_id=$(printf '%s' "${r6b_resp}" | jq -r '.id // empty')
+    [[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")
+    if [[ "${api_status}" == "400" ]]; then
+        ok "R6b: mapped input {} rejected (400, missing topic)"
+    else
+        note_fail "R6b: mapped input {} returned ${api_status}, expected 400 (${r6b_resp})"
+    fi
+    r6b_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6b-mapped-ok",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{topic:"nightly"}}')")
+    if [[ "${api_status}" == "201" ]]; then
+        ok "R6b: mapped input {topic:\"nightly\"} accepted (201)"
+        created_triggers+=("$(printf '%s' "${r6b_resp}" | jq -r '.id')")
+    else
+        note_fail "R6b: mapped conforming input returned ${api_status}, expected 201 (${r6b_resp})"
+    fi
+
+    # R6c — webhook body mode: inputFrom "body" makes the posted payload
+    # the run input (top level), schema-validated at fire time.
+    r6c_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6c-body",sourceType:"webhook",sourceConfig:{},workflowId:$w,inputFrom:"body"}')")
+    if [[ "${api_status}" != "201" ]]; then
+        note_fail "R6c setup: webhook trigger create failed: ${api_status} ${r6c_resp}"
+    else
+        R6_HOOK=$(printf '%s' "${r6c_resp}" | jq -r '.trigger.id')
+        created_triggers+=("${R6_HOOK}")
+        r6c_rot=$(api POST "/api/v1/me/triggers/${R6_HOOK}/rotate-secret")
+        R6_SECRET=$(printf '%s' "${r6c_rot}" | jq -r '.webhookSecret // empty')
+        R6_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r6c_rot}" | jq -r '.webhookUrl // empty')"
+        if [[ -n "${R6_SECRET}" && "${R6_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
+            ok "R6c: rotate-secret returned webhookSecret + webhookUrl"
+        else
+            note_fail "R6c: rotate-secret failed: ${api_status} ${r6c_rot}"
+        fi
+
+        r6_hook_post() { # body -> http code (HMAC-signed POST to the hook URL)
+            local body="$1"
+            curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+                -H "Content-Type: application/json" \
+                -H "X-Hub-Signature-256: sha256=$(printf '%s' "${body}" \
+                    | openssl dgst -sha256 -hmac "${R6_SECRET}" | awk '{print $NF}')" \
+                -d "${body}" "${R6_HOOK_URL}"
+        }
+
+        # uq_workflow_run_single_inflight: a delivery while the workflow
+        # has a queued/running run 409s with a skipped fire. Wait for the
+        # slot to drain (the scheduler tick claims dummy-workspace runs
+        # and fast-fails them within ~10s) before EACH signed delivery.
+        r6_wait_slot() { # -> 0 once R6_WF has no queued/running run
+            local i
+            for i in $(seq 1 30); do
+                if [[ "$(api GET "/api/v1/me/workflows/${R6_WF}/runs" \
+                    | jq '[.runs[] | select(.status=="queued" or .status=="running")] | length')" -eq 0 ]]; then
+                    return 0
+                fi
+                sleep 2
+            done
+            return 1
+        }
+
+        if [[ -n "${R6_SECRET}" && "${R6_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
+            if r6_wait_slot; then
+                ok "R6c: inflight slot drained before the conforming delivery"
+            else
+                note_fail "R6c: workflow inflight slot never drained (R5b run stuck)"
+            fi
+            r6c_code=$(r6_hook_post '{"topic":"e2e"}')
+            if [[ "${r6c_code}" == "202" ]]; then
+                ok "R6c: signed conforming payload accepted (202)"
+            else
+                note_fail "R6c: signed conforming payload returned ${r6c_code}, expected 202"
+            fi
+
+            # Fire recorded + run queued with the PAYLOAD as the run input.
+            r6_input=0
+            for _ in $(seq 1 15); do
+                sleep 2
+                if [[ "$(api GET "/api/v1/me/workflows/${R6_WF}/runs" \
+                    | jq --arg t "${R6_HOOK}" '[.runs[] | select(.triggerId == $t and .input.topic == "e2e")] | length')" -ge 1 ]]; then
+                    r6_input=1; break
+                fi
+            done
+            if [[ "${r6_input}" -eq 1 ]]; then
+                ok "R6c: payload arrived as top-level run input (input.topic == \"e2e\")"
+            else
+                note_fail "R6c: no queued run with input.topic == \"e2e\" (payload not mapped to the run input)"
+            fi
+            if [[ "$(api GET "/api/v1/me/triggers/${R6_HOOK}/fires" \
+                | jq '[.fires[] | select(.status=="fired")] | length')" -ge 1 ]]; then
+                ok "R6c: signed delivery recorded a fired fire"
+            else
+                note_fail "R6c: no fired fire recorded for the signed delivery"
+            fi
+
+            # Violating payload → 202 + validation_error fire with typed
+            # violations only (no instance echo), and NO run queued.
+            # Drain again first: the conforming delivery's own run holds
+            # the single-inflight slot until the tick fast-fails it.
+            if r6_wait_slot; then
+                ok "R6c: inflight slot drained before the violating delivery"
+            else
+                note_fail "R6c: inflight slot never drained after the conforming delivery"
+            fi
+            r6c_code=$(r6_hook_post '{"wrong":true}')
+            if [[ "${r6c_code}" == "202" ]]; then
+                ok "R6c: signed violating payload answered 202 (delivery vs input-contract split)"
+            else
+                note_fail "R6c: signed violating payload returned ${r6c_code}, expected 202"
+            fi
+            r6_ve=0
+            for _ in $(seq 1 15); do
+                sleep 2
+                if [[ "$(api GET "/api/v1/me/triggers/${R6_HOOK}/fires" \
+                    | jq '[.fires[] | select(.status=="validation_error")] | length')" -ge 1 ]]; then
+                    r6_ve=1; break
+                fi
+            done
+            if [[ "${r6_ve}" -ne 1 ]]; then
+                note_fail "R6c: no validation_error fire within 30s for the violating payload"
+            else
+                ok "R6c: validation_error fire recorded for the violating payload"
+                r6_ar=$(api GET "/api/v1/me/triggers/${R6_HOOK}/fires" \
+                    | jq -c '.fires[] | select(.status=="validation_error") | .actionResult' | head -1)
+                if [[ "${r6_ar}" == *"schema_mismatch"* && "${r6_ar}" != *"wrong"* ]]; then
+                    ok "R6c: validation_error actionResult carries schema_mismatch with no instance echo"
+                else
+                    note_fail "R6c: validation_error actionResult wrong: '${r6_ar}'"
+                fi
+            fi
+            r6_count=$(api GET "/api/v1/me/workflows/${R6_WF}/runs" \
+                | jq --arg t "${R6_HOOK}" '[.runs[] | select(.triggerId == $t)] | length')
+            if [[ "${r6_count}" == "1" ]]; then
+                ok "R6c: violating payload queued no run (1 hook-triggered run total)"
+            else
+                note_fail "R6c: expected 1 hook-triggered run after both deliveries, found ${r6_count}"
+            fi
+        fi
+    fi
+fi
+
 # --- verdict ---------------------------------------------------------------
 
 if [[ "${failures}" -ne 0 ]]; then
     die "automation e2e: ${failures} row(s) failed"
 fi
-ok "automation e2e: all rows passed (R1-R5)"
+ok "automation e2e: all rows passed (R1-R6)"

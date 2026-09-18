@@ -361,6 +361,19 @@ jobs:
           R4_WAIT_S: 150
         run: bash local/issue-1410-1412-automation-e2e.sh
 
+      - name: Run templating e2e rows (#1417)
+        # Agent-prompt dotted-path rendering: a workflow run with
+        # {{.body.topic}} + {{.missing.path}} executes against an
+        # in-cluster echo-upstream; the run output must carry the
+        # rendered value (T1) and the literal ref (T2).
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18086
+          RUN_WAIT_S: 300
+        run: bash local/issue-1417-templating-e2e.sh
+
       - name: Run revisions e2e rows (Epic 70 US-70.2 REV-0..REV-4)
         # Two-tier-revision acceptance rows: v2 contract feature-detect
         # (REV-0 — loud-skips ALL rows when the deployed API predates the

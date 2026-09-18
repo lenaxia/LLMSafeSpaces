@@ -14,9 +14,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +41,10 @@ type triggerStore interface {
 	GetWebhookByTriggerID(ctx context.Context, triggerID string) (*wf.WebhookRow, error)
 	UpdateWebhookSecret(ctx context.Context, triggerID string, secretCipher []byte, keyVersion int) error
 	ListTriggerFires(ctx context.Context, triggerID string, limit, offset int) ([]*wf.TriggerFireRow, error)
+	// GetWorkflow is the owner-scoped workflow lookup the input-mapping
+	// rules (0059 V3/V4/V6) validate the target's inputSchema against —
+	// the same store method pod automation's gateWorkflowTarget uses.
+	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
 }
 
 // triggerEncryptor encrypts/decrypts webhook HMAC secrets using the server KEK.
@@ -194,6 +200,12 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		return
 	}
 
+	// Input mapping (0059): V1–V6 on the create view.
+	inputFrom := wf.NormalizeTriggerInputFrom(req.InputFrom)
+	if !h.validateTriggerInputMapping(c, ownerType, ownerID, req.SourceType, req.WorkflowID, inputFrom, req.Input) {
+		return
+	}
+
 	effectiveMemoryMode := req.MemoryMode
 	if effectiveMemoryMode == "" {
 		effectiveMemoryMode = types.MemoryNone
@@ -239,6 +251,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		Name: req.Name, Description: req.Description, Enabled: enabled,
 		SourceType: req.SourceType, SourceConfig: req.SourceConfig,
 		WorkspaceID: wsID, WorkflowID: wfID,
+		InputFrom: inputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
 		MemoryMode: memoryMode, MemoryMaxRuns: memoryMaxRuns,
@@ -346,6 +359,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 		Name: req.Name, Description: req.Description, Enabled: req.Enabled,
 		SourceConfig: req.SourceConfig,
 		WorkspaceID:  req.WorkspaceID, WorkflowID: req.WorkflowID,
+		InputFrom: req.InputFrom, Input: req.Input,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
 		MemoryMode: req.MemoryMode, MemoryMaxRuns: req.MemoryMaxRuns,
@@ -379,9 +393,15 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	// the new config. Also recompute on re-enable when the stored slot is
 	// already in the past, so a long-disabled trigger resumes on the next
 	// future occurrence instead of emitting a backdated skip.
+	//
+	// The same stored row feeds the input-mapping re-validation below
+	// (V7 needs the post-patch merged view).
+	touchesMapping := req.WorkflowID != nil || req.InputFrom != nil || req.Input != nil
+	var existing *wf.TriggerRow
 	now := time.Now().UTC()
-	if req.SourceConfig != nil || req.Enabled != nil {
-		existing, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
+	if req.SourceConfig != nil || req.Enabled != nil || touchesMapping {
+		var err error
+		existing, err = h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 		if err != nil {
 			if errors.Is(err, wf.ErrNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
@@ -418,6 +438,35 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 		}
 	}
 
+	// Input mapping (0059 V7): only patches that touch workflowId, input,
+	// or inputFrom re-run the wiring/mapping rules — against the POST-PATCH
+	// merged view. Patches that remove an opt-in (input → null, inputFrom →
+	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
+	// or schedule change re-runs nothing.
+	if touchesMapping {
+		mergedWorkflowID := ""
+		if existing.WorkflowID != nil {
+			mergedWorkflowID = *existing.WorkflowID
+		}
+		if req.WorkflowID != nil {
+			mergedWorkflowID = *req.WorkflowID
+		}
+		mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
+		if req.InputFrom != nil {
+			mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
+		}
+		mergedInput := existing.Input
+		if req.Input != nil {
+			// Present key (including JSON null, which clears the static
+			// document) replaces; absent key keeps — discriminated here so
+			// the store keeps its plain CASE WHEN NULL THEN keep shape.
+			mergedInput = req.Input
+		}
+		if !h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput) {
+			return
+		}
+	}
+
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
@@ -441,6 +490,119 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID string) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// --- Input mapping validation (design 0059 §3.3, rules V1–V7) ---
+
+// validateTriggerInputMapping enforces the input-mapping rules on ONE
+// (sourceType, workflowID, inputFrom, input) view: the create request
+// directly, or the post-patch merged view on update (V7). It runs inside
+// create/update and therefore also covers the pod-automation delegation,
+// which forwards through these handlers. Writes the failure response
+// itself; returns true when the view passes.
+//
+//	V1  input mapping (static input, or inputFrom beyond the envelope
+//	    default) requires a workflow target — routine triggers keep the
+//	    envelope-fed {{.input}} prompt contract.
+//	V2  inputFrom "body" requires a webhook source (cron envelopes carry
+//	    no body key).
+//	V3  an opted-in wiring must be able to reach its schema: a missing
+//	    target workflow cannot be validated (distinct from #1412's
+//	    fire-time ghost, which stays loud for un-opted wiring).
+//	V4  inputFrom "mapped": the static document must satisfy the
+//	    workflow's inputSchema (absent schema accepts everything).
+//	V5  envelope/body + static input: the static document must be a JSON
+//	    object (it overlays an object base).
+//	V6  un-opted NEW wiring against a schema whose top-level `required`
+//	    names properties beyond the source's envelope key set is rejected
+//	    with the three remedies — the narrowed O1 guard (D4). Legacy
+//	    triggers are never re-scanned; a missing workflow skips the guard
+//	    (nothing to require — the #1412 R4 ghost fixture stays creatable).
+func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType, ownerID, sourceType, workflowID, inputFrom string, input json.RawMessage) bool {
+	if !types.ValidTriggerInputFrom(inputFrom) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid inputFrom (want envelope, body, or mapped)"})
+		return false
+	}
+	staticPresent := wf.StaticInputPresent(input)
+	if staticPresent && len(input) > types.MaxTriggerStaticInputBytes {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input exceeds the %d-byte static-input cap", types.MaxTriggerStaticInputBytes)})
+		return false
+	}
+	// V5: the overlay merges into an object base, so it must be one.
+	if staticPresent && inputFrom != types.TriggerInputFromMapped && !isJSONDocumentObject(input) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "static input must be a JSON object in envelope/body modes"})
+		return false
+	}
+	optedIn := staticPresent || inputFrom != types.TriggerInputFromEnvelope
+
+	// V1.
+	if optedIn && workflowID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "input mapping requires a workflow target"})
+		return false
+	}
+	// V2.
+	if inputFrom == types.TriggerInputFromBody && sourceType != types.TriggerSourceWebhook {
+		c.JSON(http.StatusBadRequest, gin.H{"error": `inputFrom "body" requires a webhook source`})
+		return false
+	}
+	if workflowID == "" {
+		return true // routine target — no schema to check against
+	}
+
+	// V3/V6: owner-scoped fetch, exactly as pod automation's
+	// gateWorkflowTarget does. Opted-in wiring must reach its schema;
+	// un-opted wiring only consults it for the V6 guard, so a missing
+	// (ghost) workflow skips the guard.
+	wfRow, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, workflowID)
+	if err != nil {
+		if optedIn {
+			if errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+				return false
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+			return false
+		}
+		if errors.Is(err, wf.ErrNotFound) {
+			return true // ghost workflow: guard skipped, fire stays loud (#1412 R4)
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
+		return false
+	}
+
+	// V4: the static document IS the run input in mapped mode — it must
+	// satisfy the schema now (fire-time validation is the steady-state
+	// backstop for later drift).
+	if inputFrom == types.TriggerInputFromMapped {
+		validateDoc := input
+		if !staticPresent {
+			validateDoc = nil
+		}
+		if verr := wf.ValidateRunInput(wfRow.InputSchema, validateDoc); verr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("input does not satisfy the workflow's inputSchema: %v", verr)})
+			return false
+		}
+		return true
+	}
+
+	// V6: new un-opted wiring whose schema requires properties the
+	// envelope never provides is the #1425 mis-wiring — make it loud at
+	// create with the three remedies (D4).
+	if !optedIn {
+		if missing := wf.RequiredNonEnvelopeProperties(wfRow.InputSchema, sourceType); len(missing) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf(
+				"workflow inputSchema requires %s, which the %s envelope never provides: set \"input\", use inputFrom \"body\" (webhook), or relax the workflow's inputSchema",
+				strings.Join(missing, ", "), sourceType)})
+			return false
+		}
+	}
+	return true
+}
+
+// isJSONDocumentObject reports whether raw is a JSON object.
+func isJSONDocumentObject(raw json.RawMessage) bool {
+	var head map[string]json.RawMessage
+	return json.Unmarshal(raw, &head) == nil
 }
 
 // --- quota ---
@@ -525,6 +687,11 @@ func triggerRowToResponse(r *wf.TriggerRow) types.TriggerResponse {
 	if r.WorkflowID != nil {
 		resp.WorkflowID = *r.WorkflowID
 	}
+	// Input mapping (0059): always report the effective mode — legacy
+	// rows read as envelope via the column default (and pre-migration
+	// in-memory rows normalize the same way).
+	resp.InputFrom = wf.NormalizeTriggerInputFrom(r.InputFrom)
+	resp.Input = r.Input
 	return resp
 }
 
