@@ -715,14 +715,16 @@ EOF
             fail S5.7g2 "identity-mode setup: ${GVID_SETUP:-<no output>}"
           fi
           GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; podman run --rm --userns=host docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
           if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
-            pass S5.7h "identity-mode nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
+            pass S5.7h "host-userns nested container ran UNDER gVisor — no nested userns, no uid_map write, nesting inside the strongest isolation tier works"
           else
-            fail S5.7h "identity-mode nested run under runsc failed: ${GRUN_OUT:-<no output>}"
+            fail S5.7h "host-userns nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
+          # busybox httpd on :8080 (high port — host-userns nested processes
+          # are uid 1000, no CAP_NET_BIND_SERVICE for :80) instead of nginx.
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n    userns: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1' || true)
           if [ "$GCOMPOSE_RC" = "200" ]; then
             pass S5.7i "identity-mode podman-compose service up under gVisor, served HTTP 200, torn down"
           else
