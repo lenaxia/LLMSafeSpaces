@@ -117,12 +117,14 @@ func lintDockerfileContent(content string) []string {
 	for lineNum, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// `# syntax=<image ref>` — a registry fetch, same pin bar as FROM.
-		// Matched per BuildKit's directive grammar (r2 review finding 1):
-		// '#' prefix, any leading whitespace (space/tab), lowercase name,
-		// optional padding around '=' — so `#syntax=…` and `#\tsyntax=…`
-		// cannot bypass the bar. A non-lowercase `#SYNTAX=` is NOT a
-		// build-honored directive (BuildKit matches lowercase) and is
-		// treated as a plain comment.
+		// Matched per BuildKit's directive grammar (r2/r3 review findings):
+		// '#' prefix, any leading whitespace (space/tab), `=`-padded value —
+		// and the key is case-INSENSITIVE because BuildKit lowercases it
+		// before validating (`k := strings.ToLower(...)` in
+		// frontend/dockerfile/parser/directives.go), so `#SYNTAX=` is
+		// build-honored too. The lint scans ALL lines (BuildKit stops
+		// directive parsing at the first instruction) — deliberate
+		// over-enforcement in the safe direction.
 		if ref, isDirective := buildkitSyntaxDirective(trimmed); isDirective {
 			if !pinnedImageRef(ref) {
 				findings = append(findings, fmt.Sprintf("%d: syntax directive %q is not digest-pinned", lineNum+1, ref))
@@ -170,14 +172,16 @@ func pinnedImageRef(ref string) bool {
 var buildkitDirectiveRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
 
 // buildkitSyntaxDirective reports whether line is a build-honored
-// `syntax` directive and returns its image reference.
+// `syntax` directive and returns its image reference. The key is
+// compared case-insensitively: BuildKit lowercases the captured name
+// before matching ("SYNTAX", "Syntax", … are all honored).
 func buildkitSyntaxDirective(line string) (ref string, ok bool) {
 	if !strings.HasPrefix(line, "#") {
 		return "", false
 	}
 	rest := strings.TrimLeftFunc(line[1:], unicode.IsSpace)
 	m := buildkitDirectiveRe.FindStringSubmatch(rest)
-	if m == nil || m[1] != "syntax" {
+	if m == nil || !strings.EqualFold(m[1], "syntax") {
 		return "", false
 	}
 	return m[2], true
@@ -346,11 +350,6 @@ func TestLintDockerfileContent(t *testing.T) {
 		{
 			name:    "unspaced digest-pinned #syntax= directive is clean",
 			content: "#syntax=docker/dockerfile:1.8@sha256:" + d64 + "\nFROM golang:1.26@sha256:" + d64 + "\n",
-			want:    0,
-		},
-		{
-			name:    "#SYNTAX= is NOT a build-honored directive (BuildKit matches lowercase) — plain comment",
-			content: "#SYNTAX=docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
 			want:    0,
 		},
 		{

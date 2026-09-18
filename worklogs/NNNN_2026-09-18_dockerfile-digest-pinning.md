@@ -75,6 +75,13 @@ r2 confirmed: r1 hard gates closed, issue #1330 **fully addressed** (all digests
 
 CI note (r2 run): "Frontend (unit + typecheck + e2e)" and "Test (full suite, race detector)" went red once on unrelated flakes — Composer-attachments Playwright spec (146 passed/1 failed/1 flaky; zero frontend source in this diff) and pre-existing `TestRelayRearm_PreKillDeferredCheck_SkipsRelayKill` agentd timing flake (COORDINATE #1312 class). `gh run rerun --failed` → full CI green; the r2 reviewer independently attributed both to flakes, not this PR.
 
+### Review r3 on PR #1447 (REQUEST_CHANGES) — closed in r4
+
+r3 verified all r2 findings closed (digests re-resolved a third time, byte-exact; red-first chain re-executed; 0 directives repo-wide; merge-safety vs main re-validated — the skeptical pass's "would revert #1446/#1442" blocker was refuted as a two-dot-diff artifact, `merge-tree` 0 conflicts). One new gating finding, fixed in r4:
+
+- **Gating — `#SYNTAX=` IS build-honored.** BuildKit's directive parser lowercases the captured key (`k := strings.ToLower(...)` in frontend/dockerfile/parser/directives.go, verified by the reviewer on master + v0.12.0) before matching `syntax` — so `#SYNTAX=docker/dockerfile:1.7` fetches the frontend from docker.io, while the r3 matcher treated it as a plain comment AND a table case enshrined that wrong expectation. **Correction (append-only): the r3-closure note above claiming "#SYNTAX= stays a plain comment (BuildKit matches lowercase)" was WRONG.** Fixed: key compared case-insensitively (`strings.EqualFold`), the case flipped to want:1 (committed red-first at 93dd18e2), comments corrected, and a lock-in case added for the deliberate all-lines directive superset (BuildKit stops directive parsing at the first instruction; the lint scans every line — over-enforcement in the safe direction).
+- Non-gating, noted: branch behind main by a few commits — merge-tree clean; orchestrator merges, current-CI-signal refresh optional.
+
 ---
 
 ## Key Decisions
