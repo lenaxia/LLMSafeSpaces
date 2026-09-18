@@ -1205,6 +1205,7 @@ func (s *StoreIntegrationSuite) TestWorkflowDeleteNullsTriggerTarget() {
 	require.NoError(s.T(), s.store.CreateWorkflow(ctx, &WorkflowRow{
 		ID: wfID, OwnerType: "user", OwnerID: "u1",
 		Name: "fk-probe", Slug: "fk-probe", Status: "draft",
+		SpecJSON:  json.RawMessage("{}"),
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
