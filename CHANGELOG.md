@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.1] - 2026-09-18
+
+### Fixes — scheduler
+
+- **Targetless triggers fail loudly (#1440, PR #1443)**: deleting a
+  workflow SET NULLs the referencing trigger's target (FK, migration
+  000020) — the trigger then ticked silently forever: no fire rows, no
+  failure count, no auto-disable, and the loud missing-workflow path
+  was unreachable for real deletes. The nil-target guard now records a
+  FAILED fire (`trigger_has_no_target`), increments
+  `consecutiveFailures`, and honors `autoDisableAfter` — route-agnostic
+  (covers the FK route and the #1442 create-anomaly consequence).
+  Store integration test pins the FK semantics; nightly R4d covers the
+  delete route end to end.
+
 ## [0.34.0] - 2026-09-18
 
 ### Features — automation (design 0059: trigger input mapping)
