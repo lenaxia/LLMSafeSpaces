@@ -913,27 +913,49 @@ func TestStaging_AllDeletesFailedMessageHonest(t *testing.T) {
 		"no envelope was deleted — the message must not say one was")
 }
 
-// TestStaging_MessageOnlyConditionChangePersists (review r5 finding 2):
-// the condition dirty-signature carries the MESSAGE — a reason-preserving
-// message-only change (the INCOMPLETE → healed revocation wording) must
-// persist a status write instead of leaving stale wording on the API
-// server for an extra pass.
+// TestStaging_MessageOnlyConditionChangePersists (review r5 finding 2,
+// repaired r7): the condition dirty-signature carries the MESSAGE — a
+// SAME-status/SAME-reason message-only change must persist a status
+// write. The scenario is the revocation INCOMPLETE → healed transition:
+// the failed-delete pass sets ReasonStaleRevoked with the RETAINED
+// wording; the healed pass keeps ReasonStaleRevoked but the message
+// becomes the "envelope deleted (D2)" wording. Without the message in the
+// signature the stored condition would keep the INCOMPLETE wording for an
+// extra pass.
 func TestStaging_MessageOnlyConditionChangePersists(t *testing.T) {
 	pubSec, _ := makePubSecret(t, 1)
 	ws := makeRelayWorkspace("ws-msg")
 	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
 	r := stagingReconciler(t, src, &fakeRouterClient{}, nil, pubSec, ws)
 	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
-	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{SpawnedRev: ws.Annotations[relayStagedRevisionAnnotation], DegradedReason: "token_expired"}
-	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
-	stale := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
-	require.NotNil(t, stale)
-	require.Equal(t, v1.ReasonStaleTokenExpired, stale.Reason)
 
-	// Same status+reason, DIFFERENT message (the degrade detail changes):
-	// the stored condition must move to the new message in THIS pass.
-	ws.Status.SecretsDelivery.DegradedReason = "token_expired_renewal_failed"
+	// Pass 2 — unbind with a FAILING delete: ReasonStaleRevoked with the
+	// INCOMPLETE/RETAINED wording.
+	src.mu.Lock()
+	src.providers = nil
+	src.mu.Unlock()
+	original := r.Client
+	r.Client = deleteFailingClient{Client: original, ns: relayTestNamespace}
+	require.Error(t, r.reconcileRelayStaging(context.Background(), ws))
+	first := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, first)
+	require.Equal(t, v1.ReasonStaleRevoked, first.Reason)
+	require.Contains(t, first.Message, "INCOMPLETE")
+
+	// Pass 3 — the delete heals: SAME status, SAME reason, message-only
+	// change (INCOMPLETE/RETAINED → "envelope deleted (D2)").
+	r.Client = original
 	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	healed := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, healed)
+	require.Equal(t, "True", healed.Status)
+	require.Equal(t, v1.ReasonStaleRevoked, healed.Reason, "the reason must NOT change between the passes — this is a message-only pin")
+	require.Contains(t, healed.Message, "envelope deleted (D2)")
+	require.NotContains(t, healed.Message, "INCOMPLETE")
+
+	// The STORED condition must carry the healed message in THIS pass (a
+	// signature without the message would skip the write and leave the
+	// INCOMPLETE wording on the API server).
 	stored := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-msg", Namespace: "default"}, stored))
 	var got *v1.WorkspaceCondition
@@ -942,7 +964,7 @@ func TestStaging_MessageOnlyConditionChangePersists(t *testing.T) {
 			got = &stored.Status.Conditions[i]
 		}
 	}
-	require.NotNil(t, got, "the stale condition must be persisted at all")
-	assert.Equal(t, "staged material not applied by the running pod: token_expired_renewal_failed (a wait or fault rotation cannot repair)", got.Message,
-		"a message-only change must persist")
+	require.NotNil(t, got)
+	assert.Equal(t, healed.Message, got.Message,
+		"a same-status/same-reason message-only change must persist")
 }
