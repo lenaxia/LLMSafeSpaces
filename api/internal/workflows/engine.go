@@ -144,16 +144,26 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 
 // retryableAgentdFailure reports whether the agentd outcome is the
 // transient-upstream shape worth retrying: agentd transport errors for
-// 5xx ("agentd node execute returned 5xx") or agentd's script_failed
-// wrapping an opencode 5xx ("opencode returned 5xx" — provider blips).
-// Deterministic failures (node validation, unsupported language, 4xx)
-// return false — retrying those is wasted budget.
+// 500/502/503 ("agentd node execute returned NNN") or agentd's
+// script_failed wrapping an opencode 500/502/503 (provider blips).
+// TIMEOUTS (504 / agentd's script_timeout) are deliberately OUT: each
+// attempt runs in a fresh session, so retrying a timeout risks double
+// execution of a turn that may still complete in the background, and a
+// 10m-timeout retry would triple the scheduler's worst-case per-fire
+// latency. Deterministic failures (validation, unsupported language,
+// 4xx) are never retried.
 func retryableAgentdFailure(err error, resp *NodeExecResponse) bool {
 	if err != nil {
-		return strings.Contains(err.Error(), "returned 5")
+		return strings.Contains(err.Error(), "returned 500") ||
+			strings.Contains(err.Error(), "returned 502") ||
+			strings.Contains(err.Error(), "returned 503")
 	}
-	return resp != nil && resp.ErrorCode == "script_failed" &&
-		strings.Contains(resp.Detail, "opencode returned 5")
+	if resp == nil || resp.ErrorCode != "script_failed" {
+		return false
+	}
+	return strings.Contains(resp.Detail, "opencode returned 500") ||
+		strings.Contains(resp.Detail, "opencode returned 502") ||
+		strings.Contains(resp.Detail, "opencode returned 503")
 }
 
 // --- WorkspaceActivator interface ---

@@ -1959,3 +1959,35 @@ func TestExecuteWithRetry_TransportShapes(t *testing.T) {
 	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{})
 	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
 }
+
+// Timeouts (504) are OUT of the retry class: fresh-session retries of a
+// timed-out turn risk double execution, and a 10m-timeout retry would
+// triple the scheduler's worst-case per-fire latency.
+func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 504: gateway timeout")},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex.calls, "504 transport not retried")
+
+	ex2 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out"}},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex2.calls, "agentd script_timeout not retried")
+
+	ex3 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 504"}},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
+}
