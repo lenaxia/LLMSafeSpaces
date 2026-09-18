@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.3] - 2026-09-18
+
+### Fixes — routine fire resilience
+
+- **Bounded retry on transient upstream 5xx (#1441 failure half, PR
+  #1451)**: routine agent calls retry transient model-provider blips
+  (agentd transport / opencode 500-502-503) up to three attempts with
+  linear backoff — a single blip previously failed the fire and burned
+  auto-disable budget. TIMEOUTS are deliberately excluded (fresh-session
+  retries risk double execution; 10m-timeout retries would triple the
+  scheduler worst case); exhausted retries fail the fire burning exactly
+  ONE budget unit. Follow-up ledger: #1452-#1458 (session-listing
+  surface, prompt growth, session-create retry leg, pre-script retry
+  leg, lifecycle consolidation, interpreter environment).
+
 ## [0.34.2] - 2026-09-18
 
 ### Fixes — fire observability + security
