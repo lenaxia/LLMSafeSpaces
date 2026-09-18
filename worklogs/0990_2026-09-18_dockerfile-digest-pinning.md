@@ -159,5 +159,5 @@ None.
 - `pkg/repolint/dockerfile_digest_pin_test.go` (new)
 - `renovate.json` (docker base-images rule: +digest updateType)
 - `README-LLM.md` (line 787 posture row)
-- `worklogs/NNNN_2026-09-18_dockerfile-digest-pinning.md` (this file)
+- `worklogs/0990_2026-09-18_dockerfile-digest-pinning.md` (this file)
 - `COORDINATE.md` (claim → DONE)
