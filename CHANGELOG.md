@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.2] - 2026-09-18
+
+### Fixes — agent prompts
+
+- **Dotted-path agent-prompt templating (#1417, PR #1430)**:
+  `{{.body.topic}}` resolves through nested maps — parity with
+  condition-node expression depth; webhook-driven prompts address the
+  payload directly instead of inlining `{{.body}}`. Single-pass
+  rendering: substituted values are never re-expanded (payload fields
+  cannot smuggle refs into the prompt), unclosed refs never swallow
+  valid ones (cross-newline or same-line), unresolvable refs stay
+  literal. Back-compat preserved: any-charset top-level keys and flat
+  dotted keys keep their pre-change rendering. Documented on the
+  workflow_create tool surface; a registered nightly e2e (echo-upstream
+  rows, happy + unhappy) pins it end to end.
+
 ## [0.33.1] - 2026-09-17
 
 ### Fixes — workflows
