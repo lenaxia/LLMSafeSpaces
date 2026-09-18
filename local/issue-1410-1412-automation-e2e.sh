@@ -200,6 +200,11 @@ fi
 
 # --- R5: run input obeys inputSchema (#1413) ------------------------------
 
+# R5_WS: the dummy workspace UUID rows below target (R5's workflow
+# targetWorkspaceId, R8's routine workspaceId). It was previously
+# referenced by R8 without ever being defined — set -u aborted the
+# script there on every nightly run.
+R5_WS="00000000-0000-4000-8000-000000000001"
 R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",
     inputSchema:{type:"object",required:["topic"],properties:{topic:{type:"string"}}},
     specYaml:"{\"nodes\":[{\"id\":\"n1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {}\"}}],\"edges\":[]}"}')
@@ -395,6 +400,52 @@ else
             fi
         fi
     fi
+fi
+
+# R9 — update-path memory/capture cross-constraint (#1467): create
+# enforces memoryMode 'last_result' ⇒ captureMode 'full' (the #1453
+# envelope-shape invariant); update must enforce the same on the
+# post-patch MERGED view. Monthly expr + dummy workspace: the trigger
+# never fires during the run (rows are API-only).
+R9_CREATE_BAD=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+    '{name:"e2e-r9-create-bad",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,memoryMode:"last_result"}')")
+if [[ "${api_status}" == "400" && "${R9_CREATE_BAD}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]]; then
+    ok "R9a: create rejects last_result without full (400, constraint error)"
+else
+    note_fail "R9a: create returned ${api_status} (${R9_CREATE_BAD})"
+fi
+
+R9_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+    '{name:"e2e-r9-flip",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,prompt:"r9"}')")
+if [[ "${api_status}" == "201" ]]; then
+    R9_ID=$(printf '%s' "${R9_RESP}" | jq -r '.id')
+    created_triggers+=("${R9_ID}")
+else
+    die "R9 setup: routine trigger create failed: ${api_status} ${R9_RESP}"
+fi
+
+R9_FLIP=$(api PUT "/api/v1/me/triggers/${R9_ID}" '{"memoryMode":"last_result"}')
+if [[ "${api_status}" == "400" && "${R9_FLIP}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]] \
+    && [[ "$(trigger_field "${R9_ID}" memoryMode)" == "none" ]]; then
+    ok "R9b: flip to last_result without full rejected (400), stored memoryMode unchanged"
+else
+    note_fail "R9b: flip returned ${api_status} (${R9_FLIP}), memoryMode='$(trigger_field "${R9_ID}" memoryMode)'"
+fi
+
+api PUT "/api/v1/me/triggers/${R9_ID}" '{"memoryMode":"last_result","captureMode":"full"}' >/dev/null
+if [[ "${api_status}" == "200" ]] \
+    && [[ "$(trigger_field "${R9_ID}" memoryMode)" == "last_result" ]] \
+    && [[ "$(trigger_field "${R9_ID}" captureMode)" == "full" ]]; then
+    ok "R9c: flip with full accepted and persisted"
+else
+    note_fail "R9c: compliant flip returned ${api_status}, memoryMode='$(trigger_field "${R9_ID}" memoryMode)' captureMode='$(trigger_field "${R9_ID}" captureMode)'"
+fi
+
+R9_NARROW=$(api PUT "/api/v1/me/triggers/${R9_ID}" '{"captureMode":"errors_only"}')
+if [[ "${api_status}" == "400" && "${R9_NARROW}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]]; then
+    ok "R9d: narrowing capture under last_result rejected (400)"
+else
+    note_fail "R9d: narrowing returned ${api_status} (${R9_NARROW})"
 fi
 
 # R8 — org-scope automation CRUD resolves the RESOURCE segment (#1449):

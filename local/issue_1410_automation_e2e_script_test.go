@@ -29,12 +29,13 @@ func TestIssue1410E2EScript_BashSyntax(t *testing.T) {
 	require.NoError(t, err, "bash -n failed: %s", string(out))
 }
 
-// TestIssue1410E2EScript_RowsAndAssertions pins the six rows and their
+// TestIssue1410E2EScript_RowsAndAssertions pins the rows and their
 // key assertions: create validation + first-occurrence slot (R1),
 // immediate reschedule (R2), no-op-enable slot stability (R3), the loud
 // missing-workflow fire (R4), run-input schema enforcement (R5), and
 // trigger input mapping (R6 — envelope-wiring guard, mapped static input,
-// webhook body mode over the rotated HMAC secret).
+// webhook body mode over the rotated HMAC secret), the update-path
+// memory/capture cross-constraint (R9 — #1467).
 func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
@@ -78,6 +79,14 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R6c: violating payload queued no run`,                        // no run on schema mismatch
 		`select(.status=="queued" or .status=="running")`,             // single-inflight drain-wait before each delivery
 		`[[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")`,     // R6b-bad unexpected-success cleanup guard
+		// R9 — update-path memory/capture cross-constraint (#1467).
+		`memoryMode:"last_result"`,                                 // the violating flip spelled (create + update rows)
+		`R9a: create rejects last_result without full`,             // create-path constraint asserted
+		`R9b: flip to last_result without full rejected`,           // merged-view rejection asserted
+		`R9c: flip with full accepted and persisted`,               // happy flip + persistence asserted
+		`R9d: narrowing capture under last_result rejected`,        // reverse-direction violation asserted
+		`*"memoryMode 'last_result' requires captureMode 'full'"*`, // the shared constraint error asserted
+		`R5_WS="00000000-0000-4000-8000-000000000001"`,             // R8's workspaceId source defined (was unbound → set -u abort)
 		// R8 — org-scope CRUD resolves the resource segment (#1449).
 		`ownerEmail:"e2e-automation@example.invalid"`, // org created; API-key user becomes admin
 		`R8a: org trigger GET resolves the trigger`,   // the shadowing 404'd here
