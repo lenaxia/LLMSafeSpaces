@@ -210,6 +210,83 @@ func (s *StoreIntegrationSuite) TestTriggerCRUD() {
 	assert.Equal(s.T(), 5, updated2.AutoDisableAfter, "auto_disable_after preserved (nil pointer)")
 }
 
+// TestTriggerInputMappingRoundtrip pins the 0059 columns: create/read
+// with input + input_from, the DB default 'envelope' on unset input_from,
+// and the update keep-vs-replace discrimination (absent key keeps the
+// stored document; an explicit JSON null replaces it with jsonb null —
+// "no static input").
+func (s *StoreIntegrationSuite) TestTriggerInputMappingRoundtrip() {
+	ctx := context.Background()
+	id := uuid.New().String()
+	wfID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateWorkflow(ctx, &WorkflowRow{
+		ID: wfID, OwnerType: "user", OwnerID: "u1",
+		Name: "wf-input", Slug: "wf-input", SpecYAML: "name: test\n",
+		SpecJSON: json.RawMessage(`{}`), Status: "draft",
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	wfPtr := wfID
+
+	created := &TriggerRow{
+		ID: id, OwnerType: "user", OwnerID: "u1",
+		Name: "mapped-trigger", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+		WorkflowID: &wfPtr, AutoDisableAfter: 10,
+		InputFrom: "mapped", Input: json.RawMessage(`{"topic":"nightly","n":1}`),
+		CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, created))
+
+	got, err := s.store.GetTrigger(ctx, "user", "u1", id)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "mapped", got.InputFrom)
+	assertJSONEqual(s.T(), `{"topic":"nightly","n":1}`, got.Input)
+
+	// Absent input key in the update keeps the stored document;
+	// input_from nil keeps the stored mode.
+	renamed := "renamed"
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Name: &renamed})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "mapped", updated.InputFrom, "nil InputFrom keeps the stored mode")
+	assertJSONEqual(s.T(), `{"topic":"nightly","n":1}`, updated.Input)
+
+	// Explicit JSON null replaces the column with jsonb null — which
+	// reads back as the JSON null literal ("no static input").
+	updated, err = s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Input: json.RawMessage(`null`)})
+	require.NoError(s.T(), err)
+	if assert.NotNil(s.T(), updated.Input, "jsonb null reads back as the JSON literal, not SQL NULL indistinguishable-from-absent at the API") {
+		assert.JSONEq(s.T(), "null", string(updated.Input))
+	}
+
+	// Replace with a real document + switch the mode.
+	body := "body"
+	updated, err = s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{
+		InputFrom: &body, Input: json.RawMessage(`{"topic":"replaced"}`),
+	})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "body", updated.InputFrom)
+	assertJSONEqual(s.T(), `{"topic":"replaced"}`, updated.Input)
+
+	// The DB default: a row written without input_from reads as envelope.
+	defaultID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: defaultID, OwnerType: "user", OwnerID: "u1",
+		Name: "legacy-trigger", Enabled: true,
+		SourceType: "cron", SourceConfig: json.RawMessage(`{"expr":"0 2 * * *"}`),
+		WorkflowID: &wfPtr, AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
+	}))
+	legacy, err := s.store.GetTrigger(ctx, "user", "u1", defaultID)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "envelope", legacy.InputFrom, "unset input_from must default to envelope (migration 000031 backfill)")
+	assert.Nil(s.T(), legacy.Input)
+
+	// The CHECK constraint rejects out-of-set modes.
+	_, err = s.store.pool.Exec(ctx, `UPDATE triggers SET input_from = 'template' WHERE id = $1`, id)
+	require.Error(s.T(), err, "triggers_input_from_check must reject unknown modes")
+}
+
 // --- Webhook ---------------------------------------------------------------
 
 func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -1654,4 +1655,170 @@ func TestScheduler_TransientStoreErrorNotCounted(t *testing.T) {
 	if store.disabled["trig-1"] {
 		t.Fatalf("trigger must stay enabled")
 	}
+}
+
+// --- 0059: trigger input mapping on the cron fire path -----------------------
+
+// makeMappedTrigger is a due cron trigger wired to a workflow with an
+// input mapping (the 0059 opt-in).
+func makeMappedTrigger(id, wfID, inputFrom string, input json.RawMessage) *wf.TriggerRow {
+	t := makeDueTrigger(id, wfID, "")
+	t.InputFrom = inputFrom
+	t.Input = input
+	return t
+}
+
+// TestScheduler_MappedTriggerConformingInput: a schema-bearing workflow
+// wired via inputFrom:mapped with a conforming static document queues a
+// run whose input IS that document — the #1425 fix.
+func TestScheduler_MappedTriggerConformingInput(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}}}`),
+	}
+	store.triggers = []*wf.TriggerRow{
+		makeMappedTrigger("trig-mapped", "wf-schema", "mapped", json.RawMessage(`{"topic":"nightly"}`)),
+	}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	require.Len(t, store.runs, 1, "a conforming mapped input must queue a run")
+	assert.JSONEq(t, `{"topic":"nightly"}`, string(store.runs[0].Input),
+		"mapped mode: the static document IS the run input")
+	require.Len(t, store.fires, 1)
+	assert.Equal(t, "fired", store.fires[0].Status)
+}
+
+// TestScheduler_MappedTriggerDivergentInput: a divergent static document
+// records a validation_error fire with typed, location-only violations —
+// no run is queued, no node executes, and the #1412 accounting drives
+// auto-disable.
+func TestScheduler_MappedTriggerDivergentInput(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"],"properties":{"topic":{"type":"string"}},"additionalProperties":false}`),
+	}
+	store.triggers = []*wf.TriggerRow{
+		makeMappedTrigger("trig-bad", "wf-schema", "mapped", json.RawMessage(`{"SECRET-INSTANCE":"x"}`)),
+	}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	require.Len(t, store.runs, 0, "no run may be created for a failing input")
+	require.Len(t, store.fires, 1)
+	fire := store.fires[0]
+	assert.Equal(t, types.TriggerFireValidationError, fire.Status)
+	assert.NotNil(t, fire.CompletedAt)
+	require.NotNil(t, fire.ActionResult)
+	payload := string(fire.ActionResult)
+	assert.Contains(t, payload, `"code":"schema_mismatch"`)
+	assert.Contains(t, payload, `"inputFrom":"mapped"`)
+	assert.Contains(t, payload, `"/topic"`)
+	assert.Contains(t, payload, `"keyword":"required"`)
+	assert.NotContains(t, payload, "SECRET-INSTANCE", "violation payloads must never carry instance values")
+	// The audit row records the raw envelope — what the source sent.
+	assert.NotNil(t, fire.InputEnvelope)
+	assert.Equal(t, 1, store.triggerFail["trig-bad"], "validation_error fires count toward auto-disable")
+	assert.False(t, store.disabled["trig-bad"])
+}
+
+// TestScheduler_ValidationErrorAutoDisables: the #1412 circuit breaker
+// trips at auto_disable_after.
+func TestScheduler_ValidationErrorAutoDisables(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"]}`),
+	}
+	trig := makeMappedTrigger("trig-ad", "wf-schema", "mapped", json.RawMessage(`{}`))
+	trig.AutoDisableAfter = 1
+	store.triggers = []*wf.TriggerRow{trig}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.True(t, store.disabled["trig-ad"], "auto_disable_after=1 must disable after one validation_error fire")
+}
+
+// TestScheduler_InvalidSchemaFailedFire: a stored schema that no longer
+// compiles is a workflow defect — failed fire with
+// {"code":"invalid_input_schema"}, never a schema-mismatch payload.
+func TestScheduler_InvalidSchemaFailedFire(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-broken"] = &wf.WorkflowRow{
+		ID: "wf-broken", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"$ref":"#/definitions/missing"}`),
+	}
+	store.triggers = []*wf.TriggerRow{
+		makeMappedTrigger("trig-broken", "wf-broken", "mapped", json.RawMessage(`{"topic":"x"}`)),
+	}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	require.Len(t, store.runs, 0)
+	require.Len(t, store.fires, 1)
+	assert.Equal(t, types.TriggerFireFailed, store.fires[0].Status)
+	assert.JSONEq(t, `{"code":"invalid_input_schema"}`, string(store.fires[0].ActionResult))
+	assert.Equal(t, 1, store.triggerFail["trig-broken"])
+}
+
+// TestScheduler_EnvelopeStaticMerge: envelope mode + static input merges
+// (static wins) and the fire's input_envelope stays the raw envelope.
+func TestScheduler_EnvelopeStaticMerge(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"]}`),
+	}
+	store.triggers = []*wf.TriggerRow{
+		makeMappedTrigger("trig-merge", "wf-schema", "envelope", json.RawMessage(`{"topic":"nightly"}`)),
+	}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	require.Len(t, store.runs, 1)
+	var runInput map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(store.runs[0].Input, &runInput))
+	assert.Equal(t, `"nightly"`, string(runInput["topic"]), "static overlay wins")
+	assert.NotNil(t, runInput["source"], "the envelope stays reachable under its keys")
+	assert.NotNil(t, runInput["received_at"])
+	// The audit row keeps the RAW envelope — what the source sent.
+	var env map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(store.fires[0].InputEnvelope, &env))
+	assert.Nil(t, env["topic"], "input_envelope must NOT carry the resolved input")
+}
+
+// TestScheduler_LegacyTriggerByteIdentical: an un-opted trigger against a
+// schema-bearing workflow keeps today's behavior exactly — the envelope
+// bytes become the run input and NO validation runs (§3.6).
+func TestScheduler_LegacyTriggerByteIdentical(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-schema"] = &wf.WorkflowRow{
+		ID: "wf-schema", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		InputSchema: json.RawMessage(`{"type":"object","required":["topic"]}`),
+	}
+	// Raw row as migration 000031 backfills it: input_from envelope, no input.
+	store.triggers = []*wf.TriggerRow{makeDueTrigger("trig-legacy", "wf-schema", "")}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	require.Len(t, store.runs, 1)
+	require.Len(t, store.fires, 1)
+	assert.Equal(t, "fired", store.fires[0].Status)
+	assert.Equal(t, string(store.fires[0].InputEnvelope), string(store.runs[0].Input),
+		"legacy un-opted triggers: run input must stay the envelope bytes verbatim")
+	assert.Equal(t, 0, store.triggerFail["trig-legacy"])
 }

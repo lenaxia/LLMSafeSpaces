@@ -33,6 +33,8 @@ type webhookE2EStore struct {
 	delivered    map[string]bool
 	fires        []*wf.TriggerFireRow
 	runs         []*wf.WorkflowRunRow
+	triggerFail  map[string]int
+	disabled     map[string]bool
 }
 
 func newWebhookE2EStore() *webhookE2EStore {
@@ -41,6 +43,8 @@ func newWebhookE2EStore() *webhookE2EStore {
 		webhooksByID: make(map[string]*wf.WebhookRow),
 		workflows:    make(map[string]*wf.WorkflowRow),
 		delivered:    make(map[string]bool),
+		triggerFail:  make(map[string]int),
+		disabled:     make(map[string]bool),
 	}
 }
 
@@ -154,6 +158,16 @@ func (m *webhookE2EStore) CreateWorkflowRunWithFire(_ context.Context, fire *wf.
 }
 func (m *webhookE2EStore) CreateTriggerFire(_ context.Context, row *wf.TriggerFireRow) error {
 	m.fires = append(m.fires, row)
+	return nil
+}
+
+// #1412 accounting, reused by validation_error fires (0059 D3).
+func (m *webhookE2EStore) IncrementTriggerFailures(_ context.Context, triggerID string) (int, error) {
+	m.triggerFail[triggerID]++
+	return m.triggerFail[triggerID], nil
+}
+func (m *webhookE2EStore) DisableTrigger(_ context.Context, triggerID string) error {
+	m.disabled[triggerID] = true
 	return nil
 }
 
