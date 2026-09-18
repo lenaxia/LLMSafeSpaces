@@ -137,15 +137,16 @@ fi
 if [[ -n "${R1_SID}" ]]; then
     # THE bug's acceptance row: the preserved session must be in the
     # platform list (index-fed), not just in the agent's own list.
+    # jq failures degrade to empty/note_fail rows, never script aborts.
     r1_listed=$(sessions_json | jq -r --arg s "${R1_SID}" \
-        '[.[] | select(.id == $s)] | length')
+        '[.[] | select(.id == $s)] | length' 2>/dev/null || echo 0)
     if [[ "${r1_listed}" == "1" ]]; then
         ok "R1c: preserved routine session appears in GET /workspaces/:id/sessions"
     else
         note_fail "R1c: session ${R1_SID} absent from the platform session list"
     fi
     r1_title=$(sessions_json | jq -r --arg s "${R1_SID}" \
-        'first(.[] | select(.id == $s) | .title // empty')
+        'first(.[] | select(.id == $s) | .title) // empty' 2>/dev/null || echo '')
     if [[ "${r1_title}" == "e2e-1452-preserve-always" ]]; then
         ok "R1d: indexed row carries the trigger name as title"
     else
@@ -183,7 +184,7 @@ fi
 sleep 5
 r2_after=$(sessions_json | jq 'length')
 r2_session=$(api GET "/api/v1/me/triggers/${R2_ID}/fires" \
-    | jq -r '[.fires[] | select(.status=="delivered")] | first | .result.session_id // empty')
+    | jq -r '[.fires[] | select(.status=="delivered")] | first | .result.session_id // empty' 2>/dev/null || echo '')
 if [[ "${r2_after}" -eq "${r2_before}" ]]; then
     ok "R2c: ephemeral routine session (id '${r2_session:-<deleted>}') left no platform row"
 else

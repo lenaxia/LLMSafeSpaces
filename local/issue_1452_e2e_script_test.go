@@ -12,8 +12,10 @@ package local_test
 // be silently dropped.
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -64,6 +66,65 @@ func TestIssue1452E2EScript_RowsAndAssertions(t *testing.T) {
 	} {
 		assert.Contains(t, src, needle, "the e2e script must keep its row assertions (dropping one silently drops the row)")
 	}
+}
+
+// TestIssue1452E2EScript_JqFiltersCompile compiles every jq program the
+// e2e script embeds. bash -n is blind to jq syntax and the needle pins
+// only assert assertions-are-present — round 2 shipped exactly this
+// gap: an unbalanced `first(` in the R1d filter (compile error, jq exit
+// 3) aborted the script under set -e exactly when the fix worked,
+// making the row guaranteed-red and exit 0 unreachable. jq exit 3 is
+// the compile error; runtime errors (5) don't matter here — the
+// nightly runner feeds real data, this pin only proves the programs
+// parse. Follows the epic71 S1 script-test precedent (LookPath + skip).
+func TestIssue1452E2EScript_JqFiltersCompile(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not on PATH — CI runs this row with it preinstalled")
+	}
+	raw, err := os.ReadFile(issue1452Script)
+	require.NoError(t, err)
+	joined := strings.ReplaceAll(string(raw), "\\\n", "")
+
+	// Single-quoted programs: jq [flags, incl. --arg name "value"] 'program'
+	singleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+|--arg(?:json)?\s+\w+\s+"[^"]*"\s+)*'([^']+)'`)
+	// Double-quoted programs (inside eval'd wait_for predicates): jq -r "program"
+	// with \" and \\ escapes to unescape.
+	doubleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+)*"((?:[^"\\]|\\.)*)"`)
+
+	var programs []string
+	for _, m := range singleQuoted.FindAllStringSubmatch(joined, -1) {
+		programs = append(programs, m[1])
+	}
+	for _, m := range doubleQuoted.FindAllStringSubmatch(joined, -1) {
+		unescaped := strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(m[1])
+		if !containsProgram(programs, unescaped) {
+			programs = append(programs, unescaped)
+		}
+	}
+	require.NotEmpty(t, programs, "extraction found no jq programs — the regexes drifted from the script's quoting style")
+
+	// Stub every $variable any filter references; unused --arg stubs are
+	// harmless, a missing one is itself a compile error jq reports.
+	stubs := []string{"-n", "--arg", "s", "x", "--arg", "t", "x", "--arg", "p", "x", "--arg", "w", "x", "--arg", "n", "x"}
+	for _, program := range programs {
+		cmd := exec.Command(jq, append(stubs, program)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+				t.Fatalf("jq program does not compile (the R1d round-2 class): %q: %s", program, out)
+			}
+		}
+	}
+}
+
+func containsProgram(programs []string, want string) bool {
+	for _, p := range programs {
+		if p == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestIssue1452E2EWorkflowRegistered pins the nightly workflow row so the

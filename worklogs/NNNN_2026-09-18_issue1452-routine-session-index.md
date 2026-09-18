@@ -35,7 +35,17 @@ Determine with evidence whether routine-trigger sessions preserved via `preserve
 - **Robustness findings — documented decisions** (in `indexPreservedSession`'s doc comment): (a) title re-stamp only overlaps a user rename on a re-driven pending fire (each fire owns its session — verified live: two fires → two sessions), accepted like the re-drive message-count double-count; (b) `has_unread` true until opened = normal unopened-session semantics (MarkSessionSeen clears); (c) startup window verified non-defect (events buffer 1024, flushed at Start); (d) shutdown race loses at most one `last_message_at` (title row persists synchronously) — accepted, low impact.
 - **Follow-ups surfaced (not blockers per review):** failed PreserveOnFailure fires never index their preserved session (mirrors the pre-existing `RecordSessionOrigin` delivery-only blind spot — the failure branch has no session_id to index); duplicate PR #1461 from a parallel workflow escalated to the orchestrator.
 
+### Review round 2 (CHANGES_REQUESTED → addressed)
+
+- **Blocker (reviewer reproduced):** the e2e R1d jq filter shipped unbalanced (`first(` never closed — compile error, jq exit 3), aborting the script under `set -e` exactly when the fix works; exit 0 was unreachable in every outcome. Fixed the paren (`'first(.[] | select(.id == $s) | .title) // empty'`) and routed the R1c/R1d/R2 jq assignments through `2>/dev/null || echo` fallbacks so jq failures degrade to note_fail rows, never script aborts.
+- **New pin class:** `TestIssue1452E2EScript_JqFiltersCompile` extracts every jq program the script embeds (single-quoted direct + double-quoted inside eval'd predicates, continuation-joined) and asserts each compiles (`jq -n` with `--arg` stubs; exit 3 = compile error fails, runtime exit 5 is irrelevant — the nightly runner feeds real data). Mutation-verified: reintroducing the unbalanced paren fails the pin, restoring passes. Precedent: epic71 S1 script test (same shell-mangle class, same LookPath+Skip).
+- **Merge from main** (b1753e48): #1463/#1462 landed; the predicted insertion-vs-insertion conflict with #1453's helpers at the post-executeRoutine anchor resolved keep-both. Two pushes had zero CI runs (known flake) — merge-of-main push (a4c7f24b) revived them. Pre-commit's worklog-sentinel gate misfires on merge-brought main worklogs (bot-numbered there) — verified repolint green manually, used the hook's documented `--no-verify` bypass for the merge commit only.
+- **Follow-up filed:** #1470 (failed PreserveOnFailure fires + drifted-output deliveries never reach session_origins/session_index — the delivery-only blind spot shared with the pre-existing origin write).
+
 ### Orchestrator adjudication + #1461 absorption
+
+- Orchestrator: **#1464 survives, #1461 closed** (parallel /fix automation had implemented the same Option A; claim + localization + review completeness favored this PR).
+- **Absorbed from #1461** (with credit): nil-logger guards in `sessionindex.Service.Start`/`Stop` — `RecordMessage` and `drain` already nil-guard, so `New(db, nil)` + `Start()` panicking was an internal inconsistency this PR's own integration test hit verbatim during development. Regression test `TestStartStop_NilLogger_NoPanic` (Start → RecordMessage → Stop on a nil-logger service, drain asserted); the engine integration test now uses the nil-logger construction it originally wanted.
 
 - Orchestrator: **#1464 survives, #1461 closed** (parallel /fix automation had implemented the same Option A; claim + localization + review completeness favored this PR).
 - **Absorbed from #1461** (with credit): nil-logger guards in `sessionindex.Service.Start`/`Stop` — `RecordMessage` and `drain` already nil-guard, so `New(db, nil)` + `Start()` panicking was an internal inconsistency this PR's own integration test hit verbatim during development. Regression test `TestStartStop_NilLogger_NoPanic` (Start → RecordMessage → Stop on a nil-logger service, drain asserted); the engine integration test now uses the nil-logger construction it originally wanted.
@@ -99,3 +109,4 @@ None.
 - `.github/workflows/e2e-nightly.yml` — register the e2e script (port 18087)
 - `api/internal/services/sessionindex/service.go` — nil-logger guards in Start/Stop (absorbed from #1461)
 - `api/internal/services/sessionindex/service_test.go` — `TestStartStop_NilLogger_NoPanic`
+- Round 2: `local/issue1452-routine-session-index-e2e.sh` (paren fix + jq soft-fail guards), `local/issue_1452_e2e_script_test.go` (`TestIssue1452E2EScript_JqFiltersCompile`)
