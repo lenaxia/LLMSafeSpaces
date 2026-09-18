@@ -646,13 +646,19 @@ EOF
         # to unmapped uids cannot succeed in identity mode); netns=host
         # still merges from the /etc slot.
         PMG_IMAGE="$REG/llmsafespaces/runtime-base-podman:ci"
-        sed '/\/etc\/subuid/d; /\/etc\/subgid/d' \
+        # Run-5 surprise: deleting the subuid/subgid layers was not enough
+        # — /etc/subuid still ends up with a line (grep -c . == 1; the
+        # newuidmap call carried the sandbox range), so something in the
+        # apt layer seeds it post-install. Deterministic fix: keep the
+        # golden layers and TRUNCATE both files at the end (before USER),
+        # guaranteeing zero subordinate ranges whoever writes them.
+        sed '/\/etc\/subuid/d; /\/etc\/subgid/d; s|^USER sandbox|RUN : > /etc/subuid \\\n    \&\& : > /etc/subgid\nUSER sandbox|' \
           api/internal/imagefactory/testdata/podman-set.Dockerfile >"$TMPDIR/podman-idmode.Dockerfile"
         if docker build --network host -f "$TMPDIR/podman-idmode.Dockerfile" \
             -t "$REG/llmsafespaces/runtime-base-podman-idmode:ci" . >/dev/null 2>&1 \
            && docker push "$REG/llmsafespaces/runtime-base-podman-idmode:ci" >/dev/null; then
           PMG_IMAGE="$REG/llmsafespaces/runtime-base-podman-idmode:ci"
-          log "S5.7: gVisor leg runs the identity-mode image variant (no subuid ranges)"
+          log "S5.7: gVisor leg runs the identity-mode image variant (subuid/subgid truncated)"
         else
           log "S5.7: idmode image build failed — gVisor leg falls back to the subuid golden (expected to fail g2)"
         fi
@@ -692,7 +698,7 @@ EOF
           # (image-layer chowns to unmapped uids cannot succeed in
           # identity mode); netns=host still merges from the /etc slot.
           GVID_SETUP=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; printf "%s\n" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf && if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; grep -c . /etc/subuid 2>/dev/null | sed "s/^/subuid-lines:/"; podman info 2>&1 | tail -5; fi' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; printf "%s\n" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf && if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
           if echo "$GVID_SETUP" | grep -q setup-ok; then
             pass S5.7g2 "identity-mode image (no subuid ranges) boots podman under runsc; info ok"
           else
