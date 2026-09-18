@@ -43,10 +43,22 @@ Added to `api/internal/handlers/triggers_test.go` (failing-first: the four viola
 
 ## Key Decisions
 
-1. **Merged-view evaluation, single code path** — always fetch when either field is touched (even when both are patched): one evaluation point, consistent 404-before-constraint precedence matching the cron-revalidate ordering.
-2. **Same error shape as create** (issue requirement) — exact string match pinned in tests.
+1. **Merged-view evaluation, single code path** — always fetch when either field is touched (even when both are patched): one evaluation point, 404-before-constraint precedence (existence precedes the cross-constraint, matching the fetch-first cron-revalidate ordering). NOTE (r1 review clarification): within the update handler the guard runs after the existing-row fetch and BEFORE the V-matrix input-mapping block — create runs its V-matrix earlier and the constraint after; a patch violating both the V-matrix and the cross-constraint therefore gets a different (but still 400) message than the equivalent create. Reviewer assessed this divergence as cosmetic and non-blocking; alignment deferred to a follow-up.
+2. **Shared error constant** (`errTriggerMemoryCaptureConstraint`, r1 review) — create and update emit the one constant; the two literals can no longer silently diverge (the exact drift class this issue is about). Tests pin the string.
 3. **No re-scan of untouched state** — legacy-invalid rows remain editable; a repair patch can always reach the store. Repair+flip in one patch (`last_result`+`full`) is the documented path off an invalid row.
 4. **Legacy empty-string rows**: `"" != full`, so flipping to `last_result` on a pre-#688 row requires `captureMode=full` in the same patch — correct under the invariant, pinned by test.
+
+---
+
+## Review Round 2 (adversarial reviewer, PR #1468)
+
+R1 verdict: CHANGES_REQUESTED — fix confirmed correct + mutation-verified, but e2e coverage demanded via the existing live harness, the delegation route pinned only by doc-comment, and the two error literals shared. Addressed:
+
+- **Shared const** `errTriggerMemoryCaptureConstraint` (both paths).
+- **Delegation route pinned at route level**: `TestPodAutomation_TriggerUpdateMemoryCaptureConstraint` drives the full chain (pod-automation route → REAL delegated user handler → store) — violating patch 400s with the constraint error and does not persist; compliant patch persists. No more doc-comment-only inheritance claim.
+- **Live-stack e2e rows (R9)** in `local/issue-1410-1412-automation-e2e.sh`: R9a create-path constraint (400 + error string — closes the create-side e2e gap the reviewer noted), R9b violating flip → 400 + stored memoryMode unchanged, R9c compliant flip → 200 + both fields persisted via GET, R9d reverse-direction narrowing → 400. Pin needles added to `local/issue_1410_automation_e2e_script_test.go`.
+- **Pre-existing script bug fixed**: `R5_WS` was referenced by the R8 row but never defined — `set -u` aborted the script at that line on every nightly run. Now defined next to R5 (dummy workspace UUID) and pinned.
+- **Precedence-divergence note** recorded under Key Decisions (above) instead of the vague wording the reviewer flagged.
 
 ---
 
@@ -63,6 +75,7 @@ None.
 - `go test -timeout 600s -count=1 ./api/internal/handlers/` — ok (82.6s, full package).
 - `go test -race -count=1 -run 'TestTrigger' ./api/internal/handlers/` — ok.
 - `go build ./...` — ok. `gofmt`/`goimports` clean; `golangci-lint run --new-from-rev=a7b2a83c` — 0 issues.
+- Round 2: `go test -run 'TestPodAutomation_TriggerUpdateMemoryCaptureConstraint|TestTriggerUpdate_MemoryCapture' ./api/internal/handlers/` — ok; `bash -n` the e2e script — ok; `go test -run 'TestIssue1410' ./local/` — ok (pins incl. R9 needles + R5_WS).
 
 ---
 
@@ -74,6 +87,9 @@ None.
 
 ## Files Modified
 
-- `api/internal/handlers/triggers.go` — update handler: fetch-condition extension + merged-view cross-constraint guard
+- `api/internal/handlers/triggers.go` — update handler: fetch-condition extension + merged-view cross-constraint guard; shared `errTriggerMemoryCaptureConstraint` const (create + update)
 - `api/internal/handlers/triggers_test.go` — guard-matrix table (12 cases) + not-found precedence test + `seedRoutineTriggerRow` helper
+- `api/internal/handlers/pod_automation_test.go` — delegation-route pin (`TestPodAutomation_TriggerUpdateMemoryCaptureConstraint`)
+- `local/issue-1410-1412-automation-e2e.sh` — R9 rows (create constraint + violating/happy/reverse flips); `R5_WS` defined (fixes set -u abort in R8)
+- `local/issue_1410_automation_e2e_script_test.go` — R9 pin needles + R5_WS pin
 - `worklogs/NNNN_2026-09-18_update-path-memory-constraint.md` — this worklog

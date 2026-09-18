@@ -52,6 +52,13 @@ type triggerEncryptor interface {
 	Encrypt(ctx context.Context, plaintext []byte) ([]byte, error)
 }
 
+// errTriggerMemoryCaptureConstraint is the create- and update-path
+// rejection for memoryMode 'last_result' without captureMode 'full' —
+// the invariant guaranteeing every delivered routine result row stores
+// the agentd envelope the memory read path expects (#1453, #1467).
+// One constant: the two paths must never diverge.
+const errTriggerMemoryCaptureConstraint = "memoryMode 'last_result' requires captureMode 'full'"
+
 // TriggersHandler handles trigger CRUD for both user and org scopes.
 type TriggersHandler struct {
 	store   triggerStore
@@ -215,7 +222,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		effectiveCaptureMode = types.CaptureErrorsOnly
 	}
 	if effectiveMemoryMode == types.MemoryLastResult && effectiveCaptureMode != types.CaptureFull {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "memoryMode 'last_result' requires captureMode 'full'"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": errTriggerMemoryCaptureConstraint})
 		return
 	}
 
@@ -467,7 +474,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 			mergedCaptureMode = *req.CaptureMode
 		}
 		if mergedMemoryMode == types.MemoryLastResult && mergedCaptureMode != types.CaptureFull {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "memoryMode 'last_result' requires captureMode 'full'"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": errTriggerMemoryCaptureConstraint})
 			return
 		}
 	}

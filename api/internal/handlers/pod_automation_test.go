@@ -575,3 +575,33 @@ func TestPodAutomation_TriggerCreateCaseVariantWorkflowKey(t *testing.T) {
 		assert.Nil(t, row.WorkspaceID, "no routine stamp alongside a gated DAG target")
 	}
 }
+
+// #1467: the pod-automation delegation forwards trigger patches
+// verbatim to the REAL user update handler, so the last_result ⇒ full
+// cross-constraint must reject through this route too — pinned here at
+// route level so a future delegation refactor cannot silently bypass
+// the guarded handler.
+func TestPodAutomation_TriggerUpdateMemoryCaptureConstraint(t *testing.T) {
+	r, trigStore, _ := newAutomationRouter(t, automationReviewer(), automationLookup())
+	id := "trig-mc"
+	wsID := "ws-1"
+	trigStore.triggers[id] = &wf.TriggerRow{
+		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "user-7",
+		Name: "mc", Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+		WorkspaceID:  &wsID, Prompt: "p",
+		MemoryMode: types.MemoryNone, CaptureMode: types.CaptureErrorsOnly,
+	}
+
+	w := doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"memoryMode":"last_result"}`)
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "memoryMode 'last_result' requires captureMode 'full'")
+	assert.Equal(t, types.MemoryNone, trigStore.triggers[id].MemoryMode, "rejected patch must not persist")
+
+	w = doAutomation(t, r, "PUT", "/internal/v1/automation/triggers/"+id+"?workspaceID=ws-1", "tok",
+		`{"memoryMode":"last_result","captureMode":"full"}`)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, types.MemoryLastResult, trigStore.triggers[id].MemoryMode)
+	assert.Equal(t, types.CaptureFull, trigStore.triggers[id].CaptureMode)
+}
