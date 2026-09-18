@@ -27,12 +27,17 @@ source "${SCRIPT_DIR}/lib/us70-common.sh"
 harness_start
 
 WS="$(ws_id 17)"
+created_triggers=()
 RUN_WAIT_S="${RUN_WAIT_S:-300}"
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
 
 cleanup() {
     local id
+    for id in ${created_triggers[*]:-}; do
+        curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
+            "http://127.0.0.1:${PORTFWD_PORT}/api/v1/me/triggers/${id}" >/dev/null 2>&1 || true
+    done
     for id in ${CREATED_WF:-}; do
         curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
             "http://127.0.0.1:${PORTFWD_PORT}/api/v1/me/workflows/${id}" >/dev/null 2>&1 || true
@@ -180,6 +185,115 @@ else
     else
         note_fail "T2 (unhappy): unresolvable ref vanished or expanded — output: ${out:0:300}"
     fi
+fi
+
+# -----------------------------------------------------------------------------
+# #1446: fire results are observable (and owner-bound) — routine fire
+# with captureMode full must expose its captured output via the fires
+# list; a foreign trigger UUID must 404 (ownership guard).
+# -----------------------------------------------------------------------------
+log "#1446 — fire result observability rows"
+
+FTR_RESP=$(api POST /api/v1/me/triggers '{"name":"e2e-1417-fires","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"prompt":"ACK","captureMode":"full","autoDisableAfter":10}')
+if [[ "${api_status}" == "201" ]]; then
+    FTR_ID=$(printf '%s' "${FTR_RESP}" | jq -r '.id')
+    created_triggers+=("${FTR_ID}")
+    ok "T3 setup: fires-result trigger created"
+else
+    note_fail "T3 setup: trigger create failed: ${api_status} ${FTR_RESP:0:120}"
+fi
+
+# Seed a fire row with a result directly through the workflow target —
+# simplest deterministic route: point the trigger at the (deleted-by-
+# cleanup) workflow is racy; instead assert on R4-style failed fires is
+# the 1410 script's lane. Here: assert the RESULT field round-trips on
+# the fires endpoint for the created trigger (empty list = field absent
+# is fine; the shape assertion runs on whatever rows exist) + guard.
+fires_json=$(api GET "/api/v1/me/triggers/${FTR_ID:-none}/fires")
+if [[ "${api_status}" == "200" ]] && printf '%s' "${fires_json}" | jq -e '.fires' >/dev/null 2>&1; then
+    ok "T3: fires endpoint answers for the owner (rows: $(printf '%s' "${fires_json}" | jq '.fires | length'))"
+else
+    note_fail "T3: fires endpoint failed for the owner: ${api_status}"
+fi
+
+# Unhappy: a foreign/nonexistent trigger UUID must 404 — the ownership
+# guard (GetTrigger owner-scoped) blocks cross-tenant fire reads.
+foreign=$(api GET "/api/v1/me/triggers/00000000-0000-4000-8000-000000000099/fires")
+if [[ "${api_status}" == "404" ]]; then
+    ok "T4: foreign trigger UUID 404s (ownership guard)"
+else
+    note_fail "T4: foreign UUID returned ${api_status}, expected 404"
+fi
+
+# T5 (happy, #1446): a captureMode-full ROUTINE fire's captured output
+# reaches the caller via .result — real content, not liveness.
+CAP_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS}" \
+    '{name:"e2e-1417-capfull",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"E2E-CAPTURED-MARKER reply ACK",captureMode:"full",autoDisableAfter:10}')")
+[[ "${api_status}" == "201" ]] || note_fail "T5 setup: capture trigger create ${api_status} ${CAP_TR_RESP:0:120}"
+CAP_ID=$(printf '%s' "${CAP_TR_RESP}" | jq -r '.id // empty')
+[[ -n "${CAP_ID}" ]] && created_triggers+=("${CAP_ID}")
+CAP_ROT=$(api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret")
+CAP_SECRET=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookSecret // empty')
+CAP_URL=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookUrl // empty')
+cap_payload='{"marker":"cap-full-e2e"}'
+cap_sig="sha256=$(printf '%s' "${cap_payload}" | openssl dgst -sha256 -hmac "${CAP_SECRET}" -hex | awk '{print $NF}')"
+if [[ -n "${CAP_URL}" && -n "${CAP_SECRET}" ]]; then
+    cap_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PORTFWD_PORT}${CAP_URL#*api.safespaces.dev}" \
+        -H "Content-Type: application/json" -H "X-Hub-Signature-256: ${cap_sig}" \
+        -d "${cap_payload}" --max-time 20) || cap_code="curl-failed"
+    # NOTE: delivered through the port-forward (in-cluster path, no CF).
+    cap_result=""
+    for ((i = 0; i < 60; i += 6)); do
+        cap_fires=$(api GET "/api/v1/me/triggers/${CAP_ID}/fires")
+        cap_status_one=$(printf '%s' "${cap_fires}" | jq -r '.fires[0].status // empty')
+        [[ "${cap_status_one}" == "delivered" || "${cap_status_one}" == "failed" ]] && break
+        sleep 6
+    done
+    cap_result=$(printf '%s' "${cap_fires}" | jq -r '.fires[0].result // empty' | head -c 400)
+    if [[ "${cap_status_one}" == "delivered" && "${cap_result}" != "" && "${cap_result}" != "null" ]]; then
+        ok "T5: captureMode-full fire exposes .result (delivered, content present)"
+    else
+        note_fail "T5: status=${cap_status_one:-none} result=${cap_result:-<empty>}"
+    fi
+else
+    note_fail "T5 setup: rotate failed (${api_status})"
+fi
+
+# T6 (unhappy, #1446): a FAILED routine exposes its error cause via
+# .result — delete the target workspace first, then deliver.
+WS2="$(ws_id 18)"
+seed_workspace "${WS2}" >/dev/null 2>&1 || true
+FAIL_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS2}" \
+    '{name:"e2e-1417-failcause",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"ACK",captureMode:"full",autoDisableAfter:50}')")
+FAIL_ID=$(printf '%s' "${FAIL_TR_RESP}" | jq -r '.id // empty')
+[[ -n "${FAIL_ID}" ]] && created_triggers+=("${FAIL_ID}")
+kc delete workspace "${WS2}" --ignore-not-found >/dev/null 2>&1 || true
+# give the controller a beat to tear the pod down
+sleep 10
+FAIL_ROT=$(api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret")
+FAIL_SECRET=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookSecret // empty')
+FAIL_URL=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookUrl // empty')
+fail_payload='{"x":1}'
+fail_sig="sha256=$(printf '%s' "${fail_payload}" | openssl dgst -sha256 -hmac "${FAIL_SECRET}" -hex | awk '{print $NF}')"
+if [[ -n "${FAIL_URL}" && -n "${FAIL_SECRET}" ]]; then
+    curl -s -o /dev/null -X POST "http://127.0.0.1:${PORTFWD_PORT}${FAIL_URL#*api.safespaces.dev}" \
+        -H "Content-Type: application/json" -H "X-Hub-Signature-256: ${fail_sig}" \
+        -d "${fail_payload}" --max-time 20 || true
+    fail_result=""
+    for ((i = 0; i < 60; i += 6)); do
+        fail_fires=$(api GET "/api/v1/me/triggers/${FAIL_ID}/fires")
+        fail_status_one=$(printf '%s' "${fail_fires}" | jq -r '.fires[0].status // empty')
+        [[ "${fail_status_one}" == "failed" ]] && break
+        sleep 6
+    done
+    fail_result=$(printf '%s' "${fail_fires}" | jq -r '.fires[0].result // empty' | head -c 300)
+    if [[ "${fail_status_one}" == "failed" && "${fail_result}" == *'"error"'* ]]; then
+        ok "T6: failed routine exposes its cause via .result"
+    else
+        note_fail "T6: status=${fail_status_one:-none} result=${fail_result:-<empty>}"
+    fi
+else
+    note_fail "T6 setup: rotate failed (${api_status})"
 fi
 
 if [[ "${failures}" -gt 0 ]]; then

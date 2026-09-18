@@ -9825,6 +9825,9 @@ components:
           enum: [run_workflow, routine]
         actionResult:
           type: object
+        result:
+          type: object
+          description: Execution outcome — the routine failure cause on error, or the captured agent output under captureMode full. Distinct from actionResult (the pre-execution action payload).
         status:
           type: string
           enum: [fired, delivered, failed, validation_error, rate_limited, skipped, auto_disabled]

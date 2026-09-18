@@ -23,6 +23,7 @@ type mockTriggerStore struct {
 	triggers  map[string]*wf.TriggerRow
 	webhooks  map[string]*wf.WebhookRow
 	workflows map[string]*wf.WorkflowRow
+	fires     []*wf.TriggerFireRow
 	createErr error
 }
 
@@ -151,7 +152,7 @@ func (m *mockTriggerStore) GetWebhookByTriggerID(_ context.Context, triggerID st
 }
 
 func (m *mockTriggerStore) ListTriggerFires(_ context.Context, triggerID string, limit, offset int) ([]*wf.TriggerFireRow, error) {
-	return []*wf.TriggerFireRow{}, nil
+	return m.fires, nil
 }
 
 func (m *mockTriggerStore) UpdateWebhookSecret(_ context.Context, triggerID string, secretCipher []byte, keyVersion int) error {
@@ -194,6 +195,7 @@ func setupTriggerRouter(t *testing.T, store triggerStore, quota workflowQuotaChe
 	group.PUT("/:id", h.UserUpdate)
 	group.DELETE("/:id", h.UserDelete)
 	group.POST("/:id/rotate-secret", h.UserRotateWebhookSecret)
+	group.GET("/:id/fires", h.UserListFires)
 	return r
 }
 
@@ -1163,4 +1165,71 @@ func TestTriggerInputMapping_ResponseFields(t *testing.T) {
 	input, ok := resp["input"].(map[string]any)
 	require.True(t, ok, "input must be echoed: %v", resp["input"])
 	assert.Equal(t, "x", input["topic"])
+}
+
+// #1441: routine failure causes land in the result column
+// (UpdateTriggerFireResult) — the fires response must expose it or
+// routine failures are undiagnosable from outside.
+func TestTriggerFires_ExposeRoutineResult(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-r"] = &wf.TriggerRow{ID: "trig-r", OwnerType: "user", OwnerID: "test-user", Name: "r", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-1", TriggerID: "trig-r", SourceType: "webhook",
+		ActionType: "routine", Status: "failed",
+		Result: json.RawMessage(`{"error":"agent call failed: deadline exceeded"}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-r/fires", nil)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "deadline exceeded", "the routine failure cause must be visible in the fires list")
+	assert.Contains(t, w.Body.String(), `"result":`, "the result field is marshaled")
+}
+
+// The fires endpoint is owner-scoped like every sibling: another
+// user's trigger UUID (which travels in shared webhook URLs) must 404.
+func TestTriggerFires_OwnershipGuard(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-own"] = &wf.TriggerRow{ID: "trig-own", OwnerType: "user", OwnerID: "someone-else", Name: "x", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-x", TriggerID: "trig-own", SourceType: "webhook",
+		ActionType: "routine", Status: "failed",
+		Result: json.RawMessage(`{"error":"secret cause"}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-own/fires", nil)
+	require.Equal(t, 404, w.Code, "cross-tenant fires read must 404")
+	assert.NotContains(t, w.Body.String(), "secret cause")
+}
+
+// Edge: NULL result (pre-execution or errors_only fires) omits the
+// field entirely — no "result":null noise, no empty object.
+func TestTriggerFires_NullResultOmitted(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-n"] = &wf.TriggerRow{ID: "trig-n", OwnerType: "user", OwnerID: "test-user", Name: "n", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-n", TriggerID: "trig-n", SourceType: "webhook",
+		ActionType: "routine", Status: "fired",
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-n/fires", nil)
+	require.Equal(t, 200, w.Code)
+	assert.NotContains(t, w.Body.String(), `"result"`, "NULL result omits the key (omitempty)")
+}
+
+// Edge: captured SUCCESS output surfaces the same way as a failure
+// cause (captureMode full stores the agent output in the same column).
+func TestTriggerFires_CapturedSuccessVisible(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-c"] = &wf.TriggerRow{ID: "trig-c", OwnerType: "user", OwnerID: "test-user", Name: "c", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-c", TriggerID: "trig-c", SourceType: "webhook",
+		ActionType: "routine", Status: "delivered",
+		Result: json.RawMessage(`{"response":"NIGHTLY-OK","session_id":""}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-c/fires", nil)
+	require.Equal(t, 200, w.Code)
+	assert.Contains(t, w.Body.String(), "NIGHTLY-OK", "captured success output is readable")
 }

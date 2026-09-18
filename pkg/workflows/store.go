@@ -160,6 +160,13 @@ type TriggerFireRow struct {
 	Status        string
 	FiredAt       time.Time
 	CompletedAt   *time.Time
+	// Result is the routine execution outcome (UpdateTriggerFireResult):
+	// the captured agent output on success (captureMode full) or the
+	// failure cause on error. Distinct from ActionResult (the
+	// receiver/engine's pre-execution action payload). Exposing it closes
+	// the routine-failure observability gap (#1441): failure causes were
+	// written to a column no read path selected.
+	Result json.RawMessage
 }
 
 // WorkflowUpdate carries only the fields a partial update may change. Pointer
@@ -847,7 +854,7 @@ func (s *Store) CreateTriggerFire(ctx context.Context, row *TriggerFireRow) erro
 // ListTriggerFires returns recent fires for a trigger, paginated by fired_at DESC.
 func (s *Store) ListTriggerFires(ctx context.Context, triggerID string, limit, offset int) ([]*TriggerFireRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, trigger_id, source_type, input_envelope, action_type, action_result, status, fired_at, completed_at
+		SELECT id, trigger_id, source_type, input_envelope, action_type, action_result, status, fired_at, completed_at, result
 		FROM trigger_fires WHERE trigger_id = $1
 		ORDER BY fired_at DESC
 		LIMIT $2 OFFSET $3
@@ -938,7 +945,7 @@ func (s *Store) ClaimDueCronTriggers(ctx context.Context, now time.Time, limit i
 // scheduler to pick up webhook-triggered routines on its next tick.
 func (s *Store) ListPendingRoutineFires(ctx context.Context, limit int) ([]*TriggerFireRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, trigger_id, source_type, input_envelope, action_type, action_result, status, fired_at, completed_at
+		SELECT id, trigger_id, source_type, input_envelope, action_type, action_result, status, fired_at, completed_at, result
 		FROM trigger_fires
 		WHERE action_type = 'routine' AND status = 'fired' AND result IS NULL
 		ORDER BY fired_at ASC
@@ -1074,6 +1081,7 @@ func scanTriggerFireRow(row pgx.Row) (*TriggerFireRow, error) {
 	err := row.Scan(
 		&r.ID, &r.TriggerID, &r.SourceType, &r.InputEnvelope,
 		&r.ActionType, &r.ActionResult, &r.Status, &r.FiredAt, &r.CompletedAt,
+		&r.Result,
 	)
 	if err != nil {
 		return nil, err

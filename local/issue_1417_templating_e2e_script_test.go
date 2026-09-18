@@ -42,6 +42,12 @@ func TestIssue1417E2EScript_RowAssertionsPresent(t *testing.T) {
 		"registry_admits",                         // the stub model must be admitted before the turn
 		"rollout status deployment/mock-llm-1417", // the mock upstream must be up
 		"targetWorkspaceId",                       // the workflow targets the seeded workspace
+		// #1446 rows (T3-T6) — pinned so none can be silently dropped.
+		"fires endpoint answers for the owner", // T3: owner-shaped fires GET
+		"foreign trigger UUID 404s",            // T4: the ownership guard
+		"exposes .result (delivered",           // T5: capture-full content asserted
+		"exposes its cause via .result",        // T6: failed routine's error visible
+		"captureMode:\"full\"",                 // T5/T6 carry real capture triggers
 	} {
 		assert.Contains(t, s, want)
 	}

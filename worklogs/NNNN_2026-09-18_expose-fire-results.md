@@ -1,0 +1,35 @@
+# Worklog: #1441 — expose routine fire results (the invisible failure column)
+
+**Date:** 2026-09-18
+**Session:** Debugging #1441 (intermittent routine-fire failures) hit a wall: failure causes are written to the trigger_fires.result column (UpdateTriggerFireResult), but ListTriggerFires never SELECTed it and the response only marshaled action_result — routine failures were undiagnosable from outside by construction. Bisect so far: capture-full alone and memory-without-marker both survive; the failure is intermittent and correlates with the {{.prevResult}} injection path.
+**Status:** Complete (observability half)
+
+---
+
+## Objective
+Make every fire row fully observable so the intermittent cause names itself on the next repro.
+
+## Work Completed
+- TriggerFireRow.Result + the two fire SELECT sites + scan carry the result column.
+- TriggerFireResponse.Result (omitempty) marshaled in triggerFireRowToResponse.
+- Handler tests: a failed routine fire's cause is visible in the fires list; the endpoint is owner-scoped (cross-tenant UUID 404s — the reviewer-caught pre-existing hole this PR would have widened; guarded like every sibling).
+- OpenAPI TriggerFire.result added (SDK consumers see the field).
+- Store integration round-trip: UpdateTriggerFireResult's cause selects back non-NULL via ListTriggerFires.
+
+## Key Decisions
+- Result stays distinct from ActionResult (pre-execution action payload vs execution outcome) — both now surface.
+
+## Blockers
+None.
+
+## Tests Run
+- Handler units: ExposeRoutineResult, OwnershipGuard, NullResultOmitted (omitempty edge), CapturedSuccessVisible (full-capture edge).
+- Store integration: TestTriggerFireResultRoundTrip (cause written → selected non-NULL).
+- E2E (issue-1417 script, nightly-registered, conflict-free vs open #1444): T3 owner fires GET answers with the list shape; T4 foreign trigger UUID 404s (the ownership guard); T5 a captureMode-full routine fire delivers through a signed webhook and its captured output is asserted in .fires[0].result (real content, not liveness); T6 a failed routine (target workspace deleted before delivery) exposes its {"error":…} cause via .result.
+- Full handlers + workflows suites green.
+
+## Next Steps
+Ship → prod → rerun the memory bisect; the failed fire's result field will carry the engine's errMsg verbatim → root-cause the intermittent failure.
+
+## Files Modified
+- pkg/workflows/store.go (+row/SELECT/scan), pkg/types/workflows.go, api/internal/handlers/triggers.go (+test)

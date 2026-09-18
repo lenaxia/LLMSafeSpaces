@@ -498,6 +498,7 @@ type TriggerFireResponse struct {
 	InputEnvelope json.RawMessage `json:"inputEnvelope,omitempty"`
 	ActionType    string          `json:"actionType"`
 	ActionResult  json.RawMessage `json:"actionResult,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
 	Status        string          `json:"status"`
 	FiredAt       time.Time       `json:"firedAt"`
 	CompletedAt   *time.Time      `json:"completedAt,omitempty"`
