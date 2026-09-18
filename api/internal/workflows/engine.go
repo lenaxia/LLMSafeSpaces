@@ -893,6 +893,15 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 // the trigger name as display title plus one activity record so the
 // session sorts by its fire time. Best-effort by design — the fire has
 // already succeeded; an index failure is logged and never escalates.
+//
+// Title semantics: each fire creates its own session (the #1327 harness
+// key is trigger+fire), so this runs once per session and a user rename
+// is never clobbered by a LATER fire. The one window is a re-driven
+// pending fire (processPendingRoutineFire after a mid-fire API death):
+// the re-drive re-stamps the trigger title over an in-between rename —
+// accepted, same class as the re-drive message_count double-count. The
+// has_unread flag reads true until the session is opened, identical to
+// any unopened interactive session (MarkSessionSeen clears it).
 func (s *Scheduler) indexPreservedSession(ctx context.Context, logger Logger, workspaceID, sessionID, title string) {
 	if s.SessionIndex == nil {
 		return

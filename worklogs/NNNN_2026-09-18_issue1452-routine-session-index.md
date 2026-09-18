@@ -26,6 +26,15 @@ Determine with evidence whether routine-trigger sessions preserved via `preserve
 - **RED:** `api/internal/workflows/engine_routine_sessionindex_test.go` — 6 tests over a recording `SessionIndexWriter` mock (PreserveAlways indexes; PreserveNever doesn't; PreserveOnFailure-delete-succeeds doesn't; delete-fails does — mirroring the #762 origin fallback; nil writer no-panic; UpsertTitle error non-fatal and independent of the message/origin writes). Confirmed failing (compile: unknown field).
 - **GREEN:** `Scheduler.SessionIndex SessionIndexWriter` (new 2-method caller-shaped interface, satisfied by `sessionindex.Service`); `indexPreservedSession` helper called inside the existing `sessionID != "" && !sessionDeleted` block (same gate as `RecordSessionOrigin` — indexes exactly the sessions that still exist); best-effort semantics (errors logged, never fail the fire; mirrors `PasswordProvider` nil-skip pattern). Wired `SessionIndex: sessionIndexSvc` in `app.go` (`sessionIndexSvc` already in scope at the `wfScheduler` literal). No wire-contract, agentd, or opencode changes.
 
+### Review round 1 (CHANGES_REQUESTED → addressed)
+
+- **Integration seam:** `TestExecuteRoutine_SessionIndexIntegration` — engine drives the REAL `sessionindex.Service` (started drainer + `MockDatabaseService`): asserts `UpsertSessionTitle` hits the DB and the queued `RecordMessage` drains into `UpsertSessionMessage` (Stop() drains-and-joins, so the mock is quiescent when asserted — a first Eventually-poll draft raced the drainer on the mock's Calls and failed `-race`, which is exactly the concurrency the drainer introduces). Covers the queue/drain the recording mock bypassed.
+- **App wiring pin:** `api/internal/app/workflow_scheduler_wiring_test.go` — source-scan pin (handlers' `no_session_derivation_test.go` precedent): `app.go` must contain `SessionIndex: sessionIndexSvc` inside the `apiwf.Scheduler` literal. Deleting the one-line production wiring now fails a test (previously every test stayed green — the reviewer reproduced the bug by deleting exactly that line).
+- **e2e rows (kind nightly):** `local/issue1452-routine-session-index-e2e.sh` — R1 happy: signed-webhook PreserveAlways routine fires → delivered fire's captured `session_id` appears in `GET /workspaces/:id/sessions` titled with the trigger name; R2 negative: PreserveNever delivers but adds no row. Deterministic (HMAC webhook firing, no cron wait); registered in `.github/workflows/e2e-nightly.yml` (port 18087). Pinned by `local/issue_1452_e2e_script_test.go` (bash syntax, row/assertion needles, workflow registration) per the issue-1410 script-test pattern.
+- **e2e unhappy (index-write failure mid-fire): deliberately NOT row-ed** — isolating a session_index write failure at cluster scale means partitioning Postgres, which also breaks `UpdateTriggerFireResult` itself (the fire can never be marked delivered), so the row would assert nothing the unit row `TestExecuteRoutine_IndexTitleError_NonFatal` doesn't already pin exactly. Documented here for the reviewer to adjudicate.
+- **Robustness findings — documented decisions** (in `indexPreservedSession`'s doc comment): (a) title re-stamp only overlaps a user rename on a re-driven pending fire (each fire owns its session — verified live: two fires → two sessions), accepted like the re-drive message-count double-count; (b) `has_unread` true until opened = normal unopened-session semantics (MarkSessionSeen clears); (c) startup window verified non-defect (events buffer 1024, flushed at Start); (d) shutdown race loses at most one `last_message_at` (title row persists synchronously) — accepted, low impact.
+- **Follow-ups surfaced (not blockers per review):** failed PreserveOnFailure fires never index their preserved session (mirrors the pre-existing `RecordSessionOrigin` delivery-only blind spot — the failure branch has no session_id to index); duplicate PR #1461 from a parallel workflow escalated to the orchestrator.
+
 ---
 
 ## Key Decisions
@@ -55,12 +64,15 @@ None.
 
 ## Tests Run
 
-- `go test -timeout 300s -race -count=1 ./api/internal/workflows/` — ok (33.6s; includes the 6 new RED-first tests)
-- `go test -timeout 120s -count=1 -run TestExecuteRoutine_ -v ./api/internal/workflows/` — 18/18 PASS
+- `go test -timeout 300s -race -count=1 ./api/internal/workflows/` — ok (includes the 7 tests of this fix: 6 unit + 1 integration)
+- `go test -timeout 120s -count=1 -run TestExecuteRoutine_ -v ./api/internal/workflows/` — all PASS
+- `go test -timeout 60s -count=1 -run TestWorkflowScheduler_SessionIndexWired ./api/internal/app/` — PASS
+- `go test -timeout 120s -count=1 -run TestIssue1452 ./local/` — 3/3 PASS (script syntax, row pins, workflow registration)
+- `bash -n local/issue1452-routine-session-index-e2e.sh` — clean
 - `go test -timeout 300s -race -count=1 ./api/internal/app/ ./api/internal/services/sessionindex/ ./api/internal/services/workspace/` — ok
 - `go test -timeout 600s -race -count=1 ./cmd/workspace-agentd/ ./pkg/agent/...` — ok (pre-push gate)
 - `go build ./...` (GOPROXY=direct) — exit 0
-- Mutation-resistance of the pins: removing the `indexPreservedSession` call fails 3 tests; moving it outside the `!sessionDeleted` gate fails `DeleteSucceeds_DoesNotIndexSession`; deleting the nil-check fails `NilSessionIndex_StillDelivers` (panic).
+- Mutation-resistance of the pins: removing the `indexPreservedSession` call fails 3 tests; moving it outside the `!sessionDeleted` gate fails `DeleteSucceeds_DoesNotIndexSession`; deleting the nil-check fails `NilSessionIndex_StillDelivers` (panic); deleting the `app.go` wiring line fails `TestWorkflowScheduler_SessionIndexWired`; dropping an e2e row's assertion fails its needle pin.
 
 ---
 
@@ -74,5 +86,9 @@ None.
 ## Files Modified
 
 - `api/internal/workflows/engine.go` — `Scheduler.SessionIndex` field + `SessionIndexWriter` interface; `indexPreservedSession` helper; one call in `executeRoutine`'s preserved-session block
-- `api/internal/workflows/engine_routine_sessionindex_test.go` — new (6 tests + recording mock)
+- `api/internal/workflows/engine_routine_sessionindex_test.go` — new (6 unit tests + recording mock + real-service integration test)
 - `api/internal/app/app.go` — wire `SessionIndex: sessionIndexSvc` into the scheduler literal
+- `api/internal/app/workflow_scheduler_wiring_test.go` — new (app wiring source pin)
+- `local/issue1452-routine-session-index-e2e.sh` — new (kind e2e rows R1/R2)
+- `local/issue_1452_e2e_script_test.go` — new (script structure pins)
+- `.github/workflows/e2e-nightly.yml` — register the e2e script (port 18087)

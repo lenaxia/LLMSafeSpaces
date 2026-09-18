@@ -25,8 +25,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
@@ -208,4 +212,38 @@ func TestExecuteRoutine_IndexTitleError_NonFatal(t *testing.T) {
 	require.Equal(t, "delivered", store.statuses["fire-idx6"], "index failure must never fail the fire")
 	require.Len(t, index.messageCalls(), 1, "message write is independent of the title write")
 	require.Len(t, store.sessionOrigins, 1, "origin write is independent of the title write")
+}
+
+// TestExecuteRoutine_SessionIndexIntegration drives the engine against
+// the REAL sessionindex.Service (started drainer + mock database) — the
+// seam the recording mock bypasses: interface dispatch on the concrete
+// service, the bounded queue, and the drain that turns RecordMessage
+// into a database UpsertSessionMessage. Stop() drains the queue and
+// joins the drainer, so the mock is quiescent when asserted (testify
+// mocks are not safe for concurrent reads from the drainer goroutine).
+func TestExecuteRoutine_SessionIndexIntegration(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("UpsertSessionTitle", mock.Anything, "ws-1", "ses_int1", "Weather Bot").Return(nil)
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_int1", mock.AnythingOfType("time.Time")).Return(nil)
+	log, err := apilogger.New(false, "error", "console")
+	require.NoError(t, err)
+	index := sessionindex.New(db, log)
+	require.NoError(t, index.Start())
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_int1"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-int1", Name: "Weather Bot", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveAlways}
+	fire := &wf.TriggerFireRow{ID: "fire-int1", TriggerID: "trig-int1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		SessionIndex: index}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	require.NoError(t, index.Stop())
+
+	require.Equal(t, "delivered", store.statuses["fire-int1"])
+	db.AssertCalled(t, "UpsertSessionTitle", mock.Anything, "ws-1", "ses_int1", "Weather Bot")
+	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "ses_int1", mock.AnythingOfType("time.Time"))
 }

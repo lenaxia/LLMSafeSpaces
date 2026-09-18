@@ -361,6 +361,24 @@ jobs:
           R4_WAIT_S: 150
         run: bash local/issue-1410-1412-automation-e2e.sh
 
+      - name: Run routine session-index e2e rows (#1452)
+        # Preserved routine sessions must be discoverable in the platform
+        # session list: the routine fire path never rides the adapter
+        # routes that populate the session_index, so a PreserveAlways
+        # fire's session is indexed at fire completion (R1: webhook-fired
+        # routine delivers, its captured session_id appears in
+        # GET /workspaces/:id/sessions titled with the trigger name) and
+        # a PreserveNever fire leaves no row (R2 — the ephemeral session
+        # is deleted agent-side). No LLM model — the routine agent node
+        # resolves the workspace default.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18087
+          FIRE_WAIT_S: 300
+        run: bash local/issue1452-routine-session-index-e2e.sh
+
       - name: Run templating e2e rows (#1417)
         # Agent-prompt dotted-path rendering: a workflow run with
         # {{.body.topic}} + {{.missing.path}} executes against an
