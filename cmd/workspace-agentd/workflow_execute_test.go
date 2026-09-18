@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -521,5 +522,236 @@ func TestRenderTemplateRefs_UnclosedSameLineDoesNotSwallow(t *testing.T) {
 	got := renderTemplateRefs("{{.typo oops {{.y}}", map[string]any{"y": "RENDERED"})
 	if !strings.Contains(got, "RENDERED") {
 		t.Fatalf("same-line valid ref must render, got %q", got)
+	}
+}
+
+// #1457: createOpencodeSession collapsed EVERY failure mode — opencode
+// 5xx (transient provider blips), transport errors, unparseable bodies
+// — into "", which execAgentNode reported as errorCode
+// "session_not_found". The engine's transient-retry classifier never
+// matches that code, so a transient blip on the session-create leg
+// failed the fire one leg earlier than #1441's class. These pins hold
+// the SPLIT: create failures surface "session_create_failed" carrying
+// the distinguishing detail; only a genuinely missing session (404 on
+// the message leg) stays "session_not_found".
+
+// Helper: swap agentAddrAtomic to the stub for the test's lifetime.
+func withStubAgentAddr(t *testing.T, stubURL string) {
+	t.Helper()
+	orig := agentAddrAtomic.Load()
+	t.Cleanup(func() { agentAddrAtomic.Store(orig) })
+	agentAddrAtomic.Store(stubURL)
+}
+
+// Handler wiring: an opencode 5xx on POST /session must surface
+// errorCode session_create_failed (HTTP 200) with the status-carrying
+// detail — NOT session_not_found. Red on the pre-#1457 collapse
+// (verified: fails with errorCode "session_not_found").
+func TestWorkflowExecuteHandler_AgentNodeSessionCreate5xx(t *testing.T) {
+	for _, status := range []int{500, 502, 503} {
+		t.Run(fmt.Sprintf("opencode%d", status), func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"blip"}`))
+			}))
+			defer stub.Close()
+			withStubAgentAddr(t, stub.URL)
+
+			body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"hi"}}`
+			req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+			req.SetBasicAuth("opencode", mcpTestPassword)
+			w := httptest.NewRecorder()
+			workflowExecuteHandler(mcpTestPassword)(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("agentd surfaces error codes as HTTP 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				ErrorCode string `json:"errorCode"`
+				Detail    string `json:"detail"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.ErrorCode != "session_create_failed" {
+				t.Fatalf("opencode %d on session create must surface session_create_failed, got %q (%q)", status, resp.ErrorCode, resp.Detail)
+			}
+			want := fmt.Sprintf("opencode returned %d", status)
+			if resp.Detail != want {
+				t.Fatalf("detail must carry the status (%q), got %q", want, resp.Detail)
+			}
+		})
+	}
+}
+
+// Handler wiring: a transport error reaching opencode on session
+// create (opencode restarting/crashed) surfaces session_create_failed
+// with the transport detail — never the bare session_not_found
+// collapse. Not in the engine's retry class (consistent with the
+// message leg, where opencode transport errors are not retried).
+func TestWorkflowExecuteHandler_AgentNodeSessionCreateTransportError(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	stubURL := stub.URL
+	stub.Close() // dead port: every dial fails
+	withStubAgentAddr(t, stubURL)
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"hi"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("agentd surfaces error codes as HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "session_create_failed" {
+		t.Fatalf("transport error on session create must surface session_create_failed, got %q (%q)", resp.ErrorCode, resp.Detail)
+	}
+	if !strings.Contains(resp.Detail, "opencode session create:") {
+		t.Fatalf("detail must carry the transport error, got %q", resp.Detail)
+	}
+}
+
+// Unit pins on createOpencodeSession itself: every failure mode
+// returns a non-empty (code, detail) pair — the "" collapse is the
+// bug. Success returns the parsed ID with empty code/detail.
+func TestCreateOpencodeSession_FailureModesCarryCode(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantDetail string
+	}{
+		{"opencode 500", 500, `{"error":"blip"}`, "opencode returned 500"},
+		{"opencode 502", 502, `{"error":"blip"}`, "opencode returned 502"},
+		{"opencode 503", 503, `{"error":"blip"}`, "opencode returned 503"},
+		{"opencode 400 deterministic", 400, `{"error":"bad"}`, "opencode returned 400"},
+		{"unparseable 200 body", 200, `not-json`, "cannot parse created session:"},
+		// r1 Finding 1: a 200 whose body carries no usable ID must be a
+		// CREATE FAILURE, not a phantom success — the empty (code,
+		// detail) collapse read as ErrorCode=="" delivers the fire.
+		{"empty 200 object", 200, `{}`, "cannot parse created session:"},
+		{"empty id string", 200, `{"id":""}`, "cannot parse created session:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer stub.Close()
+			withStubAgentAddr(t, stub.URL)
+
+			id, code, detail := createOpencodeSession(context.Background(), mcpTestPassword)
+			if id != "" {
+				t.Fatalf("failed create must return no session ID, got %q", id)
+			}
+			if code != "session_create_failed" {
+				t.Fatalf("failure must carry session_create_failed, got %q (detail %q)", code, detail)
+			}
+			if !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("detail %q must carry %q", detail, tc.wantDetail)
+			}
+		})
+	}
+}
+
+func TestCreateOpencodeSession_SuccessReturnsID(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"ses_created_1"}`))
+	}))
+	defer stub.Close()
+	withStubAgentAddr(t, stub.URL)
+
+	id, code, detail := createOpencodeSession(context.Background(), mcpTestPassword)
+	if id != "ses_created_1" {
+		t.Fatalf("expected parsed session ID, got %q", id)
+	}
+	if code != "" || detail != "" {
+		t.Fatalf("success must carry no failure code, got (%q, %q)", code, detail)
+	}
+}
+
+// Handler wiring (r1 Finding 1): a 200 create response with an
+// empty/absent id must surface session_create_failed — never an empty
+// errorCode, which the engine reads as success (phantom "delivered"
+// fire with the failure counter reset). Red on the unguarded split
+// (verified: handler emits {"errorCode":"","detail":""}).
+func TestWorkflowExecuteHandler_AgentNodeSessionCreateEmptyIDIsFailure(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty object": `{}`,
+		"empty id":     `{"id":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer stub.Close()
+			withStubAgentAddr(t, stub.URL)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute",
+				strings.NewReader(`{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"hi"}}`))
+			req.SetBasicAuth("opencode", mcpTestPassword)
+			w := httptest.NewRecorder()
+			workflowExecuteHandler(mcpTestPassword)(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("agentd surfaces error codes as HTTP 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				ErrorCode string `json:"errorCode"`
+				Detail    string `json:"detail"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.ErrorCode != "session_create_failed" {
+				t.Fatalf("empty-ID 200 create must surface session_create_failed, got %q (%q)", resp.ErrorCode, resp.Detail)
+			}
+			if !strings.Contains(resp.Detail, "cannot parse created session:") {
+				t.Fatalf("detail must name the parse failure, got %q", resp.Detail)
+			}
+		})
+	}
+}
+
+// Genuine missing-session stays its own code: a 404 on the MESSAGE
+// leg (the session existed at create, vanished before/during the
+// turn) reports session_not_found — never retried by the engine.
+// Guards the #1457 split from collapsing in the OTHER direction.
+func TestWorkflowExecuteHandler_AgentNodeMessageLeg404StaysSessionNotFound(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/message") {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no session"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_gone"}`))
+	}))
+	defer stub.Close()
+	withStubAgentAddr(t, stub.URL)
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"hi"}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "session_not_found" {
+		t.Fatalf("message-leg 404 must stay session_not_found, got %q (%q)", resp.ErrorCode, resp.Detail)
 	}
 }

@@ -302,10 +302,13 @@ fi
 # (TestExecuteWithRetry_*); asserting a live provider blip from e2e
 # would be flake-shaped by definition. The row pins the WIRING: the
 # scheduler-level test that fails if the retry call site is reverted.
-# T7 (#1451): the retry wiring lives in the engine suite — this row
-# ASSERTS the pins exist in the tree the nightly runs against (a
-# deleted wiring test fails the row instead of rotting silently).
-for t7test in TestScheduler_RoutineFireRetriesTransient5xx TestScheduler_RoutineFirePersistent5xxBurnsOneFailure; do
+# T7 (#1451/#1457/#1458): the retry wiring lives in the engine suite —
+# this row ASSERTS the pins exist in the tree the nightly runs against
+# (a deleted wiring test fails the row instead of rotting silently).
+# The #1457 row pins the session-create leg (transient opencode 5xx at
+# create, surfaced as session_create_failed, retried); the #1458 row
+# pins the ScriptPath pre-script leg (transport 5xx retried).
+for t7test in TestScheduler_RoutineFireRetriesTransient5xx TestScheduler_RoutineFirePersistent5xxBurnsOneFailure TestScheduler_RoutineFireRetriesSessionCreate5xx TestScheduler_RoutineFireScriptLegRetriesTransient5xx; do
     if ! grep -rq "func ${t7test}(" api/internal/workflows/; then
         note_fail "T7: wiring test ${t7test} missing from the tree"
     fi

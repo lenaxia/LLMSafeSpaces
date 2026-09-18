@@ -400,9 +400,14 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	createdEphemeral := false
 	sessionID := data.SessionID
 	if sessionID == "" {
-		sessionID = createOpencodeSession(ctx, password)
+		var failCode, failDetail string
+		sessionID, failCode, failDetail = createOpencodeSession(ctx, password)
 		if sessionID == "" {
-			writeWorkflowError(w, http.StatusOK, "session_not_found", "failed to create ephemeral session")
+			// #1457: a FAILED CREATE is never a missing session — a
+			// transient opencode 5xx here must stay distinguishable
+			// from the message-leg 404 below so the engine's retry
+			// classifier can see it.
+			writeWorkflowError(w, http.StatusOK, failCode, failDetail)
 			return
 		}
 		createdEphemeral = true
@@ -600,21 +605,40 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 	return result
 }
 
-func createOpencodeSession(ctx context.Context, password string) string {
+// createOpencodeSession creates a session via the opencode HTTP API.
+// Every failure mode returns a non-empty (code, detail) pair — NEVER
+// a bare collapse to "": transport errors, non-200s, unparseable
+// bodies, and a 200 with no usable ID all surface errorCode
+// session_create_failed carrying the distinguishing detail (#1457),
+// so the engine can classify a transient opencode 5xx apart from
+// deterministic failures (an empty pair would read as ErrorCode==""
+// there — a phantom delivered fire). Only the message leg's 404
+// reports session_not_found — a session that existed at create and
+// vanished before/during the turn.
+func createOpencodeSession(ctx context.Context, password string) (sessionID, failCode, failDetail string) {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
 		getAgentAddr()+"/session", strings.NewReader("{}"))
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{}).Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return ""
+	if err != nil {
+		return "", "session_create_failed", fmt.Sprintf("opencode session create: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", "session_create_failed", fmt.Sprintf("opencode returned %d", resp.StatusCode)
+	}
 	id, err := parseCreatedSessionID(resp.Body)
 	if err != nil {
-		return ""
+		return "", "session_create_failed", fmt.Sprintf("cannot parse created session: %v", err)
 	}
-	return id
+	// A 200 with no usable ID ({}, {"id":""}) is a create failure,
+	// not success: an empty (code, detail) pair would read as
+	// ErrorCode=="" at the engine — a phantom delivered fire.
+	if id == "" {
+		return "", "session_create_failed", "cannot parse created session: empty id"
+	}
+	return id, "", ""
 }
 
 // agentNodeMessage is the opencode V1 message wire shape the workflow
