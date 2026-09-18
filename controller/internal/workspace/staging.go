@@ -18,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -116,6 +117,25 @@ type RelayStagingConfig struct {
 	RouterClient   RelayRouterClient
 	redaction      secrets.StagedKeyRedactor
 	Now            func() time.Time
+
+	// APIReader is the DIRECT (non-cached) reader every llm-relay Secret
+	// read goes through (pub, mint-key). The reconciler's cached client
+	// cannot serve these: a namespace outside the cache scope fails
+	// without an API call, and an informer inside it needs LIST+WATCH —
+	// verbs the llm-relay Role deliberately withholds (§4.3 deviation
+	// note). Writes stay on the reconciler client (controller-runtime
+	// writes bypass the cache). Wired to mgr.GetAPIReader() in
+	// SetupRelayStaging; nil falls back to the reconciler client (unit
+	// tests that don't exercise the topology).
+	APIReader client.Reader
+}
+
+// readerFor returns the reader llm-relay reads must use.
+func (r *WorkspaceReconciler) relayReader() client.Reader {
+	if r.RelayStaging.APIReader != nil {
+		return r.RelayStaging.APIReader
+	}
+	return r.Client
 }
 
 // NewRelayStagingConfig constructs the production staging config. The
@@ -248,6 +268,7 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	}
 	logger := log.FromContext(ctx)
 	before := snapshotRelayState(ws)
+	r.relayPendingRevocations = nil
 
 	providers, err := cfg.ProviderSource.LLMProviders(ctx, ws.Spec.Owner.UserID, ws.Name)
 	if err != nil {
@@ -279,7 +300,17 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	lastSealed := relayAnnotationInt(ws, relaySealedGenerationAnnotation)
 	forceReseal := pub.Generation != lastSealed
 
-	revoked := r.relayRevokeUndesired(ctx, ws, desired, staged)
+	revoked, revokeErr := r.relayRevokeUndesired(ctx, ws, desired, staged)
+	if revokeErr != nil {
+		// Persist what DID complete + the pending-revocation condition,
+		// then requeue — the retained envelope keeps resolving (D2
+		// incomplete) until the delete lands.
+		r.relayEvaluateStale(ws, revoked, false, nil)
+		if err := r.relayPersist(ctx, ws, before); err != nil {
+			return err
+		}
+		return revokeErr
+	}
 
 	// §4.2 reconcile predicate — the DR/residual-window terminator.
 	// Generation unchanged while corruption-class stale persists under an
@@ -435,12 +466,13 @@ func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesire
 // envelope whose provider is no longer bound (unbind/credential delete) is
 // deleted, its redaction group unregistered in the same pass, and a
 // one-pass CredentialStale(revocation-class) is raised (worklog D7).
-func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState) []string {
+func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState) ([]string, error) {
 	want := make(map[string]bool, len(desired))
 	for i := range desired {
 		want[desired[i].pd.Slug] = true
 	}
 	var revoked []string
+	var pending []string
 	for slug, old := range staged {
 		if want[slug] {
 			continue
@@ -448,11 +480,13 @@ func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.W
 		// Blind delete (name derived; no read on the envelope Secrets).
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: envelopeSecretName(ws.Name, slug), Namespace: r.RelayStaging.Namespace}}
 		if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
-			// Fail-closed on the D2 contract: a delete we cannot perform
-			// must NOT silently drop out of the revocation set — surface
-			// loudly and retry via requeue.
-			log.FromContext(ctx).Error(err, "relay staging: revocation delete failed — envelope retained, will retry", "secret", sec.Name)
-			return append(revoked, slug)
+			// Fail-closed on the D2 contract: the envelope is RETAINED and
+			// stays in the staged map so the next pass retries; the caller
+			// requeues on the returned error. Reported distinctly — a
+			// pending revocation must not read as a completed one.
+			log.FromContext(ctx).Error(err, "relay staging: revocation delete failed — envelope retained, retrying", "secret", sec.Name)
+			pending = append(pending, slug)
+			continue
 		}
 		r.RelayStaging.redaction.UnregisterStagedKey(old.RedactionID)
 		delete(staged, slug)
@@ -462,7 +496,11 @@ func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.W
 				"provider %q unbound: llm-relay envelope deleted (revocation = Secret deletion, D2); in-flight tokens fail closed until the batch applies the removal", slug)
 		}
 	}
-	return revoked
+	r.relayPendingRevocations = pending
+	if len(pending) > 0 {
+		return revoked, fmt.Errorf("revocation incomplete: envelope delete failed for %s — retained in llm-relay, retrying", joinQuoted(pending))
+	}
+	return revoked, nil
 }
 
 func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, keyID string) (*relayHandoff, bool, error) {
@@ -544,7 +582,7 @@ func (r *WorkspaceReconciler) relayStaleClass(ws *v1.Workspace, revoked []string
 	// (its token now fails closed by design), and escalation is explicitly
 	// forbidden for revocation-class (§4.2) — anti-churn conservatism.
 	switch {
-	case len(revoked) > 0:
+	case len(revoked) > 0 || len(r.relayPendingRevocations) > 0:
 		return relayStaleRevocation
 	case degraded == "credential_stale":
 		return relayStaleCorruption
@@ -590,8 +628,11 @@ func (r *WorkspaceReconciler) relayEvaluateStale(ws *v1.Workspace, revoked []str
 		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True",
 			v1.ReasonStaleTokenExpired, "token expired; renewal owns this cause")
 	case class == relayStaleRevocation:
-		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True",
-			v1.ReasonStaleRevoked, fmt.Sprintf("credential revoked: %s — envelope deleted (D2); resolves fail closed until the batch applies the removal", joinQuoted(revoked)))
+		msg := fmt.Sprintf("credential revoked: %s — envelope deleted (D2); resolves fail closed until the batch applies the removal", joinQuoted(revoked))
+		if len(r.relayPendingRevocations) > 0 {
+			msg += fmt.Sprintf("; revocation INCOMPLETE (delete failed, retained + retrying): %s", joinQuoted(r.relayPendingRevocations))
+		}
+		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True", v1.ReasonStaleRevoked, msg)
 	case class == relayStaleDelivery:
 		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True",
 			v1.ReasonStaleDeliveryDeferred, fmt.Sprintf("staged material not applied by the running pod: %s (a wait or fault rotation cannot repair)", degraded))
@@ -638,7 +679,7 @@ func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []rel
 func (r *WorkspaceReconciler) relayEscalateRotate(ctx context.Context, ws *v1.Workspace) (RelayRotateReceipt, bool, error) {
 	cfg := r.RelayStaging
 	key := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: secrets.RelayMintKeyName, Namespace: cfg.Namespace}, key); err != nil {
+	if err := r.relayReader().Get(ctx, types.NamespacedName{Name: secrets.RelayMintKeyName, Namespace: cfg.Namespace}, key); err != nil {
 		return RelayRotateReceipt{}, false, err
 	}
 	if last := key.Annotations[relayLastRotateEscalationAnnotation]; last != "" {
@@ -677,13 +718,14 @@ func validateRotateReceipt(pub *secrets.HPKEPubPayload, receipt RelayRotateRecei
 
 func (r *WorkspaceReconciler) relayReadPub(ctx context.Context) (*secrets.HPKEPubPayload, error) {
 	sec := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: secrets.RelayPubSecretName, Namespace: r.RelayStaging.Namespace}, sec); err != nil {
+	// Deliberately NO llm-relay-kek probe: the Role's read carve-out is
+	// name-scoped to pub + mint-key (§4.3 deviation note), so a KEK GET is
+	// Forbidden in-cluster and the KMS-vs-HPKE distinction cannot be made
+	// by the controller without widening the grant — deferred to US-72.5
+	// with the rest of the KMS-mode wiring (worklog D4).
+	if err := r.relayReader().Get(ctx, types.NamespacedName{Name: secrets.RelayPubSecretName, Namespace: r.RelayStaging.Namespace}, sec); err != nil {
 		if apierrors.IsNotFound(err) {
-			kek := &corev1.Secret{}
-			if kerr := r.Get(ctx, types.NamespacedName{Name: secrets.RelayKEKSecretName, Namespace: r.RelayStaging.Namespace}, kek); kerr == nil {
-				return nil, fmt.Errorf("llm-relay-kek present but no %s: KMS staging mode is not wired in the controller yet (US-72.5 flip prep); HPKE is the supported mode", secrets.RelayPubSecretName)
-			}
-			return nil, fmt.Errorf("%s not found in namespace %s (router not bootstrapped?)", secrets.RelayPubSecretName, r.RelayStaging.Namespace)
+			return nil, fmt.Errorf("%s not found in namespace %s — router not bootstrapped, or a KMS-mode (llm-relay-kek) deployment where controller staging is not yet wired (US-72.5)", secrets.RelayPubSecretName, r.RelayStaging.Namespace)
 		}
 		return nil, fmt.Errorf("reading %s: %w", secrets.RelayPubSecretName, err)
 	}
@@ -699,7 +741,7 @@ func (r *WorkspaceReconciler) relayReadPub(ctx context.Context) (*secrets.HPKEPu
 // it lazily so boot ordering never wedges).
 func (r *WorkspaceReconciler) ensureRelayMintKey(ctx context.Context) (string, error) {
 	sec := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Name: secrets.RelayMintKeyName, Namespace: r.RelayStaging.Namespace}, sec)
+	err := r.relayReader().Get(ctx, types.NamespacedName{Name: secrets.RelayMintKeyName, Namespace: r.RelayStaging.Namespace}, sec)
 	if err == nil {
 		if key := string(sec.Data[secrets.RelayMintKeyDataKey]); key != "" {
 			return key, nil
@@ -831,7 +873,8 @@ func (r *WorkspaceReconciler) relayPersist(ctx context.Context, ws *v1.Workspace
 	}
 	statusDirty := relayConditionsChanged(before, ws)
 	annotationsDirty := desired[relaySealedGenerationAnnotation] != before.sealedGeneration ||
-		desired[relayStagedRevisionAnnotation] != before.stagedRevision
+		desired[relayStagedRevisionAnnotation] != before.stagedRevision ||
+		desired[relayStagedProvidersAnnotation] != before.stagedProviders
 	if !statusDirty && !annotationsDirty {
 		return nil
 	}
@@ -858,6 +901,7 @@ func (r *WorkspaceReconciler) relayPersist(ctx context.Context, ws *v1.Workspace
 type relayStateSnapshot struct {
 	sealedGeneration string
 	stagedRevision   string
+	stagedProviders  string
 	conditions       []relayCondSig
 }
 
@@ -872,6 +916,7 @@ func snapshotRelayState(ws *v1.Workspace) relayStateSnapshot {
 	if ws.Annotations != nil {
 		s.sealedGeneration = ws.Annotations[relaySealedGenerationAnnotation]
 		s.stagedRevision = ws.Annotations[relayStagedRevisionAnnotation]
+		s.stagedProviders = ws.Annotations[relayStagedProvidersAnnotation]
 	}
 	for _, c := range ws.Status.Conditions {
 		switch c.Type {

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -697,4 +698,146 @@ func TestStaging_MintFailureRetainsUnexpiredToken(t *testing.T) {
 	assert.Empty(t, ho3.Providers, "an expired token with a failed mint must not linger")
 	require.NotNil(t, conditionOf(ws, v1.WorkspaceConditionCredentialStale))
 	assert.Equal(t, v1.ReasonStageFailed, conditionOf(ws, v1.WorkspaceConditionCredentialStale).Reason)
+}
+
+// failingReadClient simulates the production cache topology for the
+// llm-relay namespace: a cached client that can serve NOTHING from
+// llm-relay (out-of-cache-scope reads fail without an API call). All
+// llm-relay reads must go through the injected API reader instead
+// (review r3 finding 1).
+type failingReadClient struct {
+	client.Client
+}
+
+func (f failingReadClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if key.Namespace == relayTestNamespace {
+		return fmt.Errorf("unable to get %s: unknown namespace for the cache", key)
+	}
+	return f.Client.Get(ctx, key, obj, opts...)
+}
+
+// TestStaging_LLMRelayReadsGoThroughAPIReader (review r3 finding 1): the
+// staging pass must complete with a reconciler client whose llm-relay
+// reads fail cache-style — pub/mint-key reads are served by the injected
+// APIReader (mgr.GetAPIReader() in production), never by the cached
+// client. This is the only topology the charted Role permits.
+func TestStaging_LLMRelayReadsGoThroughAPIReader(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 2)
+	ws := makeRelayWorkspace("ws-reader")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	// Wrap the reconciler client so llm-relay reads fail like the
+	// production cache, then point the staging config's reader at the raw
+	// client (the APIReader stand-in).
+	raw := r.Client
+	r.Client = failingReadClient{Client: raw}
+	r.RelayStaging.APIReader = raw
+
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	// The pass completed THROUGH the direct reader: envelope + handoff +
+	// staged condition all landed despite the cache client being unable
+	// to serve any llm-relay read. (Verified via the RAW client — the
+	// wrapped reconciler client legitimately cannot read llm-relay.)
+	env := &corev1.Secret{}
+	require.NoError(t, raw.Get(context.Background(), types.NamespacedName{Namespace: relayTestNamespace, Name: envelopeSecretName("ws-reader", "openai")}, env))
+	assert.True(t, strings.HasPrefix(string(env.Data[secrets.RelayEnvDataKey]), "stg:v1:hpke:hpke-g2:"))
+	require.NotNil(t, conditionOf(ws, v1.WorkspaceConditionCredentialsStaged))
+	assert.Equal(t, "True", conditionOf(ws, v1.WorkspaceConditionCredentialsStaged).Status)
+}
+
+// TestStaging_StagedProvidersAnnotationLossConverges (review r3 finding
+// 2): losing ONLY the staged-providers bookkeeping (sealed generation and
+// tokens intact) must re-seal once AND persist the rebuilt annotation —
+// the next pass returns to zero writes. The persist gate covers the
+// annotation.
+func TestStaging_StagedProvidersAnnotationLossConverges(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-annloss")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	require.NotEmpty(t, ws.Annotations[relayStagedProvidersAnnotation])
+
+	// Wipe ONLY the bookkeeping annotation (fresh token, sealed
+	// generation intact).
+	delete(ws.Annotations, relayStagedProvidersAnnotation)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	assert.NotEmpty(t, ws.Annotations[relayStagedProvidersAnnotation],
+		"the rebuilt bookkeeping must be PERSISTED, not just recomputed in memory")
+	assert.Contains(t, ws.Annotations[relayStagedProvidersAnnotation], "openai")
+
+	// The stored workspace object carries it too (converged on the API
+	// server, not only in-memory).
+	stored := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-annloss", Namespace: "default"}, stored))
+	assert.Contains(t, stored.Annotations[relayStagedProvidersAnnotation], "openai")
+
+	// And the NEXT pass is a no-op (steady state restored).
+	router.mu.Lock()
+	mints := router.mints
+	router.mu.Unlock()
+	rv := ws.ResourceVersion
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	router.mu.Lock()
+	assert.Equal(t, mints, router.mints, "converged pass must not re-mint")
+	router.mu.Unlock()
+	assert.Equal(t, rv, ws.ResourceVersion, "converged pass must not write the workspace")
+}
+
+// TestStaging_RevocationDeleteFailureRetriesAndReports (review r3 finding
+// 4): a failed envelope delete is NOT reported as a completed revocation,
+// keeps the envelope in the staged set, and propagates an error so the
+// caller requeues.
+func TestStaging_RevocationDeleteFailureRetriesAndReports(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-revfail")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	// Unbind, and make llm-relay Secret deletes fail (RBAC regression
+	// shape).
+	src.mu.Lock()
+	src.providers = nil
+	src.mu.Unlock()
+	original := r.Client
+	r.Client = deleteFailingClient{Client: original, ns: relayTestNamespace}
+
+	err := r.reconcileRelayStaging(context.Background(), ws)
+	require.Error(t, err, "an incomplete revocation must propagate so the caller requeues")
+	assert.Contains(t, err.Error(), "revocation incomplete")
+
+	stale := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, stale)
+	assert.Contains(t, stale.Message, "INCOMPLETE", "the message must distinguish pending from completed revocation")
+	assert.Contains(t, stale.Message, "retained")
+
+	// The staged bookkeeping still carries the slug → the retry (delete
+	// healed) completes the revocation on the next pass.
+	assert.Contains(t, ws.Annotations[relayStagedProvidersAnnotation], "openai")
+	r.Client = original
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	assert.NotContains(t, ws.Annotations[relayStagedProvidersAnnotation], "openai",
+		"the retried pass completes the revocation")
+}
+
+// deleteFailingClient fails Secret deletes in the given namespace.
+type deleteFailingClient struct {
+	client.Client
+	ns string
+}
+
+func (d deleteFailingClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if d.ns != "" && obj.GetNamespace() == d.ns {
+		if _, ok := obj.(*corev1.Secret); ok {
+			return fmt.Errorf("secrets is forbidden: User cannot delete resource in namespace %s", d.ns)
+		}
+	}
+	return d.Client.Delete(ctx, obj, opts...)
 }
