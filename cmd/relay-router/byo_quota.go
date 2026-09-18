@@ -53,10 +53,15 @@ func (q *byoWorkspaceQuota) countersLocked(workspaceID string) *workspaceCounter
 	return c
 }
 
-// Allow reports whether one more request fits the window. The request is
-// only counted when Record is called (post-verification), so rejected
-// requests never consume quota.
-func (q *byoWorkspaceQuota) Allow(workspaceID string) bool {
+// Admit atomically checks the request budget and, when the request fits,
+// counts it immediately. Admission-time counting is the correctness
+// invariant: a request counts against the window from the moment it is
+// accepted, NOT when its response completes — otherwise a client that
+// observes a completed response can race the previous handler's
+// post-stream bookkeeping and slip an over-budget request through
+// (pinned by TestQuotaAdmissionCountsInFlight after a CI flake).
+// Denied requests never consume quota.
+func (q *byoWorkspaceQuota) Admit(workspaceID string) bool {
 	if q.maxRequests <= 0 {
 		return true
 	}
@@ -68,52 +73,40 @@ func (q *byoWorkspaceQuota) Allow(workspaceID string) bool {
 	for _, b := range c.buckets {
 		requests += b.requests
 	}
-	return requests < q.maxRequests
+	if requests >= q.maxRequests {
+		return false
+	}
+	q.addLocked(c, 1, 0)
+	return true
 }
 
-// RecordBytes counts bytes only (both directions; requests counted once
-// via Record).
+// addLocked records requests and/or bytes into the current (or new)
+// minute bucket. Callers hold q.mu.
+func (q *byoWorkspaceQuota) addLocked(c *workspaceCounters, requests, bytes int64) {
+	now := q.clock()
+	var b *quotaBucket
+	if len(c.buckets) > 0 {
+		last := &c.buckets[len(c.buckets)-1]
+		if now.Sub(last.start) < time.Minute {
+			b = last
+		}
+	}
+	if b == nil {
+		c.buckets = append(c.buckets, quotaBucket{start: now})
+		b = &c.buckets[len(c.buckets)-1]
+	}
+	b.requests += requests
+	b.bytes += bytes
+}
+
+// RecordBytes counts bytes only (both directions; requests are counted
+// once at admission via Admit).
 func (q *byoWorkspaceQuota) RecordBytes(workspaceID string, bytes int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	c := q.countersLocked(workspaceID)
 	q.pruneLocked(c)
-	now := q.clock()
-	var b *quotaBucket
-	if len(c.buckets) > 0 {
-		last := &c.buckets[len(c.buckets)-1]
-		if now.Sub(last.start) < time.Minute {
-			b = last
-		}
-	}
-	if b == nil {
-		c.buckets = append(c.buckets, quotaBucket{start: now})
-		b = &c.buckets[len(c.buckets)-1]
-	}
-	b.bytes += bytes
-}
-
-// Record counts an accepted request and its response bytes against the
-// window.
-func (q *byoWorkspaceQuota) Record(workspaceID string, bytes int64) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	c := q.countersLocked(workspaceID)
-	q.pruneLocked(c)
-	now := q.clock()
-	var b *quotaBucket
-	if len(c.buckets) > 0 {
-		last := &c.buckets[len(c.buckets)-1]
-		if now.Sub(last.start) < time.Minute {
-			b = last
-		}
-	}
-	if b == nil {
-		c.buckets = append(c.buckets, quotaBucket{start: now})
-		b = &c.buckets[len(c.buckets)-1]
-	}
-	b.requests++
-	b.bytes += bytes
+	q.addLocked(c, 0, bytes)
 }
 
 // BytesLeft reports the remaining byte budget in the window (cap check

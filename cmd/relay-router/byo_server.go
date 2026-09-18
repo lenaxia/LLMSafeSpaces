@@ -316,7 +316,7 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 	}
 
 	// (3) Quota (§4.7 rule 6): request-rate AND byte-rate budgets.
-	if !s.quota.Allow(workspaceID) || s.quota.BytesLeft(workspaceID) <= 0 {
+	if !s.quota.Admit(workspaceID) || s.quota.BytesLeft(workspaceID) <= 0 {
 		w.Header().Set("Retry-After", "10")
 		reject(byoRejectQuota, http.StatusTooManyRequests, "workspace quota exceeded")
 		return
@@ -355,7 +355,7 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 	if subPath == "models" && r.Method == http.MethodGet {
 		models, staged := s.cache.Models(workspaceID, providerSlug)
 		if staged {
-			s.quota.Record(workspaceID, 0)
+			// Request counted at admission (Admit above); bytes are 0.
 			s.metrics.recordRequest(workspaceID, providerSlug, http.StatusOK)
 			log.Printf("byo-router: ws=%s slug=%s keyID=%s status=%d latency=%s bytes=%d", //nolint:gosec // sanitized metadata only (K7)
 				sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), sanitizeMeta(payload.KeyID), http.StatusOK, time.Since(start), 0)
@@ -452,7 +452,7 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 				// chunk boundary (length framing already dropped above).
 				log.Printf("byo-router: ws=%s slug=%s response exceeded cap (%d bytes)", //nolint:gosec // sanitized metadata only
 					sanitizeMeta(workspaceID), sanitizeMeta(providerSlug), s.cfg.maxRespBytes)
-				s.quota.Record(workspaceID, total)
+				s.quota.RecordBytes(workspaceID, total)
 				s.metrics.recordRequest(workspaceID, providerSlug, resp.StatusCode)
 				s.metrics.recordBytes(workspaceID, total)
 				return
@@ -476,7 +476,7 @@ func (s *byoServer) handleWorkspaceTraffic(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	s.quota.Record(workspaceID, total)
+	s.quota.RecordBytes(workspaceID, total)
 	s.metrics.recordRequest(workspaceID, providerSlug, resp.StatusCode)
 	s.metrics.recordBytes(workspaceID, total)
 	log.Printf("byo-router: ws=%s slug=%s keyID=%s status=%d latency=%s bytes=%d", //nolint:gosec // sanitized metadata only (K7)

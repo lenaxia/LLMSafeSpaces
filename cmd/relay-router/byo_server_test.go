@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -461,4 +462,48 @@ func (r *upstreamRecorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.requests)
+}
+
+// TestQuotaAdmissionCountsInFlight (post-CI-flake pin): an admitted
+// request counts against the window AT ADMISSION — not at response
+// completion. The CI flake (PR #1432 merge run): a client could observe
+// a completed response and fire the next request before the previous
+// handler's post-stream Record ran, so Allow saw an undercount and a
+// request beyond budget was admitted (200 instead of 429). This test
+// deterministically holds a response mid-stream: with budget=1 and one
+// admitted in-flight request, a second request must be 429 even though
+// the first has NOT completed (no Record-by-completion has run).
+func TestQuotaAdmissionCountsInFlight(t *testing.T) {
+	upstreamEntered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var firstGate int32
+	rig := newByoTestRigWithUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()                          // transmit headers — the proxy's Do unblocks on headers
+		if atomic.CompareAndSwapInt32(&firstGate, 0, 1) { // ONLY the first entry blocks
+			upstreamEntered <- struct{}{}
+			<-release // hold the FIRST response open — admitted, not completed
+		}
+	})
+	rig.svc.quota = newByoWorkspaceQuota(time.Minute, 1, 0)
+	token := rig.mint(t, nil)
+	body := `{"model":"glm-4.7"}`
+
+	done := make(chan int, 1)
+	go func() {
+		resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, body, nil)
+		if err != nil {
+			done <- -1
+			return
+		}
+		done <- resp.StatusCode
+	}()
+	<-upstreamEntered // request 1 is admitted and mid-flight
+
+	resp, err := rig.do(http.MethodPost, "/w/ws-1/zai/v1/chat/completions", token, body, nil)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "in-flight admitted request must count against the window at admission")
+
+	close(release)
+	require.NotEqual(t, -1, <-done, "first request must complete cleanly")
 }
