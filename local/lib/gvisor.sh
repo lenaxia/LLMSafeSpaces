@@ -87,13 +87,20 @@ gvisor_install_on_node() { # node
       # gVisor publishes "<sha512>  <file>" per artifact — verify the
       # bundle against its line BEFORE anything is installed.
       verify_bundle /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS "$BUNDLE" || exit 1
-      # The bundle carries BOTH binaries at its root (verified against
-      # release-20260907.0); runsc also needs the SHIM (run 10: "runtime
-      # io.containerd.runsc.v1 binary not installed containerd-shim-runsc-v1").
-      tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp runsc containerd-shim-runsc-v1
+      # The bundle carries runsc + the shim at its root, plus — since the
+      # 2026-09 release shape (verified against release-20260914.0) — a
+      # gvisor-bin/ directory holding the sentry sidecar runsc now
+      # REQUIRES under --sidecar-usage-policy=STRICT (run 35306741294:
+      # "sidecar gvisor_sentry not usable (stat /usr/local/bin/gvisor-bin/
+      # gvisor_sentry: no such file or directory)"). Install all three:
+      # the binaries to /usr/local/bin, the sidecar dir alongside them.
+      tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp runsc containerd-shim-runsc-v1 gvisor-bin
       install -m 0755 /tmp/runsc /usr/local/bin/runsc
       install -m 0755 /tmp/containerd-shim-runsc-v1 /usr/local/bin/containerd-shim-runsc-v1
+      mkdir -p /usr/local/bin/gvisor-bin
+      install -m 0755 /tmp/gvisor-bin/* /usr/local/bin/gvisor-bin/
       rm -f /tmp/gvisor.tar.zstd /tmp/gvisor.SHA512SUMS /tmp/runsc /tmp/containerd-shim-runsc-v1
+      rm -rf /tmp/gvisor-bin
       /usr/local/bin/runsc --version >/dev/null
       # Register the handler in containerd (config_v2 runtime table);
       # containerd resolves `runsc` from PATH (/usr/local/bin).

@@ -533,11 +533,15 @@ fi
 #   S5.7f nested images survive suspend→activate (graphroot on the PVC)
 #   S5.7g/S5.7h/S5.7i the same three checks under gVisor (runsc) — the
 #         decisive leg: nesting INSIDE the strongest isolation tier.
-podman_exec() { # pod script — workspace container runs as uid 1000; the
-  # explicit exports document the non-login-shell caveat (profile.d only
-  # covers bash -l): XDG_RUNTIME_DIR on the pod-ephemeral tmpfs, HOME on
-  # the PVC (kubectl exec does not inherit the image WORKDIR user env).
-  kubectl -n "$NS" exec "$1" -c workspace -- /bin/bash -c "$2" 2>/dev/null
+podman_exec() { # pod script — the workspace container runs as uid 1000.
+  # The wrapper owns the environment bootstrap that profile.d cannot give
+  # non-login shells: XDG_RUNTIME_DIR must EXIST before podman starts
+  # (run 35306741294: exporting the var without mkdir-ing the dir failed
+  # every podman invocation — S5.7c/d/e/f all red on that one bug), HOME
+  # lands on the PVC. stderr stays attached: engine errors must surface
+  # in the CI log, not vanish behind a redirected fd.
+  kubectl -n "$NS" exec "$1" -c workspace -- /bin/bash -c \
+    "export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p \"\$XDG_RUNTIME_DIR\"; $2"
 }
 
 if [ "${S5_RUN_PODMAN:-0}" != "1" ]; then
@@ -582,9 +586,9 @@ EOF
       fi
 
       PM_INFO=$(podman_exec "$PM_POD" \
-        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman info >/dev/null 2>&1 && echo info-ok' || true)
+        'podman info >/dev/null 2>&1 && echo info-ok || podman info 2>&1 | tail -3' || true)
       PM_DRV=$(podman_exec "$PM_POD" \
-        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman info --format "{{.Store.GraphDriverName}}" 2>/dev/null' || true)
+        'podman info --format "{{.Store.GraphDriverName}}" 2>/dev/null' || true)
       PM_SHIM=$(podman_exec "$PM_POD" 'docker --version 2>/dev/null' || true)
       if [ "$PM_INFO" = "info-ok" ] && [ "$PM_DRV" = "vfs" ] && [ -n "$PM_SHIM" ]; then
         pass S5.7c "engine boots rootless (driver=$PM_DRV); docker shim: $PM_SHIM"
@@ -593,7 +597,7 @@ EOF
       fi
 
       RUN_OUT=$(podman_exec "$PM_POD" \
-        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+        'podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
       if echo "$RUN_OUT" | grep -q podman-nested-ok; then
         pass S5.7d "nested container ran under runc (userns + newuidmap, no caps, RuntimeDefault seccomp)"
       else
@@ -601,7 +605,7 @@ EOF
       fi
 
       COMPOSE_RC=$(podman_exec "$PM_POD" \
-        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+        'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
       if [ "$COMPOSE_RC" = "200" ]; then
         pass S5.7e "podman-compose service up on host netns, served HTTP 200, torn down"
       else
@@ -613,7 +617,7 @@ EOF
          && patch_workspace_retry "$WS_PM" '{"spec":{"suspend":false}}' && wait_phase "$WS_PM" Active 600; then
         PM_POD=$(pod_of "$WS_PM")
         PM_IMGS=$(podman_exec "$PM_POD" \
-          'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman images --format "{{.Repository}}" 2>/dev/null' || true)
+          'podman images --format "{{.Repository}}" 2>/dev/null' || true)
         if echo "$PM_IMGS" | grep -q "library/alpine\|library/nginx"; then
           pass S5.7f "nested images survived suspend→activate (graphroot on the PVC)"
         else
@@ -654,14 +658,14 @@ EOF
             fail S5.7g "gVisor podman-set workspace Active but opencode unreachable"
           fi
           GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+            'podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
           if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
             pass S5.7h "nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
           else
             fail S5.7h "nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+            'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
           if [ "$GCOMPOSE_RC" = "200" ]; then
             pass S5.7i "podman-compose service up under gVisor, served HTTP 200, torn down"
           else
