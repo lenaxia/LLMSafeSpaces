@@ -113,3 +113,27 @@ relayOnlyKeyDelivery:
 `)
 	assert.Contains(t, controllerArgs(t, controllerDeployment(t, docs)), "--relay-token-ttl=12h")
 }
+
+// TestRelayStaging_ClusterScopeRefusesRender (review r5 finding 3):
+// rbac.scope=cluster grants the controller cluster-wide Secret
+// get/list/watch (the informer cache grant), which the llm-relay Role
+// cannot subtract — with relay-only enabled it would replicate the keypair
+// Secret into controller memory, defeating the §4.3 no-read guarantee.
+// The combination must FAIL the render; the default namespace scope
+// renders.
+func TestRelayStaging_ClusterScopeRefusesRender(t *testing.T) {
+	require.Error(t, helmTemplateErr(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+rbac:
+  scope: cluster
+`), "relay-only + cluster scope must refuse to render")
+
+	docs := helmTemplate(t, `
+relayOnlyKeyDelivery:
+  enabled: true
+rbac:
+  scope: namespace
+`)
+	assert.NotEmpty(t, docs, "the default namespace scope renders with relay-only")
+}

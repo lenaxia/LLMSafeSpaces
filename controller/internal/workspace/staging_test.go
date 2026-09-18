@@ -912,3 +912,37 @@ func TestStaging_AllDeletesFailedMessageHonest(t *testing.T) {
 	assert.NotContains(t, stale.Message, "envelope deleted",
 		"no envelope was deleted — the message must not say one was")
 }
+
+// TestStaging_MessageOnlyConditionChangePersists (review r5 finding 2):
+// the condition dirty-signature carries the MESSAGE — a reason-preserving
+// message-only change (the INCOMPLETE → healed revocation wording) must
+// persist a status write instead of leaving stale wording on the API
+// server for an extra pass.
+func TestStaging_MessageOnlyConditionChangePersists(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-msg")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	r := stagingReconciler(t, src, &fakeRouterClient{}, nil, pubSec, ws)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{SpawnedRev: ws.Annotations[relayStagedRevisionAnnotation], DegradedReason: "token_expired"}
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	stale := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, stale)
+	require.Equal(t, v1.ReasonStaleTokenExpired, stale.Reason)
+
+	// Same status+reason, DIFFERENT message (the degrade detail changes):
+	// the stored condition must move to the new message in THIS pass.
+	ws.Status.SecretsDelivery.DegradedReason = "token_expired_renewal_failed"
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	stored := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-msg", Namespace: "default"}, stored))
+	var got *v1.WorkspaceCondition
+	for i := range stored.Status.Conditions {
+		if stored.Status.Conditions[i].Type == v1.WorkspaceConditionCredentialStale {
+			got = &stored.Status.Conditions[i]
+		}
+	}
+	require.NotNil(t, got, "the stale condition must be persisted at all")
+	assert.Equal(t, "staged material not applied by the running pod: token_expired_renewal_failed (a wait or fault rotation cannot repair)", got.Message,
+		"a message-only change must persist")
+}
