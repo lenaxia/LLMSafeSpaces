@@ -192,7 +192,12 @@ func main() {
 	var opencodeBinarySHA256ARM64 string
 	flag.StringVar(&opencodeBinarySHA256ARM64, "opencode-binary-sha256-arm64", "",
 		"Design 0053 §4.2: OPTIONAL per-image override — sha256 (64 hex) of the arm64 opencode "+
-			"binary inside --opencode-image. Set BOTH hashes or NEITHER.")
+			"binary inside --opencode-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+	// Epic 72 / US-72.3 (design 0058): relay-only key delivery — the
+	// controller staging pass. Default OFF until the US-72.5 flip; off
+	// means zero behavior change (raw-key path, byte-identical batches).
+	relayFlags := registerRelayFlags()
 	flag.Parse()
 
 	// US-43.19 / D20: the shared secret authenticating controller→API internal
@@ -316,6 +321,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Epic 72 / US-72.3: construct the relay staging config + run the
+	// FAIL-LOUD startup guard (the rbac.scope=cluster gate precedent):
+	// enabled without a reachable, bootstrapped router must refuse
+	// startup. Nil config (flag off) = zero behavior change.
+	relayStaging, err := controller.SetupRelayStaging(mgr, relayFlags.enabled, relayFlags.routerURL, relayFlags.namespace, relayFlags.tokenTTL, apiServiceURL, apiInternalToken)
+	if err != nil {
+		setupLog.Error(err, "relay-only key delivery: refusing to start")
+		os.Exit(1)
+	}
+
 	// US-65.6-followup: register the agent runtime explicitly.
 	opencode.Register()
 
@@ -377,7 +392,7 @@ func main() {
 		Image:             opencodeImage,
 		BinarySHA256AMD64: opencodeBinarySHA256AMD64,
 		BinarySHA256ARM64: opencodeBinarySHA256ARM64,
-	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles)); err != nil {
+	}, agentdSidecarEnabled, clampConcurrenctReconciles(maxConcurrentReconciles), relayStaging); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}
@@ -494,4 +509,33 @@ func clampConcurrenctReconciles(n int) int {
 		return 64
 	}
 	return n
+}
+
+// relayFlags carries the Epic 72 / US-72.3 relay-only key delivery flags
+// (registered together so the block stays extractable from main).
+type relayFlags struct {
+	enabled   bool
+	routerURL string
+	namespace string
+	tokenTTL  time.Duration
+}
+
+func registerRelayFlags() relayFlags {
+	var f relayFlags
+	flag.BoolVar(&f.enabled, "relay-only-key-delivery", false,
+		"Epic 72 (design 0058): seal bound BYO llm-provider credentials into llm-relay envelope "+
+			"Secrets and stage scoped router tokens instead of delivering raw keys. Requires the "+
+			"llm-relay router (--llm-relay-router-url) and --api-service-url; startup REFUSES, loud, "+
+			"when the router is unreachable or unbootstrapped. Default false (raw-key path).")
+	flag.StringVar(&f.routerURL, "llm-relay-router-url", "",
+		"Base URL of the llm-relay BYO resolve router (e.g. http://llm-relay-router.llm-relay.svc.cluster.local) "+
+			"— the internal mint/rotate API and the router URL staged into workspace tokens. "+
+			"Required when --relay-only-key-delivery is enabled.")
+	flag.StringVar(&f.namespace, "llm-relay-namespace", "llm-relay",
+		"Namespace holding the llm-relay router and the staged envelope Secrets. "+
+			"Required when --relay-only-key-delivery is enabled.")
+	flag.DurationVar(&f.tokenTTL, "relay-token-ttl", 24*time.Hour,
+		"TTL of staged router tokens (design 0058 §4.4). Renewal re-mints at ~TTL/2 via the "+
+			"staging pass. Clamp: 1s..7d (router-enforced).")
+	return f
 }
