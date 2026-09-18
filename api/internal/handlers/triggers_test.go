@@ -23,6 +23,7 @@ type mockTriggerStore struct {
 	triggers  map[string]*wf.TriggerRow
 	webhooks  map[string]*wf.WebhookRow
 	workflows map[string]*wf.WorkflowRow
+	fires     []*wf.TriggerFireRow
 	createErr error
 }
 
@@ -151,7 +152,7 @@ func (m *mockTriggerStore) GetWebhookByTriggerID(_ context.Context, triggerID st
 }
 
 func (m *mockTriggerStore) ListTriggerFires(_ context.Context, triggerID string, limit, offset int) ([]*wf.TriggerFireRow, error) {
-	return []*wf.TriggerFireRow{}, nil
+	return m.fires, nil
 }
 
 func (m *mockTriggerStore) UpdateWebhookSecret(_ context.Context, triggerID string, secretCipher []byte, keyVersion int) error {
@@ -194,6 +195,7 @@ func setupTriggerRouter(t *testing.T, store triggerStore, quota workflowQuotaChe
 	group.PUT("/:id", h.UserUpdate)
 	group.DELETE("/:id", h.UserDelete)
 	group.POST("/:id/rotate-secret", h.UserRotateWebhookSecret)
+	group.GET("/:id/fires", h.UserListFires)
 	return r
 }
 
@@ -1163,4 +1165,23 @@ func TestTriggerInputMapping_ResponseFields(t *testing.T) {
 	input, ok := resp["input"].(map[string]any)
 	require.True(t, ok, "input must be echoed: %v", resp["input"])
 	assert.Equal(t, "x", input["topic"])
+}
+
+// #1441: routine failure causes land in the result column
+// (UpdateTriggerFireResult) — the fires response must expose it or
+// routine failures are undiagnosable from outside.
+func TestTriggerFires_ExposeRoutineResult(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-r"] = &wf.TriggerRow{ID: "trig-r", OwnerType: "user", OwnerID: "test-user", Name: "r", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-1", TriggerID: "trig-r", SourceType: "webhook",
+		ActionType: "routine", Status: "failed",
+		Result: json.RawMessage(`{"error":"agent call failed: deadline exceeded"}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-r/fires", nil)
+	require.Equal(t, 200, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "deadline exceeded", "the routine failure cause must be visible in the fires list")
+	assert.Contains(t, w.Body.String(), `"result":`, "the result field is marshaled")
 }

@@ -749,6 +749,7 @@ func triggerFireRowToResponse(f *wf.TriggerFireRow) types.TriggerFireResponse {
 		InputEnvelope: f.InputEnvelope,
 		ActionType:    f.ActionType,
 		ActionResult:  f.ActionResult,
+		Result:        f.Result,
 		Status:        f.Status,
 		FiredAt:       f.FiredAt,
 	}
