@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.2] - 2026-09-18
+
+### Fixes — fire observability + security
+
+- **Routine fire results are observable, and the fires endpoint is
+  owner-scoped (#1441 observability / PR #1446)**: failure causes and
+  captured outputs were written to a column no read path selected —
+  routine failures were undiagnosable from outside. The fires list now
+  carries `result` (distinct from `actionResult`), on both the user API
+  and the agentd `trigger_fires` tool. The reviewer-caught pre-existing
+  hole ships closed with it: `listFires` never used its owner params —
+  any authenticated user could read any trigger's fires by UUID (and
+  trigger UUIDs travel in shared webhook URLs); now guarded like every
+  sibling (404 on mismatch). OpenAPI updated; nightly e2e rows assert
+  captured-success content and failure-cause visibility end to end.
+
 ## [0.34.1] - 2026-09-18
 
 ### Fixes — scheduler
