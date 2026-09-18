@@ -18,7 +18,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -49,6 +48,16 @@ const (
 	// content hash the handoff carries) — the lineage conjunct compares
 	// the terminal spawned_rev against THIS.
 	relayStagedRevisionAnnotation = "llmsafespaces.dev/relay-staged-revision"
+	// relayStagedProvidersAnnotation persists the per-provider staging
+	// bookkeeping (key digest, keyID, models digest, redaction-group ID).
+	// The controller holds NO read access to the llm-relay envelope
+	// Secrets beyond the name-scoped pub/mint-key reads (design 0058 §4.3
+	// deviation note, US-72.3): envelopes are written BLIND
+	// (delete+create) and every diffing decision — re-seal, revocation,
+	// §4.9 unregister — reads THIS state instead. Digests are 12-hex
+	// sha256 prefixes: non-reversible, not brute-forceable against
+	// high-entropy provider keys.
+	relayStagedProvidersAnnotation = "llmsafespaces.dev/relay-staged-providers"
 	// relayLastRotateEscalationAnnotation lives on the llm-relay-mint-key
 	// Secret (cluster-global: rotations are cluster-wide) and spaces
 	// controller-initiated rotations ≥ relayRotateMinInterval (anti-storm).
@@ -56,9 +65,7 @@ const (
 	// relayRotateMinInterval is the anti-storm floor — sized to the
 	// prior-key retention default (10m, design §4.2).
 	relayRotateMinInterval = 10 * time.Minute
-	// relayTokenRenewMargin: a token is re-minted once it is past
-	// TTL - TTL/2 (design §4.4: renewal rides the manifest tier at ~TTL/2).
-	relayHandoffDataKey = "handoff"
+	relayHandoffDataKey    = "handoff"
 	// relayProviderCacheTTL bounds controller→API credential-source calls
 	// (one fetch per workspace per window at the Active requeue cadence).
 	relayProviderCacheTTL = 60 * time.Second
@@ -176,6 +183,15 @@ type relayDesiredProvider struct {
 	models  []string
 }
 
+// relayStagedProviderState is the per-provider bookkeeping persisted in
+// the relay-staged-providers annotation (see its const doc).
+type relayStagedProviderState struct {
+	KeyDigest    string `json:"keyDigest"`
+	KeyID        string `json:"keyID"`
+	ModelsDigest string `json:"modelsDigest"`
+	RedactionID  string `json:"redactionID"`
+}
+
 // relayStaleClass is the §4.6 cause classification; only
 // relayStaleCorruption is escalation-eligible (§4.2: rotating on a
 // non-repairable cause is cluster-wide churn for nothing).
@@ -195,6 +211,30 @@ func envelopeSecretName(workspaceName, slug string) string {
 
 func handoffSecretName(workspaceName string) string {
 	return "workspace-relay-" + workspaceName
+}
+
+// relayReadStagedState parses the annotation-persisted staging
+// bookkeeping. Unparseible/absent = empty (fresh stage; the safe direction
+// is re-sealing, never skipping).
+func relayReadStagedState(ws *v1.Workspace) map[string]relayStagedProviderState {
+	out := map[string]relayStagedProviderState{}
+	if ws.Annotations == nil {
+		return out
+	}
+	raw := ws.Annotations[relayStagedProvidersAnnotation]
+	if raw == "" {
+		return out
+	}
+	_ = json.Unmarshal([]byte(raw), &out)
+	return out
+}
+
+// relayDigest is the staging fingerprint: a 12-hex sha256 prefix.
+// Non-reversible and not brute-forceable against high-entropy provider
+// keys; persisted only in the workspace annotation for change detection.
+func relayDigest(material []byte) string {
+	sum := sha256.Sum256(material)
+	return hex.EncodeToString(sum[:6])
 }
 
 // reconcileRelayStaging is the staging reconcile step. Errors are infra
@@ -233,17 +273,13 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 
 	desired, skipped := relayDesiredSet(providers)
 
-	existing := r.relayExistingEnvelopes(ctx, ws.Name)
-
+	// No llm-relay List/Get on the envelope Secrets (§4.3): every diffing
+	// decision reads the annotation-persisted staged state instead.
+	staged := relayReadStagedState(ws)
 	lastSealed := relayAnnotationInt(ws, relaySealedGenerationAnnotation)
-	if lastSealed == 0 {
-		// Annotation lost (e.g. manually wiped): derive from the live
-		// envelopes' keyIDs so re-seal cannot wedge.
-		lastSealed = relayEnvelopeGeneration(existing)
-	}
 	forceReseal := pub.Generation != lastSealed
 
-	revoked := r.relayRevokeUndesired(ctx, ws, desired, existing)
+	revoked := r.relayRevokeUndesired(ctx, ws, desired, staged)
 
 	// §4.2 reconcile predicate — the DR/residual-window terminator.
 	// Generation unchanged while corruption-class stale persists under an
@@ -251,12 +287,19 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	// Never for revocation-, delivery- (incl. #852 deferral), or
 	// token-expiry-class causes.
 	escalated := false
-	if !forceReseal && lastSealed > 0 && len(existing) > 0 {
+	if !forceReseal && lastSealed > 0 && len(staged) > 0 {
 		class := r.relayStaleClass(ws, revoked)
-		if class == relayStaleCorruption && r.relayLineageIntact(ws, desired, existing) {
+		if class == relayStaleCorruption && r.relayLineageIntact(ws, desired, staged, keyID) {
 			receipt, ok, err := r.relayEscalateRotate(ctx, ws)
 			if err != nil {
 				logger.Error(err, "relay staging: rotate escalation failed")
+				if r.Recorder != nil {
+					// The 10m anti-storm budget was consumed by the attempt
+					// (deliberate — a failing rotate must not storm); make
+					// that visible to the operator.
+					r.Recorder.Eventf(ws, corev1.EventTypeWarning, "RelayRotateEscalationFailed",
+						"rotate escalation failed (anti-storm 10m budget consumed): %v", err)
+				}
 			}
 			if ok {
 				// Seal-time generation validation (§4.2): the re-got pub
@@ -283,30 +326,43 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 		return r.relayPersist(ctx, ws, before)
 	}
 
-	// Seal loop. Confirmation is the controller's own write-acks: it is the
-	// sole writer of the envelope Secrets, so a successful Create/Update
-	// with the new keyID IS completion — no decrypt, no resolve probe, no
-	// read-back (§4.2).
+	// Seal loop. A provider (re-)seals when it was never staged, when the
+	// pub generation moved, or when its keyID / model catalog / KEY VALUE
+	// changed — the key digest closes the rotation gap where a credential
+	// value changed under a stable slug and would otherwise stay sealed
+	// forever. Envelopes are written BLIND (delete + create): the
+	// controller holds no read on them, and confirmation is its own
+	// write-acks — no decrypt, no resolve probe, no read-back (§4.2).
 	for i := range desired {
 		dp := &desired[i]
-		old, had := existing[dp.pd.Slug]
 		wantModels, _ := json.Marshal(dp.models)
-		if !had || forceReseal || relayEnvelopeKeyID(old.envelope) != keyID || !bytes.Equal(old.models, wantModels) {
+		wantKey := relayDigest([]byte(dp.pd.APIKey))
+		wantModelsDigest := relayDigest(wantModels)
+		old, had := staged[dp.pd.Slug]
+		if !had || forceReseal || old.KeyID != keyID || old.ModelsDigest != wantModelsDigest || old.KeyDigest != wantKey {
 			envelope, serr := sealer.Seal(ctx, []byte(dp.pd.APIKey))
 			if serr != nil {
-				r.relayMarkStale(ws, v1.ReasonStageFailed, fmt.Sprintf("sealing provider %q failed: %v", dp.pd.Slug, serr))
+				// §4.6 "staged Secret absent": the envelope for a bound
+				// provider is missing after the seal attempt.
+				r.relayMarkStale(ws, v1.ReasonStaleEnvelopeMissing, fmt.Sprintf("envelope for provider %q absent: seal failed: %v", dp.pd.Slug, serr))
 				return r.relayPersist(ctx, ws, before)
 			}
-			if err := r.upsertRelayEnvelope(ctx, ws, dp, envelope, wantModels); err != nil {
+			if err := r.writeRelayEnvelope(ctx, ws, dp, envelope, wantModels); err != nil {
 				return err
 			}
 			// §4.9 lifecycle: the re-seal pass unregisters the superseded
-			// envelope's rule group in the SAME pass — nothing else can
-			// know the replacement relationship.
-			if had && old.envelope != envelope {
-				cfg.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
+			// envelope's rule group in the SAME pass — the annotation
+			// carries the superseded group's ID (the envelope itself is
+			// unreadable by design).
+			if had {
+				cfg.redaction.UnregisterStagedKey(old.RedactionID)
 			}
-			existing[dp.pd.Slug] = relayEnvelopeInfo{envelope: envelope, models: wantModels}
+			staged[dp.pd.Slug] = relayStagedProviderState{
+				KeyDigest:    wantKey,
+				KeyID:        keyID,
+				ModelsDigest: wantModelsDigest,
+				RedactionID:  secrets.StagedKeyRedactionID(envelope),
+			}
 		}
 	}
 
@@ -315,14 +371,19 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 		return err
 	}
 
-	revision := relayStagedRevision(handoff, existing)
+	revision := relayStagedRevision(handoff, staged)
 	if ws.Annotations == nil {
 		ws.Annotations = map[string]string{}
 	}
 	ws.Annotations[relaySealedGenerationAnnotation] = strconv.FormatInt(pub.Generation, 10)
 	ws.Annotations[relayStagedRevisionAnnotation] = revision
+	stagedJSON, err := json.Marshal(staged)
+	if err != nil {
+		return err
+	}
+	ws.Annotations[relayStagedProvidersAnnotation] = string(stagedJSON)
 
-	if err := r.upsertRelayHandoff(ctx, ws, handoff, existing); err != nil {
+	if err := r.upsertRelayHandoff(ctx, ws, handoff); err != nil {
 		return err
 	}
 
@@ -374,23 +435,27 @@ func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesire
 // envelope whose provider is no longer bound (unbind/credential delete) is
 // deleted, its redaction group unregistered in the same pass, and a
 // one-pass CredentialStale(revocation-class) is raised (worklog D7).
-func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]relayEnvelopeInfo) []string {
+func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState) []string {
 	want := make(map[string]bool, len(desired))
 	for i := range desired {
 		want[desired[i].pd.Slug] = true
 	}
 	var revoked []string
-	for slug, old := range existing {
+	for slug, old := range staged {
 		if want[slug] {
 			continue
 		}
+		// Blind delete (name derived; no read on the envelope Secrets).
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: envelopeSecretName(ws.Name, slug), Namespace: r.RelayStaging.Namespace}}
 		if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
-			log.FromContext(ctx).Error(err, "relay staging: revocation delete failed", "secret", sec.Name)
-			continue
+			// Fail-closed on the D2 contract: a delete we cannot perform
+			// must NOT silently drop out of the revocation set — surface
+			// loudly and retry via requeue.
+			log.FromContext(ctx).Error(err, "relay staging: revocation delete failed — envelope retained, will retry", "secret", sec.Name)
+			return append(revoked, slug)
 		}
-		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
-		delete(existing, slug)
+		r.RelayStaging.redaction.UnregisterStagedKey(old.RedactionID)
+		delete(staged, slug)
 		revoked = append(revoked, slug)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(ws, corev1.EventTypeNormal, "CredentialRevoked",
@@ -400,9 +465,6 @@ func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.W
 	return revoked
 }
 
-// relayMintTokens (re)mints scoped tokens: a fresh one when none is cached,
-// the cached keyID no longer matches, or the cached token is past TTL/2
-// (design §4.4 renewal). The handoff Secret is the token store.
 func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, keyID string) (*relayHandoff, bool, error) {
 	cfg := r.RelayStaging
 	cached := r.relayReadHandoff(ctx, ws)
@@ -437,6 +499,17 @@ func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Worksp
 			})
 			if err != nil {
 				log.FromContext(ctx).Error(err, "relay staging: token mint failed", "provider", dp.pd.Slug)
+				// The handoff Secret is the ONLY token store: a transient
+				// mint failure at the renewal boundary must retain the
+				// still-valid cached token rather than persisting a
+				// reduced handoff. Only a fully expired (or keyID-stale)
+				// token is dropped, with the loud tokensFailed signal.
+				if entry.Token != "" && entry.KeyID == keyID && entry.ExpiresAt != "" {
+					if exp, perr := time.Parse(time.RFC3339, entry.ExpiresAt); perr == nil && now.Before(exp) {
+						out.Providers = append(out.Providers, entry)
+						continue
+					}
+				}
 				tokensFailed = true
 				continue
 			}
@@ -466,13 +539,17 @@ func (r *WorkspaceReconciler) relayStaleClass(ws *v1.Workspace, revoked []string
 	if ws.Status.SecretsDelivery != nil {
 		degraded = ws.Status.SecretsDelivery.DegradedReason
 	}
+	// A revocation performed this pass wins over a co-present corruption
+	// degrade: the degrade is most plausibly ABOUT the revoked provider
+	// (its token now fails closed by design), and escalation is explicitly
+	// forbidden for revocation-class (§4.2) — anti-churn conservatism.
 	switch {
+	case len(revoked) > 0:
+		return relayStaleRevocation
 	case degraded == "credential_stale":
 		return relayStaleCorruption
 	case degraded == "token_expired":
 		return relayStaleTokenExpiry
-	case len(revoked) > 0:
-		return relayStaleRevocation
 	case degraded != "":
 		return relayStaleDelivery
 	default:
@@ -534,14 +611,16 @@ func relayRouterRejection(degraded string) string {
 	}
 }
 
-// relayLineageIntact is §4.2's spawn-layer conjunct: the envelope Secrets
-// are present AND the child spawned with the staged revision — the
-// `spawned_rev`-class TERMINAL signal, not the batch-apply anchor, so the
-// #852 deferral window (fresh token applied, restart waiting behind busy
-// sessions) reads as pending-delivery and never escalates.
-func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]relayEnvelopeInfo) bool {
+// relayLineageIntact is §4.2's spawn-layer conjunct: every desired
+// provider is staged under the CURRENT keyID AND the child spawned with
+// the staged revision — the `spawned_rev`-class TERMINAL signal, not the
+// batch-apply anchor, so the #852 deferral window (fresh token applied,
+// restart waiting behind busy sessions) reads as pending-delivery and
+// never escalates.
+func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState, keyID string) bool {
 	for i := range desired {
-		if _, ok := existing[desired[i].pd.Slug]; !ok {
+		old, ok := staged[desired[i].pd.Slug]
+		if !ok || old.KeyID != keyID {
 			return false
 		}
 	}
@@ -643,26 +722,20 @@ func (r *WorkspaceReconciler) ensureRelayMintKey(ctx context.Context) (string, e
 	return string(sec.Data[secrets.RelayMintKeyDataKey]), nil
 }
 
-func (r *WorkspaceReconciler) upsertRelayEnvelope(ctx context.Context, ws *v1.Workspace, dp *relayDesiredProvider, envelope string, modelsJSON []byte) error {
+// writeRelayEnvelope writes an envelope Secret BLIND: Delete by derived
+// name (NotFound = fresh stage), then Create. The controller holds no read
+// on the envelope Secrets (design 0058 §4.3 deviation note) — the
+// annotation bookkeeping upstream decides whether a write is needed at
+// all, so the steady-state pass performs zero calls here.
+func (r *WorkspaceReconciler) writeRelayEnvelope(ctx context.Context, ws *v1.Workspace, dp *relayDesiredProvider, envelope string, modelsJSON []byte) error {
 	name := envelopeSecretName(ws.Name, dp.pd.Slug)
-	sec := &corev1.Secret{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: r.RelayStaging.Namespace}, sec)
-	if err == nil {
-		if string(sec.Data[secrets.RelayEnvDataKey]) == envelope && bytes.Equal(sec.Data[secrets.RelayEnvModelsKey], modelsJSON) {
-			return nil // steady state: the write-ack from a previous pass still stands
-		}
-		sec.Data = map[string][]byte{
-			secrets.RelayEnvDataKey:   []byte(envelope),
-			secrets.RelayEnvModelsKey: modelsJSON,
-		}
-		return r.Update(ctx, sec)
-	}
-	if !apierrors.IsNotFound(err) {
+	stub := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.RelayStaging.Namespace}}
+	if err := r.Delete(ctx, stub); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	// Cross-namespace owner references are forbidden — envelope lifetime is
 	// managed explicitly (relayDeleteEnvelopes on termination).
-	sec = &corev1.Secret{
+	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: r.RelayStaging.Namespace,
@@ -679,8 +752,8 @@ func (r *WorkspaceReconciler) upsertRelayEnvelope(ctx context.Context, ws *v1.Wo
 	return r.Create(ctx, sec)
 }
 
-func (r *WorkspaceReconciler) upsertRelayHandoff(ctx context.Context, ws *v1.Workspace, handoff *relayHandoff, envelopes map[string]relayEnvelopeInfo) error {
-	handoff.Revision = relayStagedRevision(handoff, envelopes)
+func (r *WorkspaceReconciler) upsertRelayHandoff(ctx context.Context, ws *v1.Workspace, handoff *relayHandoff) error {
+	handoff.Revision = relayStagedRevision(handoff, relayReadStagedState(ws))
 	data, err := json.Marshal(handoff)
 	if err != nil {
 		return err
@@ -720,58 +793,30 @@ func (r *WorkspaceReconciler) relayReadHandoff(ctx context.Context, ws *v1.Works
 	return &h
 }
 
-// relayExistingEnvelopes lists the workspace's envelope Secrets in llm-relay
-// (label-selected). The envelope strings are pass INPUTS for diffing — never
-// a post-write confirmation (that is the write-ack's job).
-func (r *WorkspaceReconciler) relayExistingEnvelopes(ctx context.Context, workspaceName string) map[string]relayEnvelopeInfo {
-	out := map[string]relayEnvelopeInfo{}
-	list := &corev1.SecretList{}
-	// One-page is fine at per-workspace cardinality (a handful of providers).
-	if err := r.List(ctx, list, client.InNamespace(r.RelayStaging.Namespace), client.MatchingLabels{secrets.RelayEnvWorkspaceLabel: workspaceName}); err != nil {
-		log.FromContext(ctx).Error(err, "relay staging: listing envelopes failed")
-		return out
-	}
-	for i := range list.Items {
-		slug := list.Items[i].Labels[secrets.RelayEnvProviderLabel]
-		if slug == "" {
-			continue
-		}
-		out[slug] = relayEnvelopeInfo{
-			envelope: string(list.Items[i].Data[secrets.RelayEnvDataKey]),
-			models:   append([]byte(nil), list.Items[i].Data[secrets.RelayEnvModelsKey]...),
-		}
-	}
-	return out
-}
-
-// relayEnvelopeInfo is a pass INPUT: the staged envelope plus its model
-// catalog bytes, for diffing. Never a post-write confirmation.
-type relayEnvelopeInfo struct {
-	envelope string
-	models   []byte
-}
-
 // relayDeleteEnvelopes removes every envelope Secret for a workspace
 // (termination path — cross-namespace Secrets get no owner-ref GC) and
-// unregisters each redaction group.
+// unregisters each redaction group, by the annotation bookkeeping (no
+// llm-relay reads; §4.3).
 func (r *WorkspaceReconciler) relayDeleteEnvelopes(ctx context.Context, ws *v1.Workspace) {
 	if r.RelayStaging == nil {
 		return
 	}
-	existing := r.relayExistingEnvelopes(ctx, ws.Name)
-	for slug, old := range existing {
+	staged := relayReadStagedState(ws)
+	for slug, old := range staged {
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: envelopeSecretName(ws.Name, slug), Namespace: r.RelayStaging.Namespace}}
 		if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Error(err, "relay staging: termination envelope delete failed", "secret", sec.Name)
 			continue
 		}
-		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
+		r.RelayStaging.redaction.UnregisterStagedKey(old.RedactionID)
 	}
 }
 
 func (r *WorkspaceReconciler) relayMarkStale(ws *v1.Workspace, reason, message string) {
 	r.setCondition(ws, v1.WorkspaceConditionCredentialsStaged, "False", reason, message)
-	removeCondition(ws, v1.WorkspaceConditionCredentialStale)
+	// CredentialStale is deliberately NOT cleared here: a staging-infra
+	// outage (pub unreadable, source down) must not erase a durable
+	// corruption-class signal the operator was already shown.
 }
 
 // relayPersist commits staging annotations + conditions. Both subresource
@@ -855,45 +900,21 @@ func relayConditionsChanged(before relayStateSnapshot, ws *v1.Workspace) bool {
 // keyID-bearing token identity via entry fields). It changes exactly when
 // any envelope or token changes, so US-72.4 can compare it against
 // spawned_rev and CredentialsStaged carries it as the revision.
-func relayStagedRevision(h *relayHandoff, envelopes map[string]relayEnvelopeInfo) string {
+func relayStagedRevision(h *relayHandoff, staged map[string]relayStagedProviderState) string {
 	if h == nil {
 		return ""
 	}
 	parts := make([]string, 0, len(h.Providers))
 	for _, p := range h.Providers {
-		envDigest := ""
-		if old, ok := envelopes[p.ProviderSlug]; ok {
-			sum := sha256.Sum256([]byte(old.envelope))
-			envDigest = hex.EncodeToString(sum[:6])
+		keyDigest := ""
+		if old, ok := staged[p.ProviderSlug]; ok {
+			keyDigest = old.KeyDigest + "/" + old.ModelsDigest
 		}
-		parts = append(parts, fmt.Sprintf("%s|%s|%s|%s|%s", p.ProviderSlug, p.KeyID, p.ExpiresAt, p.BaseURL, envDigest))
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%s|%s", p.ProviderSlug, p.KeyID, p.ExpiresAt, p.BaseURL, keyDigest))
 	}
 	sort.Strings(parts)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s;%s", h.RouterURL, joinWith(parts, ";"))))
 	return "r" + hex.EncodeToString(sum[:6])
-}
-
-func relayEnvelopeKeyID(envelope string) string {
-	_, keyID, err := secrets.InspectStagingEnvelope(envelope)
-	if err != nil {
-		return ""
-	}
-	return keyID
-}
-
-// relayEnvelopeGeneration derives the highest sealed generation from the
-// live envelopes' keyIDs (hpke-g<N>) — the fallback when the annotation was
-// wiped.
-func relayEnvelopeGeneration(existing map[string]relayEnvelopeInfo) int64 {
-	var max int64
-	for _, old := range existing {
-		id := relayEnvelopeKeyID(old.envelope)
-		var gen int64
-		if _, err := fmt.Sscanf(id, "hpke-g%d", &gen); err == nil && gen > max {
-			max = gen
-		}
-	}
-	return max
 }
 
 func relayAnnotationInt(ws *v1.Workspace, key string) int64 {

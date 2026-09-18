@@ -98,15 +98,20 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 		assert.Contains(t, err.Error(), "not reachable")
 	})
 
-	t.Run("missing namespace refuses startup", func(t *testing.T) {
+	t.Run("namespace absence surfaces via the pub read (no cluster-scoped Namespace GET)", func(t *testing.T) {
+		// The guard deliberately performs NO Namespace GET (cluster-scoped;
+		// granted under no rbac.scope). A missing namespace surfaces as the
+		// pub Secret read failing — pinned here so the access pattern
+		// cannot quietly regress into needing cluster-scope RBAC.
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 		defer srv.Close()
-		r := guardClient(t, pubSec)
+		r := guardClient(t) // no namespace object, no pub Secret
 		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
 		require.NoError(t, err)
 		err = ValidateRelayStagingStartup(context.Background(), cfg, r.Client)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "namespace")
+		assert.Contains(t, err.Error(), secrets.RelayPubSecretName)
+		assert.NotContains(t, err.Error(), "cluster-scoped", "the guard must never require namespace-object RBAC")
 	})
 
 	t.Run("missing pub Secret (router not bootstrapped) refuses startup", func(t *testing.T) {

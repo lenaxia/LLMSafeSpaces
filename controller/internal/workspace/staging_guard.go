@@ -64,10 +64,12 @@ func ProbeRelayRouter(ctx context.Context, routerURL string) error {
 }
 
 // ValidateRelayStagingStartup is the full boot gate: flags probed, router
-// reachable, namespace present, pub Secret readable + parseable (the router
-// bootstrapped; this also proves the controller's get-on-pub RBAC), and
-// the mint key created. c must be a DIRECT (non-cached) client — the
-// controller-runtime cache is not started this early.
+// reachable, pub Secret readable + parseable (the router bootstrapped; this
+// also proves the controller's name-scoped get-on-pub RBAC — a successful
+// read implies the namespace exists, so no cluster-scoped Namespace GET is
+// needed or performed), and the mint key created. c must be a DIRECT
+// (non-cached) client — the controller-runtime cache is not started this
+// early.
 func ValidateRelayStagingStartup(ctx context.Context, cfg *RelayStagingConfig, c client.Client) error {
 	if cfg == nil {
 		return nil
@@ -77,10 +79,6 @@ func ValidateRelayStagingStartup(ctx context.Context, cfg *RelayStagingConfig, c
 	}
 	if err := ProbeRelayRouter(ctx, cfg.RouterURL); err != nil {
 		return err
-	}
-	ns := &corev1.Namespace{}
-	if err := c.Get(ctx, types.NamespacedName{Name: cfg.Namespace}, ns); err != nil {
-		return fmt.Errorf("relay-only: namespace %q not found — is relayOnlyKeyDelivery.enabled fully rendered (llm-relay-namespace.yaml)? %w", cfg.Namespace, err)
 	}
 	pubSec := &corev1.Secret{}
 	if err := c.Get(ctx, types.NamespacedName{Name: secrets.RelayPubSecretName, Namespace: cfg.Namespace}, pubSec); err != nil {

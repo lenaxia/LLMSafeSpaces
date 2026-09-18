@@ -223,6 +223,25 @@ func TestDrWindowReconcileTerminates_RejectedSurfacesConditionAndEvent(t *testin
 	}
 }
 
+// Leg 8 (review r2 combination): a revocation co-present with a
+// corruption-class degrade must classify as REVOCATION — the degrade is
+// most plausibly about the just-revoked provider (its token fails closed
+// by design), and escalation is forbidden for revocation-class (§4.2).
+func TestDrWindowReconcileTerminates_RevocationWinsOverCorruptionDegrade(t *testing.T) {
+	env := newDREnv(t, "ws-dr8", "credential_stale", true)
+	env.src.mu.Lock()
+	env.src.providers = nil // unbind the only provider this pass
+	env.src.mu.Unlock()
+
+	require.NoError(t, env.r.reconcileRelayStaging(context.Background(), env.ws))
+	env.router.mu.Lock()
+	assert.Equal(t, 0, env.router.rotates, "a co-present revocation must suppress escalation")
+	env.router.mu.Unlock()
+	stale := conditionOf(env.ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, stale)
+	assert.Equal(t, v1.ReasonStaleRevoked, stale.Reason)
+}
+
 func mustGet(t *testing.T, r *WorkspaceReconciler, ns, name string) *corev1.Secret {
 	t.Helper()
 	sec := &corev1.Secret{}
@@ -238,5 +257,3 @@ func nonEmptyOr(s, fallback string) string {
 	}
 	return s
 }
-
-var _ = metav1.Now // keep metav1 imported for future matrix legs

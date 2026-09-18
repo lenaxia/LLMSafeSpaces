@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -81,7 +82,8 @@ func (c *CachedLLMProviderSource) LLMProviders(ctx context.Context, ownerUserID,
 }
 
 func (c *CachedLLMProviderSource) fetch(ctx context.Context, ownerUserID, workspaceID string) ([]secrets.LLMProviderData, error) {
-	url := fmt.Sprintf("%s/api/v1/internal/workspaces/%s/llm-providers?ownerUserID=%s", c.baseURL, workspaceID, ownerUserID)
+	url := fmt.Sprintf("%s/api/v1/internal/workspaces/%s/llm-providers?ownerUserID=%s",
+		c.baseURL, url.PathEscape(workspaceID), url.QueryEscape(ownerUserID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)

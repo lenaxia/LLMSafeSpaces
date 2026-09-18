@@ -1,11 +1,17 @@
-{{- /* RBAC for relay-only key delivery (design 0058 §4.3):
-       - the router SA: get/list/watch Secrets in llm-relay, plus the
-         name-scoped WRITE carve-out for exactly the two HPKE keypair
-         Secrets (§4.2 bootstrap/rotation/DR needs it, and nothing else);
-       - the controller SA: create/update/delete the OTHER llm-relay
-         Secrets (staged envelopes, llm-relay-kek, llm-relay-mint-key) and
-         get on llm-relay-hpke-pub only — it never reads the private-key
-         Secret. */}}
+{{- /* RBAC for relay-only key delivery (design 0058 §4.3 + its US-72.3
+        deviation note):
+        - the router SA: get/list/watch Secrets in llm-relay, plus the
+          name-scoped WRITE carve-out for exactly the two HPKE keypair
+          Secrets (§4.2 bootstrap/rotation/DR needs it, and nothing else);
+        - the controller SA: create/update/delete the OTHER llm-relay
+          Secrets (staged envelopes, written BLIND — delete+create, no
+          read), plus name-scoped get on llm-relay-hpke-pub (it seals
+          against the public key) and llm-relay-mint-key (it created and
+          owns the mint key), and name-scoped update on llm-relay-mint-key
+          (the cluster-global rotate-escalation anti-storm timestamp).
+          The controller NEVER reads the private-key Secret and NEVER
+          lists llm-relay Secrets (a list would return the keypair payload
+          too — RBAC cannot exclude-by-name on list). */}}
 {{- if .Values.relayOnlyKeyDelivery.enabled }}
 {{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
 apiVersion: v1
@@ -55,8 +61,12 @@ rules:
     verbs: ["create", "update", "delete"]
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["llm-relay-hpke-pub"]
+    resourceNames: ["llm-relay-hpke-pub", "llm-relay-mint-key"]
     verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["llm-relay-mint-key"]
+    verbs: ["update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

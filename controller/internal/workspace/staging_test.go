@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -199,7 +200,7 @@ func TestStaging_StagesEnvelopesAndHandoff(t *testing.T) {
 		assert.Equal(t, "ws-a", sec.Labels[secrets.RelayEnvWorkspaceLabel])
 		assert.Equal(t, slug, sec.Labels[secrets.RelayEnvProviderLabel])
 		envelope := string(sec.Data[secrets.RelayEnvDataKey])
-		assert.True(t, hasPrefix(envelope, "stg:v1:hpke:hpke-g2:"), "envelope for %s: %s", slug, envelope[:min(40, len(envelope))])
+		assert.True(t, strings.HasPrefix(envelope, "stg:v1:hpke:hpke-g2:"), "envelope for %s: %s", slug, envelope[:min(40, len(envelope))])
 		var models []string
 		require.NoError(t, json.Unmarshal(sec.Data[secrets.RelayEnvModelsKey], &models))
 		if slug == "openai" {
@@ -572,15 +573,6 @@ func pubKeyForGeneration(t *testing.T, generation int64) ([]byte, error) {
 	return pub.PublicKey, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
-
 // TestStaging_SteadyStateZeroWrites: a no-change pass performs NO
 // envelope/handoff writes and NO re-mints (the second pass's handoff bytes
 // are identical — the revision did not move, no apiserver churn).
@@ -634,4 +626,75 @@ func TestStaging_ModelsChangeReseals(t *testing.T) {
 	after := string(getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-models", "openai")).Data[secrets.RelayEnvModelsKey])
 	assert.Contains(t, after, "gpt-5")
 	assert.NotContains(t, after, "gpt-4o")
+}
+
+// TestStaging_CredentialValueRotationReseals (review r2, Correctness #2):
+// a credential VALUE rotation under a stable slug/keyID/models must re-seal
+// the envelope — the key digest in the staging bookkeeping closes the gap
+// where the old key would otherwise stay live in llm-relay indefinitely.
+func TestStaging_CredentialValueRotationReseals(t *testing.T) {
+	pubSec, kp1 := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-valrot")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "sk-old-value")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	resolver1, err := secrets.NewHPKEStagingResolver(kp1.PrivateKey, "hpke-g1", nil)
+	require.NoError(t, err)
+	env1 := string(getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-valrot", "openai")).Data[secrets.RelayEnvDataKey])
+	plain1, err := resolver1.Resolve(context.Background(), env1)
+	require.NoError(t, err)
+	require.Equal(t, "sk-old-value", string(plain1), "pre-condition: old key sealed")
+
+	// Rotate the credential VALUE: same slug, same kind, same models.
+	src.mu.Lock()
+	src.providers = []secrets.LLMProviderData{openaiPD("openai", "sk-new-value")}
+	src.mu.Unlock()
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	env2 := string(getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-valrot", "openai")).Data[secrets.RelayEnvDataKey])
+	assert.NotEqual(t, env1, env2, "the envelope must be re-sealed on a credential value change")
+	plain2, err := resolver1.Resolve(context.Background(), env2)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-new-value", string(plain2), "the re-sealed envelope must carry the NEW key")
+	assert.NotContains(t, env2, "sk-old-value")
+}
+
+// TestStaging_MintFailureRetainsUnexpiredToken (review r2, Correctness #3):
+// a transient mint failure at the TTL/2 renewal boundary must NOT drop the
+// still-valid cached token from the handoff — the handoff Secret is the
+// only token store.
+func TestStaging_MintFailureRetainsUnexpiredToken(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-mintfail")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	base := time.Now()
+	r.RelayStaging.Now = func() time.Time { return base }
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	ho1 := decodeHandoff(t, getSecret(t, r, "default", handoffSecretName("ws-mintfail")).Data[relayHandoffDataKey])
+	require.Len(t, ho1.Providers, 1)
+	firstToken := ho1.Providers[0].Token
+
+	// Past TTL/2 the renewal mint fails (transient router error).
+	r.RelayStaging.Now = func() time.Time { return base.Add(40 * time.Minute) }
+	router.mu.Lock()
+	router.mintErr = fmt.Errorf("router overloaded")
+	router.mu.Unlock()
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	ho2 := decodeHandoff(t, getSecret(t, r, "default", handoffSecretName("ws-mintfail")).Data[relayHandoffDataKey])
+	require.Len(t, ho2.Providers, 1, "the still-valid token must be RETAINED, not dropped")
+	assert.Equal(t, firstToken, ho2.Providers[0].Token)
+	assert.Nil(t, conditionOf(ws, v1.WorkspaceConditionCredentialStale), "a retained unexpired token is not stale")
+
+	// A fully expired token + mint failure IS dropped, loudly.
+	r.RelayStaging.Now = func() time.Time { return base.Add(2 * time.Hour) }
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	ho3 := decodeHandoff(t, getSecret(t, r, "default", handoffSecretName("ws-mintfail")).Data[relayHandoffDataKey])
+	assert.Empty(t, ho3.Providers, "an expired token with a failed mint must not linger")
+	require.NotNil(t, conditionOf(ws, v1.WorkspaceConditionCredentialStale))
+	assert.Equal(t, v1.ReasonStageFailed, conditionOf(ws, v1.WorkspaceConditionCredentialStale).Reason)
 }
