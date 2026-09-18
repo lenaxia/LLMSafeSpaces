@@ -84,6 +84,36 @@ Deliver: (1) the image-factory catalog set that makes rootless podman work insid
 
 ## Run 2 results (35310867239) — the decisive data
 
+S5.6 **PASS** (the `gvisor-bin/` sidecar fix works — gVisor workspaces boot again). S5.7a/b PASS, **S5.7g PASS** (podman-set image boots Active under runsc). The blockers are now precisely identified: — the identity/host-userns pursuit (gVisor leg)
+
+| Run | Change | Result / lesson |
+|---|---|---|
+| 3 | user-slot containers.conf subuid override at `$HOME/.config` | Not honored — newuidmap still called with the /etc range; even `podman info` trips it (rootless storage init chowns graphroot via userns re-exec) |
+| 4 | `CONTAINERS_CONF` env override (deterministic) | Conf echoed = override active, newuidmap STILL called — podman 4.3 storage-init reads /etc/subuid directly; runtime override impossible |
+| 5 | image variant with subuid/subgid layers deleted | `/etc/subuid` still had a line — something in the apt layer seeds a range post-install |
+| 6 | image variant + post-layer truncation (`: > /etc/subuid`) | **g2 PASS**: `podman info` boots under runsc with zero ranges. Nested run then failed on blob staging: containers-storage defaults to `/var/tmp` (read-only rootfs) |
+| 7 | wrapper exports `TMPDIR=/tmp` | Pull proceeded; layer apply failed: `lchown /etc/shadow → 0:42` EINVAL — the identity-mode trade-off itself |
+| 8 | `ignore_chown_errors` in storage options | TOML type error — it is a STRING option (`"true"`) |
+| 9 | string-typed | keep-id **hard-requires** subuid ranges in podman 4.3 |
+| 10 | `--userns=host` (no nested userns at all) | Pull+extract OK; netns creation bind-mounted nsfs → runsc EINVAL — `CONTAINERS_CONF` REPLACES /etc (netns=host was lost) |
+| 11 | `netns = "host"` in the override | **S5.7h PASS: nested container ran UNDER gVisor** — no nested userns, no uid_map write |
+| 12 | + `userns = "host"` default in [containers] | **S5.7h PASS again (reproducible)**. Compose (S5.7i) still 000 |
+| 13 | compose diagnostics + pip-installed podman-compose retry | apt podman-compose 1.0.3 (2022-era) fails in this mode; pip retry inconclusive (PATH plumbing in the harness one-liner, not a platform limitation) |
+
+## Final verdict
+
+**Nesting inside the strongest isolation tier works.** `podman run` under gVisor, in the hardened workspace pod, reproduced green across two consecutive runs. The working recipe (what the real implementation would bake):
+
+1. Image: podman set WITHOUT subuid/subgid ranges (truncate post-apt — a pkg postinst seeds ranges even when the file layers are absent)
+2. `userns = "host"` — nested containers create NO user namespace: no newuidmap, no uid_map write (the runsc blocker), and no seccomp clone-mask problem either (the runc blocker!) — this mode should work on **both** runtime classes; only the runc leg's verification remains
+3. `netns = "host"` (+ high ports: nested processes are uid 1000, no CAP_NET_BIND_SERVICE)
+4. storage: `vfs`, `runroot=/sandbox-runtime/...`, `graphroot` on PVC, `ignore_chown_errors = "true"` (string), `TMPDIR` on a writable path, `XDG_RUNTIME_DIR` mkdir'd at /sandbox-runtime/run
+5. Trade-offs, documented: nested containers share the pod uid (files stay uid 1000; images hard-requiring specific ownerships may misbehave — alpine/busybox fine), no low ports, vfs speed
+6. Compose: bookworm's apt podman-compose 1.0.3 is insufficient — the factory set should ship a current compose (pip `podman-compose` or the docker-compose v2 static binary); harness retry plumbing left as-is, proof deferred to implementation
+
+**Open product decisions (unchanged, now better informed):** the catalog set as staged (with subuid ranges) matches the *runc + loosened-seccomp* story; the gVisor-compatible shape is the set minus subuid/subgid plus the [containers]/[storage] overrides above — either one set or two variants is an owner call. The runc seccomp decision (chart-wide vs admin-gated field) remains, though `userns=host` mode suggests runc may work under RuntimeDefault too (no userns clone needed) — worth one verification leg before deciding.
+
+
 S5.6 **PASS** (the `gvisor-bin/` sidecar fix works — gVisor workspaces boot again). S5.7a/b PASS, **S5.7g PASS** (podman-set image boots Active under runsc). The blockers are now precisely identified:
 
 - **runc (S5.7c→f): `cannot clone: Operation not permitted` → `Error: cannot re-exec process`.** Rootless podman's re-exec `clone`s with namespace flags beyond `CLONE_NEWUSER`; containerd's `RuntimeDefault` seccomp allows `clone` only masked to exactly `CLONE_NEWUSER`, so the syscall returns EPERM. The session's load-bearing assumption ("RuntimeDefault permits the rootless userns bootstrap — no pod spec change needed") is **falsified**. Known upstream pattern (containers/podman#9958 class): running rootless podman inside an unprivileged container requires a seccomp profile that permits `clone`/`unshare` with arbitrary namespace flags. That is a **platform change** (pod seccomp `Localhost` profile + node distribution + admin-gated selection), not an image-factory change.
