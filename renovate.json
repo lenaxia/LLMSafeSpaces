@@ -114,9 +114,9 @@
       "prPriority": 10
     },
     {
-      "description": "Bump Docker base images via patch.",
+      "description": "Bump Docker base images via patch, and keep the #1330 digest pins fresh (grouped so a mass rebuild lands as one PR).",
       "matchManagers": ["dockerfile"],
-      "matchUpdateTypes": ["patch"],
+      "matchUpdateTypes": ["patch", "digest"],
       "groupName": "docker base images"
     }
   ],

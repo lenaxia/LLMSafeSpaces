@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Build the controller manager binary.
 # Build context MUST be the repository root (single Go module at root).
 #
@@ -10,7 +9,7 @@
 # injects the value per-platform; a hardcoded default can mask a missing
 # buildx override and produce a binary for the wrong arch (issue #462).
 
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26@sha256:3c3e25a4da13fd0478eed2df1eb35a0e667094a7124d3993a6a1d30f71c17e79 AS builder
 
 WORKDIR /workspace
 
@@ -45,7 +44,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
         -o /out/manager \
         ./controller
 
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
 WORKDIR /
 
