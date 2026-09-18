@@ -773,7 +773,10 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			Spec: buildRoutineScriptSpec(trigger), Input: envelopeJSON,
 			Timeout: "5m",
 		}
-		scriptResp, err := s.AgentdClient.Execute(ctx, workspaceID, podIP, scriptReq)
+		// #1458: the pre-script leg rides the same bounded transient
+		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
+		// this leg must not fail the fire either.
+		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
