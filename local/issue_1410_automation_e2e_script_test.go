@@ -51,10 +51,13 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		// R3 — no-op enable keeps the slot (review guard on #1410).
 		`'{"enabled":true}' >/dev/null`,
 		`R3: no-op enabled:true kept the slot`,
-		// R4 — missing workflow is loud (#1412).
+		// R4 — missing workflow is loud (#1412); R4d — the DELETE route
+		// (FK SET NULL) is loud too (#1440).
 		`GHOST_WF="deadbeef-0000-4000-8000-000000000000"`, // nonexistent DAG target
 		`select(.status=="failed")`,                       // failed fire asserted
-		`*"workflow not found"*`,                          // payload asserted
+		`*"workflow not found"*`,                          // payload asserted (never-existed route)
+		`*"trigger_has_no_target"*`,                       // payload asserted (delete route, #1440)
+		"silent zombie regression",                        // R4d auto-disable assertion present
 		`R4c: consecutiveFailures incremented`,            // failure counter asserted
 		// R5 — run input obeys inputSchema (#1413).
 		`'{"input":{"wrong":true}}' >/dev/null`,    // non-conforming input attempted

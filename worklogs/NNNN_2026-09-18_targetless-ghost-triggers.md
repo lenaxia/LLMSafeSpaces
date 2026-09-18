@@ -16,6 +16,8 @@ Migration 000020: triggers.workflow_id REFERENCES workflows(id) ON DELETE SET NU
 - fireRoutineTarget's nil-target guard now records a FAILED fire (reason trigger_has_no_target + hint), increments consecutiveFailures, and honors autoDisableAfter — identical accounting to the missing-workflow path.
 - Engine tests: targetless trigger records exactly one failed fire with the named payload + count (no run); auto-disable at threshold.
 - Store integration test pins the FK semantics the fix relies on: delete succeeds, trigger SURVIVES, workflow_id NULL (never CASCADE, never RESTRICT).
+- Nightly R4d added (create-then-delete through the user API): asserts the targetless trigger records trigger_has_no_target failed fires and auto-disables — the delete route now has its own row, distinct from R4's never-existed-UUID route (which rides the unchanged GetWorkflow-miss path).
+- A store-level trg_target_present CHECK was considered and REJECTED (coordination with the #1442 author): with ON DELETE SET NULL, the CHECK would fail the workflow-delete transaction itself — deletion breaks. Engine-side loudness is the sound invariant for the SET NULL route.
 
 ## Key Decisions
 - Fix at the ROUTE-AGNOSTIC point (the guard): whether the target was lost to FK SET NULL, a create anomaly (#1442), or authoring without workspace_id, the zombie behaves identically.
