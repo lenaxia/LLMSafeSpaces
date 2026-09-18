@@ -84,7 +84,14 @@ Deliver: (1) the image-factory catalog set that makes rootless podman work insid
 
 ## Run 2 results (35310867239) — the decisive data
 
-S5.6 **PASS** (the `gvisor-bin/` sidecar fix works — gVisor workspaces boot again). S5.7a/b PASS, **S5.7g PASS** (podman-set image boots Active under runsc). The blockers are now precisely identified: — the identity/host-userns pursuit (gVisor leg)
+S5.6 **PASS** (the `gvisor-bin/` sidecar fix works — gVisor workspaces boot again). S5.7a/b PASS, **S5.7g PASS** (podman-set image boots Active under runsc). The blockers, precisely identified:
+
+- **runc (S5.7c→f): `cannot clone: Operation not permitted` → `Error: cannot re-exec process`.** Rootless podman's re-exec `clone`s with namespace flags beyond `CLONE_NEWUSER`; containerd's `RuntimeDefault` seccomp allows `clone` only masked to exactly `CLONE_NEWUSER`. The session's load-bearing assumption ("RuntimeDefault permits the rootless userns bootstrap") is **falsified** for podman 4.3's re-exec; the standard fix is a custom seccomp profile permitting ns-flag `clone`/`unshare` — a platform change, not an image-factory change.
+- **gVisor (S5.7h): clone + setuid `newuidmap` both WORK under runsc** (runsc applies the OCI seccomp differently — no EPERM at clone); the failure is `newuidmap ... write to uid_map failed: EPERM` — runsc rejects the multi-line subordinate mapping.
+
+S5.7d/e/f and S5.7i were downstream of these two blockers (no pull ever succeeded).
+
+## Runs 3-13 — the identity/host-userns pursuit (gVisor leg)
 
 | Run | Change | Result / lesson |
 |---|---|---|
