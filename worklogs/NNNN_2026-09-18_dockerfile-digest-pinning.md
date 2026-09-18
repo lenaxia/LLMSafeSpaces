@@ -92,6 +92,17 @@ r4 verified the `#SYNTAX=` fix closed (BuildKit premise re-verified from source;
 
 CI: all checks green on the r4 head (the earlier Playwright/race flakes did not recur; `gh run rerun --failed` history recorded above).
 
+### Review r5 on PR #1447 (REQUEST_CHANGES) — count-record correction (r6)
+
+r5 verified both r4 gating findings closed (port-with-tag restored with disclosure; `//` form matched; digests re-resolved a FIFTH time; merge-tree clean). One gating finding — a repeat of the r4 count error, made worse by a false attestation:
+
+- **The r5 worklog/COORDINATE/commit/PR-body claimed 30 cases; HEAD has exactly 29** (25 + 1 restored + 3 `//` = 29; the trailing "+1" in the r5 worklog entry had no referent). The r5 "recount verified by execution: 30 passing subtests" claim was FALSE — the 30 came from counting the PARENT test's PASS line together with the 29 subtest PASS lines (`grep -c 'PASS:'` without anchoring to the subtest prefix). **Retraction (append-only): that attestation is retracted; the verified-by-execution count is 29.** Evidence (commands + output, run at 6463075a):
+  - `go test ./pkg/repolint/ -run TestLintDockerfileContent -v | grep -c '=== RUN   TestLintDockerfileContent/'` → **29**
+  - `… | grep -c -- '--- PASS: TestLintDockerfileContent/'` → **29**
+  - `… | grep -c -- '--- FAIL: TestLintDockerfileContent/'` → **0**
+- Corrected in COORDINATE.md and the PR body in the same round. (Reviewer's optional non-gating BOM observation noted below in Next Steps — not taken this round to keep the count-record fix minimal and exact.)
+
+
 ---
 
 ## Key Decisions
