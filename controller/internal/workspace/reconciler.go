@@ -141,12 +141,6 @@ type WorkspaceReconciler struct {
 	// 33811397260); main.go clamps this to 1..64 to bound apiserver load.
 	MaxConcurrentReconciles int
 
-	// relayPendingRevocations carries slugs whose envelope delete failed
-	// in the current staging pass (in-memory only; the staged annotation
-	// keeps them so the next pass retries). Single-writer per workspace
-	// (controller-runtime never runs the same object concurrently).
-	relayPendingRevocations []string
-
 	// RelayStaging (Epic 72 / design 0058, US-72.3): when non-nil, every
 	// Creating/Active reconcile runs the staging pass — seal bound BYO
 	// llm-provider credentials into llm-relay envelope Secrets, mint scoped

@@ -91,7 +91,9 @@ func ValidateRelayStagingStartup(ctx context.Context, cfg *RelayStagingConfig, c
 		return fmt.Errorf("relay-only: %s payload is shape-invalid at startup: %w", secrets.RelayPubSecretName, err)
 	}
 	// The mint key is controller-created (the router reads it lazily); the
-	// guard creates it so the first mint never races the router's lazy read.
+	// guard creates it so the first mint never races the router's lazy
+	// read. Reads go through the config's (construction-required, direct)
+	// API reader — the same one the runtime pass uses.
 	if _, err := (&WorkspaceReconciler{Client: c, RelayStaging: cfg}).ensureRelayMintKey(ctx); err != nil {
 		return fmt.Errorf("relay-only: ensuring mint key: %w", err)
 	}

@@ -78,7 +78,7 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 		defer srv.Close()
 		r := guardClient(t, ns, pubSec)
-		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
+		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, r.Client)
 		require.NoError(t, err)
 		require.NoError(t, ValidateRelayStagingStartup(context.Background(), cfg, r.Client))
 		mk := &corev1.Secret{}
@@ -91,7 +91,7 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 		url := dead.URL
 		dead.Close()
 		r := guardClient(t, ns, pubSec)
-		cfg, err := NewRelayStagingConfig(url, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
+		cfg, err := NewRelayStagingConfig(url, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, r.Client)
 		require.NoError(t, err)
 		err = ValidateRelayStagingStartup(context.Background(), cfg, r.Client)
 		require.Error(t, err)
@@ -106,7 +106,7 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 		defer srv.Close()
 		r := guardClient(t) // no namespace object, no pub Secret
-		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
+		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, r.Client)
 		require.NoError(t, err)
 		err = ValidateRelayStagingStartup(context.Background(), cfg, r.Client)
 		require.Error(t, err)
@@ -118,7 +118,7 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 		defer srv.Close()
 		r := guardClient(t, ns)
-		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
+		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, r.Client)
 		require.NoError(t, err)
 		err = ValidateRelayStagingStartup(context.Background(), cfg, r.Client)
 		require.Error(t, err)
@@ -133,7 +133,7 @@ func TestValidateRelayStagingStartup_FailLoudMatrix(t *testing.T) {
 			Data:       map[string][]byte{secrets.RelayPubDataKey: []byte("not-json")},
 		}
 		r := guardClient(t, ns, badPub)
-		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{})
+		cfg, err := NewRelayStagingConfig(srv.URL, relayTestNamespace, time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, r.Client)
 		require.NoError(t, err)
 		assert.ErrorContains(t, ValidateRelayStagingStartup(context.Background(), cfg, r.Client), "shape-invalid")
 	})

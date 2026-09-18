@@ -55,7 +55,7 @@ func envtestStagingRig(t *testing.T, objs ...client.Object) (*WorkspaceReconcile
 		Scheme:   sch,
 		Recorder: record.NewFakeRecorder(64),
 	}
-	staging, err := NewRelayStagingConfig("http://llm-relay-router.llm-relay.svc.cluster.local", relayTestNamespace, 0, src, router, &recordingRedactor{})
+	staging, err := NewRelayStagingConfig("http://llm-relay-router.llm-relay.svc.cluster.local", relayTestNamespace, 0, src, router, &recordingRedactor{}, dyn)
 	require.NoError(t, err)
 	r.RelayStaging = staging
 	return r, src, router

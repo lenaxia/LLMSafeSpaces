@@ -131,6 +131,12 @@ func SetupRelayStaging(mgr ctrl.Manager, enabled bool, routerURL, namespace stri
 	if err != nil {
 		return nil, fmt.Errorf("relay staging redactor: %w", err)
 	}
+	// Every llm-relay READ goes through the direct API reader: the cached
+	// client cannot serve the llm-relay namespace (out-of-scope namespaces
+	// fail without an API call; an in-scope informer would need LIST+WATCH
+	// the Role withholds — review r3 finding 1). Writes bypass the cache
+	// and stay on the reconciler client. The reader is REQUIRED at
+	// construction — no cached-client fallback exists.
 	cfg, err := workspace.NewRelayStagingConfig(
 		routerURL,
 		namespace,
@@ -138,16 +144,11 @@ func SetupRelayStaging(mgr ctrl.Manager, enabled bool, routerURL, namespace stri
 		workspace.NewCachedLLMProviderSource(apiServiceURL, apiInternalToken, 0),
 		workspace.NewHTTPRelayRouterClient(routerURL, namespace, mgr.GetAPIReader()),
 		secrets.RedactStagedKeys{Redactor: redactor},
+		mgr.GetAPIReader(),
 	)
 	if err != nil {
 		return nil, err
 	}
-	// Every llm-relay READ goes through the direct API reader: the cached
-	// client cannot serve the llm-relay namespace (out-of-scope namespaces
-	// fail without an API call; an in-scope informer would need LIST+WATCH
-	// the Role withholds — review r3 finding 1). Writes bypass the cache
-	// and stay on the reconciler client.
-	cfg.APIReader = mgr.GetAPIReader()
 	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
 	if err != nil {
 		return nil, fmt.Errorf("building startup-guard client: %w", err)

@@ -124,27 +124,32 @@ type RelayStagingConfig struct {
 	// without an API call, and an informer inside it needs LIST+WATCH —
 	// verbs the llm-relay Role deliberately withholds (§4.3 deviation
 	// note). Writes stay on the reconciler client (controller-runtime
-	// writes bypass the cache). Wired to mgr.GetAPIReader() in
-	// SetupRelayStaging; nil falls back to the reconciler client (unit
-	// tests that don't exercise the topology).
+	// writes bypass the cache). REQUIRED at construction
+	// (mgr.GetAPIReader() in production) — there is deliberately no
+	// cached-client fallback.
 	APIReader client.Reader
 }
 
-// readerFor returns the reader llm-relay reads must use.
+// relayReader returns the direct reader llm-relay reads must use. The
+// constructor guarantees non-nil (no cached-client fallback by design).
 func (r *WorkspaceReconciler) relayReader() client.Reader {
-	if r.RelayStaging.APIReader != nil {
-		return r.RelayStaging.APIReader
-	}
-	return r.Client
+	return r.RelayStaging.APIReader
 }
 
 // NewRelayStagingConfig constructs the production staging config. The
 // redactor is mandatory (US-72.1 §4.9 amendment binding on US-72.3's
 // construction path) — a nil redactor means an unregistered staged key could
-// echo through diagnostics, which the design forbids.
-func NewRelayStagingConfig(routerURL, namespace string, tokenTTL time.Duration, source LLMProviderSource, routerClient RelayRouterClient, redactor secrets.StagedKeyRedactor) (*RelayStagingConfig, error) {
+// echo through diagnostics, which the design forbids. The reader is
+// likewise mandatory: llm-relay reads MUST go through a DIRECT client
+// (mgr.GetAPIReader()) — the cached reconciler client cannot serve them
+// (review r3 finding 1) — so the production wiring cannot silently drop
+// it.
+func NewRelayStagingConfig(routerURL, namespace string, tokenTTL time.Duration, source LLMProviderSource, routerClient RelayRouterClient, redactor secrets.StagedKeyRedactor, apiReader client.Reader) (*RelayStagingConfig, error) {
 	if redactor == nil {
 		return nil, fmt.Errorf("relay staging: a nil redactor on the production path violates design 0058 §4.9 (fail-open is test-adoption only)")
+	}
+	if apiReader == nil {
+		return nil, fmt.Errorf("relay staging: a nil API reader cannot serve llm-relay reads (the cached client cannot serve them either — route mgr.GetAPIReader() here)")
 	}
 	if routerURL == "" {
 		return nil, fmt.Errorf("relay staging: router URL is required")
@@ -165,6 +170,7 @@ func NewRelayStagingConfig(routerURL, namespace string, tokenTTL time.Duration, 
 		ProviderSource: source,
 		RouterClient:   routerClient,
 		redaction:      redactor,
+		APIReader:      apiReader,
 		Now:            time.Now,
 	}, nil
 }
@@ -268,7 +274,6 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	}
 	logger := log.FromContext(ctx)
 	before := snapshotRelayState(ws)
-	r.relayPendingRevocations = nil
 
 	providers, err := cfg.ProviderSource.LLMProviders(ctx, ws.Spec.Owner.UserID, ws.Name)
 	if err != nil {
@@ -300,12 +305,19 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	lastSealed := relayAnnotationInt(ws, relaySealedGenerationAnnotation)
 	forceReseal := pub.Generation != lastSealed
 
-	revoked, revokeErr := r.relayRevokeUndesired(ctx, ws, desired, staged)
+	revoked, pending, revokeErr := r.relayRevokeUndesired(ctx, ws, desired, staged)
 	if revokeErr != nil {
-		// Persist what DID complete + the pending-revocation condition,
-		// then requeue — the retained envelope keeps resolving (D2
-		// incomplete) until the delete lands.
-		r.relayEvaluateStale(ws, revoked, false, nil)
+		// Persist the updated bookkeeping (completed revocations leave the
+		// staged set now, so the retry only retries the pending ones), the
+		// pending-revocation condition, then requeue — the retained
+		// envelope keeps resolving (D2 incomplete) until the delete lands.
+		if ws.Annotations == nil {
+			ws.Annotations = map[string]string{}
+		}
+		if stagedJSON, jerr := json.Marshal(staged); jerr == nil {
+			ws.Annotations[relayStagedProvidersAnnotation] = string(stagedJSON)
+		}
+		r.relayEvaluateStale(ws, revoked, pending, false)
 		if err := r.relayPersist(ctx, ws, before); err != nil {
 			return err
 		}
@@ -319,7 +331,7 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	// token-expiry-class causes.
 	escalated := false
 	if !forceReseal && lastSealed > 0 && len(staged) > 0 {
-		class := r.relayStaleClass(ws, revoked)
+		class := classifyRelayStale(ws, revoked, nil)
 		if class == relayStaleCorruption && r.relayLineageIntact(ws, desired, staged, keyID) {
 			receipt, ok, err := r.relayEscalateRotate(ctx, ws)
 			if err != nil {
@@ -426,7 +438,7 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	}
 	r.setCondition(ws, v1.WorkspaceConditionCredentialsStaged, "True",
 		v1.ReasonCredentialsStaged, stagedMsg)
-	r.relayEvaluateStale(ws, revoked, tokensFailed, handoff)
+	r.relayEvaluateStale(ws, revoked, nil, tokensFailed)
 	if escalated {
 		if r.Recorder != nil {
 			r.Recorder.Eventf(ws, corev1.EventTypeNormal, "RelayRotateEscalated",
@@ -466,7 +478,7 @@ func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesire
 // envelope whose provider is no longer bound (unbind/credential delete) is
 // deleted, its redaction group unregistered in the same pass, and a
 // one-pass CredentialStale(revocation-class) is raised (worklog D7).
-func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState) ([]string, error) {
+func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, staged map[string]relayStagedProviderState) ([]string, []string, error) {
 	want := make(map[string]bool, len(desired))
 	for i := range desired {
 		want[desired[i].pd.Slug] = true
@@ -496,11 +508,10 @@ func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.W
 				"provider %q unbound: llm-relay envelope deleted (revocation = Secret deletion, D2); in-flight tokens fail closed until the batch applies the removal", slug)
 		}
 	}
-	r.relayPendingRevocations = pending
 	if len(pending) > 0 {
-		return revoked, fmt.Errorf("revocation incomplete: envelope delete failed for %s — retained in llm-relay, retrying", joinQuoted(pending))
+		return revoked, pending, fmt.Errorf("revocation incomplete: envelope delete failed for %s — retained in llm-relay, retrying", joinQuoted(pending))
 	}
-	return revoked, nil
+	return revoked, nil, nil
 }
 
 func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, keyID string) (*relayHandoff, bool, error) {
@@ -572,7 +583,7 @@ func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Worksp
 // `credential_stale` degrade — the router's resolve-failure code for a
 // wrong or corrupt keypair lineage (live emission lands with US-72.4's
 // degrade codes; the classification and predicate land here, per the story).
-func (r *WorkspaceReconciler) relayStaleClass(ws *v1.Workspace, revoked []string) relayStaleClass {
+func classifyRelayStale(ws *v1.Workspace, revoked, pending []string) relayStaleClass {
 	degraded := ""
 	if ws.Status.SecretsDelivery != nil {
 		degraded = ws.Status.SecretsDelivery.DegradedReason
@@ -582,7 +593,7 @@ func (r *WorkspaceReconciler) relayStaleClass(ws *v1.Workspace, revoked []string
 	// (its token now fails closed by design), and escalation is explicitly
 	// forbidden for revocation-class (§4.2) — anti-churn conservatism.
 	switch {
-	case len(revoked) > 0 || len(r.relayPendingRevocations) > 0:
+	case len(revoked) > 0 || len(pending) > 0:
 		return relayStaleRevocation
 	case degraded == "credential_stale":
 		return relayStaleCorruption
@@ -598,8 +609,8 @@ func (r *WorkspaceReconciler) relayStaleClass(ws *v1.Workspace, revoked []string
 // relayEvaluateStale sets/clears CredentialStale and CredentialRejected from
 // the recomputed causes (worklog D7: revocation-class is one-pass; the
 // durable post-72.4 signal is the degrade feed).
-func (r *WorkspaceReconciler) relayEvaluateStale(ws *v1.Workspace, revoked []string, tokensFailed bool, handoff *relayHandoff) {
-	class := r.relayStaleClass(ws, revoked)
+func (r *WorkspaceReconciler) relayEvaluateStale(ws *v1.Workspace, revoked, pending []string, tokensFailed bool) {
+	class := classifyRelayStale(ws, revoked, pending)
 	degraded := ""
 	if ws.Status.SecretsDelivery != nil {
 		degraded = ws.Status.SecretsDelivery.DegradedReason
@@ -629,8 +640,8 @@ func (r *WorkspaceReconciler) relayEvaluateStale(ws *v1.Workspace, revoked []str
 			v1.ReasonStaleTokenExpired, "token expired; renewal owns this cause")
 	case class == relayStaleRevocation:
 		msg := fmt.Sprintf("credential revoked: %s — envelope deleted (D2); resolves fail closed until the batch applies the removal", joinQuoted(revoked))
-		if len(r.relayPendingRevocations) > 0 {
-			msg += fmt.Sprintf("; revocation INCOMPLETE (delete failed, retained + retrying): %s", joinQuoted(r.relayPendingRevocations))
+		if len(pending) > 0 {
+			msg += fmt.Sprintf("; revocation INCOMPLETE (delete failed, retained + retrying): %s", joinQuoted(pending))
 		}
 		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True", v1.ReasonStaleRevoked, msg)
 	case class == relayStaleDelivery:
@@ -847,7 +858,14 @@ func (r *WorkspaceReconciler) relayDeleteEnvelopes(ctx context.Context, ws *v1.W
 	for slug, old := range staged {
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: envelopeSecretName(ws.Name, slug), Namespace: r.RelayStaging.Namespace}}
 		if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
-			log.FromContext(ctx).Error(err, "relay staging: termination envelope delete failed", "secret", sec.Name)
+			// No later pass, no owner-ref GC (cross-namespace): a failed
+			// termination delete ORPHANS sealed material in llm-relay —
+			// permanent until an operator intervenes. Loud, never silent.
+			log.FromContext(ctx).Error(err, "relay staging: termination envelope delete failed — envelope ORPHANED in llm-relay", "secret", sec.Name)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(ws, corev1.EventTypeWarning, "RelayEnvelopeOrphaned",
+					"envelope %s delete failed at termination (%v) — sealed material orphaned in llm-relay; manual cleanup required", sec.Name, err)
+			}
 			continue
 		}
 		r.RelayStaging.redaction.UnregisterStagedKey(old.RedactionID)
@@ -906,9 +924,10 @@ type relayStateSnapshot struct {
 }
 
 type relayCondSig struct {
-	typ    v1.WorkspaceConditionType
-	status string
-	reason string
+	typ     v1.WorkspaceConditionType
+	status  string
+	reason  string
+	message string
 }
 
 func snapshotRelayState(ws *v1.Workspace) relayStateSnapshot {
@@ -921,7 +940,7 @@ func snapshotRelayState(ws *v1.Workspace) relayStateSnapshot {
 	for _, c := range ws.Status.Conditions {
 		switch c.Type {
 		case v1.WorkspaceConditionCredentialsStaged, v1.WorkspaceConditionCredentialStale, v1.WorkspaceConditionCredentialRejected:
-			s.conditions = append(s.conditions, relayCondSig{typ: c.Type, status: c.Status, reason: c.Reason})
+			s.conditions = append(s.conditions, relayCondSig{typ: c.Type, status: c.Status, reason: c.Reason, message: c.Message})
 		}
 	}
 	return s

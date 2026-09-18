@@ -147,7 +147,7 @@ func stagingReconciler(t *testing.T, src *fakeProviderSource, router *fakeRouter
 	if redactor == nil {
 		redactor = &recordingRedactor{}
 	}
-	cfg, err := NewRelayStagingConfig("http://llm-relay-router.llm-relay.svc.cluster.local", relayTestNamespace, time.Hour, src, router, redactor)
+	cfg, err := NewRelayStagingConfig("http://llm-relay-router.llm-relay.svc.cluster.local", relayTestNamespace, time.Hour, src, router, redactor, r.Client)
 	require.NoError(t, err)
 	r.RelayStaging = cfg
 	r.Recorder = record.NewFakeRecorder(64)
@@ -531,9 +531,19 @@ func TestPubSealtimeGenerationValidated_ShapeInvalidPubFailsLoudly(t *testing.T)
 // --- construction pin (§4.9 amendment) ------------------------------------
 
 func TestNewRelayStagingConfig_RefusesNilRedactor(t *testing.T) {
-	_, err := NewRelayStagingConfig("http://router", "llm-relay", time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, nil)
+	_, err := NewRelayStagingConfig("http://router", "llm-relay", time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil redactor")
+}
+
+// TestNewRelayStagingConfig_RefusesNilAPIReader: the direct reader is
+// REQUIRED at construction — there is deliberately no cached-client
+// fallback, so the production wiring (mgr.GetAPIReader()) cannot be
+// silently dropped (review r4 missing-test item).
+func TestNewRelayStagingConfig_RefusesNilAPIReader(t *testing.T) {
+	_, err := NewRelayStagingConfig("http://router", "llm-relay", time.Hour, &fakeProviderSource{}, &fakeRouterClient{}, &recordingRedactor{}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil API reader")
 }
 
 // --- termination cleanup ----------------------------------------------------
@@ -762,9 +772,18 @@ func TestStaging_StagedProvidersAnnotationLossConverges(t *testing.T) {
 	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
 	require.NotEmpty(t, ws.Annotations[relayStagedProvidersAnnotation])
 
-	// Wipe ONLY the bookkeeping annotation (fresh token, sealed
-	// generation intact).
-	delete(ws.Annotations, relayStagedProvidersAnnotation)
+	// Wipe ONLY the bookkeeping annotation (fresh token, sealed generation
+	// intact) — STORE-LEVEL (via the client), so the test exercises the
+	// real loss shape (etcd lost the value; the in-memory refetch must see
+	// it gone). An in-memory-only delete is a false-green: pass-1's stored
+	// write satisfies the stored assertion without the fix (review r4
+	// finding 2).
+	storedWiped := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-annloss", Namespace: "default"}, storedWiped))
+	delete(storedWiped.Annotations, relayStagedProvidersAnnotation)
+	require.NoError(t, r.Update(context.Background(), storedWiped))
+	*ws = *storedWiped.DeepCopy()
+
 	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
 
 	assert.NotEmpty(t, ws.Annotations[relayStagedProvidersAnnotation],
@@ -840,4 +859,30 @@ func (d deleteFailingClient) Delete(ctx context.Context, obj client.Object, opts
 		}
 	}
 	return d.Client.Delete(ctx, obj, opts...)
+}
+
+// TestStaging_ConcurrentPassesRaceFree (review r4 finding 1): two
+// workspaces' staging passes run CONCURRENTLY under -race. The pending-
+// revocation state must be pass-local (parameter-threaded), never on the
+// shared reconciler — the deployment default is maxConcurrentReconciles=4.
+func TestStaging_ConcurrentPassesRaceFree(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	wsA := makeRelayWorkspace("ws-race-a")
+	wsB := makeRelayWorkspace("ws-race-b")
+	r := stagingReconciler(t, src, router, nil, pubSec, wsA, wsB)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, ws := range []*v1.Workspace{wsA, wsB} {
+		wg.Add(1)
+		go func(i int, ws *v1.Workspace) {
+			defer wg.Done()
+			errs[i] = r.reconcileRelayStaging(context.Background(), ws)
+		}(i, ws)
+	}
+	wg.Wait()
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
 }
