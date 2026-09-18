@@ -452,6 +452,7 @@ type mockSchedulerStore struct {
 	lastRoutineResult json.RawMessage
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
+	overridePending   []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -464,19 +465,48 @@ func newMockSchedulerStore() *mockSchedulerStore {
 	}
 }
 
-func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, _ time.Time, _ int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error) {
+func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, now time.Time, _ int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var out []*wf.TriggerRow
 	for _, t := range m.triggers {
+		// Store parity: only DUE, ENABLED, CRON-SOURCED triggers are
+		// claimed (the real claim filters source_type='cron' AND
+		// enabled=true AND next_fire_at due). Without this gate the
+		// mock returned every row, double-firing webhook-sourced
+		// routine triggers that ride the pending-fire drain instead.
+		if t.SourceType != types.TriggerSourceCron || !t.Enabled {
+			continue
+		}
+		if t.NextFireAt == nil || t.NextFireAt.After(now) {
+			continue
+		}
 		if nextFireFn != nil {
 			m.nextFires[t.ID] = nextFireFn(t)
 		}
+		out = append(out, t)
 	}
-	return m.triggers, nil
+	return out, nil
 }
 
 func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) ([]*wf.TriggerFireRow, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.overridePending != nil {
+		return m.overridePending, nil
+	}
+	// Store parity: only routine fires still in 'fired' AND never
+	// result-written drain (the real store filters action_type='routine'
+	// AND status='fired' AND result IS NULL). Without the result-write
+	// landing on the row, a fire created and completed within one tick
+	// re-executed on the same tick's drain — production-impossible.
+	var out []*wf.TriggerFireRow
+	for _, f := range m.fires {
+		if f.ActionType == "routine" && f.Status == "fired" && f.Result == nil {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 func (m *mockSchedulerStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
@@ -510,6 +540,21 @@ func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID s
 		m.statuses = make(map[string]string)
 	}
 	m.statuses[fireID] = status
+	// Store parity: the write lands ON THE ROW (result set + status
+	// moved out of 'fired'), so a same-tick drain re-list cannot pick
+	// it up. Without this the drain filter observed nothing.
+	for _, f := range m.fires {
+		if f.ID == fireID {
+			f.Status = status
+			f.Result = json.RawMessage(`{"written":true}`)
+		}
+	}
+	for _, f := range m.overridePending {
+		if f.ID == fireID {
+			f.Status = status
+			f.Result = json.RawMessage(`{"written":true}`)
+		}
+	}
 	return nil
 }
 
@@ -1829,10 +1874,12 @@ func TestScheduler_LegacyTriggerByteIdentical(t *testing.T) {
 func TestScheduler_TargetlessTriggerFailsLoudly(t *testing.T) {
 	store := newMockSchedulerStore()
 	// Post-FK shape: workflow_id NULL (deleted target), no workspace_id.
+	due := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-ghost", OwnerType: "user", OwnerID: "u1",
 		Name: "ghost", Enabled: true, SourceType: "cron",
 		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 5,
+		NextFireAt: &due,
 	}}
 
 	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
@@ -1859,10 +1906,12 @@ func TestScheduler_TargetlessTriggerFailsLoudly(t *testing.T) {
 // At the threshold the targetless fire disarms the zombie.
 func TestScheduler_TargetlessTriggerAutoDisables(t *testing.T) {
 	store := newMockSchedulerStore()
+	due2 := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-ghost2", OwnerType: "user", OwnerID: "u1",
 		Name: "ghost2", Enabled: true, SourceType: "cron",
 		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 1,
+		NextFireAt: &due2,
 	}}
 
 	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
@@ -1871,4 +1920,227 @@ func TestScheduler_TargetlessTriggerAutoDisables(t *testing.T) {
 	if !store.disabled["trig-ghost2"] {
 		t.Fatalf("targetless zombie must auto-disable at the threshold")
 	}
+}
+
+// --- #1441: bounded retry on transient upstream 5xx ------------------------
+
+type scriptedExecutor struct {
+	calls   int
+	results []struct {
+		resp *NodeExecResponse
+		err  error
+	}
+}
+
+func (e *scriptedExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRequest) (*NodeExecResponse, error) {
+	i := e.calls
+	e.calls++
+	if i >= len(e.results) {
+		i = len(e.results) - 1
+	}
+	return e.results[i].resp, e.results[i].err
+}
+
+// A provider blip (opencode 500) recovers on retry: the fire succeeds
+// and no failure budget is burned.
+func TestExecuteWithRetry_Transient5xxRecovers(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Output)
+	assert.Equal(t, 2, ex.calls, "exactly one retry")
+}
+
+// Exhausted retries surface the failure as before.
+func TestExecuteWithRetry_Exhausted(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 503"}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Equal(t, 3, ex.calls, "bounded: three attempts")
+}
+
+// Deterministic failures are NOT retried (unsupported language etc.).
+func TestExecuteWithRetry_DeterministicNoRetry(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "invalid_node_data", Detail: "unsupported language"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_node_data", resp.ErrorCode)
+	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
+}
+
+// Transport errors: agentd 5xx retried, non-5xx not.
+func TestExecuteWithRetry_TransportShapes(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
+	}}
+	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, ex.calls)
+
+	ex2 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 404: no route")},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
+}
+
+// Timeouts (504) are OUT of the retry class: fresh-session retries of a
+// timed-out turn risk double execution, and a 10m-timeout retry would
+// triple the scheduler's worst-case per-fire latency.
+func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 504: gateway timeout")},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex.calls, "504 transport not retried")
+
+	ex2 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out"}},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex2.calls, "agentd script_timeout not retried")
+
+	ex3 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 504"}},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
+}
+
+// Wiring pin: executeRoutine actually routes through the retry — a
+// transient 5xx from the executor must NOT fail the fire (reverting
+// the executeWithRetry call site leaves this red).
+func TestScheduler_RoutineFireRetriesTransient5xx(t *testing.T) {
+	store := newMockSchedulerStore()
+	// A pending WEBHOOK routine fire (the receiver created it; the tick
+	// drains it) whose routine workspace is live.
+	wsPtr := "ws-rt"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-rt", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-rt", TriggerID: "trig-rt", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	// Executor: first call is the transient 500, second succeeds.
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "delivered", store.statuses["fire-rt"], "the transient 500 must not fail the fire")
+	assert.Equal(t, 2, ex.calls, "exactly one retry — reverting the executeWithRetry call site leaves this red (0 retries, fire failed)")
+}
+
+// Exhausted-retry wiring: a PERSISTENT retryable 5xx fails the fire and
+// burns exactly ONE failure — the budget-multiplication regression
+// class this retry exists to prevent (per-attempt counting would
+// triple-burn consecutiveFailures).
+func TestScheduler_RoutineFirePersistent5xxBurnsOneFailure(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-rt2"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-rt2", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-rt2", TriggerID: "trig-rt2", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "failed", store.statuses["fire-rt2"], "persistent 5xx still fails the fire")
+	assert.Equal(t, 3, ex.calls, "bounded at three attempts")
+	assert.Equal(t, 1, store.triggerFail["trig-rt2"], "exactly ONE failure burned — not one per attempt")
+	assert.False(t, store.disabled["trig-rt2"], "threshold not reached (1 < 10)")
+}
+
+// Mock-fidelity pin (review r5/r6): a DUE CRON routine trigger's
+// claim-created fire, completed within the same tick, executes exactly
+// once — the drain must not re-pick the result-written row. This is
+// the exact double-execution shape the round-4 mock allowed (claim
+// fires + writes the row; the unfiltered drain re-listed it). Red
+// under the round-4 mock, green with the result-write landing on rows.
+func TestScheduler_RoutineFireExecutesOncePerTick(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-once"
+	due := time.Now().UTC().Add(-5 * time.Second)
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-once", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceCron, WorkspaceID: &wsPtr,
+		SourceConfig: json.RawMessage(`{"expr":"* * * * *","tz":"UTC"}`),
+		Prompt:       "ACK", AutoDisableAfter: 10, NextFireAt: &due,
+	}}
+	ex := &countingExecutor{}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, 1, ex.calls, "claim-executed fire must not re-execute on the same tick's drain")
+	require.Len(t, store.fires, 1)
+	assert.Equal(t, "delivered", store.fires[0].Status)
+}
+
+type countingExecutor struct{ calls int }
+
+func (e *countingExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRequest) (*NodeExecResponse, error) {
+	e.calls++
+	return &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}, nil
 }

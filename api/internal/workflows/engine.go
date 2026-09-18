@@ -115,6 +115,57 @@ type NodeExecResponse struct {
 	Detail    string          `json:"detail,omitempty"`
 }
 
+// executeWithRetry runs an agentd node-execution with a bounded retry
+// on TRANSIENT upstream failures: agentd's "script_failed" wrapping
+// "opencode returned 5xx" (provider blips) and agentd transport 5xxs.
+// Deterministic failures (4xx-node errors, validation, unsupported
+// language) are NOT retried — only shapes that historically recover
+// within seconds (#1441: a single provider blip consumed
+// consecutiveFailures and could auto-disable a healthy trigger).
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	const attempts = 3
+	var resp *NodeExecResponse
+	var err error
+	for a := 1; a <= attempts; a++ {
+		resp, err = ex.Execute(ctx, workspaceID, podIP, req)
+		if !retryableAgentdFailure(err, resp) {
+			return resp, err
+		}
+		if a < attempts {
+			select {
+			case <-time.After(time.Duration(a) * 2 * time.Second):
+			case <-ctx.Done():
+				return resp, err
+			}
+		}
+	}
+	return resp, err
+}
+
+// retryableAgentdFailure reports whether the agentd outcome is the
+// transient-upstream shape worth retrying: agentd transport errors for
+// 500/502/503 ("agentd node execute returned NNN") or agentd's
+// script_failed wrapping an opencode 500/502/503 (provider blips).
+// TIMEOUTS (504 / agentd's script_timeout) are deliberately OUT: each
+// attempt runs in a fresh session, so retrying a timeout risks double
+// execution of a turn that may still complete in the background, and a
+// 10m-timeout retry would triple the scheduler's worst-case per-fire
+// latency. Deterministic failures (validation, unsupported language,
+// 4xx) are never retried.
+func retryableAgentdFailure(err error, resp *NodeExecResponse) bool {
+	if err != nil {
+		return strings.Contains(err.Error(), "returned 500") ||
+			strings.Contains(err.Error(), "returned 502") ||
+			strings.Contains(err.Error(), "returned 503")
+	}
+	if resp == nil || resp.ErrorCode != "script_failed" {
+		return false
+	}
+	return strings.Contains(resp.Detail, "opencode returned 500") ||
+		strings.Contains(resp.Detail, "opencode returned 502") ||
+		strings.Contains(resp.Detail, "opencode returned 503")
+}
+
 // --- WorkspaceActivator interface ---
 
 type WorkspaceActivator interface {
@@ -752,7 +803,10 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		Spec: buildRoutineAgentSpec(trigger, prompt), Input: envelopeJSON,
 		Timeout: "10m",
 	}
-	agentResp, err := s.AgentdClient.Execute(ctx, workspaceID, podIP, agentReq)
+	// #1441: transient upstream 5xx (model-provider blips surfacing as
+	// "opencode returned 5xx") must not fail a fire or burn
+	// auto-disable budget — bounded retry with backoff before giving up.
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
