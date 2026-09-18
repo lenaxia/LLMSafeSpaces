@@ -295,6 +295,47 @@ func TestLintDockerfileContent(t *testing.T) {
 			content: "# syntax=docker/dockerfile:1.7@sha256:" + d63 + "\nFROM golang:1.26@sha256:" + d64 + "\n",
 			want:    1,
 		},
+		{
+			// r2 review finding 1: BuildKit's directive parser (CutPrefix "#",
+			// TrimLeftFunc IsSpace, `^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
+			// honors unspaced, tabbed, and `=`-padded spellings — each is a live
+			// docker.io frontend fetch and must not bypass the pin bar.
+			name:    "unspaced #syntax= directive is a finding",
+			content: "#syntax=docker/dockerfile:1.8\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "tab-prefixed directive is a finding",
+			content: "#\tsyntax=docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "directive padded around = is a finding (BuildKit grammar allows spaces)",
+			content: "# syntax = docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "unspaced digest-pinned #syntax= directive is clean",
+			content: "#syntax=docker/dockerfile:1.8@sha256:" + d64 + "\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    0,
+		},
+		{
+			name:    "#SYNTAX= is NOT a build-honored directive (BuildKit matches lowercase) — plain comment",
+			content: "#SYNTAX=docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    0,
+		},
+		{
+			// r2 review minor 1: a registry port is not a tag; keep-the-tag
+			// policy must look at the last path segment only.
+			name:    "registry port without a tag is a finding (port is not a tag)",
+			content: "FROM registry:5000/img@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			name:    "registry port WITH a tag is clean",
+			content: "FROM registry:5000/img:1.2.3@sha256:" + d64 + "\n",
+			want:    0,
+		},
 	}
 
 	for _, tc := range cases {
