@@ -634,6 +634,11 @@ func TestCreateOpencodeSession_FailureModesCarryCode(t *testing.T) {
 		{"opencode 503", 503, `{"error":"blip"}`, "opencode returned 503"},
 		{"opencode 400 deterministic", 400, `{"error":"bad"}`, "opencode returned 400"},
 		{"unparseable 200 body", 200, `not-json`, "cannot parse created session:"},
+		// r1 Finding 1: a 200 whose body carries no usable ID must be a
+		// CREATE FAILURE, not a phantom success — the empty (code,
+		// detail) collapse read as ErrorCode=="" delivers the fire.
+		{"empty 200 object", 200, `{}`, "cannot parse created session:"},
+		{"empty id string", 200, `{"id":""}`, "cannot parse created session:"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -671,6 +676,49 @@ func TestCreateOpencodeSession_SuccessReturnsID(t *testing.T) {
 	}
 	if code != "" || detail != "" {
 		t.Fatalf("success must carry no failure code, got (%q, %q)", code, detail)
+	}
+}
+
+// Handler wiring (r1 Finding 1): a 200 create response with an
+// empty/absent id must surface session_create_failed — never an empty
+// errorCode, which the engine reads as success (phantom "delivered"
+// fire with the failure counter reset). Red on the unguarded split
+// (verified: handler emits {"errorCode":"","detail":""}).
+func TestWorkflowExecuteHandler_AgentNodeSessionCreateEmptyIDIsFailure(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty object": `{}`,
+		"empty id":     `{"id":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer stub.Close()
+			withStubAgentAddr(t, stub.URL)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute",
+				strings.NewReader(`{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"hi"}}`))
+			req.SetBasicAuth("opencode", mcpTestPassword)
+			w := httptest.NewRecorder()
+			workflowExecuteHandler(mcpTestPassword)(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("agentd surfaces error codes as HTTP 200, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp struct {
+				ErrorCode string `json:"errorCode"`
+				Detail    string `json:"detail"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.ErrorCode != "session_create_failed" {
+				t.Fatalf("empty-ID 200 create must surface session_create_failed, got %q (%q)", resp.ErrorCode, resp.Detail)
+			}
+			if !strings.Contains(resp.Detail, "cannot parse created session:") {
+				t.Fatalf("detail must name the parse failure, got %q", resp.Detail)
+			}
+		})
 	}
 }
 

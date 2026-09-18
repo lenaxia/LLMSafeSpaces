@@ -607,12 +607,14 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 
 // createOpencodeSession creates a session via the opencode HTTP API.
 // Every failure mode returns a non-empty (code, detail) pair — NEVER
-// a bare collapse to "": transport errors, non-200s, and unparseable
-// bodies all surface errorCode session_create_failed carrying the
-// distinguishing detail (#1457), so the engine can classify a
-// transient opencode 5xx apart from deterministic failures. Only the
-// message leg's 404 reports session_not_found — a session that
-// existed at create and vanished before/during the turn.
+// a bare collapse to "": transport errors, non-200s, unparseable
+// bodies, and a 200 with no usable ID all surface errorCode
+// session_create_failed carrying the distinguishing detail (#1457),
+// so the engine can classify a transient opencode 5xx apart from
+// deterministic failures (an empty pair would read as ErrorCode==""
+// there — a phantom delivered fire). Only the message leg's 404
+// reports session_not_found — a session that existed at create and
+// vanished before/during the turn.
 func createOpencodeSession(ctx context.Context, password string) (sessionID, failCode, failDetail string) {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
 		getAgentAddr()+"/session", strings.NewReader("{}"))
@@ -629,6 +631,12 @@ func createOpencodeSession(ctx context.Context, password string) (sessionID, fai
 	id, err := parseCreatedSessionID(resp.Body)
 	if err != nil {
 		return "", "session_create_failed", fmt.Sprintf("cannot parse created session: %v", err)
+	}
+	// A 200 with no usable ID ({}, {"id":""}) is a create failure,
+	// not success: an empty (code, detail) pair would read as
+	// ErrorCode=="" at the engine — a phantom delivered fire.
+	if id == "" {
+		return "", "session_create_failed", "cannot parse created session: empty id"
 	}
 	return id, "", ""
 }

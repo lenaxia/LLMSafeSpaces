@@ -35,6 +35,10 @@
 ### T7 e2e row (`local/issue-1417-templating-e2e.sh`)
 - The structural "wiring pins exist in the tree" loop now also asserts `TestScheduler_RoutineFireRetriesSessionCreate5xx` and `TestScheduler_RoutineFireScriptLegRetriesTransient5xx` (deleted pins fail the nightly row instead of rotting). `bash -n` verified.
 
+### Review round 1 (Finding 1 — empty-ID phantom success, fixed)
+- The reviewer traced (and live-reproduced) that a 200 create body of `{}` or `{"id":""}` passes `decodeStrict` (single-JSON-value check only) → `parseCreatedSessionID` returns `("", nil)` → the split returned `("", "", "")` → the engine read `ErrorCode==""` as SUCCESS → fire "delivered", failure counter reset. A silent phantom success — strictly worse than the pre-PR `session_not_found` visible failure. Validated independently (RED reproduced on all four new subtests), then fixed: empty parsed ID now returns `session_create_failed` / `cannot parse created session: empty id`. Docstring invariant updated to name the empty-ID shape. Mutation-verified: removing the one-line guard fails 6 test lines (unit + handler, both bodies).
+- Reviewer Finding 2 (non-blocking, acknowledged): a 502-after-commit create retried 3× can leak up to three orphan sessions (`deleteOpencodeSession` runs only on the success path). Pre-PR leaked one per fire attempt cycle as well (next tick re-fired the create); the create POST carries no idempotency key to dedupe on. No double-execution risk (reviewer verified: create failure precedes any message POST). Documented here as known behavior; mitigation needs an upstream idempotent-create surface — out of scope for this PR.
+
 ---
 
 ## Key Decisions
@@ -74,6 +78,7 @@ None. (Noted: `golangci-lint` was not installed in the pod; installed to `/tmp/o
   1. #1458 one-liner revert → `TestScheduler_RoutineFireScriptLegRetriesTransient5xx` FAIL
   2. classifier `session_create_failed` arm removed → both #1457 engine tests FAIL
   3. agentd collapse restored at the call site → both create-leg handler tests FAIL
+  4. r1 empty-ID guard removed → 6 FAIL lines (unit + handler empty-ID subtests)
 
 ---
 
