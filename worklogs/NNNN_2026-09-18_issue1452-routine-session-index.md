@@ -35,6 +35,11 @@ Determine with evidence whether routine-trigger sessions preserved via `preserve
 - **Robustness findings — documented decisions** (in `indexPreservedSession`'s doc comment): (a) title re-stamp only overlaps a user rename on a re-driven pending fire (each fire owns its session — verified live: two fires → two sessions), accepted like the re-drive message-count double-count; (b) `has_unread` true until opened = normal unopened-session semantics (MarkSessionSeen clears); (c) startup window verified non-defect (events buffer 1024, flushed at Start); (d) shutdown race loses at most one `last_message_at` (title row persists synchronously) — accepted, low impact.
 - **Follow-ups surfaced (not blockers per review):** failed PreserveOnFailure fires never index their preserved session (mirrors the pre-existing `RecordSessionOrigin` delivery-only blind spot — the failure branch has no session_id to index); duplicate PR #1461 from a parallel workflow escalated to the orchestrator.
 
+### Orchestrator adjudication + #1461 absorption
+
+- Orchestrator: **#1464 survives, #1461 closed** (parallel /fix automation had implemented the same Option A; claim + localization + review completeness favored this PR).
+- **Absorbed from #1461** (with credit): nil-logger guards in `sessionindex.Service.Start`/`Stop` — `RecordMessage` and `drain` already nil-guard, so `New(db, nil)` + `Start()` panicking was an internal inconsistency this PR's own integration test hit verbatim during development. Regression test `TestStartStop_NilLogger_NoPanic` (Start → RecordMessage → Stop on a nil-logger service, drain asserted); the engine integration test now uses the nil-logger construction it originally wanted.
+
 ---
 
 ## Key Decisions
@@ -92,3 +97,5 @@ None.
 - `local/issue1452-routine-session-index-e2e.sh` — new (kind e2e rows R1/R2)
 - `local/issue_1452_e2e_script_test.go` — new (script structure pins)
 - `.github/workflows/e2e-nightly.yml` — register the e2e script (port 18087)
+- `api/internal/services/sessionindex/service.go` — nil-logger guards in Start/Stop (absorbed from #1461)
+- `api/internal/services/sessionindex/service_test.go` — `TestStartStop_NilLogger_NoPanic`

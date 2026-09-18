@@ -147,3 +147,20 @@ func TestUpsertContextUsed_ZeroValue(t *testing.T) {
 	assert.NoError(t, err)
 	db.AssertCalled(t, "UpsertSessionContextUsed", mock.Anything, "ws-1", "ses_abc", int64(0))
 }
+
+// TestStartStop_NilLogger_NoPanic: New(db, nil) already yields a service
+// whose RecordMessage and drainer nil-guard their logger — Start/Stop
+// must not be the one pair that panics on the same construction (the
+// trap #1452's integration test hit verbatim). Absorbed from #1461.
+func TestStartStop_NilLogger_NoPanic(t *testing.T) {
+	db := &mocks.MockDatabaseService{}
+	db.On("UpsertSessionMessage", mock.Anything, mock.Anything, mock.Anything, mock.AnythingOfType("time.Time")).Return(nil)
+
+	svc := New(db, nil)
+	assert.NotPanics(t, func() {
+		assert.NoError(t, svc.Start())
+		svc.RecordMessage("ws-1", "sess-1", "", time.Now())
+		assert.NoError(t, svc.Stop())
+	})
+	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "sess-1", mock.AnythingOfType("time.Time"))
+}

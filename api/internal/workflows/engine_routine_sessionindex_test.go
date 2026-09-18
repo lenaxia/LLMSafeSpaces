@@ -28,7 +28,6 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
-	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -225,9 +224,7 @@ func TestExecuteRoutine_SessionIndexIntegration(t *testing.T) {
 	db := &mocks.MockDatabaseService{}
 	db.On("UpsertSessionTitle", mock.Anything, "ws-1", "ses_int1", "Weather Bot").Return(nil)
 	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_int1", mock.AnythingOfType("time.Time")).Return(nil)
-	log, err := apilogger.New(false, "error", "console")
-	require.NoError(t, err)
-	index := sessionindex.New(db, log)
+	index := sessionindex.New(db, nil)
 	require.NoError(t, index.Start())
 
 	store := newMockSchedulerStore()
