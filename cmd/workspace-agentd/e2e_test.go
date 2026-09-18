@@ -24,6 +24,11 @@ import (
 
 func TestMain(m *testing.M) {
 	log = zap.NewNop()
+	// #944 r1: the disk-notice seam defaults to a HEALTHY pod volume for
+	// the whole package — tests asserting exact send/admit bodies stay
+	// deterministic regardless of the runner's real disk fill; rows that
+	// exercise the notice override via withStubbedPodDiskUsage.
+	podDiskUsage = func() (uint64, uint64, error) { return 10, 100, nil }
 	code := m.Run()
 	// Drain the shared test-binary temp dir recorded by buildAgentdBinary
 	// (secrets_test.go). Runs after all tests so the once-per-process

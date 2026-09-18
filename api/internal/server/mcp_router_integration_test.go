@@ -361,10 +361,52 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 
 	// Stub opencode pod: answers the adapter's V1 send with a completed
 	// assistant message, history with an array (the adapter streams a
-	// JSON array), and records the prompt body it received.
+	// JSON array), and records the prompt body it received. The fixture
+	// arms the agentd terminus (the contract-stream route), so the pod
+	// stub ALSO serves the ABI Act op (#1372): in the authority regime
+	// the sends arrive as Act send actions, and the stub answers with
+	// the same completed assistant message in the ActionResult shape.
 	promptGot := make(chan map[string]any, 8)
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/llmsafespaces.abi.v1.HarnessABIService/Act"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			select {
+			case promptGot <- body:
+			default:
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if send, ok := body["send"].(map[string]any); ok {
+				sid, _ := body["sessionId"].(string)
+				text := ""
+				if t, ok := send["text"].(string); ok {
+					text = t
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"sessionId": sid,
+					"send": map[string]any{
+						"message": map[string]any{
+							"id":        "msg_1",
+							"type":      "MESSAGE_TYPE_ASSISTANT",
+							"createdAt": "2026-08-05T05:46:40Z",
+							"parts":     []map[string]any{{"type": "PART_TYPE_TEXT", "text": text}},
+						},
+					},
+				})
+				return
+			}
+			// The non-send verbs (interrupt/create/delete/rename): echo
+			// the arm back as an empty result — the fixture's flows do
+			// not exercise them beyond success.
+			res := map[string]any{"sessionId": body["sessionId"]}
+			for _, arm := range []string{"interrupt", "createSession", "deleteSession", "renameSession", "answerQuestion", "compact", "switchModel", "switchAgent"} {
+				if _, ok := body[arm]; ok {
+					res[arm] = map[string]any{}
+					break
+				}
+			}
+			_ = json.NewEncoder(w).Encode(res)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -452,6 +494,9 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 	proxy, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, adapter)
 	require.NoError(t, err)
 	proxy.SetResolverHost(host)
+	// The ABI surface (Act) targets the same stub pod — the port override
+	// points the terminus transport at the fixture's Act case above.
+	proxy.SetAgentdPortForTest(backendPort)
 	broker := eventbroker.NewUserEventBroker()
 	proxy.SetUserBrokerForTest(broker)
 	// US-69.11: the MCP client consumes the ABI contract stream — arm
@@ -583,17 +628,18 @@ func TestMCPClientSessionMessage_QuestionViaContractStream(t *testing.T) {
 		t.Fatal("SendMessage did not return after input-request frame")
 	}
 
-	// The prompt leg must have delivered a parts-based text body the
-	// handler accepted (pre-fix: {"message": ...} → 400 empty text).
+	// The prompt leg must have delivered the text to the pod. The
+	// fixture runs with the terminus armed, so the write arrives as an
+	// Act send action (#1372) — the payload carries the same text the
+	// parts-based REST body did (pre-fix: {"message": ...} → 400 empty
+	// text at the handler, never reaching the pod at all).
 	select {
 	case body := <-f.promptGot:
 		require.NotEmpty(t, body, "prompt body must reach the agent pod")
-		parts, ok := body["parts"].([]any)
-		require.True(t, ok, "prompt body must be parts-shaped, got: %v", body)
-		require.Len(t, parts, 1)
-		part, _ := parts[0].(map[string]any)
-		assert.Equal(t, "text", part["type"])
-		assert.Equal(t, "please continue", part["text"])
+		send, ok := body["send"].(map[string]any)
+		require.True(t, ok, "terminus-regime prompt must be an Act send action, got: %v", body)
+		assert.Equal(t, "please continue", send["text"])
+		assert.NotEmpty(t, body["sessionId"], "the Act payload carries the session")
 	default:
 		t.Fatal("prompt never reached the agent pod — the /prompt leg of session_message is broken")
 	}

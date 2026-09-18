@@ -13,7 +13,7 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { ModelRef } from "./contract_pb";
+import type { Message as Message$1, ModelRef, Session } from "./contract_pb";
 import { file_llmsafespaces_abi_v1_contract } from "./contract_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -21,7 +21,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file llmsafespaces/abi/v1/action.proto.
  */
 export const file_llmsafespaces_abi_v1_action: GenFile = /*@__PURE__*/
-  fileDesc("CiFsbG1zYWZlc3BhY2VzL2FiaS92MS9hY3Rpb24ucHJvdG8SFGxsbXNhZmVzcGFjZXMuYWJpLnYxIucCCg1BY3Rpb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkSOgoJaW50ZXJydXB0GAIgASgLMiUubGxtc2FmZXNwYWNlcy5hYmkudjEuSW50ZXJydXB0QWN0aW9uSAASPwoMc3dpdGNoX21vZGVsGAMgASgLMicubGxtc2FmZXNwYWNlcy5hYmkudjEuU3dpdGNoTW9kZWxBY3Rpb25IABI/Cgxzd2l0Y2hfYWdlbnQYBCABKAsyJy5sbG1zYWZlc3BhY2VzLmFiaS52MS5Td2l0Y2hBZ2VudEFjdGlvbkgAEkIKD2Fuc3dlcl9xdWVzdGlvbhgFIAEoCzInLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkFuc3dlcklucHV0QWN0aW9uSAASNgoHY29tcGFjdBgGIAEoCzIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNvbXBhY3RBY3Rpb25IAEIICgZhY3Rpb24iEQoPSW50ZXJydXB0QWN0aW9uIkIKEVN3aXRjaE1vZGVsQWN0aW9uEi0KBW1vZGVsGAEgASgLMh4ubGxtc2FmZXNwYWNlcy5hYmkudjEuTW9kZWxSZWYiJQoRU3dpdGNoQWdlbnRBY3Rpb24SEAoIYWdlbnRfaWQYASABKAkiowEKEUFuc3dlcklucHV0QWN0aW9uEhAKCGlucHV0X2lkGAEgASgJEhIKCm9wdGlvbl9pZHMYAiADKAkSGAoLY3VzdG9tX3RleHQYAyABKAlIAIgBARISCgVyZXBseRgEIAEoCUgBiAEBEhQKB21lc3NhZ2UYBSABKAlIAogBAUIOCgxfY3VzdG9tX3RleHRCCAoGX3JlcGx5QgoKCF9tZXNzYWdlIg8KDUNvbXBhY3RBY3Rpb24ijgMKDEFjdGlvblJlc3VsdBISCgpzZXNzaW9uX2lkGAEgASgJEjoKCWludGVycnVwdBgCIAEoCzIlLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkludGVycnVwdFJlc3VsdEgAEj8KDHN3aXRjaF9tb2RlbBgDIAEoCzInLmxsbXNhZmVzcGFjZXMuYWJpLnYxLlN3aXRjaE1vZGVsUmVzdWx0SAASPwoMc3dpdGNoX2FnZW50GAQgASgLMicubGxtc2FmZXNwYWNlcy5hYmkudjEuU3dpdGNoQWdlbnRSZXN1bHRIABJCCg9hbnN3ZXJfcXVlc3Rpb24YBSABKAsyJy5sbG1zYWZlc3BhY2VzLmFiaS52MS5BbnN3ZXJJbnB1dFJlc3VsdEgAEjYKB2NvbXBhY3QYBiABKAsyIy5sbG1zYWZlc3BhY2VzLmFiaS52MS5Db21wYWN0UmVzdWx0SAASFwoKZWZmZWN0X3NlcRgHIAEoBEgBiAEBQggKBnJlc3VsdEINCgtfZWZmZWN0X3NlcSIRCg9JbnRlcnJ1cHRSZXN1bHQiQgoRU3dpdGNoTW9kZWxSZXN1bHQSLQoFbW9kZWwYASABKAsyHi5sbG1zYWZlc3BhY2VzLmFiaS52MS5Nb2RlbFJlZiIlChFTd2l0Y2hBZ2VudFJlc3VsdBIQCghhZ2VudF9pZBgBIAEoCSIlChFBbnN3ZXJJbnB1dFJlc3VsdBIQCghpbnB1dF9pZBgBIAEoCSIPCg1Db21wYWN0UmVzdWx0QjFaL2dpdGh1Yi5jb20vbGVuYXhpYS9sbG1zYWZlc3BhY2VzL3BrZy9hYmkvdjE7YWJpYgZwcm90bzM", [file_llmsafespaces_abi_v1_contract]);
+  fileDesc("CiFsbG1zYWZlc3BhY2VzL2FiaS92MS9hY3Rpb24ucHJvdG8SFGxsbXNhZmVzcGFjZXMuYWJpLnYxIugECg1BY3Rpb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkSOgoJaW50ZXJydXB0GAIgASgLMiUubGxtc2FmZXNwYWNlcy5hYmkudjEuSW50ZXJydXB0QWN0aW9uSAASPwoMc3dpdGNoX21vZGVsGAMgASgLMicubGxtc2FmZXNwYWNlcy5hYmkudjEuU3dpdGNoTW9kZWxBY3Rpb25IABI/Cgxzd2l0Y2hfYWdlbnQYBCABKAsyJy5sbG1zYWZlc3BhY2VzLmFiaS52MS5Td2l0Y2hBZ2VudEFjdGlvbkgAEkIKD2Fuc3dlcl9xdWVzdGlvbhgFIAEoCzInLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkFuc3dlcklucHV0QWN0aW9uSAASNgoHY29tcGFjdBgGIAEoCzIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNvbXBhY3RBY3Rpb25IABJDCg5jcmVhdGVfc2Vzc2lvbhgHIAEoCzIpLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNyZWF0ZVNlc3Npb25BY3Rpb25IABIwCgRzZW5kGAggASgLMiAubGxtc2FmZXNwYWNlcy5hYmkudjEuU2VuZEFjdGlvbkgAEkMKDmRlbGV0ZV9zZXNzaW9uGAkgASgLMikubGxtc2FmZXNwYWNlcy5hYmkudjEuRGVsZXRlU2Vzc2lvbkFjdGlvbkgAEkMKDnJlbmFtZV9zZXNzaW9uGAogASgLMikubGxtc2FmZXNwYWNlcy5hYmkudjEuUmVuYW1lU2Vzc2lvbkFjdGlvbkgAQggKBmFjdGlvbiIRCg9JbnRlcnJ1cHRBY3Rpb24iQgoRU3dpdGNoTW9kZWxBY3Rpb24SLQoFbW9kZWwYASABKAsyHi5sbG1zYWZlc3BhY2VzLmFiaS52MS5Nb2RlbFJlZiIlChFTd2l0Y2hBZ2VudEFjdGlvbhIQCghhZ2VudF9pZBgBIAEoCSKjAQoRQW5zd2VySW5wdXRBY3Rpb24SEAoIaW5wdXRfaWQYASABKAkSEgoKb3B0aW9uX2lkcxgCIAMoCRIYCgtjdXN0b21fdGV4dBgDIAEoCUgAiAEBEhIKBXJlcGx5GAQgASgJSAGIAQESFAoHbWVzc2FnZRgFIAEoCUgCiAEBQg4KDF9jdXN0b21fdGV4dEIICgZfcmVwbHlCCgoIX21lc3NhZ2UiDwoNQ29tcGFjdEFjdGlvbiIkChNDcmVhdGVTZXNzaW9uQWN0aW9uEg0KBXRpdGxlGAEgASgJIkkKClNlbmRBY3Rpb24SDAoEdGV4dBgBIAEoCRItCgVtb2RlbBgCIAEoCzIeLmxsbXNhZmVzcGFjZXMuYWJpLnYxLk1vZGVsUmVmIhUKE0RlbGV0ZVNlc3Npb25BY3Rpb24iJAoTUmVuYW1lU2Vzc2lvbkFjdGlvbhINCgV0aXRsZRgBIAEoCSKPBQoMQWN0aW9uUmVzdWx0EhIKCnNlc3Npb25faWQYASABKAkSOgoJaW50ZXJydXB0GAIgASgLMiUubGxtc2FmZXNwYWNlcy5hYmkudjEuSW50ZXJydXB0UmVzdWx0SAASPwoMc3dpdGNoX21vZGVsGAMgASgLMicubGxtc2FmZXNwYWNlcy5hYmkudjEuU3dpdGNoTW9kZWxSZXN1bHRIABI/Cgxzd2l0Y2hfYWdlbnQYBCABKAsyJy5sbG1zYWZlc3BhY2VzLmFiaS52MS5Td2l0Y2hBZ2VudFJlc3VsdEgAEkIKD2Fuc3dlcl9xdWVzdGlvbhgFIAEoCzInLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkFuc3dlcklucHV0UmVzdWx0SAASNgoHY29tcGFjdBgGIAEoCzIjLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNvbXBhY3RSZXN1bHRIABJDCg5jcmVhdGVfc2Vzc2lvbhgIIAEoCzIpLmxsbXNhZmVzcGFjZXMuYWJpLnYxLkNyZWF0ZVNlc3Npb25SZXN1bHRIABIwCgRzZW5kGAkgASgLMiAubGxtc2FmZXNwYWNlcy5hYmkudjEuU2VuZFJlc3VsdEgAEkMKDmRlbGV0ZV9zZXNzaW9uGAogASgLMikubGxtc2FmZXNwYWNlcy5hYmkudjEuRGVsZXRlU2Vzc2lvblJlc3VsdEgAEkMKDnJlbmFtZV9zZXNzaW9uGAsgASgLMikubGxtc2FmZXNwYWNlcy5hYmkudjEuUmVuYW1lU2Vzc2lvblJlc3VsdEgAEhcKCmVmZmVjdF9zZXEYByABKARIAYgBAUIICgZyZXN1bHRCDQoLX2VmZmVjdF9zZXEiEQoPSW50ZXJydXB0UmVzdWx0IkIKEVN3aXRjaE1vZGVsUmVzdWx0Ei0KBW1vZGVsGAEgASgLMh4ubGxtc2FmZXNwYWNlcy5hYmkudjEuTW9kZWxSZWYiJQoRU3dpdGNoQWdlbnRSZXN1bHQSEAoIYWdlbnRfaWQYASABKAkiJQoRQW5zd2VySW5wdXRSZXN1bHQSEAoIaW5wdXRfaWQYASABKAkiDwoNQ29tcGFjdFJlc3VsdCJFChNDcmVhdGVTZXNzaW9uUmVzdWx0Ei4KB3Nlc3Npb24YASABKAsyHS5sbG1zYWZlc3BhY2VzLmFiaS52MS5TZXNzaW9uIjwKClNlbmRSZXN1bHQSLgoHbWVzc2FnZRgBIAEoCzIdLmxsbXNhZmVzcGFjZXMuYWJpLnYxLk1lc3NhZ2UiFQoTRGVsZXRlU2Vzc2lvblJlc3VsdCIVChNSZW5hbWVTZXNzaW9uUmVzdWx0QjFaL2dpdGh1Yi5jb20vbGVuYXhpYS9sbG1zYWZlc3BhY2VzL3BrZy9hYmkvdjE7YWJpYgZwcm90bzM", [file_llmsafespaces_abi_v1_contract]);
 
 /**
  * @generated from message llmsafespaces.abi.v1.ActionRequest
@@ -65,6 +65,30 @@ export type ActionRequest = Message<"llmsafespaces.abi.v1.ActionRequest"> & {
      */
     value: CompactAction;
     case: "compact";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.CreateSessionAction create_session = 7;
+     */
+    value: CreateSessionAction;
+    case: "createSession";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.SendAction send = 8;
+     */
+    value: SendAction;
+    case: "send";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.DeleteSessionAction delete_session = 9;
+     */
+    value: DeleteSessionAction;
+    case: "deleteSession";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.RenameSessionAction rename_session = 10;
+     */
+    value: RenameSessionAction;
+    case: "renameSession";
   } | { case: undefined; value?: undefined };
 };
 
@@ -189,6 +213,84 @@ export const CompactActionSchema: GenMessage<CompactAction> = /*@__PURE__*/
   messageDesc(file_llmsafespaces_abi_v1_action, 5);
 
 /**
+ * The sessions-cluster verbs (#1372, S1 completion): the API's five
+ * session-write sites ride Act in the authority regime. session_id is
+ * unset for create_session (the session does not exist yet — opencode
+ * mints the id); send/delete/rename target the request's session_id.
+ * All four harness routes are the production adapter path's own V1
+ * routes (POST /session, POST /session/:id/message, DELETE
+ * /session/:id, PATCH /session/:id) — declared unconditionally in the
+ * boot capability report (same confidence class as interrupt).
+ *
+ * @generated from message llmsafespaces.abi.v1.CreateSessionAction
+ */
+export type CreateSessionAction = Message<"llmsafespaces.abi.v1.CreateSessionAction"> & {
+  /**
+   * @generated from field: string title = 1;
+   */
+  title: string;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.CreateSessionAction.
+ * Use `create(CreateSessionActionSchema)` to create a new message.
+ */
+export const CreateSessionActionSchema: GenMessage<CreateSessionAction> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 6);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.SendAction
+ */
+export type SendAction = Message<"llmsafespaces.abi.v1.SendAction"> & {
+  /**
+   * @generated from field: string text = 1;
+   */
+  text: string;
+
+  /**
+   * @generated from field: llmsafespaces.abi.v1.ModelRef model = 2;
+   */
+  model?: ModelRef | undefined;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.SendAction.
+ * Use `create(SendActionSchema)` to create a new message.
+ */
+export const SendActionSchema: GenMessage<SendAction> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 7);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.DeleteSessionAction
+ */
+export type DeleteSessionAction = Message<"llmsafespaces.abi.v1.DeleteSessionAction"> & {
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.DeleteSessionAction.
+ * Use `create(DeleteSessionActionSchema)` to create a new message.
+ */
+export const DeleteSessionActionSchema: GenMessage<DeleteSessionAction> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 8);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.RenameSessionAction
+ */
+export type RenameSessionAction = Message<"llmsafespaces.abi.v1.RenameSessionAction"> & {
+  /**
+   * @generated from field: string title = 1;
+   */
+  title: string;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.RenameSessionAction.
+ * Use `create(RenameSessionActionSchema)` to create a new message.
+ */
+export const RenameSessionActionSchema: GenMessage<RenameSessionAction> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 9);
+
+/**
  * @generated from message llmsafespaces.abi.v1.ActionResult
  */
 export type ActionResult = Message<"llmsafespaces.abi.v1.ActionResult"> & {
@@ -230,6 +332,30 @@ export type ActionResult = Message<"llmsafespaces.abi.v1.ActionResult"> & {
      */
     value: CompactResult;
     case: "compact";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.CreateSessionResult create_session = 8;
+     */
+    value: CreateSessionResult;
+    case: "createSession";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.SendResult send = 9;
+     */
+    value: SendResult;
+    case: "send";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.DeleteSessionResult delete_session = 10;
+     */
+    value: DeleteSessionResult;
+    case: "deleteSession";
+  } | {
+    /**
+     * @generated from field: llmsafespaces.abi.v1.RenameSessionResult rename_session = 11;
+     */
+    value: RenameSessionResult;
+    case: "renameSession";
   } | { case: undefined; value?: undefined };
 
   /**
@@ -247,7 +373,7 @@ export type ActionResult = Message<"llmsafespaces.abi.v1.ActionResult"> & {
  * Use `create(ActionResultSchema)` to create a new message.
  */
 export const ActionResultSchema: GenMessage<ActionResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 6);
+  messageDesc(file_llmsafespaces_abi_v1_action, 10);
 
 /**
  * @generated from message llmsafespaces.abi.v1.InterruptResult
@@ -260,7 +386,7 @@ export type InterruptResult = Message<"llmsafespaces.abi.v1.InterruptResult"> & 
  * Use `create(InterruptResultSchema)` to create a new message.
  */
 export const InterruptResultSchema: GenMessage<InterruptResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 7);
+  messageDesc(file_llmsafespaces_abi_v1_action, 11);
 
 /**
  * @generated from message llmsafespaces.abi.v1.SwitchModelResult
@@ -277,7 +403,7 @@ export type SwitchModelResult = Message<"llmsafespaces.abi.v1.SwitchModelResult"
  * Use `create(SwitchModelResultSchema)` to create a new message.
  */
 export const SwitchModelResultSchema: GenMessage<SwitchModelResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 8);
+  messageDesc(file_llmsafespaces_abi_v1_action, 12);
 
 /**
  * @generated from message llmsafespaces.abi.v1.SwitchAgentResult
@@ -294,7 +420,7 @@ export type SwitchAgentResult = Message<"llmsafespaces.abi.v1.SwitchAgentResult"
  * Use `create(SwitchAgentResultSchema)` to create a new message.
  */
 export const SwitchAgentResultSchema: GenMessage<SwitchAgentResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 9);
+  messageDesc(file_llmsafespaces_abi_v1_action, 13);
 
 /**
  * @generated from message llmsafespaces.abi.v1.AnswerInputResult
@@ -311,7 +437,7 @@ export type AnswerInputResult = Message<"llmsafespaces.abi.v1.AnswerInputResult"
  * Use `create(AnswerInputResultSchema)` to create a new message.
  */
 export const AnswerInputResultSchema: GenMessage<AnswerInputResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 10);
+  messageDesc(file_llmsafespaces_abi_v1_action, 14);
 
 /**
  * @generated from message llmsafespaces.abi.v1.CompactResult
@@ -324,5 +450,69 @@ export type CompactResult = Message<"llmsafespaces.abi.v1.CompactResult"> & {
  * Use `create(CompactResultSchema)` to create a new message.
  */
 export const CompactResultSchema: GenMessage<CompactResult> = /*@__PURE__*/
-  messageDesc(file_llmsafespaces_abi_v1_action, 11);
+  messageDesc(file_llmsafespaces_abi_v1_action, 15);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.CreateSessionResult
+ */
+export type CreateSessionResult = Message<"llmsafespaces.abi.v1.CreateSessionResult"> & {
+  /**
+   * @generated from field: llmsafespaces.abi.v1.Session session = 1;
+   */
+  session?: Session | undefined;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.CreateSessionResult.
+ * Use `create(CreateSessionResultSchema)` to create a new message.
+ */
+export const CreateSessionResultSchema: GenMessage<CreateSessionResult> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 16);
+
+/**
+ * SendResult carries the completed assistant message — the synchronous
+ * send contract (V1 POST /session/:id/message returns the finished
+ * message; the API's REST response is this message verbatim).
+ *
+ * @generated from message llmsafespaces.abi.v1.SendResult
+ */
+export type SendResult = Message<"llmsafespaces.abi.v1.SendResult"> & {
+  /**
+   * @generated from field: llmsafespaces.abi.v1.Message message = 1;
+   */
+  message?: Message$1 | undefined;
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.SendResult.
+ * Use `create(SendResultSchema)` to create a new message.
+ */
+export const SendResultSchema: GenMessage<SendResult> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 17);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.DeleteSessionResult
+ */
+export type DeleteSessionResult = Message<"llmsafespaces.abi.v1.DeleteSessionResult"> & {
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.DeleteSessionResult.
+ * Use `create(DeleteSessionResultSchema)` to create a new message.
+ */
+export const DeleteSessionResultSchema: GenMessage<DeleteSessionResult> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 18);
+
+/**
+ * @generated from message llmsafespaces.abi.v1.RenameSessionResult
+ */
+export type RenameSessionResult = Message<"llmsafespaces.abi.v1.RenameSessionResult"> & {
+};
+
+/**
+ * Describes the message llmsafespaces.abi.v1.RenameSessionResult.
+ * Use `create(RenameSessionResultSchema)` to create a new message.
+ */
+export const RenameSessionResultSchema: GenMessage<RenameSessionResult> = /*@__PURE__*/
+  messageDesc(file_llmsafespaces_abi_v1_action, 19);
 

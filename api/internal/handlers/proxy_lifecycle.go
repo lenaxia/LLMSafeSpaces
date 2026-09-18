@@ -221,6 +221,13 @@ func (h *ProxyHandler) SetAgentdTerminus(enabled bool) {
 	h.agentdTerminus = enabled
 }
 
+// SetAgentdPortForTest redirects the ABI-surface port at a test stub
+// (zero → agentd.AgentdPort). The #1372 sessions Act path resolves the
+// same endpoint as the outbox deliverer and the actions route.
+func (h *ProxyHandler) SetAgentdPortForTest(port int) {
+	h.agentdPortOverride = port
+}
+
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
 // the raw selector JSON). Confirmed delivery completes via the outbox's

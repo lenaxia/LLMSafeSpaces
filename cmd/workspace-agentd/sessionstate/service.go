@@ -172,7 +172,14 @@ func (a *Authority) GetDeliveryStatus(ctx context.Context, req *connect.Request[
 }
 
 func (a *Authority) Act(ctx context.Context, req *connect.Request[abiv1.ActionRequest]) (*connect.Response[abiv1.ActionResult], error) {
-	if err := a.limiter.allow(req.Msg.GetSessionId()); err != nil {
+	// The limiter keys per session; create_session has no session yet
+	// (#1372) — the pod-wide create bucket matches its "" session-lock
+	// serialization (creates are rare, and a shared bucket bounds spam).
+	key := req.Msg.GetSessionId()
+	if key == "" && req.Msg.GetCreateSession() != nil {
+		key = "action.create_session"
+	}
+	if err := a.limiter.allow(key); err != nil {
 		return nil, err
 	}
 	res, err := a.act(ctx, req.Msg)
