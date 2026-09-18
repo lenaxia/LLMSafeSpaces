@@ -302,7 +302,7 @@ fi
 # (TestExecuteWithRetry_*); asserting a live provider blip from e2e
 # would be flake-shaped by definition. The row pins the WIRING: the
 # scheduler-level test that fails if the retry call site is reverted.
-log "T7: retry wiring pinned at scheduler level (TestScheduler_RoutineFireRetriesTransient5xx in CI)"
+log "T7: retry wiring pinned at scheduler level (TestScheduler_RoutineFireRetriesTransient5xx + _Persistent5xxBurnsOneFailure in CI; the budget-multiplication class is the latter)"
 
 if [[ "${failures}" -gt 0 ]]; then
     die "${failures} templating e2e row(s) failed"

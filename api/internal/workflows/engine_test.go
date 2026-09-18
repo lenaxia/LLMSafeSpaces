@@ -2046,3 +2046,37 @@ func TestScheduler_RoutineFireRetriesTransient5xx(t *testing.T) {
 	assert.Equal(t, "delivered", store.statuses["fire-rt"], "the transient 500 must not fail the fire")
 	assert.Equal(t, 2, ex.calls, "exactly one retry — reverting the executeWithRetry call site leaves this red (0 retries, fire failed)")
 }
+
+// Exhausted-retry wiring: a PERSISTENT retryable 5xx fails the fire and
+// burns exactly ONE failure — the budget-multiplication regression
+// class this retry exists to prevent (per-attempt counting would
+// triple-burn consecutiveFailures).
+func TestScheduler_RoutineFirePersistent5xxBurnsOneFailure(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-rt2"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-rt2", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-rt2", TriggerID: "trig-rt2", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "failed", store.statuses["fire-rt2"], "persistent 5xx still fails the fire")
+	assert.Equal(t, 3, ex.calls, "bounded at three attempts")
+	assert.Equal(t, 1, store.triggerFail["trig-rt2"], "exactly ONE failure burned — not one per attempt")
+	assert.False(t, store.disabled["trig-rt2"], "threshold not reached (1 < 10)")
+}
