@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // TestDockerfiles_BaseImagesDigestPinned is the enforcement test for
@@ -116,8 +117,13 @@ func lintDockerfileContent(content string) []string {
 	for lineNum, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		// `# syntax=<image ref>` — a registry fetch, same pin bar as FROM.
-		if strings.HasPrefix(strings.ToLower(trimmed), "# syntax=") {
-			ref := strings.TrimSpace(trimmed[len("# syntax="):])
+		// Matched per BuildKit's directive grammar (r2 review finding 1):
+		// '#' prefix, any leading whitespace (space/tab), lowercase name,
+		// optional padding around '=' — so `#syntax=…` and `#\tsyntax=…`
+		// cannot bypass the bar. A non-lowercase `#SYNTAX=` is NOT a
+		// build-honored directive (BuildKit matches lowercase) and is
+		// treated as a plain comment.
+		if ref, isDirective := buildkitSyntaxDirective(trimmed); isDirective {
 			if !pinnedImageRef(ref) {
 				findings = append(findings, fmt.Sprintf("%d: syntax directive %q is not digest-pinned", lineNum+1, ref))
 			}
@@ -143,15 +149,38 @@ func lintDockerfileContent(content string) []string {
 
 // pinnedImageRef reports whether ref is a well-formed <tag>@sha256:<64
 // lowercase hex> image reference: a digest present, valid, preceded by
-// a non-empty reference that carries a tag (digest-only refs without a
-// tag lose the readability the pins exist for; matches renovate's
-// name:tag@sha256 shape).
+// a non-empty reference whose LAST PATH SEGMENT carries a tag (a
+// registry port such as registry:5000/img is not a tag; digest-only
+// refs without a tag lose the readability the pins exist for — matches
+// renovate's name:tag@sha256 output shape).
 func pinnedImageRef(ref string) bool {
 	name, digest, found := strings.Cut(ref, "@")
-	if !found || name == "" || !strings.Contains(name, ":") {
+	if !found || name == "" {
+		return false
+	}
+	if last := name[strings.LastIndex(name, "/")+1:]; !strings.Contains(last, ":") {
 		return false
 	}
 	return digestSuffixRe.MatchString("@" + digest)
+}
+
+// buildkitDirectiveRe mirrors BuildKit's directive grammar
+// (frontend/dockerfile/parser/directives.go): after '#' and any leading
+// whitespace, `name\s*=\s*value` with a lowercase-alpha name.
+var buildkitDirectiveRe = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
+
+// buildkitSyntaxDirective reports whether line is a build-honored
+// `syntax` directive and returns its image reference.
+func buildkitSyntaxDirective(line string) (ref string, ok bool) {
+	if !strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	rest := strings.TrimLeftFunc(line[1:], unicode.IsSpace)
+	m := buildkitDirectiveRe.FindStringSubmatch(rest)
+	if m == nil || m[1] != "syntax" {
+		return "", false
+	}
+	return m[2], true
 }
 
 // fromBase parses a Dockerfile FROM line and returns the base image
