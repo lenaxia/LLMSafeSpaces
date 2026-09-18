@@ -9697,7 +9697,7 @@ components:
     TriggerCreateRequest:
       type: object
       required: [name, sourceType, sourceConfig]
-      description: Exactly one of workspaceId (routine mode) or workflowId (workflow mode) is required. memoryMode last_result requires captureMode full. Input mapping (`input`/`inputFrom` beyond `envelope`) requires workflowId; `inputFrom: body` requires a webhook source; `inputFrom: mapped` validates `input` against the workflow's inputSchema; an envelope-mode wiring with no `input` against a schema whose required properties reach beyond the source's envelope keys is rejected with a 400 naming the properties and the three remedies (set `input`, use `inputFrom: "body"`, or relax the schema).
+      description: "Exactly one of workspaceId (routine mode) or workflowId (workflow mode) is required. memoryMode last_result requires captureMode full. Input mapping (`input`/`inputFrom` beyond `envelope`) requires workflowId; `inputFrom: body` requires a webhook source; `inputFrom: mapped` validates `input` against the workflow's inputSchema; an envelope-mode wiring with no `input` against a schema whose required properties reach beyond the source's envelope keys is rejected with a 400 naming the properties and the three remedies (set `input`, use `inputFrom: \"body\"`, or relax the schema)."
       properties:
         name:
           type: string
@@ -9720,7 +9720,7 @@ components:
           description: "Selects what a fired run's input is. Default: envelope. `body` is webhook-only (cron envelopes carry no body key)."
         input:
           type: object
-          description: "Static input document (workflow mode only, ≤ 64 KiB, must be a JSON object in envelope/body modes). The JSON literal null means no static input, same as omitting the key."
+          description: "Optional static input document (workflow mode only, ≤ 64 KiB). In envelope/body modes it is a shallow top-level overlay on the base (static wins); in mapped mode it IS the run input, validated against the workflow's inputSchema at trigger create/update."
         prompt:
           type: string
         agent:
@@ -9759,7 +9759,7 @@ components:
           type: string
     TriggerUpdateRequest:
       type: object
-      description: Partial update — omitted fields keep their existing values. sourceType is immutable. Patches touching `workflowId`/`input`/`inputFrom` re-run the input-mapping validation against the post-patch state (a patch that removes an opt-in — clearing `input` to null or switching `inputFrom` back to `envelope` — re-exposes the envelope wiring and is rejected if the schema requires non-envelope properties).
+      description: "Partial update — omitted fields keep their existing values. sourceType is immutable. Patches touching `workflowId`/`input`/`inputFrom` re-run the input-mapping validation against the post-patch state (a patch that removes an opt-in — clearing `input` to null or switching `inputFrom` back to `envelope` — re-exposes the envelope wiring and is rejected if the schema requires non-envelope properties)."
       properties:
         name:
           type: string

@@ -38,8 +38,13 @@ None. (Local docker unavailable: migration up/down round-trip + store integratio
 - **Missing test #2**: `TestWebhookReceiver_InvalidSchemaFailedFire` pins the webhook-side `ErrInvalidInputSchema` branch (202 + `failed` fire `{"code":"invalid_input_schema"}` + no run + accounting).
 - **Style nit**: dropped the pointless `sprintf` wrapper in `input_schema_test.go`.
 
+## Review Round 3 (r2: CHANGES_REQUESTED — findings addressed)
+- **Blocking 1 (invalid YAML in `sdks/openapi.yaml`)**: the r2 `TriggerCreateRequest.description` was an unquoted plain scalar containing `` `inputFrom: body` `` — a colon-space inside backticks is a hard YAML parse error. The description (and the sibling `Trigger.input` / `TriggerUpdateRequest` description scalars from the same hunk) are now double-quoted. Verified: `make openapi-validate` → "✓ OpenAPI spec is valid", and `go test ./api/internal/server/` (the package whose `TestOpenAPIRouterContract` caught the break) is green on this head.
+- **Blocking 2 (false worklog verification claim)**: the Tests Run section above now states exactly what was run in r1 — `./api/internal/server/` was NOT among it; corrected rather than papered over. This round's full battery, all re-run from this head: `go build ./...`; `go test ./pkg/workflows/ ./api/internal/handlers/ ./api/internal/workflows/ ./pkg/mcp/ ./pkg/types/ ./api/internal/server/` — all ok; `make openapi-validate` ✓; `gofmt` clean; `golangci-lint` (touched packages, new-from-merge-base) 0 issues; `make repolint` ✓.
+- **Blocking 3 (R6 e2e + agentd D7 surface absent from the branch)**: merged origin/main (fast, no conflicts) — main carries merged PR #1438 (`feat/0059-agentd-e2e`: the agentd trigger_create/trigger_update/workflow_create/trigger_fires description updates and the `local/issue-1410-1412-automation-e2e.sh` R6a/b/c rows). The branch tree now contains the full D7 surface and the design §5 e2e coverage; `git log --oneline` shows the merge, R6 verified present at `local/issue-1410-1412-automation-e2e.sh:196+`.
+
 ## Tests Run
-`go build ./...` clean; `go test ./pkg/workflows/ ./api/internal/handlers/ ./api/internal/workflows/ ./api/internal/server/` green; `gofmt` clean; `golangci-lint run` (touched packages, `--new-from-merge-base=origin/main`) 0 issues; `make repolint` passes (migration 000031 api/helm mirror, worklog sentinel).
+`go build ./...` clean; `go test ./pkg/workflows/ ./api/internal/handlers/ ./api/internal/workflows/` green (the original round-1 claim — `./api/internal/server/` was NOT run before the r2 push, which is how the r2 openapi.yaml break slipped through; see the correction below); `gofmt` clean; `golangci-lint run` (touched packages, `--new-from-merge-base=origin/main`) 0 issues; `make repolint` passes (migration 000031 api/helm mirror, worklog sentinel).
 
 ## Files Modified
 - api/migrations/000031_trigger_input_mapping.{up,down}.sql (new) + helm/migrations/ mirror (new)
