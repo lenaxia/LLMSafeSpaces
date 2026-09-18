@@ -552,9 +552,25 @@ podman_exec() { # pod script — the workspace container runs as uid 1000.
 if [ "${S5_RUN_PODMAN:-0}" != "1" ]; then
   log "S5.7: rootless-podman leg not requested (S5_RUN_PODMAN=0) — dispatch with run-podman-spike to execute"
 else
-  log "S5.7: building runtime-base-podman overlay (factory golden Dockerfile on the stripped base)"
-  sed "s|^FROM .*|FROM $REG/llmsafespaces/runtime-base:ci|" \
+  log "S5.7: building runtime-base-podman overlay (converged host-userns recipe on the stripped base)"
+  # Runs 1-13 converged on this recipe, now BAKED (the product shape —
+  # no runtime config plumbing): podman set MINUS subuid/subgid (a pkg
+  # postinst seeds ranges, so truncate post-apt), containers.conf with
+  # netns=host + userns=host (no nested user namespace: no uid_map write
+  # under runsc, no userns-clone under RuntimeDefault seccomp on runc),
+  # storage.conf with vfs + writable runroot/graphroot +
+  # ignore_chown_errors="true" (string!), TMPDIR export in profile.d.
+  sed "s|^FROM .*|FROM $REG/llmsafespaces/runtime-base:ci|; /\/etc\/subuid/d; /\/etc\/subgid/d; /\/etc\/containers/d; /^USER sandbox$/d; /^WORKDIR \/workspace$/d" \
     api/internal/imagefactory/testdata/podman-set.Dockerfile >"$TMPDIR/podman-overlay.Dockerfile"
+  cat >>"$TMPDIR/podman-overlay.Dockerfile" <<'OVERLAY'
+RUN mkdir -p /etc/containers \
+    && printf '%s\n' '[containers]' 'netns = "host"' 'userns = "host"' 'ignore_chown_errors = true' > /etc/containers/containers.conf \
+    && printf '%s\n' '[storage]' 'driver = "vfs"' 'runroot = "/sandbox-runtime/containers/run"' 'graphroot = "/home/sandbox/.local/share/containers/storage"' '[storage.options]' 'ignore_chown_errors = "true"' > /etc/containers/storage.conf \
+    && : > /etc/subuid && : > /etc/subgid \
+    && echo 'export TMPDIR="${TMPDIR:-/tmp}"' >> /etc/profile.d/podman.sh
+USER sandbox
+WORKDIR /workspace
+OVERLAY
   if docker build --network host -f "$TMPDIR/podman-overlay.Dockerfile" \
       -t "$REG/llmsafespaces/runtime-base-podman:ci" . \
      && docker push "$REG/llmsafespaces/runtime-base-podman:ci" >/dev/null; then
@@ -604,17 +620,17 @@ EOF
       RUN_OUT=$(podman_exec "$PM_POD" \
         'podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
       if echo "$RUN_OUT" | grep -q podman-nested-ok; then
-        pass S5.7d "nested container ran under runc (userns + newuidmap, no caps, RuntimeDefault seccomp)"
+        pass S5.7d "nested container ran under runc (host-userns default — no userns clone, no caps, RuntimeDefault seccomp)"
       else
         fail S5.7d "nested run failed: ${RUN_OUT:-<no output>}"
       fi
 
       COMPOSE_RC=$(podman_exec "$PM_POD" \
-        'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
-      if [ "$COMPOSE_RC" = "200" ]; then
-        pass S5.7e "podman-compose service up on host netns, served HTTP 200, torn down"
+        'python3 -m pip install --user --quiet podman-compose >/dev/null 2>&1; PC="$HOME/.local/bin/podman-compose"; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && "$PC" down >/dev/null 2>&1 || true; c=$("$PC" up -d >/tmp/compose-up.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && "$PC" down >/dev/null 2>&1); [ "$c" = "200" ] && { echo "compose200 $("$PC" version 2>/dev/null | head -1)"; } || { echo "compose-failed"; tail -5 /tmp/compose-up.log 2>/dev/null; }' || true)
+      if echo "$COMPOSE_RC" | grep -q compose200; then
+        pass S5.7e "current podman-compose service up on host netns, served HTTP 200, torn down ($(echo "$COMPOSE_RC" | head -1 | cut -d' ' -f2-))"
       else
-        fail S5.7e "compose smoke: ${COMPOSE_RC:-<failed before curl>}"
+        fail S5.7e "compose smoke: ${COMPOSE_RC:-<failed>}"
       fi
 
       log "S5.7f: suspend → activate (nested image store on PVC)"
@@ -623,7 +639,7 @@ EOF
         PM_POD=$(pod_of "$WS_PM")
         PM_IMGS=$(podman_exec "$PM_POD" \
           'podman images --format "{{.Repository}}" 2>/dev/null' || true)
-        if echo "$PM_IMGS" | grep -q "library/alpine\|library/nginx"; then
+        if echo "$PM_IMGS" | grep -q "library/alpine"; then
           pass S5.7f "nested images survived suspend→activate (graphroot on the PVC)"
         else
           fail S5.7f "image store empty after resume: ${PM_IMGS:-none}"
@@ -635,35 +651,6 @@ EOF
       if [ "$GV_OK" != "1" ]; then
         fail S5.7g "gVisor sub-leg unavailable: S5.6 runsc install failed or was skipped"
       else
-        # Runs 3-4 lessons: CONTAINERS_CONF subuid_path override WAS
-        # active (conf echoed) yet newuidmap still ran with the /etc/
-        # subuid range — podman 4.3's storage-init reads subid files
-        # directly; no runtime override diverts it. Run 5 therefore tests
-        # identity mode the only way left: an IMAGE variant with NO
-        # subordinate ranges (golden minus the /etc/subuid + /etc/subgid
-        # layers → empty files shipped by the uidmap pkg). With zero
-        # ranges the process writes its own single-line uid_map and
-        # newuidmap is never invoked — dodging the runsc EPERM.
-        # ignore_chown_errors rides CONTAINERS_CONF (image-layer chowns
-        # to unmapped uids cannot succeed in identity mode); netns=host
-        # still merges from the /etc slot.
-        PMG_IMAGE="$REG/llmsafespaces/runtime-base-podman:ci"
-        # Run-5 surprise: deleting the subuid/subgid layers was not enough
-        # — /etc/subuid still ends up with a line (grep -c . == 1; the
-        # newuidmap call carried the sandbox range), so something in the
-        # apt layer seeds it post-install. Deterministic fix: keep the
-        # golden layers and TRUNCATE both files at the end (before USER),
-        # guaranteeing zero subordinate ranges whoever writes them.
-        sed '/\/etc\/subuid/d; /\/etc\/subgid/d; s|^USER sandbox|RUN : > /etc/subuid \\\n    \&\& : > /etc/subgid\nUSER sandbox|' \
-          api/internal/imagefactory/testdata/podman-set.Dockerfile >"$TMPDIR/podman-idmode.Dockerfile"
-        if docker build --network host -f "$TMPDIR/podman-idmode.Dockerfile" \
-            -t "$REG/llmsafespaces/runtime-base-podman-idmode:ci" . >/dev/null 2>&1 \
-           && docker push "$REG/llmsafespaces/runtime-base-podman-idmode:ci" >/dev/null; then
-          PMG_IMAGE="$REG/llmsafespaces/runtime-base-podman-idmode:ci"
-          log "S5.7: gVisor leg runs the identity-mode image variant (subuid/subgid truncated)"
-        else
-          log "S5.7: idmode image build failed — gVisor leg falls back to the subuid golden (expected to fail g2)"
-        fi
         WS_PMG="ws-s5-podman-gvisor"
         PMG_MANIFEST=$(mktemp)
         cat >"$PMG_MANIFEST" <<EOF
@@ -677,7 +664,7 @@ metadata:
 spec:
   owner:
     userID: s5-int
-  runtime: $PMG_IMAGE
+  runtime: $REG/llmsafespaces/runtime-base-podman:ci
   runtimeClass: gvisor
   storage:
     size: 1Gi
@@ -691,44 +678,44 @@ EOF
           else
             fail S5.7g "gVisor podman-set workspace Active but opencode unreachable"
           fi
-          # Runs 3-4 lessons: CONTAINERS_CONF subuid_path override WAS
-          # active (conf echoed) yet newuidmap still ran with the /etc/
-          # subuid range — podman 4.3's storage-init reads subid files
-          # directly; no runtime override diverts it. Identity mode
-          # therefore rides the image variant (built above, no subuid
-          # ranges); CONTAINERS_CONF carries only ignore_chown_errors
-          # (image-layer chowns to unmapped uids cannot succeed in
-          # identity mode); netns=host still merges from the /etc slot.
-          # Run-7 lesson: TMPDIR got the pull past blob staging, and the
-          # failure moved to the fundamental identity-mode trade-off —
-          # layer apply lchowns files to image ownerships (0:42 for
-          # /etc/shadow) which have no mapping in a single-identity
-          # userns → EINVAL. ignore_chown_errors is a STORAGE option
-          # (run 7 had it in [containers] — wrong section); it rides
-          # CONTAINERS_STORAGE_CONF, which REPLACES the config chain, so
-          # the baked vfs/runroot/graphroot keys are repeated in it.
           GVID_SETUP=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; printf "%s\n" "[containers]" "netns = \"host\"" "userns = \"host\"" "ignore_chown_errors = true" > /tmp/podman-idmode.conf; printf "%s\n" "[storage]" "driver = \"vfs\"" "runroot = \"/sandbox-runtime/containers/run\"" "graphroot = \"/home/sandbox/.local/share/containers/storage\"" "[storage.options]" "ignore_chown_errors = \"true\"" > /tmp/podman-idmode-storage.conf; if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
+            'if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
           if echo "$GVID_SETUP" | grep -q setup-ok; then
-            pass S5.7g2 "identity-mode image (no subuid ranges) boots podman under runsc; info ok (storage ignore_chown_errors)"
+            pass S5.7g2 "baked host-userns image boots podman under runsc; info ok (no runtime config plumbing)"
           else
-            fail S5.7g2 "identity-mode setup: ${GVID_SETUP:-<no output>}"
+            fail S5.7g2 "gVisor podman boot check: ${GVID_SETUP:-<no output>}"
           fi
           GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; podman run --rm --userns=host docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+            'podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
           if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
-            pass S5.7h "host-userns nested container ran UNDER gVisor — no nested userns, no uid_map write, nesting inside the strongest isolation tier works"
+            pass S5.7h "nested container ran UNDER gVisor (baked host-userns default) — nesting inside the strongest isolation tier works"
           else
-            fail S5.7h "host-userns nested run under runsc failed: ${GRUN_OUT:-<no output>}"
+            fail S5.7h "nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
-          # busybox httpd on :8080 (high port — host-userns nested processes
-          # are uid 1000, no CAP_NET_BIND_SERVICE for :80) instead of nginx.
+          # busybox httpd on :8080 (high port — nested processes are uid
+          # 1000, no CAP_NET_BIND_SERVICE) + CURRENT podman-compose via
+          # pip (run 13: bookworm's apt 1.0.3 is 2022-era and fails in
+          # host-userns mode), invoked by full path (no PATH plumbing).
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n    userns: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; c=$(podman-compose up -d >/tmp/compose-up.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1); if [ "$c" = "200" ]; then echo "200-apt-compose"; else echo "apt-compose-failed:"; tail -6 /tmp/compose-up.log; podman ps -a 2>&1 | head -4; echo "-- retrying with current podman-compose via pip:"; python3 -m pip install --user --quiet podman-compose >/dev/null 2>&1 && export PATH="$HOME/.local/bin:$PATH" && rm -rf ~/.local/share/containers 2>/dev/null; c2=$(podman-compose version 2>/dev/null | head -1; podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/tmp/compose-up2.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1); echo "pip-compose:$c2"; tail -6 /tmp/compose-up2.log 2>/dev/null; fi' || true)
-          if echo "$GCOMPOSE_RC" | grep -q "200-apt-compose\|pip-compose:200"; then
-            pass S5.7i "podman-compose service up under gVisor, served HTTP 200, torn down ($(echo "$GCOMPOSE_RC" | grep -o 'apt-compose\|pip-compose:200' | head -1))"
+            'python3 -m pip install --user --quiet podman-compose >/dev/null 2>&1; PC="$HOME/.local/bin/podman-compose"; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && "$PC" down >/dev/null 2>&1 || true; c=$("$PC" up -d >/tmp/compose-up.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && "$PC" down >/dev/null 2>&1); [ "$c" = "200" ] && { echo "compose200 $("$PC" version 2>/dev/null | head -1)"; } || { echo "compose-failed"; tail -5 /tmp/compose-up.log 2>/dev/null; }' || true)
+          if echo "$GCOMPOSE_RC" | grep -q compose200; then
+            pass S5.7i "current podman-compose service up UNDER gVisor, served HTTP 200, torn down ($(echo "$GCOMPOSE_RC" | head -1 | cut -d' ' -f2-))"
           else
             fail S5.7i "compose smoke under runsc: ${GCOMPOSE_RC:-<failed>}"
+          fi
+          log "S5.7g3: gVisor suspend → activate (nested image store on PVC)"
+          if patch_workspace_retry "$WS_PMG" '{"spec":{"suspend":true}}' && wait_phase "$WS_PMG" Suspended 300 \
+             && patch_workspace_retry "$WS_PMG" '{"spec":{"suspend":false}}' && wait_phase "$WS_PMG" Active 600; then
+            PMG_POD=$(pod_of "$WS_PMG")
+            PMG_IMGS=$(podman_exec "$PMG_POD" \
+              'podman images --format "{{.Repository}}" 2>/dev/null' || true)
+            if echo "$PMG_IMGS" | grep -q "library/alpine"; then
+              pass S5.7g3 "nested images survived suspend→activate under gVisor (graphroot on the PVC)"
+            else
+              fail S5.7g3 "gVisor image store empty after resume: ${PMG_IMGS:-none}"
+            fi
+          else
+            fail S5.7g3 "gVisor suspend/activate cycle did not complete"
           fi
         else
           fail S5.7g "gVisor podman-set workspace never reached Active"

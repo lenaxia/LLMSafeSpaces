@@ -107,6 +107,14 @@ S5.7d/e/f and S5.7i were downstream of these two blockers (no pull ever succeede
 | 12 | + `userns = "host"` default in [containers] | **S5.7h PASS again (reproducible)**. Compose (S5.7i) still 000 |
 | 13 | compose diagnostics + pip-installed podman-compose retry | apt podman-compose 1.0.3 (2022-era) fails in this mode; pip retry inconclusive (PATH plumbing in the harness one-liner, not a platform limitation) |
 
+## Owner decision (2026-09-18, end of session)
+
+**Podman support shelved.** The host-userns mode (the only one that works under gVisor and without a seccomp change) cannot run Dockerfile builds with root steps (`apt-get` et al.) — and full-fidelity builds are a hard requirement for this platform's users. Full-fidelity requires subuid mode → runc + custom seccomp profile, and under gVisor it is blocked upstream by google/gvisor#13944 ("Enable rootless Podman in gVisor", open). Rather than ship a split capability across tiers, the owner chose to wait for upstream and track it in a repo issue (see issue link in the PR/branch description; spike artifacts preserved on `spike/rootless-podman-s5.7`).
+
+Re-enable criteria when gVisor#13944 resolves: subuid mode under runsc (uid_map subordinate writes allowed) → one catalog set, all tiers, no seccomp change. The S5.7 leg on the branch is the validation harness for that day.
+
+Salvage note: the `local/lib/gvisor.sh` sentry-sidecar fix on this branch is INDEPENDENT of podman — S5.6 was broken on main for any gVisor run (run 1 evidence: no runsc pod could boot). PR that separately regardless of the podman decision.
+
 ## Final verdict
 
 **Nesting inside the strongest isolation tier works.** `podman run` under gVisor, in the hardened workspace pod, reproduced green across two consecutive runs. The working recipe (what the real implementation would bake):
