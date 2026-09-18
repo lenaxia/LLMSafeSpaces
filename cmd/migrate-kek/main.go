@@ -142,8 +142,8 @@ func runAudit(dbURL, kmsProvider string) error {
 	if dbURL == "" {
 		return fmt.Errorf("--db-url is required for --audit")
 	}
-	pgStore, err := newPgMigrationStore(dbURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
-	if err != nil {                            // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
+	pgStore, err := newPgMigrationStore(dbURL)
+	if err != nil {
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -207,6 +207,12 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	gcpKeyNameProvider, gcpKeyNameOrg, gcpKeyNameMaster string,
 	table, resumeFrom, redisURL string, dryRun bool,
 ) error {
+	// --resume-from is a per-table cursor; MigrateAll takes none. Silently
+	// ignoring the flag would strand pre-cursor rows (PR #1409 review).
+	if table == "all" && resumeFrom != "" {
+		return fmt.Errorf("--resume-from applies per table; pair it with --table <provider_credentials|api_keys|org_sso_configs>")
+	}
+
 	// Load old master key for local fallback provider.
 	oldMaster, err := readMasterKeyFile(masterKeyFile)
 	if err != nil {
@@ -259,8 +265,8 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 		// single-key fallback would silently fail to decrypt v1 rows.
 		var local secrets.RootKeyProvider
 		if p.key == "master-kek" {
-			dekCacheKey := deriveKey(oldMaster, "dek-cache")
-			masterKekKey := deriveKey(oldMaster, "master-kek")
+			dekCacheKey := secrets.DeriveServerKey(oldMaster, "dek-cache")
+			masterKekKey := secrets.DeriveServerKey(oldMaster, "master-kek")
 			if dekCacheKey == nil || masterKekKey == nil {
 				return fmt.Errorf("deriving keys for purpose %q from old master key", p.key)
 			}
@@ -272,7 +278,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 				return fmt.Errorf("constructing multi-version local fallback for %s: %w", p.key, err)
 			}
 		} else {
-			purposeKey := deriveKey(oldMaster, p.key)
+			purposeKey := secrets.DeriveServerKey(oldMaster, p.key)
 			if purposeKey == nil {
 				return fmt.Errorf("deriving local key for purpose %q from old master key", p.key)
 			}
@@ -290,16 +296,16 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	}
 
 	// Connect to Postgres.
-	pgStore, err := newPgMigrationStore(dbURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
-	if err != nil {                            // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
+	pgStore, err := newPgMigrationStore(dbURL)
+	if err != nil {
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
 
 	var store secrets.MigrationStore = pgStore
 	if redisURL != "" {
-		rc, err := newRedisCacheFlusher(redisURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
-		if err != nil {                           // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
+		rc, err := newRedisCacheFlusher(redisURL)
+		if err != nil {
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
 		defer rc.Close()
@@ -323,10 +329,11 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 			r := results[tbl]
 			totalProcessed += r.Processed
 			totalFailed += r.Failed
-			fmt.Fprintf(os.Stderr, "  %s: processed=%d failed=%d\n", tbl, r.Processed, r.Failed)
+			fmt.Fprintf(os.Stderr, "  %s: processed=%d failed=%d %s\n", tbl, r.Processed, r.Failed, lastRowIDField(r.LastRowID))
 			for _, e := range r.Errors {
 				fmt.Fprintf(os.Stderr, "    ERROR %s/%s: %v\n", tbl, e.RowID, e.Error)
 			}
+			printResumeHint(tbl, r.LastRowID, dryRun)
 		}
 		fmt.Fprintf(os.Stderr, "\nTotal: processed=%d failed=%d\n", totalProcessed, totalFailed)
 		if totalFailed > 0 {
@@ -339,14 +346,55 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%s: processed=%d failed=%d\n", table, result.Processed, result.Failed)
+	fmt.Fprintf(os.Stderr, "%s: processed=%d failed=%d %s\n", table, result.Processed, result.Failed, lastRowIDField(result.LastRowID))
 	for _, e := range result.Errors {
 		fmt.Fprintf(os.Stderr, "  ERROR %s/%s: %v\n", table, e.RowID, e.Error)
+	}
+	printResumeHint(table, result.LastRowID, dryRun)
+	// The runbook promises the Redis DEK cache is flushed automatically on
+	// success — for every invocation shape, including the documented
+	// per-table recovery path. MigrateAll flushes inside the coordinator; a
+	// single-table run flushes here. The flush runs after the walk even
+	// with per-row failures (matching MigrateAll): flushing is always safe —
+	// evicted DEKs are re-derived on demand and still decrypt via the
+	// static fallback during the migration window. With no --redis-url the
+	// store's flush is the pg-only no-op.
+	if !dryRun {
+		if err := store.FlushDEKCache(ctx); err != nil {
+			return fmt.Errorf("flush DEK cache: %w", err)
+		}
 	}
 	if result.Failed > 0 {
 		return fmt.Errorf("%d rows failed migration", result.Failed)
 	}
 	return nil
+}
+
+// lastRowIDField renders the last-row-id=<id> report field. In an apply run
+// the operator can resume an interruption with --resume-from <id>; in a
+// dry-run the value is informational only (see printResumeHint).
+func lastRowIDField(id string) string {
+	if id == "" {
+		return ""
+	}
+	return "last-row-id=" + id
+}
+
+// printResumeHint tells the operator how to continue after this table. For an
+// apply run that is the --resume-from recovery path for interruptions
+// (helm/KEK-MIGRATION.md); for a dry-run nothing was written, so resuming
+// from the reported id on the apply run would SKIP every row before it — the
+// hint says to re-run plainly instead (re-processing is the documented,
+// harmless migration semantic).
+func printResumeHint(table, lastRowID string, dryRun bool) {
+	if lastRowID == "" {
+		return
+	}
+	if dryRun {
+		fmt.Fprintf(os.Stderr, "  (to apply: re-run without --dry-run and without --resume-from — a plain re-run is safe; --resume-from is only for resuming interrupted apply runs)\n")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "  (to resume this table if interrupted: migrate-kek --table %s --resume-from %s ...)\n", table, lastRowID)
 }
 
 func readMasterKeyFile(path string) ([]byte, error) {

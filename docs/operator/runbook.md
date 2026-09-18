@@ -90,10 +90,11 @@ The master KEK is the root of trust for at-rest encryption. The `rotate-kek` CLI
 - The `rotate-kek` binary (available in the API image, or build from `cmd/rotate-kek/`).
 - The current (old) master KEK (the projected file mount).
 - A new master KEK (`openssl rand -base64 48` — must be ≥32 bytes).
-- Postgres connectivity from where you run the CLI.
+- Postgres connectivity from where you run the CLI (`--database-url`, required).
+- Redis connectivity for the post-rotation DEK cache flush (`--redis-url`, recommended).
 - A maintenance window is **not required** (zero-downtime rotation), but do it during low traffic.
 
-### Procedure
+The full procedure — including the Helm rotation window that mounts both keys — is in [`helm/KEK-ROTATION.md`](../../helm/KEK-ROTATION.md). The condensed in-cluster flow:
 
 ```bash
 # 1. Generate the new KEK
@@ -101,27 +102,30 @@ NEW_KEK=$(openssl rand -base64 48)
 echo -n "$NEW_KEK" > /tmp/new-master-secret
 chmod 0400 /tmp/new-master-secret
 
-# 2. Dry-run from within the API pod
-kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
-    /usr/local/bin/rotate-kek \
-    --old-master-key-file /var/run/secrets/llmsafespaces/master-secret \
-    --new-master-key-file /tmp/new-master-secret \
-    --dry-run
-
-# 3. Copy the new KEK into the pod and apply
+# 2. Copy the new KEK into the pod
 kubectl -n llmsafespaces cp /tmp/new-master-secret \
     deploy/llmsafespaces-api:/tmp/new-master-secret
 
+# 3. Dry-run from within the API pod (no writes; reports per-table counts)
 kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
     /usr/local/bin/rotate-kek \
-    --old-master-key-file /var/run/secrets/llmsafespaces/master-secret \
-    --new-master-key-file /tmp/new-master-secret
+    --old-master-file /var/run/secrets/llmsafespaces/master-secret \
+    --new-master-file /tmp/new-master-secret \
+    --database-url "$DATABASE_URL" \
+    --redis-url "$REDIS_URL" \
+    --dry-run
 
-# 4. Update the credentials Secret with the new KEK
+# 4. Apply (drop --dry-run; --target-version 2 is the default)
+kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
+    /usr/local/bin/rotate-kek \
+    --old-master-file /var/run/secrets/llmsafespaces/master-secret \
+    --new-master-file /tmp/new-master-secret \
+    --database-url "$DATABASE_URL" \
+    --redis-url "$REDIS_URL"
+
+# 5. Update the credentials Secret with the new KEK and redeploy
 kubectl -n llmsafespaces patch secret llmsafespaces-credentials \
     --type merge -p "{\"data\":{\"master-secret\":\"$(echo -n "$NEW_KEK" | base64)\"}}"
-
-# 5. Restart API pods to load the new KEK as primary
 kubectl -n llmsafespaces rollout restart deployment/llmsafespaces-api
 kubectl -n llmsafespaces rollout status deployment/llmsafespaces-api
 
@@ -130,17 +134,28 @@ rm /tmp/new-master-secret
 kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- rm /tmp/new-master-secret
 ```
 
+`--database-url` / `--redis-url` take the same coordinates the API uses (from your Helm release's `postgresql.*` / `redis.*` values, plus the `postgres-password` / `redis-password` keys in the credentials Secret). For example:
+
+```bash
+DATABASE_URL="postgres://llmsafespaces:$(kubectl -n llmsafespaces get secret llmsafespaces-credentials -o jsonpath='{.data.postgres-password}' | base64 -d)@<postgresql.host>:<postgresql.port>/<postgresql.database>?sslmode=<postgresql.sslMode>"
+REDIS_URL="redis://:<redis-password>@<redis.host>:<redis.port>"
+```
+
 ### Resume-from
 
-If the rotation is interrupted (network blip, CLI crash), use `--resume-from` to continue from the last completed table:
+If the rotation is interrupted (network blip, CLI crash), re-run with `--resume-from <last-row-id>` — the CLI prints `last-row-id=<id>` per table on exit, plus the exact resume command. Resume per table with `--table`:
 
 ```bash
 kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
     /usr/local/bin/rotate-kek \
-    --old-master-key-file /var/run/secrets/llmsafespaces/master-secret \
-    --new-master-key-file /tmp/new-master-secret \
-    --resume-from <table-name>
+    --old-master-file /var/run/secrets/llmsafespaces/master-secret \
+    --new-master-file /tmp/new-master-secret \
+    --database-url "$DATABASE_URL" \
+    --table api_keys \
+    --resume-from <last-row-id>
 ```
+
+Resuming is idempotent: rows already re-wrapped are at the target `key_version` and are filtered out, so nothing is double-rotated.
 
 ### Verification
 

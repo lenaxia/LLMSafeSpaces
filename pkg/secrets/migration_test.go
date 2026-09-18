@@ -479,3 +479,51 @@ func TestAuditMigrationAll_AllThreeTablesAggregated(t *testing.T) {
 func base64Str(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }
+
+// TestMigrationCoordinator_ReportsLastRowID verifies the runbook contract
+// (helm/KEK-MIGRATION.md: "the CLI prints the last processed row ID per table
+// on exit"): the result carries the last row examined so an interrupted
+// migration can resume with --resume-from. Issue #830.
+func TestMigrationCoordinator_ReportsLastRowID(t *testing.T) {
+	rows := []MigrationRow{
+		{ID: "k1", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-k1"), KeyVersion: 1},
+		{ID: "k2", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-k2"), KeyVersion: 1},
+	}
+	store := newFakeMigrationStore(rows)
+
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	coord := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		map[string]RootKeyProvider{"master-kek": target})
+
+	res, err := coord.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Processed)
+	assert.Equal(t, "k2", res.LastRowID, "LastRowID must be the last row examined")
+}
+
+// TestMigrationCoordinator_LastRowIDStopsAtFailedRow pins the resume-cursor
+// contract: the cursor never advances past a failed row. A first-row failure
+// leaves the cursor empty so --resume-from restarts the table; a mid-run
+// failure leaves the cursor on the last successfully migrated row. Issue #830.
+func TestMigrationCoordinator_LastRowIDStopsAtFailedRow(t *testing.T) {
+	// First row carries a foreign prefix (decrypt fails), second is clean.
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "a1", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:foreign"), KeyVersion: 1},
+		{ID: "b2", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-b2"), KeyVersion: 1},
+	})
+
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		map[string]RootKeyProvider{"master-kek": target},
+	)
+
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Failed)
+	assert.Equal(t, 1, res.Processed)
+	assert.Empty(t, res.LastRowID, "cursor must not advance past the failed first row")
+}

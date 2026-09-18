@@ -178,16 +178,21 @@ If a release changes how the master KEK is derived or wrapped, you may need to r
 # Dry-run first
 kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
     /usr/local/bin/rotate-kek \
-    --old-master-key-file /var/run/secrets/llmsafespaces/master-secret \
-    --new-master-key-file /path/to/new-kek \
+    --old-master-file /var/run/secrets/llmsafespaces/master-secret \
+    --new-master-file /path/to/new-kek \
+    --database-url "postgres://user:pass@host:5432/dbname?sslmode=require" \
     --dry-run
 
 # Apply
 kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
     /usr/local/bin/rotate-kek \
-    --old-master-key-file /var/run/secrets/llmsafespaces/master-secret \
-    --new-master-key-file /path/to/new-kek
+    --old-master-file /var/run/secrets/llmsafespaces/master-secret \
+    --new-master-file /path/to/new-kek \
+    --database-url "postgres://user:pass@host:5432/dbname?sslmode=require" \
+    --redis-url "redis://host:6379"
 ```
+
+Build the connection strings from your Helm release's `postgresql.*` / `redis.*` values (see the [Runbook](runbook.md#rotating-the-master-kek) for the exact shape).
 
 Features: per-purpose key derivation, Postgres + Redis connections, `RotationCoordinator`, dry-run, resume-from, multi-table support. See the [Runbook](runbook.md#rotating-the-master-kek) for the full procedure.
 

@@ -25,6 +25,13 @@ type KEKMigrationResult struct {
 	Processed int
 	Failed    int
 	Errors    []KEKMigrationError
+	// LastRowID is the ID of the last row the coordinator successfully
+	// migrated. The runbook's interrupted-run procedure prints it per table
+	// so the operator can resume with --resume-from <last-row-id>. The
+	// cursor deliberately does not advance past a failed row: resuming
+	// re-attempts every row after the cursor. Empty when no row was
+	// successfully migrated.
+	LastRowID string
 }
 
 // KEKMigrationError records a per-row failure.
@@ -101,6 +108,10 @@ func NewMigrationCoordinator(
 func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFromID string, dryRun bool) (KEKMigrationResult, error) {
 	result := KEKMigrationResult{}
 	batchSize := 100
+	// cursorFrozen freezes LastRowID at the last success before the first
+	// failure. Without it, a later success would push the cursor past a
+	// failed row and --resume-from would never re-attempt it.
+	cursorFrozen := false
 
 	for {
 		rows, err := c.store.ListMigrationRows(ctx, table, resumeFromID, batchSize)
@@ -117,6 +128,7 @@ func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFr
 			purpose := purposeForMigrationRow(row)
 			source, ok := c.sources[purpose]
 			if !ok || source == nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKMigrationError{
 					RowID: row.ID, Table: table,
@@ -126,6 +138,7 @@ func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFr
 			}
 			target, ok := c.targets[purpose]
 			if !ok || target == nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKMigrationError{
 					RowID: row.ID, Table: table,
@@ -136,6 +149,7 @@ func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFr
 
 			plaintext, err := source.Decrypt(ctx, row.Ciphertext)
 			if err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKMigrationError{
 					RowID: row.ID, Table: table,
@@ -145,12 +159,16 @@ func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFr
 			}
 
 			if dryRun {
+				if !cursorFrozen {
+					result.LastRowID = row.ID
+				}
 				result.Processed++
 				continue
 			}
 
 			newCT, err := target.Encrypt(ctx, plaintext)
 			if err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKMigrationError{
 					RowID: row.ID, Table: table,
@@ -161,12 +179,16 @@ func (c *MigrationCoordinator) MigrateTable(ctx context.Context, table, resumeFr
 
 			// key_version is reset to 1 under KMS — it's cosmetic (D6).
 			if err := c.store.UpdateMigrationRow(ctx, table, row.ID, newCT, 1); err != nil {
+				cursorFrozen = true
 				result.Failed++
 				result.Errors = append(result.Errors, KEKMigrationError{
 					RowID: row.ID, Table: table,
 					Error: fmt.Errorf("update row: %w", err),
 				})
 				continue
+			}
+			if !cursorFrozen {
+				result.LastRowID = row.ID
 			}
 			result.Processed++
 		}
