@@ -185,9 +185,16 @@ POD_A=$(pod_of "${WS_A}")
 
 # -----------------------------------------------------------------------------
 # Sidecar mode gate (as-built D1): uploads require single-container mode.
+# Since #980 the agentd sidecar is a NATIVE sidecar — an init container
+# with restartPolicy: Always (controller/internal/workspace/agentd_sidecar.go) —
+# so the gate probes BOTH container lists; a containers-only probe cannot
+# see it and misreads sidecar pods as single-container (issue #1456).
+# No other container name contains the substring "agentd" (pod_builder.go /
+# platform_init.go init containers: platform-*, workspace-setup,
+# credential-setup), so the combined substring match is unambiguous.
 # -----------------------------------------------------------------------------
-SIDECAR_CONTAINERS=$(kc -n "${NS}" get pod "${POD_A}" -o jsonpath='{.spec.containers[*].name}')
-if [[ "${SIDECAR_CONTAINERS}" == *"agentd"* ]]; then
+CONTAINER_NAMES=$(kc -n "${NS}" get pod "${POD_A}" -o jsonpath='{.spec.containers[*].name} {.spec.initContainers[*].name}')
+if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
     warn "agentd SIDECAR mode detected — /workspace is read-only in the sidecar (design epic-68 D1 as-built)."
     log "Sidecar clean-fail assertion: upload must fail 5xx and write nothing"
     printf 'sidecar mode: uploads unavailable\n' > /tmp/us67-sidecar.txt
@@ -207,7 +214,7 @@ if [[ "${SIDECAR_CONTAINERS}" == *"agentd"* ]]; then
     warn "(helm: --set controller.agentdSidecar.enabled=false; runs weekly via e2e-attachments-single-container.yml)"
     exit 0
 fi
-ok "single-container mode confirmed (containers: ${SIDECAR_CONTAINERS})"
+ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
 
 # -----------------------------------------------------------------------------
 # E2 — Persistence: upload → suspend → resume → file present + identical
