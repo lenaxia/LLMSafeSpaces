@@ -78,6 +78,13 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R6c: violating payload queued no run`,                        // no run on schema mismatch
 		`select(.status=="queued" or .status=="running")`,             // single-inflight drain-wait before each delivery
 		`[[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")`,     // R6b-bad unexpected-success cleanup guard
+		// R8 — org-scope CRUD resolves the resource segment (#1449).
+		`ownerEmail:"e2e-automation@example.invalid"`, // org created; API-key user becomes admin
+		`R8a: org trigger GET resolves the trigger`,   // the shadowing 404'd here
+		`R8b: org trigger PUT resolves and mutates`,
+		`R8c: org trigger fires route reachable`,
+		`R8d: org trigger DELETE resolves`,
+		`R8e: foreign-org trigger GET fails closed`, // unhappy leg
 		// Cleanup so the nightly owner's trigger list stays clean.
 		`trap cleanup EXIT`,
 	} {

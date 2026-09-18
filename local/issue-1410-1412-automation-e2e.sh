@@ -397,6 +397,63 @@ else
     fi
 fi
 
+# R8 — org-scope automation CRUD resolves the RESOURCE segment (#1449):
+# on /orgs/:id/triggers/:triggerId the org id used to shadow the trigger
+# id (every org GET/PUT/DELETE/fires 404'd). The API-key user creates the
+# org and becomes its admin, then exercises the fixed routes end to end.
+R8_ORG_RESP=$(api POST /api/v1/orgs "$(jq -nc '{name:"E2E Automation Org",slug:"e2e-automation-org",ownerEmail:"e2e-automation@example.invalid"}')")
+if [[ "${api_status}" != "201" ]]; then
+    note_fail "R8 setup: org create failed: ${api_status} ${R8_ORG_RESP}"
+else
+    R8_ORG=$(printf '%s' "${R8_ORG_RESP}" | jq -r '.id // .org.id // empty')
+    if [[ -z "${R8_ORG}" ]]; then
+        note_fail "R8 setup: org id missing from create response: ${R8_ORG_RESP}"
+    else
+        R8_TRESP=$(api POST "/api/v1/orgs/${R8_ORG}/triggers" "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-org-trigger",sourceType:"cron",sourceConfig:{expr:"0 8 1 * *",tz:"UTC"},workspaceId:$w}')")
+        if [[ "${api_status}" != "201" ]]; then
+            note_fail "R8 setup: org trigger create failed: ${api_status} ${R8_TRESP}"
+        else
+            R8_ID=$(printf '%s' "${R8_TRESP}" | jq -r '.id')
+            # GET must resolve the TRIGGER (the #1449 shadowing 404'd here).
+            r8_get=$(api GET "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}")
+            if [[ "${api_status}" == "200" ]] && [[ "$(printf '%s' "${r8_get}" | jq -r '.name // empty')" == "e2e-org-trigger" ]]; then
+                ok "R8a: org trigger GET resolves the trigger (not the shadowed org id)"
+            else
+                note_fail "R8a: org trigger GET returned ${api_status} (${r8_get})"
+            fi
+            # PUT renames (404 under the shadowing).
+            api PUT "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}" '{"name":"e2e-org-trigger-2"}' >/dev/null
+            if [[ "${api_status}" == "200" ]]; then
+                ok "R8b: org trigger PUT resolves and mutates"
+            else
+                note_fail "R8b: org trigger PUT returned ${api_status}, expected 200"
+            fi
+            # Fires lists without 404.
+            api GET "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}/fires" >/dev/null
+            if [[ "${api_status}" == "200" ]]; then
+                ok "R8c: org trigger fires route reachable"
+            else
+                note_fail "R8c: org fires returned ${api_status}, expected 200"
+            fi
+            # DELETE removes.
+            api DELETE "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}" >/dev/null
+            if [[ "${api_status}" == "200" ]]; then
+                ok "R8d: org trigger DELETE resolves"
+            else
+                note_fail "R8d: org trigger DELETE returned ${api_status}, expected 200"
+            fi
+            # Unhappy: a foreign org id fails closed (403/404, never 200).
+            api GET "/api/v1/orgs/00000000-0000-4000-8000-000000000099/triggers/${R8_ID}" >/dev/null
+            if [[ "${api_status}" != "200" ]]; then
+                ok "R8e: foreign-org trigger GET fails closed (${api_status})"
+            else
+                note_fail "R8e: foreign-org trigger GET returned 200 — scoping regression"
+            fi
+        fi
+        api DELETE "/api/v1/orgs/${R8_ORG}" >/dev/null 2>&1 || true
+    fi
+fi
+
 # --- verdict ---------------------------------------------------------------
 
 if [[ "${failures}" -ne 0 ]]; then

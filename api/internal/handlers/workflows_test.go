@@ -1029,3 +1029,28 @@ func TestOrgWorkflowRoutes_ResolveWorkflowID(t *testing.T) {
 	w = doWFRequest(t, r, "GET", "/api/v1/orgs/org-OTHER/workflows/wf-org2", nil)
 	assert.Equal(t, 404, w.Code, "owner-scoped lookup must still fail closed")
 }
+
+// #1449 r1: OrgRunWorkflow — the run route must resolve the WORKFLOW id
+// (a 404 here means the :id shadowing is back; a 400 workspace-required
+// proves resolution reached the handler).
+func TestOrgWorkflowRunRoute_ResolvesWorkflowID(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	h := NewOrgWorkflowsHandler(store, quota)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	org := r.Group("/api/v1/orgs/:id/workflows")
+	org.POST("/:workflowId/runs", h.OrgRunWorkflow)
+
+	store.workflows["wf-org-run"] = &wf.WorkflowRow{
+		ID: "wf-org-run", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-run", Slug: "org-run", Status: "draft",
+		SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`),
+	}
+
+	// No targetWorkspaceId and none supplied: 400 workspace-required — the
+	// handler RUNS with the resolved workflow (404 = the shadowing bug).
+	w := doWFRequest(t, r, "POST", "/api/v1/orgs/org-7/workflows/wf-org-run/runs", map[string]any{"input": map[string]any{}})
+	require.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "workspace_id is required")
+}

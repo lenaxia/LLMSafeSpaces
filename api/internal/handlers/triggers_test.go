@@ -1418,3 +1418,41 @@ func TestOrgTriggerRoutes_ResolveTriggerID(t *testing.T) {
 	w = doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-OTHER/triggers/trig-org2", nil)
 	assert.Equal(t, 404, w.Code, "owner-scoped lookup must still fail closed")
 }
+
+// #1449 r1: OrgRotateWebhookSecret — fixed but previously untested.
+func TestOrgRotateWebhookSecret_RouteWorks(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+	h := NewOrgTriggersHandler(store, quota, encrypt)
+	org := r.Group("/api/v1/orgs/:id/triggers")
+	org.POST("/:triggerId/rotate-secret", h.OrgRotateWebhookSecret)
+
+	// Non-webhook org trigger: 400 (route resolves the TRIGGER — a 404
+	// would be the :id shadowing).
+	store.triggers["trig-org-cron"] = &wf.TriggerRow{
+		ID: "trig-org-cron", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-cron", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+	w := doTriggerRequest(t, r, "POST", "/api/v1/orgs/org-7/triggers/trig-org-cron/rotate-secret", nil)
+	require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+
+	// Webhook org trigger: 200 + one-time secret, store updated.
+	store.triggers["trig-org-hook"] = &wf.TriggerRow{
+		ID: "trig-org-hook", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-hook", Enabled: true, SourceType: "webhook",
+		SourceConfig: json.RawMessage(`{}`),
+	}
+	require.NoError(t, store.CreateWebhook(context.Background(), &wf.WebhookRow{ID: "wh-org", TriggerID: "trig-org-hook", SecretCipher: []byte("old"), KeyVersion: 1}))
+	w = doTriggerRequest(t, r, "POST", "/api/v1/orgs/org-7/triggers/trig-org-hook/rotate-secret", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	var resp struct {
+		WebhookSecret string `json:"webhookSecret"`
+		WebhookURL    string `json:"webhookUrl"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Contains(t, resp.WebhookSecret, "whsec_")
+	assert.Equal(t, "/api/v1/hooks/trig-org-hook", resp.WebhookURL)
+}

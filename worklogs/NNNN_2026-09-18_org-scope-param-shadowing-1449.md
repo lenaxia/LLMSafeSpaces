@@ -17,8 +17,11 @@ Make org-scope automation CRUD reachable at all, without weakening the fail-clos
 ## Key Decisions
 - Parameter injection over param-context rewriting: the shadowing was a naming-convention accident; explicit arguments make the route-to-handler binding visible and unshadowable.
 
+## Work Completed (r1 additions)
+- Review r1 asked for the two untested operations + production-wire + e2e tiers: TestOrgWorkflowRunRoute_ResolvesWorkflowID (400 workspace-required proves resolution), TestOrgRotateWebhookSecret_RouteWorks (non-webhook 400 + webhook 200 + whsec_ + URL), TestOrgAutomationRoutes_ProductionWire (real NewRouter + OrgAdminGuard through the wire fake org store; foreign-org fails closed), and e2e row R8 (org create → trigger CRUD through the fixed routes → foreign-org unhappy leg → org cleanup; banner + pins to R1-R8).
+
 ## Tests Run
-- TestOrgTriggerRoutes_ResolveTriggerID, TestOrgWorkflowRoutes_ResolveWorkflowID (red under the old convention by construction — the routes 404'd); full handlers + api tree green; golangci-lint 0 issues.
+- All four tiers green; full handlers + server + local suites; golangci-lint 0 issues.
 
 ## Files Modified
 - api/internal/handlers/triggers.go (+_test.go), workflows.go (+_test.go)
