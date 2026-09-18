@@ -2110,23 +2110,22 @@ func TestScheduler_RoutineFirePersistent5xxBurnsOneFailure(t *testing.T) {
 	assert.False(t, store.disabled["trig-rt2"], "threshold not reached (1 < 10)")
 }
 
-// Mock-fidelity pin (review r5): a fire created AND completed within
-// one tick executes exactly once — the drain must not re-pick the
-// result-written row. Guards the same-tick double-execution the mock
-// used to allow (TestScheduler_RoutineTrigger shape).
+// Mock-fidelity pin (review r5/r6): a DUE CRON routine trigger's
+// claim-created fire, completed within the same tick, executes exactly
+// once — the drain must not re-pick the result-written row. This is
+// the exact double-execution shape the round-4 mock allowed (claim
+// fires + writes the row; the unfiltered drain re-listed it). Red
+// under the round-4 mock, green with the result-write landing on rows.
 func TestScheduler_RoutineFireExecutesOncePerTick(t *testing.T) {
 	store := newMockSchedulerStore()
 	wsPtr := "ws-once"
+	due := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-once", OwnerType: "user", OwnerID: "u1", Enabled: true,
-		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
-		Prompt: "ACK", AutoDisableAfter: 10,
+		SourceType: types.TriggerSourceCron, WorkspaceID: &wsPtr,
+		SourceConfig: json.RawMessage(`{"expr":"* * * * *","tz":"UTC"}`),
+		Prompt:       "ACK", AutoDisableAfter: 10, NextFireAt: &due,
 	}}
-	fire := &wf.TriggerFireRow{
-		ID: "fire-once", TriggerID: "trig-once", SourceType: "webhook",
-		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
-	}
-	store.fires = append(store.fires, fire)
 	ex := &countingExecutor{}
 	sched := &Scheduler{
 		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
@@ -2134,8 +2133,9 @@ func TestScheduler_RoutineFireExecutesOncePerTick(t *testing.T) {
 	}
 	sched.tick(context.Background(), noopLogger{}, 10)
 
-	assert.Equal(t, 1, ex.calls, "exactly one execution per tick — no same-tick re-drain")
-	assert.Equal(t, "delivered", store.statuses["fire-once"])
+	assert.Equal(t, 1, ex.calls, "claim-executed fire must not re-execute on the same tick's drain")
+	require.Len(t, store.fires, 1)
+	assert.Equal(t, "delivered", store.fires[0].Status)
 }
 
 type countingExecutor struct{ calls int }
