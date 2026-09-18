@@ -1,0 +1,114 @@
+# Worklog: Dockerfile base-image digest pinning (#1330)
+
+**Date:** 2026-09-18
+**Session:** Digest-pin every Dockerfile base image (issue #1330), add red-first pin-enforcement repolint test, extend renovate digest grouping, make README-LLM's posture claim true.
+**Status:** Complete
+
+---
+
+## Objective
+
+Issue #1330: unprefixed Dockerfile `FROM` lines resolve against docker.io; during the 2026-09-11 Docker Hub auth-endpoint outage 11 CI jobs failed (`failed to fetch oauth token ... 500`), and tag-only pins mean a moved tag = silently different base. README-LLM.md already *claimed* "Debian bookworm-slim (digest-pinned)" — false at the time. Fix: pin every registry FROM to `tag@sha256:<manifest-list digest>`, enforce with a repolint test so it can't regress, and keep pins maintainable via renovate.
+
+---
+
+## Work Completed
+
+### Inventory (sweep, not just the issue list)
+
+`rg`-equivalent sweep (`grep -rn '^FROM ' --include='Dockerfile*'`) over all 8 Dockerfiles found **13 unpinned registry FROMs** — the issue's 9 plus **4 × `gcr.io/distroless/static:nonroot`** (api/controller/relay-proxy/relay-router delivery stages) that the issue hadn't listed but that fail the same "every FROM carries @sha256:" bar. `FROM scratch` (agentd:52, opencode:79) correctly exempt — no registry round-trip. No `*.Dockerfile`/build-stage files exist elsewhere; no Dockerfiles under any `testdata/` (api/internal/imagefactory has no testdata dir at all — nothing byte-locked to exclude).
+
+### Digest resolution (docker unavailable in sandbox → registry HTTP API)
+
+Per-tag manifest-LIST digest via anonymous token + manifest GET, reading the `Docker-Content-Digest` response header. Resolution commands (recorded verbatim):
+
+```sh
+repo=library/golang; tag=1.26   # (repeat per image; nginxinc/... for the namespaced one)
+token=$(curl -sfS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" | jq -r .token)
+curl -sfS -o /dev/null -D - -H "Authorization: Bearer ${token}" \
+  -H "Accept: application/vnd.oci.image.index.v1+json" \
+  -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+  "https://registry-1.docker.io/v2/${repo}/manifests/${tag}" | tr -d '\r' | grep -i docker-content-digest
+# gcr.io variant: anonymous token from https://gcr.io/v2/token?scope=repository:distroless/static:pull,
+# then GET https://gcr.io/v2/distroless/static/manifests/nonroot
+```
+
+Evidence all are list/index pins: response `Content-Type: application/vnd.oci.image.index.v1+json` (verified for golang:1.26, nginxinc/nginx-unprivileged:1.27-alpine, and gcr.io/distroless/static) — the multi-arch (amd64+arm64) buildx matrix resolves both platforms against a list digest; a single-arch manifest digest would 404/fail on the other arch.
+
+| Image | Digest (2026-09-18) | Used in |
+|---|---|---|
+| `golang:1.26` | `sha256:3c3e25a4da13fd0478eed2df1eb35a0e667094a7124d3993a6a1d30f71c17e79` | api:13, controller:13, relay-proxy:11, relay-router:11 |
+| `golang:1.26-bookworm` | `sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81` | workspace-agentd:29 |
+| `debian:bookworm-slim` | `sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171` | runtimes/base:2, runtimes/opencode:47 |
+| `node:22-bookworm-slim` | `sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5` | frontend:1 |
+| `nginxinc/nginx-unprivileged:1.27-alpine` | `sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0` | frontend:20 |
+| `gcr.io/distroless/static:nonroot` | `sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3` | api:47, controller:48, relay-proxy:39, relay-router:39 |
+
+Post-pin re-verification: re-queried `debian` and `distroless` **by digest** (GET .../manifests/sha256:...) → HTTP 200 both.
+
+### Enforcement test (red-first, TDD)
+
+New `pkg/repolint/dockerfile_digest_pin_test.go` — `TestDockerfiles_BaseImagesDigestPinned` walks every `Dockerfile*` (same walk as `TestDockerfiles_NoTargetArchDefault`; skips node_modules/vendor/.git), parses each FROM (flag-tolerant, comment-skipping), exempts `scratch` + stage-local aliases (two-pass: collect `AS <name>` first), and requires `@sha256:` + exactly 64 lowercase hex (catches truncated pastes). Committed RED first (13 findings, exactly the inventory above), then pins, then green.
+
+### renovate disposition
+
+`renovate.json` already extends **`docker:pinDigests`** — that preset is what pins and keeps updating Dockerfile digests, so coverage existed. Gap found: the only dockerfile-manager packageRule grouped `patch` updates; digest-pin refresh PRs (`updateType: digest`) would arrive ungrouped/ungoverned. Extended that rule in-place (existing style): `matchUpdateTypes: ["patch", "digest"]` + description updated. Deliberately did **not** add automerge for docker digests (unlike github-actions digests): base-image changes alter release-gated artifacts (runtime images are content-versioned CalVer; frontend has a zero-HIGH/CRITICAL Trivy gate) — human review stays.
+
+### README-LLM posture line
+
+Line 787 technology-stack row edited minimally: "Debian bookworm-slim (digest-pinned; every Dockerfile base is, enforced by `pkg/repolint` — #1330)" — the previously false claim is now true and points at the enforcement test.
+
+---
+
+## Key Decisions
+
+- **List/index digests, not per-arch**: pins must keep CI's buildx amd64+arm64 matrix working on both platforms; verified via Accept+Content-Type round-trip (see above).
+- **Pin the sweep-found distroless images too**: issue listed 9; the bar is "every FROM". gcr.io isn't Docker Hub, but the supply-chain argument (tag move = silent base change) is identical.
+- **Scratch and stage-local aliases exempt** (the only exemptions): scratch has no registry fetch; `FROM builder` is intra-file. No allowlist mechanism added — a future `${VAR}` base or new image without a digest should fail loudly and be pin-exempted deliberately, not silently.
+- **Tags kept in front of `@sha256:`** for readability, per issue requirement.
+- **Grouped digest bumps in renovate instead of automerge**: see renovate disposition above.
+- **Not addressing the ghcr.io mirroring half of the issue's ask**: mirroring bases into ghcr.io is an infra/registry change (credentials, cache hygiene) out of scope for a Dockerfile+enforcement PR; digest-pinning alone removes the tag-move class. Noted as follow-up.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+- `go test ./pkg/repolint/ -run TestDockerfiles_BaseImagesDigestPinned -count=1` → RED pre-pin (13 findings), GREEN post-pin.
+- `go test ./pkg/repolint/ -count=1` → ok (full package: no regressions to arch/CA-bundle pins).
+- `go test ./local/ -count=1` → ok (runtime-dockerfile retry pins unaffected).
+- `go build ./...` → exit 0 (no Go changes; test-only + Dockerfile/JSON/MD edits).
+- `jq empty renovate.json` → valid JSON.
+- Registry re-query by digest (debian, distroless) → 200.
+- No shell scripts touched → `bash -n` n/a.
+- gitleaks: not installed in sandbox (hook skipped it); diff contains only public image digests — nothing secret-shaped. Pre-commit did **not** block, so `--no-verify` was not needed on any commit.
+
+---
+
+## Next Steps
+
+- If Docker Hub flakiness recurs pre-pins-merge, consider the ghcr.io mirror half of #1330's ask as a separate infra task.
+- Renovate will open the first "docker base images" digest-bump PR after merge; expect it to update golang/debian/node/nginx/distroless digests — review it like any base bump.
+
+---
+
+## Files Modified
+
+- `api/Dockerfile` (2 FROMs pinned)
+- `controller/Dockerfile` (2)
+- `cmd/relay-proxy/Dockerfile` (2)
+- `cmd/relay-router/Dockerfile` (2)
+- `cmd/workspace-agentd/Dockerfile` (1)
+- `frontend/Dockerfile` (2)
+- `runtimes/base/Dockerfile` (1)
+- `runtimes/opencode/Dockerfile` (1)
+- `pkg/repolint/dockerfile_digest_pin_test.go` (new)
+- `renovate.json` (docker base-images rule: +digest updateType)
+- `README-LLM.md` (line 787 posture row)
+- `worklogs/NNNN_2026-09-18_dockerfile-digest-pinning.md` (this file)
+- `COORDINATE.md` (claim → DONE)

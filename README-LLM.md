@@ -784,7 +784,7 @@ When a workspace's `/workspace` PVC crosses **90% usage**, the API proxy prepend
 | Security | unrolled/secure | HTTP security headers |
 | Code generation | k8s.io/code-generator | DeepCopy for controller CRD types |
 | Testing | testify, go-sqlmock, miniredis | Unit and integration testing |
-| Runtime images | Debian bookworm-slim (digest-pinned) | Small attack surface; SHA256-verified binaries |
+| Runtime images | Debian bookworm-slim (digest-pinned; every Dockerfile base is, enforced by `pkg/repolint` — #1330) | Small attack surface; SHA256-verified binaries |
 | Runtime manager | mise (jdx/mise) | Polyglot runtime manager — agents install Python/Node/Go/etc. without root |
 | Secret redaction | pkg/redact (internal) | 16-rule regex pipeline; prevents credential leaks in agent output |
 
