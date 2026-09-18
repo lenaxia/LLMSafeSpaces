@@ -115,6 +115,47 @@ type NodeExecResponse struct {
 	Detail    string          `json:"detail,omitempty"`
 }
 
+// executeWithRetry runs an agentd node-execution with a bounded retry
+// on TRANSIENT upstream failures: agentd's "script_failed" wrapping
+// "opencode returned 5xx" (provider blips) and agentd transport 5xxs.
+// Deterministic failures (4xx-node errors, validation, unsupported
+// language) are NOT retried — only shapes that historically recover
+// within seconds (#1441: a single provider blip consumed
+// consecutiveFailures and could auto-disable a healthy trigger).
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	const attempts = 3
+	var resp *NodeExecResponse
+	var err error
+	for a := 1; a <= attempts; a++ {
+		resp, err = ex.Execute(ctx, workspaceID, podIP, req)
+		if !retryableAgentdFailure(err, resp) {
+			return resp, err
+		}
+		if a < attempts {
+			select {
+			case <-time.After(time.Duration(a) * 2 * time.Second):
+			case <-ctx.Done():
+				return resp, err
+			}
+		}
+	}
+	return resp, err
+}
+
+// retryableAgentdFailure reports whether the agentd outcome is the
+// transient-upstream shape worth retrying: agentd transport errors for
+// 5xx ("agentd node execute returned 5xx") or agentd's script_failed
+// wrapping an opencode 5xx ("opencode returned 5xx" — provider blips).
+// Deterministic failures (node validation, unsupported language, 4xx)
+// return false — retrying those is wasted budget.
+func retryableAgentdFailure(err error, resp *NodeExecResponse) bool {
+	if err != nil {
+		return strings.Contains(err.Error(), "returned 5")
+	}
+	return resp != nil && resp.ErrorCode == "script_failed" &&
+		strings.Contains(resp.Detail, "opencode returned 5")
+}
+
 // --- WorkspaceActivator interface ---
 
 type WorkspaceActivator interface {
@@ -752,7 +793,10 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		Spec: buildRoutineAgentSpec(trigger, prompt), Input: envelopeJSON,
 		Timeout: "10m",
 	}
-	agentResp, err := s.AgentdClient.Execute(ctx, workspaceID, podIP, agentReq)
+	// #1441: transient upstream 5xx (model-provider blips surfacing as
+	// "opencode returned 5xx") must not fail a fire or burn
+	// auto-disable budget — bounded retry with backoff before giving up.
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg

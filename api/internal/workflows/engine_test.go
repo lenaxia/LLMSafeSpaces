@@ -1872,3 +1872,90 @@ func TestScheduler_TargetlessTriggerAutoDisables(t *testing.T) {
 		t.Fatalf("targetless zombie must auto-disable at the threshold")
 	}
 }
+
+// --- #1441: bounded retry on transient upstream 5xx ------------------------
+
+type scriptedExecutor struct {
+	calls   int
+	results []struct {
+		resp *NodeExecResponse
+		err  error
+	}
+}
+
+func (e *scriptedExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRequest) (*NodeExecResponse, error) {
+	i := e.calls
+	e.calls++
+	if i >= len(e.results) {
+		i = len(e.results) - 1
+	}
+	return e.results[i].resp, e.results[i].err
+}
+
+// A provider blip (opencode 500) recovers on retry: the fire succeeds
+// and no failure budget is burned.
+func TestExecuteWithRetry_Transient5xxRecovers(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Output)
+	assert.Equal(t, 2, ex.calls, "exactly one retry")
+}
+
+// Exhausted retries surface the failure as before.
+func TestExecuteWithRetry_Exhausted(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 503"}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "script_failed", resp.ErrorCode)
+	assert.Equal(t, 3, ex.calls, "bounded: three attempts")
+}
+
+// Deterministic failures are NOT retried (unsupported language etc.).
+func TestExecuteWithRetry_DeterministicNoRetry(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "invalid_node_data", Detail: "unsupported language"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
+	}}
+	resp, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, "invalid_node_data", resp.ErrorCode)
+	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
+}
+
+// Transport errors: agentd 5xx retried, non-5xx not.
+func TestExecuteWithRetry_TransportShapes(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
+	}}
+	_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, ex.calls)
+
+	ex2 := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 404: no route")},
+	}}
+	_, _ = executeWithRetry(context.Background(), ex2, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex2.calls, "404 transport not retried")
+}
