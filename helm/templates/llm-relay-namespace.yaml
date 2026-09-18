@@ -1,0 +1,14 @@
+{{- /* Relay-only key delivery (Epic 72 / design 0058): the dedicated
+       llm-relay namespace hosts the BYO resolve router (US-72.2) and the
+       staged-envelope Secrets. Gated on relayOnlyKeyDelivery.enabled
+       (default false until the US-72.5 flip). */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+  labels:
+    {{- include "llmsafespaces.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+{{- end }}

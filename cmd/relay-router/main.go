@@ -70,6 +70,24 @@ func loadRouterConfig() routerConfig {
 }
 
 func main() {
+	// BYO resolve mode (Epic 72, design 0058 §4.1 hop 5): a separate
+	// Deployment in the llm-relay namespace runs the same binary with
+	// ROUTER_MODE=byo — the Epic 42 fleet router below stays untouched.
+	if getEnv("ROUTER_MODE", "fleet") == "byo" {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			cancel()
+		}()
+		if err := runBYO(ctx); err != nil {
+			log.Fatalf("relay-router: %v", err)
+		}
+		return
+	}
+
 	cfg := loadRouterConfig()
 
 	fleet := newRelayFleet(cfg.healthThreshold, cfg.detectionWindow)

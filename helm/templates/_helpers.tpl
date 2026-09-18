@@ -147,6 +147,36 @@ app.kubernetes.io/component: relay-router
 app.kubernetes.io/component: relay-router
 {{- end }}
 
+{{- define "llmsafespaces.llmRelayRouter.selectorLabels" -}}
+app.kubernetes.io/name: llm-relay-router
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "llmsafespaces.llmRelayRouter.labels" -}}
+{{ include "llmsafespaces.llmRelayRouter.selectorLabels" . }}
+app.kubernetes.io/component: relay-router
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+llmsafespaces.positiveIntEnv coerces a numeric value (values-file int,
+values-file float, --set string in decimal/exponential notation) to an
+exact decimal string for env consumption (strconv.Atoi on the router side).
+Fails the render for negative or non-numeric results (a silent 0 would disable the bound): the byte quota and body caps are
+security-adjacent §4.7 bounds, and a silent "0" would disable them
+(quota 0 = unlimited) just as silently as the scientific-notation class
+this replaces.
+*/}}
+{{- define "llmsafespaces.positiveIntEnv" -}}
+{{- $n := (. | float64 | int64) -}}
+{{- if lt $n 1 -}}
+{{- fail (printf "value %v must coerce to an integer >= 1 (got %d)" . $n) -}}
+{{- end -}}
+{{- $n | quote -}}
+{{- end }}
+
 {{- define "llmsafespaces.relayRouter.image" -}}
 {{- if .Values.controller.inferenceRelay.router.image.digest -}}
 {{- printf "%s@%s" .Values.controller.inferenceRelay.router.image.repository .Values.controller.inferenceRelay.router.image.digest -}}

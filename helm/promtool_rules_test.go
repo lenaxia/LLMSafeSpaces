@@ -28,7 +28,9 @@ func TestPromtoolRules(t *testing.T) {
 		t.Skip("helm not on PATH; skipping chart render")
 	}
 
-	docs := helmTemplate(t, "monitoring:\n  enabled: true\n")
+	// Epic 72 (US-72.2): the llm-relay alert scenarios require the
+	// relay-only flag on — the flip-gate posture (monitoring + relay-only).
+	docs := helmTemplate(t, "monitoring:\n  enabled: true\nrelayOnlyKeyDelivery:\n  enabled: true\n")
 	var groupsRaw any
 	for _, d := range docs {
 		if d["kind"] != "PrometheusRule" {

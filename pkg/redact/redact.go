@@ -167,6 +167,32 @@ func (r *Redactor) UnregisterDynamic(id string) {
 	delete(r.dynamic, id)
 }
 
+// DynamicRules snapshots the registered dynamic rules (dynamic
+// longest-first order). The BYO resolve router (US-72.2) uses it to apply
+// the precise exact-value staged-key rules to proxied bodies — bodies get
+// dynamic-only redaction (the static heuristics would corrupt legitimate
+// structured/vision payloads, e.g. long base64 image parts); diagnostics
+// and logs get the full pipeline via Redact (design 0058 §4.9, K7).
+func (r *Redactor) DynamicRules() []DynamicRule {
+	entries := r.dynamicSnapshot()
+	rules := make([]DynamicRule, 0, len(entries))
+	for _, e := range entries {
+		rules = append(rules, DynamicRule{Value: e.value, Replacement: e.replacement})
+	}
+	return rules
+}
+
+// RedactDynamicOnly applies exactly the dynamic exact-value rules (no
+// static pipeline) — see DynamicRules for why the router's body path uses
+// this surface.
+func (r *Redactor) RedactDynamicOnly(input string) string {
+	result := input
+	for _, e := range r.dynamicSnapshot() {
+		result = strings.ReplaceAll(result, e.value, e.replacement)
+	}
+	return result
+}
+
 var (
 	cachedRedactor     *Redactor
 	cachedRedactorOnce sync.Once

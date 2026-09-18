@@ -1,0 +1,100 @@
+{{- /* BYO resolve router (US-72.2, design 0058 §4.1 hop 5): 2 replicas in
+       llm-relay, same binary as the fleet router with ROUTER_MODE=byo.
+       PDB maxUnavailable=1 keeps one replica serving through rolling
+       deploys; terminationGracePeriodSeconds is sized to the longest
+       legitimate stream — a cap, not a delay (#1078). */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+{{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-relay-router
+  namespace: {{ $ns }}
+  labels:
+    {{- include "llmsafespaces.llmRelayRouter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.relayOnlyKeyDelivery.router.replicas | default 2 }}
+  selector:
+    matchLabels:
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llmsafespaces.llmRelayRouter.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: llm-relay-router
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: {{ .Values.relayOnlyKeyDelivery.router.terminationGracePeriodSeconds | default 630 }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: router
+          image: {{ .Values.controller.inferenceRelay.router.image.repository }}:{{ .Values.controller.inferenceRelay.router.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: {{ .Values.controller.inferenceRelay.router.image.pullPolicy | default "IfNotPresent" }}
+          env:
+            - name: ROUTER_MODE
+              value: "byo"
+            - name: LISTEN_ADDR
+              value: ":8090"
+            - name: BYO_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BYO_PRIOR_KEY_RETENTION
+              value: {{ .Values.relayOnlyKeyDelivery.router.priorKeyRetention | default "10m" | quote }}
+            - name: BYO_DRAIN_GRACE
+              value: {{ .Values.relayOnlyKeyDelivery.router.drainGrace | default "600s" | quote }}
+            - name: BYO_QUOTA_WINDOW
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.window | default "60s" | quote }}
+            - name: BYO_QUOTA_REQUESTS
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.requestsPerWindow | default 120 | include "llmsafespaces.positiveIntEnv" }}
+            - name: BYO_QUOTA_BYTES
+              value: {{ .Values.relayOnlyKeyDelivery.router.quota.bytesPerWindow | default 209715200 | include "llmsafespaces.positiveIntEnv" }}
+            - name: BYO_MAX_BODY_BYTES
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxBodyBytes | default 10485760 | include "llmsafespaces.positiveIntEnv" }}
+            - name: BYO_MAX_RESP_BYTES
+              value: {{ .Values.relayOnlyKeyDelivery.router.maxRespBytes | default 52428800 | include "llmsafespaces.positiveIntEnv" }}
+            - name: BYO_INFORMER_RESYNC
+              value: {{ .Values.relayOnlyKeyDelivery.router.informerResync | default "5m" | quote }}
+          ports:
+            - name: http
+              containerPort: 8090
+          # #1078 pre-not-ready: give the endpoint removal a head start
+          # before the graceful drain begins.
+          lifecycle:
+            preStop:
+              sleep:
+                seconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml (.Values.relayOnlyKeyDelivery.router.resources | default (dict "requests" (dict "cpu" "50m" "memory" "64Mi") "limits" (dict "memory" "256Mi"))) | nindent 12 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: llm-relay-router
+  namespace: {{ $ns }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
+{{- end }}

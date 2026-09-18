@@ -1,0 +1,59 @@
+{{- /* Relay-only key delivery network posture (design 0058 §4.3):
+       ingress on the router from the workspace namespace, and the
+       workspace-namespace egress carve-out (router + the platform's
+       default-deny egress posture). */}}
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+{{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-relay-router-allow-workspaces
+  namespace: {{ $ns }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+      ports:
+        - protocol: TCP
+          port: 8090
+{{- end }}
+---
+{{- /* The workspace-namespace EGRESS carve-out (§4.3): workspace pods may
+       reach exactly the BYO router — paired with the router's ingress
+       rule above and applied only when the platform's egress NetworkPolicy
+       posture is on. */}}
+{{- $ns2 := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+{{- if and .Values.relayOnlyKeyDelivery.enabled .Values.networkPolicy.enabled .Values.networkPolicy.workspaceEgress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-relay-egress-carveout
+  namespace: {{ .Release.Namespace }}
+spec:
+  # The SAME label pair every chart policy selects for workspace pods
+  # (pod_builder.go labels + _helpers.tpl defaults) — not a novel label.
+  podSelector:
+    matchLabels:
+      app: llmsafespaces
+      component: workspace
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $ns2 }}
+          # NetworkPolicy egress matches the post-DNAT POD port — the
+          # router container listens on 8090 (Service 80 → 8090).
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: llm-relay-router
+      ports:
+        - protocol: TCP
+          port: 8090
+{{- end }}

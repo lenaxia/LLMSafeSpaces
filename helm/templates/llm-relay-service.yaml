@@ -1,0 +1,17 @@
+{{- if .Values.relayOnlyKeyDelivery.enabled }}
+{{- $ns := .Values.relayOnlyKeyDelivery.namespace | default "llm-relay" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-relay-router
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: llm-relay-router
+spec:
+  selector:
+    {{- include "llmsafespaces.llmRelayRouter.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+{{- end }}

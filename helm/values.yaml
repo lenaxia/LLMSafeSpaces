@@ -1746,3 +1746,37 @@ previewOrigin:
     existingSecret: "llmsafespaces-credentials"
     # Key within that Secret.
     key: "preview-origin-token-secret"
+
+# Relay-only key delivery (Epic 72 / design 0058, US-72.2/72.3): LLM
+# provider keys never land in uid-1000 space — the controller seals them
+# into per-workspace envelope Secrets in a dedicated namespace and the
+# BYO resolve router (same binary as the fleet router, ROUTER_MODE=byo)
+# resolves per request. DEFAULT FALSE until the US-72.5 flip (gates:
+# #910 merged via #1401, router SLO-green, CredentialsStaged on canary,
+# sanitization + quota/alerts verified, rollback drill executed).
+relayOnlyKeyDelivery:
+  enabled: false
+  # Namespace for the router + staged Secrets.
+  namespace: "llm-relay"
+  # URL workspace pods use (the router FQDN cross-namespace).
+  workspaceRouterURL: "http://llm-relay-router.llm-relay.svc.cluster.local"
+  # Default token TTL (participates in the batch manifest tier — renewal
+  # rides US-70.2/70.3 conditional pull).
+  tokenTTL: "24h"
+  router:
+    replicas: 2
+    # Sized to the longest legitimate stream — a cap, not a delay (#1078).
+    terminationGracePeriodSeconds: 630
+    drainGrace: "600s"
+    priorKeyRetention: "10m"
+    # Per-workspace quota (exfil-through-relay bound, §4.7 rule 6).
+    quota:
+      window: "60s"
+      requestsPerWindow: 120
+      bytesPerWindow: 209715200
+    # Body caps (§4.7 rule 3).
+    maxBodyBytes: 10485760
+    maxRespBytes: 52428800
+    # Informer resync for the Secret watch.
+    informerResync: "5m"
+    resources: {}
