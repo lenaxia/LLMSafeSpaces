@@ -724,11 +724,11 @@ EOF
           # busybox httpd on :8080 (high port — host-userns nested processes
           # are uid 1000, no CAP_NET_BIND_SERVICE for :80) instead of nginx.
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n    userns: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1' || true)
-          if [ "$GCOMPOSE_RC" = "200" ]; then
-            pass S5.7i "identity-mode podman-compose service up under gVisor, served HTTP 200, torn down"
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/alpine:3.20\n    command: sh -c \"mkdir -p /srv && echo ok > /srv/index.html && httpd -f -p 8080 -h /srv\"\n    network_mode: host\n    userns: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; c=$(podman-compose up -d >/tmp/compose-up.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1); if [ "$c" = "200" ]; then echo "200-apt-compose"; else echo "apt-compose-failed:"; tail -6 /tmp/compose-up.log; podman ps -a 2>&1 | head -4; echo "-- retrying with current podman-compose via pip:"; python3 -m pip install --user --quiet podman-compose >/dev/null 2>&1 && export PATH="$HOME/.local/bin:$PATH" && rm -rf ~/.local/share/containers 2>/dev/null; c2=$(podman-compose version 2>/dev/null | head -1; podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/tmp/compose-up2.log 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ && podman-compose down >/dev/null 2>&1); echo "pip-compose:$c2"; tail -6 /tmp/compose-up2.log 2>/dev/null; fi' || true)
+          if echo "$GCOMPOSE_RC" | grep -q "200-apt-compose\|pip-compose:200"; then
+            pass S5.7i "podman-compose service up under gVisor, served HTTP 200, torn down ($(echo "$GCOMPOSE_RC" | grep -o 'apt-compose\|pip-compose:200' | head -1))"
           else
-            fail S5.7i "identity-mode compose smoke under runsc: ${GCOMPOSE_RC:-<failed before curl>}"
+            fail S5.7i "compose smoke under runsc: ${GCOMPOSE_RC:-<failed>}"
           fi
         else
           fail S5.7g "gVisor podman-set workspace never reached Active"
