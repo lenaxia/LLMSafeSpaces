@@ -495,14 +495,14 @@ func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) (
 	if m.overridePending != nil {
 		return m.overridePending, nil
 	}
-	// Store parity: only routine fires still in 'fired' (never
-	// result-written) drain — the unfiltered fallback re-executed fires
-	// the same tick created (production-impossible; the real store
-	// filters action_type='routine' AND status='fired' AND result IS
-	// NULL, store.go ListPendingRoutineFires).
+	// Store parity: only routine fires still in 'fired' AND never
+	// result-written drain (the real store filters action_type='routine'
+	// AND status='fired' AND result IS NULL). Without the result-write
+	// landing on the row, a fire created and completed within one tick
+	// re-executed on the same tick's drain — production-impossible.
 	var out []*wf.TriggerFireRow
 	for _, f := range m.fires {
-		if f.ActionType == "routine" && f.Status == "fired" {
+		if f.ActionType == "routine" && f.Status == "fired" && f.Result == nil {
 			out = append(out, f)
 		}
 	}
@@ -540,6 +540,21 @@ func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID s
 		m.statuses = make(map[string]string)
 	}
 	m.statuses[fireID] = status
+	// Store parity: the write lands ON THE ROW (result set + status
+	// moved out of 'fired'), so a same-tick drain re-list cannot pick
+	// it up. Without this the drain filter observed nothing.
+	for _, f := range m.fires {
+		if f.ID == fireID {
+			f.Status = status
+			f.Result = json.RawMessage(`{"written":true}`)
+		}
+	}
+	for _, f := range m.overridePending {
+		if f.ID == fireID {
+			f.Status = status
+			f.Result = json.RawMessage(`{"written":true}`)
+		}
+	}
 	return nil
 }
 
@@ -2093,4 +2108,39 @@ func TestScheduler_RoutineFirePersistent5xxBurnsOneFailure(t *testing.T) {
 	assert.Equal(t, 3, ex.calls, "bounded at three attempts")
 	assert.Equal(t, 1, store.triggerFail["trig-rt2"], "exactly ONE failure burned — not one per attempt")
 	assert.False(t, store.disabled["trig-rt2"], "threshold not reached (1 < 10)")
+}
+
+// Mock-fidelity pin (review r5): a fire created AND completed within
+// one tick executes exactly once — the drain must not re-pick the
+// result-written row. Guards the same-tick double-execution the mock
+// used to allow (TestScheduler_RoutineTrigger shape).
+func TestScheduler_RoutineFireExecutesOncePerTick(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-once"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-once", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	fire := &wf.TriggerFireRow{
+		ID: "fire-once", TriggerID: "trig-once", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}
+	store.fires = append(store.fires, fire)
+	ex := &countingExecutor{}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, 1, ex.calls, "exactly one execution per tick — no same-tick re-drain")
+	assert.Equal(t, "delivered", store.statuses["fire-once"])
+}
+
+type countingExecutor struct{ calls int }
+
+func (e *countingExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRequest) (*NodeExecResponse, error) {
+	e.calls++
+	return &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}, nil
 }
