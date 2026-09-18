@@ -21,7 +21,9 @@ A provider blip must not fail a fire or auto-disable a healthy trigger.
 None.
 
 ## Tests Run
-Transient-recovers (exactly one retry), exhausted (bounded 3, failure surfaces), deterministic-no-retry (invalid_node_data once), transport shapes (502 retried; 404 not), timeout-not-retried (504 transport, agentd script_timeout, opencode 504 wrap — each attempted once). Full workflows suite green.
+- Unit matrix: transient-recovers (exactly one retry), exhausted (bounded 3, failure surfaces), deterministic-no-retry, transport shapes (502 in; 404 out), timeout-not-retrried (504 transport, agentd script_timeout, opencode 504 wrap — each attempted once).
+- WIRING (review r2): TestScheduler_RoutineFireRetriesTransient5xx — a pending webhook routine fire whose executor answers 500-then-success DELIVERS with exactly one retry; reverting the executeWithRetry call site leaves it red (0 retries, fire failed). Along the way the mock's ClaimDueCronTriggers gained store-parity due-gating (it returned every row, double-firing pending-drained webhook triggers).
+- Full workflows suite green; e2e leg T7 records the wiring pin (a live provider-blip assertion would be flake-shaped by definition).
 
 ## Scope
 The failure half of #1441 only: the session-listing symptom is #1452, the prompt-growth design decision is #1453.

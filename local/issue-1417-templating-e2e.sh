@@ -296,6 +296,14 @@ else
     note_fail "T6 setup: rotate failed (${api_status})"
 fi
 
+# T7 (#1451): routine agent calls retry transient upstream 5xx — the
+# provider blip class the engine now masks (bounded, timeouts excluded).
+# Structural pin only: the behavioral matrix lives in the engine tests
+# (TestExecuteWithRetry_*); asserting a live provider blip from e2e
+# would be flake-shaped by definition. The row pins the WIRING: the
+# scheduler-level test that fails if the retry call site is reverted.
+log "T7: retry wiring pinned at scheduler level (TestScheduler_RoutineFireRetriesTransient5xx in CI)"
+
 if [[ "${failures}" -gt 0 ]]; then
     die "${failures} templating e2e row(s) failed"
 fi

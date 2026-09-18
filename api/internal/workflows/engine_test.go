@@ -452,6 +452,7 @@ type mockSchedulerStore struct {
 	lastRoutineResult json.RawMessage
 	getWorkflowErr    error
 	sessionOrigins    map[string]*wf.SessionOriginRow
+	overridePending   []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -464,19 +465,34 @@ func newMockSchedulerStore() *mockSchedulerStore {
 	}
 }
 
-func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, _ time.Time, _ int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error) {
+func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, now time.Time, _ int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var out []*wf.TriggerRow
 	for _, t := range m.triggers {
+		// Store parity: only DUE triggers are claimed (NULL/past-due
+		// next_fire_at never matches; a fire without a slot is not
+		// cron-claimable). Without this gate the mock returned every
+		// row, double-firing webhook-sourced routine triggers that ride
+		// the pending-fire drain instead.
+		if t.NextFireAt == nil || t.NextFireAt.After(now) {
+			continue
+		}
 		if nextFireFn != nil {
 			m.nextFires[t.ID] = nextFireFn(t)
 		}
+		out = append(out, t)
 	}
-	return m.triggers, nil
+	return out, nil
 }
 
 func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) ([]*wf.TriggerFireRow, error) {
-	return nil, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.overridePending != nil {
+		return m.overridePending, nil
+	}
+	return m.fires, nil
 }
 
 func (m *mockSchedulerStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
@@ -1829,10 +1845,12 @@ func TestScheduler_LegacyTriggerByteIdentical(t *testing.T) {
 func TestScheduler_TargetlessTriggerFailsLoudly(t *testing.T) {
 	store := newMockSchedulerStore()
 	// Post-FK shape: workflow_id NULL (deleted target), no workspace_id.
+	due := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-ghost", OwnerType: "user", OwnerID: "u1",
 		Name: "ghost", Enabled: true, SourceType: "cron",
 		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 5,
+		NextFireAt: &due,
 	}}
 
 	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
@@ -1859,10 +1877,12 @@ func TestScheduler_TargetlessTriggerFailsLoudly(t *testing.T) {
 // At the threshold the targetless fire disarms the zombie.
 func TestScheduler_TargetlessTriggerAutoDisables(t *testing.T) {
 	store := newMockSchedulerStore()
+	due2 := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-ghost2", OwnerType: "user", OwnerID: "u1",
 		Name: "ghost2", Enabled: true, SourceType: "cron",
 		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 1,
+		NextFireAt: &due2,
 	}}
 
 	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
@@ -1990,4 +2010,39 @@ func TestExecuteWithRetry_TimeoutNotRetried(t *testing.T) {
 	}}
 	_, _ = executeWithRetry(context.Background(), ex3, "ws", "ip", &NodeExecRequest{})
 	assert.Equal(t, 1, ex3.calls, "opencode 504 wrap not retried")
+}
+
+// Wiring pin: executeRoutine actually routes through the retry — a
+// transient 5xx from the executor must NOT fail the fire (reverting
+// the executeWithRetry call site leaves this red).
+func TestScheduler_RoutineFireRetriesTransient5xx(t *testing.T) {
+	store := newMockSchedulerStore()
+	// A pending WEBHOOK routine fire (the receiver created it; the tick
+	// drains it) whose routine workspace is live.
+	wsPtr := "ws-rt"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-rt", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-rt", TriggerID: "trig-rt", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	// Executor: first call is the transient 500, second succeeds.
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "delivered", store.statuses["fire-rt"], "the transient 500 must not fail the fire")
+	assert.Equal(t, 2, ex.calls, "exactly one retry — reverting the executeWithRetry call site leaves this red (0 retries, fire failed)")
 }
