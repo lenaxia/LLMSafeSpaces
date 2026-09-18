@@ -987,3 +987,45 @@ func TestWorkflowUpdate_YAMLRejections(t *testing.T) {
 	require.Equal(t, 400, w.Code, "malformed SECOND document rejected, not swallowed")
 	assert.Contains(t, w.Body.String(), "trailing YAML")
 }
+
+// #1449 twin: org-scope WORKFLOW routes had the same :id/:workflowId
+// shadowing — every org workflow GET/PUT/DELETE/run/runs 404'd.
+func TestOrgWorkflowRoutes_ResolveWorkflowID(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	h := NewOrgWorkflowsHandler(store, quota)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	org := r.Group("/api/v1/orgs/:id/workflows")
+	org.GET("/:workflowId", h.OrgGet)
+	org.PUT("/:workflowId", h.OrgUpdate)
+	org.DELETE("/:workflowId", h.OrgDelete)
+	org.POST("/:workflowId/runs", h.OrgRunWorkflow)
+	org.GET("/:workflowId/runs", h.OrgListRuns)
+
+	store.workflows["wf-org"] = &wf.WorkflowRow{
+		ID: "wf-org", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-wf", Slug: "org-wf", Status: "draft",
+	}
+
+	w := doWFRequest(t, r, "GET", "/api/v1/orgs/org-7/workflows/wf-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "org-wf")
+
+	newName := "org-wf-2"
+	w = doWFRequest(t, r, "PUT", "/api/v1/orgs/org-7/workflows/wf-org", map[string]any{"name": newName})
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+
+	w = doWFRequest(t, r, "GET", "/api/v1/orgs/org-7/workflows/wf-org/runs", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+
+	w = doWFRequest(t, r, "DELETE", "/api/v1/orgs/org-7/workflows/wf-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+
+	store.workflows["wf-org2"] = &wf.WorkflowRow{
+		ID: "wf-org2", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "scoped", Slug: "scoped", Status: "draft",
+	}
+	w = doWFRequest(t, r, "GET", "/api/v1/orgs/org-OTHER/workflows/wf-org2", nil)
+	assert.Equal(t, 404, w.Code, "owner-scoped lookup must still fail closed")
+}

@@ -90,17 +90,17 @@ func (h *TriggersHandler) UserCreate(c *gin.Context) {
 
 func (h *TriggersHandler) UserGet(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.get(c, types.WorkflowOwnerUser, userID)
+	h.get(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *TriggersHandler) UserUpdate(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.update(c, types.WorkflowOwnerUser, userID)
+	h.update(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *TriggersHandler) UserDelete(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.del(c, types.WorkflowOwnerUser, userID)
+	h.del(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 // --- Org endpoints ---
@@ -120,17 +120,17 @@ func (h *TriggersHandler) OrgCreate(c *gin.Context) {
 
 func (h *TriggersHandler) OrgGet(c *gin.Context) {
 	orgID := c.Param("id")
-	h.get(c, types.WorkflowOwnerOrg, orgID)
+	h.get(c, types.WorkflowOwnerOrg, orgID, c.Param("triggerId"))
 }
 
 func (h *TriggersHandler) OrgUpdate(c *gin.Context) {
 	orgID := c.Param("id")
-	h.update(c, types.WorkflowOwnerOrg, orgID)
+	h.update(c, types.WorkflowOwnerOrg, orgID, c.Param("triggerId"))
 }
 
 func (h *TriggersHandler) OrgDelete(c *gin.Context) {
 	orgID := c.Param("id")
-	h.del(c, types.WorkflowOwnerOrg, orgID)
+	h.del(c, types.WorkflowOwnerOrg, orgID, c.Param("triggerId"))
 }
 
 // --- shared CRUD ---
@@ -333,8 +333,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	c.JSON(http.StatusCreated, resp)
 }
 
-func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID string) {
-	triggerID := c.Param("id")
+func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID, triggerID string) {
 	row, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
@@ -347,8 +346,7 @@ func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID string) {
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
 }
 
-func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
-	triggerID := c.Param("id")
+func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID string) {
 	var req types.UpdateTriggerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -498,8 +496,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
 }
 
-func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID string) {
-	triggerID := c.Param("id")
+func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID, triggerID string) {
 	if err := h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID); err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
@@ -731,20 +728,16 @@ func generateWebhookSecret() string {
 // UserListFires returns recent trigger fire audit rows for a user-scope trigger.
 func (h *TriggersHandler) UserListFires(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.listFires(c, types.WorkflowOwnerUser, userID)
+	h.listFires(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 // OrgListFires returns recent trigger fire audit rows for an org-scope trigger.
 func (h *TriggersHandler) OrgListFires(c *gin.Context) {
 	orgID := c.Param("id")
-	h.listFires(c, types.WorkflowOwnerOrg, orgID)
+	h.listFires(c, types.WorkflowOwnerOrg, orgID, c.Param("triggerId"))
 }
 
-func (h *TriggersHandler) listFires(c *gin.Context, ownerType, ownerID string) {
-	triggerID := c.Param("id")
-	if triggerID == "" {
-		triggerID = c.Param("triggerId")
-	}
+func (h *TriggersHandler) listFires(c *gin.Context, ownerType, ownerID, triggerID string) {
 
 	// Owner-scoped guard, mirroring every sibling (get/update/del/
 	// rotate): without it, any authenticated user could read any
@@ -801,20 +794,16 @@ func triggerFireRowToResponse(f *wf.TriggerFireRow) types.TriggerFireResponse {
 // Returns the plaintext secret ONE TIME — the caller must store it; it cannot be recovered.
 func (h *TriggersHandler) UserRotateWebhookSecret(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.rotateWebhookSecret(c, types.WorkflowOwnerUser, userID)
+	h.rotateWebhookSecret(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 // OrgRotateWebhookSecret does the same for org-scope triggers.
 func (h *TriggersHandler) OrgRotateWebhookSecret(c *gin.Context) {
 	orgID := c.Param("id")
-	h.rotateWebhookSecret(c, types.WorkflowOwnerOrg, orgID)
+	h.rotateWebhookSecret(c, types.WorkflowOwnerOrg, orgID, c.Param("triggerId"))
 }
 
-func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID string) {
-	triggerID := c.Param("id")
-	if triggerID == "" {
-		triggerID = c.Param("triggerId")
-	}
+func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID, triggerID string) {
 
 	trigger, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 	if err != nil {

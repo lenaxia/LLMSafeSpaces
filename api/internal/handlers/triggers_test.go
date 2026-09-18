@@ -1364,3 +1364,57 @@ func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
 	require.NotNil(t, row.WorkflowID)
 	assert.Equal(t, "wf-repair", *row.WorkflowID)
 }
+
+// --- #1449: org-scope trigger routes must resolve the TRIGGER id ---
+
+// The production route shape /api/v1/orgs/:id/triggers/:triggerId shadowed
+// the delegated helpers' c.Param("id") read with the ORG id — every org
+// trigger GET/PUT/DELETE/fires/rotate 404'd for real triggers. The helpers
+// now take the resource id as a parameter; the wrappers bind the segment
+// their route actually carries.
+func TestOrgTriggerRoutes_ResolveTriggerID(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+	h := NewOrgTriggersHandler(store, quota, &mockEncryptor{})
+	org := r.Group("/api/v1/orgs/:id/triggers")
+	org.GET("/:triggerId", h.OrgGet)
+	org.PUT("/:triggerId", h.OrgUpdate)
+	org.DELETE("/:triggerId", h.OrgDelete)
+	org.GET("/:triggerId/fires", h.OrgListFires)
+
+	store.triggers["trig-org"] = &wf.TriggerRow{
+		ID: "trig-org", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+
+	// GET: the trigger — not a 404 from looking up the ORG id as the trigger.
+	w := doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-7/triggers/trig-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "org-trigger")
+
+	// PUT: renames the trigger (would 404 under the shadowing).
+	newName := "org-trigger-2"
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/orgs/org-7/triggers/trig-org", map[string]any{"name": newName})
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, newName, store.triggers["trig-org"].Name)
+
+	// Fires: lists (empty is fine — the ROUTE must not 404).
+	w = doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-7/triggers/trig-org/fires", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+
+	// DELETE: removes the trigger.
+	w = doTriggerRequest(t, r, "DELETE", "/api/v1/orgs/org-7/triggers/trig-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.NotContains(t, store.triggers, "trig-org")
+
+	// Cross-org scoping still fails closed: another org's id 404s.
+	store.triggers["trig-org2"] = &wf.TriggerRow{
+		ID: "trig-org2", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "scoped", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+	w = doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-OTHER/triggers/trig-org2", nil)
+	assert.Equal(t, 404, w.Code, "owner-scoped lookup must still fail closed")
+}
