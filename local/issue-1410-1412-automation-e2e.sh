@@ -164,6 +164,40 @@ else
     note_fail "R4c: consecutiveFailures not incremented: '${r4_cf}'"
 fi
 
+# R4d — the DELETE route (#1440): deleting an EXISTING target workflow
+# SET NULLs the trigger's workflow_id (migration 000020 FK), so the
+# scheduler sees a targetless row — which must ALSO fail loudly
+# (trigger_has_no_target) and auto-disable, not tick silently.
+R4D_WF=$(api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')")
+[[ "${api_status}" == "201" ]] || die "R4d setup: workflow create failed: ${api_status} ${R4D_WF}"
+R4D_WF_ID=$(printf '%s' "${R4D_WF}" | jq -r '.id')
+created_workflows+=("${R4D_WF_ID}")
+R4D_BODY=$(jq -nc --arg w "${R4D_WF_ID}"   '{name:"e2e-r4d-ghost",sourceType:"cron",sourceConfig:{expr:"* * * * *",tz:"UTC"},workflowId:$w,autoDisableAfter:2}')
+R4D_RESP=$(api POST /api/v1/me/triggers "${R4D_BODY}")
+[[ "${api_status}" == "201" ]] || die "R4d setup: trigger create failed: ${api_status} ${R4D_RESP}"
+R4D_ID=$(printf '%s' "${R4D_RESP}" | jq -r '.id')
+created_triggers+=("${R4D_ID}")
+api DELETE "/api/v1/me/workflows/${R4D_WF_ID}" >/dev/null   # FK SET NULL -> targetless
+r4d_status=""
+for ((i = 0; i < R4_WAIT_S; i += 10)); do
+    r4d_status=$(trigger_field "${R4D_ID}" enabled)
+    [[ "${r4d_status}" == "false" ]] && break
+    sleep 10
+done
+if [[ "${r4d_status}" == "false" ]]; then
+    ok "R4d: targetless trigger auto-disabled after workflow delete"
+else
+    note_fail "R4d: targetless trigger still enabled — silent zombie regression (#1440)"
+fi
+r4d_result=$(api GET "/api/v1/me/triggers/${R4D_ID}/fires"     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
+if [[ "${r4d_result}" == *"trigger_has_no_target"* ]]; then
+    ok "R4d: failed fire carries the targetless payload"
+else
+    note_fail "R4d: targetless payload wrong: '${r4d_result}'"
+fi
+
 # --- R5: run input obeys inputSchema (#1413) ------------------------------
 
 R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",

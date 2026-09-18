@@ -1822,3 +1822,53 @@ func TestScheduler_LegacyTriggerByteIdentical(t *testing.T) {
 		"legacy un-opted triggers: run input must stay the envelope bytes verbatim")
 	assert.Equal(t, 0, store.triggerFail["trig-legacy"])
 }
+
+// #1440: a targetless trigger (workflow deleted → FK SET NULL, or a
+// routine missing workspace_id) must record a FAILED fire, count
+// toward auto-disable, and never tick silently.
+func TestScheduler_TargetlessTriggerFailsLoudly(t *testing.T) {
+	store := newMockSchedulerStore()
+	// Post-FK shape: workflow_id NULL (deleted target), no workspace_id.
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-ghost", OwnerType: "user", OwnerID: "u1",
+		Name: "ghost", Enabled: true, SourceType: "cron",
+		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 5,
+	}}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if len(store.fires) != 1 || store.fires[0].Status != "failed" {
+		t.Fatalf("targetless trigger must record exactly one FAILED fire, got %+v", store.fires)
+	}
+	if store.triggerFail["trig-ghost"] != 1 {
+		t.Fatalf("failure counted, got %v", store.triggerFail)
+	}
+	if store.runs != nil {
+		t.Fatalf("no run may be created")
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(store.fires[0].ActionResult, &payload); err != nil {
+		t.Fatalf("action result payload: %v", err)
+	}
+	if payload["reason"] != "trigger_has_no_target" {
+		t.Fatalf("payload names the cause, got %v", payload)
+	}
+}
+
+// At the threshold the targetless fire disarms the zombie.
+func TestScheduler_TargetlessTriggerAutoDisables(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-ghost2", OwnerType: "user", OwnerID: "u1",
+		Name: "ghost2", Enabled: true, SourceType: "cron",
+		WorkflowID: nil, WorkspaceID: nil, AutoDisableAfter: 1,
+	}}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if !store.disabled["trig-ghost2"] {
+		t.Fatalf("targetless zombie must auto-disable at the threshold")
+	}
+}
