@@ -289,9 +289,9 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 	// read-back (§4.2).
 	for i := range desired {
 		dp := &desired[i]
-		oldEnv, had := existing[dp.pd.Slug]
+		old, had := existing[dp.pd.Slug]
 		wantModels, _ := json.Marshal(dp.models)
-		if !had || forceReseal || relayEnvelopeKeyID(oldEnv) != keyID {
+		if !had || forceReseal || relayEnvelopeKeyID(old.envelope) != keyID || !bytes.Equal(old.models, wantModels) {
 			envelope, serr := sealer.Seal(ctx, []byte(dp.pd.APIKey))
 			if serr != nil {
 				r.relayMarkStale(ws, v1.ReasonStageFailed, fmt.Sprintf("sealing provider %q failed: %v", dp.pd.Slug, serr))
@@ -303,10 +303,10 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 			// §4.9 lifecycle: the re-seal pass unregisters the superseded
 			// envelope's rule group in the SAME pass — nothing else can
 			// know the replacement relationship.
-			if had && oldEnv != envelope {
-				cfg.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(oldEnv))
+			if had && old.envelope != envelope {
+				cfg.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
 			}
-			existing[dp.pd.Slug] = envelope
+			existing[dp.pd.Slug] = relayEnvelopeInfo{envelope: envelope, models: wantModels}
 		}
 	}
 
@@ -315,14 +315,14 @@ func (r *WorkspaceReconciler) reconcileRelayStaging(ctx context.Context, ws *v1.
 		return err
 	}
 
-	revision := relayStagedRevision(handoff)
+	revision := relayStagedRevision(handoff, existing)
 	if ws.Annotations == nil {
 		ws.Annotations = map[string]string{}
 	}
 	ws.Annotations[relaySealedGenerationAnnotation] = strconv.FormatInt(pub.Generation, 10)
 	ws.Annotations[relayStagedRevisionAnnotation] = revision
 
-	if err := r.upsertRelayHandoff(ctx, ws, handoff); err != nil {
+	if err := r.upsertRelayHandoff(ctx, ws, handoff, existing); err != nil {
 		return err
 	}
 
@@ -374,13 +374,13 @@ func relayDesiredSet(providers []secrets.LLMProviderData) (desired []relayDesire
 // envelope whose provider is no longer bound (unbind/credential delete) is
 // deleted, its redaction group unregistered in the same pass, and a
 // one-pass CredentialStale(revocation-class) is raised (worklog D7).
-func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]string) []string {
+func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]relayEnvelopeInfo) []string {
 	want := make(map[string]bool, len(desired))
 	for i := range desired {
 		want[desired[i].pd.Slug] = true
 	}
 	var revoked []string
-	for slug, oldEnv := range existing {
+	for slug, old := range existing {
 		if want[slug] {
 			continue
 		}
@@ -389,7 +389,7 @@ func (r *WorkspaceReconciler) relayRevokeUndesired(ctx context.Context, ws *v1.W
 			log.FromContext(ctx).Error(err, "relay staging: revocation delete failed", "secret", sec.Name)
 			continue
 		}
-		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(oldEnv))
+		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
 		delete(existing, slug)
 		revoked = append(revoked, slug)
 		if r.Recorder != nil {
@@ -539,7 +539,7 @@ func relayRouterRejection(degraded string) string {
 // `spawned_rev`-class TERMINAL signal, not the batch-apply anchor, so the
 // #852 deferral window (fresh token applied, restart waiting behind busy
 // sessions) reads as pending-delivery and never escalates.
-func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]string) bool {
+func (r *WorkspaceReconciler) relayLineageIntact(ws *v1.Workspace, desired []relayDesiredProvider, existing map[string]relayEnvelopeInfo) bool {
 	for i := range desired {
 		if _, ok := existing[desired[i].pd.Slug]; !ok {
 			return false
@@ -648,6 +648,9 @@ func (r *WorkspaceReconciler) upsertRelayEnvelope(ctx context.Context, ws *v1.Wo
 	sec := &corev1.Secret{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: r.RelayStaging.Namespace}, sec)
 	if err == nil {
+		if string(sec.Data[secrets.RelayEnvDataKey]) == envelope && bytes.Equal(sec.Data[secrets.RelayEnvModelsKey], modelsJSON) {
+			return nil // steady state: the write-ack from a previous pass still stands
+		}
 		sec.Data = map[string][]byte{
 			secrets.RelayEnvDataKey:   []byte(envelope),
 			secrets.RelayEnvModelsKey: modelsJSON,
@@ -676,8 +679,8 @@ func (r *WorkspaceReconciler) upsertRelayEnvelope(ctx context.Context, ws *v1.Wo
 	return r.Create(ctx, sec)
 }
 
-func (r *WorkspaceReconciler) upsertRelayHandoff(ctx context.Context, ws *v1.Workspace, handoff *relayHandoff) error {
-	handoff.Revision = relayStagedRevision(handoff)
+func (r *WorkspaceReconciler) upsertRelayHandoff(ctx context.Context, ws *v1.Workspace, handoff *relayHandoff, envelopes map[string]relayEnvelopeInfo) error {
+	handoff.Revision = relayStagedRevision(handoff, envelopes)
 	data, err := json.Marshal(handoff)
 	if err != nil {
 		return err
@@ -686,6 +689,9 @@ func (r *WorkspaceReconciler) upsertRelayHandoff(ctx context.Context, ws *v1.Wor
 	sec := &corev1.Secret{}
 	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ws.Namespace}, sec)
 	if getErr == nil {
+		if bytes.Equal(sec.Data[relayHandoffDataKey], data) {
+			return nil // steady state: nothing staged changed
+		}
 		sec.Data = map[string][]byte{relayHandoffDataKey: data}
 		return r.Update(ctx, sec)
 	}
@@ -717,8 +723,8 @@ func (r *WorkspaceReconciler) relayReadHandoff(ctx context.Context, ws *v1.Works
 // relayExistingEnvelopes lists the workspace's envelope Secrets in llm-relay
 // (label-selected). The envelope strings are pass INPUTS for diffing — never
 // a post-write confirmation (that is the write-ack's job).
-func (r *WorkspaceReconciler) relayExistingEnvelopes(ctx context.Context, workspaceName string) map[string]string {
-	out := map[string]string{}
+func (r *WorkspaceReconciler) relayExistingEnvelopes(ctx context.Context, workspaceName string) map[string]relayEnvelopeInfo {
+	out := map[string]relayEnvelopeInfo{}
 	list := &corev1.SecretList{}
 	// One-page is fine at per-workspace cardinality (a handful of providers).
 	if err := r.List(ctx, list, client.InNamespace(r.RelayStaging.Namespace), client.MatchingLabels{secrets.RelayEnvWorkspaceLabel: workspaceName}); err != nil {
@@ -730,9 +736,19 @@ func (r *WorkspaceReconciler) relayExistingEnvelopes(ctx context.Context, worksp
 		if slug == "" {
 			continue
 		}
-		out[slug] = string(list.Items[i].Data[secrets.RelayEnvDataKey])
+		out[slug] = relayEnvelopeInfo{
+			envelope: string(list.Items[i].Data[secrets.RelayEnvDataKey]),
+			models:   append([]byte(nil), list.Items[i].Data[secrets.RelayEnvModelsKey]...),
+		}
 	}
 	return out
+}
+
+// relayEnvelopeInfo is a pass INPUT: the staged envelope plus its model
+// catalog bytes, for diffing. Never a post-write confirmation.
+type relayEnvelopeInfo struct {
+	envelope string
+	models   []byte
 }
 
 // relayDeleteEnvelopes removes every envelope Secret for a workspace
@@ -743,13 +759,13 @@ func (r *WorkspaceReconciler) relayDeleteEnvelopes(ctx context.Context, ws *v1.W
 		return
 	}
 	existing := r.relayExistingEnvelopes(ctx, ws.Name)
-	for slug, env := range existing {
+	for slug, old := range existing {
 		sec := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: envelopeSecretName(ws.Name, slug), Namespace: r.RelayStaging.Namespace}}
 		if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
 			log.FromContext(ctx).Error(err, "relay staging: termination envelope delete failed", "secret", sec.Name)
 			continue
 		}
-		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(env))
+		r.RelayStaging.redaction.UnregisterStagedKey(secrets.StagedKeyRedactionID(old.envelope))
 	}
 }
 
@@ -839,13 +855,18 @@ func relayConditionsChanged(before relayStateSnapshot, ws *v1.Workspace) bool {
 // keyID-bearing token identity via entry fields). It changes exactly when
 // any envelope or token changes, so US-72.4 can compare it against
 // spawned_rev and CredentialsStaged carries it as the revision.
-func relayStagedRevision(h *relayHandoff) string {
+func relayStagedRevision(h *relayHandoff, envelopes map[string]relayEnvelopeInfo) string {
 	if h == nil {
 		return ""
 	}
 	parts := make([]string, 0, len(h.Providers))
 	for _, p := range h.Providers {
-		parts = append(parts, fmt.Sprintf("%s|%s|%s|%s", p.ProviderSlug, p.KeyID, p.ExpiresAt, p.BaseURL))
+		envDigest := ""
+		if old, ok := envelopes[p.ProviderSlug]; ok {
+			sum := sha256.Sum256([]byte(old.envelope))
+			envDigest = hex.EncodeToString(sum[:6])
+		}
+		parts = append(parts, fmt.Sprintf("%s|%s|%s|%s|%s", p.ProviderSlug, p.KeyID, p.ExpiresAt, p.BaseURL, envDigest))
 	}
 	sort.Strings(parts)
 	sum := sha256.Sum256([]byte(fmt.Sprintf("%s;%s", h.RouterURL, joinWith(parts, ";"))))
@@ -863,10 +884,10 @@ func relayEnvelopeKeyID(envelope string) string {
 // relayEnvelopeGeneration derives the highest sealed generation from the
 // live envelopes' keyIDs (hpke-g<N>) — the fallback when the annotation was
 // wiped.
-func relayEnvelopeGeneration(existing map[string]string) int64 {
+func relayEnvelopeGeneration(existing map[string]relayEnvelopeInfo) int64 {
 	var max int64
-	for _, env := range existing {
-		id := relayEnvelopeKeyID(env)
+	for _, old := range existing {
+		id := relayEnvelopeKeyID(old.envelope)
 		var gen int64
 		if _, err := fmt.Sscanf(id, "hpke-g%d", &gen); err == nil && gen > max {
 			max = gen

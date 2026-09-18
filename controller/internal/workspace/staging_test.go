@@ -580,3 +580,58 @@ func min(a, b int) int {
 }
 
 func hasPrefix(s, p string) bool { return len(s) >= len(p) && s[:len(p)] == p }
+
+// TestStaging_SteadyStateZeroWrites: a no-change pass performs NO
+// envelope/handoff writes and NO re-mints (the second pass's handoff bytes
+// are identical — the revision did not move, no apiserver churn).
+func TestStaging_SteadyStateZeroWrites(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-steady")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	base := time.Now()
+	r.RelayStaging.Now = func() time.Time { return base }
+
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	ho1 := append([]byte(nil), getSecret(t, r, "default", handoffSecretName("ws-steady")).Data[relayHandoffDataKey]...)
+	env1 := append([]byte(nil), getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-steady", "openai")).Data[secrets.RelayEnvDataKey]...)
+	rv1 := ws.ResourceVersion
+
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	ho2 := getSecret(t, r, "default", handoffSecretName("ws-steady")).Data[relayHandoffDataKey]
+	env2 := getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-steady", "openai")).Data[secrets.RelayEnvDataKey]
+	assert.Equal(t, string(ho1), string(ho2), "handoff must not be rewritten at steady state")
+	assert.Equal(t, string(env1), string(env2), "envelope must not be re-sealed at steady state")
+	router.mu.Lock()
+	assert.Equal(t, 1, router.mints, "no re-mint at steady state")
+	router.mu.Unlock()
+	assert.Equal(t, rv1, ws.ResourceVersion, "no workspace metadata/status write at steady state")
+}
+
+// TestStaging_ModelsChangeReseals: an allowlist edit (models list) on an
+// unchanged keypair re-seals the envelope with the new catalog — the router
+// serves GET /models from the envelope Secret, so a stale catalog would
+// serve the wrong model list forever.
+func TestStaging_ModelsChangeReseals(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-models")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	router := &fakeRouterClient{}
+	r := stagingReconciler(t, src, router, nil, pubSec, ws)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	before := string(getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-models", "openai")).Data[secrets.RelayEnvModelsKey])
+	assert.Contains(t, before, "gpt-4o")
+
+	src.mu.Lock()
+	src.providers = []secrets.LLMProviderData{{
+		Kind: "openai", Slug: "openai", APIKey: "k1",
+		Models: []secrets.LLMModelConfig{{ID: "gpt-5"}},
+	}}
+	src.mu.Unlock()
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+	after := string(getSecret(t, r, relayTestNamespace, envelopeSecretName("ws-models", "openai")).Data[secrets.RelayEnvModelsKey])
+	assert.Contains(t, after, "gpt-5")
+	assert.NotContains(t, after, "gpt-4o")
+}
