@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -306,6 +307,77 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 	writeWorkflowSuccess(w, map[string]any{}, "otherwise")
 }
 
+// renderTemplateRefs replaces {{.path}} references in an agent prompt
+// with values from the node input, in ONE left-to-right pass —
+// replacements are emitted straight to the output builder and are
+// never re-scanned, so a VALUE shaped like a ref (or like a sentinel)
+// cannot trigger further expansion: an externally-supplied webhook
+// payload field cannot pull other fields into the prompt.
+//
+// At each match: an exact top-level key hit wins first (any key
+// charset — KEY matching is the pre-#1417 behavior; value rendering
+// improved: composites as JSON, nil as null; a flat key literally
+// named "body.topic" beats path walking), then dotted paths walk
+// nested maps — matching the condition nodes' expression depth
+// (webhook runs put the payload under body; hyphens allowed).
+// Scalars render bare; composites as compact JSON; unresolvable refs
+// stay literal.
+func renderTemplateRefs(prompt string, input map[string]any) string {
+	var b strings.Builder
+	last := 0
+	for _, loc := range templateRefPattern.FindAllStringIndex(prompt, -1) {
+		b.WriteString(prompt[last:loc[0]])
+		ref := prompt[loc[0]:loc[1]]
+		path := strings.TrimSuffix(strings.TrimPrefix(ref, "{{."), "}}")
+		if v, ok := input[path]; ok {
+			b.WriteString(renderTemplateValue(v))
+		} else if v, ok := walkTemplatePath(input, path); ok {
+			b.WriteString(renderTemplateValue(v))
+		} else {
+			b.WriteString(ref)
+		}
+		last = loc[1]
+	}
+	b.WriteString(prompt[last:])
+	return b.String()
+}
+
+// walkTemplatePath resolves a dotted path through nested maps.
+func walkTemplatePath(input map[string]any, path string) (any, bool) {
+	var cur any = input
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+func renderTemplateValue(v any) string {
+	if str, ok := v.(string); ok {
+		return str
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
+}
+
+// templateRefPattern matches a ref whose body contains NO braces and
+// no newlines: an unclosed {{.x must never swallow a following valid
+// ref — neither across a newline (no (?s)) nor on the same line (a
+// brace-free body stops the lazy match at the first }} where the valid
+// ref's own {{ begins). Multi-line/brace-containing keys are not
+// addressable anyway. KEY matching is by map lookup — the matched
+// body is not constrained to any whitelist vocabulary.
+var templateRefPattern = regexp.MustCompile(`\{\{\.([^{}\n]+?)\}\}`)
+
 func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, req *workflowExecuteRequest) {
 	var data wf.AgentNodeData
 	if err := json.Unmarshal(req.Spec, &data); err != nil {
@@ -317,9 +389,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	if len(req.Input) > 0 {
 		var input map[string]any
 		_ = json.Unmarshal(req.Input, &input)
-		for k, v := range input {
-			prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", fmt.Sprintf("%v", v))
-		}
+		prompt = renderTemplateRefs(prompt, input)
 	}
 
 	sessionMode := data.Session
@@ -532,8 +602,7 @@ func resolveSecretRef(s string, secrets map[string]string) string {
 
 func createOpencodeSession(ctx context.Context, password string) string {
 	req, _ := http.NewRequestWithContext(ctx, "POST",
-		fmt.Sprintf("%s/session", getAgentAddr()),
-		strings.NewReader("{}"))
+		getAgentAddr()+"/session", strings.NewReader("{}"))
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{}).Do(req)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -327,4 +328,198 @@ func TestWorkflowExecute_ScriptProcessFailureKeepsExitCode(t *testing.T) {
 	assert.Equal(t, "script_failed", resp.ErrorCode)
 	assert.Contains(t, resp.Detail, "exit 1", "real process exits keep the exit N: stderr shape")
 	assert.Contains(t, resp.Detail, "boom", "handler traceback surfaces in stderr")
+}
+
+// #1417: dotted-path template refs walk nested maps — webhook-driven
+// runs hand the envelope whose payload lives under body.
+func TestRenderTemplateRefs_NestedPaths(t *testing.T) {
+	input := map[string]any{
+		"body": map[string]any{
+			"topic":   "ship-it",
+			"urgency": "high",
+			"meta":    map[string]any{"n": 1.0},
+		},
+		"received_at": "2026-09-17T00:00:00Z",
+	}
+	out := renderTemplateRefs("{{.body.topic}} / {{.body.urgency}} / {{.received_at}}", input)
+	if out != "ship-it / high / 2026-09-17T00:00:00Z" {
+		t.Fatalf("nested scalars must render: %q", out)
+	}
+	// Composites render as compact JSON.
+	if got := renderTemplateRefs("{{.body.meta}}", input); got != `{"n":1}` {
+		t.Fatalf("composite renders as JSON: %q", got)
+	}
+	// Unresolvable refs stay literal — never empty, never dropped.
+	if got := renderTemplateRefs("keep {{.body.missing}} and {{.not.a.map}}", input); got != "keep {{.body.missing}} and {{.not.a.map}}" {
+		t.Fatalf("unresolvable refs stay literal: %q", got)
+	}
+	// Top-level behavior unchanged (back-compat with schema-shaped runs).
+	if got := renderTemplateRefs("{{.topic}}", map[string]any{"topic": "x"}); got != "x" {
+		t.Fatalf("top-level refs still render: %q", got)
+	}
+}
+
+// #1417: hyphenated path segments (e.g. {{.headers.content-type}}) resolve.
+func TestRenderTemplateRefs_HyphenatedKeys(t *testing.T) {
+	input := map[string]any{"headers": map[string]any{"content-type": "application/json"}}
+	if got := renderTemplateRefs("type={{.headers.content-type}}", input); got != "type=application/json" {
+		t.Fatalf("hyphenated keys must resolve: %q", got)
+	}
+}
+
+// #1417 handler-level integration: an agent node through the REAL
+// handler + wire against a stub harness — the RENDERED prompt must
+// carry nested-path values, proving renderTemplateRefs is wired (unit
+// tests alone can't).
+func TestWorkflowExecuteHandler_AgentNodeRendersNestedRefs(t *testing.T) {
+	promptMu := sync.Mutex{}
+	var gotPrompt string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/message"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptMu.Lock()
+			if parts, ok := body["parts"].([]any); ok && len(parts) > 0 {
+				if p, ok := parts[0].(map[string]any); ok {
+					gotPrompt, _ = p["text"].(string)
+				}
+			}
+			promptMu.Unlock()
+			_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"m1","time":{"created":1786400000000}},"parts":[{"type":"text","text":"ok"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"ses_stub1"}`))
+		}
+	}))
+	defer stub.Close()
+	orig := agentAddrAtomic.Load()
+	defer agentAddrAtomic.Store(orig)
+	agentAddrAtomic.Store(stub.URL)
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"topic={{.body.topic}} at {{.body.when}} raw={{.body}}"},"input":{"body":{"topic":"ship-it","when":"2026-09-17"},"source":{"type":"webhook"}}}`
+	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	for _, want := range []string{"topic=ship-it", "at 2026-09-17", `"topic":"ship-it"`} {
+		if !strings.Contains(gotPrompt, want) {
+			t.Fatalf("rendered prompt missing %q: %q", want, gotPrompt)
+		}
+	}
+}
+
+// #1417 unhappy leg through the REAL handler: unresolvable refs stay
+// literal in the rendered prompt (inspectable, never silently empty).
+func TestWorkflowExecuteHandler_AgentNodeUnresolvedRefsStayLiteral(t *testing.T) {
+	promptMu := sync.Mutex{}
+	var gotPrompt string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/message") {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			promptMu.Lock()
+			if parts, ok := body["parts"].([]any); ok && len(parts) > 0 {
+				if p, ok := parts[0].(map[string]any); ok {
+					gotPrompt, _ = p["text"].(string)
+				}
+			}
+			promptMu.Unlock()
+			_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"m1","time":{"created":1786400000000}},"parts":[{"type":"text","text":"ok"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_stub2"}`))
+	}))
+	defer stub.Close()
+	orig := agentAddrAtomic.Load()
+	defer agentAddrAtomic.Store(orig)
+	agentAddrAtomic.Store(stub.URL)
+
+	body := `{"nodeId":"a1","nodeType":"agent","spec":{"prompt":"keep {{.body.nope}} and {{.not.a.map}} ok={{.body.topic}}"},"input":{"body":{"topic":"x"}}}`
+	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	for _, want := range []string{"{{.body.nope}}", "{{.not.a.map}}", "ok=x"} {
+		if !strings.Contains(gotPrompt, want) {
+			t.Fatalf("rendered prompt missing %q: %q", want, gotPrompt)
+		}
+	}
+}
+
+// Back-compat: arbitrary-charset TOP-LEVEL keys still render (the
+// pre-#1417 behavior), and a flat key literally named "body.topic"
+// wins over path walking.
+func TestRenderTemplateRefs_TopLevelAnyCharsetAndFlatDotted(t *testing.T) {
+	input := map[string]any{
+		"my key":     "spaced",
+		"a/b":        "slashed",
+		"über":       "unicode",
+		"body.topic": "flat-wins",
+		"body":       map[string]any{"topic": "nested"},
+	}
+	out := renderTemplateRefs("{{.my key}} {{.a/b}} {{.über}} {{.body.topic}}", input)
+	if out != "spaced slashed unicode flat-wins" {
+		t.Fatalf("top-level any-charset + flat-dotted precedence: %q", out)
+	}
+}
+
+// Double-render pin: a VALUE shaped like a ref is never re-expanded —
+// externally-supplied payloads cannot smuggle other fields in.
+func TestRenderTemplateRefs_NoDoubleRender(t *testing.T) {
+	input := map[string]any{
+		"x": "{{.y}}",
+		"y": "PWNED",
+	}
+	if got := renderTemplateRefs("{{.x}}", input); got != "{{.y}}" {
+		t.Fatalf("value-shaped refs must stay literal after substitution, got %q", got)
+	}
+	// Nested walk too: a body value containing a ref shape stays inert.
+	input = map[string]any{"body": map[string]any{"a": "{{.body.b}}", "b": "SECRET"}}
+	if got := renderTemplateRefs("{{.body.a}}", input); got != "{{.body.b}}" {
+		t.Fatalf("walked values must not re-expand, got %q", got)
+	}
+}
+
+// Sentinel-collision variant: values containing token/control shapes
+// stay inert (single-pass builder — no restoration phase to collide).
+func TestRenderTemplateRefs_InertControlShapedValues(t *testing.T) {
+	input := map[string]any{
+		"a": "prefix",
+		"b": "real",
+		"x": "\x00\x31\x00", // shaped like a hypothetical restore token
+	}
+	if got := renderTemplateRefs("[{{.x}}] {{.a}}-{{.b}}", input); got != "[\x00\x31\x00] prefix-real" {
+		t.Fatalf("control-shaped value must pass through verbatim, got %q", got)
+	}
+}
+
+// DOTALL regression pin: an unclosed {{.x before a newline must not
+// swallow the NEXT valid ref — it renders independently.
+func TestRenderTemplateRefs_UnclosedRefDoesNotSwallow(t *testing.T) {
+	prompt := "x {{.a\nblah {{.b}} y"
+	got := renderTemplateRefs(prompt, map[string]any{"b": "RENDERED"})
+	if !strings.Contains(got, "RENDERED") {
+		t.Fatalf("the valid ref after an unclosed one must render, got %q", got)
+	}
+}
+
+// Same-line swallow pin: an unclosed ref before a valid one on the
+// SAME line must not consume it.
+func TestRenderTemplateRefs_UnclosedSameLineDoesNotSwallow(t *testing.T) {
+	got := renderTemplateRefs("{{.typo oops {{.y}}", map[string]any{"y": "RENDERED"})
+	if !strings.Contains(got, "RENDERED") {
+		t.Fatalf("same-line valid ref must render, got %q", got)
+	}
 }
