@@ -246,10 +246,14 @@ jobs:
           set -euo pipefail
           NS=${{ env.NS }}
 
-          # Get the Valkey ClusterIP.
-          VALKEY_IP=$(kubectl -n "$NS" get svc \
-            -l app=valkey \
-            -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || echo "")
+          # Get the Valkey ClusterIP. Lookup is BY NAME: the valkey
+          # Service in local/postgres-redis.yaml carries
+          # no metadata labels (app: valkey lives on the Deployment
+          # and in the Service's selector), so label-based Service
+          # discovery matches nothing and F8 silently skipped on every
+          # nightly in history (issue #1456).
+          VALKEY_IP=$(kubectl -n "$NS" get svc valkey \
+            -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
           if [[ -z "$VALKEY_IP" ]]; then
             echo "SKIP: valkey Service not found; skipping F8 connectivity check"
             exit 0
