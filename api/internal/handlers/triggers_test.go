@@ -1185,3 +1185,20 @@ func TestTriggerFires_ExposeRoutineResult(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "deadline exceeded", "the routine failure cause must be visible in the fires list")
 	assert.Contains(t, w.Body.String(), `"result":`, "the result field is marshaled")
 }
+
+// The fires endpoint is owner-scoped like every sibling: another
+// user's trigger UUID (which travels in shared webhook URLs) must 404.
+func TestTriggerFires_OwnershipGuard(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-own"] = &wf.TriggerRow{ID: "trig-own", OwnerType: "user", OwnerID: "someone-else", Name: "x", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-x", TriggerID: "trig-own", SourceType: "webhook",
+		ActionType: "routine", Status: "failed",
+		Result: json.RawMessage(`{"error":"secret cause"}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-own/fires", nil)
+	require.Equal(t, 404, w.Code, "cross-tenant fires read must 404")
+	assert.NotContains(t, w.Body.String(), "secret cause")
+}

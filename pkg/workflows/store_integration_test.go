@@ -1227,3 +1227,33 @@ func (s *StoreIntegrationSuite) TestWorkflowDeleteNullsTriggerTarget() {
 	require.NotNil(s.T(), got, "trigger survives the workflow delete (SET NULL, not CASCADE)")
 	assert.Nil(s.T(), got.WorkflowID, "workflow_id is SET NULL — the targetless row the scheduler must fail loudly on")
 }
+
+// #1441/#1446: the result column round-trips — a failure cause written
+// by UpdateTriggerFireResult is selected back non-NULL by ListTriggerFires.
+func (s *StoreIntegrationSuite) TestTriggerFireResultRoundTrip() {
+	ctx := context.Background()
+	now := time.Now()
+
+	trigID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: trigID, OwnerType: "user", OwnerID: "u1",
+		Name: "result-roundtrip", Enabled: true, SourceType: "cron",
+		SourceConfig:     json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+		AutoDisableAfter: 10, NextFireAt: &now,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	fireID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTriggerFire(ctx, &TriggerFireRow{
+		ID: fireID, TriggerID: trigID, SourceType: "cron",
+		ActionType: "routine", Status: "fired", FiredAt: now,
+	}))
+	require.NoError(s.T(), s.store.UpdateTriggerFireResult(ctx, fireID,
+		json.RawMessage(`{"error":"agent call failed: deadline exceeded"}`), "failed"))
+
+	fires, err := s.store.ListTriggerFires(ctx, trigID, 10, 0)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), fires, 1)
+	assert.Equal(s.T(), "failed", fires[0].Status)
+	require.NotNil(s.T(), fires[0].Result, "result selected non-NULL")
+	assert.Contains(s.T(), string(fires[0].Result), "deadline exceeded")
+}

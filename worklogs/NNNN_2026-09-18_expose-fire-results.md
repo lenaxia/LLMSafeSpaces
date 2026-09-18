@@ -12,7 +12,9 @@ Make every fire row fully observable so the intermittent cause names itself on t
 ## Work Completed
 - TriggerFireRow.Result + the two fire SELECT sites + scan carry the result column.
 - TriggerFireResponse.Result (omitempty) marshaled in triggerFireRowToResponse.
-- Handler test: a failed routine fire's cause is visible in the fires list.
+- Handler tests: a failed routine fire's cause is visible in the fires list; the endpoint is owner-scoped (cross-tenant UUID 404s — the reviewer-caught pre-existing hole this PR would have widened; guarded like every sibling).
+- OpenAPI TriggerFire.result added (SDK consumers see the field).
+- Store integration round-trip: UpdateTriggerFireResult's cause selects back non-NULL via ListTriggerFires.
 
 ## Key Decisions
 - Result stays distinct from ActionResult (pre-execution action payload vs execution outcome) — both now surface.
@@ -21,7 +23,7 @@ Make every fire row fully observable so the intermittent cause names itself on t
 None.
 
 ## Tests Run
-TestTriggerFires_ExposeRoutineResult; full handlers + workflows suites green.
+TestTriggerFires_ExposeRoutineResult + _OwnershipGuard; TestTriggerFireResultRoundTrip (Postgres suite); full handlers + workflows suites green. Nightly fires-result row lands after #1444 merges (same script, conflict-avoided).
 
 ## Next Steps
 Ship → prod → rerun the memory bisect; the failed fire's result field will carry the engine's errMsg verbatim → root-cause the intermittent failure.

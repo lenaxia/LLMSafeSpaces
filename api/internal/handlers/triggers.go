@@ -725,6 +725,21 @@ func (h *TriggersHandler) listFires(c *gin.Context, ownerType, ownerID string) {
 		triggerID = c.Param("triggerId")
 	}
 
+	// Owner-scoped guard, mirroring every sibling (get/update/del/
+	// rotate): without it, any authenticated user could read any
+	// trigger's fires by UUID — and trigger UUIDs travel in
+	// externally-shared webhook URLs. Fire rows carry captured agent
+	// outputs (result) and input envelopes; that exposure must be
+	// owner-bound (404 on mismatch, same as the siblings).
+	if _, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID); err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch trigger"})
+		return
+	}
+
 	limit := 50
 	offset := 0
 
