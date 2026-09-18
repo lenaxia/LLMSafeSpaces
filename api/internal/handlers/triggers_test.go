@@ -1202,3 +1202,34 @@ func TestTriggerFires_OwnershipGuard(t *testing.T) {
 	require.Equal(t, 404, w.Code, "cross-tenant fires read must 404")
 	assert.NotContains(t, w.Body.String(), "secret cause")
 }
+
+// Edge: NULL result (pre-execution or errors_only fires) omits the
+// field entirely — no "result":null noise, no empty object.
+func TestTriggerFires_NullResultOmitted(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-n"] = &wf.TriggerRow{ID: "trig-n", OwnerType: "user", OwnerID: "test-user", Name: "n", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-n", TriggerID: "trig-n", SourceType: "webhook",
+		ActionType: "routine", Status: "fired",
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-n/fires", nil)
+	require.Equal(t, 200, w.Code)
+	assert.NotContains(t, w.Body.String(), `"result"`, "NULL result omits the key (omitempty)")
+}
+
+// Edge: captured SUCCESS output surfaces the same way as a failure
+// cause (captureMode full stores the agent output in the same column).
+func TestTriggerFires_CapturedSuccessVisible(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-c"] = &wf.TriggerRow{ID: "trig-c", OwnerType: "user", OwnerID: "test-user", Name: "c", Enabled: true}
+	store.fires = []*wf.TriggerFireRow{{
+		ID: "fire-c", TriggerID: "trig-c", SourceType: "webhook",
+		ActionType: "routine", Status: "delivered",
+		Result: json.RawMessage(`{"response":"NIGHTLY-OK","session_id":""}`),
+	}}
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-c/fires", nil)
+	require.Equal(t, 200, w.Code)
+	assert.Contains(t, w.Body.String(), "NIGHTLY-OK", "captured success output is readable")
+}

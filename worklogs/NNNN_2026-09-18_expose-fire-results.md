@@ -23,7 +23,10 @@ Make every fire row fully observable so the intermittent cause names itself on t
 None.
 
 ## Tests Run
-TestTriggerFires_ExposeRoutineResult + _OwnershipGuard; TestTriggerFireResultRoundTrip (Postgres suite); full handlers + workflows suites green. Nightly fires-result row lands after #1444 merges (same script, conflict-avoided).
+- Handler units: ExposeRoutineResult, OwnershipGuard, NullResultOmitted (omitempty edge), CapturedSuccessVisible (full-capture edge).
+- Store integration: TestTriggerFireResultRoundTrip (cause written → selected non-NULL).
+- E2E (issue-1417 script, nightly-registered, conflict-free vs open #1444): T3 owner fires GET answers with the list shape; T4 foreign trigger UUID 404s (the ownership guard).
+- Full handlers + workflows suites green.
 
 ## Next Steps
 Ship → prod → rerun the memory bisect; the failed fire's result field will carry the engine's errMsg verbatim → root-cause the intermittent failure.
