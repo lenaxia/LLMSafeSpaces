@@ -92,4 +92,4 @@ None.
 - `api/internal/handlers/pod_automation_test.go` — delegation-route pin (`TestPodAutomation_TriggerUpdateMemoryCaptureConstraint`)
 - `local/issue-1410-1412-automation-e2e.sh` — R9 rows (create constraint + violating/happy/reverse flips); `R5_WS` defined (fixes set -u abort in R8)
 - `local/issue_1410_automation_e2e_script_test.go` — R9 pin needles + R5_WS pin
-- `worklogs/NNNN_2026-09-18_update-path-memory-constraint.md` — this worklog
+- `worklogs/0996_2026-09-18_update-path-memory-constraint.md` — this worklog
