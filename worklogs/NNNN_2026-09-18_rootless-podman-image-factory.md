@@ -82,14 +82,23 @@ Deliver: (1) the image-factory catalog set that makes rootless podman work insid
 | S5.6 (pre-existing) | FAIL — `sidecar "gvisor_sentry" not usable ... --sidecar-usage-policy STRICT` | **Independent breakage**: gVisor's 2026-09 release shape (verified: release-20260914.0 bundle now ships `gvisor-bin/` with `gvisor_sentry`) requires the sidecar at `/usr/local/bin/gvisor-bin/`; `local/lib/gvisor.sh` installed only runsc + shim → NO gVisor workspace could boot (S5.7g consequential). Fixed: install the whole `gvisor-bin/` dir |
 | S5.7g/h/i | FAIL (consequence of S5.6) | re-run after the gvisor.sh fix |
 
-Run 2 dispatched after both fixes.
+## Run 2 results (35310867239) — the decisive data
+
+S5.6 **PASS** (the `gvisor-bin/` sidecar fix works — gVisor workspaces boot again). S5.7a/b PASS, **S5.7g PASS** (podman-set image boots Active under runsc). The blockers are now precisely identified:
+
+- **runc (S5.7c→f): `cannot clone: Operation not permitted` → `Error: cannot re-exec process`.** Rootless podman's re-exec `clone`s with namespace flags beyond `CLONE_NEWUSER`; containerd's `RuntimeDefault` seccomp allows `clone` only masked to exactly `CLONE_NEWUSER`, so the syscall returns EPERM. The session's load-bearing assumption ("RuntimeDefault permits the rootless userns bootstrap — no pod spec change needed") is **falsified**. Known upstream pattern (containers/podman#9958 class): running rootless podman inside an unprivileged container requires a seccomp profile that permits `clone`/`unshare` with arbitrary namespace flags. That is a **platform change** (pod seccomp `Localhost` profile + node distribution + admin-gated selection), not an image-factory change.
+- **gVisor (S5.7h/i): clone + setuid `newuidmap` both WORK under runsc** (runsc applies the OCI seccomp differently — no EPERM at clone); the failure is `newuidmap ... write to uid_map failed: Operation not permitted` — runsc's user-namespace support rejects the multi-line subordinate mapping. Follow-up experiment: single-identity mapping mode (no `/etc/subuid` subranges; `--userns=keep-id`) — weaker nested-root semantics but may run containers under gVisor.
+
+Consequences (S5.7d/e/f and S5.7i are all downstream of the two blockers — no pull ever succeeded, so the persistence check had nothing to persist).
+
+**Tier verdict from the spike:** the image-factory set alone is NOT sufficient on runc (seccomp) and is partially blocked under gVisor (uid_map). Nesting remains feasible but requires the platform-side seccomp decision; the catalog rows are correct as staged and inert until that lands.
+
 
 ## Next Steps
 
-- Observe the dispatched S5.7 run; record pass/fail per sub-leg.
-- Write the README-LLM "Nested Containers" section (TOC entry + version-history row 1.30) with the tier matrix decided by the results: runsc ✅ → nesting offered at all tiers; runsc ❌ → runc-only wording and a "not for security-sensitive tenants" caveat.
-- Decide promotion of S5.7 into the standing weekly suite.
-- Open the PR from `spike/rootless-podman-s5.7` once results are in.
+- **Decision needed (owner)**: ship a workspace seccomp profile that permits ns-flag `clone`/`unshare` — options: (a) chart-level pod seccomp override for all workspace pods (operator trust decision), or (b) an Epic-51-style admin-gated `spec.seccompProfile` CRD field + Localhost profile distribution (DaemonSet/ConfigMap) — (b) matches the runtimeClass precedent.
+- gVisor follow-up experiment: identity-mapping mode (drop subuid ranges, `--userns=keep-id`) under runsc.
+- Write the README-LLM "Nested Containers" section (TOC entry + version-history row 1.30) with the tier matrix decided by the above.
 
 ## Files Modified
 
