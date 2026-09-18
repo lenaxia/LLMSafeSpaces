@@ -62,11 +62,13 @@ func TestEpic71S1Script_RowPins(t *testing.T) {
 	if strings.Contains(src, "S1-SLOW-TURN (") {
 		t.Fatalf("no request-body slow-mode parsing — the provider request shape is not ours to depend on")
 	}
-	// r4: the row must carry its own discriminator — the IN-FLIGHT
-	// assertion (the send's completion log still absent when the abort
-	// returns). Without it a no-op abort against a crashed turn passes.
-	if !strings.Contains(src, "S1B_SEND_LOG") || !strings.Contains(src, "S1B_INFLIGHT") {
-		t.Fatalf("s1 script must assert the send is still in flight when the abort returns")
+	// r4/r12: the row's discriminator is the PRE-abort engagement probe
+	// (the turn provably in flight BEFORE the abort); the post-abort
+	// send state is CORROBORATION ONLY (r11's run proved the old
+	// post-abort re-read races the preemption — the aborted send
+	// completing fast is the SUCCESS signature).
+	if !strings.Contains(src, "CORROBORATION ONLY") || !strings.Contains(src, "S1B_ENGAGED") {
+		t.Fatalf("s1 script must discriminate pre-abort and demote the post-abort read to corroboration")
 	}
 	// r4: the mock self-check — the row that would have exposed the
 	// broken slow mode in one dispatch.

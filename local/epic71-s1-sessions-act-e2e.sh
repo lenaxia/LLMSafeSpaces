@@ -330,19 +330,25 @@ if [[ ${S1B_ENGAGED} != 1 ]]; then
 else
     ok "S1b slow turn engaged (send pending ≥8s)"
 
+# The DISCRIMINATOR is the PRE-abort engagement probe above (the turn
+# provably in flight — log absent ~8s into a ≥45s turn — BEFORE the
+# abort is issued). The abort's own row is then: 204 within the budget.
+# r11's run proved the property holds and the OLD post-abort in-flight
+# re-read RACED the preemption it existed to pin (the aborted send
+# completes within milliseconds of the abort, so in-flight=0 was the
+# SUCCESS signature, not a failure). The post-abort send state is
+# CORROBORATION ONLY — reported, never a failure condition.
 S1B_T0=$(date +%s)
 S1B_ABORT=$(http_code_of POST "/api/v1/workspaces/${S1_WS}/sessions/${S1_SID}/abort" '' )
 S1B_ELAPSED=$(( $(date +%s) - S1B_T0 ))
-# IN-FLIGHT assertion (r4): the abort's 204 must return while the send
-# is STILL pending — its completion log must be absent at this moment.
-# Without this discriminator a no-op abort against a crashed turn
-# passes (exactly the vacuity the r4 review caught).
-S1B_INFLIGHT=0
-if ! [[ -f "${S1B_SEND_LOG}" ]]; then S1B_INFLIGHT=1; fi
-if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} && ${S1B_INFLIGHT} == 1 ]]; then
-    ok "S1b abort preempted the in-flight turn: 204 in ${S1B_ELAPSED}s, send still pending (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s)"
+if [[ "${S1B_ABORT}" == "204" && ${S1B_ELAPSED} -le ${S1B_ABORT_BUDGET_S} ]]; then
+    if [[ -f "${S1B_SEND_LOG}" ]]; then
+        ok "S1b abort preempted the engaged turn: 204 in ${S1B_ELAPSED}s (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s); the aborted send already completed — corroboration of the kill"
+    else
+        ok "S1b abort preempted the engaged turn: 204 in ${S1B_ELAPSED}s (budget ${S1B_ABORT_BUDGET_S}s < turn ${S1B_SLOW_TURN_S}s); send still pending at return — corroboration of the preempt window"
+    fi
 else
-    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s in-flight=${S1B_INFLIGHT} send='$(head -c 400 "${S1B_SEND_LOG}" 2>/dev/null || echo none)' (want 204 / ≤${S1B_ABORT_BUDGET_S}s / send pending); api-log='$( { kc logs deploy/llmsafespaces-api --since=3m --tail=500 2>/dev/null || true; } | grep -a '"status":400' | tail -3 | tr "\n" "|" )'; agentd-tail='$( { kc logs "${S1_POD}" -c agentd --tail=200 2>/dev/null || true; } | grep -aiE "act|send|abort|error" | tail -4 | tr "\n" "|" )'"
+    note_fail "S1b abort: code=${S1B_ABORT} elapsed=${S1B_ELAPSED}s (want 204 / ≤${S1B_ABORT_BUDGET_S}s against the engaged turn); send='$(head -c 400 "${S1B_SEND_LOG}" 2>/dev/null || echo none)'; api-log='$( { kc logs deploy/llmsafespaces-api --since=3m --tail=500 2>/dev/null || true; } | grep -a '"status":4' | tail -3 | tr "\n" "|" )'; agentd-tail='$( { kc logs "${S1_POD}" -c agentd --tail=200 2>/dev/null || true; } | grep -aiE "act|send|abort|error" | tail -4 | tr "\n" "|" )'"
 fi
 
 # The interrupted session must not be WEDGED BUSY: after the turn's own

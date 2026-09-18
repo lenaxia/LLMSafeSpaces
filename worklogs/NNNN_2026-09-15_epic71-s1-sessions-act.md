@@ -211,3 +211,7 @@ Also this cycle: coordinator nudge #2 executed — merged origin/main (#1396's a
 - `go test ./cmd/workspace-agentd/sessionstate/` — ok incl. the new carve-out pin (mutation red/green captured)
 - `go test ./local/` — ok incl. the use-before-assignment pin (two mutations red, fixed green)
 - `go test ./pkg/agent/opencode/` — ok incl. the trailing-bytes pin (mutation red/green captured)
+
+## Review r12 remediation — the S1b discriminator restructured
+
+r11's verdict: all three r10 code blockers verified fixed with mutation-verified pins; the one remaining item was the evidence gate — the pool run on 44221524 failed ONLY at S1b, and the failure was the row's own POST-ABORT in-flight re-read RACING the preemption it existed to pin (the log shows the property HOLDING: "S1b slow turn engaged ✓" then "abort: code=204 elapsed=0s" — the aborted send completing within milliseconds made `in-flight=0` the SUCCESS signature, not a failure). Restructured exactly as ordered: the PRE-abort engagement probe (log absent ~8s into a ≥45s turn, before the abort is issued) is the discriminator; the abort's row is 204-within-budget; the post-abort send state is CORROBORATION ONLY — reported on both branches ("already completed — corroboration of the kill" / "still pending — corroboration of the preempt window"), never a failure condition. The failure branch's diagnostics keep the 4xx API-log and agentd-tail fetches. Pin test updated (CORROBORATION ONLY + S1B_ENGAGED required; the old S1B_INFLIGHT post-abort requirement dropped).
