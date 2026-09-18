@@ -531,8 +531,11 @@ fi
 #         under RuntimeDefault seccomp, no caps, read-only rootfs)
 #   S5.7e podman-compose brings up a service on host netns, serves HTTP
 #   S5.7f nested images survive suspend→activate (graphroot on the PVC)
-#   S5.7g/S5.7h/S5.7i the same three checks under gVisor (runsc) — the
-#         decisive leg: nesting INSIDE the strongest isolation tier.
+#   S5.7g/S5.7g2/S5.7h/S5.7i the gVisor (runsc) leg as an IDENTITY-MAPPING
+#         experiment (run 2: runsc allows the userns clone + setuid exec
+#         but rejects subordinate uid_map writes): user-level containers
+#         override with empty subid paths + keep-id runs — the path that
+#         keeps nesting inside the strongest isolation tier.
 podman_exec() { # pod script — the workspace container runs as uid 1000.
   # The wrapper owns the environment bootstrap that profile.d cannot give
   # non-login shells: XDG_RUNTIME_DIR must EXIST before podman starts
@@ -657,19 +660,36 @@ EOF
           else
             fail S5.7g "gVisor podman-set workspace Active but opencode unreachable"
           fi
-          GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
-          if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
-            pass S5.7h "nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
+          # Run-3 experiment: IDENTITY-MAPPING mode. Run 2 proved runsc
+          # rejects the SUBORDINATE uid_map write (newuidmap EPERM) but
+          # allows the userns clone and the setuid exec; identity mapping
+          # (no subid ranges, --userns=keep-id) is the path that keeps
+          # nesting INSIDE the strongest tier. Toggle is leg-local — a
+          # user-level containers.conf redirecting subuid/subgid paths at
+          # an empty file (engine keys merge over the baked /etc config;
+          # netns=host still applies) — so the image under test stays the
+          # exact factory golden. Trade-off under test: nested containers
+          # share the pod uid, so chown-to-other-uid images degrade.
+          GVID_SETUP=$(podman_exec "$PMG_POD" \
+            'mkdir -p "$HOME/.config/containers" && : > /tmp/podman-empty-subids && printf "[engine]\nsubuid_path = \"/tmp/podman-empty-subids\"\nsubgid_path = \"/tmp/podman-empty-subids\"\n[containers]\nignore_chown_errors = true\n" > "$HOME/.config/containers/containers.conf" && podman info >/dev/null 2>&1 && echo setup-ok || { echo setup-failed; cat "$HOME/.config/containers/containers.conf" 2>/dev/null; podman info 2>&1 | tail -3; }' || true)
+          if [ "$GVID_SETUP" = "setup-ok" ]; then
+            pass S5.7g2 "identity-mode override active (empty subid paths, keep-id runs); podman info ok under runsc"
           else
-            fail S5.7h "nested run under runsc failed: ${GRUN_OUT:-<no output>}"
+            fail S5.7g2 "identity-mode setup: ${GVID_SETUP:-<no output>}"
+          fi
+          GRUN_OUT=$(podman_exec "$PMG_POD" \
+            'podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+          if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
+            pass S5.7h "identity-mode nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
+          else
+            fail S5.7h "identity-mode nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+            'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
           if [ "$GCOMPOSE_RC" = "200" ]; then
-            pass S5.7i "podman-compose service up under gVisor, served HTTP 200, torn down"
+            pass S5.7i "identity-mode podman-compose service up under gVisor, served HTTP 200, torn down"
           else
-            fail S5.7i "compose smoke under runsc: ${GCOMPOSE_RC:-<failed before curl>}"
+            fail S5.7i "identity-mode compose smoke under runsc: ${GCOMPOSE_RC:-<failed before curl>}"
           fi
         else
           fail S5.7g "gVisor podman-set workspace never reached Active"
