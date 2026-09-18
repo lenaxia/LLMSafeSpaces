@@ -835,7 +835,7 @@ func TestStaging_RevocationDeleteFailureRetriesAndReports(t *testing.T) {
 	stale := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
 	require.NotNil(t, stale)
 	assert.Contains(t, stale.Message, "INCOMPLETE", "the message must distinguish pending from completed revocation")
-	assert.Contains(t, stale.Message, "retained")
+	assert.Contains(t, stale.Message, "RETAINED")
 
 	// The staged bookkeeping still carries the slug → the retry (delete
 	// healed) completes the revocation on the next pass.
@@ -885,4 +885,30 @@ func TestStaging_ConcurrentPassesRaceFree(t *testing.T) {
 	wg.Wait()
 	require.NoError(t, errs[0])
 	require.NoError(t, errs[1])
+}
+
+// TestStaging_AllDeletesFailedMessageHonest (review r5 finding 2): with
+// EVERY revocation delete failed (pending non-empty, revoked empty) the
+// condition message must not claim any envelope was deleted.
+func TestStaging_AllDeletesFailedMessageHonest(t *testing.T) {
+	pubSec, _ := makePubSecret(t, 1)
+	ws := makeRelayWorkspace("ws-allfail")
+	src := &fakeProviderSource{providers: []secrets.LLMProviderData{openaiPD("openai", "k1")}}
+	r := stagingReconciler(t, src, &fakeRouterClient{}, nil, pubSec, ws)
+	require.NoError(t, r.reconcileRelayStaging(context.Background(), ws))
+
+	src.mu.Lock()
+	src.providers = nil
+	src.mu.Unlock()
+	original := r.Client
+	r.Client = deleteFailingClient{Client: original, ns: relayTestNamespace}
+	err := r.reconcileRelayStaging(context.Background(), ws)
+	require.Error(t, err)
+
+	stale := conditionOf(ws, v1.WorkspaceConditionCredentialStale)
+	require.NotNil(t, stale)
+	assert.Contains(t, stale.Message, "INCOMPLETE")
+	assert.Contains(t, stale.Message, "RETAINED")
+	assert.NotContains(t, stale.Message, "envelope deleted",
+		"no envelope was deleted — the message must not say one was")
 }

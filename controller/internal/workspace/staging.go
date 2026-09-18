@@ -578,7 +578,7 @@ func (r *WorkspaceReconciler) relayMintTokens(ctx context.Context, ws *v1.Worksp
 	return out, tokensFailed, nil
 }
 
-// relayStaleClass classifies the CURRENT stale causes (§4.6 → §4.2
+// classifyRelayStale classifies the CURRENT stale causes (§4.6 → §4.2
 // escalation classes). The corruption/wrong-pub class is the agentd
 // `credential_stale` degrade — the router's resolve-failure code for a
 // wrong or corrupt keypair lineage (live emission lands with US-72.4's
@@ -639,9 +639,15 @@ func (r *WorkspaceReconciler) relayEvaluateStale(ws *v1.Workspace, revoked, pend
 		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True",
 			v1.ReasonStaleTokenExpired, "token expired; renewal owns this cause")
 	case class == relayStaleRevocation:
-		msg := fmt.Sprintf("credential revoked: %s — envelope deleted (D2); resolves fail closed until the batch applies the removal", joinQuoted(revoked))
+		msg := ""
+		if len(revoked) > 0 {
+			msg = fmt.Sprintf("credential revoked: %s — envelope deleted (D2); resolves fail closed until the batch applies the removal", joinQuoted(revoked))
+		}
 		if len(pending) > 0 {
-			msg += fmt.Sprintf("; revocation INCOMPLETE (delete failed, retained + retrying): %s", joinQuoted(pending))
+			if msg != "" {
+				msg += "; "
+			}
+			msg += fmt.Sprintf("revocation INCOMPLETE (delete failed, envelope RETAINED + retrying): %s", joinQuoted(pending))
 		}
 		r.setCondition(ws, v1.WorkspaceConditionCredentialStale, "True", v1.ReasonStaleRevoked, msg)
 	case class == relayStaleDelivery:
