@@ -91,4 +91,4 @@ None. Runtime arbitration happens on the next nightly (06:00 UTC 2026-09-19): F8
 - `local/us-68-attachments-e2e.sh` — sidecar gate probes both container lists; comment; rename to `CONTAINER_NAMES`.
 - `.github/workflows/e2e-nightly.yml` — F8 by-name Service lookup + why-comment; three-way verdict; diagnostics-before-delete; if/then loop form.
 - `local/us68_attachments_script_test.go` — NEW: structural + executable pins (fake kc / fake kubectl with invocation trace).
-- `worklogs/NNNN_2026-09-18_nightly-e2e-f8-sidecar-gate-triage.md` — this worklog.
+- `worklogs/0994_2026-09-18_nightly-e2e-f8-sidecar-gate-triage.md` — this worklog.
