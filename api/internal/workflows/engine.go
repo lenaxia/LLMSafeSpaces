@@ -491,6 +491,20 @@ type Scheduler struct {
 	// PreserveOnFailure session-delete call. Zero → default (4097).
 	// Tests inject an httptest server port; mirrors HTTPAgentExecutor.Port.
 	AgentdPort int
+	// SessionIndex mirrors preserved routine sessions into the sidebar's
+	// session_index (#1452): the platform's session list surface serves
+	// only that index, and the routine fire path never touches the
+	// proxy routes that write it. Nil → indexing skipped (fire result
+	// is unaffected).
+	SessionIndex SessionIndexWriter
+}
+
+// SessionIndexWriter is the session-index surface the routine path
+// needs: a display title and one activity record per fire. Satisfied by
+// the sessionindex service.
+type SessionIndexWriter interface {
+	UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error
+	RecordMessage(workspaceID, sessionID, title string, at time.Time)
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -854,6 +868,10 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			}); err != nil {
 				logger.Error(err, "routine: failed to record session origin", "sessionId", sessionID, "triggerId", trigger.ID)
 			}
+			// #1452: the same session must also exist in the sidebar's
+			// session_index — the platform session list serves only that
+			// index, and no adapter route runs for a routine fire.
+			s.indexPreservedSession(ctx, logger, workspaceID, sessionID, trigger.Name)
 		}
 	}
 
@@ -868,6 +886,21 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	}
 
 	logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
+}
+
+// indexPreservedSession writes a preserved routine session into the
+// session_index underpinning GET /workspaces/:id/sessions (#1452):
+// the trigger name as display title plus one activity record so the
+// session sorts by its fire time. Best-effort by design — the fire has
+// already succeeded; an index failure is logged and never escalates.
+func (s *Scheduler) indexPreservedSession(ctx context.Context, logger Logger, workspaceID, sessionID, title string) {
+	if s.SessionIndex == nil {
+		return
+	}
+	if err := s.SessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
+		logger.Error(err, "routine: failed to index session title", "sessionId", sessionID, "workspaceID", workspaceID)
+	}
+	s.SessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now().UTC())
 }
 
 func buildRoutineScriptSpec(trigger *wf.TriggerRow) json.RawMessage {
