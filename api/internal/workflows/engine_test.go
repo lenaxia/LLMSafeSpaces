@@ -470,11 +470,14 @@ func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, now time.Ti
 	defer m.mu.Unlock()
 	var out []*wf.TriggerRow
 	for _, t := range m.triggers {
-		// Store parity: only DUE triggers are claimed (NULL/past-due
-		// next_fire_at never matches; a fire without a slot is not
-		// cron-claimable). Without this gate the mock returned every
-		// row, double-firing webhook-sourced routine triggers that ride
-		// the pending-fire drain instead.
+		// Store parity: only DUE, ENABLED, CRON-SOURCED triggers are
+		// claimed (the real claim filters source_type='cron' AND
+		// enabled=true AND next_fire_at due). Without this gate the
+		// mock returned every row, double-firing webhook-sourced
+		// routine triggers that ride the pending-fire drain instead.
+		if t.SourceType != types.TriggerSourceCron || !t.Enabled {
+			continue
+		}
 		if t.NextFireAt == nil || t.NextFireAt.After(now) {
 			continue
 		}
@@ -492,7 +495,18 @@ func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) (
 	if m.overridePending != nil {
 		return m.overridePending, nil
 	}
-	return m.fires, nil
+	// Store parity: only routine fires still in 'fired' (never
+	// result-written) drain — the unfiltered fallback re-executed fires
+	// the same tick created (production-impossible; the real store
+	// filters action_type='routine' AND status='fired' AND result IS
+	// NULL, store.go ListPendingRoutineFires).
+	var out []*wf.TriggerFireRow
+	for _, f := range m.fires {
+		if f.ActionType == "routine" && f.Status == "fired" {
+			out = append(out, f)
+		}
+	}
+	return out, nil
 }
 
 func (m *mockSchedulerStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {

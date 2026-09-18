@@ -302,7 +302,17 @@ fi
 # (TestExecuteWithRetry_*); asserting a live provider blip from e2e
 # would be flake-shaped by definition. The row pins the WIRING: the
 # scheduler-level test that fails if the retry call site is reverted.
-log "T7: retry wiring pinned at scheduler level (TestScheduler_RoutineFireRetriesTransient5xx + _Persistent5xxBurnsOneFailure in CI; the budget-multiplication class is the latter)"
+# T7 (#1451): the retry wiring lives in the engine suite — this row
+# ASSERTS the pins exist in the tree the nightly runs against (a
+# deleted wiring test fails the row instead of rotting silently).
+for t7test in TestScheduler_RoutineFireRetriesTransient5xx TestScheduler_RoutineFirePersistent5xxBurnsOneFailure; do
+    if ! grep -rq "func ${t7test}(" api/internal/workflows/; then
+        note_fail "T7: wiring test ${t7test} missing from the tree"
+    fi
+done
+if [[ "${failures}" -eq 0 ]]; then
+    ok "T7: retry wiring pins present (delivered + budget-multiplication classes)"
+fi
 
 if [[ "${failures}" -gt 0 ]]; then
     die "${failures} templating e2e row(s) failed"

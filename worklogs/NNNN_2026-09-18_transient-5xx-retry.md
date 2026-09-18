@@ -21,14 +21,14 @@ A provider blip must not fail a fire or auto-disable a healthy trigger.
 None.
 
 ## Tests Run
-- Unit matrix: transient-recovers (exactly one retry), exhausted (bounded 3, failure surfaces), deterministic-no-retry, transport shapes (502 in; 404 out), timeout-not-retrried (504 transport, agentd script_timeout, opencode 504 wrap — each attempted once).
+- Unit matrix: transient-recovers (exactly one retry), exhausted (bounded 3, failure surfaces), deterministic-no-retry, transport shapes (502 in; 404 out), timeout-not-retried (504 transport, agentd script_timeout, opencode 504 wrap — each attempted once).
 - WIRING (review r2): TestScheduler_RoutineFireRetriesTransient5xx — a pending webhook routine fire whose executor answers 500-then-success DELIVERS with exactly one retry; reverting the executeWithRetry call site leaves it red (0 retries, fire failed). Along the way the mock's ClaimDueCronTriggers gained store-parity due-gating (it returned every row, double-firing pending-drained webhook triggers).
 - Exhausted-retry WIRING (review r3): TestScheduler_RoutineFirePersistent5xxBurnsOneFailure — persistent retryable 5xx fails the fire, bounded at three attempts, and burns EXACTLY ONE consecutiveFailures (the budget-multiplication regression class).
 - Full workflows suite green; e2e leg T7 names both wiring tests (a live provider-blip assertion would be flake-shaped by definition).
 - Scope gaps filed: #1454 (fire-lifecycle consolidation), #1455 (script-node interpreter environment).
 
 ## Scope
-The failure half of #1441 only: the session-listing symptom is #1452, the prompt-growth design decision is #1453.
+The failure half of #1441 only: the session-listing symptom is #1452, the prompt-growth design decision is #1453, the session-create retry leg is #1457, the pre-script retry leg is #1458, the lifecycle consolidation is #1454, the script-node interpreter environment is #1455. The Reconciler's executeNode (engine.go ~:410) retains its own divergent blanket-retry policy — deliberately untouched here (different caller, different budget semantics); acknowledging rather than silently inheriting it.
 
 ## Next Steps
 PR → review → release; post-deploy, the hunt harness should show delivered fires across provider blips.
