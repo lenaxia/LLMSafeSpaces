@@ -1456,3 +1456,100 @@ func TestOrgRotateWebhookSecret_RouteWorks(t *testing.T) {
 	assert.Contains(t, resp.WebhookSecret, "whsec_")
 	assert.Equal(t, "/api/v1/hooks/trig-org-hook", resp.WebhookURL)
 }
+
+// seedRoutineTriggerRow inserts a routine trigger row directly (bypassing
+// the create handler) so the update guard can be tested against every
+// stored memoryMode/captureMode combination, including states create
+// refuses to produce.
+func seedRoutineTriggerRow(store *mockTriggerStore, id, memoryMode, captureMode string) {
+	wsID := "ws-1"
+	store.triggers[id] = &wf.TriggerRow{
+		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		Name: "seeded", Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 * * * *","tz":"UTC"}`),
+		WorkspaceID:  &wsID, Prompt: "p",
+		MemoryMode: memoryMode, MemoryMaxRuns: 1, CaptureMode: captureMode,
+		PreserveSession: types.PreserveNever, AutoDisableAfter: 10,
+	}
+}
+
+// #1467: the update path must enforce the create-path cross-constraint
+// memoryMode 'last_result' ⇒ captureMode 'full' (triggers.go create
+// arm) on the POST-PATCH MERGED view — a patch may flip one side while
+// leaving the other stored. Guard matrix: violating flips → 400 with
+// the create-path error; valid flips and unaffected combos → 200.
+func TestTriggerUpdate_MemoryCaptureCrossConstraint(t *testing.T) {
+	const constraintErr = "memoryMode 'last_result' requires captureMode 'full'"
+	tests := []struct {
+		name        string
+		seedMemory  string
+		seedCapture string
+		patch       map[string]any
+		wantCode    int
+		wantErr     string
+	}{
+		{"flip to last_result without full", types.MemoryNone, types.CaptureErrorsOnly,
+			map[string]any{"memoryMode": types.MemoryLastResult}, 400, constraintErr},
+		{"flip to last_result with full", types.MemoryNone, types.CaptureErrorsOnly,
+			map[string]any{"memoryMode": types.MemoryLastResult, "captureMode": types.CaptureFull}, 200, ""},
+		{"narrow capture under last_result", types.MemoryLastResult, types.CaptureFull,
+			map[string]any{"captureMode": types.CaptureErrorsOnly}, 400, constraintErr},
+		{"re-set full under last_result", types.MemoryLastResult, types.CaptureFull,
+			map[string]any{"captureMode": types.CaptureFull}, 200, ""},
+		{"loosen memory to none", types.MemoryLastResult, types.CaptureFull,
+			map[string]any{"memoryMode": types.MemoryNone}, 200, ""},
+		{"capture full on plain trigger", types.MemoryNone, types.CaptureErrorsOnly,
+			map[string]any{"captureMode": types.CaptureFull}, 200, ""},
+		{"both provided violating", types.MemoryNone, types.CaptureFull,
+			map[string]any{"memoryMode": types.MemoryLastResult, "captureMode": types.CaptureErrorsOnly}, 400, constraintErr},
+		{"both provided none and errors_only", types.MemoryLastResult, types.CaptureFull,
+			map[string]any{"memoryMode": types.MemoryNone, "captureMode": types.CaptureErrorsOnly}, 200, ""},
+		{"unrelated patch on valid row", types.MemoryNone, types.CaptureErrorsOnly,
+			map[string]any{"prompt": "new prompt"}, 200, ""},
+		// A legacy-invalid row (the exact state the missing guard let
+		// through) stays editable: untouched state is not re-scanned, so
+		// a repair patch can reach the store.
+		{"unrelated patch on legacy-invalid row", types.MemoryLastResult, types.CaptureErrorsOnly,
+			map[string]any{"prompt": "still editable"}, 200, ""},
+		{"flip on legacy empty-string row without full", "", "",
+			map[string]any{"memoryMode": types.MemoryLastResult}, 400, constraintErr},
+		{"flip on legacy empty-string row with full", "", "",
+			map[string]any{"memoryMode": types.MemoryLastResult, "captureMode": types.CaptureFull}, 200, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newMockTriggerStore()
+			seedRoutineTriggerRow(store, "trig-seed", tt.seedMemory, tt.seedCapture)
+			r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+			w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/trig-seed", tt.patch)
+			require.Equal(t, tt.wantCode, w.Code, "body: %s", w.Body.String())
+
+			if tt.wantErr != "" {
+				var resp map[string]any
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+				assert.Equal(t, tt.wantErr, resp["error"])
+			}
+			if tt.wantCode == 200 {
+				row, err := store.GetTrigger(context.Background(), types.WorkflowOwnerUser, "test-user", "trig-seed")
+				require.NoError(t, err)
+				if m, ok := tt.patch["memoryMode"].(string); ok {
+					assert.Equal(t, m, row.MemoryMode, "accepted patch must persist memoryMode")
+				}
+				if cm, ok := tt.patch["captureMode"].(string); ok {
+					assert.Equal(t, cm, row.CaptureMode, "accepted patch must persist captureMode")
+				}
+			}
+		})
+	}
+}
+
+// The merged view needs the stored row, so existence precedes the
+// cross-constraint: a violating patch on a missing trigger is a 404.
+func TestTriggerUpdate_MemoryCaptureCrossConstraint_NotFound(t *testing.T) {
+	store := newMockTriggerStore()
+	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/nope",
+		map[string]any{"memoryMode": types.MemoryLastResult})
+	assert.Equal(t, 404, w.Code, "body: %s", w.Body.String())
+}

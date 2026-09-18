@@ -396,10 +396,13 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	// (V7 needs the post-patch merged view).
 	touchesMapping := req.WorkflowID != nil || req.InputFrom != nil || req.Input != nil
 	touchesTarget := touchesMapping || req.WorkspaceID != nil
+	// #1467: the last_result ⇒ full cross-constraint below needs the
+	// stored row whenever a patch could flip one side without the other.
+	touchesMemoryCapture := req.MemoryMode != nil || req.CaptureMode != nil
 	targetlessAfterPatch := false
 	var existing *wf.TriggerRow
 	now := time.Now().UTC()
-	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget {
+	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget || touchesMemoryCapture {
 		var err error
 		existing, err = h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 		if err != nil {
@@ -443,6 +446,29 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 				// next occurrence.
 				upd.NextFireAt = &next
 			}
+		}
+	}
+
+	// #1467: create enforces memoryMode 'last_result' ⇒ captureMode
+	// 'full' (triggers.go create arm — the invariant guaranteeing every
+	// delivered routine result row stores the agentd envelope the memory
+	// read path expects, per #1453). The update path enforces the same
+	// constraint on the POST-PATCH MERGED view: a patch may flip one
+	// side while leaving the other stored. Rows whose stored state is
+	// untouched keep whatever they had — legacy-invalid rows stay
+	// editable so a repair patch can reach the store.
+	if touchesMemoryCapture {
+		mergedMemoryMode := existing.MemoryMode
+		if req.MemoryMode != nil {
+			mergedMemoryMode = *req.MemoryMode
+		}
+		mergedCaptureMode := existing.CaptureMode
+		if req.CaptureMode != nil {
+			mergedCaptureMode = *req.CaptureMode
+		}
+		if mergedMemoryMode == types.MemoryLastResult && mergedCaptureMode != types.CaptureFull {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "memoryMode 'last_result' requires captureMode 'full'"})
+			return
 		}
 	}
 
