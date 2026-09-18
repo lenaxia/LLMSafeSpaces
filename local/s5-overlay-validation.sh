@@ -541,10 +541,12 @@ podman_exec() { # pod script — the workspace container runs as uid 1000.
   # non-login shells: XDG_RUNTIME_DIR must EXIST before podman starts
   # (run 35306741294: exporting the var without mkdir-ing the dir failed
   # every podman invocation — S5.7c/d/e/f all red on that one bug), HOME
-  # lands on the PVC. stderr stays attached: engine errors must surface
-  # in the CI log, not vanish behind a redirected fd.
+  # lands on the PVC. TMPDIR follows (run 35321626777: containers-storage
+  # stages image blobs under /var/tmp by default — read-only rootfs →
+  # EROFS on the very first pull; /tmp is the PVC subPath). stderr stays
+  # attached: engine errors must surface in the CI log.
   kubectl -n "$NS" exec "$1" -c workspace -- /bin/bash -c \
-    "export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p \"\$XDG_RUNTIME_DIR\"; $2"
+    "export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox TMPDIR=/tmp; mkdir -p \"\$XDG_RUNTIME_DIR\"; $2"
 }
 
 if [ "${S5_RUN_PODMAN:-0}" != "1" ]; then
