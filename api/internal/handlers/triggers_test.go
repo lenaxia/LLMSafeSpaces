@@ -103,6 +103,9 @@ func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, 
 	if upd.PreserveSession != nil {
 		r.PreserveSession = *upd.PreserveSession
 	}
+	if upd.Name != nil {
+		r.Name = *upd.Name
+	}
 	if upd.SourceConfig != nil {
 		r.SourceConfig = upd.SourceConfig
 	}
@@ -1232,4 +1235,132 @@ func TestTriggerFires_CapturedSuccessVisible(t *testing.T) {
 	w := doTriggerRequest(t, r, "GET", "/api/v1/me/triggers/trig-c/fires", nil)
 	require.Equal(t, 200, w.Code)
 	assert.Contains(t, w.Body.String(), "NIGHTLY-OK", "captured success output is readable")
+}
+func TestTriggerUpdate_TargetPresenceGuard(t *testing.T) {
+	newRouterWithDAGTrigger := func(t *testing.T) (*gin.Engine, *mockTriggerStore, string) {
+		store := newMockTriggerStore()
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+		w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+			"name": "dag", "sourceType": "cron",
+			"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+			"workflowId":   "wf-1", "prompt": "x",
+		})
+		require.Equal(t, 201, w.Code, "body: %s", w.Body.String())
+		var created map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+		return r, store, created["id"].(string)
+	}
+
+	t.Run("clearing workflowId alone is rejected", func(t *testing.T) {
+		r, _, id := newRouterWithDAGTrigger(t)
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workflowId": ""})
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+	})
+
+	t.Run("clearing workflowId while naming a workspace is allowed", func(t *testing.T) {
+		r, store, id := newRouterWithDAGTrigger(t)
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workflowId": "", "workspaceId": "ws-1"})
+		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+		row := store.triggers[id]
+		require.NotNil(t, row.WorkspaceID)
+		assert.Nil(t, row.WorkflowID)
+	})
+
+	t.Run("clearing workspaceId on a routine trigger is rejected", func(t *testing.T) {
+		store := newMockTriggerStore()
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+		w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+			"name": "routine", "sourceType": "cron",
+			"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+			"workspaceId":  "ws-1", "prompt": "x",
+		})
+		require.Equal(t, 201, w.Code)
+		var created map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+		id := created["id"].(string)
+
+		w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workspaceId": ""})
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), "without an execution target")
+	})
+
+	t.Run("swapping workspace for workflow keeps a target", func(t *testing.T) {
+		store := newMockTriggerStore()
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+		w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+			"name": "swap", "sourceType": "cron",
+			"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+			"workspaceId":  "ws-1", "prompt": "x",
+		})
+		require.Equal(t, 201, w.Code)
+		var created map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+		id := created["id"].(string)
+
+		w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workspaceId": "", "workflowId": "wf-9"})
+		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+		row := store.triggers[id]
+		require.NotNil(t, row.WorkflowID)
+		assert.Nil(t, row.WorkspaceID)
+	})
+}
+
+// #1442 round 2: pre-existing targetless rows (the #1440 incident
+// population — FK SET NULL zombies) must stay EDITABLE for non-target
+// patches: disable, rename. The guard evaluates only patches that touch
+// a target field; an unconditional merged-view check would 400 every
+// disable/rename of the incident population and strand them enabled.
+func TestTriggerUpdate_TargetlessRowNonTargetPatchAccepted(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	// Seed a targetless enabled row directly (the zombie shape).
+	id := "trig-zombie"
+	store.triggers[id] = &wf.TriggerRow{
+		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		Name: "zombie", Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+
+	disabled := false
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"enabled": disabled})
+	require.Equal(t, 200, w.Code, "disarm-first must work on a targetless row: %s", w.Body.String())
+	assert.False(t, store.triggers[id].Enabled)
+
+	rename := "zombie-renamed"
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"name": rename})
+	require.Equal(t, 200, w.Code, "rename must work on a targetless row: %s", w.Body.String())
+	assert.Equal(t, rename, store.triggers[id].Name)
+
+	// But a target-touching patch on a targetless row still 400s — the
+	// API route to KEEPING it targetless stays closed.
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workflowId": ""})
+	assert.Equal(t, 400, w.Code, "target-touching patch on a targetless row must still reject")
+	assert.Contains(t, w.Body.String(), "without an execution target")
+}
+
+// #1442 round 3: the REPAIR path — naming a new target on an
+// already-targetless row (the remediation for the #1440 incident
+// population) must be accepted. The guard computes workflowSet from the
+// request alone precisely to permit this; a "currently-targetless ⇒
+// reject any target patch" simplification would strand every zombie
+// unrepairable.
+func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	id := "trig-zombie-repair"
+	store.triggers[id] = &wf.TriggerRow{
+		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		Name: "zombie2", Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+
+	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workflowId": "wf-repair"})
+	require.Equal(t, 200, w.Code, "repair patch must be accepted: %s", w.Body.String())
+	row := store.triggers[id]
+	require.NotNil(t, row.WorkflowID)
+	assert.Equal(t, "wf-repair", *row.WorkflowID)
 }

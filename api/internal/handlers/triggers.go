@@ -397,9 +397,11 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	// The same stored row feeds the input-mapping re-validation below
 	// (V7 needs the post-patch merged view).
 	touchesMapping := req.WorkflowID != nil || req.InputFrom != nil || req.Input != nil
+	touchesTarget := touchesMapping || req.WorkspaceID != nil
+	targetlessAfterPatch := false
 	var existing *wf.TriggerRow
 	now := time.Now().UTC()
-	if req.SourceConfig != nil || req.Enabled != nil || touchesMapping {
+	if req.SourceConfig != nil || req.Enabled != nil || touchesTarget {
 		var err error
 		existing, err = h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 		if err != nil {
@@ -409,6 +411,14 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch trigger"})
 			return
+		}
+		if req.WorkflowID != nil || req.WorkspaceID != nil {
+			// Evaluated after the V-matrix below — a targetless post-patch
+			// view that survives V1 (the opted-in case) is a plain
+			// de-targeting patch and gets the generic #1442 rejection.
+			workflowSet := (req.WorkflowID != nil && *req.WorkflowID != "") || (req.WorkflowID == nil && existing.WorkflowID != nil)
+			workspaceSet := (req.WorkspaceID != nil && *req.WorkspaceID != "") || (req.WorkspaceID == nil && existing.WorkspaceID != nil)
+			targetlessAfterPatch = !workflowSet && !workspaceSet
 		}
 		if existing.SourceType == types.TriggerSourceCron {
 			cfg := existing.SourceConfig
@@ -467,6 +477,15 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 		}
 	}
 
+	// #1442: the post-patch row must keep an execution target. The 0059
+	// V-matrix above already rejected opted-in de-targeting patches (V1,
+	// the specific message); anything still targetless here is a plain
+	// de-targeting patch — the user-API route to a zombie tick, now a 400.
+	if targetlessAfterPatch {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
+		return
+	}
+
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
@@ -517,7 +536,9 @@ func (h *TriggersHandler) del(c *gin.Context, ownerType, ownerID string) {
 //	    names properties beyond the source's envelope key set is rejected
 //	    with the three remedies — the narrowed O1 guard (D4). Legacy
 //	    triggers are never re-scanned; a missing workflow skips the guard
-//	    (nothing to require — the #1412 R4 ghost fixture stays creatable).
+//	    (nothing to require — reachable via cross-owner references, which
+//	    the owner-scoped fetch misses; the engine records a loud
+//	    missing-workflow failed fire for those at fire time).
 func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType, ownerID, sourceType, workflowID, inputFrom string, input json.RawMessage) bool {
 	if !types.ValidTriggerInputFrom(inputFrom) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid inputFrom (want envelope, body, or mapped)"})
@@ -564,7 +585,7 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 			return false
 		}
 		if errors.Is(err, wf.ErrNotFound) {
-			return true // ghost workflow: guard skipped, fire stays loud (#1412 R4)
+			return true // cross-owner/unfetchable workflow: guard skipped, fire stays loud
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})
 		return false
