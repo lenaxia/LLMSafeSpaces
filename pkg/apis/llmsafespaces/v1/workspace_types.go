@@ -301,6 +301,26 @@ const (
 	// restartGeneration bump, suspend, Failed-phase self-heal). The
 	// operator remedy is spec.suspend=true (#699), which halts the loop.
 	WorkspaceConditionRecoveryExhausted WorkspaceConditionType = "RecoveryExhausted"
+	// WorkspaceConditionCredentialsStaged (Epic 72 / design 0058 §4.6):
+	// every stageable bound BYO llm-provider credential is sealed into
+	// its llm-relay envelope Secret and a scoped token is staged in the
+	// workspace-namespace handoff Secret. True carries the staged revision
+	// in its message. Only set when relay-only key delivery is enabled
+	// (relayOnlyKeyDelivery.enabled — absent otherwise, mixed-fleet W15).
+	WorkspaceConditionCredentialsStaged WorkspaceConditionType = "CredentialsStaged"
+	// WorkspaceConditionCredentialStale (Epic 72 / design 0058 §4.6): a
+	// staged credential fails closed at resolve time — token expired,
+	// staged envelope Secret absent, batch not applying the staged
+	// revision (incl. the #852 busy-session deferral window), credential
+	// revoked (envelope deleted — D2 terminal), or corruption/wrong-pub
+	// class (the one escalating cause, §4.2). Cause enumeration lives in
+	// the Reason.
+	WorkspaceConditionCredentialStale WorkspaceConditionType = "CredentialStale"
+	// WorkspaceConditionCredentialRejected (Epic 72 / design 0058 §4.6):
+	// the router explicitly rejected a token (bad scope, sanitization
+	// refusal, quota) — an operator-visible anomaly signal, never silent
+	// (§4.7).
+	WorkspaceConditionCredentialRejected WorkspaceConditionType = "CredentialRejected"
 )
 
 const (
@@ -318,6 +338,40 @@ const (
 	// reason and its warning-event reason (#760): consecutive failures
 	// crossed the class's exhaustion threshold.
 	ReasonRecoveryExhausted = "RecoveryExhausted"
+)
+
+// Epic 72 / design 0058 §4.6 condition reasons (US-72.3). CredentialStale
+// carries its cause in the Reason per the §4.6 enumeration.
+const (
+	// ReasonCredentialsStaged: all stageable bound providers sealed +
+	// tokened; the message carries the staged revision.
+	ReasonCredentialsStaged = "CredentialsStaged"
+	// ReasonStageFailed: the staging pass itself failed (credential source
+	// unreachable, mint-key/pub Secret trouble, seal or mint error) —
+	// surfaced on CredentialsStaged=False.
+	ReasonStageFailed = "StageFailed"
+	// ReasonStaleWrongPubLineage: corruption/wrong-pub-class resolve
+	// failure — §4.2's ONE escalating cause (eligible for rotate
+	// escalation under an intact spawn-layer lineage).
+	ReasonStaleWrongPubLineage = "WrongPubLineage"
+	// ReasonStalePubUnreadable: llm-relay-hpke-pub missing or
+	// shape-invalid (seal-time parse fails loudly); not escalatable.
+	ReasonStalePubUnreadable = "PubUnreadable"
+	// ReasonStaleTokenExpired: token past expiry — renewal owns it.
+	ReasonStaleTokenExpired = "TokenExpired"
+	// ReasonStaleEnvelopeMissing: a staged envelope Secret is absent
+	// while its provider remains bound (self-heals by re-seal).
+	ReasonStaleEnvelopeMissing = "EnvelopeMissing"
+	// ReasonStaleDeliveryDeferred: batch not applying the staged revision
+	// / #852 busy-session restart deferral / relay unreachable — a wait or
+	// fault rotation cannot repair.
+	ReasonStaleDeliveryDeferred = "DeliveryDeferred"
+	// ReasonStaleRevoked: credential unbound — envelope deleted (D2
+	// terminal); resolves fail closed until the batch applies the removal.
+	ReasonStaleRevoked = "CredentialRevoked"
+	// ReasonCredentialRouterRejected: the router explicitly rejected a
+	// token (scope violation, sanitization refusal, quota) — §4.7.
+	ReasonCredentialRouterRejected = "RouterRejected"
 )
 
 const (

@@ -62,6 +62,17 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{}, nil
 	}
 
+	// Epic 72 / US-72.3: relay staging pass (nil-config no-op when the
+	// deployment flag is off). Runs before the lifecycle branches so
+	// conditions survive their early returns; its own persistence is
+	// change-gated (steady state: zero writes). Infra failures requeue;
+	// business failures are conditions-only (worklog D7) — pre-flip the
+	// raw-key path still delivers.
+	if err := r.reconcileRelayStaging(ctx, workspace); err != nil {
+		logger.Error(err, "relay staging reconcile failed; requeueing")
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// Check restart generation. #761: drain busy sessions before the
 	// recycle — the workspace stays Active (and the generation unobserved)
 	// until in-flight turns finish or stall out.

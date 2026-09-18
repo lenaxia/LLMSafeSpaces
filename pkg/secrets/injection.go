@@ -569,6 +569,64 @@ func (s *SecretService) applyModelAllowlist(pd *LLMProviderData, b CredentialBin
 	pd.Models = filtered
 }
 
+// ResolveLLMProviders (US-72.3) resolves the decrypted llm-provider set a
+// workspace's batch would deliver: the same rows (loadWorkspaceRows), the
+// same dedup-by-slug-first-winner, the same decrypt matrix and the same
+// model-allowlist application as buildCredentialEntries — so the envelope
+// set the controller stages is by construction exactly the provider set of
+// the batch. Per-entry failures audit and continue (a corrupted ciphertext
+// must not poison the healthy ones); with no DEK available the user-owned
+// entries are skipped with the sessionless vocabulary, matching the
+// builder's degrade semantics.
+//
+// This backs the cluster-internal GET
+// /api/v1/internal/workspaces/:workspaceID/llm-providers endpoint the
+// controller staging polls — trusted-plane only, never a pod delivery
+// path (K6).
+func (s *SecretService) ResolveLLMProviders(ctx context.Context, ownerUserID, workspaceID string) ([]LLMProviderData, error) {
+	bindings, relevantSecrets, servers, err := s.loadWorkspaceRows(ctx, ownerUserID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	dek, _ := s.workspaceDEK(ctx, ownerUserID, workspaceID, bindings, relevantSecrets, servers)
+
+	adminDecrypt := decryptFnFor(s.adminProvider)
+	orgDecrypt := decryptFnFor(s.orgProvider)
+
+	seen := make(map[string]bool)
+	out := make([]LLMProviderData, 0, len(bindings))
+	for _, b := range bindings {
+		if seen[b.Slug] {
+			continue
+		}
+		if b.OwnerType == "user" && dek == nil {
+			s.audit(ctx, ownerUserID, "credential_skipped_no_session", nil, &workspaceID,
+				map[string]string{"credentialID": b.ID, "slug": b.Slug, "kind": b.Kind, "ownerType": b.OwnerType})
+			continue
+		}
+		pd, err := s.decryptBindingWithDEK(ctx, b, dek, adminDecrypt, orgDecrypt)
+		if err != nil {
+			// Don't set seen — allow fallback to lower-priority binding.
+			s.audit(ctx, ownerUserID, "credential_decrypt_failed", nil, &workspaceID,
+				map[string]string{"credentialID": b.ID, "slug": b.Slug, "kind": b.Kind, "ownerType": b.OwnerType, "error": err.Error()})
+			continue
+		}
+		s.applyModelAllowlist(&pd, b)
+		if seen[pd.Slug] {
+			// Two binding rows decrypting to the same provider slug: keep
+			// the priority-order winner (first row), matching what the
+			// rendered provider map effectively serves.
+			continue
+		}
+		seen[pd.Slug] = true
+		credID := b.ID
+		s.audit(ctx, ownerUserID, "internal_llm_providers_reveal", &credID, &workspaceID,
+			map[string]string{"slug": pd.Slug, "kind": pd.Kind})
+		out = append(out, pd)
+	}
+	return out, nil
+}
+
 // requireCredentialStore casts the configured store to CredentialStore
 // (the interface the multi-source credential path needs). All production
 // store types implement this; if the cast fails, a wrapper was added

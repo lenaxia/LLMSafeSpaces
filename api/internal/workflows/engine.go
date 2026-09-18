@@ -768,15 +768,28 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		}
 		if maxRuns == 1 {
 			if prevResult, err := s.Store.GetLastRoutineResult(ctx, trigger.ID); err == nil && len(prevResult) > 0 {
-				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", string(prevResult))
+				if injected, ok := routinePrevResultInjection(prevResult); ok {
+					prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", injected)
+				} else {
+					logger.Info("routine: stored prev result is not the expected envelope; leaving {{.prevResult}} unreplaced (#1453)", "triggerId", trigger.ID)
+				}
 			}
 		} else {
 			if results, err := s.Store.GetRecentRoutineResults(ctx, trigger.ID, maxRuns); err == nil && len(results) > 0 {
-				combined := make([]string, len(results))
-				for i, r := range results {
-					combined[i] = string(r)
+				injected := make([]string, 0, len(results))
+				for _, r := range results {
+					if inj, ok := routinePrevResultInjection(r); ok {
+						injected = append(injected, inj)
+					}
 				}
-				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", strings.Join(combined, "\n---\n"))
+				if len(injected) > 0 {
+					if len(injected) < len(results) {
+						logger.Info("routine: dropped non-envelope prev results from {{.prevResult}} injection (#1453)", "triggerId", trigger.ID, "dropped", len(results)-len(injected))
+					}
+					prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", strings.Join(injected, "\n---\n"))
+				} else {
+					logger.Info("routine: no stored prev result is the expected envelope; leaving {{.prevResult}} unreplaced (#1453)", "triggerId", trigger.ID)
+				}
 			}
 		}
 	}
@@ -910,6 +923,48 @@ func (s *Scheduler) indexPreservedSession(ctx context.Context, logger Logger, wo
 		logger.Error(err, "routine: failed to index session title", "sessionId", sessionID, "workspaceID", workspaceID)
 	}
 	s.SessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now().UTC())
+}
+
+// routinePrevResultPayload is the {{.prevResult}} injection payload: the
+// previous round's own output, without the envelope fields that compound
+// the prompt round over round.
+type routinePrevResultPayload struct {
+	Response json.RawMessage `json:"response"`
+	Tokens   json.RawMessage `json:"tokens,omitempty"`
+}
+
+// routinePrevResultInjection renders the {{.prevResult}} replacement for
+// one stored routine result (#1453). Under captureMode=full the stored
+// result is the agent-node output envelope (cmd/workspace-agentd/
+// workflow_execute.go: {response, session_id, tokens, prompt, parts}),
+// whose prompt field is the FULL rendered prompt of its round —
+// injecting the envelope verbatim made round N's prompt embed round
+// N-1's result, which embedded round N-1's prompt, which embedded round
+// N-2's result... unbounded recursive growth. Only {response, tokens}
+// ride; the injection is their compact JSON encoding (content intact —
+// structured-output responses are arbitrary JSON, not strings).
+//
+// A stored blob that is not the expected envelope (not a JSON object,
+// or no response key) yields ok=false and is never injected raw: every
+// delivered result since the routine feature landed (#688) carries the
+// envelope, so an unrecognized shape means corrupted or foreign data,
+// and unverifiable bytes in an LLM prompt are the exact hazard class
+// this strips. Callers leave the template placeholder unreplaced, as
+// they already do when no stored result exists.
+func routinePrevResultInjection(stored json.RawMessage) (string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &fields); err != nil {
+		return "", false
+	}
+	resp, ok := fields["response"]
+	if !ok || len(resp) == 0 {
+		return "", false
+	}
+	out, err := json.Marshal(routinePrevResultPayload{Response: resp, Tokens: fields["tokens"]})
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
 }
 
 func buildRoutineScriptSpec(trigger *wf.TriggerRow) json.RawMessage {

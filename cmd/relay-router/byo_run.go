@@ -30,7 +30,7 @@ import (
 // the API/controller are the only mint callers). The Secret is created by
 // the controller staging reconcile (US-72.3); the router reads it lazily
 // and caches briefly so boot ordering never wedges and rotation converges.
-const byoMintAuthKeyName = "llm-relay-mint-key"
+const byoMintAuthKeyName = secrets.RelayMintKeyName
 
 type byoRunConfig struct {
 	listenAddr     string
@@ -108,7 +108,7 @@ func (a *byoMintAuth) current(ctx context.Context) (string, error) {
 		}
 		return "", err
 	}
-	key := string(sec.Data["mint-key"])
+	key := string(sec.Data[secrets.RelayMintKeyDataKey])
 	if key == "" {
 		return "", errors.New("mint key secret has empty mint-key data")
 	}

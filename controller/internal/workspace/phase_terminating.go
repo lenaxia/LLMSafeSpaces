@@ -68,6 +68,14 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 	// Mirrors the Failed-phase cleanup pattern (recovery.go:31,60,112).
 	r.cleanupFailedWorkspaceSecrets(ctx, workspace)
 
+	// Epic 72 / US-72.3: the llm-relay envelope Secrets live in a DIFFERENT
+	// namespace, so owner-reference GC cannot reach them — terminate them
+	// explicitly (revocation = Secret deletion, D2) and unregister each
+	// redaction rule group in the same pass (§4.9). The workspace-namespace
+	// handoff Secret IS owner-ref'd and GC'd with the Workspace. No-op when
+	// relay staging is disabled.
+	r.relayDeleteEnvelopes(ctx, workspace)
+
 	workspace.Status.Phase = v1.WorkspacePhaseTerminated
 
 	// Record deletion metric.

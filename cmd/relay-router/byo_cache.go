@@ -16,12 +16,13 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// Envelope Secret contract (US-72.3 writes; the router only reads).
+// Envelope Secret contract (US-72.3 writes; the router only reads) —
+// constants single-sourced in pkg/secrets so the two sides cannot drift.
 const (
-	byoEnvWorkspaceLabel = "llmsafespaces.dev/workspace-id"
-	byoEnvProviderLabel  = "llmsafespaces.dev/provider-slug"
-	byoEnvDataKey        = "envelope"
-	byoEnvModelsKey      = "models"
+	byoEnvWorkspaceLabel = secrets.RelayEnvWorkspaceLabel
+	byoEnvProviderLabel  = secrets.RelayEnvProviderLabel
+	byoEnvDataKey        = secrets.RelayEnvDataKey
+	byoEnvModelsKey      = secrets.RelayEnvModelsKey
 )
 
 type envCacheKey struct {

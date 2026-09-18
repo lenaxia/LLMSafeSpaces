@@ -118,17 +118,40 @@ relayOnlyKeyDelivery:
 				"the write carve-out covers exactly the two keypair Secrets")
 		case "llmsafespaces-controller-llm-relay":
 			rules := role["rules"].([]any)
+			// US-72.3 deviation-note contract: envelopes are written
+			// BLIND (create/update/delete, no read); reads are
+			// name-scoped to pub + mint-key; update is name-scoped to
+			// the mint key (anti-storm timestamp); NEVER list (a list
+			// returns the keypair payload) and never the private-key
+			// Secret.
+			var getNames, updateNames []string
 			for _, r := range rules {
 				rule := r.(map[string]any)
 				verbs := toStrings(t, rule["verbs"])
-				if names, ok := rule["resourceNames"]; ok {
-					assert.ElementsMatch(t, []string{"llm-relay-hpke-pub"}, toStrings(t, names),
-						"controller's name-scoped rule is get-on-pub only")
-					assert.ElementsMatch(t, []string{"get"}, verbs)
-				} else {
-					assert.NotContains(t, verbs, "get", "controller's general llm-relay Secret rule must not read (pub-only read, name-scoped)")
+				var names []string
+				if rawNames, ok := rule["resourceNames"]; ok {
+					names = toStrings(t, rawNames)
 				}
+				if len(names) > 0 {
+					assert.NotContains(t, verbs, "list", "name-scoped rules must not list")
+					for _, n := range names {
+						assert.NotEqual(t, "llm-relay-hpke-key", n, "controller must never be granted the private-key Secret")
+					}
+					if relayTestContains(verbs, "get") {
+						getNames = append(getNames, names...)
+					}
+					if relayTestContains(verbs, "update") {
+						updateNames = append(updateNames, names...)
+					}
+					continue
+				}
+				assert.ElementsMatch(t, []string{"create", "update", "delete"}, verbs,
+					"controller's general llm-relay Secret rule is blind-write only")
 			}
+			assert.ElementsMatch(t, []string{"llm-relay-hpke-pub", "llm-relay-mint-key"}, getNames,
+				"controller's read carve-out is exactly pub + mint-key (name-scoped get)")
+			assert.ElementsMatch(t, []string{"llm-relay-mint-key"}, updateNames,
+				"controller's name-scoped update is exactly the mint key (anti-storm state)")
 		}
 	}
 }

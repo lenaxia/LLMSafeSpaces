@@ -438,6 +438,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var promptHandler *handlers.PromptHandler
 	var roleSvc *role.Service
 	var agentRoleHandler *handlers.AgentRoleHandler
+	var internalLLMProvidersHandler *handlers.InternalLLMProvidersHandler
 	var auditHandler *handlers.AuditHandler
 	var platformAdminHandler *handlers.PlatformAdminHandler
 	var internalOrgStatusHandler *handlers.InternalOrgStatusHandler
@@ -948,6 +949,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// surfaces best-effort audit-write + revocation-write failures.
 		platformAdminHandler = handlers.NewPlatformAdminHandler(pgOrgStore, dbSvc, svc.GetAuth(), svc.GetAuth(), log)
 		internalOrgStatusHandler = handlers.NewInternalOrgStatusHandler(pgOrgStore)
+		// US-72.3: the controller relay-staging credential source (design
+		// 0058 §4.1 hop 1). Backed by the SecretService's ResolveLLMProviders
+		// — the same rows/dedup/allowlist the batch builder applies, with a
+		// per-reveal audit row.
+		internalLLMProvidersHandler = handlers.NewInternalLLMProvidersHandler(secretService)
 
 		// US-54.1: login discovery handler for POST /api/v1/auth/lookup. Harmless
 		// when subdomain routing is disabled (falls back to direct SSO URL).
@@ -1462,6 +1468,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		AuthorityFlipHandler:            handlers.NewAuthorityFlipHandler(proxyHandler, log),
 		PlatformAdminHandler:            platformAdminHandler,
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
+		InternalLLMProvidersHandler:     internalLLMProvidersHandler,
 		PodBootstrapHandler:             podBootstrapHandler,
 		PodWorkspaceRenameHandler:       podWorkspaceRenameHandler,
 		PodAutomationHandler:            podAutomationHandler,

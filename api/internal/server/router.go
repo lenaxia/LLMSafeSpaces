@@ -188,6 +188,17 @@ type RouterConfig struct {
 	// L3/L4 defense-in-depth; the token is the load-bearing control.
 	InternalOrgStatusHandler *handlers.InternalOrgStatusHandler
 
+	// InternalLLMProvidersHandler, when non-nil, registers the
+	// cluster-internal GET
+	// /api/v1/internal/workspaces/:workspaceID/llm-providers endpoint the
+	// controller's relay staging polls (US-72.3, design 0058 §4.1 hop 1) to
+	// obtain decrypted BYO provider credentials for sealing. Same auth
+	// contract as InternalOrgStatusHandler (mandatory X-Internal-Token,
+	// fail-closed 403 when unset) — but it returns credential material, so
+	// it MUST never be ingress-exposed; every reveal is audited
+	// server-side.
+	InternalLLMProvidersHandler *handlers.InternalLLMProvidersHandler
+
 	// PodBootstrapHandler, when non-nil, registers POST /internal/v1/pod-bootstrap
 	// — the secretless credential injection endpoint (Epic 35). The workspace
 	// init container presents a projected SA token; the handler validates it via
@@ -756,6 +767,14 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// L3/L4 defense-in-depth.
 	if cfg.InternalOrgStatusHandler != nil {
 		router.GET("/api/v1/internal/orgs/:orgID/status", cfg.InternalOrgStatusHandler.GetOrgStatus)
+	}
+
+	// US-72.3 (design 0058 §4.1): cluster-internal decrypted-provider
+	// endpoint polled by the controller's relay staging. NOT behind
+	// AuthMiddleware; gated by the mandatory X-Internal-Token shared
+	// secret (fail-closed 403 when unset) — see handler docs.
+	if cfg.InternalLLMProvidersHandler != nil {
+		router.GET("/api/v1/internal/workspaces/:workspaceID/llm-providers", cfg.InternalLLMProvidersHandler.GetLLMProviders)
 	}
 
 	registerInternalPodRoutes(router, cfg)

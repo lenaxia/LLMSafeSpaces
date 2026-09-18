@@ -53,6 +53,46 @@ const (
 	KEKSecretWrapped = "wrapped-kek"
 )
 
+// Envelope Secret contract (US-72.3 writes, US-72.2's router reads via its
+// llm-relay informer). Single-sourced here so the two sides cannot drift:
+// the router's cache keys off these labels/data keys and ignores anything
+// that does not carry them.
+const (
+	// RelayEnvWorkspaceLabel identifies the workspace a staged envelope
+	// belongs to (value: the Workspace's K8s name — also the routing-path
+	// workspaceID the token scope binds).
+	RelayEnvWorkspaceLabel = "llmsafespaces.dev/workspace-id"
+	// RelayEnvProviderLabel identifies the provider slug (the decrypted
+	// LLMProviderData slug — the provider-map key the batch renders).
+	RelayEnvProviderLabel = "llmsafespaces.dev/provider-slug"
+	// RelayEnvDataKey holds the stg:v1 envelope wire string.
+	RelayEnvDataKey = "envelope"
+	// RelayEnvModelsKey optionally holds a JSON array of allowlisted model
+	// IDs — the catalog the router serves GET /models from with zero
+	// upstream fetches (design 0058 §4.5).
+	RelayEnvModelsKey = "models"
+)
+
+// llm-relay Secret names shared by controller and router.
+const (
+	// RelayPubSecretName is the controller-readable HPKE public-key Secret
+	// (payload: HPKEPubPayload under RelayPubDataKey).
+	RelayPubSecretName = "llm-relay-hpke-pub"
+	// RelayKeyPairSecretName is the router-private keypair Secret.
+	RelayKeyPairSecretName = "llm-relay-hpke-key"
+	// RelayMintKeyName is the controller-created, router-read mint-key
+	// Secret (data key "mint-key") authenticating the internal mint/rotate
+	// API (design 0058 §4.4).
+	RelayMintKeyName = "llm-relay-mint-key"
+	// RelayMintKeyDataKey is the mint-key Secret's data key.
+	RelayMintKeyDataKey = "mint-key"
+	// RelayKEKSecretName is the KMS-mode KEK Secret (prod deployments).
+	RelayKEKSecretName = "llm-relay-kek"
+	// RelayPubDataKey is the data key both keypair Secrets use for their
+	// JSON payload.
+	RelayPubDataKey = "payload"
+)
+
 const stagingKEKSize = 32
 
 const stagingHPKEInfo = "llmsafespaces-staging-hpke-v1"
