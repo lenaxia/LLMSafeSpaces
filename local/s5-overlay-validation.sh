@@ -660,32 +660,30 @@ EOF
           else
             fail S5.7g "gVisor podman-set workspace Active but opencode unreachable"
           fi
-          # Run-3 experiment: IDENTITY-MAPPING mode. Run 2 proved runsc
-          # rejects the SUBORDINATE uid_map write (newuidmap EPERM) but
-          # allows the userns clone and the setuid exec; identity mapping
-          # (no subid ranges, --userns=keep-id) is the path that keeps
-          # nesting INSIDE the strongest tier. Toggle is leg-local — a
-          # user-level containers.conf redirecting subuid/subgid paths at
-          # an empty file (engine keys merge over the baked /etc config;
-          # netns=host still applies) — so the image under test stays the
-          # exact factory golden. Trade-off under test: nested containers
-          # share the pod uid, so chown-to-other-uid images degrade.
+          # Run-3 lesson: a user-slot file at $HOME/.config/containers did
+          # NOT divert the newuidmap call (still `1 100000 65536` from
+          # /etc/subuid) — and even `podman info` trips it under runsc
+          # (rootless storage init chowns graphroot via a userns re-exec).
+          # Run 4 goes deterministic: CONTAINERS_CONF pins the user-slot
+          # path explicitly (no HOME/XDG ambiguity; the /etc slot still
+          # merges, so netns=host holds), single-printf atoms avoid the
+          # nested-quote hazard, and the conf is echoed into diagnostics.
           GVID_SETUP=$(podman_exec "$PMG_POD" \
-            'mkdir -p "$HOME/.config/containers" && : > /tmp/podman-empty-subids && printf "[engine]\nsubuid_path = \"/tmp/podman-empty-subids\"\nsubgid_path = \"/tmp/podman-empty-subids\"\n[containers]\nignore_chown_errors = true\n" > "$HOME/.config/containers/containers.conf" && podman info >/dev/null 2>&1 && echo setup-ok || { echo setup-failed; cat "$HOME/.config/containers/containers.conf" 2>/dev/null; podman info 2>&1 | tail -3; }' || true)
-          if [ "$GVID_SETUP" = "setup-ok" ]; then
-            pass S5.7g2 "identity-mode override active (empty subid paths, keep-id runs); podman info ok under runsc"
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; printf "%s\n" "[engine]" "subuid_path = \"/tmp/podman-empty-subids\"" "subgid_path = \"/tmp/podman-empty-subids\"" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf && : > /tmp/podman-empty-subids && echo "--- conf:" && cat /tmp/podman-idmode.conf && if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; podman info 2>&1 | tail -5; fi' || true)
+          if echo "$GVID_SETUP" | grep -q setup-ok; then
+            pass S5.7g2 "identity-mode override active via CONTAINERS_CONF (empty subid paths); podman info ok under runsc"
           else
             fail S5.7g2 "identity-mode setup: ${GVID_SETUP:-<no output>}"
           fi
           GRUN_OUT=$(podman_exec "$PMG_POD" \
-            'podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; podman run --rm --userns=keep-id docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
           if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
             pass S5.7h "identity-mode nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
           else
             fail S5.7h "identity-mode nested run under runsc failed: ${GRUN_OUT:-<no output>}"
           fi
           GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
-            'mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n    userns: keep-id\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
           if [ "$GCOMPOSE_RC" = "200" ]; then
             pass S5.7i "identity-mode podman-compose service up under gVisor, served HTTP 200, torn down"
           else
