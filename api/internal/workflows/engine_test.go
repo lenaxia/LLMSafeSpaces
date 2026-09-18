@@ -2144,3 +2144,188 @@ func (e *countingExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRe
 	e.calls++
 	return &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}, nil
 }
+
+// --- #1457: session-create failures join the transient retry class ---
+
+// Classifier unit: agentd's session_create_failed wrapping an opencode
+// 500/502/503 (provider blip on the create leg) is retried — the same
+// transient class as script_failed wraps. Red until
+// retryableAgentdFailure learns the new code (#1457).
+func TestExecuteWithRetry_SessionCreateFailedTransient5xxRecovers(t *testing.T) {
+	for _, status := range []string{"500", "502", "503"} {
+		ex := &scriptedExecutor{results: []struct {
+			resp *NodeExecResponse
+			err  error
+		}{
+			{resp: &NodeExecResponse{ErrorCode: "session_create_failed", Detail: "opencode returned " + status}},
+			{resp: &NodeExecResponse{Output: json.RawMessage(`{}`)}},
+		}}
+		_, err := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, 2, ex.calls, "opencode %s on session create must retry once", status)
+	}
+}
+
+// Classifier unit: the NON-transient session shapes are never retried
+// — the transport-to-opencode detail (consistent with the message leg,
+// where opencode transport errors are not retried), deterministic 4xx
+// creates, and a genuine missing session (session_not_found).
+func TestExecuteWithRetry_SessionCreateFailedNonTransientNotRetried(t *testing.T) {
+	for name, resp := range map[string]*NodeExecResponse{
+		"transport detail":   {ErrorCode: "session_create_failed", Detail: `opencode session create: Post "http://localhost:4096/session": dial tcp: connection refused`},
+		"opencode 400 wrap":  {ErrorCode: "session_create_failed", Detail: "opencode returned 400"},
+		"genuine missing":    {ErrorCode: "session_not_found", Detail: "session ses_x not found"},
+		"missing, blip text": {ErrorCode: "session_not_found", Detail: "opencode returned 500"},
+	} {
+		ex := &scriptedExecutor{results: []struct {
+			resp *NodeExecResponse
+			err  error
+		}{{resp: resp}}}
+		_, _ = executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+		assert.Equal(t, 1, ex.calls, "%s must not retry", name)
+	}
+}
+
+// Wiring pin (#1457): a routine fire whose agent leg hits a transient
+// opencode 5xx on SESSION CREATE delivers after exactly one retry and
+// burns NO failure budget. Reverting the session_create_failed arm of
+// retryableAgentdFailure leaves this red (fire fails, one failure
+// burned — the pre-fix collapse mapped the blip to
+// session_not_found, outside the retry class).
+func TestScheduler_RoutineFireRetriesSessionCreate5xx(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-ses5xx"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-ses5xx", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-ses5xx", TriggerID: "trig-ses5xx", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "session_create_failed", Detail: "opencode returned 503"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "delivered", store.statuses["fire-ses5xx"], "a transient session-create 5xx must not fail the fire")
+	assert.Equal(t, 2, ex.calls, "exactly one retry")
+	assert.Equal(t, 0, store.triggerFail["trig-ses5xx"], "no consecutiveFailures burned")
+	assert.False(t, store.disabled["trig-ses5xx"])
+}
+
+// Wiring guard (#1457): a GENUINE missing session (message-leg 404 →
+// session_not_found) is deterministic — one attempt, fire failed,
+// exactly ONE failure burned. Retrying it would triple-burn the
+// auto-disable budget on a permanently-broken session.
+func TestScheduler_RoutineFireSessionNotFoundNotRetried(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-snf"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-snf", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-snf", TriggerID: "trig-snf", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "session_not_found", Detail: "session ses_x not found"}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "failed", store.statuses["fire-snf"], "genuine missing session fails the fire")
+	assert.Equal(t, 1, ex.calls, "no retry for session_not_found")
+	assert.Equal(t, 1, store.triggerFail["trig-snf"], "exactly ONE failure burned")
+}
+
+// --- #1458: the ScriptPath pre-script leg rides the retry ---
+
+// Wiring pin (#1458): a transient agentd transport 5xx on the
+// PRE-SCRIPT leg (ScriptPath set) is retried — the fire delivers.
+// Reverting the executeWithRetry call site in the ScriptPath branch
+// (back to a direct AgentdClient.Execute) leaves this red: the first
+// 502 fails the fire after one call.
+func TestScheduler_RoutineFireScriptLegRetriesTransient5xx(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-scr5xx"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-scr5xx", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		ScriptPath: "/workspace/pre.py", Prompt: "ACK {{.scriptResult}}", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-scr5xx", TriggerID: "trig-scr5xx", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	// Call order: script leg (transient 502 → retry → success), then
+	// the agent leg (success).
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 502: bad gateway")},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"stdout":"PRE"}`)}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ACK"}`)}},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "delivered", store.statuses["fire-scr5xx"], "a transient 5xx on the pre-script leg must not fail the fire")
+	assert.Equal(t, 3, ex.calls, "script leg retried once (2 calls) + agent leg (1 call)")
+	assert.Equal(t, 0, store.triggerFail["trig-scr5xx"], "no consecutiveFailures burned")
+	assert.False(t, store.disabled["trig-scr5xx"])
+}
+
+// Wiring guard (#1458): deterministic failures on the pre-script leg
+// are NOT retried — a 4xx transport error fails the fire after one
+// attempt and burns exactly ONE failure. Guards the retry class from
+// widening into everything-shaped.
+func TestScheduler_RoutineFireScriptLegDeterministic4xxNoRetry(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsPtr := "ws-scr4xx"
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-scr4xx", OwnerType: "user", OwnerID: "u1", Enabled: true,
+		SourceType: types.TriggerSourceWebhook, WorkspaceID: &wsPtr,
+		ScriptPath: "/workspace/pre.py", Prompt: "ACK", AutoDisableAfter: 10,
+	}}
+	store.overridePending = []*wf.TriggerFireRow{{
+		ID: "fire-scr4xx", TriggerID: "trig-scr4xx", SourceType: "webhook",
+		ActionType: "routine", Status: "fired", FiredAt: time.Now().UTC(),
+	}}
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{err: fmt.Errorf("agentd node execute returned 400: bad request")},
+	}}
+	sched := &Scheduler{
+		Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		AgentdClient: ex, Activator: &mockActivator{},
+	}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	assert.Equal(t, "failed", store.statuses["fire-scr4xx"], "deterministic 4xx on the pre-script leg fails the fire")
+	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
+	assert.Equal(t, 1, store.triggerFail["trig-scr4xx"], "exactly ONE failure burned")
+}

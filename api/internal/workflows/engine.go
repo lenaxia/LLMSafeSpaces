@@ -144,26 +144,38 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 
 // retryableAgentdFailure reports whether the agentd outcome is the
 // transient-upstream shape worth retrying: agentd transport errors for
-// 500/502/503 ("agentd node execute returned NNN") or agentd's
-// script_failed wrapping an opencode 500/502/503 (provider blips).
-// TIMEOUTS (504 / agentd's script_timeout) are deliberately OUT: each
-// attempt runs in a fresh session, so retrying a timeout risks double
-// execution of a turn that may still complete in the background, and a
-// 10m-timeout retry would triple the scheduler's worst-case per-fire
-// latency. Deterministic failures (validation, unsupported language,
-// 4xx) are never retried.
+// 500/502/503 ("agentd node execute returned NNN"), agentd's
+// script_failed wrapping an opencode 500/502/503 (provider blips), or
+// agentd's session_create_failed wrapping an opencode 500/502/503
+// (#1457 — the same provider-blip class surfacing one leg earlier, at
+// session create; a FAILED CREATE retries safely: no prompt was sent,
+// so there is nothing to double-execute). TIMEOUTS (504 / agentd's
+// script_timeout) are deliberately OUT: each attempt runs in a fresh
+// session, so retrying a timeout risks double execution of a turn
+// that may still complete in the background, and a 10m-timeout retry
+// would triple the scheduler's worst-case per-fire latency. Also OUT:
+// session_create_failed's transport-to-opencode detail (opencode
+// down/crash-looping — the message leg never retried that shape
+// either) and its deterministic 4xx wraps; and session_not_found
+// ALWAYS — a genuinely missing session is permanent, and retrying it
+// would triple-burn the auto-disable budget. Deterministic failures
+// (validation, unsupported language, 4xx) are never retried.
 func retryableAgentdFailure(err error, resp *NodeExecResponse) bool {
 	if err != nil {
 		return strings.Contains(err.Error(), "returned 500") ||
 			strings.Contains(err.Error(), "returned 502") ||
 			strings.Contains(err.Error(), "returned 503")
 	}
-	if resp == nil || resp.ErrorCode != "script_failed" {
+	if resp == nil {
 		return false
 	}
-	return strings.Contains(resp.Detail, "opencode returned 500") ||
-		strings.Contains(resp.Detail, "opencode returned 502") ||
-		strings.Contains(resp.Detail, "opencode returned 503")
+	switch resp.ErrorCode {
+	case "script_failed", "session_create_failed":
+		return strings.Contains(resp.Detail, "opencode returned 500") ||
+			strings.Contains(resp.Detail, "opencode returned 502") ||
+			strings.Contains(resp.Detail, "opencode returned 503")
+	}
+	return false
 }
 
 // --- WorkspaceActivator interface ---
