@@ -225,6 +225,77 @@ else
     note_fail "T4: foreign UUID returned ${api_status}, expected 404"
 fi
 
+# T5 (happy, #1446): a captureMode-full ROUTINE fire's captured output
+# reaches the caller via .result — real content, not liveness.
+CAP_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS}" \
+    '{name:"e2e-1417-capfull",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"E2E-CAPTURED-MARKER reply ACK",captureMode:"full",autoDisableAfter:10}')")
+[[ "${api_status}" == "201" ]] || note_fail "T5 setup: capture trigger create ${api_status} ${CAP_TR_RESP:0:120}"
+CAP_ID=$(printf '%s' "${CAP_TR_RESP}" | jq -r '.id // empty')
+[[ -n "${CAP_ID}" ]] && created_triggers+=("${CAP_ID}")
+CAP_ROT=$(api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret")
+CAP_SECRET=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookSecret // empty')
+CAP_URL=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookUrl // empty')
+cap_payload='{"marker":"cap-full-e2e"}'
+cap_sig="sha256=$(printf '%s' "${cap_payload}" | openssl dgst -sha256 -hmac "${CAP_SECRET}" -hex | awk '{print $NF}')"
+if [[ -n "${CAP_URL}" && -n "${CAP_SECRET}" ]]; then
+    cap_code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${PORTFWD_PORT}${CAP_URL#*api.safespaces.dev}" \
+        -H "Content-Type: application/json" -H "X-Hub-Signature-256: ${cap_sig}" \
+        -d "${cap_payload}" --max-time 20) || cap_code="curl-failed"
+    # NOTE: delivered through the port-forward (in-cluster path, no CF).
+    cap_result=""
+    for ((i = 0; i < 60; i += 6)); do
+        cap_fires=$(api GET "/api/v1/me/triggers/${CAP_ID}/fires")
+        cap_status_one=$(printf '%s' "${cap_fires}" | jq -r '.fires[0].status // empty')
+        [[ "${cap_status_one}" == "delivered" || "${cap_status_one}" == "failed" ]] && break
+        sleep 6
+    done
+    cap_result=$(printf '%s' "${cap_fires}" | jq -r '.fires[0].result // empty' | head -c 400)
+    if [[ "${cap_status_one}" == "delivered" && "${cap_result}" != "" && "${cap_result}" != "null" ]]; then
+        ok "T5: captureMode-full fire exposes .result (delivered, content present)"
+    else
+        note_fail "T5: status=${cap_status_one:-none} result=${cap_result:-<empty>}"
+    fi
+else
+    note_fail "T5 setup: rotate failed (${api_status})"
+fi
+
+# T6 (unhappy, #1446): a FAILED routine exposes its error cause via
+# .result — delete the target workspace first, then deliver.
+WS2="$(ws_id 18)"
+seed_workspace "${WS2}" >/dev/null 2>&1 || true
+FAIL_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS2}" \
+    '{name:"e2e-1417-failcause",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"ACK",captureMode:"full",autoDisableAfter:50}')")
+FAIL_ID=$(printf '%s' "${FAIL_TR_RESP}" | jq -r '.id // empty')
+[[ -n "${FAIL_ID}" ]] && created_triggers+=("${FAIL_ID}")
+kc delete workspace "${WS2}" --ignore-not-found >/dev/null 2>&1 || true
+# give the controller a beat to tear the pod down
+sleep 10
+FAIL_ROT=$(api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret")
+FAIL_SECRET=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookSecret // empty')
+FAIL_URL=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookUrl // empty')
+fail_payload='{"x":1}'
+fail_sig="sha256=$(printf '%s' "${fail_payload}" | openssl dgst -sha256 -hmac "${FAIL_SECRET}" -hex | awk '{print $NF}')"
+if [[ -n "${FAIL_URL}" && -n "${FAIL_SECRET}" ]]; then
+    curl -s -o /dev/null -X POST "http://127.0.0.1:${PORTFWD_PORT}${FAIL_URL#*api.safespaces.dev}" \
+        -H "Content-Type: application/json" -H "X-Hub-Signature-256: ${fail_sig}" \
+        -d "${fail_payload}" --max-time 20 || true
+    fail_result=""
+    for ((i = 0; i < 60; i += 6)); do
+        fail_fires=$(api GET "/api/v1/me/triggers/${FAIL_ID}/fires")
+        fail_status_one=$(printf '%s' "${fail_fires}" | jq -r '.fires[0].status // empty')
+        [[ "${fail_status_one}" == "failed" ]] && break
+        sleep 6
+    done
+    fail_result=$(printf '%s' "${fail_fires}" | jq -r '.fires[0].result // empty' | head -c 300)
+    if [[ "${fail_status_one}" == "failed" && "${fail_result}" == *'"error"'* ]]; then
+        ok "T6: failed routine exposes its cause via .result"
+    else
+        note_fail "T6: status=${fail_status_one:-none} result=${fail_result:-<empty>}"
+    fi
+else
+    note_fail "T6 setup: rotate failed (${api_status})"
+fi
+
 if [[ "${failures}" -gt 0 ]]; then
     die "${failures} templating e2e row(s) failed"
 fi

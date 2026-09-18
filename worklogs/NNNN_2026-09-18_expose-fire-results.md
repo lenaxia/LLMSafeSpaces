@@ -25,7 +25,7 @@ None.
 ## Tests Run
 - Handler units: ExposeRoutineResult, OwnershipGuard, NullResultOmitted (omitempty edge), CapturedSuccessVisible (full-capture edge).
 - Store integration: TestTriggerFireResultRoundTrip (cause written → selected non-NULL).
-- E2E (issue-1417 script, nightly-registered, conflict-free vs open #1444): T3 owner fires GET answers with the list shape; T4 foreign trigger UUID 404s (the ownership guard).
+- E2E (issue-1417 script, nightly-registered, conflict-free vs open #1444): T3 owner fires GET answers with the list shape; T4 foreign trigger UUID 404s (the ownership guard); T5 a captureMode-full routine fire delivers through a signed webhook and its captured output is asserted in .fires[0].result (real content, not liveness); T6 a failed routine (target workspace deleted before delivery) exposes its {"error":…} cause via .result.
 - Full handlers + workflows suites green.
 
 ## Next Steps
