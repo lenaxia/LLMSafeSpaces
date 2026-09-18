@@ -271,27 +271,49 @@ jobs:
           for i in $(seq 1 30); do
             PHASE=$(kubectl -n "$NS" get pod valkey-migrate-probe \
               -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-            [[ "$PHASE" == "Succeeded" || "$PHASE" == "Failed" ]] && break
+            if [[ "$PHASE" == "Succeeded" || "$PHASE" == "Failed" ]]; then break; fi
             sleep 2
           done
 
+          # Verdict classification rides RESULT emptiness, never the
+          # (possibly stale) wait-loop PHASE sample: the phase is
+          # re-fetched AFTER the logs read — a pod completing just past
+          # the loop window still left its verdict in the logs
+          # (#1459 withdrawal delta 1).
           RESULT=$(kubectl -n "$NS" logs valkey-migrate-probe 2>/dev/null || echo "")
+          PHASE=$(kubectl -n "$NS" get pod valkey-migrate-probe \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
 
-          if [[ "$RESULT" != *"REACHABLE"* ]]; then
-            # Diagnostics BEFORE the delete — a delete-first dump
-            # describes a corpse (#1459 withdrawal delta 2).
-            echo "=== probe pod (pre-delete) ==="
-            kubectl -n "$NS" describe pod valkey-migrate-probe || true
-            echo "=== probe pod events ==="
-            kubectl -n "$NS" get events \
-              --field-selector involvedObject.name=valkey-migrate-probe || true
-            echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate Job)"
-            echo "Result: $RESULT"
+          if [[ "$RESULT" == *"REACHABLE"* ]]; then
             kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
+            echo "OK: migrate-labeled pod reached Valkey:6379 (F8)"
+            exit 0
+          fi
+
+          # Diagnostics BEFORE the delete — a delete-first dump describes
+          # a corpse (#1459 withdrawal delta 2).
+          echo "=== probe pod (pre-delete) ==="
+          kubectl -n "$NS" describe pod valkey-migrate-probe || true
+          echo "=== probe pod events ==="
+          kubectl -n "$NS" get events \
+            --field-selector involvedObject.name=valkey-migrate-probe || true
+          kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
+
+          if [[ -n "$RESULT" ]]; then
+            # The probe ran and could not connect — a REAL F8 verdict.
+            echo "=== datastore NetworkPolicies ==="
+            kubectl -n "$NS" get networkpolicy -o yaml || true
+            echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate Job)"
+            echo "Result: $RESULT (final phase: $PHASE)"
             exit 1
           fi
-          kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
-          echo "OK: migrate-labeled pod reached Valkey:6379 (F8)"
+
+          # No verdict at all: the probe never ran to completion (image
+          # pull / scheduling / transient API error) — F8 is UNVERIFIED
+          # this run, not failed. WARN without gating the ten downstream
+          # rows on a leg that produced no signal (#1459 delta 1).
+          echo "WARN: valkey migrate probe produced no verdict (final phase: ${PHASE:-unknown}) — F8 unverified this run; not gating downstream suites"
+          exit 0
 
       - name: Run e2e test suite
         env:

@@ -232,8 +232,8 @@ func runUS68F8Step(t *testing.T, svc, phase, logs string) (string, string, error
 	t.Helper()
 	bash := requireBash(t)
 	dir, trace := us68FakeKubectl(t)
-	script := "set -u; export PATH=" + dir + ":$PATH FAKE_TRACE=" + trace +
-		" FAKE_SVC=" + svc + " FAKE_PHASE=" + phase + " FAKE_LOGS=" + shQuote(logs) + "\n" +
+	script := "set -u; export PATH=" + shQuote(dir) + ":$PATH FAKE_TRACE=" + shQuote(trace) +
+		" FAKE_SVC=" + svc + " FAKE_PHASE=" + shQuote(phase) + " FAKE_LOGS=" + shQuote(logs) + "\n" +
 		us68F8StepScript(t)
 	out, err := exec.Command(bash, "-c", script).CombinedOutput()
 	traceRaw, terr := os.ReadFile(trace)
@@ -276,6 +276,90 @@ func TestUS68NightlyF8_DiagnosticsBeforeDelete(t *testing.T) {
 			t.Fatalf("a green verdict must still delete the probe pod, trace:\n%s", trace)
 		}
 	})
+}
+
+// TestUS68NightlyF8_ThreeWayVerdict pins the #1459 withdrawal delta 1:
+// the F8 step must classify on RESULT emptiness (never a stale PHASE
+// sample — the phase is re-fetched AFTER the logs read):
+//
+//   - REACHABLE            -> OK, exit 0
+//   - verdict, no REACHABLE (BLOCKED...) -> hard FAIL + datastore
+//     NetworkPolicy dump, exit 1
+//   - no verdict (empty logs: the probe never ran to completion — image
+//     pull / scheduling / transient API error) -> WARN + describe/events,
+//     exit 0 — a no-verdict leg must not hold the ten downstream rows
+//     hostage while a real verdict still hard-fails.
+func TestUS68NightlyF8_ThreeWayVerdict(t *testing.T) {
+	t.Run("no verdict (probe never completed) -> WARN, exit 0, no netpol dump", func(t *testing.T) {
+		out, trace, err := runUS68F8Step(t, "present", "Pending", "")
+		if err != nil {
+			t.Fatalf("a no-verdict leg must not fail the step (downstream rows still run), got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "WARN: valkey migrate probe produced no verdict") {
+			t.Fatalf("no verdict must WARN loudly naming F8 as unverified, got: %q", out)
+		}
+		if !strings.Contains(out, "DESCRIBE-OUTPUT") || !strings.Contains(out, "EVENTS-OUTPUT") {
+			t.Fatalf("the no-verdict leg must dump describe/events (scheduling/pull evidence), got: %q", out)
+		}
+		if strings.Contains(out, "NETPOL-OUTPUT") {
+			t.Fatalf("the datastore NetworkPolicy dump belongs to the REAL-verdict fail leg, got: %q", out)
+		}
+		if !strings.Contains(trace, "delete pod valkey-migrate-probe") {
+			t.Fatalf("the probe pod must still be cleaned up, trace:\n%s", trace)
+		}
+	})
+
+	t.Run("terminal phase but empty logs -> still the no-verdict WARN leg", func(t *testing.T) {
+		// Classification is on RESULT emptiness, not the phase sample: a
+		// pod that completed without leaving a verdict in its logs
+		// (log-collection anomaly) is UNVERIFIED, not BLOCKED.
+		out, _, err := runUS68F8Step(t, "present", "Succeeded", "")
+		if err != nil {
+			t.Fatalf("empty logs classify as no-verdict regardless of phase, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "WARN: valkey migrate probe produced no verdict") {
+			t.Fatalf("expected the no-verdict WARN, got: %q", out)
+		}
+	})
+
+	t.Run("real BLOCKED verdict -> FAIL + datastore NetworkPolicy dump", func(t *testing.T) {
+		out, _, err := runUS68F8Step(t, "present", "Succeeded", "BLOCKED")
+		if err == nil {
+			t.Fatalf("a real verdict must hard-fail, got: %q", out)
+		}
+		if !strings.Contains(out, "FAIL: migrate-labeled pod could not reach Valkey:6379") {
+			t.Fatalf("expected the FAIL verdict, got: %q", out)
+		}
+		if !strings.Contains(out, "NETPOL-OUTPUT") {
+			t.Fatalf("a real failing verdict must dump the datastore NetworkPolicies, got: %q", out)
+		}
+	})
+
+	t.Run("phase is re-fetched AFTER the logs read", func(t *testing.T) {
+		// The wait loop's PHASE sample can be stale (pod completing just
+		// after the loop window). The step must re-read the phase after
+		// the logs: the LAST pod fetch in the trace follows the logs call.
+		_, trace, err := runUS68F8Step(t, "present", "Pending", "")
+		if err != nil {
+			t.Fatalf("no-verdict leg must exit 0, got: %v", err)
+		}
+		logsAt := strings.LastIndex(trace, "logs valkey-migrate-probe")
+		lastPhase := strings.LastIndex(trace, "get pod valkey-migrate-probe")
+		if logsAt < 0 || lastPhase < logsAt {
+			t.Fatalf("the phase must be re-fetched after the logs read (logs@%d, last pod fetch@%d); trace:\n%s", logsAt, lastPhase, trace)
+		}
+	})
+
+	// Structural anchors: the classification expressions themselves.
+	step := us68F8Step(t)
+	for _, pin := range []string{
+		`if [[ "$RESULT" == *"REACHABLE"* ]]`,
+		`[[ -n "$RESULT" ]]`,
+	} {
+		if !strings.Contains(step, pin) {
+			t.Fatalf("F8 verdict classification must keep %q — classification is on RESULT emptiness (#1459 delta 1)", pin)
+		}
+	}
 }
 
 // TestUS68NightlyF8_StepExecutes runs the REAL F8 step script against a
