@@ -113,7 +113,7 @@ S5.7d/e/f and S5.7i were downstream of these two blockers (no pull ever succeede
 
 Re-enable criteria when gVisor#13944 resolves: subuid mode under runsc (uid_map subordinate writes allowed) → one catalog set, all tiers, no seccomp change. The S5.7 leg on the branch is the validation harness for that day.
 
-Salvage note: the `local/lib/gvisor.sh` sentry-sidecar fix on this branch is INDEPENDENT of podman — S5.6 was broken on main for any gVisor run (run 1 evidence: no runsc pod could boot). PR that separately regardless of the podman decision.
+Salvage note (CORRECTED 2026-09-18): the spike branch was cut from main BEFORE #1406 landed, which is why run 1 hit the `gvisor_sentry` sidecar failure — this session reimplemented, in parallel, the fix main had just merged (`7fef6c9e`, PR #1406: sidecar-tree install + `TestUS70GvisorBundle_InstallsSidecarTree` + its own worklog). Nothing to salvage — main already carries the complete fix; the duplicate on this branch is dead weight only if the branch is ever rebased.
 
 ## Final verdict
 
