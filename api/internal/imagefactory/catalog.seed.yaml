@@ -236,6 +236,92 @@ extensions:
     supportedBases: [bookworm]
     description: "Ninja build system (fast C/C++ builds)"
 
+  # ── Nested containers (rootless Podman) ────────────────────────────────
+  # Runs containers INSIDE the workspace pod with no root, no added
+  # capabilities, no privileged pods — the workspace security context is
+  # unchanged (README-LLM §Nested Containers). Select ALL SIX together;
+  # the apt row alone installs stock Debian defaults that assume /dev/fuse
+  # and slirp4netns, neither of which exists in a workspace pod.
+  #   - podman (apt): engine + uidmap (setuid newuidmap/newgidmap — the
+  #     subordinate-mapping contract for unprivileged user namespaces) +
+  #     podman-compose + podman-docker (a /usr/bin/docker shim so
+  #     docker-fluent agents and scripts just work)
+  #   - podman-subuid / podman-subgid: subordinate uid/gid range for the
+  #     sandbox user (uid 1000), disjoint from everything else
+  #   - podman-containers-conf: netns="host" — pods carry no /dev/net/tun,
+  #     so rootless slirp4netns/pasta cannot run; nested containers share
+  #     the pod network namespace (platform egress policy still applies)
+  #   - podman-storage-conf: vfs driver + writable runroot/graphroot —
+  #     pods carry no /dev/fuse (no fuse-overlayfs) and the rootfs is
+  #     read-only; runroot lives on the /sandbox-runtime tmpfs, graphroot
+  #     on the /home/sandbox PVC so nested images persist across
+  #     suspend/resume (at the cost of PVC quota)
+  #   - podman-profile: exports XDG_RUNTIME_DIR to /sandbox-runtime/run —
+  #     rootless podman requires it and /run is read-only; sourced by
+  #     login shells only (bash -l), non-login shells must export it
+  # Validated on runc and runsc (gVisor) by the S5.7 leg
+  # (local/s5-overlay-validation.sh, opt-in via S5_RUN_PODMAN=1).
+  - id: podman
+    type: apt
+    value: podman uidmap podman-compose podman-docker
+    supportedBases: [bookworm]
+    description: "Rootless Podman container engine + docker CLI shim (podman, uidmap, podman-compose, podman-docker). Part of the podman set — select with the podman-* file extensions"
+
+  - id: podman-subuid
+    type: file
+    value: |
+      sandbox:100000:65536
+    fileSpec:
+      path: /etc/subuid
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "Subordinate UID range for the sandbox user (newuidmap contract for unprivileged user namespaces). Part of the podman set"
+
+  - id: podman-subgid
+    type: file
+    value: |
+      sandbox:100000:65536
+    fileSpec:
+      path: /etc/subgid
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "Subordinate GID range for the sandbox user (newgidmap contract for unprivileged user namespaces). Part of the podman set"
+
+  - id: podman-containers-conf
+    type: file
+    value: |
+      [containers]
+      netns = "host"
+    fileSpec:
+      path: /etc/containers/containers.conf
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "Nested containers share the pod network namespace (no /dev/net/tun for rootless bridges; egress policy still applies). Part of the podman set"
+
+  - id: podman-storage-conf
+    type: file
+    value: |
+      [storage]
+      driver = "vfs"
+      runroot = "/sandbox-runtime/containers/run"
+      graphroot = "/home/sandbox/.local/share/containers/storage"
+    fileSpec:
+      path: /etc/containers/storage.conf
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "vfs storage on writable paths (no /dev/fuse, read-only rootfs); nested images persist on the /home/sandbox PVC. Part of the podman set"
+
+  - id: podman-profile
+    type: file
+    value: |
+      export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/sandbox-runtime/run}"
+      mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+    fileSpec:
+      path: /etc/profile.d/podman.sh
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "XDG_RUNTIME_DIR export for rootless podman (/run is read-only; /sandbox-runtime is the pod-ephemeral tmpfs). Part of the podman set"
+
   # ── Statistics / Data Science ──────────────────────────────────────────
   - id: r-base
     type: apt

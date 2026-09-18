@@ -4,6 +4,9 @@
 package imagefactory
 
 import (
+	"encoding/base64"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -196,6 +199,74 @@ func TestRenderDockerfile_OrderStableAcrossReruns(t *testing.T) {
 		if got != first {
 			t.Fatalf("iteration %d diverged from first render", i)
 		}
+	}
+}
+
+// TestRenderDockerfile_PodmanSetGolden: rendering the seed's podman set
+// (the rootless-nesting catalog extension set) must byte-match
+// testdata/podman-set.Dockerfile — the file local/s5-overlay-validation.sh
+// S5.7 builds as the workspace runtime image (FROM repointed at the
+// locally built base). Byte-equality means the spike exercises the exact
+// artifact the factory emits; drift fails here, not in CI. The embedded
+// base64 blobs are additionally decoded and content-pinned so a golden
+// regen can never silently change the baked configs.
+func TestRenderDockerfile_PodmanSetGolden(t *testing.T) {
+	t.Parallel()
+	seed, err := LoadSeed()
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	byID := map[string]Extension{}
+	for _, e := range seed.Extensions {
+		byID[e.ID] = e.ToExtension()
+	}
+	rv, err := ResolveSelection(podmanSetIDs, byID, "bookworm")
+	if err != nil {
+		t.Fatalf("ResolveSelection: %v", err)
+	}
+	base := Base{Name: "bookworm", Version: "2026.09.0", Image: "ghcr.io/lenaxia/llmsafespaces/base", Tag: "2026.09.0"}
+	out, err := RenderDockerfile(rv, base)
+	if err != nil {
+		t.Fatalf("RenderDockerfile: %v", err)
+	}
+	want, err := os.ReadFile("testdata/podman-set.Dockerfile")
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if out != string(want) {
+		t.Fatalf("podman set render drifted from golden (regen testdata only via the renderer)\n--- want ---\n%s\n--- got ---\n%s", want, out)
+	}
+
+	// Content pins: every printf|base64 blob decodes to the intended config.
+	blobRe := regexp.MustCompile(`printf %s "([^"]+)" \| base64 -d > "([^"]+)"`)
+	decoded := map[string]string{}
+	for _, m := range blobRe.FindAllStringSubmatch(out, -1) {
+		raw, err := base64.StdEncoding.DecodeString(m[1])
+		if err != nil {
+			t.Fatalf("golden blob for %s does not decode: %v", m[2], err)
+		}
+		decoded[m[2]] = string(raw)
+	}
+	if len(decoded) != 5 {
+		t.Fatalf("expected 5 baked files, got %d: %v", len(decoded), decoded)
+	}
+	if got := decoded["/etc/subuid"]; got != "sandbox:100000:65536\n" {
+		t.Errorf("/etc/subuid content: %q", got)
+	}
+	if got := decoded["/etc/subgid"]; got != "sandbox:100000:65536\n" {
+		t.Errorf("/etc/subgid content: %q", got)
+	}
+	if got := decoded["/etc/containers/containers.conf"]; got != "[containers]\nnetns = \"host\"\n" {
+		t.Errorf("containers.conf content: %q", got)
+	}
+	st := decoded["/etc/containers/storage.conf"]
+	for _, want := range []string{"driver = \"vfs\"", "runroot = \"/sandbox-runtime/containers/run\"", "graphroot = \"/home/sandbox/.local/share/containers/storage\""} {
+		if !strings.Contains(st, want) {
+			t.Errorf("storage.conf missing %q:\n%s", want, st)
+		}
+	}
+	if pf := decoded["/etc/profile.d/podman.sh"]; !strings.Contains(pf, "XDG_RUNTIME_DIR") || !strings.Contains(pf, "/sandbox-runtime/run") {
+		t.Errorf("profile.d/podman.sh content: %q", pf)
 	}
 }
 

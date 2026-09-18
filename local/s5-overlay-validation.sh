@@ -26,6 +26,12 @@
 #       (design 0051's open item): install runsc on the kind node,
 #       register the handler, boot a workspace on RuntimeClass gvisor,
 #       assert Ready + overlays mounted.
+#   S5.7 Rootless-podman nesting leg (opt-in, S5_RUN_PODMAN=1): builds
+#       the image-factory podman-set overlay (golden-locked to
+#       RenderDockerfile) and proves nested containers run in the
+#       hardened workspace pod on BOTH runc and runsc — engine boot,
+#       docker shim, nested run, podman-compose on host netns, and
+#       image-store persistence across suspend/resume.
 #
 # Topology: controller-only chart install (api/mcp/webhooks lean, same as
 # us2-kind-integration.sh — the reconciler is what is under test). Images
@@ -447,9 +453,11 @@ fi
 # S5_SKIP_GVISOR=1 records the skip in the summary via fail() but the run
 # still exits red — the flip decision requires a real runsc run, not a
 # skip (the env gate only makes the deliberate skip visible in the log).
+GV_OK=0
 if [ "${S5_SKIP_GVISOR:-0}" = "1" ]; then
   fail S5.6 "SKIPPED via S5_SKIP_GVISOR=1 — the flip decision requires a real runsc run"
 else
+  GV_OK=0
   log "S5.6: installing gVisor runsc on the kind node"
   NODE=$(kind get nodes --name "$CLUSTER_NAME" | head -1)
   # One provisioning flow: local/lib/gvisor.sh (the inline GCS copy this
@@ -463,6 +471,7 @@ else
        bash "$REPO_ROOT/local/lib/gvisor.sh" install "$NODE" \
       && CLUSTER_NAME="$CLUSTER_NAME" CTX="kind-$CLUSTER_NAME" \
        bash "$REPO_ROOT/local/lib/gvisor.sh" runtimeclass; then
+    GV_OK=1
     WS_GVISOR="ws-s5-gvisor"
     log "S5.6: creating gvisor workspace $WS_GVISOR"
     # spec.runtimeClass (the CRD field) is admin-gated: the webhook
@@ -505,3 +514,172 @@ EOF
     fail S5.6 "runsc installation failed on the kind node (environment — re-run on a gvisor-capable runner)"
   fi
 fi
+
+# --- S5.7: rootless-podman nesting leg (image-factory podman set) -----------
+# Opt-in spike leg (S5_RUN_PODMAN=1, wired to the workflow_dispatch input):
+# not part of the standing flip decision yet, so weekly runs skip it WITHOUT
+# a FAIL row. Builds the exact workspace image the factory would emit for
+# the podman extension set — api/internal/imagefactory/testdata/
+# podman-set.Dockerfile, byte-locked to RenderDockerfile by
+# TestRenderDockerfile_PodmanSetGolden, FROM repointed at the locally built
+# base — then boots runc AND runsc workspaces on it. What this proves on a
+# real kubelet that unit tests cannot:
+#   S5.7a runc podman workspace reaches Active (hardened pod spec unchanged)
+#   S5.7b login shells inherit XDG_RUNTIME_DIR via /etc/profile.d
+#   S5.7c engine boots: podman info, vfs driver won, docker shim answers
+#   S5.7d a nested container runs: podman run --rm alpine (userns+newuidmap
+#         under RuntimeDefault seccomp, no caps, read-only rootfs)
+#   S5.7e podman-compose brings up a service on host netns, serves HTTP
+#   S5.7f nested images survive suspend→activate (graphroot on the PVC)
+#   S5.7g/S5.7h/S5.7i the same three checks under gVisor (runsc) — the
+#         decisive leg: nesting INSIDE the strongest isolation tier.
+podman_exec() { # pod script — workspace container runs as uid 1000; the
+  # explicit exports document the non-login-shell caveat (profile.d only
+  # covers bash -l): XDG_RUNTIME_DIR on the pod-ephemeral tmpfs, HOME on
+  # the PVC (kubectl exec does not inherit the image WORKDIR user env).
+  kubectl -n "$NS" exec "$1" -c workspace -- /bin/bash -c "$2" 2>/dev/null
+}
+
+if [ "${S5_RUN_PODMAN:-0}" != "1" ]; then
+  log "S5.7: rootless-podman leg not requested (S5_RUN_PODMAN=0) — dispatch with run-podman-spike to execute"
+else
+  log "S5.7: building runtime-base-podman overlay (factory golden Dockerfile on the stripped base)"
+  sed "s|^FROM .*|FROM $REG/llmsafespaces/runtime-base:ci|" \
+    api/internal/imagefactory/testdata/podman-set.Dockerfile >"$TMPDIR/podman-overlay.Dockerfile"
+  if docker build --network host -f "$TMPDIR/podman-overlay.Dockerfile" \
+      -t "$REG/llmsafespaces/runtime-base-podman:ci" . \
+     && docker push "$REG/llmsafespaces/runtime-base-podman:ci" >/dev/null; then
+    WS_PM="ws-s5-podman"
+    PM_MANIFEST=$(mktemp)
+    cat >"$PM_MANIFEST" <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $WS_PM
+  namespace: $NS
+spec:
+  owner:
+    userID: s5-int
+  runtime: $REG/llmsafespaces/runtime-base-podman:ci
+  storage:
+    size: 1Gi
+EOF
+    kubectl -n "$NS" apply -f "$PM_MANIFEST" >/dev/null
+    if wait_phase "$WS_PM" Active 600; then
+      PM_POD=$(pod_of "$WS_PM")
+      PM_OC=$(podman_exec "$PM_POD" 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4096/' || echo 000)
+      if [ "$PM_OC" != "000" ]; then
+        pass S5.7a "runc podman-set workspace Active; opencode serves (http $PM_OC) — hardening untouched"
+      else
+        fail S5.7a "runc podman-set workspace Active but opencode unreachable"
+      fi
+
+      XDG_OUT=$(podman_exec "$PM_POD" 'bash -lc '\''printf %s "${XDG_RUNTIME_DIR:-unset}"'\''' || true)
+      if [ "$XDG_OUT" = "/sandbox-runtime/run" ]; then
+        pass S5.7b "login shells inherit XDG_RUNTIME_DIR=/sandbox-runtime/run via /etc/profile.d"
+      else
+        fail S5.7b "login-shell XDG_RUNTIME_DIR is ${XDG_OUT:-empty} (profile.d not sourced?)"
+      fi
+
+      PM_INFO=$(podman_exec "$PM_POD" \
+        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman info >/dev/null 2>&1 && echo info-ok' || true)
+      PM_DRV=$(podman_exec "$PM_POD" \
+        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman info --format "{{.Store.GraphDriverName}}" 2>/dev/null' || true)
+      PM_SHIM=$(podman_exec "$PM_POD" 'docker --version 2>/dev/null' || true)
+      if [ "$PM_INFO" = "info-ok" ] && [ "$PM_DRV" = "vfs" ] && [ -n "$PM_SHIM" ]; then
+        pass S5.7c "engine boots rootless (driver=$PM_DRV); docker shim: $PM_SHIM"
+      else
+        fail S5.7c "engine/shim check: info=${PM_INFO:-fail} driver=${PM_DRV:-?} shim=${PM_SHIM:-none}"
+      fi
+
+      RUN_OUT=$(podman_exec "$PM_POD" \
+        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+      if echo "$RUN_OUT" | grep -q podman-nested-ok; then
+        pass S5.7d "nested container ran under runc (userns + newuidmap, no caps, RuntimeDefault seccomp)"
+      else
+        fail S5.7d "nested run failed: ${RUN_OUT:-<no output>}"
+      fi
+
+      COMPOSE_RC=$(podman_exec "$PM_POD" \
+        'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+      if [ "$COMPOSE_RC" = "200" ]; then
+        pass S5.7e "podman-compose service up on host netns, served HTTP 200, torn down"
+      else
+        fail S5.7e "compose smoke: ${COMPOSE_RC:-<failed before curl>}"
+      fi
+
+      log "S5.7f: suspend → activate (nested image store on PVC)"
+      if patch_workspace_retry "$WS_PM" '{"spec":{"suspend":true}}' && wait_phase "$WS_PM" Suspended 300 \
+         && patch_workspace_retry "$WS_PM" '{"spec":{"suspend":false}}' && wait_phase "$WS_PM" Active 600; then
+        PM_POD=$(pod_of "$WS_PM")
+        PM_IMGS=$(podman_exec "$PM_POD" \
+          'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman images --format "{{.Repository}}" 2>/dev/null' || true)
+        if echo "$PM_IMGS" | grep -q "library/alpine\|library/nginx"; then
+          pass S5.7f "nested images survived suspend→activate (graphroot on the PVC)"
+        else
+          fail S5.7f "image store empty after resume: ${PM_IMGS:-none}"
+        fi
+      else
+        fail S5.7f "suspend/activate cycle did not complete"
+      fi
+
+      if [ "$GV_OK" != "1" ]; then
+        fail S5.7g "gVisor sub-leg unavailable: S5.6 runsc install failed or was skipped"
+      else
+        WS_PMG="ws-s5-podman-gvisor"
+        PMG_MANIFEST=$(mktemp)
+        cat >"$PMG_MANIFEST" <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $WS_PMG
+  namespace: $NS
+  annotations:
+    llmsafespaces.dev/allow-runtime-class-override: "true"
+spec:
+  owner:
+    userID: s5-int
+  runtime: $REG/llmsafespaces/runtime-base-podman:ci
+  runtimeClass: gvisor
+  storage:
+    size: 1Gi
+EOF
+        kubectl -n "$NS" apply -f "$PMG_MANIFEST" >/dev/null
+        if wait_phase "$WS_PMG" Active 600; then
+          PMG_POD=$(pod_of "$WS_PMG")
+          PMG_OC=$(podman_exec "$PMG_POD" 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4096/' || echo 000)
+          if [ "$PMG_OC" != "000" ]; then
+            pass S5.7g "gVisor podman-set workspace Active; opencode serves (http $PMG_OC)"
+          else
+            fail S5.7g "gVisor podman-set workspace Active but opencode unreachable"
+          fi
+          GRUN_OUT=$(podman_exec "$PMG_POD" \
+            'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; podman run --rm docker.io/library/alpine:3.20 echo podman-nested-ok' || true)
+          if echo "$GRUN_OUT" | grep -q podman-nested-ok; then
+            pass S5.7h "nested container ran UNDER gVisor — nesting inside the strongest isolation tier works"
+          else
+            fail S5.7h "nested run under runsc failed: ${GRUN_OUT:-<no output>}"
+          fi
+          GCOMPOSE_RC=$(podman_exec "$PMG_POD" \
+            'export XDG_RUNTIME_DIR=/sandbox-runtime/run HOME=/home/sandbox; mkdir -p /tmp/podman-compose-test && printf "services:\n  web:\n    image: docker.io/library/nginx:1.27-alpine\n    network_mode: host\n" > /tmp/podman-compose-test/docker-compose.yaml && cd /tmp/podman-compose-test && podman-compose down >/dev/null 2>&1 || true; podman-compose up -d >/dev/null 2>&1 && sleep 5 && curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:80/ && podman-compose down >/dev/null 2>&1' || true)
+          if [ "$GCOMPOSE_RC" = "200" ]; then
+            pass S5.7i "podman-compose service up under gVisor, served HTTP 200, torn down"
+          else
+            fail S5.7i "compose smoke under runsc: ${GCOMPOSE_RC:-<failed before curl>}"
+          fi
+        else
+          fail S5.7g "gVisor podman-set workspace never reached Active"
+          kubectl -n "$NS" describe pod -l llmsafespaces.dev/workspace="$WS_PMG" 2>&1 | tail -30 || true
+        fi
+        kubectl -n "$NS" delete workspace "$WS_PMG" --wait=false >/dev/null 2>&1 || true
+      fi
+    else
+      fail S5.7a "runc podman-set workspace never reached Active"
+      kubectl -n "$NS" describe pod -l llmsafespaces.dev/workspace="$WS_PM" 2>&1 | tail -30 || true
+    fi
+    kubectl -n "$NS" delete workspace "$WS_PM" --wait=false >/dev/null 2>&1 || true
+  else
+    fail S5.7 "runtime-base-podman overlay image build/push failed"
+  fi
+fi
+

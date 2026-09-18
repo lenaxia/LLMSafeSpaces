@@ -6,6 +6,7 @@ package imagefactory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -200,6 +201,103 @@ func TestLoadSeed_PlaywrightDepsNoTrailingNewline(t *testing.T) {
 		}
 	}
 	t.Fatal("playwright-deps extension not found in seed")
+}
+
+// podmanSetIDs is the rootless-podman catalog set: one apt row (engine +
+// setuid mapping helpers + compose + docker shim) and five baked config
+// files. The set lets workspace users run nested containers without root
+// or added capabilities (README-LLM §Nested Containers; validated by the
+// S5.7 leg on runc and runsc).
+var podmanSetIDs = []string{
+	"podman",
+	"podman-subuid",
+	"podman-subgid",
+	"podman-containers-conf",
+	"podman-storage-conf",
+	"podman-profile",
+}
+
+func TestLoadSeed_PodmanSet(t *testing.T) {
+	t.Parallel()
+	seed, err := LoadSeed()
+	require.NoError(t, err)
+
+	byID := map[string]SeedExtensionEntry{}
+	for _, ext := range seed.Extensions {
+		byID[ext.ID] = ext
+	}
+
+	for _, id := range podmanSetIDs {
+		ext, ok := byID[id]
+		require.True(t, ok, "extension %s should be in seed", id)
+		assert.Equal(t, []string{"bookworm"}, ext.SupportedBases, "%s", id)
+	}
+
+	apt := byID["podman"]
+	assert.Equal(t, ExtensionTypeApt, apt.Type)
+	assert.NotContains(t, apt.Value, "\n",
+		"podman apt value must be single-line (breaks Dockerfile apt block)")
+	for _, pkg := range []string{"podman", "uidmap", "podman-compose", "podman-docker"} {
+		assert.Contains(t, apt.Value, pkg,
+			"podman apt value must install %s (uidmap = setuid newuidmap/newgidmap; podman-compose = compose front-end; podman-docker = /usr/bin/docker shim so docker-fluent agents just work)", pkg)
+	}
+
+	paths := map[string]string{
+		"podman-subuid":          "/etc/subuid",
+		"podman-subgid":          "/etc/subgid",
+		"podman-containers-conf": "/etc/containers/containers.conf",
+		"podman-storage-conf":    "/etc/containers/storage.conf",
+		"podman-profile":         "/etc/profile.d/podman.sh",
+	}
+	for id, path := range paths {
+		ext := byID[id]
+		assert.Equal(t, ExtensionTypeFile, ext.Type, "%s", id)
+		require.NotNil(t, ext.FileSpec, "%s", id)
+		assert.Equal(t, path, ext.FileSpec.Path, "%s", id)
+		assert.NotEmpty(t, ext.Value, "%s", id)
+	}
+
+	// The subuid/subgid rows must map the sandbox user (uid 1000, the
+	// workspace pod's runAsNonRoot uid) into a disjoint subordinate range —
+	// the newuidmap contract that makes unprivileged user namespaces work.
+	assert.Equal(t, "sandbox:100000:65536\n", byID["podman-subuid"].Value)
+	assert.Equal(t, "sandbox:100000:65536\n", byID["podman-subgid"].Value)
+}
+
+// TestSeedCatalog_PodmanSetResolvesAndRenders: the full set resolves
+// against the seeded catalog, passes ValidateResolved, and renders a
+// Dockerfile where the apt block (Debian's stock /etc/containers defaults)
+// precedes the file block (the platform overrides) — the ordering that
+// makes the baked containers.conf/storage.conf win.
+func TestSeedCatalog_PodmanSetResolvesAndRenders(t *testing.T) {
+	t.Parallel()
+	store := &fakeSeedStore{}
+	require.NoError(t, SeedCatalog(context.Background(), store))
+
+	exts := map[string]Extension{}
+	for _, id := range podmanSetIDs {
+		ext, err := store.GetExtension(context.Background(), id)
+		require.NoError(t, err)
+		exts[id] = ext
+	}
+
+	rv, err := ResolveSelection(podmanSetIDs, exts, "bookworm")
+	require.NoError(t, err)
+	require.NoError(t, ValidateResolved(rv))
+
+	base := Base{Name: "bookworm", Version: "2026.09.0", Image: "ghcr.io/lenaxia/llmsafespaces/base", Tag: "2026.09.0"}
+	out, err := RenderDockerfile(rv, base)
+	require.NoError(t, err)
+	mustContain(t, out, "uidmap")
+	mustContain(t, out, `"/etc/subuid"`)
+	mustContain(t, out, `"/etc/profile.d/podman.sh"`)
+
+	aptIdx := strings.Index(out, "apt-get install")
+	fileIdx := strings.Index(out, `"/etc/subuid"`)
+	require.GreaterOrEqual(t, aptIdx, 0, "apt block missing")
+	require.GreaterOrEqual(t, fileIdx, 0, "file block missing")
+	assert.Less(t, aptIdx, fileIdx,
+		"apt block must precede the file overrides so baked /etc/containers configs overwrite package defaults")
 }
 
 // TestSeedCatalog_BootAfterDefaultMove_NoSecondDefault (#936 C2): the

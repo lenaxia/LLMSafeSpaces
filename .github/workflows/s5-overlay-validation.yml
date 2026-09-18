@@ -11,6 +11,11 @@ name: S5 overlay validation (kind)
 
 on:
   workflow_dispatch:
+    inputs:
+      run-podman-spike:
+        description: "Run the S5.7 rootless-podman nesting leg (runc + runsc)"
+        type: boolean
+        default: false
   schedule:
     # Sundays 06:00 UTC — after the attachments slot (Sun 04:00), before
     # the US-2 L3 slot (Mon 05:00).
@@ -20,7 +25,7 @@ jobs:
   s5-overlay:
     name: S5 overlay checks
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
 
@@ -40,6 +45,10 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
       - name: Run S5 overlay validation checks
+        env:
+          # Spike leg opt-in: weekly schedule runs keep the standing
+          # suite (S5_RUN_PODMAN unset → leg logs a skip, no FAIL).
+          S5_RUN_PODMAN: ${{ inputs.run-podman-spike && '1' || '0' }}
         run: local/s5-overlay-validation.sh
 
       - name: Dump diagnostics on failure
@@ -47,7 +56,7 @@ jobs:
         run: |
           export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
           kubectl -n llmsafespaces get pods -o wide || true
-          for ws in ws-s5-main ws-s5-bad-agentd ws-s5-bad-opencode ws-s5-gvisor; do
+          for ws in ws-s5-main ws-s5-bad-agentd ws-s5-bad-opencode ws-s5-gvisor ws-s5-podman ws-s5-podman-gvisor; do
             kubectl -n llmsafespaces describe pod -l llmsafespaces.dev/workspace="$ws" || true
             kubectl -n llmsafespaces logs -l llmsafespaces.dev/workspace="$ws" -c workspace --tail=80 || true
             kubectl get workspace "$ws" -o yaml || true
