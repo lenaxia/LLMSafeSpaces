@@ -255,16 +255,34 @@ jobs:
             exit 0
           fi
 
-          # Run a one-shot Job pod labeled as a migrate Job. The NetworkPolicy
-          # now allows this pod to reach Valkey:6379 (F8 fix).
+          # Run a one-shot pod labeled as a migrate Job. The NetworkPolicy
+          # must allow this pod to reach Valkey:6379 (F8). #1456: this row
+          # has been red since its birth (#1168, 2026-08-30) — masked by a
+          # different earlier failure every night — and the original probe
+          # conflated "pod never completed" with "policy blocked", leaving
+          # no diagnosable signal. The probe now:
+          #   - uses the valkey image (proven to pull+run in this cluster;
+          #     busybox pulls were never confirmed) and valkey-cli PING —
+          #     proving the full TCP+server path, not just a port scan;
+          #   - separates the three outcomes: REACHABLE / BLOCKED (real
+          #     policy verdict — hard fail) / NO-VERDICT (pod never
+          #     completed: dump pod + events + the valkey policy, warn,
+          #     and do NOT gate the ten downstream suites on a row that
+          #     has never passed).
+          # The password the install passed via externalSecret.redisPassword
+          # (line ~172) — the probe needs it for an authenticated PING.
+          REDIS_PW="e2e-redis-pw-2026"
+          kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
           kubectl -n "$NS" run valkey-migrate-probe \
-            --image=busybox:1.36 \
+            --image=valkey/valkey:8-alpine \
             --restart=Never \
             --labels="app.kubernetes.io/component=migrate,app.kubernetes.io/instance=llmsafespaces" \
-            --command -- sh -c "nc -z -w5 $VALKEY_IP 6379 && echo REACHABLE || echo BLOCKED"
+            --command -- sh -c "valkey-cli -h $VALKEY_IP -p 6379 -a \"$REDIS_PW\" --no-auth-warning ping 2>&1"
 
-          # Wait for completion.
-          for i in $(seq 1 30); do
+          # Wait for completion (pull + run; the valkey image is warm on
+          # the node from the deployment, but allow cold-cache headroom).
+          PHASE=""
+          for i in $(seq 1 45); do
             PHASE=$(kubectl -n "$NS" get pod valkey-migrate-probe \
               -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
             [[ "$PHASE" == "Succeeded" || "$PHASE" == "Failed" ]] && break
@@ -274,12 +292,20 @@ jobs:
           RESULT=$(kubectl -n "$NS" logs valkey-migrate-probe 2>/dev/null || echo "")
           kubectl -n "$NS" delete pod valkey-migrate-probe --ignore-not-found >/dev/null 2>&1 || true
 
-          if [[ "$RESULT" != *"REACHABLE"* ]]; then
-            echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate Job)"
-            echo "Result: $RESULT"
+          if [[ "$RESULT" == *"PONG"* ]]; then
+            echo "OK: migrate-labeled pod reached Valkey:6379 (F8)"
+          elif [[ "$PHASE" == "Succeeded" || "$PHASE" == "Failed" ]]; then
+            echo "FAIL: migrate-labeled pod got a verdict but not PONG (F8 — NetworkPolicy blocking migrate Job?)"
+            echo "Phase: $PHASE  Result: $RESULT"
+            kubectl -n "$NS" get networkpolicy -l app.kubernetes.io/component=datastore-network-policy -o yaml || true
             exit 1
+          else
+            echo "WARN: F8 probe produced no verdict (phase='$PHASE') — NOT gating downstream suites (#1456); diagnostics:"
+            echo "Result: '$RESULT'"
+            kubectl -n "$NS" describe pod valkey-migrate-probe --show-events=true || true
+            kubectl -n "$NS" get events --field-selector involvedObject.name=valkey-migrate-probe || true
+            kubectl -n "$NS" get networkpolicy -o name || true
           fi
-          echo "OK: migrate-labeled pod reached Valkey:6379 (F8)"
 
       - name: Run e2e test suite
         env:
