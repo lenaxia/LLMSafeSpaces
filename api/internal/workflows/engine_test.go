@@ -440,19 +440,20 @@ func TestComputeNextFire_TimezoneInvalid(t *testing.T) {
 // --- Scheduler tests ---
 
 type mockSchedulerStore struct {
-	mu                sync.Mutex
-	triggers          []*wf.TriggerRow
-	workflows         map[string]*wf.WorkflowRow
-	fires             []*wf.TriggerFireRow
-	runs              []*wf.WorkflowRunRow
-	disabled          map[string]bool
-	nextFires         map[string]time.Time
-	statuses          map[string]string
-	triggerFail       map[string]int
-	lastRoutineResult json.RawMessage
-	getWorkflowErr    error
-	sessionOrigins    map[string]*wf.SessionOriginRow
-	overridePending   []*wf.TriggerFireRow
+	mu                   sync.Mutex
+	triggers             []*wf.TriggerRow
+	workflows            map[string]*wf.WorkflowRow
+	fires                []*wf.TriggerFireRow
+	runs                 []*wf.WorkflowRunRow
+	disabled             map[string]bool
+	nextFires            map[string]time.Time
+	statuses             map[string]string
+	triggerFail          map[string]int
+	lastRoutineResult    json.RawMessage
+	recentRoutineResults []json.RawMessage
+	getWorkflowErr       error
+	sessionOrigins       map[string]*wf.SessionOriginRow
+	overridePending      []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -563,7 +564,7 @@ func (m *mockSchedulerStore) GetLastRoutineResult(_ context.Context, _ string) (
 }
 
 func (m *mockSchedulerStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) ([]json.RawMessage, error) {
-	return nil, nil
+	return m.recentRoutineResults, nil
 }
 
 func (m *mockSchedulerStore) ResetTriggerFailures(_ context.Context, _ string) error {
@@ -1402,7 +1403,9 @@ func TestBuildRoutineAgentSpec_PreserveOnFailure(t *testing.T) {
 
 func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
 	store := newMockSchedulerStore()
-	store.lastRoutineResult = json.RawMessage(`{"action":"check email"}`)
+	// Real stored shape under captureMode=full: the agent-node output
+	// envelope (#1453 — the injected prev must be {response, tokens} only).
+	store.lastRoutineResult = json.RawMessage(`{"response":"checked email, nothing urgent","session_id":"ses_1","tokens":{"input":10,"output":5,"total":15},"prompt":"OLD-ROUND-PROMPT","parts":[]}`)
 
 	agentd := newMockAgentd()
 	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"done"}`)
@@ -1427,11 +1430,14 @@ func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
 	var parsed map[string]any
 	_ = json.Unmarshal(sentSpec, &parsed)
 	renderedPrompt, _ := parsed["prompt"].(string)
-	if !strings.Contains(renderedPrompt, "check email") {
+	if !strings.Contains(renderedPrompt, "checked email") {
 		t.Errorf("expected prevResult injected into prompt, got: %s", renderedPrompt)
 	}
 	if strings.Contains(renderedPrompt, "{{.prevResult}}") {
 		t.Errorf("expected {{.prevResult}} to be replaced, got: %s", renderedPrompt)
+	}
+	if strings.Contains(renderedPrompt, "OLD-ROUND-PROMPT") {
+		t.Errorf("injected prev result must not carry the prior round's prompt (#1453), got: %s", renderedPrompt)
 	}
 }
 
