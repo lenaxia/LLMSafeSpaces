@@ -158,7 +158,7 @@ Redaction (payload hygiene) and staging (credential delivery) are separate mecha
 **§4.5 note (US-72.2):** the router serves `GET /models` from the staged catalog **scoped to the token's model allowlist** — the listing never widens beyond what the workspace was granted.
 
 **§4.3 deviation note (US-72.2):** Kubernetes RBAC cannot express "all Secrets except two" without enumerating names. The controller's llm-relay Role grants create/update/delete without resourceNames (its envelope Secrets are dynamically named) — technically covering the keypair Secrets too. Reads remain excluded (the controller's only name-scoped read is `get` on `llm-relay-hpke-pub`), so the controller can blind-write but never read key material; accepted and pinned by chart test.
-origin/main
+
 ---
 
 ## 5. Stage 0 disposition: EXCLUDED
