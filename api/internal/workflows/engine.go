@@ -636,7 +636,24 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
 	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
-		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no workspace_id", "triggerId", trigger.ID)
+		// #1440: a trigger with NO reachable target must never tick
+		// silently. The common route here is a workflow-targeted trigger
+		// whose workflow was DELETED — the workflow_id FK is ON DELETE
+		// SET NULL (migration 000020), so by the time the scheduler sees
+		// the row, both targets are nil and the loud missing-workflow
+		// path in fireWorkflowTarget is unreachable. Record the failure
+		// and honor auto-disable, exactly like a missing workflow.
+		errPayload, _ := json.Marshal(map[string]string{"reason": "trigger_has_no_target", "hint": "workflow deleted (FK set null) or routine missing workspace_id"})
+		completed := now
+		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: trigger.SourceType,
+			InputEnvelope: envelopeJSON, ActionType: "routine", ActionResult: errPayload,
+			Status: "failed", FiredAt: now, CompletedAt: &completed,
+		})
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
+		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no target (workflow deleted or workspace missing); failed fire recorded", "triggerId", trigger.ID)
 		return
 	}
 

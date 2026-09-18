@@ -1191,3 +1191,38 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_NextFireAt_PersistsAndNilPrese
 	require.NotNil(s.T(), got.NextFireAt)
 	assert.True(s.T(), got.NextFireAt.Equal(want), "nil update after explicit slot preserves it")
 }
+
+// #1440: deleting a workflow SET NULLs the referencing trigger's
+// workflow_id (migration 000020) — the exact row shape the scheduler's
+// targetless-trigger fix handles. Pins the FK semantics the engine
+// relies on: never CASCADE (the trigger must survive as a loud zombie),
+// never RESTRICT (the delete must succeed).
+func (s *StoreIntegrationSuite) TestWorkflowDeleteNullsTriggerTarget() {
+	ctx := context.Background()
+	now := time.Now()
+
+	wfID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateWorkflow(ctx, &WorkflowRow{
+		ID: wfID, OwnerType: "user", OwnerID: "u1",
+		Name: "fk-probe", Slug: "fk-probe", Status: "draft",
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	trigID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: trigID, OwnerType: "user", OwnerID: "u1",
+		Name: "fk-probe-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
+		WorkflowID:   &wfID, AutoDisableAfter: 5, NextFireAt: &now,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// The delete succeeds despite the referencing trigger...
+	require.NoError(s.T(), s.store.DeleteWorkflow(ctx, "user", "u1", wfID))
+
+	// ...and the trigger SURVIVES with a NULLed target (not cascaded).
+	got, err := s.store.GetTrigger(ctx, "user", "u1", trigID)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), got, "trigger survives the workflow delete (SET NULL, not CASCADE)")
+	assert.Nil(s.T(), got.WorkflowID, "workflow_id is SET NULL — the targetless row the scheduler must fail loudly on")
+}
