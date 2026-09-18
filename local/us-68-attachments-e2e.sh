@@ -214,7 +214,7 @@ if [[ "${CONTAINER_NAMES}" == *"agentd"* ]]; then
     warn "(helm: --set controller.agentdSidecar.enabled=false; runs weekly via e2e-attachments-single-container.yml)"
     exit 0
 fi
-ok "single-container mode confirmed (containers: ${CONTAINER_NAMES})"
+ok "single-container mode confirmed (containers+initContainers: ${CONTAINER_NAMES})"
 
 # -----------------------------------------------------------------------------
 # E2 — Persistence: upload → suspend → resume → file present + identical

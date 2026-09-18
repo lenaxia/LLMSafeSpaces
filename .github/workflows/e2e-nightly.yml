@@ -240,7 +240,7 @@ jobs:
       # F8 regression test at runtime: verify that a pod labeled
       # component=migrate can reach Valkey:6379 (the new allow rule),
       # and that a pod without that label cannot (the policy is enforced).
-      # Runs as a Job with the correct labels so the NetworkPolicy allows it.
+      # Runs as a bare pod with the migrate Job's labels so the NetworkPolicy allows it.
       - name: E2E — Valkey migrate-rule connectivity (F8 runtime verification)
         run: |
           set -euo pipefail
@@ -259,8 +259,8 @@ jobs:
             exit 0
           fi
 
-          # Run a one-shot Job pod labeled as a migrate Job. The NetworkPolicy
-          # now allows this pod to reach Valkey:6379 (F8 fix).
+          # Run a one-shot probe pod carrying the migrate Job's labels.
+          # The NetworkPolicy now allows this pod to reach Valkey:6379 (F8 fix).
           kubectl -n "$NS" run valkey-migrate-probe \
             --image=busybox:1.36 \
             --restart=Never \
@@ -303,7 +303,7 @@ jobs:
             # The probe ran and could not connect — a REAL F8 verdict.
             echo "=== datastore NetworkPolicies ==="
             kubectl -n "$NS" get networkpolicy -o yaml || true
-            echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate Job)"
+            echo "FAIL: migrate-labeled pod could not reach Valkey:6379 (F8 regression — NetworkPolicy blocking migrate-labeled pods)"
             echo "Result: $RESULT (final phase: $PHASE)"
             exit 1
           fi
