@@ -1364,3 +1364,95 @@ func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
 	require.NotNil(t, row.WorkflowID)
 	assert.Equal(t, "wf-repair", *row.WorkflowID)
 }
+
+// --- #1449: org-scope trigger routes must resolve the TRIGGER id ---
+
+// The production route shape /api/v1/orgs/:id/triggers/:triggerId shadowed
+// the delegated helpers' c.Param("id") read with the ORG id — every org
+// trigger GET/PUT/DELETE/fires/rotate 404'd for real triggers. The helpers
+// now take the resource id as a parameter; the wrappers bind the segment
+// their route actually carries.
+func TestOrgTriggerRoutes_ResolveTriggerID(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+	h := NewOrgTriggersHandler(store, quota, &mockEncryptor{})
+	org := r.Group("/api/v1/orgs/:id/triggers")
+	org.GET("/:triggerId", h.OrgGet)
+	org.PUT("/:triggerId", h.OrgUpdate)
+	org.DELETE("/:triggerId", h.OrgDelete)
+	org.GET("/:triggerId/fires", h.OrgListFires)
+
+	store.triggers["trig-org"] = &wf.TriggerRow{
+		ID: "trig-org", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+
+	// GET: the trigger — not a 404 from looking up the ORG id as the trigger.
+	w := doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-7/triggers/trig-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "org-trigger")
+
+	// PUT: renames the trigger (would 404 under the shadowing).
+	newName := "org-trigger-2"
+	w = doTriggerRequest(t, r, "PUT", "/api/v1/orgs/org-7/triggers/trig-org", map[string]any{"name": newName})
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.Equal(t, newName, store.triggers["trig-org"].Name)
+
+	// Fires: lists (empty is fine — the ROUTE must not 404).
+	w = doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-7/triggers/trig-org/fires", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+
+	// DELETE: removes the trigger.
+	w = doTriggerRequest(t, r, "DELETE", "/api/v1/orgs/org-7/triggers/trig-org", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	assert.NotContains(t, store.triggers, "trig-org")
+
+	// Cross-org scoping still fails closed: another org's id 404s.
+	store.triggers["trig-org2"] = &wf.TriggerRow{
+		ID: "trig-org2", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "scoped", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+	w = doTriggerRequest(t, r, "GET", "/api/v1/orgs/org-OTHER/triggers/trig-org2", nil)
+	assert.Equal(t, 404, w.Code, "owner-scoped lookup must still fail closed")
+}
+
+// #1449 r1: OrgRotateWebhookSecret — fixed but previously untested.
+func TestOrgRotateWebhookSecret_RouteWorks(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+	h := NewOrgTriggersHandler(store, quota, encrypt)
+	org := r.Group("/api/v1/orgs/:id/triggers")
+	org.POST("/:triggerId/rotate-secret", h.OrgRotateWebhookSecret)
+
+	// Non-webhook org trigger: 400 (route resolves the TRIGGER — a 404
+	// would be the :id shadowing).
+	store.triggers["trig-org-cron"] = &wf.TriggerRow{
+		ID: "trig-org-cron", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-cron", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+	w := doTriggerRequest(t, r, "POST", "/api/v1/orgs/org-7/triggers/trig-org-cron/rotate-secret", nil)
+	require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+
+	// Webhook org trigger: 200 + one-time secret, store updated.
+	store.triggers["trig-org-hook"] = &wf.TriggerRow{
+		ID: "trig-org-hook", OwnerType: types.WorkflowOwnerOrg, OwnerID: "org-7",
+		Name: "org-hook", Enabled: true, SourceType: "webhook",
+		SourceConfig: json.RawMessage(`{}`),
+	}
+	require.NoError(t, store.CreateWebhook(context.Background(), &wf.WebhookRow{ID: "wh-org", TriggerID: "trig-org-hook", SecretCipher: []byte("old"), KeyVersion: 1}))
+	w = doTriggerRequest(t, r, "POST", "/api/v1/orgs/org-7/triggers/trig-org-hook/rotate-secret", nil)
+	require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	var resp struct {
+		WebhookSecret string `json:"webhookSecret"`
+		WebhookURL    string `json:"webhookUrl"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Contains(t, resp.WebhookSecret, "whsec_")
+	assert.Equal(t, "/api/v1/hooks/trig-org-hook", resp.WebhookURL)
+}

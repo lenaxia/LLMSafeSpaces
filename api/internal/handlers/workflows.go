@@ -141,17 +141,17 @@ func (h *WorkflowsHandler) UserCreate(c *gin.Context) {
 
 func (h *WorkflowsHandler) UserGet(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.get(c, types.WorkflowOwnerUser, userID)
+	h.get(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *WorkflowsHandler) UserUpdate(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.update(c, types.WorkflowOwnerUser, userID)
+	h.update(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *WorkflowsHandler) UserDelete(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.del(c, types.WorkflowOwnerUser, userID)
+	h.del(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 // --- Org endpoints ---
@@ -174,17 +174,17 @@ func (h *WorkflowsHandler) OrgCreate(c *gin.Context) {
 
 func (h *WorkflowsHandler) OrgGet(c *gin.Context) {
 	orgID := c.Param("id")
-	h.get(c, types.WorkflowOwnerOrg, orgID)
+	h.get(c, types.WorkflowOwnerOrg, orgID, c.Param("workflowId"))
 }
 
 func (h *WorkflowsHandler) OrgUpdate(c *gin.Context) {
 	orgID := c.Param("id")
-	h.update(c, types.WorkflowOwnerOrg, orgID)
+	h.update(c, types.WorkflowOwnerOrg, orgID, c.Param("workflowId"))
 }
 
 func (h *WorkflowsHandler) OrgDelete(c *gin.Context) {
 	orgID := c.Param("id")
-	h.del(c, types.WorkflowOwnerOrg, orgID)
+	h.del(c, types.WorkflowOwnerOrg, orgID, c.Param("workflowId"))
 }
 
 // --- shared CRUD ---
@@ -321,8 +321,7 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 	c.JSON(http.StatusCreated, workflowRowToResponse(row))
 }
 
-func (h *WorkflowsHandler) get(c *gin.Context, ownerType, ownerID string) {
-	workflowID := c.Param("id")
+func (h *WorkflowsHandler) get(c *gin.Context, ownerType, ownerID, workflowID string) {
 	row, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, workflowID)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
@@ -335,8 +334,7 @@ func (h *WorkflowsHandler) get(c *gin.Context, ownerType, ownerID string) {
 	c.JSON(http.StatusOK, workflowRowToResponse(row))
 }
 
-func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
-	workflowID := c.Param("id")
+func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID, workflowID string) {
 	var req types.UpdateWorkflowRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -449,8 +447,7 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	c.JSON(http.StatusOK, workflowRowToResponse(row))
 }
 
-func (h *WorkflowsHandler) del(c *gin.Context, ownerType, ownerID string) {
-	workflowID := c.Param("id")
+func (h *WorkflowsHandler) del(c *gin.Context, ownerType, ownerID, workflowID string) {
 	if err := h.store.DeleteWorkflow(c.Request.Context(), ownerType, ownerID, workflowID); err != nil {
 		if errors.Is(err, wf.ErrNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
@@ -592,16 +589,15 @@ func isWorkflowUniqueViolation(err error) bool {
 // UserRunWorkflow starts a manual run for a user-scope workflow.
 func (h *WorkflowsHandler) UserRunWorkflow(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.runWorkflow(c, types.WorkflowOwnerUser, userID)
+	h.runWorkflow(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *WorkflowsHandler) OrgRunWorkflow(c *gin.Context) {
 	orgID := c.Param("id")
-	h.runWorkflow(c, types.WorkflowOwnerOrg, orgID)
+	h.runWorkflow(c, types.WorkflowOwnerOrg, orgID, c.Param("workflowId"))
 }
 
-func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string) {
-	workflowID := c.Param("id")
+func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID, workflowID string) {
 	var req types.CreateWorkflowRunRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		if err.Error() != "EOF" {
@@ -740,16 +736,15 @@ func (h *WorkflowsHandler) ListActiveRunsByWorkspace(c *gin.Context) {
 // UserListRuns lists runs for a user-scope workflow.
 func (h *WorkflowsHandler) UserListRuns(c *gin.Context) {
 	userID := c.GetString("userID")
-	h.listRuns(c, types.WorkflowOwnerUser, userID)
+	h.listRuns(c, types.WorkflowOwnerUser, userID, c.Param("id"))
 }
 
 func (h *WorkflowsHandler) OrgListRuns(c *gin.Context) {
 	orgID := c.Param("id")
-	h.listRuns(c, types.WorkflowOwnerOrg, orgID)
+	h.listRuns(c, types.WorkflowOwnerOrg, orgID, c.Param("workflowId"))
 }
 
-func (h *WorkflowsHandler) listRuns(c *gin.Context, ownerType, ownerID string) {
-	workflowID := c.Param("id")
+func (h *WorkflowsHandler) listRuns(c *gin.Context, ownerType, ownerID, workflowID string) {
 	limit := 20
 	offset := 0
 	runs, err := h.store.ListWorkflowRuns(c.Request.Context(), workflowID, limit, offset)
