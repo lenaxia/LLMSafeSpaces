@@ -361,9 +361,22 @@ func TestLintDockerfileContent(t *testing.T) {
 			want:    1,
 		},
 		{
-			name:    "registry port WITH a tag is clean",
-			content: "FROM registry:5000/img:1.2.3@sha256:" + d64 + "\n",
-			want:    0,
+			// r3 review finding 1: BuildKit LOWERCASES the directive key
+			// (directives.go: `k := strings.ToLower(...)`) — #SYNTAX= is
+			// build-honored and fetches the frontend from docker.io.
+			name:    "#SYNTAX= is a build-honored directive (BuildKit lowercases the key) — finding",
+			content: "#SYNTAX=docker/dockerfile:1.7\nFROM golang:1.26@sha256:" + d64 + "\n",
+			want:    1,
+		},
+		{
+			// Lock the deliberate superset: BuildKit stops parsing directives
+			// after the first instruction; the lint scans ALL lines. A
+			// directive mid-file is dead to BuildKit but flagged anyway —
+			// over-enforcement is the safe direction (it cannot become live
+			// unnoticed if a file is reordered).
+			name:    "directive after build instructions is still flagged (superset over-enforcement)",
+			content: "FROM golang:1.26@sha256:" + d64 + " AS builder\nRUN echo hi\n#syntax=docker/dockerfile:1.7\n",
+			want:    1,
 		},
 	}
 
