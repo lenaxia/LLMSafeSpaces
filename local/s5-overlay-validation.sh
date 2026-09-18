@@ -708,7 +708,7 @@ EOF
           # CONTAINERS_STORAGE_CONF, which REPLACES the config chain, so
           # the baked vfs/runroot/graphroot keys are repeated in it.
           GVID_SETUP=$(podman_exec "$PMG_POD" \
-            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; printf "%s\n" "[containers]" "ignore_chown_errors = true" > /tmp/podman-idmode.conf; printf "%s\n" "[storage]" "driver = \"vfs\"" "runroot = \"/sandbox-runtime/containers/run\"" "graphroot = \"/home/sandbox/.local/share/containers/storage\"" "[storage.options]" "ignore_chown_errors = \"true\"" > /tmp/podman-idmode-storage.conf; if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
+            'export CONTAINERS_CONF=/tmp/podman-idmode.conf CONTAINERS_STORAGE_CONF=/tmp/podman-idmode-storage.conf; printf "%s\n" "[containers]" "netns = \"host\"" "ignore_chown_errors = true" > /tmp/podman-idmode.conf; printf "%s\n" "[storage]" "driver = \"vfs\"" "runroot = \"/sandbox-runtime/containers/run\"" "graphroot = \"/home/sandbox/.local/share/containers/storage\"" "[storage.options]" "ignore_chown_errors = \"true\"" > /tmp/podman-idmode-storage.conf; if podman info >/dev/null 2>&1; then echo setup-ok; else echo setup-failed; echo "subuid-content:"; cat /etc/subuid 2>/dev/null; podman info 2>&1 | tail -5; fi' || true)
           if echo "$GVID_SETUP" | grep -q setup-ok; then
             pass S5.7g2 "identity-mode image (no subuid ranges) boots podman under runsc; info ok (storage ignore_chown_errors)"
           else
