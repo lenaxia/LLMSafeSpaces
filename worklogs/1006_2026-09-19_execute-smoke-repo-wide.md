@@ -66,7 +66,7 @@ None. Not reported as blockers: us-70-secret-delivery's deep chaos legs (suspend
 - `local/issue-1455-scriptenv-e2e.sh` — the ruled no-subshell api() contract (corpse #3; own commit, veto-able)
 - `local/e2e_smoke_helpers_test.go` — two new kubectl shim rules
 - `local/e2e_smoke_repo_wide_test.go` — new: the 7-script table smoke
-- `worklogs/NNNN_2026-09-19_execute-smoke-repo-wide.md` — this worklog
+- `worklogs/1006_2026-09-19_execute-smoke-repo-wide.md` — this worklog
 
 ## Review Round 1 (depth not pinned — three mutations proved it; fixed)
 
