@@ -111,4 +111,37 @@ test.describe("agent-originated message rendering (#1465)", () => {
     await expect(page.getByText("Just a human message.")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("agent-origin-badge")).toHaveCount(0);
   });
+
+  // #1465 owner report: the badge TRUNCATED the ID behind an ellipsis
+  // (nowrap on the label span) — a bug class text-content assertions
+  // cannot see in any harness. This row observes LAYOUT in a real
+  // browser at a narrow viewport: the label + 31-char ID (~363px at
+  // 11px monospace) cannot fit the ~300px message column, so a healthy
+  // badge WRAPS to two+ lines (single line ≈ 20px incl. padding and
+  // border; wrapped ≥ ~33px — the 26px threshold splits both with
+  // margin), and nothing overflows horizontally. A reintroduced
+  // truncate/nowrap anywhere in the badge's constraint chain keeps the
+  // box one line tall and this row fails.
+  test("the origin session ID wraps at a narrow viewport instead of truncating", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await setupAPIMocks(page, [
+      { id: "m1", type: "user", parts: [{ type: "text", text: sentineledUserText("injected") }] },
+    ]);
+    await openChat(page);
+
+    const badge = page.getByTestId("agent-origin-badge");
+    await expect(badge).toBeVisible({ timeout: 10_000 });
+    const box = await badge.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThan(26);
+    // No horizontal overflow inside the badge: if any element in the
+    // constraint chain regains nowrap, the badge's scrollWidth exceeds
+    // its clientWidth (or the label ellipsizes — either way the wrap
+    // height assertion above already caught it; this guards the ID
+    // element specifically).
+    const idEl = page.getByTestId("agent-origin-session-id");
+    await expect(idEl).toBeVisible();
+    const noOverflow = await idEl.evaluate((el) => el.scrollWidth <= el.clientWidth);
+    expect(noOverflow).toBe(true);
+  });
 });

@@ -31,16 +31,17 @@ describe("AgentOriginBadge", () => {
     const { getByTestId } = render(<AgentOriginBadge origin={{ fromSession: "ses_a" }} />);
     expect(getByTestId("agent-origin-badge").textContent).not.toContain("workspace");
   });
-});
 
   // #1465 owner report: the badge TRUNCATED the origin session ID
-  // (nowrap + ellipsis via `truncate`) instead of wrapping, hiding the
-  // return address. The fix, pinned here: the ID renders in full inside
-  // its own break-all element (house convention for monospace IDs —
-  // TriggersPage/ApiKeysTab), carries the full ID as title for
-  // hover-copy, and must never regain the truncation utility — a
-  // removed-overflow regression fails these assertions.
-  it("renders the full session ID in a wrapping element with a hover title", () => {
+  // (nowrap + ellipsis via `truncate` on the label span) instead of
+  // wrapping, hiding the return address. Pinned here: the ID renders
+  // in full inside its own break-all element (house convention for
+  // monospace IDs — TriggersPage/ApiKeysTab), carries the full ID as
+  // title for hover-copy, and NO element in the badge subtree carries
+  // truncation/nowrap utilities — the historical bug was on the OUTER
+  // label span, so scanning only the inner ID span would miss exactly
+  // that reintroduction (r1 review finding).
+  it("renders the full session ID, wrapping, with a hover title, and no truncation anywhere in the badge", () => {
     const fullId = "ses_f4990c383ffe6Jr3rKx1nyKwtx"; // realistic 31-char platform ID
     const { getByTestId } = render(<AgentOriginBadge origin={{ fromSession: fullId }} />);
     const idEl = getByTestId("agent-origin-session-id");
@@ -51,4 +52,13 @@ describe("AgentOriginBadge", () => {
     // The full ID must be present in the rendered badge text — no
     // ellipsis substitution at the DOM level.
     expect(getByTestId("agent-origin-badge").textContent).toContain(fullId);
+    // No truncation/nowrap semantics anywhere in the badge subtree —
+    // re-adding `truncate` or `whitespace-nowrap` to ANY span (the
+    // outer label span is the historical location) fails here.
+    const badge = getByTestId("agent-origin-badge");
+    for (const el of [badge, ...Array.from(badge.querySelectorAll("*"))]) {
+      expect(el.className).not.toContain("truncate");
+      expect(el.className).not.toContain("whitespace-nowrap");
+    }
   });
+});
