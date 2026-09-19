@@ -1835,6 +1835,45 @@ jobs:
             COMMIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
+      # #1469 follow-up (2026-09-19 live incident): assert the BUILT
+      # IMAGE's /plugins is traversable (x bit) and the plugin file is
+      # readable. Root cause class: BuildKit applies COPY --chmod to
+      # implicitly created parent dirs — a 644 file-copy silently made
+      # /plugins untraversable for uid 1000 and the plugin's file://
+      # import no-op'd (all send_message traffic degraded to
+      # self-declared origin). The --load rebuild reads the builder's
+      # local layer cache from the push build above (same builder,
+      # same job) — no re-fetch of the release tarball.
+      - name: Overlay plugin mode pin (traversable /plugins)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker buildx build --load -f runtimes/opencode/Dockerfile -t lsp-opencode-mode-pin:ci . >/dev/null
+          # FROM scratch, no entrypoint: docker create needs an explicit
+          # command token even though it is never executed.
+          cid=$(docker create lsp-opencode-mode-pin:ci true)
+          docker export "$cid" -o /tmp/oc-fs.tar
+          docker rm "$cid" >/dev/null
+          dmode=$(tar -tvf /tmp/oc-fs.tar | awk '$NF == "plugins/" || $NF == "plugins" {print $1}' | head -1)
+          fmode=$(tar -tvf /tmp/oc-fs.tar | awk '$NF == "plugins/llmsafespaces-origin.js" {print $1}' | head -1)
+          echo "/plugins mode: ${dmode:-MISSING}; plugin mode: ${fmode:-MISSING}"
+          [ -n "$dmode" ] || { echo "::error::/plugins missing from the image"; exit 1; }
+          [ -n "$fmode" ] || { echo "::error::plugin file missing from the image"; exit 1; }
+          # uid 1000 (opencode) is NOT the owner: traversal needs the
+          # OTHER-execute bit. The tar mode string is 10 chars (type
+          # char + 9 mode bits) — other-execute is char 10. (A glob like
+          # drwx*x*x*x* is unsatisfiable; cut -c9 reads other-READ.)
+          other_x=$(printf '%s' "$dmode" | cut -c10)
+          if [ "$other_x" != "x" ]; then
+            echo "::error::/plugins mode $dmode lacks the other-execute (traversal) bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1
+          fi
+          # The file is root-owned in the image: uid-1000 readability
+          # is the OTHER-READ bit — mode char 8. (A *r* glob matches
+          # any r anywhere, incl. -rw------- owner-only.)
+          other_r=$(printf '%s' "$fmode" | cut -c8)
+          if [ "$other_r" != "r" ]; then
+            echo "::error::plugin file mode $fmode lacks the other-read bit — uid 1000 cannot read it (the silent-no-op incident class)"; exit 1
+          fi
+
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
         run: |
