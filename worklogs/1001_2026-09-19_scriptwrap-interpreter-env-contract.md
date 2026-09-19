@@ -108,4 +108,4 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - `local/issue-1455-scriptenv-e2e.sh` — adaptive mode-contract e2e row (r2: harness_start, corrected nightly-sidecar premise, R2 http-secrets live row)
 - `local/issue_1455_e2e_script_test.go` — structural pins for the e2e script (r2: harness_start + R2 needles)
 - `.github/workflows/e2e-nightly.yml` — r2: scriptenv rows wired into the nightly (after the 1452 rows)
-- `worklogs/NNNN_2026-09-19_scriptwrap-interpreter-env-contract.md` — this worklog
+- `worklogs/1001_2026-09-19_scriptwrap-interpreter-env-contract.md` — this worklog
