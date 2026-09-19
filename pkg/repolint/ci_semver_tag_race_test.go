@@ -172,9 +172,11 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 	case []any:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
+			s, ok := item.(string)
+			if !ok {
+				t.Fatalf("unsupported tags: list item shape %T — extend the pin, do not skip it", item)
 			}
+			out = append(out, s)
 		}
 		return out
 	default:
@@ -183,15 +185,25 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 	}
 }
 
+// versionLiteralRe matches a bare version literal (v0.34.6 / 0.34.6)
+// — a filter matching exactly one version tag selects version tags
+// just as much as a glob does (r3: ['v0.34.6'] evaded the metachar
+// check).
+var versionLiteralRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
+
 // tagFilterMatchesVersions reports whether a push-tag filter selects
-// version-like tags (v-prefixed) — covering the literal v*.*.* AND
-// equivalent globs (v[0-9]*.[0-9]*.[0-9]*) the skeptical pass used to
-// evade a substring check.
+// version-like tags — v-prefixed with ANY glob metachar (* ? [ — the
+// r3 evasions used ? and bare '*'), or an exact version literal.
+// Over-matching non-version v-tags is acceptable: this pins ci.yml,
+// which has no legitimate tag trigger at all.
 func tagFilterMatchesVersions(filter string) bool {
+	if versionLiteralRe.MatchString(filter) {
+		return true
+	}
 	if !strings.HasPrefix(filter, "v") {
 		return false
 	}
-	return strings.ContainsAny(filter, "*[")
+	return strings.ContainsAny(filter, "*?[")
 }
 
 // TestCIWorkflow_NoTagTrigger: ci.yml must not trigger on version-tag
@@ -230,17 +242,21 @@ func TestReleaseWorkflow_FiresOnVersionTags(t *testing.T) {
 // push of a version tag in a merge job evades them (release.yml itself
 // uses raw imagetools for per-arch tags). Guard the merge steps at
 // Contains level: no hardcoded semver-looking tag in any ci.yml run
-// step.
+// step. Prerelease suffixes (-rc1) and digest-terminated refs count
+// (r3 evasions); comments are skipped (r3 false-positive).
 func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 	ci := readWorkflow(t, ciPath)
-	re := regexp.MustCompile(`(?m):\s*v?\d+\.\d+\.\d+(\s|$|"|')`)
+	re := regexp.MustCompile(`v?\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?`)
 	for i, line := range strings.Split(ci, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+			continue
+		}
 		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") && !strings.Contains(trimmed, "imagetools") {
 			continue
 		}
 		if m := re.FindString(line); m != "" {
-			t.Errorf("ci.yml line %d pushes a raw version-looking tag (%q) — version tags are release.yml-only (ops-prod #2539)", i+1, strings.TrimSpace(m))
+			t.Errorf("ci.yml line %d pushes a raw version-looking tag (%q) — version tags are release.yml-only (ops-prod #2539)", i+1, m)
 		}
 	}
 }

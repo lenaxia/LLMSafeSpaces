@@ -71,3 +71,11 @@ The reviewer evaded the line-grep trigger pin with BOTH alternative YAML spellin
 2. TestReleaseWorkflow_FiresOnVersionTags — the trigger itself pinned (deleting it fails loudly).
 3. TestMergeJobs_NoRawVersionTagPushes — Contains-level guard against raw `-t …:X.Y.Z` / docker push of version-looking tags in ci.yml run steps (release.yml's own per-arch pattern was the evasion vector).
 All four reviewer mutations reproduce FAIL on the new pins; restored tree green.
+
+## r3 — third-metachar + prerelease + comment-filter pin hardening
+
+Reviewer reproductions closed (each re-verified by local mutation → FAIL → restore):
+1. `?`-glob and bare-literal filters (`v?.?.?`, `v0.34.6`, `*.*.*`) — version-likeness now = v-prefix + any of `*?[`, OR an exact version literal regex.
+2. Prerelease raw pushes (`:0.34.6-rc1`) — the raw-tag regex gains an optional prerelease suffix class.
+3. Comment false-positives — the raw-push pin skips `#`/`//` lines (activeLines precedent).
+4. Non-string tag-list items now fail loudly (extend the pin, never skip).
