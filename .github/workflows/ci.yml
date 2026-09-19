@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ['v*.*.*']
+    # NO tag trigger (ops-prod #2539 tag race): the Release workflow is
+    # the ONLY writer of release tags — semver, latest, AND the released
+    # commit's sha-/ts- (it publishes all of them itself). A CI run on
+    # a tag event would deterministically collide with the Release
+    # workflow's cosign-attested pushes on every shared tag. CI still
+    # covers released commits via the main push of the release commit.
+    # Pinned by pkg/repolint/ci_semver_tag_race_test.go.
+
   pull_request:
     branches: [main]
   # Manual trigger so a branch can produce a registry-pushed image set
@@ -16,7 +23,8 @@ on:
   workflow_dispatch:
 
 # Superseded runs on the same PR are cancelled instead of queueing.
-# Push semantics on main/tags (cancel-in-progress is PR-only):
+# Push semantics on main/dispatch (cancel-in-progress is PR-only;
+# there is no tag trigger — release.yml owns all tag events):
 #   - a RUNNING run is never cancelled — an image push interrupted
 #     mid-manifest-merge would leave an incomplete tag set on ghcr;
 #   - a PENDING run is replaced by a newer push (intended newest-wins),
@@ -47,7 +55,7 @@ jobs:
   # filters, which leave any future required-check config hanging as
   # "expected". Detection failure (missing merge-base, etc.) resolves
   # to docs_only=false → full suite: the fast path must fail safe.
-  # push/tag/dispatch events bypass the gate and always run everything
+  # push/dispatch events bypass the gate and always run everything
   # (main is the safety net that catches any misdetection).
   changes:
     name: Detect docs-only change
@@ -1035,7 +1043,8 @@ jobs:
   # `ts-<unix>` tag. Sortable lexicographically as a 10-digit number until
   # 2286-11-20 (year 9999999999 fits in 10 digits through 2286). Combined with
   # `sha-<commit>` for content addressability and `dev` for the moving pointer
-  # to the latest main build. Tagged releases (v1.2.3) emit semver tags.
+  # to the latest main build. ci.yml never runs on tags — the Release
+  # workflow emits semver/latest for releases (ops-prod #2539).
   prepare:
     name: Prepare build metadata
     runs-on: ubuntu-latest
@@ -1047,10 +1056,14 @@ jobs:
     steps:
       - id: ts
         run: echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
-      # Resolve a build version for CI image builds. Tag pushes use the
-      # semver (without the leading "v"); branch/PR/dispatch builds fall
-      # back to the short commit sha so no CI image reports a bare "dev"
-      # or "unknown" as its binary version.
+      # Resolve a build version for CI image builds. This workflow runs
+      # on branch pushes, PRs, and dispatches (no tag trigger —
+      # release.yml owns tag events, see the trigger comment above):
+      # non-tag refs carry the short commit sha. A workflow_dispatch run
+      # may be pinned to ANY ref incl. a released tag — the version step
+      # below still resolves it (release-version refs carry their
+      # version; prerelease refs fall to the sha form) — so no CI image
+      # reports a bare "dev" or "unknown" as its binary version.
       - id: v
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
@@ -1159,10 +1172,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -1290,10 +1299,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -1397,10 +1402,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -1504,10 +1505,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -1723,10 +1720,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Download digests
         uses: actions/download-artifact@v8
@@ -1953,10 +1946,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Download digests
         uses: actions/download-artifact@v8
@@ -2103,10 +2092,6 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
