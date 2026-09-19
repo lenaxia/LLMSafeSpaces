@@ -451,9 +451,16 @@ type mockSchedulerStore struct {
 	triggerFail          map[string]int
 	lastRoutineResult    json.RawMessage
 	recentRoutineResults []json.RawMessage
-	getWorkflowErr       error
-	sessionOrigins       map[string]*wf.SessionOriginRow
-	overridePending      []*wf.TriggerFireRow
+	// Call-count/last-result mirrors for the #1454 behavior-identical
+	// consolidation pins: increments/resets count CALLS (triggerFail
+	// stays the running total), results captures the last written
+	// result payload per fire.
+	increments      map[string]int
+	resets          map[string]int
+	results         map[string]json.RawMessage
+	getWorkflowErr  error
+	sessionOrigins  map[string]*wf.SessionOriginRow
+	overridePending []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -534,13 +541,17 @@ func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*w
 	return r, nil
 }
 
-func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID string, _ json.RawMessage, status string) error {
+func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID string, result json.RawMessage, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.statuses == nil {
 		m.statuses = make(map[string]string)
 	}
+	if m.results == nil {
+		m.results = make(map[string]json.RawMessage)
+	}
 	m.statuses[fireID] = status
+	m.results[fireID] = result
 	// Store parity: the write lands ON THE ROW (result set + status
 	// moved out of 'fired'), so a same-tick drain re-list cannot pick
 	// it up. Without this the drain filter observed nothing.
@@ -567,7 +578,13 @@ func (m *mockSchedulerStore) GetRecentRoutineResults(_ context.Context, _ string
 	return m.recentRoutineResults, nil
 }
 
-func (m *mockSchedulerStore) ResetTriggerFailures(_ context.Context, _ string) error {
+func (m *mockSchedulerStore) ResetTriggerFailures(_ context.Context, triggerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.resets == nil {
+		m.resets = make(map[string]int)
+	}
+	m.resets[triggerID]++
 	return nil
 }
 
@@ -585,6 +602,10 @@ func (m *mockSchedulerStore) CreateTriggerFire(_ context.Context, row *wf.Trigge
 func (m *mockSchedulerStore) IncrementTriggerFailures(_ context.Context, triggerID string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.increments == nil {
+		m.increments = make(map[string]int)
+	}
+	m.increments[triggerID]++
 	m.triggerFail[triggerID]++
 	return m.triggerFail[triggerID], nil
 }
