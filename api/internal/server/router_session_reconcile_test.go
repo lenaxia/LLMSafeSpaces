@@ -42,6 +42,13 @@ type reconcileSpyAdapter struct {
 	present []string
 }
 
+// CountMessages overrides the nil-embedded Adapter so the #1481 count
+// rebuild (which walks PRESENT sessions) doesn't nil-panic this wiring
+// spy — the router piggyback drives the full reconciliation.
+func (a *reconcileSpyAdapter) CountMessages(_ context.Context, _, _, _ string) (int, error) {
+	return 0, nil
+}
+
 func (a *reconcileSpyAdapter) ListSessions(_ context.Context, _, _ string) ([]session.Session, error) {
 	a.mu.Lock()
 	a.calls++
@@ -94,9 +101,13 @@ func (r *recordingIndex) DeleteSession(_ context.Context, w, s string) error {
 func (r *recordingIndex) UpsertTitle(_ context.Context, _, _, _ string) error             { return nil }
 func (r *recordingIndex) UpsertParent(_ context.Context, _, _, _ string) error            { return nil }
 func (r *recordingIndex) UpsertContextUsed(_ context.Context, _, _ string, _ int64) error { return nil }
-func (r *recordingIndex) UpdateLastSeen(_ context.Context, _, _ string) error             { return nil }
-func (r *recordingIndex) Start() error                                                    { return nil }
-func (r *recordingIndex) Stop() error                                                     { return nil }
+func (r *recordingIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
+func (r *recordingIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
+func (r *recordingIndex) Start() error                                        { return nil }
+func (r *recordingIndex) Stop() error                                         { return nil }
 
 func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 	gin.SetMode(gin.TestMode)

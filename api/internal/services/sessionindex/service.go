@@ -28,7 +28,7 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // absent — the triage guard held it), delete_failed.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed).",
+	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).
@@ -126,6 +126,14 @@ func (s *Service) DeleteSession(ctx context.Context, workspaceID, sessionID stri
 // UpsertTitle updates just the title for a session.
 func (s *Service) UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error {
 	return s.db.UpsertSessionTitle(ctx, workspaceID, sessionID, title)
+}
+
+// RebuildMessageCount sets a session's message_count absolutely from the
+// harness-walked ground truth (#1481) — the reconcile-side repair for
+// the incremental path's duplicate-event double-count. The DB-level
+// DISTINCT guard keeps converged workspaces write-free.
+func (s *Service) RebuildMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
+	return s.db.UpsertSessionMessageCount(ctx, workspaceID, sessionID, count)
 }
 
 // UpsertParent records the parent session of a (sub)session. Used by the

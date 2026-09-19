@@ -32,6 +32,9 @@ func (f *fakeAdapter) GetSession(_ context.Context, _, _, _ string) (*session.Se
 func (f *fakeAdapter) ListSessions(_ context.Context, _, _ string) ([]session.Session, error) {
 	return nil, nil
 }
+func (f *fakeAdapter) CountMessages(_ context.Context, _, _, _ string) (int, error) {
+	return 0, nil
+}
 func (f *fakeAdapter) RenameSession(_ context.Context, _, _, _, _ string) error { return nil }
 func (f *fakeAdapter) DeleteSession(_ context.Context, _, _, _ string) error    { return nil }
 func (f *fakeAdapter) Send(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {

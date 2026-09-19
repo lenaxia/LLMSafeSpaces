@@ -14,15 +14,17 @@ import (
 // mockAdapter is a test double for agent.Adapter. Each method is a
 // configurable function field; tests set only the methods they exercise.
 // Unset fields panic — tests that call unconfigured methods fail loudly
-// rather than silently returning zero values. Exceptions: Capabilities and
-// ContextUsageFromEvent default to zero-value answers, because both are on
-// the unconditional onRawEvent path and a panic default would break every
-// SSE test that doesn't configure them.
+// rather than silently returning zero values. Exceptions: Capabilities,
+// ContextUsageFromEvent, and CountMessages default to zero-value answers,
+// because all three sit on unconditional background paths (onRawEvent;
+// the #1481 reconcile count walk) where a panic default would break every
+// test that doesn't configure them.
 type mockAdapter struct {
 	pagedCalls          int
 	getSessionFn        func(ctx context.Context, userID, workspaceID, sessionID string) (*session.Session, error)
 	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
+	countMessagesFn     func(ctx context.Context, userID, workspaceID, sessionID string) (int, error)
 	renameSessionFn     func(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	deleteSessionFn     func(ctx context.Context, userID, workspaceID, sessionID string) error
 	sendFn              func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error)
@@ -54,8 +56,16 @@ func (m *mockAdapter) ListSessions(ctx context.Context, uid, wid string) ([]sess
 	if m.listSessionsFn != nil {
 		return m.listSessionsFn(ctx, uid, wid)
 	}
-	panic("mockAdapter.ListSessions not configured")
+	panic("mockAdapter: ListSessions not configured")
 }
+
+func (m *mockAdapter) CountMessages(ctx context.Context, userID, workspaceID, sessionID string) (int, error) {
+	if m.countMessagesFn != nil {
+		return m.countMessagesFn(ctx, userID, workspaceID, sessionID)
+	}
+	return 0, nil
+}
+
 func (m *mockAdapter) RenameSession(ctx context.Context, uid, wid, sid, title string) error {
 	if m.renameSessionFn != nil {
 		return m.renameSessionFn(ctx, uid, wid, sid, title)

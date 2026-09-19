@@ -29,13 +29,14 @@ import (
 // index; deleted sessions are skipped (see also proxy_test.go).
 
 type mockSessionIndex struct {
-	mu          sync.Mutex
-	titles      map[string]string // key: "workspaceID/sessionID"
-	contextUsed map[string]*int64 // key: "workspaceID/sessionID"
-	deletedTree map[string]bool   // key: "workspaceID/sessionID" (DeleteSession recording)
-	failDelete  bool              // DeleteSession returns an error when set
-	failList    bool              // ListByWorkspace returns an error when set
-	rows        map[string][]types.SessionListItem
+	mu            sync.Mutex
+	titles        map[string]string // key: "workspaceID/sessionID"
+	contextUsed   map[string]*int64 // key: "workspaceID/sessionID"
+	deletedTree   map[string]bool   // key: "workspaceID/sessionID" (DeleteSession recording)
+	failDelete    bool              // DeleteSession returns an error when set
+	failList      bool              // ListByWorkspace returns an error when set
+	rebuiltCounts map[string]int    // key: "workspaceID/sessionID" (#1481 count rebuilds)
+	rows          map[string][]types.SessionListItem
 }
 
 func newMockSessionIndex() *mockSessionIndex {
@@ -84,6 +85,16 @@ func (m *mockSessionIndex) DeleteSession(_ context.Context, workspaceID, session
 	m.deletedTree[workspaceID+"/"+sessionID] = true
 	return nil
 }
+func (m *mockSessionIndex) RebuildMessageCount(_ context.Context, workspaceID, sessionID string, count int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.rebuiltCounts == nil {
+		m.rebuiltCounts = make(map[string]int)
+	}
+	m.rebuiltCounts[workspaceID+"/"+sessionID] = count
+	return nil
+}
+
 func (m *mockSessionIndex) UpsertParent(_ context.Context, _, _, _ string) error { return nil }
 func (m *mockSessionIndex) UpsertContextUsed(_ context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	m.mu.Lock()
