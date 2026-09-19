@@ -51,11 +51,20 @@ type workflowExecuteRequest struct {
 type workflowExecuteResponse struct {
 	Output json.RawMessage `json:"output,omitempty"`
 	Branch string          `json:"branch,omitempty"`
+	// SessionID is the first-class session identity (#1470): set iff a
+	// session still exists when the node finished — preserved modes on
+	// any outcome, ephemeral modes only when the teardown failed (the
+	// leak is real and must stay discoverable). Older API servers
+	// ignore it; older agentd simply never sets it.
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 type workflowExecuteError struct {
 	ErrorCode string `json:"errorCode"`
 	Detail    string `json:"detail"`
+	// SessionID carries the surviving session of a FAILED agent turn
+	// (#1470) — same existence contract as the success envelope.
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 type inFlightExec struct {
@@ -413,6 +422,24 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		createdEphemeral = true
 	}
 
+	// #1470: every failure past this point knows the session, and the
+	// envelope must report sessionId iff the session still EXISTS when
+	// the node finishes — preserved modes keep it, ephemeral modes tear
+	// down and omit it, a failed teardown reports the leaked session
+	// (reality over intent). WithoutCancel + a bound so the timeout
+	// leg's dead context can neither skip nor wedge the cleanup DELETE.
+	failAgentNode := func(status int, code, detail string) {
+		surviving := sessionID
+		if createdEphemeral && sessionMode == "ephemeral" {
+			dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel() //nolint:gocritic // defer-in-closure: fires when the handler returns
+			if deleteOpencodeSession(dctx, password, sessionID) {
+				surviving = ""
+			}
+		}
+		writeWorkflowErrorSession(w, status, code, detail, surviving)
+	}
+
 	// #1327: the agent POST carries the execution-derived dedupe key.
 	// The pinned harness (opencode 1.18.15, G1 probe on PR #1323)
 	// validates the msg_-prefix, uses a repeated messageID verbatim as
@@ -430,7 +457,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		fmt.Sprintf("%s/session/%s/message", getAgentAddr(), sessionID),
 		strings.NewReader(body))
 	if err != nil {
-		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
+		failAgentNode(http.StatusOK, "script_failed", err.Error())
 		return
 	}
 	httpReq.SetBasicAuth(agentd.AuthUsername, password)
@@ -439,26 +466,28 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	resp, err := (&http.Client{}).Do(httpReq)
 	if err != nil {
 		if ctx.Err() != nil {
-			writeWorkflowError(w, http.StatusGatewayTimeout, "script_timeout", "agent call timed out")
+			failAgentNode(http.StatusGatewayTimeout, "script_timeout", "agent call timed out")
 			return
 		}
-		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
+		failAgentNode(http.StatusOK, "script_failed", err.Error())
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
+		// The session is GONE — reporting an id would assert a session
+		// that does not exist, so this leg stays session-less.
 		writeWorkflowError(w, http.StatusOK, "session_not_found", fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 	if resp.StatusCode != http.StatusOK {
-		writeWorkflowError(w, http.StatusOK, "script_failed", fmt.Sprintf("opencode returned %d", resp.StatusCode))
+		failAgentNode(http.StatusOK, "script_failed", fmt.Sprintf("opencode returned %d", resp.StatusCode))
 		return
 	}
 
 	msgResp, err := parseAgentNodeResponse(resp.Body)
 	if err != nil {
-		writeWorkflowError(w, http.StatusOK, "script_output_invalid", fmt.Sprintf("cannot parse opencode response: %v", err))
+		failAgentNode(http.StatusOK, "script_output_invalid", fmt.Sprintf("cannot parse opencode response: %v", err))
 		return
 	}
 
@@ -480,19 +509,24 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	if data.EnforceStructuredOutput && len(data.OutputSchema) > 0 {
 		var parsed any
 		if err := json.Unmarshal([]byte(strings.Join(texts, "")), &parsed); err != nil {
-			writeWorkflowError(w, http.StatusOK, "schema_mismatch", fmt.Sprintf("agent output is not valid JSON: %v", err))
+			failAgentNode(http.StatusOK, "schema_mismatch", fmt.Sprintf("agent output is not valid JSON: %v", err))
 			return
 		}
 		result["response"] = parsed
 	}
 
 	if createdEphemeral && sessionMode == "ephemeral" {
-		deleteOpencodeSession(ctx, password, sessionID)
-		result["session_id"] = ""
-		result["session_deleted"] = true
+		if deleteOpencodeSession(ctx, password, sessionID) {
+			sessionID = ""
+			result["session_deleted"] = true
+		}
+		// A failed teardown leaves the session alive: both the payload
+		// and the envelope report the leak rather than claim deletion
+		// (#1470 reality contract — the session must stay discoverable).
 	}
+	result["session_id"] = sessionID
 
-	writeWorkflowSuccess(w, result)
+	writeWorkflowSuccessSession(w, result, sessionID)
 }
 
 // Key-shape constants for workflowAgentMessageKey (#1327). The prefix
@@ -558,20 +592,39 @@ func sanitizeKeyComponent(s string) string {
 }
 
 func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	out, _ := json.Marshal(output)
-	resp := workflowExecuteResponse{Output: out}
+	resp := workflowExecuteResponse{}
 	if len(branch) > 0 {
 		resp.Branch = branch[0]
 	}
+	writeWorkflowSuccessResponse(w, output, resp)
+}
+
+// writeWorkflowSuccessSession writes the success envelope with the
+// node's surviving session identity (#1470); an empty sessionID renders
+// identically to the session-less success writer (omitempty).
+func writeWorkflowSuccessSession(w http.ResponseWriter, output any, sessionID string) {
+	writeWorkflowSuccessResponse(w, output, workflowExecuteResponse{SessionID: sessionID})
+}
+
+func writeWorkflowSuccessResponse(w http.ResponseWriter, output any, resp workflowExecuteResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	out, _ := json.Marshal(output)
+	resp.Output = out
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) {
+	writeWorkflowErrorSession(w, status, code, detail, "")
+}
+
+// writeWorkflowErrorSession writes the error envelope with the session
+// that survived a failed agent turn (#1470); an empty sessionID renders
+// identically to the session-less writers (omitempty).
+func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, sessionID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail})
+	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail, SessionID: sessionID})
 }
 
 func loadSecretsEnv() (map[string]string, error) {
@@ -680,18 +733,23 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 	return s.ID, nil
 }
 
-func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
+// deleteOpencodeSession deletes a finished routine's opencode session and
+// reports whether the session is gone (2xx). Callers that must report
+// the REALITY of a surviving session (#1470's envelope contract) use
+// the return; fire-and-forget callers may ignore it.
+func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
 	if err != nil {
 		// Malformed sessionID (control chars) makes the URL unparseable;
 		// req would be nil and SetBasicAuth would panic.
-		return
+		return false
 	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := (&http.Client{}).Do(req) //nolint:gosec // G704: local-only
 	if err != nil {
-		return
+		return false
 	}
-	_ = resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }

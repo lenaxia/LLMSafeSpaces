@@ -36,15 +36,23 @@ import (
 // POST /session mints ses_N, POST /session/{id}/message records the
 // body (the transcript append), DELETE /session/{id} records the
 // teardown. failMessages makes the message POST return 500 (the
-// retry-path leg).
+// retry-path leg). messageStatus (when non-zero and failMessages is
+// off) overrides the message response status — 404 drives the
+// session_not_found leg, 5xx the script_failed leg (#1470 envelope
+// tests). garbageBody returns a 200 the strict decode must reject
+// (script_output_invalid). failDeletes makes the teardown DELETE fail
+// (the leaked-ephemeral reality #1470's envelope contract reports).
 type dedupeHarness struct {
-	mu           sync.Mutex
-	nextSession  int
-	messages     []dedupeHarnessMessage // one per accepted POST
-	createdSess  int
-	deletedSess  []string
-	failMessages bool
-	srv          *httptest.Server
+	mu            sync.Mutex
+	nextSession   int
+	messages      []dedupeHarnessMessage // one per accepted POST
+	createdSess   int
+	deletedSess   []string
+	failMessages  bool
+	messageStatus int
+	garbageBody   bool
+	failDeletes   bool
+	srv           *httptest.Server
 }
 
 type dedupeHarnessMessage struct {
@@ -78,10 +86,23 @@ func newDedupeHarness(t *testing.T) *dedupeHarness {
 				_, _ = w.Write([]byte(`{"error":"boom"}`))
 				return
 			}
+			if h.messageStatus != 0 {
+				w.WriteHeader(h.messageStatus)
+				_, _ = w.Write([]byte(`{"error":"boom"}`))
+				return
+			}
+			if h.garbageBody {
+				_, _ = w.Write([]byte(`not-json{`))
+				return
+			}
 			// The pinned V1 shape execAgentNode strictly decodes.
 			_, _ = w.Write([]byte(`{"info":{"id":"msg_asst_1","agent":"build","tokens":{"input":1,"output":2,"total":3}},"parts":[{"type":"text","text":"done"}]}`))
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/session/"):
 			h.deletedSess = append(h.deletedSess, strings.TrimPrefix(r.URL.Path, "/session/"))
+			if h.failDeletes {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusNotFound)
