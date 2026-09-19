@@ -1828,6 +1828,12 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=opencode-${{ matrix.platform }}
+          cache-to: type=gha,scope=opencode-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       # #1469 follow-up (2026-09-19 live incident): assert the BUILT
       # IMAGE's /plugins is traversable (x bit) and the plugin file is
@@ -1835,8 +1841,9 @@ jobs:
       # implicitly created parent dirs — a 644 file-copy silently made
       # /plugins untraversable for uid 1000 and the plugin's file://
       # import no-op'd (all send_message traffic degraded to
-      # self-declared origin). The --load rebuild hits the builder
-      # cache from the push build above, so this costs seconds.
+      # self-declared origin). The --load rebuild reads the builder's
+      # local layer cache from the push build above (same builder,
+      # same job) — no re-fetch of the release tarball.
       - name: Overlay plugin mode pin (traversable /plugins)
         if: matrix.platform == 'linux/amd64'
         run: |
@@ -1851,20 +1858,17 @@ jobs:
           echo "/plugins mode: ${dmode:-MISSING}; plugin mode: ${fmode:-MISSING}"
           [ -n "$dmode" ] || { echo "::error::/plugins missing from the image"; exit 1; }
           [ -n "$fmode" ] || { echo "::error::plugin file missing from the image"; exit 1; }
-          case "$dmode" in
-            drwx*x*x*x*) ;;
-            *) echo "::error::/plugins mode $dmode lacks the traversal bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1 ;;
-          esac
+          # uid 1000 (opencode) is NOT the owner: traversal needs the
+          # OTHER-execute bit — mode char 9. (A glob like drwx*x*x*x* is
+          # unsatisfiable: it demands more x's than a 9-char mode has.)
+          other_x=$(printf '%s' "$dmode" | cut -c9)
+          if [ "$other_x" != "x" ]; then
+            echo "::error::/plugins mode $dmode lacks the other-execute (traversal) bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1
+          fi
           case "$fmode" in
             *r*) ;;
             *) echo "::error::plugin file mode $fmode is not readable"; exit 1 ;;
           esac
-          cache-from: type=gha,scope=opencode-${{ matrix.platform }}
-          cache-to: type=gha,scope=opencode-${{ matrix.platform }},mode=max
-          build-args: |
-            VERSION=${{ needs.prepare.outputs.version }}
-            COMMIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export binary sha256
         if: github.event_name != 'pull_request'
