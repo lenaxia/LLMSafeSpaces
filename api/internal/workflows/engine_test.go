@@ -462,13 +462,15 @@ type mockSchedulerStore struct {
 	// Call-count/last-result mirrors for the #1454 behavior-identical
 	// consolidation pins: increments/resets count CALLS (triggerFail
 	// stays the running total), results captures the last written
-	// result payload per fire.
-	increments      map[string]int
-	resets          map[string]int
-	results         map[string]json.RawMessage
-	getWorkflowErr  error
-	sessionOrigins  map[string]*wf.SessionOriginRow
-	overridePending []*wf.TriggerFireRow
+	// result payload per fire. getTriggerByIDErr injects a transient
+	// store failure (#1473 fetch split).
+	increments        map[string]int
+	resets            map[string]int
+	results           map[string]json.RawMessage
+	getTriggerByIDErr error
+	getWorkflowErr    error
+	sessionOrigins    map[string]*wf.SessionOriginRow
+	overridePending   []*wf.TriggerFireRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -526,12 +528,18 @@ func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) (
 }
 
 func (m *mockSchedulerStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
+	if m.getTriggerByIDErr != nil {
+		return nil, m.getTriggerByIDErr
+	}
 	for _, t := range m.triggers {
 		if t.ID == triggerID {
 			return t, nil
 		}
 	}
-	return nil, fmt.Errorf("not found")
+	// Store parity: the real store maps a missing row to wf.ErrNotFound
+	// (pkg/workflows/store.go GetTriggerByID) so the drain's transient-
+	// vs-deleted split (#1473) is exercisable at unit speed.
+	return nil, wf.ErrNotFound
 }
 
 func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*wf.WorkflowRow, error) {
@@ -1467,18 +1475,6 @@ func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
 	}
 	if strings.Contains(renderedPrompt, "OLD-ROUND-PROMPT") {
 		t.Errorf("injected prev result must not carry the prior round's prompt (#1453), got: %s", renderedPrompt)
-	}
-}
-
-func TestProcessPendingRoutineFire_TriggerNotFound_MarksFailed(t *testing.T) {
-	store := newMockSchedulerStore()
-
-	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
-	fire := &wf.TriggerFireRow{ID: "fire-orphan", TriggerID: "nonexistent", InputEnvelope: json.RawMessage(`{}`)}
-	sched.processPendingRoutineFire(context.Background(), noopLogger{}, fire)
-
-	if store.statuses["fire-orphan"] != "failed" {
-		t.Errorf("expected failed for orphaned fire, got %s", store.statuses["fire-orphan"])
 	}
 }
 

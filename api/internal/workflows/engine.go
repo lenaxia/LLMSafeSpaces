@@ -629,9 +629,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 			InputEnvelope: envelopeJSON, ActionType: "run_workflow",
 			ActionResult: errMsg, Status: "failed", FiredAt: now, CompletedAt: &completed,
 		})
-		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-			_ = s.Store.DisableTrigger(ctx, trigger.ID)
-		}
+		s.accountTriggerFailure(ctx, trigger)
 		logger.Error(err, "scheduler: workflow target not found", "triggerId", trigger.ID, "workflowId", workflowID)
 		return
 	}
@@ -673,9 +671,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 				InputEnvelope: envelopeJSON, ActionType: "run_workflow",
 				ActionResult: actionResult, Status: fireStatus, FiredAt: now, CompletedAt: &completed,
 			})
-			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-				_ = s.Store.DisableTrigger(ctx, trigger.ID)
-			}
+			s.accountTriggerFailure(ctx, trigger)
 			// Log locations only — the raw ValidateRunInput error can embed
 			// instance-derived content (the §3.5 sanitization rationale); the
 			// sanitized payload on the fire row is the auditable detail.
@@ -1145,27 +1141,35 @@ func httpClient() *http.Client {
 func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger, fire *wf.TriggerFireRow) {
 	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
 	if err != nil {
-		// Preserved behavior, pinned by
-		// TestProcessPendingRoutineFire_FetchError_PreservedBehavior:
-		// ANY fetch error fails the fire unaccounted. Splitting transient
-		// errors (leave pending, re-driven next tick) from wf.ErrNotFound
-		// — mirroring fireWorkflowTarget — is a behavior-change
-		// follow-up, deliberately out of this consolidation's scope.
-		logger.Error(err, "routine: failed to get trigger for pending fire", "fireId", fire.ID)
+		// #1473 (mirroring #1412's fireWorkflowTarget split): a
+		// TRANSIENT store error (pool exhaustion, canceled context) is
+		// the platform's problem, not the fire's — the webhook already
+		// 202'd. Leave the fire PENDING; the next tick's drain re-drives
+		// it. Never written, never counted.
+		if !goerrors.Is(err, wf.ErrNotFound) {
+			logger.Error(err, "routine: trigger fetch failed; fire left pending for re-drive", "fireId", fire.ID, "triggerId", fire.TriggerID)
+			return
+		}
+		// Trigger gone mid-tick (the only reachable window — fires
+		// cascade-delete with their trigger, migration 000016): fail the
+		// fire best-effort with the cause payload. No accounting: no
+		// trigger row exists to hold a counter (and the fire row itself
+		// is usually already cascade-gone; the write no-ops).
+		logger.Error(err, "routine: trigger deleted while fire pending", "fireId", fire.ID, "triggerId", fire.TriggerID)
 		errMsg, _ := json.Marshal(map[string]string{"error": "trigger not found"})
 		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
 		return
 	}
 	if _, ok := routineTargetWorkspace(trigger); !ok {
-		// Preserved behavior, pinned by
-		// TestProcessPendingRoutineFire_TargetlessDrain_PreservedBehavior:
-		// the drain route updates the existing row with its own payload
-		// and does NOT account — unlike the cron route's guard in
-		// fireRoutineTarget (#1440: counts + auto-disables). Closing
-		// that gap is a behavior-change follow-up, out of scope here.
-		logger.Error(fmt.Errorf("no workspace"), "routine: trigger has no workspace", "triggerId", trigger.ID)
-		errMsg, _ := json.Marshal(map[string]string{"error": "trigger has no workspace_id"})
-		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
+		// #1473 gap 1 — the drain twin of the cron route's #1440 guard:
+		// a targetless trigger must never tick silently through either
+		// door. Same payload, same accounting, same auto-disable; only
+		// the persistence verb differs (the drain updates the row the
+		// webhook fire already minted; the cron route creates one).
+		logger.Error(fmt.Errorf("no workspace"), "trigger has no target (workflow deleted or workspace missing); failed fire recorded", "triggerId", trigger.ID)
+		errPayload, _ := json.Marshal(map[string]string{"reason": "trigger_has_no_target", "hint": "workflow deleted (FK set null) or routine missing workspace_id"})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errPayload, "failed")
+		s.accountTriggerFailure(ctx, trigger)
 		return
 	}
 
