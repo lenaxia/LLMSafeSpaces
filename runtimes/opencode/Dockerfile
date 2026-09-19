@@ -95,7 +95,14 @@ COPY --from=fetch --chmod=755 /out/opencode /usr/local/bin/opencode
 # read-only with the image volume at /opencode/plugins; referenced by
 # file:// from agent-config.json (injectPlatformAgentConfig). Data,
 # not executables — see the NOTE above.
-COPY --chmod=644 runtimes/opencode/plugins/llmsafespaces-origin.js /plugins/llmsafespaces-origin.js
+# 755, NOT 644: BuildKit applies --chmod to implicitly created parent
+# directories as well as the copied entry — a 644 here strips the
+# traversal bit from the auto-created /plugins and uid 1000 (opencode's
+# runtime uid) cannot traverse it, so the plugin's file:// import fails
+# SILENTLY (live incident 2026-09-19: every send_message degraded to
+# self-declared origin). The plugin is data; the x bit on it is
+# harmless. Pinned by pkg/repolint/opencode_plugins_mode_test.go.
+COPY --chmod=755 runtimes/opencode/plugins/llmsafespaces-origin.js /plugins/llmsafespaces-origin.js
 
 # Not a runnable image by itself (no entrypoint) — it is consumed only as
 # an image volume mounted read-only at /opencode in workspace pods.

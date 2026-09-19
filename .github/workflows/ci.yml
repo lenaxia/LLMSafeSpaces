@@ -1828,6 +1828,35 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.OPENCODE_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+
+      # #1469 follow-up (2026-09-19 live incident): assert the BUILT
+      # IMAGE's /plugins is traversable (x bit) and the plugin file is
+      # readable. Root cause class: BuildKit applies COPY --chmod to
+      # implicitly created parent dirs — a 644 file-copy silently made
+      # /plugins untraversable for uid 1000 and the plugin's file://
+      # import no-op'd (all send_message traffic degraded to
+      # self-declared origin). The --load rebuild hits the builder
+      # cache from the push build above, so this costs seconds.
+      - name: Overlay plugin mode pin (traversable /plugins)
+        if: matrix.platform == 'linux/amd64'
+        run: |
+          docker buildx build --load -f runtimes/opencode/Dockerfile -t lsp-opencode-mode-pin:ci . >/dev/null
+          cid=$(docker create lsp-opencode-mode-pin:ci)
+          docker export "$cid" -o /tmp/oc-fs.tar
+          docker rm "$cid" >/dev/null
+          dmode=$(tar -tvf /tmp/oc-fs.tar | awk '$NF == "plugins/" || $NF == "plugins" {print $1}' | head -1)
+          fmode=$(tar -tvf /tmp/oc-fs.tar | awk '$NF == "plugins/llmsafespaces-origin.js" {print $1}' | head -1)
+          echo "/plugins mode: ${dmode:-MISSING}; plugin mode: ${fmode:-MISSING}"
+          [ -n "$dmode" ] || { echo "::error::/plugins missing from the image"; exit 1; }
+          [ -n "$fmode" ] || { echo "::error::plugin file missing from the image"; exit 1; }
+          case "$dmode" in
+            drwx*x*x*x*) ;;
+            *) echo "::error::/plugins mode $dmode lacks the traversal bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1 ;;
+          esac
+          case "$fmode" in
+            *r*) ;;
+            *) echo "::error::plugin file mode $fmode is not readable"; exit 1 ;;
+          esac
           cache-from: type=gha,scope=opencode-${{ matrix.platform }}
           cache-to: type=gha,scope=opencode-${{ matrix.platform }},mode=max
           build-args: |
