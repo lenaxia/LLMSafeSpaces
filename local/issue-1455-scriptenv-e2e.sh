@@ -128,18 +128,26 @@ RUN_ID=$(printf '%s' "${RUN_RESP}" | jq -r '.id // empty')
 
 if ! wait_run "${RUN_ID}" "${RUN_WAIT_S}"; then
     note_fail "R1: run never reached a terminal state within ${RUN_WAIT_S}s (last: ${run_status:-none})"
-elif [[ "${run_status}" == "succeeded" && "${run_row}" == *"e2e-1455-scriptenv-ran"* ]]; then
-    ok "R1a: single-container mode — script node executed post-EnvCheck (marker output present)"
-elif [[ "${run_status}" == "failed" && "${run_row}" == *"script_env_unavailable"* ]]; then
-    if [[ "${run_row}" == *"sidecar"* ]]; then
-        ok "R1b: sidecar mode — script node failed LOUD (script_env_unavailable naming the sidecar cause)"
-    else
-        note_fail "R1b: failed with script_env_unavailable but the detail does not name the sidecar cause: ${run_row:0:300}"
-    fi
-elif [[ "${run_status}" == "succeeded" ]]; then
-    note_fail "R1a: run succeeded but the handler marker is missing from the run row: ${run_row:0:300}"
 else
-    note_fail "R1: terminal shape outside the mode contract (status=${run_status}): ${run_row:0:300}"
+    # Assert the marker on the extracted .output — the raw run row carries
+    # the specSnapshot (handler source embedded), so matching the marker
+    # there would be a tautology (r4 finding; the R2b class). The script
+    # node's output IS the handler's return dict, so the literal can only
+    # come from a real execution.
+    r1_output=$(printf '%s' "${run_row}" | jq -r '.output | if type == "string" then . else tostring end')
+    if [[ "${run_status}" == "succeeded" && "${r1_output}" == *"e2e-1455-scriptenv-ran"* ]]; then
+        ok "R1a: single-container mode — script node executed post-EnvCheck (marker present in the node output)"
+    elif [[ "${run_status}" == "failed" && "${run_row}" == *"script_env_unavailable"* ]]; then
+        if [[ "${run_row}" == *"sidecar"* ]]; then
+            ok "R1b: sidecar mode — script node failed LOUD (script_env_unavailable naming the sidecar cause)"
+        else
+            note_fail "R1b: failed with script_env_unavailable but the detail does not name the sidecar cause: ${run_row:0:300}"
+        fi
+    elif [[ "${run_status}" == "succeeded" ]]; then
+        note_fail "R1a: run succeeded but the handler marker is missing from the node output: ${r1_output:0:300}"
+    else
+        note_fail "R1: terminal shape outside the mode contract (status=${run_status}): ${run_row:0:300}"
+    fi
 fi
 
 # -----------------------------------------------------------------------------

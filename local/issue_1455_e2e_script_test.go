@@ -50,12 +50,15 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 		`\"language\":\"python\"`, // inside the jq -nc workflow body
 		`e2e-1455-scriptenv-ran`,
 		// The adaptive row's three arms.
-		`R1a: single-container mode — script node executed post-EnvCheck`,
+		`R1a: single-container mode — script node executed post-EnvCheck (marker present in the node output)`,
 		`script_env_unavailable`, // the loud #1455 code is asserted by name
 		`R1b: sidecar mode — script node failed LOUD`,
 		`R1b: failed with script_env_unavailable but the detail does not name the sidecar cause`,
 		// The nothing-between arm: any other terminal shape fails.
 		`R1: terminal shape outside the mode contract`,
+		// R1's output extraction (r4: the marker ships in every row's
+		// specSnapshot — asserting it on the raw row is a tautology).
+		`Assert the marker on the extracted .output`,
 		// Terminal-state polling is bounded (no hang on a stuck run).
 		`run never reached a terminal state within`,
 		// R2 — http-node secrets live join: bind + materialize + echo.
