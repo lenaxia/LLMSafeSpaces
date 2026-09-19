@@ -11,8 +11,10 @@ package local_test
 // of the assertions so rows cannot be silently dropped.
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -39,6 +41,10 @@ func TestIssue1342E2EScript_RowsAndAssertions(t *testing.T) {
 	src := string(raw)
 
 	for _, needle := range []string{
+		// Harness init (the #1478 r1 class: without harness_start the
+		// script aborts at seed_workspace's OWNER_ID guard — R0-fatal
+		// on every cluster).
+		`harness_start`,
 		// R1 — incident replay.
 		`bind_env "${WS}"`,                      // credential change lands mid-turn
 		`CredentialsApplyPending`,               // operator-visible defer surface
@@ -65,4 +71,80 @@ func TestIssue1342E2EWorkflowRegistered(t *testing.T) {
 	src := string(raw)
 	assert.True(t, strings.Contains(src, "local/issue-1342-graceful-restart-e2e.sh"),
 		"the #1342 e2e script must be registered in the nightly workflow")
+}
+
+// TestIssue1342E2EScript_WorkspaceIDCanonical pins the script's
+// UNCONDITIONAL WS_BASE (the us-70-revisions r21 pattern — the lib
+// shadows any :- default at source time, so the unconditional literal
+// is the only LIVE per-script prefix): ws_id (base[:32] + 4-digit
+// suffix) must construct canonical 8-4-4-4-12 UUIDs or PostgreSQL
+// rejects the seed insert. Same shape as
+// TestIssue1455E2EScript_WorkspaceIDCanonical.
+func TestIssue1342E2EScript_WorkspaceIDCanonical(t *testing.T) {
+	raw, err := os.ReadFile(issue1342Script)
+	require.NoError(t, err)
+	// Assert ALL matches, not just the first: bash honors the LAST
+	// assignment, so a shadowing second line must not slip past the pin.
+	matches := regexp.MustCompile(`(?m)^WS_BASE="([0-9a-f-]+)"$`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, matches, "unconditional WS_BASE assignment not found — the script's shape drifted (a :- default is dead post-source)")
+
+	for _, m := range matches {
+		base := m[1]
+		for _, sfx := range []string{"0001", "0002", "9999", "1234"} {
+			id := base[:32] + sfx
+			assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, id,
+				"ws_id(%q) output must be a canonical UUID or PostgreSQL rejects the seed insert", base)
+		}
+	}
+}
+
+// TestIssue1342E2EScript_JqFiltersCompile compiles every jq program the
+// script embeds (the provenance comment's mirror ask; the 1452-r2
+// incident class: an unbalanced filter aborts the script under set -e
+// exactly when the fix works). jq exit 3 is the compile error; runtime
+// errors do not matter — this pin only proves the programs parse. Same
+// shape as TestIssue1452E2EScript_JqFiltersCompile.
+func TestIssue1342E2EScript_JqFiltersCompile(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not on PATH — CI runs this row with it preinstalled")
+	}
+	raw, err := os.ReadFile(issue1342Script)
+	require.NoError(t, err)
+	joined := strings.ReplaceAll(string(raw), "\\\n", "")
+
+	singleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+|--arg(?:json)?\s+\w+\s+"[^"]*"\s+)*'([^']+)'`)
+	doubleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+)*"((?:[^"\\]|\\.)*)"`)
+
+	var programs []string
+	for _, m := range singleQuoted.FindAllStringSubmatch(joined, -1) {
+		programs = append(programs, m[1])
+	}
+	for _, m := range doubleQuoted.FindAllStringSubmatch(joined, -1) {
+		unescaped := strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(m[1])
+		dup := false
+		for _, p := range programs {
+			if p == unescaped {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			programs = append(programs, unescaped)
+		}
+	}
+	require.NotEmpty(t, programs, "extraction found no jq programs — the regexes drifted from the script's quoting style")
+
+	// Stub every $variable any filter references; unused --arg stubs are
+	// harmless, a missing one is itself a compile error jq reports.
+	stubs := []string{"-n", "--arg", "s", "x", "--arg", "t", "x", "--arg", "w", "x", "--arg", "p", "x", "--arg", "phase", "x", "--arg", "m", "x", "--arg", "id", "x"}
+	for _, program := range programs {
+		cmd := exec.Command(jq, append(stubs, program)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+				t.Fatalf("jq program does not compile (the 1452-r2 class): %q: %s", program, out)
+			}
+		}
+	}
 }

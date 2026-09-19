@@ -29,11 +29,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/us70-common.sh
 source "${SCRIPT_DIR}/lib/us70-common.sh"
 
+harness_start
+
 [[ -n "${LLM_MODEL:-}" ]] || die "LLM_MODEL must name the model turns run on (e.g. litellm/<free-model>)"
 R1_STREAM_S="${R1_STREAM_S:-40}"
 R1_SLEEP_S="${R1_SLEEP_S:-300}"
 
-WS_BASE="${WS_BASE:-e2e134200-0000-4000-8000-000000000000}"
+# UNCONDITIONAL (the us-70-revisions r21 pattern): the lib sets its own
+# WS_BASE default at source time, so the :- form here is dead code — the
+# pool's shared e2e5d000 prefix would silently apply and per-script
+# isolation never engages.
+WS_BASE="e2e13420-0000-4000-8000-000000000000"
 WS="$(ws_id 1)"
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
