@@ -21,8 +21,16 @@ export function AgentOriginBadge({ origin }: Props) {
       className="mb-1.5 inline-flex max-w-full items-center gap-1.5 rounded-md border border-muted-foreground/25 bg-muted/40 px-2 py-0.5 font-mono text-[11px] text-muted-foreground"
     >
       <Bot className="h-3 w-3 shrink-0" aria-hidden="true" />
-      <span className="truncate">
-        message from session {origin.fromSession}
+      {/* The session ID is the return address — it must render in full.
+          break-all (house convention for monospace IDs) wraps it at the
+          container edge; the old `truncate` here hid it behind an
+          ellipsis (#1465 owner report). title carries the full ID for
+          hover-copy. */}
+      <span data-testid="agent-origin-label" className="min-w-0">
+        message from session{" "}
+        <span data-testid="agent-origin-session-id" className="break-all" title={origin.fromSession}>
+          {origin.fromSession}
+        </span>
         {origin.workspace ? ` · workspace ${origin.workspace}` : ""}
         {origin.mode === "self-declared" ? " · self-declared origin" : ""}
       </span>
