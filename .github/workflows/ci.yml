@@ -3,13 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
-    # Tag runs stay triggered (they publish the tag commit's sha-/ts-
-    # images), but they MUST NOT emit semver or latest tags: the Release
-    # workflow is the ONLY writer of version tags (cosign-attested). A
-    # semver line in this file's merge jobs re-opens the release tag
-    # race — ops-prod #2539, pinned by
-    # pkg/repolint/ci_semver_tag_race_test.go.
-    tags: ['v*.*.*']
+    # NO tag trigger (ops-prod #2539 tag race): the Release workflow is
+    # the ONLY writer of release tags — semver, latest, AND the released
+    # commit's sha-/ts- (it publishes all of them itself). A CI run on
+    # a tag event would deterministically collide with the Release
+    # workflow's cosign-attested pushes on every shared tag. CI still
+    # covers released commits via the main push of the release commit.
+    # Pinned by pkg/repolint/ci_semver_tag_race_test.go.
+
   pull_request:
     branches: [main]
   # Manual trigger so a branch can produce a registry-pushed image set

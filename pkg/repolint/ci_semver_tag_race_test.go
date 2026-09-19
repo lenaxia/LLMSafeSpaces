@@ -21,6 +21,7 @@ package repolint_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -112,16 +113,55 @@ func TestCIMergeJobs_StillPushTraceableTags(t *testing.T) {
 	}
 }
 
+// activeLines counts ACTIVE (non-comment) lines matching the pattern —
+// a Contains check is comment-blind: commenting out every emission
+// line would pass it while releases silently lose their pins (r1
+// review finding, demonstrated by mutation).
+func activeLines(src string, pattern string) int {
+	re := regexp.MustCompile(`(?m)^\s*` + pattern + `\s*$`)
+	n := 0
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if re.MatchString(line) {
+			n++
+		}
+	}
+	return n
+}
+
 // TestReleaseWorkflow_RemainsTheSemverWriter: the invariant has two
-// sides. If release.yml ever drops its semver emission, NOBODY
-// publishes version tags — the pin fails loudly instead of releases
-// silently losing their pins.
+// sides. If release.yml ever drops its semver emission (including by
+// COMMENTING the lines out — comment-blind pins were an r1 finding),
+// NOBODY publishes version tags — the pin fails loudly instead of
+// releases silently losing their pins.
 func TestReleaseWorkflow_RemainsTheSemverWriter(t *testing.T) {
 	rel := readWorkflow(t, releasePath)
-	if !strings.Contains(rel, "type=semver,pattern={{version}}") {
-		t.Error("release.yml no longer emits type=semver,pattern={{version}} — releases would publish NO version tag; the race fix must keep release.yml as the sole (and active) semver writer")
+	if n := activeLines(rel, `type=semver,pattern=\{\{version\}\}`); n < 7 {
+		t.Errorf("release.yml has only %d ACTIVE type=semver,pattern={{version}} lines (want ≥7, one per image) — releases would publish NO version tag for some images; the race fix must keep release.yml as the sole (and active) semver writer", n)
 	}
-	if !strings.Contains(rel, "value=latest") {
-		t.Error("release.yml no longer emits latest — the race fix must keep release.yml as the sole (and active) latest writer")
+	if n := activeLines(rel, `type=raw,value=latest(,enable=.+)?$`); n < 7 {
+		t.Errorf("release.yml has only %d ACTIVE latest lines (want ≥7) — the race fix must keep release.yml as the sole (and active) latest writer", n)
+	}
+}
+
+// TestCIWorkflow_NoTagTrigger: ci.yml must not trigger on tag pushes at
+// all — the Release workflow publishes every tag a released commit
+// needs (semver, latest, sha-, ts-), so a CI tag run would
+// deterministically collide with the cosign-attested pushes on every
+// shared tag (ops-prod #2539's r1 residual: the sha-/ts- collision is
+// deterministic on tag events).
+func TestCIWorkflow_NoTagTrigger(t *testing.T) {
+	ci := readWorkflow(t, ciPath)
+	for _, line := range strings.Split(ci, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "tags:") && strings.Contains(trimmed, "v*") {
+			t.Errorf("ci.yml triggers on tag pushes (%q) — release.yml publishes ALL tags for released commits (semver, latest, sha-, ts-); a CI tag run collides deterministically. Drop the tag trigger (ops-prod #2539).", trimmed)
+		}
 	}
 }
