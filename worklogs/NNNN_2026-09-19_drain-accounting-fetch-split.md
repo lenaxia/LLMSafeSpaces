@@ -66,6 +66,10 @@ None.
 - `bash -n` the e2e script — ok; `go test -run TestIssue1410 ./local/` — ok (R10 needles).
 - Targeted engine pins re-run green post-merge-from-main (memory directive: no full sweeps locally; CI carries the full board).
 
+## Review Round 3 (bash harness defects — all four confirmed by my own simulation)
+
+R3 blocking finding: the R10 harness could not execute its contract — (1) `verdict=$(fn)` takes the function's exit status → `return 1/2` aborted the whole script under `set -e`; (2) `ok` writes stdout, captured into the verdict variable → pass line swallowed; (3) polluted verdict forced arithmetic on a message → attempt "b" always double-executed after success; (4) the retry/verdict branches were unreachable in all worlds and a twice-lost race silently passed. **Fix**: verdict-by-stdout contract — the attempt function's ONLY stdout is the verdict code, it always `return 0`, all diagnostics via `warn`/`note_fail` (stderr), `ok` printed by the caller from the `case`. Verified by isolated bash simulation of all six verdict sequences (1 1 / 1 0 / 2 / 3 / 0 / 9) under `set -euo pipefail`: correct branch per sequence, no abort, retry works, unexpected codes guarded. (The first simulation run exposed a stub bug — subshell state mutation — fixed before trusting results; recorded as its own lesson in method.)
+
 ## Tests Run (original verification, pre-directive)
 
 - RED-first: 6 subtests failing pre-implementation (targetless ×3, transient ×2, tick-level ×1).
