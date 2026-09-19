@@ -65,4 +65,4 @@ None. Runtime arbitration: tomorrow's nightly (~10:30–12:10Z window per the 11
 - `local/e2e_smoke_helpers_test.go` — kubectl shim: opt-in invocation tracing; sidecar-shaped answer for the combined container-list jsonpath.
 - `local/us68_attachments_script_test.go` — cleanup pins (structural + executable + ExecuteSmoke row).
 - `local/test_sh_hygiene_test.go` — NEW: test.sh hygiene pins (syntax, extraction-executes-against-fixture, backstop presence + ordering).
-- `worklogs/NNNN_2026-09-19_nightly-workspace-cleanup-hygiene.md` — this worklog.
+- `worklogs/1010_2026-09-19_nightly-workspace-cleanup-hygiene.md` — this worklog.
