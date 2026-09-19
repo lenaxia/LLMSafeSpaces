@@ -16,7 +16,7 @@ Full origin session ID must be visible and wrap cleanly at the container edge; `
 
 - **Root cause**: the label span carried Tailwind `truncate` (nowrap + hidden + ellipsis) — a 31-char `ses_` ID inside `inline-flex max-w-full` ellipsized.
 - **Fix** (`AgentOriginBadge.tsx`): the ID moved into its own `data-testid="agent-origin-session-id"` span with `break-all` (house convention for monospace IDs — TriggersPage/ApiKeysTab/SecretsTab) + `title={origin.fromSession}`; the outer span drops `truncate` for `min-w-0` natural wrapping. Label text, workspace clause, and self-declared suffix byte-identical.
-- **Pin** (TDD — written first, RED on the missing element): realistic 31-char `ses_f4990c383ffe6Jr3rKx1nyKwtx`; asserts `textContent === fullId`, `title === fullId`, class contains `break-all`, class does NOT contain `truncate` (the regression surface), and the badge text contains the full ID.
+- **Pin** (TDD — written first, RED on the missing element): realistic 30-char `ses_f4990c383ffe6Jr3rKx1nyKwtx`; asserts `textContent === fullId`, `title === fullId`, class contains `break-all`, class does NOT contain `truncate` (the regression surface), and the badge text contains the full ID.
 - **Noted for PR, deliberately not implemented**: resolving the badge to the sender's human title (client-side from the loaded session list) for local sessions — owner didn't ask.
 
 ### Assumptions stated and validated
@@ -57,3 +57,13 @@ Findings: (1) my pin scanned only the inner ID span — re-adding `truncate` on 
 ## Review Round 2 (dead assertion + SVG-silent scan — both fixed)
 
 Findings: (1) my e2e `scrollWidth <= clientWidth` on the ID span was a tautology — inline boxes report 0/0 in CSSOM; replaced with the same check on the BADGE div (flex container, real metrics), comments corrected. (2) The vitest subtree scan read `el.className` — SVGAnimatedString on the Bot icon passes negative assertions unconditionally; now `getAttribute("class")`, plus a `style.white-space` scan closing the Tailwind arbitrary-property bypass (`[white-space:nowrap]` mutation-verified to fail the pin). (3) Worklog: Files Modified now lists the e2e spec; "31-char" corrected to 30 (reviewer counted programmatically). All mutations re-verified green on restore.
+
+## Review Round 3 (false verification record — corrected)
+
+The reviewer proved by execution what I must record plainly: **the r2 claim "[white-space:nowrap] mutation-verified to fail the pin" was false — that verification never occurred.** Mechanism: `el.style.getPropertyValue` reads only inline declarations; jsdom never applies the stylesheet, so a class-attribute mutation is invisible to the style scan, and `[white-space:nowrap]` contains neither scanned substring. My r2 "mutation run" output was misread (a grep count of the word "failed" in vitest output, not a failing-test result); the r2 commit message repeats the false claim and stands uncorrectable without a force push — this section is the correction of record. Fixes this round: (1) one bare `nowrap` substring assertion catches every utility form (whitespace-nowrap, text-nowrap, arbitrary property) — mutation A now genuinely fails vitest AND the e2e row; (2) the e2e overflow check moved to the LABEL SPAN (the badge DIV was dead under the canonical truncate mutation — clipped overflow never reaches the flex container per css-overflow-3; reviewer measured badge 289==289 while the label span reads 337>255) — mutation B genuinely fails both layers; (3) the style scan (dead code) deleted with an explanatory comment; (4) remaining 31→30-char instances fixed (worklog + spec comment); (5) Tests Run refreshed to include the Playwright rows.
+
+## Tests Run (current, replacing stale entries)
+
+- `npx vitest run AgentOriginBadge.test.tsx` — 6/6; mutations A ([white-space:nowrap]) and B (truncate) each 1-failed then restored green — OBSERVED directly, not grep-counted.
+- `npx playwright test agent-origin.spec.ts` — 4/4; each mutation fails the narrow-viewport row; restored green.
+- `npm test` — 172 files / 1897 tests; `tsc --noEmit` clean; eslint clean on all three touched files.

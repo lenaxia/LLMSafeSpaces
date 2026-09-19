@@ -115,7 +115,7 @@ test.describe("agent-originated message rendering (#1465)", () => {
   // #1465 owner report: the badge TRUNCATED the ID behind an ellipsis
   // (nowrap on the label span) — a bug class text-content assertions
   // cannot see in any harness. This row observes LAYOUT in a real
-  // browser at a narrow viewport: the label + 31-char ID (~363px at
+  // browser at a narrow viewport: the label + 30-char ID (~357px at
   // 11px monospace) cannot fit the ~300px message column, so a healthy
   // badge WRAPS to two+ lines (single line ≈ 20px incl. padding and
   // border; wrapped ≥ ~33px — the 26px threshold splits both with
@@ -134,12 +134,17 @@ test.describe("agent-originated message rendering (#1465)", () => {
     const box = await badge.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.height).toBeGreaterThan(26);
-    // No horizontal overflow inside the badge: the badge DIV is a
-    // flex container (blockified — real scroll metrics, unlike an
-    // inline span whose clientWidth/scrollWidth are always 0), so any
-    // nowrap regression anywhere in the chain makes its scrollWidth
-    // exceed its clientWidth.
-    const noOverflow = await badge.evaluate((el) => el.scrollWidth <= el.clientWidth);
+    // No horizontal overflow in the LABEL SPAN — the flex item that
+    // carries the text (blockified: real scroll metrics). The badge
+    // DIV is the WRONG element for this check: an `overflow:hidden`
+    // descendant (the historical truncate) clips its own overflow and
+    // per css-overflow-3 it never reaches the flex container, so the
+    // badge-level check passes under exactly the canonical mutation
+    // (r3 finding, validated: badge 289 == 289 while the label span
+    // reads 337 > 255). The height assertion above carries the
+    // mutation coverage; this is the live secondary signal.
+    const label = page.getByTestId("agent-origin-label");
+    const noOverflow = await label.evaluate((el) => el.scrollWidth <= el.clientWidth);
     expect(noOverflow).toBe(true);
   });
 });

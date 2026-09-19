@@ -59,13 +59,17 @@ describe("AgentOriginBadge", () => {
     for (const el of [badge, ...Array.from(badge.querySelectorAll("*"))]) {
       // getAttribute, not el.className: SVG elements expose
       // SVGAnimatedString, on which toContain passes unconditionally
-      // (r2 review). The style scan also catches Tailwind arbitrary
-      // properties ([white-space:nowrap] — computed-identical to
-      // truncate, invisible to the class-substring scan).
+      // (r2). One bare "nowrap" substring catches every utility form —
+      // whitespace-nowrap, text-nowrap, and the Tailwind arbitrary
+      // property [white-space:nowrap] (computed-identical to truncate;
+      // invisible to "whitespace-nowrap" scans). No style scan: jsdom
+      // never applies the stylesheet, so el.style can only ever see
+      // inline declarations — a class-driven mutation is invisible to
+      // it (r3 finding; the r2 style scan was dead code and its
+      // claimed mutation verification never occurred).
       const cls = el.getAttribute("class") ?? "";
       expect(cls).not.toContain("truncate");
-      expect(cls).not.toContain("whitespace-nowrap");
-      expect((el as HTMLElement).style?.getPropertyValue("white-space")).toBe("");
+      expect(cls).not.toContain("nowrap");
     }
   });
 });
