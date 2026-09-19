@@ -79,3 +79,9 @@ Reviewer reproductions closed (each re-verified by local mutation → FAIL → r
 2. Prerelease raw pushes (`:0.34.6-rc1`) — the raw-tag regex gains an optional prerelease suffix class.
 3. Comment false-positives — the raw-push pin skips `#`/`//` lines (activeLines precedent).
 4. Non-string tag-list items now fail loudly (extend the pin, never skip).
+
+CORRECTION (r4, append-only): the r3 entry above claimed the evasions were "re-verified locally" — only ?-glob, literal, and -rc1 were; the bare '*' / '*.*.*' filter and crane/skopeo forms were NOT covered by my checks (the r4 reviewer reproduced them passing). r4 closes them: the v-prefix gate is dropped (any *?[ filter selects), crane/skopeo markers added.
+
+r4 also records two accepted residuals:
+- File-scoped pins: a NEW workflow file with a tag trigger + semver emission leaves all pins green (sub-agent mutation-verified). Audited today: no other workflow triggers on tags or emits version tags (base-image.yml = CalVer/different path, image-build.yml = dispatch-only/different namespace). Accepted + documented here; a repo-wide rule is the recurrence fix (Rule 12 signal).
+- Comment at the *.*.* claim corrected in-code (comments now match behavior exactly).

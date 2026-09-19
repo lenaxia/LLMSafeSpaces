@@ -192,16 +192,13 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 var versionLiteralRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
 
 // tagFilterMatchesVersions reports whether a push-tag filter selects
-// version-like tags — v-prefixed with ANY glob metachar (* ? [ — the
-// r3 evasions used ? and bare '*'), or an exact version literal.
-// Over-matching non-version v-tags is acceptable: this pins ci.yml,
-// which has no legitimate tag trigger at all.
+// version-like tags: ANY glob metachar (* ? [) — v-prefixed or not
+// (r4: bare '*' and '*.*.*' evaded the v-gate) — or an exact version
+// literal. Deliberately over-matching: this pins ci.yml, which has NO
+// legitimate tag trigger at all.
 func tagFilterMatchesVersions(filter string) bool {
 	if versionLiteralRe.MatchString(filter) {
 		return true
-	}
-	if !strings.HasPrefix(filter, "v") {
-		return false
 	}
 	return strings.ContainsAny(filter, "*?[")
 }
@@ -242,8 +239,8 @@ func TestReleaseWorkflow_FiresOnVersionTags(t *testing.T) {
 // push of a version tag in a merge job evades them (release.yml itself
 // uses raw imagetools for per-arch tags). Guard the merge steps at
 // Contains level: no hardcoded semver-looking tag in any ci.yml run
-// step. Prerelease suffixes (-rc1) and digest-terminated refs count
-// (r3 evasions); comments are skipped (r3 false-positive).
+// step. Prerelease suffixes (-rc1) count (r3); comments are skipped
+// (r3 false-positive); crane/skopeo push forms count (r4).
 func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 	ci := readWorkflow(t, ciPath)
 	re := regexp.MustCompile(`v?\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?`)
@@ -252,7 +249,9 @@ func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") && !strings.Contains(trimmed, "imagetools") {
+		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") &&
+			!strings.Contains(trimmed, "imagetools") && !strings.Contains(trimmed, "crane") &&
+			!strings.Contains(trimmed, "skopeo") {
 			continue
 		}
 		if m := re.FindString(line); m != "" {
