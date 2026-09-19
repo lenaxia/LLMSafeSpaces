@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.5] - 2026-09-19
+
+### Features — agent-to-agent messaging provenance (#1465, PR #1469)
+
+- **send_message origin metadata, hybrid and mode-labeled**: inter-agent
+  messages now carry a versioned sentinel (`lsp:agent-message-v1`) with the
+  originating session, auto-injected server-side. PRIMARY: a first-party
+  opencode plugin (shipped in the pinned overlay artifact — design 0053 §3
+  amended: digest-pinned platform plugins are part of the delivery
+  contract) stamps the calling session via the documented
+  tool.execute.before hook (mode "injected"); FALLBACK: a validated
+  model-supplied from_session_id (mode "self-declared") when the plugin is
+  absent or drifted — delivery⇔attribution holds in every mode and a
+  degraded pod self-reports. Frontend renders agent-origin messages
+  user-side with a provenance badge; a CI freeze-pin job guards the hook
+  contract against opencode bumps. The opencode overlay image digest
+  changes with this release.
+
+### Fixes — routine fire lifecycle closure (#1454/#1470/#1473/#1476, PRs #1472/#1471/#1474/#1477)
+
+- **One accounting primitive (#1454, PR #1472)**: the four copy-pasted
+  increment/disable blocks and both target predicates collapsed into
+  accountTriggerFailure + routineTargetWorkspace — pure refactor,
+  behavior-pinned identical (characterization pins proven green on
+  pre-refactor main).
+- **Failed fires record their sessions (#1470, PR #1471)**: the agent-node
+  envelope carries sessionId on success AND error; failed
+  PreserveOnFailure/PreserveAlways fires origin-record and index their
+  surviving sessions; ephemeral sessions are torn down on every failure
+  leg; an opencode-DELETE 404 counts as gone (no phantom survivors).
+- **Drain-door gaps closed (#1473, PR #1474)**: targetless drain fires now
+  account and auto-disable (the #1440 cron guard's twin); transient
+  trigger-fetch errors leave pending fires for re-drive instead of
+  permanently failing them.
+- **Retry intermediates cleaned (#1476, PR #1477)**: superseded retry
+  attempts' sessions are deleted via the authorized route (never the
+  final attempt's); the agent-node timeout leg surfaces 200+errorCode so
+  timed-out fires' surviving sessions are recorded (script-node legs stay
+  504 — the engine's pre-script branch has no ErrorCode handling).
+
+### Fixes — script-node environment contract (#1455, PR #1475)
+
+- **script_env_unavailable fails loud and classified**: agentd probes the
+  scriptwrap prerequisites (writable temp dir, interpreter) before
+  execution; sidecar-mode scratch containers now fail with a named,
+  attributed error code (pinned outside the transient retry class — an
+  environment does not heal in 2s) instead of an incidental script_failed.
+  The http-node reader's secrets-env path now shares the US-4b coordinate.
+  Runbook + epic-64 contract documented; Option-B (execute in the
+  workspace container) remains an open design ruling.
+
+### Fixes — e2e harness reliability (#1473/#1480/#1478, PRs #1474/#1480/#1478)
+
+- **Three harnesses resurrected**: the api() status side-channel died in
+  every caller's subshell — the 1410 harness had never executed, 1452 and
+  1342 never called harness_start (killed at seed_workspace on every
+  nightly). All three now run under a shared ExecuteSmoke shim layer
+  (curl/kubectl fidelity, verdict gates, whsec_ leak bans), with WS_BASE
+  canonicality pinned in the live unconditional form. Sister-script smoke
+  coverage extension to the remaining eight nightly scripts is queued
+  follow-up work.
+
 ## [0.34.4] - 2026-09-19
 
 ### Fixes — routine fire follow-up ledger (#1452–#1458, #1467)
