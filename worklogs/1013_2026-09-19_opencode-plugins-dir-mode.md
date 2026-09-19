@@ -53,7 +53,7 @@ None. (Local docker verification impossible — dev pod has no docker daemon by 
 - `runtimes/opencode/Dockerfile` (chmod 755 + rationale comment)
 - `pkg/repolint/opencode_plugins_mode_test.go` (new source pin)
 - `.github/workflows/ci.yml` (built-image /plugins mode assertion in Build Opencode amd64)
-- `worklogs/NNNN_2026-09-19_opencode-plugins-dir-mode.md` (this file)
+- `worklogs/1013_2026-09-19_opencode-plugins-dir-mode.md` (this file)
 
 ## r4 — the three r3-review residuals
 

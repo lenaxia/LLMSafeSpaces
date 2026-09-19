@@ -55,7 +55,7 @@ None.
 
 - `.github/workflows/ci.yml` (semver/latest removal + trigger comment)
 - `pkg/repolint/ci_semver_tag_race_test.go` (new — 3 structural pins)
-- `worklogs/NNNN_2026-09-19_ci-manifest-semver-tag-race.md` (this file)
+- `worklogs/1012_2026-09-19_ci-manifest-semver-tag-race.md` (this file)
 
 ## r1 review — decision on the residual + corrections (append-only)
 
