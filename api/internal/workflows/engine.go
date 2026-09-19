@@ -1101,10 +1101,6 @@ func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessag
 
 func agentdExecPort() int { return 4097 }
 
-// deleteRoutineSession deletes a finished routine's opencode session via
-// agentd's authenticated /v1/workflow/session/delete and reports whether the
-// session was deleted. Non-2xx responses are logged — before #762's caller
-// fix the 401s were silently swallowed and PreserveOnFailure sessions were
 // Purpose labels for the shared authorized session-delete path — the
 // delete is caller-neutral; every log line names its caller so an
 // operator debugging one class never chases the other's code path.
@@ -1113,6 +1109,10 @@ const (
 	deletePurposeRetryIntermediate = "retry_intermediate_cleanup"
 )
 
+// deleteRoutineSession deletes a finished routine's opencode session via
+// agentd's authenticated /v1/workflow/session/delete and reports whether the
+// session was deleted. Non-2xx responses are logged — before #762's caller
+// fix the 401s were silently swallowed and PreserveOnFailure sessions were
 // never deleted.
 func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP string, port int, sessionID, purpose string) bool {
 	if logger == nil {

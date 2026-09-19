@@ -23,6 +23,7 @@ Stop the retry-intermediate session leak: `executeWithRetry` runs each attempt i
 
 ## Key Decisions
 
+- **Latency note (review observation, accepted):** the synchronous delete inside the retry loop runs ahead of the backoff and is bounded by the 10s HTTP client — worst case adds ~2×(10s+) per fire when agentd hangs. Consistent with the best-effort contract; flagged here as the recorded trade-off.
 - **Cleanup lives in the retry loop**, the only place that knows a response is being discarded. Agentd cannot know whether the engine will retry; unconditional agentd-side teardown would break #1470's keep-on-final-failure contract.
 - **Explicit parameter over variadic-optional** (Rule 3): both call sites updated — script leg passes `nil` visibly.
 - **Only when `a < attempts`** — the guard ordering matters; cleaning before the final-attempt check would delete the session #1470 exists to preserve.

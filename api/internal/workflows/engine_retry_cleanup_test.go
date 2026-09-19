@@ -252,3 +252,22 @@ func TestExecuteRoutine_TimeoutEnvelope_RecordsSurvivingSession_Composition(t *t
 	require.Len(t, store.sessionOrigins, 1, "the timed-out fire's surviving session is recorded")
 	require.Equal(t, "ses_to1", index.titleCalls()[0].sessionID)
 }
+
+// TestExecuteWithRetry_RetryableWithoutSession_NoCleanup pins the
+// remaining guard half explicitly: a retryable envelope that carries no
+// session (old-agentd skew, or session_create_failed — no session was
+// created) retries without invoking the cleaner.
+func TestExecuteWithRetry_RetryableWithoutSession_NoCleanup(t *testing.T) {
+	ex := &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500"}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ok"}`)}},
+	}}
+	var cleaned []string
+	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+
+	_, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
+		&NodeExecRequest{NodeID: "n1"}, cleanup)
+
+	require.NoError(t, err)
+	require.Empty(t, cleaned, "a retryable envelope with no session has nothing to clean")
+}
