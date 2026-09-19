@@ -129,13 +129,19 @@ func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 	spy := &reconcileSpyAdapter{present: []string{"ses_alive"}}
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, spy)
 	require.NoError(t, err)
+	// Pre-set the parent-backfill gate: otherwise BackfillSessionParents
+	// ALSO calls adapter.ListSessions on this route and satisfies a
+	// call-count assertion with the WRONG path — the r2 mutation finding
+	// (the piggyback could be deleted and the old pin still passed).
+	proxyHandler.SetParentBackfilledForTest("ws-1")
 	idx := newRecordingIndex()
 	// A count-zero ghost absent from the harness + prior miss=1 → this
-	// pass reaps (proves the router→handler→wsstate→sessionindex chain
-	// end to end, not just the list-call wiring).
+	// pass REAPS (asserting the deletion is the wiring proof: router →
+	// handler → wsstate → PlanReconciliation → sessionindex delete).
 	idx.seed("ws-1", "ses_ghost", 0)
 	idx.seed("ws-1", "ses_alive", 3)
 	proxyHandler.SetSessionIndex(idx)
+	proxyHandler.SeedReconcileMissesForTest("ws-1", map[string]int{"ses_ghost": 1})
 	ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(
 		[]types.SessionListItem{
 			{ID: "ses_ghost", Title: "Ghost", MessageCount: 0},
@@ -153,4 +159,10 @@ func TestRouterSessionList_TriggersReconcilePass(t *testing.T) {
 
 	assert.Eventually(t, func() bool { return spy.listCalls() >= 1 }, 3*time.Second, 50*time.Millisecond,
 		"the sidebar list must trigger the harness list diff (the router piggyback)")
+	assert.Eventually(t, func() bool {
+		idx.mu.Lock()
+		defer idx.mu.Unlock()
+		return idx.deleted["ws-1/ses_ghost"]
+	}, 3*time.Second, 50*time.Millisecond,
+		"the piggybacked pass must reap the count-zero ghost (deleting router.go's ReconcileSessionIndex call fails this)")
 }

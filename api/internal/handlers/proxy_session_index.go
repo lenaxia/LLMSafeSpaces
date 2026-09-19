@@ -16,16 +16,23 @@ import (
 	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 )
 
-// sessionGoneHumanMessage is the #1340 typed gone-state body, house
+// sessionGone messages are the #1340 typed gone-state body, house
 // pattern (code + human message, mirroring the 422
 // text_only_model_image_history surface). The code discriminator drives
-// the frontend's gone-state rendering; the message is for humans.
-const sessionGoneHumanMessage = "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list."
+// the frontend's gone-state rendering; the message is for humans and
+// MUST be true for the guard outcome: a reaped row is gone from the
+// list; a history-bearing row the guard kept is still listed pending
+// operator review (r2 finding — one message for both was a user-visible
+// untruth in the kept case).
+const (
+	sessionGoneReaped = "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list."
+	sessionGoneKept   = "This session no longer exists on the agent — it may have been deleted. Its history entry remains in your session list pending review."
+)
 
-func writeSessionGoneBody(c *gin.Context) {
+func writeSessionGoneBody(c *gin.Context, message string) {
 	c.JSON(http.StatusGone, gin.H{
 		"code":  "session_gone",
-		"error": sessionGoneHumanMessage,
+		"error": message,
 	})
 }
 
@@ -47,27 +54,32 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 	if h.sessionIndex != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		rows, listErr := h.sessionIndex.ListByWorkspace(ctx, workspaceID)
-		if listErr == nil {
-			for _, row := range rows {
-				if row.ID != sessionID {
-					continue
-				}
-				if sessionindex.DefaultReapGuard(row) {
-					if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
-						h.logger.Warn("session_gone: index row reap failed",
-							"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
-					}
-				} else {
-					h.logger.Warn("session_gone: history-bearing row kept for operator review",
-						"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
-						"messageCount", row.MessageCount)
-				}
-				break
+		if listErr != nil {
+			h.logger.Warn("session_gone: index lookup failed; row left for the convergence pass",
+				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", listErr.Error())
+		}
+		for _, row := range rows {
+			if row.ID != sessionID {
+				continue
 			}
+			if sessionindex.DefaultReapGuard(row) {
+				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
+					h.logger.Warn("session_gone: index row reap failed",
+						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+				}
+				writeSessionGoneBody(c, sessionGoneReaped)
+			} else {
+				h.logger.Warn("session_gone: history-bearing row kept for operator review",
+					"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
+					"messageCount", row.MessageCount)
+				writeSessionGoneBody(c, sessionGoneKept)
+			}
+			cancel()
+			return true
 		}
 		cancel()
 	}
-	writeSessionGoneBody(c)
+	writeSessionGoneBody(c, sessionGoneReaped)
 	return true
 }
 
@@ -132,20 +144,29 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	}
 
 	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, sessionindex.DefaultReapGuard)
+	// keptForOperator rows keep a threshold-level counter so every
+	// subsequent pass re-detects them — the operator signal fires
+	// consistently, never every-other-pass (r2 finding).
+	for _, id := range keptForOperator {
+		next[id] = reconcileMissThreshold
+	}
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	for _, id := range remove {
 		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
+			sessionindex.ReconcileOutcome("delete_failed")
 			h.logger.Warn("session reconcile: ghost delete failed", "workspaceID", workspaceID, "sessionID", id, "error", err.Error())
 			continue
 		}
+		sessionindex.ReconcileOutcome("reaped")
 		h.logger.Info("session reconcile: reaped ghost index row",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
 	for _, id := range keptForOperator {
 		// #1340 triage guard: history-bearing rows the harness reports
-		// gone are NOT auto-deleted — surfaced for operator review (a
-		// vanished session with history may indicate a harness store
+		// gone are NOT auto-deleted — metric + Warn for operator review
+		// (a vanished session with history may indicate a harness store
 		// reset; the read path still answers the typed gone-state).
+		sessionindex.ReconcileOutcome("kept_for_operator")
 		h.logger.Warn("session reconcile: history-bearing row absent at harness, kept for operator review",
 			"workspaceID", workspaceID, "sessionID", id)
 	}

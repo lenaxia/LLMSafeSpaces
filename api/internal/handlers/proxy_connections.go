@@ -317,6 +317,12 @@ func (h *ProxyHandler) GetPriorPhaseForTest(workspaceID string) (string, bool) {
 	return h.state().GetPriorPhase(context.Background(), workspaceID)
 }
 
+// SeedReconcileMissesForTest seeds the #1340 reconcile miss counters
+// (router-level wiring tests stage the N=1-prior state).
+func (h *ProxyHandler) SeedReconcileMissesForTest(workspaceID string, misses map[string]int) {
+	h.state().SetReconcileMisses(context.Background(), workspaceID, misses)
+}
+
 // SetParentBackfilledForTest seeds the parent-backfill marker.
 func (h *ProxyHandler) SetParentBackfilledForTest(workspaceID string) {
 	h.state().SetParentBackfilled(context.Background(), workspaceID)

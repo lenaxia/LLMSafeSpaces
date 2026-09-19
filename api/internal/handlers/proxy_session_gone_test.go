@@ -149,6 +149,18 @@ func TestGetSession_Harness404_HistoryBearingRowKeptButStill410(t *testing.T) {
 
 	require.Equal(t, http.StatusGone, w.Code, "the gone-state answers regardless of the guard")
 	assert.Empty(t, idx.deletedTree, "message_count>0 rows are never auto-deleted on the read path")
+
+	// r2: the human message must be TRUE for the guard outcome — the
+	// kept row is still listed; saying "removed from your session list"
+	// here was a user-visible untruth.
+	var body struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Equal(t, "session_gone", body.Code)
+	assert.Contains(t, body.Error, "remains in your session list")
+	assert.NotContains(t, body.Error, "has been removed", "the kept case must not claim removal")
 }
 
 // Real classification chain through the mounted routes: the fake

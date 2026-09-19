@@ -23,6 +23,19 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Session-index write outcomes by kind (queued, applied, db_error, dropped_queue_full).",
 }, []string{"outcome"})
 
+// reconcileOutcomes counts the convergence pass's dispositions (#1340):
+// reaped (guard-admitted deletion), kept_for_operator (history-bearing
+// absent — the triage guard held it), delete_failed.
+var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "session_index_reconcile_outcomes_total",
+	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed).",
+}, []string{"outcome"})
+
+// ReconcileOutcome records one convergence disposition (handler-side).
+func ReconcileOutcome(outcome string) {
+	reconcileOutcomes.WithLabelValues(outcome).Inc()
+}
+
 // Service manages the session_index table with non-blocking writes.
 type Service struct {
 	db     interfaces.DatabaseService
@@ -85,6 +98,7 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 		case <-s.queue:
 		default:
 		}
+		sessionIndexEvents.WithLabelValues("dropped_queue_full").Inc()
 		s.queue <- recordEvent{workspaceID: workspaceID, sessionID: sessionID, title: title, at: at}
 	}
 }
@@ -153,9 +167,12 @@ func (s *Service) UpdateLastSeen(ctx context.Context, workspaceID, sessionID str
 // probe-shell class). Rows the harness reports gone but that carry
 // message history are returned as keptForOperator instead: a vanished
 // session WITH history may indicate a harness store reset, so the row
-// is surfaced (metric + log at the orchestration layer) rather than
-// silently destroyed. threshold <= 1 removes on the first absence;
-// callers pass 2.
+// is surfaced (the orchestration layer records the
+// session_index_reconcile_outcomes_total metric + a Warn log) rather
+// than silently destroyed. threshold <= 1 removes on the first absence;
+// callers pass 2. keptForOperator rows carry no miss counter here —
+// the orchestration layer pins theirs at the threshold so the signal
+// repeats consistently.
 func PlanReconciliation(indexRows []types.SessionListItem, harnessList func() (map[string]bool, error), prevMiss map[string]int, threshold int, reap ReapGuard) (remove, keptForOperator []string, nextMiss map[string]int) {
 	nextMiss = map[string]int{}
 	present, err := harnessList()

@@ -69,3 +69,44 @@ func TestRedisStore_ReconcileMisses_CorruptPayloadReadsNil(t *testing.T) {
 	// a corrupt counter must not break the reconciliation pass.
 	assert.Nil(t, s.GetReconcileMisses(ctx, "ws-1"))
 }
+
+// The cross-replica turn claim — the r2 centerpiece: contention,
+// expiry re-arm, and fail-open on outage.
+func TestRedisStore_ClaimReconcileTurn_Contention(t *testing.T) {
+	s, _ := newReconcileTestStore(t)
+	ctx := context.Background()
+
+	// Contention: exactly one claimant wins the window.
+	first := s.ClaimReconcileTurn(ctx, "ws-1", time.Minute)
+	second := s.ClaimReconcileTurn(ctx, "ws-1", time.Minute)
+	assert.True(t, first)
+	assert.False(t, second, "a second claimant in the same window must lose")
+
+	// Per-workspace independence.
+	assert.True(t, s.ClaimReconcileTurn(ctx, "ws-2", time.Minute))
+}
+
+func TestRedisStore_ClaimReconcileTurn_ExpiryRearms(t *testing.T) {
+	s, mr := newReconcileTestStore(t)
+	ctx := context.Background()
+
+	require.True(t, s.ClaimReconcileTurn(ctx, "ws-1", time.Minute))
+	require.False(t, s.ClaimReconcileTurn(ctx, "ws-1", time.Minute))
+	mr.FastForward(2 * time.Minute)
+	assert.True(t, s.ClaimReconcileTurn(ctx, "ws-1", time.Minute),
+		"an expired window must be claimable again")
+}
+
+func TestRedisStore_ClaimReconcileTurn_FailOpenOnOutage(t *testing.T) {
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	s := NewRedisStore(client, testActiveSessTTL)
+
+	// Outage: the cache being DOWN must not block convergence —
+	// fail-open (documented in-code).
+	mr.Close()
+	assert.True(t, s.ClaimReconcileTurn(context.Background(), "ws-1", time.Minute),
+		"Redis outage must fail OPEN (the pass is idempotent; blocking convergence inverts the S5b priority)")
+}

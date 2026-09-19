@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -266,4 +268,37 @@ func TestPlanReconciliation(t *testing.T) {
 			assert.Equal(t, tc.wantMiss, misses)
 		})
 	}
+}
+
+// #754 fold-in via #1340: write outcomes are QUERYABLE — the drop
+// branch (channel full) and DB failure each increment their counter.
+func TestSessionIndexEvents_DropAndDBErrorCounted(t *testing.T) {
+	// Leg A (drop): NO drainer — the queue fills deterministically, then
+	// one more push fires the eviction branch.
+	silent := New(&mocks.MockDatabaseService{}, nil)
+	beforeDrop := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("dropped_queue_full"))
+	for i := 0; i < 1024; i++ {
+		silent.RecordMessage("ws-1", "ses_x", "t", time.Now())
+	}
+	silent.RecordMessage("ws-1", "ses_overflow", "t", time.Now())
+	assert.Greater(t,
+		promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("dropped_queue_full")),
+		beforeDrop, "the channel-full eviction must be counted")
+
+	// Leg B (db_error): drainer running; the default upsert succeeds and
+	// the failing session's call errors once.
+	db := &mocks.MockDatabaseService{}
+	// Specific FIRST: testify matches the first declared expectation,
+	// so the wildcard default must come second.
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_err", mock.Anything).
+		Return(assert.AnError).Once()
+	db.On("UpsertSessionMessage", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+	beforeDB := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("db_error"))
+	svc.RecordMessage("ws-1", "ses_err", "t", time.Now())
+	assert.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("db_error")) > beforeDB
+	}, 3*time.Second, 25*time.Millisecond, "the upsert failure must be counted")
 }
