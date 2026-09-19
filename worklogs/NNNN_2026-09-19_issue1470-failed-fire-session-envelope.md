@@ -61,6 +61,8 @@ None.
 
 ## Next Steps
 
+- Round 1 (CHANGES_REQUESTED) findings addressed: (F1) opencode-DELETE **404 counts as gone** — `deleteOpencodeSession` returns true on 2xx-or-404, and the agentd delete route now **propagates reality** (204 gone / 502 `session_delete_failed` survived) so the engine's PreserveOnFailure-success leg stops trusting a blanket 204 (its existing `>=400 → false` is fed honestly; engine-side status logic deliberately unchanged — a 404 on that leg can only mean misroute/skew and reading it as "gone" would re-open the phantom-leak class). (F2) the `WithoutCancel` timeout-leg teardown is pinned: `blockMessages` parks the message POST past a 300ms dispatch deadline — ephemeral cleanup DELETE must still land under the dead context (reverting WithoutCancel fails the test); preserved mode reports the id in the 504 body. Plus: delete-404 harness mode pinning both phantom legs, the route's 204/502 contract pin, engine-side leaked-ephemeral reality recording pin, dead `session_id` assignment removed (style nit). Origin-value decision (routine + FireID linkage, no distinct failed-fire origin) recorded on the issue.
+- Rebased onto cea33f5e → 9c6624ed (v0.34.4 + the #1454 sibling's #1472 accounting refactor — zero conflicts, the predicted disjoint-hunk composition; their accounting pins now exercise my recording call site).
 - Adversarial review loop until APPROVED; orchestrator merges (rebase first if #1469's lane lands in cmd/workspace-agentd package main first).
 - If reviewers want the timeout-leg session reported: separate decision on mapping `script_timeout` to a 200 envelope (failure-payload shape change).
 
