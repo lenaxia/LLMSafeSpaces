@@ -136,3 +136,17 @@ func TestIssue1452E2EWorkflowRegistered(t *testing.T) {
 	assert.True(t, strings.Contains(src, "local/issue1452-routine-session-index-e2e.sh"),
 		"the #1452 routine-session-index e2e script must be registered in the nightly workflow")
 }
+
+// TestIssue1452E2EScript_ExecuteSmoke — same class as the 1410 smoke.
+// Constructing it found the script had never been executable: it never
+// called harness_start, so OWNER_ID (blanked at source time) was unset
+// and seed_workspace died at R0 (#1474 r4's latent-death class). The
+// script now calls harness_start; the smoke pins that it traverses.
+func TestIssue1452E2EScript_ExecuteSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execution smoke spawns ~hundreds of shim processes")
+	}
+	combined, exitVal := runScriptUnderShims(t, "issue1452-routine-session-index-e2e.sh", "Active", nil)
+	assertSmokeTraversal(t, "issue1452-routine-session-index-e2e.sh", combined, exitVal,
+		"row(s) failed", "issue-1452 e2e: all rows passed")
+}

@@ -46,6 +46,12 @@ trap cleanup EXIT
 curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
     || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
 
+# harness_start seeds the session user + API key and sets OWNER_ID —
+# without it seed_workspace dies (OWNER_ID is blanked at source time and
+# only harness_start sets it; found while adding the execution smoke:
+# the script had never been executable end to end, #1474 r4's class).
+harness_start
+
 api() { # method path [body] -> body on stdout; api_status + api_body globals
     # No-subshell contract: capture-style callers must use
     # `api M P B; var="${api_body}"` — `var=$(api ...)` runs in a
