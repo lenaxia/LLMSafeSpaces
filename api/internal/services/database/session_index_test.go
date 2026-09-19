@@ -101,3 +101,41 @@ func TestUpsertSessionParent_OnConflictUpdatesParent(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestUpsertSessionMessageCount_WritesExpectedColumns pins the #1481
+// rebuild upsert: message_count is set ABSOLUTELY (the harness-walked
+// ground truth replaces the incrementally-maintained approximation),
+// and the DISTINCT guard skips the write when nothing changed — a
+// converged workspace must not churn updated_at every 30s pass.
+func TestUpsertSessionMessageCount_WritesExpectedColumns(t *testing.T) {
+	svc, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	mock.ExpectExec(regexp.QuoteMeta(
+		`INSERT INTO session_index (workspace_id, session_id, message_count, updated_at)`,
+	)).
+		WithArgs("ws-1", "ses_c1", 507).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := svc.UpsertSessionMessageCount(context.Background(), "ws-1", "ses_c1", 507)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUpsertSessionMessageCount_DistinctGuardSkipsNoOpWrites asserts the
+// conflict clause only fires on drift (the double-count repair writes
+// once, then never again for the same count).
+func TestUpsertSessionMessageCount_DistinctGuardSkipsNoOpWrites(t *testing.T) {
+	svc, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	mock.ExpectExec(regexp.QuoteMeta(
+		`WHERE session_index.message_count IS DISTINCT FROM EXCLUDED.message_count`,
+	)).
+		WithArgs("ws-1", "ses_c1", 507).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := svc.UpsertSessionMessageCount(context.Background(), "ws-1", "ses_c1", 507)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

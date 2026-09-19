@@ -478,6 +478,66 @@ func (a *Adapter) GetHistoryPage(ctx context.Context, userID, workspaceID, sessi
 	return a.getHistoryV1(ctx, userID, workspaceID, sessionID, limit)
 }
 
+// countWalkPageSize/countWalkMaxPages mirror the loopback client's
+// SessionMessageCount contract: 500-message pages, a 40-page ceiling
+// (20k messages) that keeps a pathological session bounded. The pinned
+// 1.18.15 session list carries no count field (verified live, #1452),
+// so this walk IS the cheapest count source at that pin.
+const (
+	countWalkPageSize = 500
+	countWalkMaxPages = 40
+)
+
+// CountMessages walks the V1 message pagination and returns the total
+// message count (#1481 — the session_index rebuild's ground truth).
+// Pages are decoded as raw JSON values only (no part parsing — counting
+// needs lengths, not shapes). The cursor contract (?limit&before= +
+// X-Next-Cursor) lives entirely inside the seam.
+func (a *Adapter) CountMessages(ctx context.Context, userID, workspaceID, sessionID string) (int, error) {
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	cursor := ""
+	for page := 0; page < countWalkMaxPages; page++ {
+		url := "/session/" + sessionID + "/message?limit=" + strconv.Itoa(countWalkPageSize)
+		if cursor != "" {
+			url += "&before=" + cursor
+		}
+		resp, err := a.doGet(ctx, c, url)
+		if err != nil {
+			return total, err
+		}
+		n, next, perr := a.readCountPage(resp, "GET /session/"+sessionID+"/message")
+		_ = resp.Body.Close() //nolint:errcheck // best-effort drain — on every path, immediately after the read
+		if perr != nil {
+			return total, perr
+		}
+		total += n
+		if next == "" || n < countWalkPageSize {
+			return total, nil
+		}
+		cursor = next
+	}
+	return total, nil
+}
+
+// readCountPage decodes one page — raw JSON lengths only (counting
+// needs lengths, not shapes) — and returns the X-Next-Cursor
+// continuation token. Non-2xx surfaces through the adapter's typed
+// session-error classifier (404 → gone). The CALLER owns Body.Close.
+func (a *Adapter) readCountPage(resp *http.Response, label string) (n int, next string, err error) {
+	if resp.StatusCode >= 400 {
+		return 0, "", a.httpSessionError(label, resp)
+	}
+	var msgs []json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+		return 0, "", fmt.Errorf("%s: count page decode: %w", label, err)
+	}
+	return len(msgs), resp.Header.Get("X-Next-Cursor"), nil
+}
+
 func (a *Adapter) getHistoryV1(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {

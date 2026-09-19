@@ -92,6 +92,7 @@ type DatabaseService interface {
 	DeleteSessionTree(ctx context.Context, workspaceID, sessionID string) error
 	UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error
 	UpsertSessionTitle(ctx context.Context, workspaceID, sessionID, title string) error
+	UpsertSessionMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error
 	UpsertSessionParent(ctx context.Context, workspaceID, sessionID, parentID string) error
 	UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error
 	UpdateSessionLastSeen(ctx context.Context, workspaceID, sessionID string) error
@@ -168,6 +169,10 @@ type SessionIndexService interface {
 	DeleteByWorkspace(ctx context.Context, workspaceID string) error
 	DeleteSession(ctx context.Context, workspaceID, sessionID string) error
 	UpsertTitle(ctx context.Context, workspaceID, sessionID, title string) error
+	// RebuildMessageCount sets a session's count ABSOLUTELY from the
+	// harness-walked ground truth (#1481) — the reconcile repair for the
+	// incremental path's duplicate-event double-count.
+	RebuildMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error
 	UpsertParent(ctx context.Context, workspaceID, sessionID, parentID string) error
 	UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error
 	UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error

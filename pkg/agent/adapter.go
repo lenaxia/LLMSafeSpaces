@@ -53,6 +53,16 @@ type Adapter interface {
 	// workspace, ordered by recency.
 	ListSessions(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
 
+	// CountMessages returns the session's total message count — the
+	// ground truth the session_index rebuild converges to (#1481, the
+	// #754 fold-in). On the interface (not a handlers-local assertion)
+	// per the #1127 lesson: production adapters are wrapped, and
+	// seam assertions fail silently through wrappers. Adapters whose
+	// harness offers no cheap count source implement a bounded history
+	// walk; a vanished session surfaces the typed gone error so the
+	// #1479 reconciliation machinery classifies it.
+	CountMessages(ctx context.Context, userID, workspaceID, sessionID string) (int, error)
+
 	// RenameSession updates a session's title.
 	RenameSession(ctx context.Context, userID, workspaceID, sessionID, title string) error
 

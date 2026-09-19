@@ -128,6 +128,14 @@ func (s *Service) UpsertTitle(ctx context.Context, workspaceID, sessionID, title
 	return s.db.UpsertSessionTitle(ctx, workspaceID, sessionID, title)
 }
 
+// RebuildMessageCount sets a session's message_count absolutely from the
+// harness-walked ground truth (#1481) — the reconcile-side repair for
+// the incremental path's duplicate-event double-count. The DB-level
+// DISTINCT guard keeps converged workspaces write-free.
+func (s *Service) RebuildMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
+	return s.db.UpsertSessionMessageCount(ctx, workspaceID, sessionID, count)
+}
+
 // UpsertParent records the parent session of a (sub)session. Used by the
 // proxy to mirror opencode's session.parentID into the sidebar's
 // session_index so the sidebar can render hierarchy without round-tripping

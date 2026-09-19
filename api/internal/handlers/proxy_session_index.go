@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // sessionGone messages are the #1340 typed gone-state body, house
@@ -136,7 +138,15 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	}
 
 	prev := h.state().GetReconcileMisses(ctx, workspaceID)
+	// The harness list is walked ONCE and shared by the reap plan and
+	// the count rebuild (#1481) — both consumers need the same
+	// present-set; a second ListSessions per pass would double the
+	// harness load for zero information.
+	var presentSet map[string]bool
 	lister := func() (map[string]bool, error) {
+		if presentSet != nil {
+			return presentSet, nil
+		}
 		sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
 		if err != nil {
 			return nil, err
@@ -145,6 +155,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		for _, s := range sessions {
 			present[s.ID] = true
 		}
+		presentSet = present
 		return present, nil
 	}
 
@@ -179,6 +190,71 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		sessionindex.ReconcileOutcome("kept_for_operator")
 		h.logger.Warn("session reconcile: history-bearing row absent at harness, kept for operator review",
 			"workspaceID", workspaceID, "sessionID", id)
+	}
+
+	h.rebuildMessageCounts(ctx, workspaceID, rows, presentSet)
+}
+
+// reconcileCountBudget bounds the count-rebuild walks per pass (#1481).
+// Measured on live pods (the #1452 lane's probe): a full 500-message
+// page costs 240–490ms over localhost, and typical sessions fit ONE
+// page (the pinned session list carries no count field — the walk is
+// the cheapest source). At K=3 the steady-state pass adds ≤3 single-GET
+// walks (~1.5s typical); every present row converges within
+// ceil(N/3)×30s (≤17min at the 100-row sidebar cap, <4min typically).
+// The 15s pass timeout bounds the pathological multi-page tail.
+const reconcileCountBudget = 3
+
+// rebuildMessageCounts repairs drifted message_count values for PRESENT
+// sessions from the harness ground truth (#1481, the #754 fold-in): the
+// incremental RecordMessage path double-counts duplicate SSE events,
+// and without a rebuild the drift persists forever. Oldest-touched rows
+// first (steady-state fairness); drift-only writes; walk failures skip
+// the row — a vanished session is the miss-machinery's business, never
+// a count error. The incremental path stays as the between-passes
+// approximation.
+func (h *ProxyHandler) rebuildMessageCounts(ctx context.Context, workspaceID string, rows []types.SessionListItem, present map[string]bool) {
+	if present == nil || len(rows) == 0 {
+		return
+	}
+	candidates := make([]types.SessionListItem, 0, len(rows))
+	for _, row := range rows {
+		if present[row.ID] {
+			candidates = append(candidates, row)
+		}
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i].LastMessageAt, candidates[j].LastMessageAt
+		if a == nil {
+			return b != nil
+		}
+		if b == nil {
+			return false
+		}
+		return a.Before(*b)
+	})
+	if len(candidates) > reconcileCountBudget {
+		candidates = candidates[:reconcileCountBudget]
+	}
+	for _, row := range candidates {
+		count, err := h.adapter.CountMessages(ctx, "", workspaceID, row.ID)
+		if err != nil {
+			sessionindex.ReconcileOutcome("count_walk_error")
+			h.logger.Debug("session reconcile: count walk failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+			continue
+		}
+		if count == row.MessageCount {
+			sessionindex.ReconcileOutcome("count_unchanged")
+			continue
+		}
+		if err := h.sessionIndex.RebuildMessageCount(ctx, workspaceID, row.ID, count); err != nil {
+			h.logger.Warn("session reconcile: count rebuild write failed", "workspaceID", workspaceID, "sessionID", row.ID, "error", err.Error())
+			continue
+		}
+		sessionindex.ReconcileOutcome("count_rebuilt")
 	}
 }
 

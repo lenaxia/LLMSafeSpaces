@@ -45,6 +45,10 @@ func (m *mockSessionIndex) UpsertTitle(ctx context.Context, workspaceID, session
 func (m *mockSessionIndex) UpsertParent(ctx context.Context, workspaceID, sessionID, parentID string) error {
 	return m.Called(ctx, workspaceID, sessionID, parentID).Error(0)
 }
+func (m *mockSessionIndex) RebuildMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
+	return nil
+}
+
 func (m *mockSessionIndex) UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error {
 	return m.Called(ctx, workspaceID, sessionID).Error(0)
 }
