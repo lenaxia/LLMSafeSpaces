@@ -30,7 +30,14 @@ Investigate #1455 (script nodes fail `create temp dir: stat /tmp` in the scratch
 ### Docs (the per-mode contract)
 - epic-64 README script section: added "Execution container is mode-dependent (#1455)" paragraph — single-container = workspace sandbox (unchanged); sidecar = fails fast with `script_env_unavailable`; Option-B execution is the open design question; http/agent/condition status stated.
 
-### Review round 2 (4 blocking e2e findings → all resolved)
+### Review round 3 (2 blocking → fixed; the "unvalidated script" class mechanically closed)
+- **R0-fatal WS_BASE**: the 9-hex first group (`e2e145500…`) made `ws_id` construct a non-canonical UUID that PostgreSQL rejects at the seed insert (reviewer verified against PG 16's `string_to_uuid`). Fixed to 8-hex (`e2e14550-…`); added `TestIssue1455E2EScript_WorkspaceIDCanonical` (simulates `ws_id` for multiple suffixes, asserts canonical 8-4-4-4-12) so the class cannot recur silently. Cross-lane note posted on PR #1464 — its `issue1452` script (and 1342) carry the same latent defect and will die at R0 the night the #1456 gate opens.
+- **R2b tautology**: asserting the literal `{{secrets.WT1455_ABSENT_VAR}}` on the raw run row could never fail — the row's specSnapshot embeds the spec. Both R2 arms now assert on the ECHOED BODY (`.output | if type == "string" then . else (.body // tostring) end`); R2a stays discriminating (the plaintext exists nowhere in the spec), R2b now genuinely pins pass-through.
+- **Cleanup gaps**: the EXIT trap now deletes the workspace (1417 pattern — no pod/PVC lingers through the nightly) and reaps `PF_PID` (our trap+function shadow us70-common's own EXIT reap — one trap per signal, later definition wins).
+- **jq-compile pin added** (`TestIssue1455E2EScript_JqFiltersCompile`, the 1452-r2 class: an unbalanced filter aborts under `set -e` exactly when the fix works).
+- **Rule-7 residual, stated honestly**: still no live-cluster execution of the script (a local kind run is the concurrent-build OOM class under the memory directive; the nightly is the execution lane post-merge). The mechanical layer now covers syntax, jq compilation, UUID canonicity, harness sequencing, and row assertions — the two r3 findings were exactly the classes this layer now catches.
+
+### Review round 2 (4 blocking e2e findings → resolved; R0 + tautology superseded by r3)
 - **R0 abort**: the script never called `harness_start` — `seed_workspace` hard-requires its OWNER_ID; fixed, and `harness_start` added to the structural pins so the regression cannot recur silently.
 - **Unwired**: the script is now a step in `e2e-nightly.yml` (after the 1452 rows; 1452's same-commit wiring precedent).
 - **False premise corrected**: the nightly installs `controller.agentdSidecar.enabled=true` (e2e-nightly.yml:181) — the header's "pre-flip clusters lack sidecar mode" was wrong. Reframed: R1b (the loud-failure contract) is the EXPECTED nightly arm; R1a covers single-container pool/dev clusters. Rule-7 lesson recorded: the premise shipped unvalidated.
@@ -73,6 +80,7 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - `go test -race ./cmd/workspace-agentd/` — ok (345s)
 - r1: targeted reruns — scriptwrap EnvCheck suite, agentd script/http handler suites, `./local/` companion pins — all ok
 - r2: `bash -n` + `TestIssue1455` companion pins (updated for harness_start + R2 needles) — ok; nightly wiring greps verified (`issue-1455-scriptenv-e2e.sh` present in e2e-nightly.yml)
+- r3: all four companion pins green (BashSyntax, RowsAndAssertions, WorkspaceIDCanonical, JqFiltersCompile); `bash -n` ok
 - Mutation evidence: (A) loadSecretsEnv reverted to hardcoded path + (B) EnvCheck probe call removed → 4 handler/unit tests FAIL; (C) EnvCheck body stubbed to return nil → 2 scriptwrap tests FAIL; restores green.
 - `bash -n local/issue-1455-scriptenv-e2e.sh` — ok (also pinned by TestIssue1455E2EScript_BashSyntax)
 

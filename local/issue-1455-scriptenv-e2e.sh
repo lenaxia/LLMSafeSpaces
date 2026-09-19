@@ -39,7 +39,7 @@ source "${SCRIPT_DIR}/lib/us70-common.sh"
 
 harness_start
 
-WS_BASE="${WS_BASE:-e2e145500-0000-4000-8000-000000000000}"
+WS_BASE="${WS_BASE:-e2e14550-0000-4000-8000-000000000000}"
 WS="$(ws_id 1)"
 RUN_WAIT_S="${RUN_WAIT_S:-300}"
 failures=0
@@ -52,7 +52,15 @@ cleanup() {
         curl -sfm 10 -X DELETE -H "Authorization: Bearer ${API_KEY}" \
             "http://127.0.0.1:${PORTFWD_PORT}/api/v1/me/workflows/${id}" >/dev/null 2>&1 || true
     done
+    kc delete workspace "${WS}" --ignore-not-found >/dev/null 2>&1 || true
     kubectl --context "${CTX}" -n "${NS}" delete deployment/echo-1455 service/echo-1455 configmap/echo-1455-config >/dev/null 2>&1 || true
+    # This trap REPLACES us70-common's own EXIT trap (one trap per
+    # signal; our function also shadows its name) — reap its port-forward
+    # or the forward leaks past script exit.
+    if [[ -n "${PF_PID:-}" ]]; then
+        kill "${PF_PID}" 2>/dev/null || true
+        wait "${PF_PID}" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
 
@@ -225,14 +233,22 @@ if ! wait_run "${R2_RUN_ID}" "${RUN_WAIT_S}"; then
     note_fail "R2: run never reached a terminal state within ${RUN_WAIT_S}s (last: ${run_status:-none})"
 elif [[ "${run_status}" != "succeeded" ]]; then
     note_fail "R2a: http node run failed (wanted succeeded): ${run_row:0:300}"
-elif [[ "${run_row}" != *"sekret-1455-e2e"* ]]; then
-    note_fail "R2a: {{secrets.*}} did NOT resolve — echoed headers lack the bound value: ${run_row:0:300}"
 else
-    ok "R2a: http-node {{secrets.*}} resolved from the materialized secrets-env coordinate"
-    if [[ "${run_row}" == *"{{secrets.WT1455_ABSENT_VAR}}"* ]]; then
-        ok "R2b: unbound ref stayed literal (documented pass-through semantics)"
+    # Assert on the ECHOED BODY (.output.body — what the upstream actually
+    # received), never the raw run row: the row embeds the workflow's own
+    # specSnapshot, so asserting the literal there would be a tautology
+    # (r3 finding). The resolved value exists nowhere in the spec, so its
+    # presence in the echoed body can only come from a resolved header.
+    r2_body=$(printf '%s' "${run_row}" | jq -r '.output | if type == "string" then . else (.body // tostring) end')
+    if [[ "${r2_body}" != *"sekret-1455-e2e"* ]]; then
+        note_fail "R2a: {{secrets.*}} did NOT resolve — echoed body lacks the bound value: ${r2_body:0:300}"
     else
-        note_fail "R2b: unbound ref vanished or expanded — output: ${run_row:0:300}"
+        ok "R2a: http-node {{secrets.*}} resolved from the materialized secrets-env coordinate"
+        if [[ "${r2_body}" == *"{{secrets.WT1455_ABSENT_VAR}}"* ]]; then
+            ok "R2b: unbound ref stayed literal in the echoed request (documented pass-through semantics)"
+        else
+            note_fail "R2b: unbound ref vanished or expanded upstream — echoed body: ${r2_body:0:300}"
+        fi
     fi
 fi
 

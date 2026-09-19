@@ -13,6 +13,8 @@ package local_test
 import (
 	"os"
 	"os/exec"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,11 +64,80 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 		`wait_env_present "${WS}" "WT1455_PROBE_TOKEN=sekret-1455-e2e" 300`,
 		`Bearer {{secrets.WT1455_PROBE_TOKEN}}`,
 		`R2a: http-node {{secrets.*}} resolved from the materialized secrets-env coordinate`,
-		`R2b: unbound ref stayed literal (documented pass-through semantics)`,
+		`R2b: unbound ref stayed literal in the echoed request (documented pass-through semantics)`,
+		// The echoed-body extraction (r3: asserting the literal on the raw
+		// run row is a tautology — the specSnapshot embeds it).
+		`.output | if type == "string" then . else (.body // tostring) end`,
 		// Cleanup so the nightly owner's workflow list + cluster stay clean.
 		`trap cleanup EXIT`,
 		`delete deployment/echo-1455 service/echo-1455 configmap/echo-1455-config`,
 	} {
 		assert.Contains(t, src, needle, "the e2e script must keep its row assertions (dropping one silently drops the row)")
+	}
+}
+
+// TestIssue1455E2EScript_WorkspaceIDCanonical pins the R0-fatal class
+// round 3 caught: a WS_BASE whose first group is not 8 hex chars makes
+// ws_id produce a non-canonical UUID that PostgreSQL rejects at the
+// seed_workspace_metadata INSERT — the script died at R0 on every
+// cluster. Simulating ws_id (base[:32] + 4-digit suffix) for every
+// suffix proves the default constructs canonical 8-4-4-4-12 UUIDs.
+func TestIssue1455E2EScript_WorkspaceIDCanonical(t *testing.T) {
+	raw, err := os.ReadFile(issue1455Script)
+	require.NoError(t, err)
+	m := regexp.MustCompile(`WS_BASE="\$\{WS_BASE:-([0-9a-f-]+)\}"`).FindStringSubmatch(string(raw))
+	require.NotNil(t, m, "WS_BASE default not found — the script's shape drifted")
+	base := m[1]
+
+	suffixes := []string{"0001", "0002", "9999", "1234"}
+	for _, sfx := range suffixes {
+		id := base[:32] + sfx
+		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, id,
+			"ws_id(%q) output must be a canonical UUID or PostgreSQL rejects the seed insert (the r3 R0-fatal class)", base)
+	}
+}
+
+// TestIssue1455E2EScript_JqFiltersCompile compiles every jq program the
+// script embeds (the 1452 round-2 class: an unbalanced filter aborts
+// the script under set -e exactly when the fix works). jq exit 3 is the
+// compile error; runtime errors do not matter — this pin only proves
+// the programs parse.
+func TestIssue1455E2EScript_JqFiltersCompile(t *testing.T) {
+	jq, err := exec.LookPath("jq")
+	if err != nil {
+		t.Skip("jq not on PATH — CI runs this row with it preinstalled")
+	}
+	raw, err := os.ReadFile(issue1455Script)
+	require.NoError(t, err)
+	joined := strings.ReplaceAll(string(raw), "\\\n", "")
+
+	singleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+|--arg(?:json)?\s+\w+\s+"[^"]*"\s+)*'([^']+)'`)
+	doubleQuoted := regexp.MustCompile(`jq\s+(?:-[a-zA-Z]+\s+)*"((?:[^"\\]|\\.)*)"`)
+
+	var programs []string
+	for _, m := range singleQuoted.FindAllStringSubmatch(joined, -1) {
+		programs = append(programs, m[1])
+	}
+	for _, m := range doubleQuoted.FindAllStringSubmatch(joined, -1) {
+		unescaped := strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(m[1])
+		dup := false
+		for _, p := range programs {
+			if p == unescaped {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			programs = append(programs, unescaped)
+		}
+	}
+	require.NotEmpty(t, programs, "extraction found no jq programs — the regexes drifted from the script's quoting style")
+
+	stubs := []string{"-n", "--arg", "r", "x", "--arg", "w", "x", "--arg", "url", "x"}
+	for _, program := range programs {
+		cmd := exec.Command(jq, append(stubs, program)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("jq program does not compile: %q: %s", program, out)
+		}
 	}
 }
