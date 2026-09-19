@@ -145,8 +145,11 @@ type NodeExecResponse struct {
 // (sessionId ⟺ session exists) must hold on every returned response,
 // and the loop itself deleted the session. Returning the stale id would
 // make the engine ghost-record a deleted session (the async
-// session_index write is ctx-free and always lands). A FAILED cleanup
-// keeps the id — the session exists and deserves recording.
+// session_index write is ctx-free and always lands). A cleanup whose
+// delete was not CONFIRMED keeps the id — the session is presumed to
+// exist and deserves recording (a lost delete response may leave it
+// gone; presuming existence is the fail-safe direction — the narrow
+// accepted mirror of confirmed-gone semantics).
 func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
