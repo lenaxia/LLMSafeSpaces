@@ -55,3 +55,10 @@ const TextOnlyWedgeMarker = "messages.content.type is invalid"
 func IsImageInTextOnlyHistoryMessage(msg string) bool {
 	return strings.Contains(msg, TextOnlyWedgeMarker)
 }
+
+// ErrMessageCountTruncated marks a count walk that hit its page ceiling
+// with more history remaining (#1481): the returned number is a floor,
+// not the ground truth the session_index rebuild needs — persisting it
+// would authoritatively undercount a possibly-correct row. Callers
+// that only display a count may ignore the error and show the floor.
+var ErrMessageCountTruncated = errors.New("message count walk truncated at the page ceiling")

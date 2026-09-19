@@ -28,7 +28,7 @@ var sessionIndexEvents = promauto.NewCounterVec(prometheus.CounterOpts{
 // absent — the triage guard held it), delete_failed.
 var reconcileOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "session_index_reconcile_outcomes_total",
-	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed).",
+	Help: "Session-index reconciliation dispositions (reaped, kept_for_operator, delete_failed, count_rebuilt, count_unchanged, count_walk_error).",
 }, []string{"outcome"})
 
 // ReconcileOutcome records one convergence disposition (handler-side).

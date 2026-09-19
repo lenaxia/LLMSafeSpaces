@@ -192,3 +192,21 @@ func TestSessionIndexReconcile_HarnessErrorSkipsRebuildToo(t *testing.T) {
 	assert.Empty(t, counted, "no harness list, no count walks")
 	assert.Empty(t, idx.rebuiltCounts)
 }
+
+// TestSessionIndexReconcile_TruncatedWalkNeverPersistsUndercount — the
+// round-1 minor finding, pinned: a ceiling-exhausted walk returns the
+// truncation sentinel; the rebuild skips the row (count_walk_error)
+// rather than persisting a floor as authoritative ground truth.
+func TestSessionIndexReconcile_TruncatedWalkNeverPersistsUndercount(t *testing.T) {
+	now := time.Now().UTC()
+	h, idx, _ := countTestHandler(t,
+		[]string{"ses_big"},
+		nil,
+		map[string]error{"ses_big": agent.ErrMessageCountTruncated})
+	seedRowCountedAt(t, idx, "ws-1", "ses_big", 22000, now)
+
+	runReconcile(t, h, "ws-1")
+
+	assert.Empty(t, idx.rebuiltCounts,
+		"a truncated walk is a floor — persisting it would authoritatively undercount a possibly-correct row")
+}

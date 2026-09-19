@@ -83,8 +83,9 @@ func TestAdapter_CountMessages_CeilingBoundsPathologicalSessions(t *testing.T) {
 	a := newTestAdapter(t, srv)
 
 	count, err := a.CountMessages(context.Background(), "", "ws-1", "ses_c3")
-	require.NoError(t, err)
-	require.Equal(t, 500*40, count, "the walk stops at the 40-page ceiling (20k messages)")
+	require.ErrorIs(t, err, agent.ErrMessageCountTruncated,
+		"a ceiling-exhausted walk is a floor, not ground truth — the rebuild must skip the row, never persist an undercount")
+	require.Equal(t, 500*40, count, "the floor is still returned for display-only callers")
 	require.Len(t, *got, 40, "no infinite pagination walk")
 }
 

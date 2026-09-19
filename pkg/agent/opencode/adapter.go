@@ -520,7 +520,10 @@ func (a *Adapter) CountMessages(ctx context.Context, userID, workspaceID, sessio
 		}
 		cursor = next
 	}
-	return total, nil
+	// The ceiling exhausted with a continuation cursor in hand: the
+	// total is a floor, not ground truth — the rebuild must not persist
+	// an authoritative undercount (#1481 round-1 finding).
+	return total, fmt.Errorf("%d pages: %w", countWalkMaxPages, agent.ErrMessageCountTruncated)
 }
 
 // readCountPage decodes one page — raw JSON lengths only (counting
