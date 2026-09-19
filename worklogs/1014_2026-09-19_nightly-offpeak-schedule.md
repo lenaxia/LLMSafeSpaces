@@ -57,7 +57,7 @@ None.
 
 - `.github/workflows/e2e-nightly.yml` — schedule slot + comments (concurrency group retained)
 - `local/nightly_dispatch_test.go` — pin renamed/re-pointed; comments to the schedule-fix rationale
-- `worklogs/NNNN_2026-09-19_nightly-offpeak-schedule.md` — this worklog
+- `worklogs/1014_2026-09-19_nightly-offpeak-schedule.md` — this worklog
 
 ---
 
