@@ -81,6 +81,8 @@ for a in "$@"; do
     jsonpath='{.items[0].metadata.name}'*) printf 'postgres-smoke-0\n'; exit 0 ;;
     # secret reads: base64("smoke-pwd") — empty output would leave PG_PWD
     # unset (base64 -d of "" succeeds, so the || default never fires).
+    jsonpath='{.status.secretsDelivery.spawnedRev}'*) printf '1:smoke:manifest\n'; exit 0 ;;
+    jsonpath='{.spec.containers[0].name}'*) printf 'workspace\n'; exit 0 ;;
     jsonpath='{.data.'*) printf 'c21va2UtcHdk\n'; exit 0 ;;
   esac
 done
