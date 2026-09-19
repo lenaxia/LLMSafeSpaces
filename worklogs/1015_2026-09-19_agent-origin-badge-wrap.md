@@ -48,7 +48,7 @@ Full origin session ID must be visible and wrap cleanly at the container edge; `
 - `frontend/src/components/chat/AgentOriginBadge.tsx` — fix
 - `frontend/src/components/chat/AgentOriginBadge.test.tsx` — pin
 - `frontend/tests/e2e/agent-origin.spec.ts` — narrow-viewport layout row (r1)
-- `worklogs/NNNN_2026-09-19_agent-origin-badge-wrap.md` — this worklog
+- `worklogs/1015_2026-09-19_agent-origin-badge-wrap.md` — this worklog
 
 ## Review Round 1 (regression-surface gap + no layout observation — both taken)
 
