@@ -24,6 +24,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // metadataTagBlocks extracts every `tags: |` multiline block body from
@@ -147,21 +149,98 @@ func TestReleaseWorkflow_RemainsTheSemverWriter(t *testing.T) {
 	}
 }
 
-// TestCIWorkflow_NoTagTrigger: ci.yml must not trigger on tag pushes at
-// all — the Release workflow publishes every tag a released commit
-// needs (semver, latest, sha-, ts-), so a CI tag run would
-// deterministically collide with the cosign-attested pushes on every
-// shared tag (ops-prod #2539's r1 residual: the sha-/ts- collision is
-// deterministic on tag events).
+// workflowOnTagFilters unmarshals a workflow's `on:` block and returns
+// every push-tag filter, whatever YAML spelling it uses (flow map
+// `tags: ['v*']`, block list `tags:\n- "v*"`, or a bare string). The
+// r2 review evaded the line-grep pin with BOTH alternative spellings —
+// structural parsing is the only spelling-proof read.
+func workflowOnTagFilters(t *testing.T, src string) []string {
+	t.Helper()
+	var wf struct {
+		On map[string]any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal([]byte(src), &wf); err != nil {
+		t.Fatalf("workflow does not parse: %v", err)
+	}
+	push, _ := wf.On["push"].(map[string]any)
+	raw, _ := push["tags"]
+	switch v := raw.(type) {
+	case nil:
+		return nil
+	case string:
+		return []string{v}
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		t.Fatalf("unsupported tags: shape %T", raw)
+		return nil
+	}
+}
+
+// tagFilterMatchesVersions reports whether a push-tag filter selects
+// version-like tags (v-prefixed) — covering the literal v*.*.* AND
+// equivalent globs (v[0-9]*.[0-9]*.[0-9]*) the skeptical pass used to
+// evade a substring check.
+func tagFilterMatchesVersions(filter string) bool {
+	if !strings.HasPrefix(filter, "v") {
+		return false
+	}
+	return strings.ContainsAny(filter, "*[")
+}
+
+// TestCIWorkflow_NoTagTrigger: ci.yml must not trigger on version-tag
+// pushes in ANY spelling — the Release workflow publishes every tag a
+// released commit needs (semver, latest, sha-, ts-), so a CI tag run
+// would deterministically collide with the cosign-attested pushes on
+// every shared tag (ops-prod #2539).
 func TestCIWorkflow_NoTagTrigger(t *testing.T) {
 	ci := readWorkflow(t, ciPath)
-	for _, line := range strings.Split(ci, "\n") {
+	for _, filter := range workflowOnTagFilters(t, ci) {
+		if tagFilterMatchesVersions(filter) {
+			t.Errorf("ci.yml triggers on version tags (filter %q) — release.yml publishes ALL tags for released commits (semver, latest, sha-, ts-); a CI tag run collides deterministically. Drop the tag trigger (ops-prod #2539).", filter)
+		}
+	}
+}
+
+// TestReleaseWorkflow_FiresOnVersionTags: the silent-loss direction —
+// if release.yml stops firing on version tags, NO workflow publishes
+// release tags while every other pin stays green. The trigger is
+// pinned, not just the tag config.
+func TestReleaseWorkflow_FiresOnVersionTags(t *testing.T) {
+	rel := readWorkflow(t, releasePath)
+	filters := workflowOnTagFilters(t, rel)
+	if len(filters) == 0 {
+		t.Fatal("release.yml no longer triggers on ANY tag push — releases would silently stop publishing version tags")
+	}
+	for _, filter := range filters {
+		if !tagFilterMatchesVersions(filter) {
+			t.Errorf("release.yml tag filter %q does not select version tags", filter)
+		}
+	}
+}
+
+// TestMergeJobs_NoRawVersionTagPushes: the metadata-action pins are
+// shape-specific — a raw `imagetools create -t …:0.34.5` or a docker
+// push of a version tag in a merge job evades them (release.yml itself
+// uses raw imagetools for per-arch tags). Guard the merge steps at
+// Contains level: no hardcoded semver-looking tag in any ci.yml run
+// step.
+func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
+	ci := readWorkflow(t, ciPath)
+	re := regexp.MustCompile(`(?m):\s*v?\d+\.\d+\.\d+(\s|$|"|')`)
+	for i, line := range strings.Split(ci, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") && !strings.Contains(trimmed, "imagetools") {
 			continue
 		}
-		if strings.Contains(trimmed, "tags:") && strings.Contains(trimmed, "v*") {
-			t.Errorf("ci.yml triggers on tag pushes (%q) — release.yml publishes ALL tags for released commits (semver, latest, sha-, ts-); a CI tag run collides deterministically. Drop the tag trigger (ops-prod #2539).", trimmed)
+		if m := re.FindString(line); m != "" {
+			t.Errorf("ci.yml line %d pushes a raw version-looking tag (%q) — version tags are release.yml-only (ops-prod #2539)", i+1, strings.TrimSpace(m))
 		}
 	}
 }
