@@ -58,3 +58,16 @@ None.
 - `.github/workflows/e2e-nightly.yml` — schedule slot + comments (concurrency group retained)
 - `local/nightly_dispatch_test.go` — pin renamed/re-pointed; comments to the schedule-fix rationale
 - `worklogs/NNNN_2026-09-19_nightly-offpeak-schedule.md` — this worklog
+
+---
+
+## Review round 1 (3 doc findings + DST nit → all fixed)
+
+- F1: e2e-attachments-single-container.yml's "two hours clear of the daily e2e-nightly run (06:00 UTC)" was invalidated by this very change — corrected to "five hours clear … (2:17am Pacific / 09:17 UTC)". The invalidating-PR-updates-siblings principle (#1485 F2) applied to its own successor.
+- F2: the concurrency pin's assertion message still named "platform dispatch" as a live leg — reworded to "(schedule, manual dispatch)".
+- F3: the renamed slot test still said "reliability backup" (a dead model — the schedule IS the primary now) — reworded to "the nightly's primary trigger".
+- Nit: DST caveat added to the workflow comment (1:17am Pacific after the November PST change; the pinned UTC slot is the contract); the test header's mid-phrase line split fixed.
+
+## Tests Run (r1)
+
+- `go test -run 'TestE2ENightly' -v ./local/` — 2/2 PASS.

@@ -5,8 +5,8 @@ package local_test
 
 // nightly_dispatch_test.go — structural pins for the nightly e2e
 // schedule contract: the 2:17am Pacific (09:17 UTC) off-peak
-// odd-minute slot (top-of-
-// hour 06:00 UTC was a documented high-contention window where this
+// odd-minute slot (the top-of-hour 06:00 UTC was a documented
+// high-contention window where this
 // workflow's scheduled runs fired 4-6h late — 11-run sample; the
 // platform-trigger dispatch experiment that briefly ran here was
 // decommissioned in favor of the schedule fix). The concurrency group
@@ -62,7 +62,7 @@ func nightlyOnBlock(t *testing.T) map[string]any {
 func TestE2ENightlyConcurrencyGroup(t *testing.T) {
 	doc := parseNightlyWorkflow(t)
 	assert.Equal(t, "e2e-nightly", doc.Concurrency.Group,
-		"one shared group for schedule backup + platform dispatch — they must conflict")
+		"one shared group across every entry path (schedule, manual dispatch) — they must conflict")
 	assert.True(t, doc.Concurrency.CancelInProgress,
 		"whichever run starts latest wins; the other is canceled instead of overlapping")
 }
@@ -76,7 +76,7 @@ func TestE2ENightlyScheduleSlotRetained(t *testing.T) {
 	assert.True(t, hasDispatch, "workflow_dispatch must remain — the manual entry path")
 
 	schedule, ok := onBlock["schedule"].([]any)
-	require.True(t, ok, "the GitHub schedule leg stays as the reliability backup")
+	require.True(t, ok, "the schedule leg is the nightly's primary trigger — it must stay")
 	require.Len(t, schedule, 1, "exactly one schedule entry — the off-peak slot")
 	entry, ok := schedule[0].(map[string]any)
 	require.True(t, ok, "schedule entries must be cron mappings")

@@ -10,7 +10,8 @@ concurrency:
 on:
   schedule:
     # 2:17am Pacific (09:17 UTC) daily — odd-minute off-peak
-    # scheduling; GitHub's scheduler runs best-effort and the previous
+    # scheduling (1:17am Pacific after the November PST change — the
+    # pinned UTC slot is the contract); GitHub's scheduler runs best-effort and the previous
     # 06:00 UTC top-of-hour slot fired 4-6h late (11-run sample). (A
     # platform-trigger dispatch experiment ran here briefly and was
     # decommissioned in favor of this fix.)
