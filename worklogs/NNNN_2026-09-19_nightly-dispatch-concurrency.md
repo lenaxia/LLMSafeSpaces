@@ -70,3 +70,16 @@ None.
 - `.github/workflows/e2e-nightly.yml` — concurrency group (cancel-in-progress); schedule + dispatch retained
 - `local/nightly_dispatch_test.go` — structural pins (new)
 - `worklogs/NNNN_2026-09-19_nightly-dispatch-concurrency.md` — this worklog
+
+---
+
+## Review round 1 (3 findings → fixed)
+
+- **F1 (misspell, the staging trap)**: the first commit attempt failed pre-commit; the sed fix landed in the working tree but the index still held the pre-sed blob, and the retry committed the STAGED copy — CI lint caught 'cancelled' in the pushed content while the worklog claimed the fix had passed. Follow-up commit 2150cf47 carried the fix (verified in the pushed blob), and this entry corrects the record: the r0 "pre-commit gates pass" claim was false for the pushed head. Second occurrence of the verify-edits-landed class this session — the check is now against the PUSHED blob, not the working tree.
+- **F2 (false sibling comment)**: e2e-attachments-single-container.yml's "the nightly declares no concurrency group" became false — rewritten to state the actual mechanism (group-name separation: workflow-name group vs the shared e2e-nightly group; neither can cancel the other).
+- **F3 (parsed-YAML pins)**: substring pins passed on commented-out blocks and never proved parseability. Pins now assert on the PARSED document (yaml.v3, already a dependency): concurrency.group/cancel-in-progress typed-decoded; the on: legs by KEY PRESENCE on the raw map (workflow_dispatch: carries no value — value-decoding reads nil even when present); parse failure itself fails the pin. Mutation-verified: commenting out the block fails the pin; restored, green.
+
+## Tests Run (r1)
+
+- `go test -run 'TestE2ENightly' -v ./local/` — 2/2 PASS (parsed-YAML layer).
+- Mutation: concurrency block commented out → 1 pin FAIL; restored → green.

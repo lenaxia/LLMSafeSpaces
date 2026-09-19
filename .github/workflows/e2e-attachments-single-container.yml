@@ -40,10 +40,12 @@ on:
 # Never overlap itself: a manual dispatch while a scheduled run is in
 # flight is queued, not run concurrently (full kind deployment — too
 # expensive to run two at once, too expensive to cancel mid-flight).
-# Cross-workflow exclusion with the sidecar nightly cannot be enforced
-# from here alone (the nightly declares no concurrency group); the
-# 04:00 Sunday slot keeps them apart in time, and the two runs are
-# isolated GitHub-hosted runners regardless.
+# Cross-workflow exclusion with the sidecar nightly is enforced by
+# group-name separation: this workflow uses its own workflow-name group
+# while the nightly runs under the shared "e2e-nightly" group, so
+# neither can cancel the other; the 04:00 Sunday slot keeps them apart
+# in time besides, and the two runs are isolated GitHub-hosted runners
+# regardless.
 concurrency:
   group: ${{ github.workflow }}
 
