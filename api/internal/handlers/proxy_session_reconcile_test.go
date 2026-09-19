@@ -72,7 +72,11 @@ func TestSessionIndexReconcile_HistoryBearingGhostKeptForOperator(t *testing.T) 
 
 	runReconcile(t, h, "ws-1")
 	assert.Empty(t, idx.deletedTree, "message_count>0 rows are never auto-deleted")
-	assert.Empty(t, h.state().GetReconcileMisses(context.Background(), "ws-1"))
+	// The kept row's counter pins AT the threshold (r2): every
+	// subsequent pass re-detects it — the operator signal is
+	// consistent, never the r2-found 1→2→1 oscillation.
+	assert.Equal(t, map[string]int{"ses_vanished": reconcileMissThreshold},
+		h.state().GetReconcileMisses(context.Background(), "ws-1"))
 }
 
 func TestSessionIndexReconcile_PresenceResetsMiss(t *testing.T) {
