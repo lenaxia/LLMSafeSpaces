@@ -1057,11 +1057,11 @@ jobs:
       - id: ts
         run: echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
       # Resolve a build version for CI image builds. This workflow runs
-      # on branch pushes and dispatches only (no tag trigger — release.yml
-      # owns tag events, see the trigger comment above): every build
-      # carries either the branch's short commit sha or, on a dispatch
-      # pinned to a released ref, that ref's version — so no CI image
-      # reports a bare "dev" or "unknown" as its binary version.
+      # on branch pushes, PRs, and dispatches (no tag trigger —
+      # release.yml owns tag events, see the trigger comment above):
+      # non-tag refs carry the short commit sha; a dispatch pinned to a
+      # released ref carries that ref's version — so no CI image reports
+      # a bare "dev" or "unknown" as its binary version.
       - id: v
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}

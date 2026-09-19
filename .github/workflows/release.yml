@@ -1263,8 +1263,10 @@ jobs:
 
       - name: Generate SBOM for each image
         env:
-          # CI's docker/metadata-action uses type=semver,pattern={{version}}
-          # which produces "0.3.0" (no "v" prefix). Match that format.
+          # The release version is resolved WITHOUT the leading "v" (the
+          # tag's semver payload), matching the version-tag format this
+          # workflow's own metadata-action emits (type=semver strips the
+          # v-prefix). SBOM component versions stay tag-consistent.
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
           mkdir -p sbom-out

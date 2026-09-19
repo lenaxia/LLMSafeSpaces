@@ -98,3 +98,8 @@ r4 also records two accepted residuals:
 - The two absolute "unique-per-run / can never masquerade" claims (test header + this worklog's fix paragraph) softened to what the pins guarantee: no semver/latest emission; sha-/ts- subject to the documented residual.
 - worklog:86's "different path" precision fix (different IMAGE / different image namespace).
 - While open: versionLiteralRe widened once more (+metadata and partial literals — its third extension), and the four cheap push-tool markers added (podman/buildah/regctl/oras) alongside -t=/--tag spellings; the marker list remains the documented cat-and-mouse surface.
+
+## r7 — the two comment-prose stragglers
+
+- ci.yml prepare's rewritten comment said "branch pushes and dispatches only" — PRs also trigger (my own rewrite error): the enumeration now reads branch pushes, PRs, and dispatches.
+- release.yml's SBOM comment still justified its no-v-prefix format by CI's metadata-action behavior (deleted by this PR) — now justified from release.yml's own version resolution (tag semver payload; its own type=semver strips the v-prefix).
