@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time assertion that InMemoryStore implements Store.
@@ -61,6 +62,11 @@ type InMemoryStore struct {
 	// counter (#1340 S5b convergence). Whole-map replace on write.
 	reconcileMisses   map[string]map[string]int
 	reconcileMissesMu sync.RWMutex
+
+	// reconcileTurn: workspace ID -> turn-claim expiry (#1340). An
+	// expired entry is an unclaimed window.
+	reconcileTurn   map[string]time.Time
+	reconcileTurnMu sync.Mutex
 }
 
 // NewInMemoryStore returns a Store backed by process-local maps. The
@@ -296,6 +302,20 @@ func (s *InMemoryStore) GetReconcileMisses(_ context.Context, workspaceID string
 	return out
 }
 
+func (s *InMemoryStore) ClaimReconcileTurn(_ context.Context, workspaceID string, cadence time.Duration) bool {
+	s.reconcileTurnMu.Lock()
+	defer s.reconcileTurnMu.Unlock()
+	now := time.Now()
+	if s.reconcileTurn == nil {
+		s.reconcileTurn = map[string]time.Time{}
+	}
+	if exp, ok := s.reconcileTurn[workspaceID]; ok && now.Before(exp) {
+		return false
+	}
+	s.reconcileTurn[workspaceID] = now.Add(cadence)
+	return true
+}
+
 func (s *InMemoryStore) SetReconcileMisses(_ context.Context, workspaceID string, misses map[string]int) {
 	s.reconcileMissesMu.Lock()
 	defer s.reconcileMissesMu.Unlock()
@@ -336,4 +356,7 @@ func (s *InMemoryStore) InvalidateAll(ctx context.Context, workspaceID string) {
 	s.InvalidateWorkspaceConfig(ctx, workspaceID)
 	s.DeleteParentBackfilled(ctx, workspaceID)
 	s.SetReconcileMisses(ctx, workspaceID, nil)
+	s.reconcileTurnMu.Lock()
+	delete(s.reconcileTurn, workspaceID)
+	s.reconcileTurnMu.Unlock()
 }

@@ -642,6 +642,22 @@ func TestAdapter_GetSession_500_DoesNotClassifySessionNotFound(t *testing.T) {
 	assert.NotErrorIs(t, err, agent.ErrSessionNotFound, "only 404 is the not-found verdict")
 }
 
+// #1340 r1: the reap sentinel is SESSION-READ-ONLY. A 404 on a
+// non-session route (question/permission replies mean "pending input
+// gone", prompts mean other verdicts) must NOT carry
+// ErrSessionNotFound — an over-broad wrap is a latent reap footgun.
+func TestAdapter_QuestionReply404_NotClassifiedSessionNotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_x/reply", `{"error":"not found"}`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.AnswerQuestion(context.Background(), "u-1", "ws-1", "que_x", nil)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrSessionNotFound,
+		"non-session-read 404s must not carry the reap sentinel")
+	assert.ErrorIs(t, err, agent.ErrHTTPStatus, "the status marker still applies")
+}
+
 func TestAdapter_NoRunningPod_ReturnsWrappingError(t *testing.T) {
 	// When PodIPResolver returns "", the adapter must surface
 	// ErrNoRunningPod so callers can map to HTTP 404.

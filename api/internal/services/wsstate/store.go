@@ -17,7 +17,10 @@
 // memory) and must remain local even after the Redis migration.
 package wsstate
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Config is the cached view of a workspace's spec-derived configuration
 // (formerly ProxyHandler.workspaceConfig). It is populated from the
@@ -181,6 +184,14 @@ type Store interface {
 	// wholesale (PlanReconciliation returns the complete next map).
 	// Redis implementations set a TTL so abandoned counters decay.
 	SetReconcileMisses(ctx context.Context, workspaceID string, misses map[string]int)
+
+	// ClaimReconcileTurn atomically claims the workspace's
+	// reconciliation turn for the cadence window: true exactly once per
+	// window across ALL replicas (Redis SET-NX-EX; in-memory per
+	// process). This single-writer claim is what makes the miss
+	// counters' read-modify-write safe — the claim holder is the only
+	// writer, so N counts checks, never concurrent repetitions.
+	ClaimReconcileTurn(ctx context.Context, workspaceID string, cadence time.Duration) bool
 
 	// --- Bulk invalidation ---
 

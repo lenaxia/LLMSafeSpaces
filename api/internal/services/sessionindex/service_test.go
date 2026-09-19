@@ -166,60 +166,89 @@ func TestStartStop_NilLogger_NoPanic(t *testing.T) {
 }
 
 // PlanReconciliation is the #1340 convergence decision: which index rows
-// to delete now, and what the next miss-counters should be. Pure — the
-// orchestration (adapter list call, wsstate counters, deletion) lives in
-// the proxy handler; this matrix IS the S5b invariant.
+// to delete now, which history-bearing absents are kept for operator
+// review (the triage message_count=0 safety guard), and the next
+// miss-counters. Pure — the orchestration lives in the proxy handler;
+// this matrix IS the S5b invariant.
 func TestPlanReconciliation(t *testing.T) {
+	row := func(id string, count int) types.SessionListItem {
+		return types.SessionListItem{ID: id, Title: id, MessageCount: count}
+	}
 	tests := []struct {
 		name       string
-		indexRows  []string
-		harness    map[string]bool // sessionID -> present at harness
+		indexRows  []types.SessionListItem
+		harness    map[string]bool
 		harnessErr bool
 		prevMiss   map[string]int
+		threshold  int
 		wantRemove []string
+		wantKept   []string
 		wantMiss   map[string]int
 	}{
 		{
 			name:      "present rows keep, counters clear",
-			indexRows: []string{"ses_a", "ses_b"},
+			indexRows: []types.SessionListItem{row("ses_a", 0), row("ses_b", 5)},
 			harness:   map[string]bool{"ses_a": true, "ses_b": true},
 			wantMiss:  map[string]int{},
 		},
 		{
 			name:      "absent once increments, no removal",
-			indexRows: []string{"ses_ghost"},
+			indexRows: []types.SessionListItem{row("ses_ghost", 0)},
 			harness:   map[string]bool{},
 			prevMiss:  map[string]int{},
+			threshold: 2,
 			wantMiss:  map[string]int{"ses_ghost": 1},
 		},
 		{
-			name:       "absent twice removes (N=2)",
-			indexRows:  []string{"ses_ghost"},
+			name:       "absent twice removes count-zero rows (N=2, guard admits)",
+			indexRows:  []types.SessionListItem{row("ses_ghost", 0)},
 			harness:    map[string]bool{},
 			prevMiss:   map[string]int{"ses_ghost": 1},
+			threshold:  2,
 			wantRemove: []string{"ses_ghost"},
 			wantMiss:   map[string]int{},
 		},
 		{
+			name:      "absent history-bearing rows are KEPT for operator review (triage guard)",
+			indexRows: []types.SessionListItem{row("ses_vanished", 12)},
+			harness:   map[string]bool{},
+			prevMiss:  map[string]int{"ses_vanished": 1},
+			threshold: 2,
+			wantKept:  []string{"ses_vanished"},
+			wantMiss:  map[string]int{},
+		},
+		{
 			name:      "presence resets a prior miss",
-			indexRows: []string{"ses_flap"},
+			indexRows: []types.SessionListItem{row("ses_flap", 0)},
 			harness:   map[string]bool{"ses_flap": true},
 			prevMiss:  map[string]int{"ses_flap": 1},
+			threshold: 2,
 			wantMiss:  map[string]int{},
 		},
 		{
 			name:       "harness error keeps everything, counters frozen",
-			indexRows:  []string{"ses_a"},
+			indexRows:  []types.SessionListItem{row("ses_maybe", 0)},
 			harnessErr: true,
-			prevMiss:   map[string]int{"ses_a": 1},
-			wantMiss:   map[string]int{"ses_a": 1},
+			prevMiss:   map[string]int{"ses_maybe": 1},
+			threshold:  2,
+			wantMiss:   map[string]int{"ses_maybe": 1},
 		},
 		{
-			name:       "mixed: one stays, one reaps, counters only for indexed rows",
-			indexRows:  []string{"ses_keep", "ses_gone"},
+			name:       "mixed: keep, reap, operator-keep, stale counters dropped",
+			indexRows:  []types.SessionListItem{row("ses_keep", 3), row("ses_gone", 0), row("ses_vanished", 7)},
 			harness:    map[string]bool{"ses_keep": true},
-			prevMiss:   map[string]int{"ses_gone": 1, "ses_stale_counter": 5},
+			prevMiss:   map[string]int{"ses_gone": 1, "ses_vanished": 1, "ses_stale": 5},
+			threshold:  2,
 			wantRemove: []string{"ses_gone"},
+			wantKept:   []string{"ses_vanished"},
+			wantMiss:   map[string]int{},
+		},
+		{
+			name:       "threshold 1 removes on the first absence (documented edge)",
+			indexRows:  []types.SessionListItem{row("ses_fast", 0)},
+			harness:    map[string]bool{},
+			threshold:  1,
+			wantRemove: []string{"ses_fast"},
 			wantMiss:   map[string]int{},
 		},
 	}
@@ -231,8 +260,9 @@ func TestPlanReconciliation(t *testing.T) {
 				}
 				return tc.harness, nil
 			}
-			remove, misses := PlanReconciliation(tc.indexRows, lister, tc.prevMiss, 2)
+			remove, kept, misses := PlanReconciliation(tc.indexRows, lister, tc.prevMiss, tc.threshold, DefaultReapGuard)
 			assert.ElementsMatch(t, tc.wantRemove, remove)
+			assert.ElementsMatch(t, tc.wantKept, kept)
 			assert.Equal(t, tc.wantMiss, misses)
 		})
 	}

@@ -453,6 +453,9 @@ func (s *RedisStore) InvalidateAll(ctx context.Context, workspaceID string) {
 	s.InvalidateWorkspaceConfig(ctx, workspaceID)
 	s.DeleteParentBackfilled(ctx, workspaceID)
 	s.SetReconcileMisses(ctx, workspaceID, nil)
+	if err := s.client.Del(ctx, reconcileTurnKey(workspaceID)).Err(); err != nil && err != redis.Nil {
+		s.recordError("delete_reconcile_turn")
+	}
 }
 
 // --- Deleted-session tombstones (Redis-backed, US-45.3) ---
@@ -850,6 +853,26 @@ func (s *RedisStore) DeleteParentBackfilled(ctx context.Context, workspaceID str
 
 func reconcileMissesKey(workspaceID string) string {
 	return fmt.Sprintf("ws:{%s}:reconcile-misses", workspaceID)
+}
+
+func (s *RedisStore) ClaimReconcileTurn(ctx context.Context, workspaceID string, cadence time.Duration) bool {
+	const op = "claim_reconcile_turn"
+	start := time.Now()
+	ok, err := s.client.SetNX(ctx, reconcileTurnKey(workspaceID), "1", cadence).Result()
+	if err != nil {
+		// Redis unavailable: fail OPEN (allow the pass) — the counters
+		// are best-effort and the pass itself is idempotent; blocking
+		// convergence on a cache outage would invert the S5b priority.
+		s.recordError(op)
+		s.observeOp(op, "error", start)
+		return true
+	}
+	s.observeOp(op, "ok", start)
+	return ok
+}
+
+func reconcileTurnKey(workspaceID string) string {
+	return fmt.Sprintf("ws:{%s}:reconcile-turn", workspaceID)
 }
 
 func (s *RedisStore) GetReconcileMisses(ctx context.Context, workspaceID string) map[string]int {

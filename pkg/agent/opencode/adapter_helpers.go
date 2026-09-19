@@ -65,16 +65,25 @@ func readBody(resp *http.Response, limit int64) ([]byte, error) {
 // error additionally wraps agent.ErrImageInTextOnlyHistory so callers
 // can surface the targeted remediation. Caller has already
 // deferred-Close'd the body.
+// httpSessionError is httpError narrowed for SESSION-READ routes
+// (GetSession, GetHistory, GetHistoryPage): there — and only there — a
+// 404 is the definitive session-not-found verdict (#1340), so it
+// additionally wraps agent.ErrSessionNotFound. Non-session routes
+// (question/permission replies, prompts) can also 404 with a DIFFERENT
+// meaning ("pending input gone", "session busy") and must not carry the
+// reap sentinel — httpError stays unclassified for them.
+func (a *Adapter) httpSessionError(path string, resp *http.Response) error {
+	if resp.StatusCode == http.StatusNotFound {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("%w: %w: %s returned %d: %s", agent.ErrHTTPStatus, agent.ErrSessionNotFound, path, resp.StatusCode, string(body))
+	}
+	return a.httpError(path, resp)
+}
+
 func (a *Adapter) httpError(path string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	if wedgeErr := textOnlyWedgeError(path, resp.StatusCode, string(body)); wedgeErr != nil {
 		return wedgeErr
-	}
-	// 404 is the definitive session-not-found verdict (#1340): classify
-	// it so callers reap stale index rows instead of string-matching.
-	// The status marker survives alongside (at-least-once semantics).
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %w: %s returned %d: %s", agent.ErrHTTPStatus, agent.ErrSessionNotFound, path, resp.StatusCode, string(body))
 	}
 	return fmt.Errorf("%w: %s returned %d: %s", agent.ErrHTTPStatus, path, resp.StatusCode, string(body))
 }

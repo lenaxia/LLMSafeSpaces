@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,7 +32,11 @@ func writeSessionGoneBody(c *gin.Context) {
 // reapSessionIfGone classifies an adapter error from a session-scoped
 // read: when the agent's definitive verdict is not-found
 // (agent.ErrSessionNotFound), the session_index row is a stale ghost
-// (#1340) — reap it (row + descendants) and answer with the typed 410.
+// (#1340). The TYPED 410 always answers (the session is unreadable
+// either way); the row itself is reaped only when the #1340 triage
+// safety guard admits it (no message history — nothing of value). A
+// history-bearing row the harness lost stays for operator attention
+// (a vanished session WITH history may indicate a harness store reset).
 // Any other error (transport, 5xx, timeouts) returns false so the
 // caller keeps its generic path: an unreachable pod is not evidence of
 // deletion.
@@ -43,9 +46,24 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 	}
 	if h.sessionIndex != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
-			h.logger.Warn("session_gone: index row reap failed",
-				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+		rows, listErr := h.sessionIndex.ListByWorkspace(ctx, workspaceID)
+		if listErr == nil {
+			for _, row := range rows {
+				if row.ID != sessionID {
+					continue
+				}
+				if sessionindex.DefaultReapGuard(row) {
+					if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
+						h.logger.Warn("session_gone: index row reap failed",
+							"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+					}
+				} else {
+					h.logger.Warn("session_gone: history-bearing row kept for operator review",
+						"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
+						"messageCount", row.MessageCount)
+				}
+				break
+			}
 		}
 		cancel()
 	}
@@ -56,6 +74,10 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 // reconcileCadence bounds how often a workspace runs the #1340
 // convergence pass: the sidebar refreshes often, but one harness
 // session-list round-trip per workspace per 30s is the S5b/L10 budget.
+// The claim is CROSS-REPLICA (wsstate SETNX-style): one replica runs
+// each window, so the counter read-modify-write below has a single
+// writer — the "N counts checks, not per-replica repetitions" invariant
+// is enforced, not approximated.
 const reconcileCadence = 30 * time.Second
 
 // reconcileMissThreshold is the consecutive-absent check count before a
@@ -63,40 +85,18 @@ const reconcileCadence = 30 * time.Second
 // snapshot miss).
 const reconcileMissThreshold = 2
 
-// lastReconcile gates the per-replica cadence (a rate limiter, not
-// correctness state — counters live in the shared wsstate store).
-var lastReconcile reconcileGate
-
-type reconcileGate struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-}
-
-func (g *reconcileGate) allow(workspaceID string, now time.Time) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.seen == nil {
-		g.seen = map[string]time.Time{}
-	}
-	if t, ok := g.seen[workspaceID]; ok && now.Sub(t) < reconcileCadence {
-		return false
-	}
-	g.seen[workspaceID] = now
-	return true
-}
-
 // ReconcileSessionIndex is the #1340 convergence pass, piggybacked on
 // the sidebar's session list (the path that already overlays harness
-// ground truth). Fire-and-forget: TTL-gated per workspace, diffs the
-// index rows against the agent's authoritative session list, and deletes
-// rows the agent has reported absent for N consecutive checks. The miss
-// counters live in wsstate (cross-replica with decay) so N counts
-// checks, not per-replica repetitions.
+// ground truth). Fire-and-forget: cadence-claimed per workspace
+// (cross-replica), diffs the index rows against the agent's
+// authoritative session list, and deletes guard-admitted rows the agent
+// has reported absent for N consecutive checks. The miss counters live
+// in wsstate (cross-replica with decay).
 func (h *ProxyHandler) ReconcileSessionIndex(ctx context.Context, workspaceID string) {
 	if h.sessionIndex == nil {
 		return
 	}
-	if !lastReconcile.allow(workspaceID, time.Now()) {
+	if !h.state().ClaimReconcileTurn(ctx, workspaceID, reconcileCadence) {
 		return
 	}
 	go h.runSessionIndexReconciliation(workspaceID) //nolint:gosec,contextcheck // G118: intentional fire-and-forget detach (BackfillSessionParents precedent)
@@ -117,10 +117,6 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	if len(rows) == 0 {
 		return
 	}
-	indexIDs := make([]string, 0, len(rows))
-	for _, r := range rows {
-		indexIDs = append(indexIDs, r.ID)
-	}
 
 	prev := h.state().GetReconcileMisses(ctx, workspaceID)
 	lister := func() (map[string]bool, error) {
@@ -135,7 +131,7 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 		return present, nil
 	}
 
-	remove, next := sessionindex.PlanReconciliation(indexIDs, lister, prev, reconcileMissThreshold)
+	remove, keptForOperator, next := sessionindex.PlanReconciliation(rows, lister, prev, reconcileMissThreshold, sessionindex.DefaultReapGuard)
 	h.state().SetReconcileMisses(ctx, workspaceID, next)
 	for _, id := range remove {
 		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
@@ -143,6 +139,14 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 			continue
 		}
 		h.logger.Info("session reconcile: reaped ghost index row",
+			"workspaceID", workspaceID, "sessionID", id)
+	}
+	for _, id := range keptForOperator {
+		// #1340 triage guard: history-bearing rows the harness reports
+		// gone are NOT auto-deleted — surfaced for operator review (a
+		// vanished session with history may indicate a harness store
+		// reset; the read path still answers the typed gone-state).
+		h.logger.Warn("session reconcile: history-bearing row absent at harness, kept for operator review",
 			"workspaceID", workspaceID, "sessionID", id)
 	}
 }

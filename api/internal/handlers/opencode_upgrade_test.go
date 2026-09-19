@@ -59,11 +59,15 @@ func (m *mockSessionIndex) ListByWorkspace(_ context.Context, workspaceID string
 	return append([]types.SessionListItem{}, m.rows[workspaceID]...), nil
 }
 
-// seedRow / setRows are test helpers for reconciliation scenarios.
+// seedRow / seedRowCounted are test helpers for reconciliation scenarios.
 func (m *mockSessionIndex) seedRow(workspaceID, sessionID string) {
+	m.seedRowCounted(workspaceID, sessionID, 0)
+}
+
+func (m *mockSessionIndex) seedRowCounted(workspaceID, sessionID string, count int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{ID: sessionID, Title: sessionID})
+	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{ID: sessionID, Title: sessionID, MessageCount: count})
 }
 func (m *mockSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
 func (m *mockSessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {

@@ -26,7 +26,10 @@ var ErrHTTPStatus = errors.New("agent http status")
 // and may be reaped, #1340). Both wires classify into this sentinel so
 // callers never care which surface produced the verdict; it wraps
 // ErrHTTPStatus on the V1 wire (the status marker survives alongside).
-var ErrSessionNotFound = errors.New("agent session not found")
+// The wording is load-bearing for the V2 composite: ErrV2SessionNotFound
+// wraps it as "agent V2: %w", and the resulting message must stay
+// byte-identical to the pre-#1340 "agent V2: session not found".
+var ErrSessionNotFound = errors.New("session not found")
 
 // ErrImageInTextOnlyHistory marks the #1307 wedge class: the session's
 // replayed history carries an image part and the active model is

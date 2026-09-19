@@ -87,3 +87,19 @@ None.
 - `sdks/openapi.yaml`
 - `frontend/src/hooks/useMessageHistory.ts`, `components/chat/ChatHistoryErrorBanner.tsx` (+ tests), `pages/ChatPage.tsx` (+ historyError test rows, hookcount pin), `tests/e2e/session-gone.spec.ts` (new)
 - `worklogs/NNNN_2026-09-19_session-index-reconcile.md` (this file)
+
+---
+
+## Correction (r1 review, Rule 7 discipline — append-only)
+
+- The original entry claimed the V2 sentinel message was "byte-stable" at ship time. FALSE when written: `fmt.Errorf("agent V2: %w", ErrSessionNotFound)` over the then-text "agent session not found" produced "agent V2: agent session not found". The r1 review caught it by execution. Fixed in the same round: ErrSessionNotFound's text is now "session not found", making the composite byte-identical to the original ("agent V2: session not found"), and a V2 message-stability pin now exists (TestV2SessionNotFound_ClassifiesShared asserts errors.Is both ways). Lesson recorded: claimed validations must be executed, not inferred.
+
+## r1 review fixes (round 2)
+
+1. message_count=0 safety guard (triage deliverable): `ReapGuard`/`DefaultReapGuard` in PlanReconciliation — auto-deletion admits only count==0 rows; history-bearing absents return as keptForOperator (Warn-logged at both reap surfaces). Read-path reap honors the same guard (still answers the typed 410 regardless — pinned).
+2. session_index_events_total{outcome} (#754 fold-in): queued/applied/db_error counter in sessionindex.
+3. Count-rebuild from harness (#754 fold-in): NOT implemented — dispositioned as a follow-up (the V1 wire carries no cheap per-session count source; a bounded full-history walk per workspace per 30s is a cost decision) — proposed follow-up issue, pending orchestrator ack.
+4. Cross-replica atomicity: the 30s gate became `ClaimReconcileTurn` (wsstate SETNX-EX cross-replica; fail-open on Redis outage with rationale) — single writer per window makes the counter RMW safe; the "N counts checks" invariant is now enforced.
+5. 404 classification narrowed to the session-read seam: httpError lost the branch; `httpSessionError` wraps only GetSession/GetHistory/GetHistoryPage routes; question-reply 404 pinned NOT classified.
+6. Threshold edge (1) pinned + documented; ≤0 documented as remove-on-first-absence.
+7. Integration coverage: router-level wiring pin (TestRouterSessionList_TriggersReconcilePass — deleting the piggyback fails it), real-adapter e2e row (fake opencode 404 → mounted route → 410 + reap), plus real-adapter history row via e2eEnv.

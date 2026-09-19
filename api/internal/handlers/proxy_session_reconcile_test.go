@@ -48,7 +48,7 @@ func runReconcile(t *testing.T, h *ProxyHandler, workspaceID string) {
 func TestSessionIndexReconcile_ReapsAfterTwoConsecutiveAbsences(t *testing.T) {
 	h, idx := reconcileTestHandler(t, map[string]bool{"ses_alive": true}, nil)
 	idx.seedRow("ws-1", "ses_alive")
-	idx.seedRow("ws-1", "ses_ghost")
+	idx.seedRow("ws-1", "ses_ghost") // count 0: guard admits
 
 	runReconcile(t, h, "ws-1")
 	assert.Empty(t, idx.deletedTree, "first absence increments, never reaps")
@@ -56,10 +56,23 @@ func TestSessionIndexReconcile_ReapsAfterTwoConsecutiveAbsences(t *testing.T) {
 		h.state().GetReconcileMisses(context.Background(), "ws-1"))
 
 	runReconcile(t, h, "ws-1")
-	assert.True(t, idx.deletedTree["ws-1/ses_ghost"], "second consecutive absence reaps the ghost")
+	assert.True(t, idx.deletedTree["ws-1/ses_ghost"], "second consecutive absence reaps the count-zero ghost")
 	assert.NotContains(t, idx.deletedTree, "ws-1/ses_alive")
 	assert.Empty(t, h.state().GetReconcileMisses(context.Background(), "ws-1"),
 		"reaped + present rows leave no counters behind")
+}
+
+// The triage safety guard: a history-bearing row the harness reports
+// gone is NEVER auto-deleted — kept for operator review (the read path
+// still answers the typed gone-state, so the UX self-heals).
+func TestSessionIndexReconcile_HistoryBearingGhostKeptForOperator(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{}, nil)
+	idx.seedRowCounted("ws-1", "ses_vanished", 12)
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{"ses_vanished": 1})
+
+	runReconcile(t, h, "ws-1")
+	assert.Empty(t, idx.deletedTree, "message_count>0 rows are never auto-deleted")
+	assert.Empty(t, h.state().GetReconcileMisses(context.Background(), "ws-1"))
 }
 
 func TestSessionIndexReconcile_PresenceResetsMiss(t *testing.T) {
@@ -107,9 +120,9 @@ func TestSessionIndexReconcile_CadenceGate(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls == 1
-	}, 3*time.Second, 50*time.Millisecond, "the cadence gate must coalesce bursts")
+	}, 3*time.Second, 50*time.Millisecond, "the cross-replica turn claim must coalesce bursts")
 
-	// The gate is per workspace: a different workspace still runs.
+	// The claim is per workspace: a different workspace still runs.
 	h.ReconcileSessionIndex(ctx, "ws-2")
 	assert.Eventually(t, func() bool {
 		mu.Lock()
