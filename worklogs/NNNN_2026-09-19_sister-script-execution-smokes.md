@@ -71,3 +71,8 @@ None.
 - `local/issue_1452_e2e_script_test.go` — + ExecuteSmoke (pins the resurrection)
 - `local/issue1452-routine-session-index-e2e.sh` — + `harness_start` (dead-on-arrival fix)
 - `worklogs/NNNN_2026-09-19_sister-script-execution-smokes.md` — this worklog
+
+## Review Round 1 (my resurrection was one gate short — fixed)
+
+The reviewer found the 1452 fix incomplete for the nightly: I placed `harness_start` AFTER the script's standalone livez pre-check, but harness_start is what ESTABLISHES the port-forward (1417 calls it as its first statement — I misread the pattern). In the nightly nothing else forwards the step's port, so the pre-check itself died forwardless. Fixed: harness_start first, fragile pre-check deleted (harness_start livez-gates internally); ordering pinned by `TestIssue1452E2EScript_HarnessStartPrecedesLivez` (+ the same pin for 1417's already-correct shape) — a source-pin because the smoke's curl shim answers /livez unconditionally and cannot see this class.
+Wording/style nits taken: dropped the unused phaseAnswer param; corrected the "behavior unchanged" claim on the 1410 smoke refactor (acceptance set widened, shim surface changed); this worklog's "closing the latent-death class completely" overstated — 8 other nightly-registered harness scripts remain without ExecuteSmoke coverage (test.sh, us-68, us-70 ×2, 1342, 1455, dev-preview-tunnel, us-63).

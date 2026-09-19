@@ -43,12 +43,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
-    || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
-
-# harness_start seeds the session user + API key and sets OWNER_ID —
-# without it seed_workspace dies (OWNER_ID is blanked at source time and
-# only harness_start sets it; found while adding the execution smoke:
+# harness_start FIRST — it establishes the API port-forward and then
+# livez-gates internally (us70-common.sh). A standalone livez pre-check
+# before it died forwardless in the nightly (nothing else forwards
+# 18087 in that step); 1417's pattern is harness_start as the first
+# statement. It also seeds the session user + API key and sets OWNER_ID
+# — without it seed_workspace dies (OWNER_ID is blanked at source time;
 # the script had never been executable end to end, #1474 r4's class).
 harness_start
 

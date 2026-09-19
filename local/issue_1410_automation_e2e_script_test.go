@@ -131,7 +131,11 @@ func TestIssue1410E2EWorkflowRegistered(t *testing.T) {
 // the r3/r4/r5 harness defects before review did. The shim surface is
 // deliberately generic: rows whose assertions need specific responses
 // note_fail, which is fine — reaching the verdict gate is the property
-// under test. Shared shim machinery: e2e_smoke_helpers_test.go.
+// under test. NOTE: the refactor onto the shared helpers WIDENED the
+// acceptance set (green-marker + exit 0 is also accepted) and changed
+// the shim surface (POST /runs→202, -o honored, auth answered) — not
+// behavior-identical to the pre-refactor test. Shared machinery:
+// e2e_smoke_helpers_test.go.
 func TestIssue1410E2EScript_ExecuteSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("execution smoke spawns ~hundreds of shim processes")

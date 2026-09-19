@@ -150,3 +150,21 @@ func TestIssue1452E2EScript_ExecuteSmoke(t *testing.T) {
 	assertSmokeTraversal(t, "issue1452-routine-session-index-e2e.sh", combined, exitVal,
 		"row(s) failed", "issue-1452 e2e: all rows passed")
 }
+
+// TestIssue1452E2EScript_HarnessStartPrecedesLivez pins the r1 review's
+// ordering fix: harness_start must run BEFORE any standalone /livez
+// probe — harness_start establishes the port-forward itself; a pre-check
+// ahead of it died forwardless in the nightly (nothing else forwards
+// the step's port), which the execution smoke cannot see (its curl shim
+// answers /livez unconditionally).
+func TestIssue1452E2EScript_HarnessStartPrecedesLivez(t *testing.T) {
+	raw, err := os.ReadFile("issue1452-routine-session-index-e2e.sh")
+	require.NoError(t, err)
+	src := string(raw)
+	callIdx := strings.Index(src, "\nharness_start")
+	require.GreaterOrEqual(t, callIdx, 0, "script must call harness_start")
+	livezIdx := strings.Index(src, "/livez")
+	if livezIdx >= 0 {
+		assert.Less(t, callIdx, livezIdx, "harness_start must precede any standalone /livez probe (it establishes the forward)")
+	}
+}

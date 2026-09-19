@@ -98,9 +98,9 @@ done
 exit 0
 `
 
-// writeSmokeShims materializes the curl/kubectl/sleep shims into dir;
-// phaseAnswer feeds wait_phase (Active vs Ready per script).
-func writeSmokeShims(t *testing.T, dir, phaseAnswer string) {
+// writeSmokeShims materializes the curl/kubectl/sleep shims into dir.
+// (Phase answers flow via SMOKE_PHASE_ANSWER env in runScriptUnderShims.)
+func writeSmokeShims(t *testing.T, dir string) {
 	t.Helper()
 	shims := map[string]string{
 		"curl":    smokeCurlShim,
@@ -110,7 +110,6 @@ func writeSmokeShims(t *testing.T, dir, phaseAnswer string) {
 	for name, body := range shims {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755))
 	}
-	_ = phaseAnswer // via env below
 }
 
 // runScriptUnderShims executes one harness script with the shims on
@@ -120,7 +119,7 @@ func writeSmokeShims(t *testing.T, dir, phaseAnswer string) {
 func runScriptUnderShims(t *testing.T, script, phaseAnswer string, extraEnv map[string]string) (string, int) {
 	t.Helper()
 	shimDir := t.TempDir()
-	writeSmokeShims(t, shimDir, phaseAnswer)
+	writeSmokeShims(t, shimDir)
 
 	cmd := exec.Command("bash", script)
 	env := append(os.Environ(),
