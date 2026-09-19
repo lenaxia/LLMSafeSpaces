@@ -76,4 +76,4 @@ None.
 - `api/internal/workflows/engine.go` — `accountTriggerFailure` + `routineTargetWorkspace` helpers; 4 call-site replacements; predicate wiring + preservation comments
 - `api/internal/workflows/engine_test.go` — mockSchedulerStore: `results`/`increments`/`resets` mirrors (additive)
 - `api/internal/workflows/engine_fire_lifecycle_test.go` — new: 4 characterization pin funcs (9 subtests)
-- `worklogs/NNNN_2026-09-19_fire-lifecycle-consolidation.md` — this worklog
+- `worklogs/0998_2026-09-19_fire-lifecycle-consolidation.md` — this worklog
