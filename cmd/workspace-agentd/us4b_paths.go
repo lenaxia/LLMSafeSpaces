@@ -31,8 +31,9 @@ func allowedDirsPathFromEnv() string {
 }
 
 // secretsEnvPathFromEnv is the secrets-env coordinate (the spawn_env
-// consumer, the resync apply path, and the materializer share it — one
-// coordinate, so US-4b's relocation is a controller env change).
+// consumer, the resync apply path, the materializer, and the workflow
+// http-node reader share it — one coordinate, so US-4b's relocation is
+// a controller env change).
 func secretsEnvPathFromEnv() string {
 	return envOrDefault("LLMSAFESPACES_SECRETS_ENV_PATH", agentd.SecretsEnvPath)
 }

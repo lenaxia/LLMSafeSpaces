@@ -201,6 +201,19 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 	}
 
 	lang := scriptwrap.Language(data.Language)
+	// #1455: probe Execute's prerequisites (writable temp dir,
+	// interpreter on PATH) before running. In sidecar mode agentd
+	// serves this mux from the FROM-scratch sidecar — no /tmp, no
+	// toolchains — and the raw failure is an incidental
+	// "create temp dir: stat ..." script_failed. The named code makes
+	// the environment contract loud and keeps the failure
+	// deterministic for the engine (outside the retry class by
+	// construction: an environment does not heal in 2s).
+	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
+		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
+			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) agentd serves workflow nodes from a scratch container without /tmp or interpreters — script nodes require the workspace container environment (epic-64 script contract; #1455). On a single-container pod this instead indicates a broken TMPDIR/PATH in the workspace container.", envErr))
+		return
+	}
 	output, stderr, exitCode, err := scriptwrap.Execute(ctx, lang, data.Handler, input)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -635,7 +648,10 @@ func writeWorkflowErrorSession(w http.ResponseWriter, status int, code, detail, 
 }
 
 func loadSecretsEnv() (map[string]string, error) {
-	data, err := os.ReadFile("/sandbox-runtime/secrets-env")
+	// #1455: share the US-4b coordinate — in sidecar mode secrets-env
+	// lives at the relocated path, and the hardcoded single-container
+	// default silently starved http-node {{secrets.*}} refs.
+	data, err := os.ReadFile(secretsEnvPathFromEnv())
 	if err != nil {
 		return map[string]string{}, err
 	}

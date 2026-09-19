@@ -2364,3 +2364,19 @@ func TestScheduler_RoutineFireScriptLegDeterministic4xxNoRetry(t *testing.T) {
 	assert.Equal(t, 1, ex.calls, "no retry on deterministic failure")
 	assert.Equal(t, 1, store.triggerFail["trig-scr4xx"], "exactly ONE failure burned")
 }
+
+// #1455 guard: agentd's script_env_unavailable (scratch-sidecar: no
+// /tmp, no interpreters) is deterministic — an environment does not
+// heal within the retry backoff — and must stay outside the retry
+// class (one attempt, like every other non-transient node failure).
+func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
+	ex := &scriptedExecutor{results: []struct {
+		resp *NodeExecResponse
+		err  error
+	}{
+		{resp: &NodeExecResponse{ErrorCode: "script_env_unavailable", Detail: "script node execution environment unavailable in this container: no writable temp dir"}},
+	}}
+	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
+	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
+}

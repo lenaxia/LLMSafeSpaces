@@ -413,6 +413,25 @@ jobs:
           FIRE_WAIT_S: 300
         run: bash local/issue1452-routine-session-index-e2e.sh
 
+      - name: Run scriptenv e2e rows (#1455)
+        # Script-node environment contract + http-node secrets
+        # coordinate. The nightly installs agentdSidecar.enabled=true:
+        # R1 asserts a script node fails LOUD there
+        # (script_env_unavailable naming the sidecar cause — never the
+        # pre-fix incidental "stat /tmp" script_failed; single-container
+        # clusters get the execute-post-EnvCheck arm instead). R2 binds
+        # an env-secret and asserts an http node's {{secrets.*}} header
+        # refs resolve from the materialized (sidecar: relocated)
+        # secrets-env coordinate via an in-cluster header-echo upstream,
+        # with unbound refs staying literal.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18088
+          RUN_WAIT_S: 300
+        run: bash local/issue-1455-scriptenv-e2e.sh
+
       - name: Run templating e2e rows (#1417)
         # Agent-prompt dotted-path rendering: a workflow run with
         # {{.body.topic}} + {{.missing.path}} executes against an
