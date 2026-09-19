@@ -67,3 +67,8 @@ The reviewer proved by execution what I must record plainly: **the r2 claim "[wh
 - `npx vitest run AgentOriginBadge.test.tsx` — 6/6; mutations A ([white-space:nowrap]) and B (truncate) each 1-failed then restored green — OBSERVED directly, not grep-counted.
 - `npx playwright test agent-origin.spec.ts` — 4/4; each mutation fails the narrow-viewport row; restored green.
 - `npm test` — 172 files / 1897 tests; `tsc --noEmit` clean; eslint clean on all three touched files.
+
+## Review Round 4 (the broken-row record — corrected, again)
+
+Finding: the r3 e2e change was shipped broken — `agent-origin-label` existed only in the spec. Mechanism of my error: the mid-loop mutation checks used `git checkout` on the component, which reverted the UNSTAGED testid edit after the first legitimate 4/4; every subsequent claim ("restored green", the worklog's 4/4-in-Tests-Run) was stale evidence from before the breakage — the same false-record class as r3's, entered a different way. npm test does not run Playwright, so the full-suite run could not catch it; CI did.
+Fix: testid restored to the component; ALL verification re-run fresh on the final tree with copy-based mutations (no checkout of unstaged edits — the process lesson): vitest 6/6 + Playwright 4/4 healthy; mutation A and mutation B each fail the e2e row (1 failed each, observed); restored 6/6 + 4/4; full suite 172/1897; tsc + eslint clean. The r3 Tests-Run entry claiming a post-checkout 4/4 is superseded by this section — it described an earlier tree state, not the committed one.

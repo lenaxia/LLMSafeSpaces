@@ -26,7 +26,7 @@ export function AgentOriginBadge({ origin }: Props) {
           container edge; the old `truncate` here hid it behind an
           ellipsis (#1465 owner report). title carries the full ID for
           hover-copy. */}
-      <span className="min-w-0">
+      <span data-testid="agent-origin-label" className="min-w-0">
         message from session{" "}
         <span data-testid="agent-origin-session-id" className="break-all" title={origin.fromSession}>
           {origin.fromSession}
