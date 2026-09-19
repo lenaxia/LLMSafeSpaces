@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.4] - 2026-09-19
+
+### Fixes — routine fire follow-up ledger (#1452–#1458, #1467)
+
+- **Prompt growth under memoryMode=last_result (#1453, PR #1462)**: the
+  captured result under captureMode=full embeds the round's full prompt,
+  so injecting it verbatim into the next round's {{.prevResult}} compounded
+  the prompt unboundedly (round N carried round N-1's prompt, which carried
+  round N-2's result...). Both injection arms (single and multi-run) now
+  reduce the stored envelope to {response, tokens} at read time; stored
+  blobs that are not the expected envelope fail closed (placeholder left
+  unreplaced, Info-logged) instead of passing unverifiable bytes into a
+  prompt. Storage format and capture semantics unchanged.
+- **Session-create failures rejoin the transient retry class
+  (#1457/#1458, PR #1466)**: agentd's ephemeral session create collapsed
+  every failure into session_not_found, hiding provider blips from the
+  #1441 retry classifier one leg early. agentd now distinguishes
+  session_create_failed (wrapping the transport error or opencode status);
+  the classifier retries it alongside script_failed wrapping 5xx; the
+  pre-script leg routes through executeWithRetry like the agent leg. A
+  round-1-caught regression ships closed: a 200 create body with an empty
+  ID is a failure, not a phantom-delivered fire.
+- **Preserved routine sessions appear in the workspace session list
+  (#1452, PR #1464)**: localization proved the pod-side list was never
+  broken (session registered and listed on the pinned binary,
+  restart-stable) — the gap was platform-side: GET /workspaces/:id/sessions
+  serves only the PostgreSQL session_index, and no routine fire path ever
+  wrote it, so visibility raced the 30s usage-stream idle gate. The engine
+  now indexes preserved sessions at fire completion (same gate as the
+  origin write), best-effort and non-fatal. Follow-up: #1470 (failed
+  PreserveOnFailure fires and drifted deliveries still miss both tables).
+- **Update path enforces the memory/capture cross-constraint (#1467, PR
+  #1468)**: PATCH could flip a trigger to memoryMode=last_result without
+  captureMode=full, which create rejects. The update handler now guards
+  the post-patch merged view with the same error, byte-identical via a
+  shared constant. Nightly harness bug fixed alongside: R8's R5_WS was
+  undefined and set -u aborted every prior run at that line.
+- **Nightly e2e: F8 executes for the first time; Epic 68 sidecar gate
+  fixed (#1456, PR #1463)**: F8's Service discovery used a label the
+  valkey Service does not carry — the check silently SKIPped on every run
+  in history while the job actually failed at attachment row E2, where
+  the sidecar gate probed only spec.containers and missed the native
+  (init-container) sidecar, sending uploads into its read-only
+  /workspace. F8 now looks up the Service by name with a three-way
+  verdict (no-verdict no longer gates the ten downstream suites); the
+  gate probes both container lists and loudly skips E2/E10/E11 in
+  sidecar mode per design D1.
+- **CI: cmd/relay-router race flakes (rides PR #1466)**: two US-72.2
+  tests (watch-delete recovery, metrics scrape) raced async harness state
+  and intermittently failed every PR's required full-suite race check;
+  both now settle-bounded before asserting (test-only).
+
 ## [0.34.3] - 2026-09-18
 
 ### Fixes — routine fire resilience
