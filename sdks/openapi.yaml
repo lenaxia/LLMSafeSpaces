@@ -883,6 +883,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/SessionGone"
         "502":
           description: The agent adapter failed to fetch the transcript
         "503":
@@ -1010,6 +1012,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/SessionGone"
         "502":
           description: The agent adapter failed to load the session
         "503":
@@ -8069,6 +8073,23 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    SessionGone:
+      description: |
+        The session existed in the session index but the agent reports it
+        no longer exists (harness-side deletion or a never-persisted
+        creation). The stale index row is reaped; clients should remove
+        the session from any list and render a gone-state. Body carries
+        `code: "session_gone"`.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/Error"
+              - type: object
+                properties:
+                  code:
+                    type: string
+                    enum: ["session_gone"]
     Conflict:
       description: Conflict (duplicate resource)
       content:

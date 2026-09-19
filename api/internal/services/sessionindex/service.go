@@ -120,6 +120,47 @@ func (s *Service) UpdateLastSeen(ctx context.Context, workspaceID, sessionID str
 	return s.db.UpdateSessionLastSeen(ctx, workspaceID, sessionID)
 }
 
+// PlanReconciliation is the #1340 convergence decision (S5b): given the
+// index's session IDs, a harness-list provider, and the previous
+// consecutive-miss counters, it returns which rows to DELETE now and the
+// next counters. Pure — orchestration (adapter call, counter storage,
+// deletion) lives with the proxy handler; this function IS the
+// invariant:
+//
+//   - harness present → keep, counter cleared
+//   - harness absent  → counter+1; removal at threshold consecutive
+//     misses (N=2 survives one mid-restart snapshot miss)
+//   - harness call error → keep everything, counters frozen (an
+//     unreachable pod is NOT evidence of deletion)
+//   - counters for rows no longer indexed are dropped (bounded state)
+//
+// The lister returning an error models the entire check failing: no
+// session is treated as absent on a failed check.
+func PlanReconciliation(indexRows []string, harnessList func() (map[string]bool, error), prevMiss map[string]int, threshold int) (remove []string, nextMiss map[string]int) {
+	nextMiss = map[string]int{}
+	present, err := harnessList()
+	if err != nil {
+		for _, id := range indexRows {
+			if n, ok := prevMiss[id]; ok {
+				nextMiss[id] = n
+			}
+		}
+		return nil, nextMiss
+	}
+	for _, id := range indexRows {
+		if present[id] {
+			continue
+		}
+		n := prevMiss[id] + 1
+		if n >= threshold {
+			remove = append(remove, id)
+			continue
+		}
+		nextMiss[id] = n
+	}
+	return remove, nextMiss
+}
+
 func (s *Service) drain() {
 	defer s.wg.Done()
 	for {

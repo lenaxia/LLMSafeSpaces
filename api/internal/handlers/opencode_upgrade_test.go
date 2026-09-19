@@ -32,12 +32,16 @@ type mockSessionIndex struct {
 	mu          sync.Mutex
 	titles      map[string]string // key: "workspaceID/sessionID"
 	contextUsed map[string]*int64 // key: "workspaceID/sessionID"
+	deletedTree map[string]bool   // key: "workspaceID/sessionID" (DeleteSession recording)
+	rows        map[string][]types.SessionListItem
 }
 
 func newMockSessionIndex() *mockSessionIndex {
 	return &mockSessionIndex{
 		titles:      make(map[string]string),
 		contextUsed: make(map[string]*int64),
+		deletedTree: make(map[string]bool),
+		rows:        make(map[string][]types.SessionListItem),
 	}
 }
 
@@ -49,11 +53,25 @@ func (m *mockSessionIndex) UpsertTitle(_ context.Context, workspaceID, sessionID
 }
 
 func (m *mockSessionIndex) RecordMessage(_, _, _ string, _ time.Time) {}
-func (m *mockSessionIndex) ListByWorkspace(_ context.Context, _ string) ([]types.SessionListItem, error) {
-	return nil, nil
+func (m *mockSessionIndex) ListByWorkspace(_ context.Context, workspaceID string) ([]types.SessionListItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]types.SessionListItem{}, m.rows[workspaceID]...), nil
 }
-func (m *mockSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error  { return nil }
-func (m *mockSessionIndex) DeleteSession(_ context.Context, _, _ string) error   { return nil }
+
+// seedRow / setRows are test helpers for reconciliation scenarios.
+func (m *mockSessionIndex) seedRow(workspaceID, sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rows[workspaceID] = append(m.rows[workspaceID], types.SessionListItem{ID: sessionID, Title: sessionID})
+}
+func (m *mockSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error { return nil }
+func (m *mockSessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deletedTree[workspaceID+"/"+sessionID] = true
+	return nil
+}
 func (m *mockSessionIndex) UpsertParent(_ context.Context, _, _, _ string) error { return nil }
 func (m *mockSessionIndex) UpsertContextUsed(_ context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	m.mu.Lock()

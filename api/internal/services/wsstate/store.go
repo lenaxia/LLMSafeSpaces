@@ -169,11 +169,25 @@ type Store interface {
 	// it can be retried, and on workspace terminate.
 	DeleteParentBackfilled(ctx context.Context, workspaceID string)
 
+	// --- Session-index reconciliation counters (#1340) ---
+
+	// GetReconcileMisses returns the per-session consecutive-absent
+	// counters for the workspace's session-index reconciliation pass
+	// (S5b convergence). Counters are shared across replicas (Redis
+	// TTL decays stale state); nil/empty means no pending misses.
+	GetReconcileMisses(ctx context.Context, workspaceID string) map[string]int
+
+	// SetReconcileMisses replaces the workspace's miss counters
+	// wholesale (PlanReconciliation returns the complete next map).
+	// Redis implementations set a TTL so abandoned counters decay.
+	SetReconcileMisses(ctx context.Context, workspaceID string, misses map[string]int)
+
 	// --- Bulk invalidation ---
 
 	// InvalidateAll clears the workspace state that becomes stale on a
 	// phase transition: active sessions, deleted markers, cached
-	// password, cached config, and parent-backfill marker. Does NOT
+	// password, cached config, parent-backfill marker, and
+	// session-index reconciliation counters. Does NOT
 	// affect connCount (which is not in this Store) and does NOT affect
 	// prior phase — the onPhaseChange handler relies on prior phase
 	// surviving invalidation to distinguish first-invocation from

@@ -576,6 +576,9 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 		msgs, err = h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
 	}
 	if err != nil {
+		if h.reapSessionIfGone(c, wid, sid, err, "GetHistory") {
+			return
+		}
 		h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
 		return
@@ -671,6 +674,9 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 
 	s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
 	if err != nil {
+		if h.reapSessionIfGone(c, wid, sid, err, "GetSession") {
+			return
+		}
 		h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
 		return

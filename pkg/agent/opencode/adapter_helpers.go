@@ -70,6 +70,12 @@ func (a *Adapter) httpError(path string, resp *http.Response) error {
 	if wedgeErr := textOnlyWedgeError(path, resp.StatusCode, string(body)); wedgeErr != nil {
 		return wedgeErr
 	}
+	// 404 is the definitive session-not-found verdict (#1340): classify
+	// it so callers reap stale index rows instead of string-matching.
+	// The status marker survives alongside (at-least-once semantics).
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("%w: %w: %s returned %d: %s", agent.ErrHTTPStatus, agent.ErrSessionNotFound, path, resp.StatusCode, string(body))
+	}
 	return fmt.Errorf("%w: %s returned %d: %s", agent.ErrHTTPStatus, path, resp.StatusCode, string(body))
 }
 

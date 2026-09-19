@@ -1,5 +1,6 @@
 import { ApiClientError } from "../../api/client";
 import { extractAgentErrorMessage, extractAgentErrorRef } from "../../api/agentErrorRef";
+import { isSessionGoneError } from "../../hooks/useMessageHistory";
 
 interface ChatHistoryErrorBannerProps {
   error: unknown;
@@ -58,6 +59,28 @@ export function ChatHistoryErrorBanner({
 }: ChatHistoryErrorBannerProps) {
   const status = error instanceof ApiClientError ? error.status : undefined;
   const ref = error instanceof ApiClientError ? extractAgentErrorRef(error.body) : undefined;
+
+  // #1340: the typed gone-state — the agent reports the session deleted
+  // and the API reaped the stale index row. Terminal (no Retry) and
+  // visually distinct from a fetch failure: never a generic banner.
+  if (isSessionGoneError(error)) {
+    const human =
+      typeof (error as ApiClientError).body?.error === "string" && (error as ApiClientError).body.error.length > 0
+        ? (error as ApiClientError).body.error
+        : "This session no longer exists.";
+    return (
+      <div
+        role="alert"
+        data-testid="session-gone-banner"
+        className="flex flex-col gap-2 border-b border-muted-foreground/25 bg-muted/30 px-4 py-3 text-sm text-muted-foreground"
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-medium">Session no longer exists</span>
+        </div>
+        <p className="text-xs">{human}</p>
+      </div>
+    );
+  }
 
   let message: string = "Unknown error";
   const reason = error instanceof ApiClientError ? error.body?.reason : undefined;

@@ -164,3 +164,76 @@ func TestStartStop_NilLogger_NoPanic(t *testing.T) {
 	})
 	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "sess-1", mock.AnythingOfType("time.Time"))
 }
+
+// PlanReconciliation is the #1340 convergence decision: which index rows
+// to delete now, and what the next miss-counters should be. Pure — the
+// orchestration (adapter list call, wsstate counters, deletion) lives in
+// the proxy handler; this matrix IS the S5b invariant.
+func TestPlanReconciliation(t *testing.T) {
+	tests := []struct {
+		name       string
+		indexRows  []string
+		harness    map[string]bool // sessionID -> present at harness
+		harnessErr bool
+		prevMiss   map[string]int
+		wantRemove []string
+		wantMiss   map[string]int
+	}{
+		{
+			name:      "present rows keep, counters clear",
+			indexRows: []string{"ses_a", "ses_b"},
+			harness:   map[string]bool{"ses_a": true, "ses_b": true},
+			wantMiss:  map[string]int{},
+		},
+		{
+			name:      "absent once increments, no removal",
+			indexRows: []string{"ses_ghost"},
+			harness:   map[string]bool{},
+			prevMiss:  map[string]int{},
+			wantMiss:  map[string]int{"ses_ghost": 1},
+		},
+		{
+			name:       "absent twice removes (N=2)",
+			indexRows:  []string{"ses_ghost"},
+			harness:    map[string]bool{},
+			prevMiss:   map[string]int{"ses_ghost": 1},
+			wantRemove: []string{"ses_ghost"},
+			wantMiss:   map[string]int{},
+		},
+		{
+			name:      "presence resets a prior miss",
+			indexRows: []string{"ses_flap"},
+			harness:   map[string]bool{"ses_flap": true},
+			prevMiss:  map[string]int{"ses_flap": 1},
+			wantMiss:  map[string]int{},
+		},
+		{
+			name:       "harness error keeps everything, counters frozen",
+			indexRows:  []string{"ses_a"},
+			harnessErr: true,
+			prevMiss:   map[string]int{"ses_a": 1},
+			wantMiss:   map[string]int{"ses_a": 1},
+		},
+		{
+			name:       "mixed: one stays, one reaps, counters only for indexed rows",
+			indexRows:  []string{"ses_keep", "ses_gone"},
+			harness:    map[string]bool{"ses_keep": true},
+			prevMiss:   map[string]int{"ses_gone": 1, "ses_stale_counter": 5},
+			wantRemove: []string{"ses_gone"},
+			wantMiss:   map[string]int{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := func() (map[string]bool, error) {
+				if tc.harnessErr {
+					return nil, assert.AnError
+				}
+				return tc.harness, nil
+			}
+			remove, misses := PlanReconciliation(tc.indexRows, lister, tc.prevMiss, 2)
+			assert.ElementsMatch(t, tc.wantRemove, remove)
+			assert.Equal(t, tc.wantMiss, misses)
+		})
+	}
+}

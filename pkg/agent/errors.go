@@ -18,6 +18,16 @@ import (
 // errors with this sentinel.
 var ErrHTTPStatus = errors.New("agent http status")
 
+// ErrSessionNotFound marks the definitive not-found verdict: the agent
+// PROCESSED the request and answered that the session does not exist
+// (the V1 wire's 404; the V2 wire's typed session-not-found). Distinct
+// from transport failure and from other 4xx/5xx verdicts — a session
+// the agent says is gone is GONE (index rows referencing it are stale
+// and may be reaped, #1340). Both wires classify into this sentinel so
+// callers never care which surface produced the verdict; it wraps
+// ErrHTTPStatus on the V1 wire (the status marker survives alongside).
+var ErrSessionNotFound = errors.New("agent session not found")
+
 // ErrImageInTextOnlyHistory marks the #1307 wedge class: the session's
 // replayed history carries an image part and the active model is
 // text-only, so the provider rejects EVERY turn until the user switches

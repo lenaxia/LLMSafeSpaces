@@ -5,10 +5,147 @@ package handlers
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 )
+
+// sessionGoneHumanMessage is the #1340 typed gone-state body, house
+// pattern (code + human message, mirroring the 422
+// text_only_model_image_history surface). The code discriminator drives
+// the frontend's gone-state rendering; the message is for humans.
+const sessionGoneHumanMessage = "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list."
+
+func writeSessionGoneBody(c *gin.Context) {
+	c.JSON(http.StatusGone, gin.H{
+		"code":  "session_gone",
+		"error": sessionGoneHumanMessage,
+	})
+}
+
+// reapSessionIfGone classifies an adapter error from a session-scoped
+// read: when the agent's definitive verdict is not-found
+// (agent.ErrSessionNotFound), the session_index row is a stale ghost
+// (#1340) — reap it (row + descendants) and answer with the typed 410.
+// Any other error (transport, 5xx, timeouts) returns false so the
+// caller keeps its generic path: an unreachable pod is not evidence of
+// deletion.
+func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID string, err error, route string) bool {
+	if !errors.Is(err, agent.ErrSessionNotFound) {
+		return false
+	}
+	if h.sessionIndex != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
+			h.logger.Warn("session_gone: index row reap failed",
+				"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+		}
+		cancel()
+	}
+	writeSessionGoneBody(c)
+	return true
+}
+
+// reconcileCadence bounds how often a workspace runs the #1340
+// convergence pass: the sidebar refreshes often, but one harness
+// session-list round-trip per workspace per 30s is the S5b/L10 budget.
+const reconcileCadence = 30 * time.Second
+
+// reconcileMissThreshold is the consecutive-absent check count before a
+// ghost row is deleted (issue #1340: N=2 survives one mid-restart
+// snapshot miss).
+const reconcileMissThreshold = 2
+
+// lastReconcile gates the per-replica cadence (a rate limiter, not
+// correctness state — counters live in the shared wsstate store).
+var lastReconcile reconcileGate
+
+type reconcileGate struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+func (g *reconcileGate) allow(workspaceID string, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.seen == nil {
+		g.seen = map[string]time.Time{}
+	}
+	if t, ok := g.seen[workspaceID]; ok && now.Sub(t) < reconcileCadence {
+		return false
+	}
+	g.seen[workspaceID] = now
+	return true
+}
+
+// ReconcileSessionIndex is the #1340 convergence pass, piggybacked on
+// the sidebar's session list (the path that already overlays harness
+// ground truth). Fire-and-forget: TTL-gated per workspace, diffs the
+// index rows against the agent's authoritative session list, and deletes
+// rows the agent has reported absent for N consecutive checks. The miss
+// counters live in wsstate (cross-replica with decay) so N counts
+// checks, not per-replica repetitions.
+func (h *ProxyHandler) ReconcileSessionIndex(ctx context.Context, workspaceID string) {
+	if h.sessionIndex == nil {
+		return
+	}
+	if !lastReconcile.allow(workspaceID, time.Now()) {
+		return
+	}
+	go h.runSessionIndexReconciliation(workspaceID) //nolint:gosec,contextcheck // G118: intentional fire-and-forget detach (BackfillSessionParents precedent)
+}
+
+// runSessionIndexReconciliation deliberately uses a detached
+// context.Background() bounded by a 15s timeout: the pass benefits
+// future requests, not this one, and must survive client disconnect.
+func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	rows, err := h.sessionIndex.ListByWorkspace(ctx, workspaceID)
+	if err != nil {
+		h.logger.Debug("session reconcile: index list failed", "workspaceID", workspaceID, "error", err.Error())
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	indexIDs := make([]string, 0, len(rows))
+	for _, r := range rows {
+		indexIDs = append(indexIDs, r.ID)
+	}
+
+	prev := h.state().GetReconcileMisses(ctx, workspaceID)
+	lister := func() (map[string]bool, error) {
+		sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		present := make(map[string]bool, len(sessions))
+		for _, s := range sessions {
+			present[s.ID] = true
+		}
+		return present, nil
+	}
+
+	remove, next := sessionindex.PlanReconciliation(indexIDs, lister, prev, reconcileMissThreshold)
+	h.state().SetReconcileMisses(ctx, workspaceID, next)
+	for _, id := range remove {
+		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
+			h.logger.Warn("session reconcile: ghost delete failed", "workspaceID", workspaceID, "sessionID", id, "error", err.Error())
+			continue
+		}
+		h.logger.Info("session reconcile: reaped ghost index row",
+			"workspaceID", workspaceID, "sessionID", id)
+	}
+}
 
 func (h *ProxyHandler) SetSessionIndex(si interfaces.SessionIndexService) {
 	h.sessionIndex = si

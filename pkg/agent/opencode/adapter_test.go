@@ -608,6 +608,40 @@ func TestAdapter_GetSession_404_PropagatesCleanError(t *testing.T) {
 	assert.Contains(t, err.Error(), "404")
 }
 
+// #1340: a harness 404 is the definitive not-found verdict — the V1
+// wire must classify into agent.ErrSessionNotFound (still wrapped in
+// ErrHTTPStatus) so callers never string-match.
+func TestAdapter_GetSession_404_ClassifiesSessionNotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/session/missing", `{"error":"not found"}`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.GetSession(context.Background(), "u-1", "ws-1", "missing")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, agent.ErrSessionNotFound)
+	assert.ErrorIs(t, err, agent.ErrHTTPStatus, "the status marker survives alongside the classification")
+}
+
+func TestAdapter_GetHistory_404_ClassifiesSessionNotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/session/missing/message", `{"error":"not found"}`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.GetHistory(context.Background(), "u-1", "ws-1", "missing")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, agent.ErrSessionNotFound)
+}
+
+func TestAdapter_GetSession_500_DoesNotClassifySessionNotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/session/ses_1", `{"error":"boom"}`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.GetSession(context.Background(), "u-1", "ws-1", "ses_1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, agent.ErrSessionNotFound, "only 404 is the not-found verdict")
+}
+
 func TestAdapter_NoRunningPod_ReturnsWrappingError(t *testing.T) {
 	// When PodIPResolver returns "", the adapter must surface
 	// ErrNoRunningPod so callers can map to HTTP 404.

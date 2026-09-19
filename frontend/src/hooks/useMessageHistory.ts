@@ -1,4 +1,5 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { ApiClientError } from "../api/client";
 import { messagesApi, type HistoryPage } from "../api/messages";
 import type { Message } from "../api/types";
 
@@ -23,6 +24,17 @@ function selectByIdentity(data: InfiniteData): Message[] {
     }
   }
   return out;
+}
+
+// isSessionGoneError (#1340): the API's typed 410 — the agent reports the
+// session deleted and the stale index row is already reaped server-side.
+// Retrying can never succeed; callers render a gone-state instead.
+export function isSessionGoneError(error: unknown): boolean {
+  return (
+    error instanceof ApiClientError &&
+    error.status === 410 &&
+    (error.body as { code?: string } | undefined)?.code === "session_gone"
+  );
 }
 
 export function useMessageHistory(workspaceId: string | undefined, sessionId: string | undefined) {

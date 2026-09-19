@@ -1458,6 +1458,10 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		// Skipped when proxyHandler is nil (router built without proxy).
 		if proxyHandler != nil {
 			proxyHandler.BackfillSessionParents(c.Request.Context(), workspaceID)
+			// #1340 S5b convergence: TTL-gated diff of the index against
+			// the harness session list — reaps ghost rows the agent
+			// reports absent for N consecutive checks.
+			proxyHandler.ReconcileSessionIndex(c.Request.Context(), workspaceID)
 			// Ground-truth session status (#792 Pattern 1): query
 			// /v1/statusz for authoritative busy/idle instead of the
 			// in-memory activeSess map, which goes stale when SSE

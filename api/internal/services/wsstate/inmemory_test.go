@@ -475,3 +475,42 @@ func TestInMemoryStore_ConcurrentMixedOps_NoRaceDetector(t *testing.T) {
 	// passed. We do not assert final state — concurrent InvalidateAll
 	// makes final counts non-deterministic by design.
 }
+
+// #1340: reconcile-miss counters — whole-map replace, copy-in/out,
+// cleared by InvalidateAll.
+func TestInMemoryStore_ReconcileMisses(t *testing.T) {
+	s := NewInMemoryStore()
+	ctx := context.Background()
+
+	if got := s.GetReconcileMisses(ctx, "ws-1"); got != nil {
+		t.Fatalf("empty store returned %v, want nil", got)
+	}
+	s.SetReconcileMisses(ctx, "ws-1", map[string]int{"ses_a": 1, "ses_b": 2})
+	got := s.GetReconcileMisses(ctx, "ws-1")
+	if got["ses_a"] != 1 || got["ses_b"] != 2 {
+		t.Fatalf("got %v", got)
+	}
+	// Whole-map replace drops keys absent from the new map.
+	s.SetReconcileMisses(ctx, "ws-1", map[string]int{"ses_a": 2})
+	got = s.GetReconcileMisses(ctx, "ws-1")
+	if len(got) != 1 || got["ses_a"] != 2 {
+		t.Fatalf("replace must be wholesale, got %v", got)
+	}
+	// Empty map clears.
+	s.SetReconcileMisses(ctx, "ws-1", nil)
+	if got := s.GetReconcileMisses(ctx, "ws-1"); got != nil {
+		t.Fatalf("cleared store returned %v, want nil", got)
+	}
+	// Copy-out: mutating the returned map does not corrupt the store.
+	s.SetReconcileMisses(ctx, "ws-1", map[string]int{"ses_a": 1})
+	s.GetReconcileMisses(ctx, "ws-1")["ses_a"] = 99
+	if s.GetReconcileMisses(ctx, "ws-1")["ses_a"] != 1 {
+		t.Fatal("GetReconcileMisses must return a copy")
+	}
+	// InvalidateAll clears.
+	s.SetReconcileMisses(ctx, "ws-1", map[string]int{"ses_a": 1})
+	s.InvalidateAll(ctx, "ws-1")
+	if got := s.GetReconcileMisses(ctx, "ws-1"); got != nil {
+		t.Fatalf("InvalidateAll must clear counters, got %v", got)
+	}
+}

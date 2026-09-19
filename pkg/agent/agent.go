@@ -52,8 +52,11 @@ type V2PromptResponse struct {
 // V2 error sentinels. Re-exported from pkg/agent/opencode; canonical
 // location is here so callers don't import the opencode package.
 var (
-	ErrV2PromptConflict  = stderrors.New("agent V2: prompt conflict (id collision)")
-	ErrV2SessionNotFound = stderrors.New("agent V2: session not found")
+	ErrV2PromptConflict = stderrors.New("agent V2: prompt conflict (id collision)")
+	// Wraps ErrSessionNotFound (#1340): the V2 wire's typed verdict
+	// classifies into the same shared sentinel as the V1 404 so callers
+	// never care which wire produced it.
+	ErrV2SessionNotFound = fmt.Errorf("agent V2: %w", ErrSessionNotFound)
 )
 
 type CredentialState string
