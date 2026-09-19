@@ -1866,10 +1866,13 @@ jobs:
           if [ "$other_x" != "x" ]; then
             echo "::error::/plugins mode $dmode lacks the other-execute (traversal) bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1
           fi
-          case "$fmode" in
-            *r*) ;;
-            *) echo "::error::plugin file mode $fmode is not readable"; exit 1 ;;
-          esac
+          # The file is root-owned in the image: uid-1000 readability
+          # is the OTHER-READ bit — mode char 8. (A *r* glob matches
+          # any r anywhere, incl. -rw------- owner-only.)
+          other_r=$(printf '%s' "$fmode" | cut -c8)
+          if [ "$other_r" != "r" ]; then
+            echo "::error::plugin file mode $fmode lacks the other-read bit — uid 1000 cannot read it (the silent-no-op incident class)"; exit 1
+          fi
 
       - name: Export binary sha256
         if: github.event_name != 'pull_request'

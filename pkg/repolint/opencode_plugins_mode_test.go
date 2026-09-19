@@ -43,17 +43,20 @@ func TestOpencodeOverlay_PluginsCopyIsTraversable(t *testing.T) {
 	}
 	src := string(data)
 
-	// Every COPY that creates /plugins must carry 755: 644/66x strips
-	// the traversal bit from the implicitly created directory.
+	// ALLOWLIST: every COPY touching plugins must carry a chmod with
+	// the x bit (traversal for the implicitly created parent dir — a
+	// blacklist misses 600/440/0644 forms and dir-COPY+file-COPY splits
+	// where only the file is chmod'd down).
 	re := regexp.MustCompile(`(?m)^COPY[^\n]*plugins[^\n]*$`)
+	chmodRe := regexp.MustCompile(`--chmod=0?7[0-7][0-7]`)
 	found := false
 	for _, line := range strings.Split(src, "\n") {
 		if !re.MatchString(line) {
 			continue
 		}
 		found = true
-		if strings.Contains(line, "--chmod=644") || strings.Contains(line, "--chmod=666") || strings.Contains(line, "--chmod=640") {
-			t.Errorf("Dockerfile COPY into /plugins uses a non-traversable chmod: %q — BuildKit applies --chmod to implicitly created parent dirs too; /plugins must carry the x bit or uid 1000 cannot traverse and the plugin import fails silently (live incident 2026-09-19)", strings.TrimSpace(line))
+		if !chmodRe.MatchString(line) {
+			t.Errorf("Dockerfile COPY touching plugins lacks a traversable --chmod (7xx): %q — BuildKit applies --chmod to implicitly created parent dirs too; /plugins must carry the x bit or uid 1000 cannot traverse and the plugin import fails silently (live incident 2026-09-19)", strings.TrimSpace(line))
 		}
 	}
 	if !found {

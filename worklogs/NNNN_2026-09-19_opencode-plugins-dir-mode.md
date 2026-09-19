@@ -18,7 +18,7 @@ Live symptom: agentd refused origin injection (orchestrator's sends fell back to
 
 1. **Fix**: the COPY is now `--chmod=755` (plugin is data; the x bit on it is harmless — the DIR's traversal bit is load-bearing) with the full-rationale comment pinned in the Dockerfile.
 2. **Source pin** (`pkg/repolint/opencode_plugins_mode_test.go`): every Dockerfile COPY referencing `plugins` must carry a traversable chmod (644/666/640 rejected — BuildKit implicit-parent semantics); RED on the old line, GREEN on the fix.
-3. **Built-image pin** (ci.yml, `Build Opencode (linux/amd64)` job): after the push build, a cache-hit `--load` rebuild → `docker create` + `docker export` → tar-header assertion that `/plugins` carries the traversal bit (drwx*x*x*x) and the plugin file is readable. The assertion reads the REAL artifact's layer modes — a source-level pin cannot see this failure class (the source tree's modes were always fine; BuildKit created the dir at build time).
+3. **Built-image pin** (ci.yml, `Build Opencode (linux/amd64)` job): after the push build, a cache-hit `--load` rebuild → `docker create` + `docker export` → tar-header assertions: `/plugins` other-execute = mode char 10 (`cut -c10`, the 10-char tar mode string's last bit); plugin file other-read = char 8 (`cut -c8` — the file is root-owned, so uid-1000 readability is the other-read bit, not any `r` in the string). The assertions read the REAL artifact's layer modes — a source-level pin cannot see this failure class. (r3 correction: an earlier draft described a drwx*x*x*x glob — removed in r2, unsatisfiable; and a *r* readability glob — vacuous, replaced in r4.)
 4. Deployment note (orchestrator's): rides the next train; the pod's overlay activates after the next compute refresh.
 
 ## Key Decisions
@@ -54,3 +54,10 @@ None. (Local docker verification impossible — dev pod has no docker daemon by 
 - `pkg/repolint/opencode_plugins_mode_test.go` (new source pin)
 - `.github/workflows/ci.yml` (built-image /plugins mode assertion in Build Opencode amd64)
 - `worklogs/NNNN_2026-09-19_opencode-plugins-dir-mode.md` (this file)
+
+## r4 — the three r3-review residuals
+
+- CI readability assertion: precise other-read check (cut -c8) replaces the vacuous *r* glob.
+- Source pin: ALLOWLIST (chmod must be 7xx) replaces the 644/666/640 blacklist — closes the dir-COPY+file-COPY escape the reviewer reproduced end-to-end (all gates green while uid 1000 couldn't read the plugin).
+- Worklog mechanism description corrected to the shipped cut -c10/cut -c8 form (the stale glob text was Rule 4).
+- Also this round: the outbox TestRun_SweepsParkedPeriodically CI failure is NOT this PR's diff (outbox untouched; the sweep-latency timing test flakes under CI load — pre-existing on main, seen on other PRs' runs too).
