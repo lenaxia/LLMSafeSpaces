@@ -37,7 +37,7 @@ NS="${NS:-llmsafespaces}"
 # The workspace CRD name MUST be a UUID: the API's workspace lookup casts the
 # name to Postgres uuid type (workspaces.id is uuid), and the platform's
 # design uses uuid.New() as the CRD name on every API-created workspace
-# (workspace_service.go:407). Using a human-readable name here causes
+# (workspace_service.go:410). Using a human-readable name here causes
 # 'invalid input syntax for type uuid' 500s on every API call that touches
 # the workspace.
 WORKSPACE_NAME="${WORKSPACE_NAME:-e2e00000-0000-0000-0000-000000000001}"

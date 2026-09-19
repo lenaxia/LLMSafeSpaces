@@ -24,8 +24,8 @@ Every workspace pod standing when a nightly step ends is CPU margin stolen from 
 
 ## Key Decisions
 
-1. **Fire-and-forget deletion in the trap** (no `--wait`): teardown starts immediately; the next step's first seed is ~30s later; a wedged finalizer must never stall the trap. Stated in the script comment.
-2. **Prefer `id` over `name` in test.sh's extraction** rather than "fixing" the DELETE route: the API contract is id-addressed; the display name was simply the wrong field to extract. Backstop covers any residual async/warn path.
+1. **Fire-and-forget deletion in the trap via `--wait=false`**: kubectl delete's DEFAULT is `--wait=true`, which blocks on the Workspace finalizer — a wedged finalizer must never stall the EXIT trap (r1's blocking correction of this very decision's first draft). Teardown starts immediately; the next step's first seed is ~30s later.
+2. **`id`-only extraction in test.sh** rather than "fixing" the DELETE route: the API contract is id-addressed; the display name was simply the wrong field to extract. No fallbacks — an id-less response dies loudly at the existing guard. Backstop covers any residual async/warn path.
 3. **Shim tracing is opt-in via env** (`SMOKE_KC_TRACE` unset → `/dev/null`): zero behavior change for the seven existing repo-wide smoke rows; verified by the full `./local/` package passing.
 4. **Sidecar-shaped shim answer** makes the smoke representative of the nightly's actual mode (agentdSidecar.enabled=true) — the gate's detection path is now smoke-executed, not just unit-pinned.
 
