@@ -23,7 +23,8 @@ on:
   workflow_dispatch:
 
 # Superseded runs on the same PR are cancelled instead of queueing.
-# Push semantics on main/tags (cancel-in-progress is PR-only):
+# Push semantics on main/dispatch (cancel-in-progress is PR-only;
+# there is no tag trigger — release.yml owns all tag events):
 #   - a RUNNING run is never cancelled — an image push interrupted
 #     mid-manifest-merge would leave an incomplete tag set on ghcr;
 #   - a PENDING run is replaced by a newer push (intended newest-wins),
@@ -54,7 +55,7 @@ jobs:
   # filters, which leave any future required-check config hanging as
   # "expected". Detection failure (missing merge-base, etc.) resolves
   # to docs_only=false → full suite: the fast path must fail safe.
-  # push/tag/dispatch events bypass the gate and always run everything
+  # push/dispatch events bypass the gate and always run everything
   # (main is the safety net that catches any misdetection).
   changes:
     name: Detect docs-only change
@@ -1042,7 +1043,8 @@ jobs:
   # `ts-<unix>` tag. Sortable lexicographically as a 10-digit number until
   # 2286-11-20 (year 9999999999 fits in 10 digits through 2286). Combined with
   # `sha-<commit>` for content addressability and `dev` for the moving pointer
-  # to the latest main build. Tagged releases (v1.2.3) emit semver tags.
+  # to the latest main build. ci.yml never runs on tags — the Release
+  # workflow emits semver/latest for releases (ops-prod #2539).
   prepare:
     name: Prepare build metadata
     runs-on: ubuntu-latest

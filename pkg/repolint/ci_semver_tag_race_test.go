@@ -189,7 +189,7 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 // — a filter matching exactly one version tag selects version tags
 // just as much as a glob does (r3: ['v0.34.6'] evaded the metachar
 // check).
-var versionLiteralRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+$`)
+var versionLiteralRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$`)
 
 // tagFilterMatchesVersions reports whether a push-tag filter selects
 // version-like tags: ANY glob metachar (* ? [) — v-prefixed or not
@@ -240,7 +240,9 @@ func TestReleaseWorkflow_FiresOnVersionTags(t *testing.T) {
 // uses raw imagetools for per-arch tags). Guard the merge steps at
 // Contains level: no hardcoded semver-looking tag in any ci.yml run
 // step. Prerelease suffixes (-rc1) count (r3); comments are skipped
-// (r3 false-positive); crane/skopeo push forms count (r4).
+// (r3 false-positive); crane/skopeo/docker-manifest push forms count
+// (r4/r5 — the marker list is the known cat-and-mouse surface; the
+// durable closure is a deny-by-default push-verb list if it recurs).
 func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 	ci := readWorkflow(t, ciPath)
 	re := regexp.MustCompile(`v?\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?`)
@@ -250,8 +252,8 @@ func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") &&
-			!strings.Contains(trimmed, "imagetools") && !strings.Contains(trimmed, "crane") &&
-			!strings.Contains(trimmed, "skopeo") {
+			!strings.Contains(trimmed, "docker manifest") && !strings.Contains(trimmed, "imagetools") &&
+			!strings.Contains(trimmed, "crane") && !strings.Contains(trimmed, "skopeo") {
 			continue
 		}
 		if m := re.FindString(line); m != "" {
