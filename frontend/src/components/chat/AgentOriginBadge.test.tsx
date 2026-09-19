@@ -44,6 +44,10 @@ describe("AgentOriginBadge", () => {
   it("renders the full session ID, wrapping, with a hover title, and no truncation anywhere in the badge", () => {
     const fullId = "ses_f4990c383ffe6Jr3rKx1nyKwtx"; // realistic 30-char platform ID
     const { getByTestId } = render(<AgentOriginBadge origin={{ fromSession: fullId }} />);
+    // The label-span testid is asserted at THIS layer too — its
+    // absence broke r3's e2e row silently (guarded only at Playwright
+    // level until r5).
+    expect(getByTestId("agent-origin-label")).toBeDefined();
     const idEl = getByTestId("agent-origin-session-id");
     expect(idEl.textContent).toBe(fullId);
     expect(idEl.getAttribute("title")).toBe(fullId);
