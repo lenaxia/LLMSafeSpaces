@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -753,5 +754,127 @@ func TestWorkflowExecuteHandler_AgentNodeMessageLeg404StaysSessionNotFound(t *te
 	}
 	if resp.ErrorCode != "session_not_found" {
 		t.Fatalf("message-leg 404 must stay session_not_found, got %q (%q)", resp.ErrorCode, resp.Detail)
+	}
+}
+
+// --- #1455: script-node environment contract + http-node secrets path ---
+
+// #1455: in sidecar mode the secrets-env file lives at the US-4b
+// relocated coordinate; loadSecretsEnv must honor the same env
+// override every other consumer shares (secretsEnvPathFromEnv) — the
+// hardcoded /sandbox-runtime default silently starved http-node
+// {{secrets.*}} refs in sidecar mode.
+func TestLoadSecretsEnv_HonorsOverridePath(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/secrets-env"
+	content := "# comment line\nTOKEN=sekret-1455\nEMPTY=\n# another\nPAIR=a=b\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", path)
+
+	m, err := loadSecretsEnv()
+	if err != nil {
+		t.Fatalf("loadSecretsEnv with override: %v", err)
+	}
+	if m["TOKEN"] != "sekret-1455" {
+		t.Errorf("TOKEN must parse from the override path, got %q", m["TOKEN"])
+	}
+	if m["PAIR"] != "a=b" {
+		t.Errorf("value may contain '=', got %q", m["PAIR"])
+	}
+	if _, ok := m["comment"]; ok {
+		t.Error("comment lines must not parse as entries")
+	}
+}
+
+// Handler-level pin of the same fix: an http node's {{secrets.*}} header
+// refs must resolve from the OVERRIDDEN secrets-env coordinate. (The
+// pre-fix code reads the single-container default path; the probe key
+// is chosen to be absent from any real pod's secrets-env so the test
+// is deterministic — stated assumption, see worklog.)
+func TestWorkflowExecute_HTTPNodeSecretsResolveFromOverridePath(t *testing.T) {
+	var gotAuth string
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer stub.Close()
+
+	dir := t.TempDir()
+	path := dir + "/secrets-env"
+	if err := os.WriteFile(path, []byte("WT1455_PROBE_TOKEN_ZQX=sekret-1455\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", path)
+
+	body := fmt.Sprintf(`{"nodeId":"h1","nodeType":"http","spec":{"method":"GET","url":%q,"headers":{"Authorization":"Bearer {{secrets.WT1455_PROBE_TOKEN_ZQX}}"}}}`, stub.URL)
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("handler status %d: %s", w.Code, w.Body.String())
+	}
+	if gotAuth != "Bearer sekret-1455" {
+		t.Fatalf("secret ref must resolve from the override path, got Authorization %q", gotAuth)
+	}
+}
+
+// #1455 loud failure: a script node with NO writable temp dir (the
+// scratch-sidecar shape — os.MkdirTemp honors TMPDIR) must fail fast
+// with the DISTINGUISHING script_env_unavailable code naming the known
+// cause, not an incidental script_failed "stat" error. Red on main
+// (verified: main returns script_failed "create temp dir: stat ...").
+func TestWorkflowExecute_ScriptEnvUnavailableLoudFailure(t *testing.T) {
+	t.Setenv("TMPDIR", "/nonexistent-scriptwrap-sidecar-tmp")
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    return {}\n"},"input":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("agentd surfaces error codes as HTTP 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "script_env_unavailable" {
+		t.Fatalf("missing temp dir must surface script_env_unavailable, got %q (%q)", resp.ErrorCode, resp.Detail)
+	}
+	if !strings.Contains(resp.Detail, "temp dir") || !strings.Contains(resp.Detail, "sidecar") {
+		t.Fatalf("detail must name the missing prerequisite and the known cause, got %q", resp.Detail)
+	}
+}
+
+// Same loud failure for the other prerequisite: no interpreter on PATH
+// (the scratch sidecar ships no toolchains). Red on main (verified:
+// main surfaces script_failed "fork/exec python3: ...").
+func TestWorkflowExecute_ScriptInterpreterMissingLoudFailure(t *testing.T) {
+	t.Setenv("PATH", "/nonexistent-scriptwrap-sidecar-bin")
+	body := `{"nodeId":"s2","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    return {}\n"},"input":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
+	req.SetBasicAuth("opencode", mcpTestPassword)
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(mcpTestPassword)(w, req)
+
+	var resp struct {
+		ErrorCode string `json:"errorCode"`
+		Detail    string `json:"detail"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ErrorCode != "script_env_unavailable" {
+		t.Fatalf("missing interpreter must surface script_env_unavailable, got %q (%q)", resp.ErrorCode, resp.Detail)
+	}
+	if !strings.Contains(resp.Detail, "python3") || !strings.Contains(resp.Detail, "sidecar") {
+		t.Fatalf("detail must name the interpreter and the known cause, got %q", resp.Detail)
 	}
 }

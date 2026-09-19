@@ -45,6 +45,32 @@ const _result = h.handler(_input);
 process.stdout.write(JSON.stringify(_result));
 `
 
+// EnvCheck reports whether Execute's prerequisites exist in the current
+// process environment: a writable temp dir (os.MkdirTemp resolves it
+// exactly as Execute will) and the language's interpreter on PATH.
+// agentd's scratch sidecar has neither — no /tmp, no toolchains — so
+// Execute there fails on the incidental layer-1 temp-dir stat (#1455);
+// callers probe FIRST to fail loud with the named cause instead. An
+// unknown language returns nil: validation is Execute's own job.
+func EnvCheck(language Language) error {
+	dir, err := os.MkdirTemp("", "scriptwrap-envcheck-*")
+	if err != nil {
+		return fmt.Errorf("no writable temp dir: %w", err)
+	}
+	_ = os.RemoveAll(dir)
+	switch language {
+	case LanguagePython:
+		if _, err := exec.LookPath("python3"); err != nil {
+			return fmt.Errorf("python3 interpreter not found on PATH: %w", err)
+		}
+	case LanguageNode:
+		if _, err := exec.LookPath("node"); err != nil {
+			return fmt.Errorf("node interpreter not found on PATH: %w", err)
+		}
+	}
+	return nil
+}
+
 // Execute runs the handler in the given language with the JSON-marshaled input
 // on stdin and returns the wrapper's stdout. The caller is responsible for
 // validating that stdout is a JSON object (dict) — Execute does not enforce

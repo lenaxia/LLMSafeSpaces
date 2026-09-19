@@ -379,6 +379,8 @@ timeout: 10m
 
 This matches the reference workflow's `def handler(input): return {...}` model (not a stdin-parsing process). The wrapper returns JSON-serialized output; **scriptwrap does NOT enforce dict returns** — US-64.7's node executor must validate the shape (`json.Unmarshal` into `map[string]any`) and fail with `script_output_invalid` on non-dict. On unhandled exception/non-zero exit: node fails with `script_failed`, stderr captured. Workspace fs, git, mise-installed libs, materialized secrets all available. Runs as the workspace user — the workspace IS the sandbox (`runAsNonRoot`, dropped caps, `readOnlyRootFilesystem` on most paths, NetworkPolicy egress, gVisor opt-in).
 
+**Execution container is mode-dependent (#1455).** The statement above describes the *single-container* mode (agentd and the workspace share one container — the default). In *sidecar* mode (`agentdSidecar.enabled`, design 0051/US-4b), the `/v1/workflow/node/execute` mux is served from the `FROM scratch` sidecar, which has no `/tmp`, no interpreters, and (by design — the sidecar spawns nothing) must never run user code. Script nodes there fail fast with `script_env_unavailable` naming the environment gap (a loud contract, not an incidental `stat /tmp` error); executing script nodes in the workspace container in sidecar mode is the open Option-B design question on #1455. `agent` nodes are unaffected (HTTP to opencode), `condition` nodes are in-process, `http` nodes run from the sidecar and resolve `{{secrets.*}}` from the relocated US-4b secrets-env coordinate.
+
 ### `agent`
 ```yaml
 type: agent

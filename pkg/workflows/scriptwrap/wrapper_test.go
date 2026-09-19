@@ -196,3 +196,42 @@ func TestExecute_InputMarshalFailure(t *testing.T) {
 		t.Fatal("expected marshal error for channel input, got nil")
 	}
 }
+
+// --- #1455: EnvCheck — Execute's prerequisites, probeable up front ---
+
+// Happy path: this environment (a workspace container, or a dev pod with
+// a toolchain) has a writable temp dir and python3 — EnvCheck passes.
+func TestEnvCheck_HappyPath(t *testing.T) {
+	if err := EnvCheck(LanguagePython); err != nil {
+		t.Fatalf("expected nil for python in a provisioned environment, got %v", err)
+	}
+}
+
+// The scratch-sidecar shape: no writable temp dir (TMPDIR points at a
+// missing parent — os.MkdirTemp("") honors TMPDIR, the same resolution
+// Execute uses).
+func TestEnvCheck_MissingTempDir(t *testing.T) {
+	t.Setenv("TMPDIR", "/nonexistent-scriptwrap-envcheck-parent")
+	err := EnvCheck(LanguagePython)
+	if err == nil {
+		t.Fatal("expected an error when no writable temp dir exists")
+	}
+	if !strings.Contains(err.Error(), "temp dir") {
+		t.Fatalf("error must name the temp dir, got %q", err.Error())
+	}
+}
+
+// No interpreters reachable: PATH carries no python3/node (the scratch
+// sidecar has no toolchains at all). Both languages must be named.
+func TestEnvCheck_InterpreterMissing(t *testing.T) {
+	t.Setenv("PATH", "/nonexistent-scriptwrap-envcheck-bin")
+	for _, lang := range []Language{LanguagePython, LanguageNode} {
+		err := EnvCheck(lang)
+		if err == nil {
+			t.Fatalf("expected an error for %s with no interpreters on PATH", lang)
+		}
+		if !strings.Contains(err.Error(), string(lang)) {
+			t.Fatalf("error must name the %s interpreter, got %q", lang, err.Error())
+		}
+	}
+}
