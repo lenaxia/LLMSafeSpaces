@@ -95,7 +95,7 @@ COPY --from=fetch --chmod=755 /out/opencode /usr/local/bin/opencode
 # read-only with the image volume at /opencode/plugins; referenced by
 # file:// from agent-config.json (injectPlatformAgentConfig). Data,
 # not executables — see the NOTE above.
-COPY --chmod=644 plugins/llmsafespaces-origin.js /plugins/llmsafespaces-origin.js
+COPY --chmod=644 runtimes/opencode/plugins/llmsafespaces-origin.js /plugins/llmsafespaces-origin.js
 
 # Not a runnable image by itself (no entrypoint) — it is consumed only as
 # an image volume mounted read-only at /opencode in workspace pods.

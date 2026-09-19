@@ -1245,6 +1245,7 @@ func TestMCPSendMessage_NoOriginAtAllRefusesDelivery(t *testing.T) {
 	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "from_session_id")
+	assert.Contains(t, err.Error(), "session_metadata", "the error must teach self-discovery for the fallback")
 	assert.Contains(t, err.Error(), "plugin", "the error must name the platform-side cause")
 	assert.Empty(t, f.msgArrived, "nothing may reach the wire — delivery without attribution is forbidden")
 }
