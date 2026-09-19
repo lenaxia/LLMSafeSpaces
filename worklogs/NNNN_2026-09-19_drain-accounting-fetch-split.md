@@ -106,3 +106,12 @@ Fixes:
 - `local/issue-1417-templating-e2e.sh`, `local/issue1452-routine-session-index-e2e.sh` — sister-script `api()` no-subshell fix (Rule 5, r4 review)
 - `local/issue_1410_automation_e2e_script_test.go` — R10 needles + `TestIssue1410E2EScript_ExecuteSmoke` (harness-execution smoke)
 - `worklogs/NNNN_2026-09-19_drain-accounting-fetch-split.md` — this worklog
+
+## Review Round 5 (conversion-mechanics defects — three, all mine, all fixed)
+
+R5 blocking findings, each a defect my r4 mechanical conversion introduced:
+1. **Captured-helper stdout pollution**: `create_trigger` (1410) and `make_routine_trigger` (1452) call `api` directly — the body echoed to stdout landed in the helper's CAPTURED output alongside the returned id (`R1_ID` = `<body><id>` → URL globbing breaks every derived call). Fix: `>/dev/null` on the api call inside both helpers; `resp` rides `api_body`.
+2. **Pipe-form misconversion (R4d)**: the transformer converted `r4d_result=$(api … | jq | head -1)` into a pipeline whose `api` member runs in a subshell — the follow-on `r4d_result="${api_body}"` read a STALE top-level value (the workflow-delete body). Fix: direct `api … >/dev/null` + `r4d_result=$(printf '%s' "${api_body}" | jq … | head -1 || true)`. Audited all three scripts for other pipe-form conversions: none remain.
+3. **Secret leak**: six unredirected rotate-secret calls now printed the one-time `webhookSecret` into CI logs (1410 ×2, 1417 ×2, 1452 ×2). Fix: `>/dev/null` on all six (values ride `api_body`); 1417's run-poll loop quieted too. The ExecuteSmoke now bans `whsec_` in script output (the shim emits the secret ONLY on rotate paths, so the ban is meaningful, not a tautology); shim body scoped accordingly.
+
+Verification: manual shim run of the full 1410 script — verdict gate reached (exit 1, 20 expected row failures under the generic shim), ZERO secret occurrences, no id corruption; bash -n all three scripts; Go pins + smoke green (13s).

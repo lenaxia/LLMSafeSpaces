@@ -90,7 +90,7 @@ create_trigger() { # name expr -> trigger id (echoed), 201 enforced
     local name="$1" expr="$2" body resp
     body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${GHOST_WF}" \
         '{name:$n,sourceType:"cron",sourceConfig:{expr:$e,tz:"UTC"},workflowId:$w}')
-    api POST /api/v1/me/triggers "${body}"
+    api POST /api/v1/me/triggers "${body}" >/dev/null
     resp="${api_body}"
     [[ "${api_status}" == "201" ]] || die "trigger create (${name}) failed: ${api_status} ${resp}"
     local id; id=$(printf '%s' "${resp}" | jq -r '.id')
@@ -205,8 +205,8 @@ if [[ "${r4d_status}" == "false" ]]; then
 else
     note_fail "R4d: targetless trigger still enabled — silent zombie regression (#1440)"
 fi
-api GET "/api/v1/me/triggers/${R4D_ID}/fires"     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1
-r4d_result="${api_body}"
+api GET "/api/v1/me/triggers/${R4D_ID}/fires" >/dev/null
+r4d_result=$(printf '%s' "${api_body}" | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1 || true)
 if [[ "${r4d_result}" == *"trigger_has_no_target"* ]]; then
     ok "R4d: failed fire carries the targetless payload"
 else
@@ -310,7 +310,7 @@ else
     else
         R6_HOOK=$(printf '%s' "${r6c_resp}" | jq -r '.trigger.id')
         created_triggers+=("${R6_HOOK}")
-        api POST "/api/v1/me/triggers/${R6_HOOK}/rotate-secret"
+        api POST "/api/v1/me/triggers/${R6_HOOK}/rotate-secret" >/dev/null
         r6c_rot="${api_body}"
         R6_SECRET=$(printf '%s' "${r6c_rot}" | jq -r '.webhookSecret // empty')
         R6_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r6c_rot}" | jq -r '.webhookUrl // empty')"
@@ -507,7 +507,7 @@ r10_attempt() { # suffix -> sets r10_verdict
     trig_id=$(printf '%s' "${tresp}" | jq -r '.trigger.id')
     created_triggers+=("${trig_id}")
 
-    api POST "/api/v1/me/triggers/${trig_id}/rotate-secret"
+    api POST "/api/v1/me/triggers/${trig_id}/rotate-secret" >/dev/null
     rot="${api_body}"
     tsec=$(printf '%s' "${rot}" | jq -r '.webhookSecret // empty')
     turl="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${rot}" | jq -r '.webhookUrl // empty')"

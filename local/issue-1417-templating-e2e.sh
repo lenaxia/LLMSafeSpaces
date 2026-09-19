@@ -175,7 +175,7 @@ RUN=$(printf '%s' "${run_resp}" | jq -r '.id')
 
 status=""
 for ((i = 0; i < RUN_WAIT_S; i += 6)); do
-    api GET "/api/v1/me/runs/${RUN}"
+    api GET "/api/v1/me/runs/${RUN}" >/dev/null
     run_json="${api_body}"
     status=$(printf '%s' "${run_json}" | jq -r '.status // empty')
     [[ "${status}" == "succeeded" || "${status}" == "failed" ]] && break
@@ -245,7 +245,7 @@ CAP_TR_RESP="${api_body}"
 [[ "${api_status}" == "201" ]] || note_fail "T5 setup: capture trigger create ${api_status} ${CAP_TR_RESP:0:120}"
 CAP_ID=$(printf '%s' "${CAP_TR_RESP}" | jq -r '.id // empty')
 [[ -n "${CAP_ID}" ]] && created_triggers+=("${CAP_ID}")
-api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret"
+api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret" >/dev/null
 CAP_ROT="${api_body}"
 CAP_SECRET=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookSecret // empty')
 CAP_URL=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookUrl // empty')
@@ -286,7 +286,7 @@ FAIL_ID=$(printf '%s' "${FAIL_TR_RESP}" | jq -r '.id // empty')
 kc delete workspace "${WS2}" --ignore-not-found >/dev/null 2>&1 || true
 # give the controller a beat to tear the pod down
 sleep 10
-api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret"
+api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret" >/dev/null
 FAIL_ROT="${api_body}"
 FAIL_SECRET=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookSecret // empty')
 FAIL_URL=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookUrl // empty')

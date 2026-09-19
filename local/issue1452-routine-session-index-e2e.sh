@@ -103,7 +103,7 @@ signed_fire() {
 make_routine_trigger() {
     local name="$1" preserve="$2" resp
     api POST /api/v1/me/triggers "$(jq -nc --arg n "${name}" --arg p "${preserve}" --arg w "${WS}" \
-        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"Reply with exactly the single word: indexed",captureMode:"full",preserveSession:$p}')"
+        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"Reply with exactly the single word: indexed",captureMode:"full",preserveSession:$p}')" >/dev/null
     resp="${api_body}"
     [[ "${api_status}" == "201" ]] || die "routine trigger create (${name}) failed: ${api_status} ${resp}"
     created_triggers+=("$(printf '%s' "${resp}" | jq -r '.id')")
@@ -119,7 +119,7 @@ ok "workspace Active"
 log "R1 — PreserveAlways routine fire surfaces in the platform session list"
 
 R1_ID=$(make_routine_trigger "e2e-1452-preserve-always" "always")
-api POST "/api/v1/me/triggers/${R1_ID}/rotate-secret"
+api POST "/api/v1/me/triggers/${R1_ID}/rotate-secret" >/dev/null
 r1_rot="${api_body}"
 R1_SECRET=$(printf '%s' "${r1_rot}" | jq -r '.webhookSecret // empty')
 R1_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r1_rot}" | jq -r '.webhookUrl // empty')"
@@ -167,7 +167,7 @@ log "R2 — PreserveNever routine fire adds no platform session row"
 
 r2_before=$(sessions_json | jq 'length')
 R2_ID=$(make_routine_trigger "e2e-1452-preserve-never" "never")
-api POST "/api/v1/me/triggers/${R2_ID}/rotate-secret"
+api POST "/api/v1/me/triggers/${R2_ID}/rotate-secret" >/dev/null
 r2_rot="${api_body}"
 R2_SECRET=$(printf '%s' "${r2_rot}" | jq -r '.webhookSecret // empty')
 R2_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r2_rot}" | jq -r '.webhookUrl // empty')"

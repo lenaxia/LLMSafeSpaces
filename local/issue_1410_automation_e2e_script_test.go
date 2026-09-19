@@ -153,11 +153,12 @@ for a in "$@"; do
   case "${a}" in http://*) path="${a}" ;; esac
   prev="${a}"
 done
-body='{"id":"smoke","trigger":{"id":"smoke"},"name":"x","enabled":false,"nextFireAt":"2026-10-01T03:00:00Z","consecutiveFailures":1,"fires":[],"runs":[],"webhookSecret":"whsec_smoke","webhookUrl":"/api/v1/hooks/smoke"}'
+body='{"id":"smoke","trigger":{"id":"smoke"},"name":"x","enabled":false,"nextFireAt":"2026-10-01T03:00:00Z","consecutiveFailures":1,"fires":[],"runs":[]}'
 code=200
 case "${path}" in
   */livez) body="ok" ;;
   */hooks/*) code=202 ;;
+  */rotate-secret) body='{"webhookSecret":"whsec_smoke","webhookUrl":"/api/v1/hooks/smoke"}' ;;
   *)
     [[ "${method}" == "POST" ]] && code=201
     ;;
@@ -212,6 +213,12 @@ exit 0
 			if strings.Contains(combined, banned) {
 				t.Fatalf("runtime abort signature %q found:\n%s", banned, tailOf(combined))
 			}
+		}
+		// Credential hygiene: the rotate-secret response carries the
+		// one-time webhook secret; nothing may echo it to the log
+		// (r5 finding 3's class — pinned here so it cannot regress).
+		if strings.Contains(combined, "whsec_") {
+			t.Fatalf("webhook secret material leaked into script output:\n%s", tailOf(combined))
 		}
 	case <-time.After(180 * time.Second):
 		_ = cmd.Process.Kill()
