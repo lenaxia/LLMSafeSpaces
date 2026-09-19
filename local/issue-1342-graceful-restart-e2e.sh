@@ -33,6 +33,15 @@ harness_start
 
 [[ -n "${LLM_MODEL:-}" ]] || die "LLM_MODEL must name the model turns run on (e.g. litellm/<free-model>)"
 R1_STREAM_S="${R1_STREAM_S:-40}"
+# Wait budgets (seconds) — overridable so execution smokes can run the
+# rows without burning the real-cluster poll windows. Defaults are the
+# historical hardcoded values; the nightly runs on defaults.
+R1_TOOL_WAIT_S="${R1_TOOL_WAIT_S:-120}"
+R1_RESTART_WAIT_S="${R1_RESTART_WAIT_S:-150}"
+R1_ORPHAN_WAIT_S="${R1_ORPHAN_WAIT_S:-90}"
+R2_TOOL_WAIT_S="${R2_TOOL_WAIT_S:-120}"
+R2_RESPAWN_WAIT_S="${R2_RESPAWN_WAIT_S:-90}"
+R2_REPAIR_WAIT_S="${R2_REPAIR_WAIT_S:-90}"
 R1_SLEEP_S="${R1_SLEEP_S:-300}"
 
 # UNCONDITIONAL (the us-70-revisions r21 pattern): the lib sets its own
@@ -129,7 +138,7 @@ else
     TURN_PID=$!
 
     PID_BEFORE=""
-    if wait_for "R1: tool part running" 120 '[[ $(running_tool_parts '"${SID1}"') -ge 1 ]]'; then
+    if wait_for "R1: tool part running" "${R1_TOOL_WAIT_S}" '[[ $(running_tool_parts '"${SID1}"') -ge 1 ]]'; then
         PID_BEFORE=$(opencode_pid)
     else
         note_fail "R1: tool never reached running state"
@@ -156,7 +165,7 @@ else
         # The stream ends; silence crosses the 30s stall bound → the
         # interrupt-first force path applies the credential.
         log "R1: waiting for stall → interrupt → restart (stream ${R1_STREAM_S}s + stall 30s + grace 5s)"
-        if wait_for "R1: credential-apply restart fired" $((R1_STREAM_S + 150)) \
+        if wait_for "R1: credential-apply restart fired" $((R1_STREAM_S + R1_RESTART_WAIT_S)) \
             '[[ "$(opencode_pid)" != "'"${PID_BEFORE}"'" ]]'; then
             ok "R1: deferred credential applied via restart"
         else
@@ -169,7 +178,7 @@ else
         fi
 
         # No eternal spinner: the interrupted tool renders terminal.
-        if wait_for "R1: orphaned tool terminal in history" 90 \
+        if wait_for "R1: orphaned tool terminal in history" "${R1_ORPHAN_WAIT_S}" \
             '[[ $(running_tool_parts '"${SID1}"') -eq 0 ]]'; then
             ok "R1: history renders no running tool part (no eternal spinner)"
         else
@@ -195,21 +204,21 @@ else
     send_message "${SID2}" "Run this exact bash command and do nothing else: echo started; sleep 600" >/dev/null &
     TURN2_PID=$!
 
-    if wait_for "R2: tool part running" 120 '[[ $(running_tool_parts '"${SID2}"') -ge 1 ]]'; then
+    if wait_for "R2: tool part running" "${R2_TOOL_WAIT_S}" '[[ $(running_tool_parts '"${SID2}"') -ge 1 ]]'; then
         # Kill the harness mid-tool — the orphaning event (uncontrolled
         # pod death, OOM, node drain: the 2026-09-11 residue class).
         kc exec "${POD}" -- sh -c 'kill -9 $(pgrep -f "opencode serve")' 2>/dev/null || true
         ok "harness killed mid-tool (kill -9)"
 
         # agentd (the parent) respawns the child: a new generation.
-        if wait_for "R2: opencode respawned" 90 '[[ -n "$(opencode_pid)" ]]'; then
+        if wait_for "R2: opencode respawned" "${R2_RESPAWN_WAIT_S}" '[[ -n "$(opencode_pid)" ]]'; then
             ok "R2: supervisor respawned opencode"
         else
             note_fail "R2: supervisor never respawned opencode"
         fi
 
         # The orphan sweep + transcript repair make the history honest.
-        if wait_for "R2: orphaned tool repaired in history" 90 \
+        if wait_for "R2: orphaned tool repaired in history" "${R2_REPAIR_WAIT_S}" \
             '[[ $(running_tool_parts '"${SID2}"') -eq 0 ]]'; then
             ok "R2: history renders no running tool part"
         else
