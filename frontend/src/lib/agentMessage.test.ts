@@ -91,6 +91,18 @@ describe("parseAgentMessage (golden fixtures from pkg/session/agentmessage/testd
   it("rejects a non-string workspace value (type-strict known keys)", () => {
     expectParseGolden("parse_workspace_bad_type_rejected.in", "parse_workspace_bad_type_rejected.want");
   });
+
+  it("rejects a non-string mode value (type-strict known keys)", () => {
+    expectParseGolden("parse_mode_bad_type_rejected.in", "parse_mode_bad_type_rejected.want");
+  });
+
+  it("parses the self-declared mode label", () => {
+    expectParseGolden("parse_mode_self_declared.in", "parse_mode_self_declared.want");
+  });
+
+  it("treats explicit null optional keys as absent (Go json null-into-string parity)", () => {
+    expectParseGolden("parse_null_keys_tolerated.in", "parse_null_keys_tolerated.want");
+  });
 });
 
 describe("parseAgentMessage over Go compose outputs", () => {

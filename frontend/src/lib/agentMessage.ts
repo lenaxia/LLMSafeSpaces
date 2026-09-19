@@ -58,18 +58,23 @@ export function parseAgentMessage(text: string): ParsedAgentMessage {
   // well-typed — a non-string workspace rejects the sentinel rather
   // than silently dropping the field. Unknown additive keys are
   // ignored on both sides.
-  if (raw.workspace !== undefined && typeof raw.workspace !== "string") {
+  // Explicit null reads as ABSENT (parity with Go's json null-into-string
+  // no-op — foreign emitters may serialize omitempty-less nulls; pinned
+  // by the parse_null_keys_tolerated fixture both suites consume).
+  const workspace = raw.workspace ?? undefined;
+  const mode = raw.mode ?? undefined;
+  if (workspace !== undefined && typeof workspace !== "string") {
     return { origin: null, text };
   }
-  if (raw.mode !== undefined && typeof raw.mode !== "string") {
+  if (mode !== undefined && typeof mode !== "string") {
     return { origin: null, text };
   }
   const origin: AgentMessageOrigin = { fromSession: raw.fromSession };
-  if (raw.workspace !== undefined && raw.workspace !== "") {
-    origin.workspace = raw.workspace;
+  if (workspace !== undefined && workspace !== "") {
+    origin.workspace = workspace;
   }
-  if (raw.mode !== undefined && raw.mode !== "") {
-    origin.mode = raw.mode;
+  if (mode !== undefined && mode !== "") {
+    origin.mode = mode;
   }
   return { origin, text: newline === -1 ? "" : text.slice(newline + 1) };
 }

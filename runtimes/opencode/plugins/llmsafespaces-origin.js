@@ -12,14 +12,16 @@
 // made. Mutating output.args in place therefore reaches the wire.
 //
 // Contract rules:
-//   - UNCONDITIONAL overwrite: from_session_id is always SET from the
-//     harness's input.sessionID, never read — a model-supplied value
-//     can never survive a working plugin.
+//   - UNCONDITIONAL overwrite: lsp_injected_session (the platform
+//     namespace key agentd labels mode "injected" from) is always SET
+//     from the harness's input.sessionID, never read — a model-supplied
+//     value can never survive a working plugin.
 //   - Defensive no-op on any shape mismatch: if the hook surface
-//     changes in a future harness, this hook does nothing and agentd
-//     refuses delivery loudly (send_message errors with "from_session_id
-//     is missing — plugin absent or outdated"). Loud failure on drift
-//     is the design; silent misattribution must be impossible.
+//     changes in a future harness, this hook does nothing and the
+//     origin falls back to the model-supplied from_session_id
+//     (mode "self-declared" — visibly labeled). Silent mode downgrade
+//     on drift is the detected, self-reporting failure; silent
+//     misattribution is impossible.
 //   - Never throws: a broken plugin must not break the host tool call.
 //
 // Delivery vehicle (overlay image vs controller volume) is decided

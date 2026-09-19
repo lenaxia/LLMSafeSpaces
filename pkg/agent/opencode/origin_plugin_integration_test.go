@@ -16,7 +16,7 @@ package opencode
 //  1. tool.execute.before hooks can MUTATE the outgoing arguments (the
 //     output object is passed by reference and IS the args source) —
 //     the positive leg fails if any layer strips unknown keys.
-//  2. The injected from_session_id arrives on the MCP wire carrying
+//  2. The injected lsp_injected_session arrives on the MCP wire carrying
 //     the CALLING session's ID — and does NOT arrive without the
 //     plugin (negative leg: the injection is the plugin's doing, not
 //     harness behavior).
@@ -302,7 +302,7 @@ func TestOriginPlugin_InjectsCallingSessionID(t *testing.T) {
 	require.True(t, ok, "arguments must be an object: %v", calls[0])
 	assert.Equal(t, sessionID, args["lsp_injected_session"],
 		"the plugin must inject the calling session's ID (platform namespace key) into the outgoing arguments")
-	// The model-supplied args survive alongside the injection.
+	// The model-supplied args survive alongside the platform-namespaced injection key.
 	assert.Equal(t, sessionID, args["session_id"], "mock emitted session_id == caller for the self-referential pin")
 	assert.Equal(t, "stub hello", args["message"])
 }

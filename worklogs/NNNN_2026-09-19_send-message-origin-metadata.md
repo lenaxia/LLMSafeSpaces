@@ -28,7 +28,7 @@ Decompiled the pinned harness binary (`/opencode/usr/local/bin/opencode`, 1.18.1
 
 ### `pkg/session/agentmessage/` — the sentinel contract
 - `agentmessage.go`: `Origin{FromSession, Workspace omitempty}`, `Compose(message, origin)` (strip-then-prepend, idempotent; JSON encoding structurally neutralizes hostile values — `-->`, newlines, quotes can never break the line), `Parse(text)` (leading-line only; unknown versions/keys/malformed/missing-fromSession → plain text, payload never breaks).
-- 17 golden fixtures in `testdata/` (compose × 5, parse × 12) + `agentmessage_test.go` (golden runners, idempotency, round-trip, hostile-value neutralization, never-mutate table).
+- 23 golden fixtures (20 parse/compose pairs + null-key/mode additions at r2) in `testdata/` (compose × 5, parse × 12) + `agentmessage_test.go` (golden runners, idempotency, round-trip, hostile-value neutralization, never-mutate table).
 
 ### Seam: `SessionExists` (pkg/agent/opencode/loopback.go)
 - By-ID existence probe: `GET /session/{id}` — 2xx exists, 404 not (live-proven: unknown ID → `404 {"name":"NotFoundError"}`), else error. Status-only (no body parse → no phantom-exists on corrupted 200). Replaces session-LIST membership for send_message's target check — immune to the #1452 list-visibility gap.
