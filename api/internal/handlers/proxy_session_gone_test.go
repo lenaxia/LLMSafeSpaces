@@ -188,3 +188,77 @@ func TestE2E_SessionGone_RealAdapterClassifies(t *testing.T) {
 	assert.Equal(t, "session_gone", body.Code)
 	assert.True(t, idx.deletedTree["ws-1/ses_ghost"], "the real chain reaps the guard-admitted row")
 }
+
+// r3: the 410's human message must be TRUE on EVERY leg — removal is
+// claimed only when a reap was CONFIRMED. The uncertain legs
+// (delete-failed, lookup-error, nil-index) say "may take a short
+// while" instead.
+func goneSessionRequest() (*gin.Context, *httptest.ResponseRecorder) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_ghost"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	return c, w
+}
+
+func TestGetSession_Harness404_DeleteFailed_UncertainMessage(t *testing.T) {
+	idx := newMockSessionIndex()
+	idx.seedRowCounted("ws-1", "ses_ghost", 0)
+	idx.failDelete = true
+	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.adapter = &mockAdapter{getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, goneAdapterErr()
+	}}
+
+	c, w := goneSessionRequest()
+	h.GetSession(c)
+
+	require.Equal(t, http.StatusGone, w.Code)
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body.Error, "short while", "an unconfirmed reap must not claim removal")
+	assert.NotContains(t, body.Error, "has been removed")
+}
+
+func TestGetSession_Harness404_LookupError_UncertainMessage(t *testing.T) {
+	idx := newMockSessionIndex()
+	idx.seedRowCounted("ws-1", "ses_ghost", 0)
+	idx.failList = true
+	h := newProxyHandlerForAdapterTest(t)
+	h.sessionIndex = idx
+	h.adapter = &mockAdapter{getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, goneAdapterErr()
+	}}
+
+	c, w := goneSessionRequest()
+	h.GetSession(c)
+
+	require.Equal(t, http.StatusGone, w.Code)
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body.Error, "short while")
+	assert.NotContains(t, body.Error, "has been removed")
+}
+
+func TestGetSession_Harness404_NilIndex_UncertainMessage(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+		return nil, goneAdapterErr()
+	}}
+
+	c, w := goneSessionRequest()
+	h.GetSession(c)
+
+	require.Equal(t, http.StatusGone, w.Code)
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body.Error, "short while")
+	assert.NotContains(t, body.Error, "has been removed")
+}

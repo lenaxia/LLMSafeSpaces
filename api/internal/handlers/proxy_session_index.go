@@ -25,8 +25,9 @@ import (
 // operator review (r2 finding — one message for both was a user-visible
 // untruth in the kept case).
 const (
-	sessionGoneReaped = "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list."
-	sessionGoneKept   = "This session no longer exists on the agent — it may have been deleted. Its history entry remains in your session list pending review."
+	sessionGoneReaped    = "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list."
+	sessionGoneKept      = "This session no longer exists on the agent — it may have been deleted. Its history entry remains in your session list pending review."
+	sessionGoneUncertain = "This session no longer exists on the agent — it may have been deleted. It may take a short while to disappear from your session list."
 )
 
 func writeSessionGoneBody(c *gin.Context, message string) {
@@ -66,8 +67,10 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 				if delErr := h.sessionIndex.DeleteSession(ctx, workspaceID, sessionID); delErr != nil {
 					h.logger.Warn("session_gone: index row reap failed",
 						"route", route, "workspaceID", workspaceID, "sessionID", sessionID, "error", delErr.Error())
+					writeSessionGoneBody(c, sessionGoneUncertain)
+				} else {
+					writeSessionGoneBody(c, sessionGoneReaped)
 				}
-				writeSessionGoneBody(c, sessionGoneReaped)
 			} else {
 				h.logger.Warn("session_gone: history-bearing row kept for operator review",
 					"route", route, "workspaceID", workspaceID, "sessionID", sessionID,
@@ -79,7 +82,9 @@ func (h *ProxyHandler) reapSessionIfGone(c *gin.Context, workspaceID, sessionID 
 		}
 		cancel()
 	}
-	writeSessionGoneBody(c, sessionGoneReaped)
+	// No confirmed reap (nil index, lookup error, or row not indexed):
+	// never claim removal — the convergence pass will converge it.
+	writeSessionGoneBody(c, sessionGoneUncertain)
 	return true
 }
 

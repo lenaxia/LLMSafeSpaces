@@ -33,6 +33,8 @@ type mockSessionIndex struct {
 	titles      map[string]string // key: "workspaceID/sessionID"
 	contextUsed map[string]*int64 // key: "workspaceID/sessionID"
 	deletedTree map[string]bool   // key: "workspaceID/sessionID" (DeleteSession recording)
+	failDelete  bool              // DeleteSession returns an error when set
+	failList    bool              // ListByWorkspace returns an error when set
 	rows        map[string][]types.SessionListItem
 }
 
@@ -56,6 +58,9 @@ func (m *mockSessionIndex) RecordMessage(_, _, _ string, _ time.Time) {}
 func (m *mockSessionIndex) ListByWorkspace(_ context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failList {
+		return nil, assert.AnError
+	}
 	return append([]types.SessionListItem{}, m.rows[workspaceID]...), nil
 }
 
@@ -73,6 +78,9 @@ func (m *mockSessionIndex) DeleteByWorkspace(_ context.Context, _ string) error 
 func (m *mockSessionIndex) DeleteSession(_ context.Context, workspaceID, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failDelete {
+		return assert.AnError
+	}
 	m.deletedTree[workspaceID+"/"+sessionID] = true
 	return nil
 }

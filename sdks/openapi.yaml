@@ -8077,8 +8077,12 @@ components:
       description: |
         The session existed in the session index but the agent reports it
         no longer exists (harness-side deletion or a never-persisted
-        creation). The stale index row is reaped; clients should remove
-        the session from any list and render a gone-state. Body carries
+        creation). Sessions without message history are reaped from the
+        index immediately; history-bearing entries are retained for
+        operator review (a vanished session with history may indicate a
+        harness store reset) — the body's human message states which.
+        Clients should render a gone-state (never a generic
+        fetch-failure) and refresh their session list. Body carries
         `code: "session_gone"`.
       content:
         application/json:
