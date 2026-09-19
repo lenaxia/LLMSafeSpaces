@@ -87,6 +87,14 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R9d: narrowing capture under last_result rejected`,        // reverse-direction violation asserted
 		`*"memoryMode 'last_result' requires captureMode 'full'"*`, // the shared constraint error asserted
 		`R5_WS="00000000-0000-4000-8000-000000000001"`,             // R8's workspaceId source defined (was unbound → set -u abort)
+		// R10 — drain-targetless via trigger patch (#1473): the drain
+		// twin of R4d (retarget clears workspace_id while a webhook
+		// routine fire pends; NULLIF store semantics).
+		`R10: drain-targetless fire failed with trigger_has_no_target`, // row's ok assertion
+		`*"trigger_has_no_target"*`,                                    // unified payload asserted
+		`"workspaceId":""`,                                             // the retarget patch spelled
+		`consecutiveFailures`,                                          // accounting asserted
+		`lost the tick race twice`,                                     // retry guard present
 		// R8 — org-scope CRUD resolves the resource segment (#1449).
 		`ownerEmail:"e2e-automation@example.invalid"`, // org created; API-key user becomes admin
 		`R8a: org trigger GET resolves the trigger`,   // the shadowing 404'd here

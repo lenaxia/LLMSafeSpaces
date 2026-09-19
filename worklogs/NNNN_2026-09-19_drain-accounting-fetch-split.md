@@ -55,7 +55,18 @@ None.
 
 ---
 
-## Tests Run
+## Review Rounds 2–3 (adversarial reviewer, PR #1474)
+
+- **R1 CHANGES_REQUESTED**: drain-route e2e demanded via a workspace-delete recipe + a superseded-test nit. I pushed back with three source-validated impossibility proofs (soft workspace delete; hard delete has no production caller; receiver mint guard) — nit taken (test deleted, 6b2829c1).
+- **R2 CHANGES_REQUESTED — my pushback partially REFUTED (correctly)**: the reviewer accepted all three proofs but found the route I missed: **trigger patch retarget** — `PUT {"workflowId":X,"workspaceId":""}` over a pending webhook routine fire (pair-check only rejects both-non-empty; #1442 guard satisfied by the new workflow target; store `NULLIF($8,'')` clears the column; the drain checks `WorkspaceID` alone). Every link independently verified (triggers.go:391/427-429/515-518, store.go:431, engine.go:948-953). Lesson recorded: "unreachable via API" claims need enumeration of ALL setters of the column, not just the delete paths.
+- **Addressed**: R10 e2e row added to `local/issue-1410-1412-automation-e2e.sh` (create schema-less workflow → webhook routine trigger bound to dummy workspace, autoDisableAfter=1 → rotate-secret → signed HMAC delivery → 202 → immediate retarget patch → wait one tick → assert failed fire with `trigger_has_no_target` + consecutiveFailures ≥ 1 + auto-disabled; one retry guard against the tick race). Pin needles added; #1473 threat-model comment corrected on the issue thread (their non-blocking item); branch merged forward to origin/main (base was behind after #1470/#1471 landed — also noted by the reviewer).
+
+## Tests Run (rounds 2–3 additions)
+
+- `bash -n` the e2e script — ok; `go test -run TestIssue1410 ./local/` — ok (R10 needles).
+- Targeted engine pins re-run green post-merge-from-main (memory directive: no full sweeps locally; CI carries the full board).
+
+## Tests Run (original verification, pre-directive)
 
 - RED-first: 6 subtests failing pre-implementation (targetless ×3, transient ×2, tick-level ×1).
 - Mutation: revert only `engine.go` → 8 failing assertion groups; restored.

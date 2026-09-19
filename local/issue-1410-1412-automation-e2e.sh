@@ -448,6 +448,85 @@ else
     note_fail "R9d: narrowing returned ${api_status} (${R9_NARROW})"
 fi
 
+# R10 — drain-targetless via trigger patch (#1473): the drain twin of
+# R4d. A webhook routine trigger bound to a workspace gets a signed
+# delivery (202 → pending fire), then is RETARGETED before the tick
+# drains (workflowId set, workspaceId cleared — the store's NULLIF
+# nulls the column). The pending routine fire then drains targetless:
+# failed fire with the unified trigger_has_no_target payload, failure
+# accounted, auto-disable at threshold. Pure API; the dummy workspace
+# never activates.
+r10_attempt() { # suffix -> 0 = asserted, 1 = lost the tick race (retry), 2 = hard fail
+    local suffix="$1" tresp tsec turl tcode patch_resp fire_result
+    local wf_resp wf_id trig_id
+    wf_resp=$(api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-r10-wf-'${suffix}'",specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",targetWorkspaceId:$w}')")
+    [[ "${api_status}" == "201" ]] || { warn "R10 setup: workflow create failed: ${api_status} ${wf_resp}"; return 2; }
+    wf_id=$(printf '%s' "${wf_resp}" | jq -r '.id')
+    created_workflows+=("${wf_id}")
+
+    tresp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+        '{name:"e2e-r10-'${suffix}'",sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"r10",autoDisableAfter:1}')")
+    [[ "${api_status}" == "201" ]] || { warn "R10 setup: trigger create failed: ${api_status} ${tresp}"; return 2; }
+    trig_id=$(printf '%s' "${tresp}" | jq -r '.trigger.id')
+    created_triggers+=("${trig_id}")
+
+    local rot
+    rot=$(api POST "/api/v1/me/triggers/${trig_id}/rotate-secret")
+    tsec=$(printf '%s' "${rot}" | jq -r '.webhookSecret // empty')
+    turl="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${rot}" | jq -r '.webhookUrl // empty')"
+    if [[ -z "${tsec}" || -z "$(printf '%s' "${rot}" | jq -r '.webhookUrl // empty')" ]]; then
+        warn "R10 setup: rotate-secret incomplete: ${rot}"
+        return 2
+    fi
+
+    tcode=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-Hub-Signature-256: sha256=$(printf '%s' '{"topic":"r10"}' \
+            | openssl dgst -sha256 -hmac "${tsec}" | awk '{print $NF}')" \
+        -d '{"topic":"r10"}' "${turl}")
+    [[ "${tcode}" == "202" ]] || { warn "R10: delivery returned ${tcode}, expected 202"; return 2; }
+
+    # Retarget BEFORE the next tick drains the pending fire.
+    patch_resp=$(api PUT "/api/v1/me/triggers/${trig_id}" \
+        '{"workflowId":"'"${wf_id}"'","workspaceId":""}')
+    [[ "${api_status}" == "200" ]] || { warn "R10: retarget patch returned ${api_status} ${patch_resp}"; return 2; }
+
+    fire_result=""
+    for _ in $(seq 1 30); do
+        sleep 2
+        fire_result=$(api GET "/api/v1/me/triggers/${trig_id}/fires" \
+            | jq -r '.fires[] | select(.status=="failed" or .status=="delivered") | [.status, (.actionResult // "")] | @tsv' | head -1)
+        [[ -n "${fire_result}" ]] && break
+    done
+    if [[ "${fire_result}" == *"workspace activation failed"* ]]; then
+        return 1 # the tick drained pre-patch; retry with a fresh pair
+    fi
+    if [[ "${fire_result}" != *"trigger_has_no_target"* ]]; then
+        note_fail "R10: drained fire missing trigger_has_no_target: '${fire_result}'"
+        return 0
+    fi
+    local cf enabled
+    cf=$(trigger_field "${trig_id}" consecutiveFailures)
+    enabled=$(trigger_field "${trig_id}" enabled)
+    if [[ "${cf}" -ge 1 ]] && [[ "${enabled}" == "false" ]]; then
+        ok "R10: drain-targetless fire failed with trigger_has_no_target, accounted (cf=${cf}), auto-disabled"
+    else
+        note_fail "R10: accounting wrong: consecutiveFailures='${cf}' enabled='${enabled}'"
+    fi
+    return 0
+}
+
+r10_verdict=2
+for sfx in a b; do
+    r10_verdict=$(r10_attempt "${sfx}")
+    [[ "${r10_verdict}" -ne 1 ]] && break
+done
+if [[ "${r10_verdict}" == "1" ]]; then
+    note_fail "R10: lost the tick race twice (fire drained before the retarget patch both times)"
+elif [[ "${r10_verdict}" == "2" ]]; then
+    note_fail "R10: setup/delivery failed (see warns above)"
+fi
+
 # R8 — org-scope automation CRUD resolves the RESOURCE segment (#1449):
 # on /orgs/:id/triggers/:triggerId the org id used to shadow the trigger
 # id (every org GET/PUT/DELETE/fires 404'd). The API-key user creates the
