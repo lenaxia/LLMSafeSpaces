@@ -129,7 +129,15 @@ type NodeExecResponse struct {
 // language) are NOT retried — only shapes that historically recover
 // within seconds (#1441: a single provider blip consumed
 // consecutiveFailures and could auto-disable a healthy trigger).
-func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+//
+// cleanupIntermediate, when non-nil, receives the sessionId of a
+// DISCARDED retryable response before the next attempt dispatches
+// (#1476): each attempt runs in a fresh session, and a preserved-mode
+// transient failure's session would otherwise survive as an unrecorded
+// orphan. It never runs for the final attempt — a failed fire keeps its
+// session for inspection (#1470) — and best-effort by contract: a
+// failed cleanup logs and the retry proceeds.
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
 	var err error
@@ -139,6 +147,9 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 			return resp, err
 		}
 		if a < attempts {
+			if cleanupIntermediate != nil && resp != nil && resp.SessionID != "" {
+				cleanupIntermediate(ctx, resp.SessionID)
+			}
 			select {
 			case <-time.After(time.Duration(a) * 2 * time.Second):
 			case <-ctx.Done():
@@ -818,7 +829,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// #1458: the pre-script leg rides the same bounded transient
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
-		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq)
+		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
@@ -849,7 +860,16 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// #1441: transient upstream 5xx (model-provider blips surfacing as
 	// "opencode returned 5xx") must not fail a fire or burn
 	// auto-disable budget — bounded retry with backoff before giving up.
-	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq)
+	// #1476: a superseded attempt's session is cleaned before the next
+	// dispatch — each attempt runs in a fresh session, and a
+	// preserved-mode transient failure's session would otherwise leak
+	// as an unrecorded orphan. Best-effort; failure paths log inside.
+	cleanupIntermediate := func(ctx context.Context, sessionID string) {
+		if s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID) {
+			logger.Info("routine: cleaned superseded retry attempt session", "sessionId", sessionID, "triggerId", trigger.ID)
+		}
+	}
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
