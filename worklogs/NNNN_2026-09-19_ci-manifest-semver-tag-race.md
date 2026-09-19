@@ -56,3 +56,10 @@ None.
 - `.github/workflows/ci.yml` (semver/latest removal + trigger comment)
 - `pkg/repolint/ci_semver_tag_race_test.go` (new — 3 structural pins)
 - `worklogs/NNNN_2026-09-19_ci-manifest-semver-tag-race.md` (this file)
+
+## r1 review — decision on the residual + corrections (append-only)
+
+1. **sha-/ts- cross-workflow collision (r1 finding)**: the tag TRIGGER is now DROPPED entirely (not just semver emission) — release.yml publishes EVERY tag a released commit needs (semver×3, latest, sha-, ts-; verified: 7 sha- + 7 ts- lines), so a CI tag run was fully redundant AND deterministically collided on every shared tag. Pin: TestCIWorkflow_NoTagTrigger.
+2. **Residual accepted + documented** (reviewer option c): the MAIN-push CI run of a release commit still pushes sha-<commit> unsigned; if that run lands AFTER the release workflow's signed sha-<commit> push (queue timing), the tag flips to the unattested same-commit build. Attestation-only delta (same commit), practically unreachable under the digest-pin discipline (#2539's fetch flow is digest-GET), and unfixable at CI time (CI cannot know a commit will be released). Recorded here per the review's demand; revisit only if a consumer pins sha- tags of released commits.
+3. **Trigger-retention rationale corrected**: the original "branch-protection side effects" claim was unvalidated (tags aren't branch-protected — r1 caught it). The REAL trade-off was sha/ts publication for tag commits — moot since release.yml publishes those; hence dropping the trigger outright (also saves a duplicate 14-job build per release).
+4. **Comment-blind pin fixed**: activeLines counts non-comment line-anchored matches; mutation-verified (commenting one semver line → pin FAILS; restored).
