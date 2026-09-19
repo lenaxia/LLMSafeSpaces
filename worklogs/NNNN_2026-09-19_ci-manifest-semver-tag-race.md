@@ -14,7 +14,7 @@ Both `ci.yml` and `release.yml` trigger on `push: tags: v*.*.*`, and ci.yml's me
 
 ## Work Completed
 
-- **Fix**: removed all `type=semver` lines (21 = 7 merge jobs × 3 patterns) and the tag-conditional `value=latest` line (7) from ci.yml's metadata blocks. ci.yml now pushes only sha-<commit>, ts-<timestamp>, and dev-on-main — unique-per-run tags that can never masquerade as a release pin. Load-bearing comment at the trigger explaining WHY (incident pointer + pin-test pointer).
+- **Fix**: removed all `type=semver` lines (21 = 7 merge jobs × 3 patterns) and the tag-conditional `value=latest` line (7) from ci.yml's metadata blocks. ci.yml now pushes only sha-<commit>, ts-<timestamp>, and dev-on-main — no version-pinnable tag (sha-/ts- remain subject to the documented residual below: a released commit's sha- can flip to the unattested CI build). Load-bearing comment at the trigger explaining WHY (incident pointer + pin-test pointer).
 - **Structural pins** (`pkg/repolint/ci_semver_tag_race_test.go`): (1) ci.yml emits no semver, no latest; (2) the fix does not over-delete — all ≥7 metadata blocks keep sha-/ts-, dev-on-main stays; (3) release.yml REMAINS the semver+latest writer (releases silently losing their pins fails loudly). Extraction via an explicit `tags: |` block parser (the naive DOTALL regex matched once — regex lesson recorded).
 
 ## Key Decisions
@@ -83,7 +83,7 @@ Reviewer reproductions closed (each re-verified by local mutation → FAIL → r
 CORRECTION (r4, append-only): the r3 entry above claimed the evasions were "re-verified locally" — only ?-glob, literal, and -rc1 were; the bare '*' / '*.*.*' filter and crane/skopeo forms were NOT covered by my checks (the r4 reviewer reproduced them passing). r4 closes them: the v-prefix gate is dropped (any *?[ filter selects), crane/skopeo markers added.
 
 r4 also records two accepted residuals:
-- File-scoped pins: a NEW workflow file with a tag trigger + semver emission leaves all pins green (sub-agent mutation-verified). Audited today: no other workflow triggers on tags or emits version tags (base-image.yml = CalVer/different path, image-build.yml = dispatch-only/different namespace). Accepted + documented here; a repo-wide rule is the recurrence fix (Rule 12 signal).
+- File-scoped pins: a NEW workflow file with a tag trigger + semver emission leaves all pins green (sub-agent mutation-verified). Audited today: no other workflow triggers on tags or emits version tags (base-image.yml = CalVer on a different IMAGE; image-build.yml = dispatch-only on a different image namespace). Accepted + documented here; a repo-wide rule is the recurrence fix (Rule 12 signal).
 - Comment at the *.*.* claim corrected in-code (comments now match behavior exactly).
 
 ## r5 — the two three-round stragglers + two new evasions closed
@@ -91,3 +91,10 @@ r4 also records two accepted residuals:
 - Stale ci.yml comments corrected (all three: header push-semantics, changes-gate bypass list, prepare tag docs — ci.yml has no tag events; release.yml owns them).
 - worklog residual record CORRECTED per the reviewer's independent validation: release's sha-/ts- pushes are unsigned (cosign covers only :VERSION refs); the CI flip target is a different-CONFIG build (VERSION=<sha> vs <semver> digests), not merely unattested-same-commit; and the workflow_dispatch-on-tag-ref variant makes it not strictly unfixable at CI time (durable closure documented: gate sha/ts emission on !startsWith(ref,'refs/tags/') if it recurs).
 - Prerelease literal filters (`v0.34.6-rc1`) now caught (versionLiteralRe gains the r3 prerelease class); `docker manifest push` joins the marker list. Both mutations verified FAIL locally.
+
+## r6 — fourth stale comment + the r5 record-accuracy stragglers
+
+- ci.yml prepare's version-resolution comment still described tag-push semantics (13 lines below the new invariant comment) — rewritten for branch/dispatch-only reality.
+- The two absolute "unique-per-run / can never masquerade" claims (test header + this worklog's fix paragraph) softened to what the pins guarantee: no semver/latest emission; sha-/ts- subject to the documented residual.
+- worklog:86's "different path" precision fix (different IMAGE / different image namespace).
+- While open: versionLiteralRe widened once more (+metadata and partial literals — its third extension), and the four cheap push-tool markers added (podman/buildah/regctl/oras) alongside -t=/--tag spellings; the marker list remains the documented cat-and-mouse surface.

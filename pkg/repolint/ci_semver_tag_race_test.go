@@ -13,8 +13,11 @@ package repolint_test
 //
 // Structural fix: release.yml is the ONLY writer of semver + latest
 // tags. ci.yml's merge jobs push sha-<commit>, ts-<timestamp>, and
-// dev-on-main only — unique-per-run tags that can never masquerade as
-// a release pin. These pins hold the invariant: reverting the fix
+// dev-on-main only — no version-pinnable tag is emitted from ci.yml.
+// (sha-/ts- remain subject to the documented residual: a released
+// commit's sha- tag can flip to the unattested CI build — see the
+// worklog; that is accepted, not solved here.) These pins hold the
+// invariant: reverting the fix
 // fails them; deleting release.yml's semver emission (leaving NOBODY
 // publishing release tags) also fails them.
 
@@ -92,9 +95,9 @@ func TestCIMergeJobs_NeverEmitSemverOrLatest(t *testing.T) {
 }
 
 // TestCIMergeJobs_StillPushTraceableTags: the fix must not over-delete.
-// Every ci.yml metadata block still pushes the unique-per-run tags
-// (sha-<commit> for provenance rollback, ts-<timestamp> for newest-wins
-// pinning) and the dev channel on main runs.
+// Every ci.yml metadata block still pushes the traceability tags
+// (sha-<commit> for provenance rollback, ts-<timestamp> for newest-
+// wins pinning) and the dev channel on main runs.
 func TestCIMergeJobs_StillPushTraceableTags(t *testing.T) {
 	ci := readWorkflow(t, ciPath)
 
@@ -189,7 +192,7 @@ func workflowOnTagFilters(t *testing.T, src string) []string {
 // — a filter matching exactly one version tag selects version tags
 // just as much as a glob does (r3: ['v0.34.6'] evaded the metachar
 // check).
-var versionLiteralRe = regexp.MustCompile(`^v?\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$`)
+var versionLiteralRe = regexp.MustCompile(`^v?\d+(\.\d+)*(-[A-Za-z0-9.]+)?(\+[A-Za-z0-9.]+)?$`)
 
 // tagFilterMatchesVersions reports whether a push-tag filter selects
 // version-like tags: ANY glob metachar (* ? [) — v-prefixed or not
@@ -251,9 +254,12 @@ func TestMergeJobs_NoRawVersionTagPushes(t *testing.T) {
 		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
 			continue
 		}
-		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "docker push") &&
+		if !strings.Contains(trimmed, "-t ") && !strings.Contains(trimmed, "-t=") &&
+			!strings.Contains(trimmed, "--tag") && !strings.Contains(trimmed, "docker push") &&
 			!strings.Contains(trimmed, "docker manifest") && !strings.Contains(trimmed, "imagetools") &&
-			!strings.Contains(trimmed, "crane") && !strings.Contains(trimmed, "skopeo") {
+			!strings.Contains(trimmed, "crane") && !strings.Contains(trimmed, "skopeo") &&
+			!strings.Contains(trimmed, "podman") && !strings.Contains(trimmed, "buildah") &&
+			!strings.Contains(trimmed, "regctl") && !strings.Contains(trimmed, "oras ") {
 			continue
 		}
 		if m := re.FindString(line); m != "" {
