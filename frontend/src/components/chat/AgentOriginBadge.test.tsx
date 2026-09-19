@@ -42,7 +42,7 @@ describe("AgentOriginBadge", () => {
   // label span, so scanning only the inner ID span would miss exactly
   // that reintroduction (r1 review finding).
   it("renders the full session ID, wrapping, with a hover title, and no truncation anywhere in the badge", () => {
-    const fullId = "ses_f4990c383ffe6Jr3rKx1nyKwtx"; // realistic 31-char platform ID
+    const fullId = "ses_f4990c383ffe6Jr3rKx1nyKwtx"; // realistic 30-char platform ID
     const { getByTestId } = render(<AgentOriginBadge origin={{ fromSession: fullId }} />);
     const idEl = getByTestId("agent-origin-session-id");
     expect(idEl.textContent).toBe(fullId);
@@ -57,8 +57,15 @@ describe("AgentOriginBadge", () => {
     // outer label span is the historical location) fails here.
     const badge = getByTestId("agent-origin-badge");
     for (const el of [badge, ...Array.from(badge.querySelectorAll("*"))]) {
-      expect(el.className).not.toContain("truncate");
-      expect(el.className).not.toContain("whitespace-nowrap");
+      // getAttribute, not el.className: SVG elements expose
+      // SVGAnimatedString, on which toContain passes unconditionally
+      // (r2 review). The style scan also catches Tailwind arbitrary
+      // properties ([white-space:nowrap] — computed-identical to
+      // truncate, invisible to the class-substring scan).
+      const cls = el.getAttribute("class") ?? "";
+      expect(cls).not.toContain("truncate");
+      expect(cls).not.toContain("whitespace-nowrap");
+      expect((el as HTMLElement).style?.getPropertyValue("white-space")).toBe("");
     }
   });
 });

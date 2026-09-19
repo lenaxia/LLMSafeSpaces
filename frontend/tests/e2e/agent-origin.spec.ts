@@ -134,14 +134,12 @@ test.describe("agent-originated message rendering (#1465)", () => {
     const box = await badge.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.height).toBeGreaterThan(26);
-    // No horizontal overflow inside the badge: if any element in the
-    // constraint chain regains nowrap, the badge's scrollWidth exceeds
-    // its clientWidth (or the label ellipsizes — either way the wrap
-    // height assertion above already caught it; this guards the ID
-    // element specifically).
-    const idEl = page.getByTestId("agent-origin-session-id");
-    await expect(idEl).toBeVisible();
-    const noOverflow = await idEl.evaluate((el) => el.scrollWidth <= el.clientWidth);
+    // No horizontal overflow inside the badge: the badge DIV is a
+    // flex container (blockified — real scroll metrics, unlike an
+    // inline span whose clientWidth/scrollWidth are always 0), so any
+    // nowrap regression anywhere in the chain makes its scrollWidth
+    // exceed its clientWidth.
+    const noOverflow = await badge.evaluate((el) => el.scrollWidth <= el.clientWidth);
     expect(noOverflow).toBe(true);
   });
 });

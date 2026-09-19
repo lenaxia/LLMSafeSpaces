@@ -47,8 +47,13 @@ Full origin session ID must be visible and wrap cleanly at the container edge; `
 
 - `frontend/src/components/chat/AgentOriginBadge.tsx` — fix
 - `frontend/src/components/chat/AgentOriginBadge.test.tsx` — pin
+- `frontend/tests/e2e/agent-origin.spec.ts` — narrow-viewport layout row (r1)
 - `worklogs/NNNN_2026-09-19_agent-origin-badge-wrap.md` — this worklog
 
 ## Review Round 1 (regression-surface gap + no layout observation — both taken)
 
 Findings: (1) my pin scanned only the inner ID span — re-adding `truncate` on the OUTER label span (the historical bug location) passed every assertion because nowrap is inherited and the outer span ellipsizes; the pin now scans the ENTIRE badge subtree (badge + all descendants) for `truncate`/`whitespace-nowrap`, and the test moved inside the describe block (finding 3). Mutation-verified: outer-span truncate reintroduction fails vitest. (2) No assertion anywhere observed LAYOUT — the reason this bug shipped. Added a Playwright row (`agent-origin.spec.ts`): at a 375px viewport the badge's boundingBox height must exceed one text line (>26px; derivation in the spec comment) and the ID span must not overflow horizontally (scrollWidth <= clientWidth). Mutation-verified: outer-span truncate reintroduction fails the row (box stays one line). Both mutations re-verified green on restore.
+
+## Review Round 2 (dead assertion + SVG-silent scan — both fixed)
+
+Findings: (1) my e2e `scrollWidth <= clientWidth` on the ID span was a tautology — inline boxes report 0/0 in CSSOM; replaced with the same check on the BADGE div (flex container, real metrics), comments corrected. (2) The vitest subtree scan read `el.className` — SVGAnimatedString on the Bot icon passes negative assertions unconditionally; now `getAttribute("class")`, plus a `style.white-space` scan closing the Tailwind arbitrary-property bypass (`[white-space:nowrap]` mutation-verified to fail the pin). (3) Worklog: Files Modified now lists the e2e spec; "31-char" corrected to 30 (reviewer counted programmatically). All mutations re-verified green on restore.
