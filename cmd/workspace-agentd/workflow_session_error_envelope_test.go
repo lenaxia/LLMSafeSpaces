@@ -177,13 +177,15 @@ func dispatchAgentNodeTimeout(t *testing.T, nodeID, workflowID, runID, spec, tim
 // context dies at 300ms while the message POST parks for 2s — the
 // ephemeral cleanup DELETE must STILL land (reverting WithoutCancel
 // makes it fail instantly on the canceled context and this test fails).
+// The timeout rides the 200+errorCode envelope (#1470 Option-A ruling):
+// the executor's normal parse path must see it, sessionId included.
 func TestExecAgentNode_TimeoutLeg_TearsDownEphemeralUnderDeadContext(t *testing.T) {
 	h := newDedupeHarness(t)
 	h.blockMessages = true
 	pointAgentAddrAt(t, h.srv.URL)
 
 	w := dispatchAgentNodeTimeout(t, "n1", "wf-1", "run-1", agentSpecEphemeral, "300ms")
-	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+	require.Equal(t, http.StatusOK, w.Code, "the agent-node timeout is an envelope, not a status")
 
 	out := decodeEnvelope(t, w)
 	require.Equal(t, "script_timeout", out.ErrorCode)
@@ -197,12 +199,28 @@ func TestExecAgentNode_TimeoutLeg_PreservedSessionRidesEnvelope(t *testing.T) {
 	pointAgentAddrAt(t, h.srv.URL)
 
 	w := dispatchAgentNodeTimeout(t, "n1", "wf-1", "run-1", agentSpecPreserved, "300ms")
-	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+	require.Equal(t, http.StatusOK, w.Code, "the agent-node timeout is an envelope, not a status")
 
 	out := decodeEnvelope(t, w)
 	require.Equal(t, "script_timeout", out.ErrorCode)
 	require.Equal(t, "ses_1", out.SessionID, "a preserved session survives a timeout and is reported")
 	require.Empty(t, h.deletes())
+}
+
+// TestExecScriptNode_TimeoutLeg_Stays504 pins the scope guardrail: the
+// SCRIPT-node timeout keeps its 504 status — its engine consumer (the
+// pre-script branch) has no ErrorCode handling, so a 200 envelope there
+// would read as success-with-empty-output.
+func TestExecScriptNode_TimeoutLeg_Stays504(t *testing.T) {
+	h := newDedupeHarness(t)
+	h.blockMessages = true
+	pointAgentAddrAt(t, h.srv.URL)
+
+	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"import time\ntime.sleep(5)"},"input":{},"timeout":"300ms"}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	require.Equal(t, http.StatusGatewayTimeout, w.Code, "script-node timeouts stay 504 (guardrail)")
 }
 
 // TestExecAgentNode_FailureEnvelope_Delete404_CountsAsGone pins the

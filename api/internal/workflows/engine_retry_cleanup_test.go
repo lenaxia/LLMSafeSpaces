@@ -217,3 +217,30 @@ func TestExecuteRoutine_RetryIntermediateCleanupFails_StillDelivers(t *testing.T
 	require.Len(t, store.sessionOrigins, 1)
 	require.Equal(t, "ses_final", index.titleCalls()[0].sessionID)
 }
+
+// TestExecuteRoutine_TimeoutEnvelope_RecordsSurvivingSession_Composition
+// pins the Option-A composition end-to-end at the engine: a timed-out
+// agent turn now arrives as a 200+errorCode envelope carrying the
+// surviving session — the ErrorCode branch records it, the fire fails
+// with the standard payload, and the classifier does NOT retry
+// script_timeout (single dispatch).
+func TestExecuteRoutine_TimeoutEnvelope_RecordsSurvivingSession_Composition(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := &sequenceAgentd{steps: []seqStep{
+		{resp: &NodeExecResponse{ErrorCode: "script_timeout", Detail: "agent call timed out", SessionID: "ses_to1"}},
+	}}
+	index := &recordingSessionIndex{}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-to1", Name: "Watchdog", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-to1", TriggerID: "trig-to1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		SessionIndex: index}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, 1, agentd.calls, "script_timeout is non-retryable — exactly one dispatch")
+	require.Equal(t, "failed", store.statuses["fire-to1"])
+	require.Len(t, store.sessionOrigins, 1, "the timed-out fire's surviving session is recorded")
+	require.Equal(t, "ses_to1", index.titleCalls()[0].sessionID)
+}

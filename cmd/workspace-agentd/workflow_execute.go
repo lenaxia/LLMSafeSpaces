@@ -474,7 +474,16 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	resp, err := (&http.Client{}).Do(httpReq)
 	if err != nil {
 		if ctx.Err() != nil {
-			failAgentNode(http.StatusGatewayTimeout, "script_timeout", "agent call timed out")
+			// #1470 transport-blindness fix (orchestrator ruling, Option
+			// A): the AGENT-node timeout rides the 200+errorCode envelope
+			// like every other agent failure, so the executor's normal
+			// parse path surfaces this response — and its sessionId — to
+			// the engine's ErrorCode branch (which records surviving
+			// sessions). Still non-retryable: the classifier's switch
+			// matches only script_failed/session_create_failed. The
+			// script/http-node timeout legs stay 504 — their consumers
+			// have no ErrorCode handling yet.
+			failAgentNode(http.StatusOK, "script_timeout", "agent call timed out")
 			return
 		}
 		failAgentNode(http.StatusOK, "script_failed", err.Error())
