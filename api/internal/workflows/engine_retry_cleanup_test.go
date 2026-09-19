@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -73,7 +74,10 @@ func TestExecuteWithRetry_CleansSupersededAttemptSession(t *testing.T) {
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ok","session_id":"ses_final"}`), SessionID: "ses_final"}},
 	}}
 	var cleaned []string
-	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		return true
+	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
 		&NodeExecRequest{NodeID: "n1"}, cleanup)
@@ -90,7 +94,10 @@ func TestExecuteWithRetry_FinalAttemptFailureNotCleaned(t *testing.T) {
 		{resp: retryableFailure("ses_final")},
 	}}
 	var cleaned []string
-	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		return true
+	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
 		&NodeExecRequest{NodeID: "n1"}, cleanup)
@@ -107,7 +114,10 @@ func TestExecuteWithRetry_NonRetryableFailureNotCleaned(t *testing.T) {
 		{resp: &NodeExecResponse{ErrorCode: "schema_mismatch", Detail: "bad json", SessionID: "ses_keep"}},
 	}}
 	var cleaned []string
-	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		return true
+	}
 
 	resp, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
 		&NodeExecRequest{NodeID: "n1"}, cleanup)
@@ -123,7 +133,10 @@ func TestExecuteWithRetry_TransportErrorNoSessionToClean(t *testing.T) {
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ok"}`)}},
 	}}
 	var cleaned []string
-	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		return true
+	}
 
 	_, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
 		&NodeExecRequest{NodeID: "n1"}, cleanup)
@@ -263,11 +276,106 @@ func TestExecuteWithRetry_RetryableWithoutSession_NoCleanup(t *testing.T) {
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ok"}`)}},
 	}}
 	var cleaned []string
-	cleanup := func(_ context.Context, sessionID string) { cleaned = append(cleaned, sessionID) }
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		return true
+	}
 
 	_, err := executeWithRetry(context.Background(), ex, "ws-1", "10.0.0.1",
 		&NodeExecRequest{NodeID: "n1"}, cleanup)
 
 	require.NoError(t, err)
 	require.Empty(t, cleaned, "a retryable envelope with no session has nothing to clean")
+}
+
+// TestExecuteWithRetry_CtxCanceledAfterCleanup_ScrubsCleanedSession is
+// the round-3 F1 pin: the context dying during the post-cleanup backoff
+// makes the CLEANED attempt's response final — and a session the loop
+// itself deleted must never ride that response (#1471 existence
+// contract), or the engine ghost-records it (the async session_index
+// write is ctx-free and always lands). The cleaner cancels the context,
+// so the window is deterministic — no select race.
+func TestExecuteWithRetry_CtxCanceledAfterCleanup_ScrubsCleanedSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex := &sequenceAgentd{steps: []seqStep{
+		{resp: retryableFailure("ses_mid")},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"response":"ok"}`)}}, // never reached
+	}}
+	var cleaned []string
+	cleanup := func(_ context.Context, sessionID string) bool {
+		cleaned = append(cleaned, sessionID)
+		cancel()
+		return true
+	}
+
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+
+	require.Equal(t, []string{"ses_mid"}, cleaned, "the cleanup ran before cancellation")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "script_failed", resp.ErrorCode, "the cleaned attempt's failure is the final outcome")
+	require.Empty(t, resp.SessionID, "a session the loop deleted must not be returned as surviving")
+}
+
+// TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_KeepsSession pins
+// the other half of the scrub rule: a cleanup that did NOT confirm the
+// delete (session still exists) keeps the id on the canceled-context
+// return — the engine records a real survivor, never drops a live one.
+func TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_KeepsSession(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex := &sequenceAgentd{steps: []seqStep{
+		{resp: retryableFailure("ses_live")},
+	}}
+	cleanup := func(_ context.Context, _ string) bool {
+		cancel()
+		return false // delete did not confirm — the session exists
+	}
+
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+
+	require.NoError(t, err)
+	require.Equal(t, "ses_live", resp.SessionID, "a live session keeps its id — dropping it would hide a real survivor")
+}
+
+// TestExecuteRoutine_CtxCanceledAfterCleanup_NoGhostRecord pins the
+// full-path F1 consequence: a canceled context between the successful
+// cleanup and the backoff returns the scrubbed response — the engine's
+// ErrorCode branch sees NO session id: no origin row, no index write
+// for the deleted session. Cancellation fires ~100ms after the
+// (microsecond-scale) cleanup and ~2s before the backoff elapses —
+// deterministic by three orders of magnitude.
+func TestExecuteRoutine_CtxCanceledAfterCleanup_NoGhostRecord(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	_, portStr, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	store := newMockSchedulerStore()
+	agentd := &sequenceAgentd{steps: []seqStep{
+		{resp: retryableFailure("ses_ghost")},
+	}}
+	index := &recordingSessionIndex{}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-gh1", Name: "Weather Bot", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveAlways}
+	fire := &wf.TriggerFireRow{ID: "fire-gh1", TriggerID: "trig-gh1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}, AgentdPort: port, SessionIndex: index}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	sched.executeRoutine(ctx, noopLogger{}, trigger, fire)
+
+	require.Equal(t, "failed", store.statuses["fire-gh1"])
+	require.Empty(t, store.sessionOrigins, "no ghost origin for the deleted session")
+	require.Empty(t, index.titleCalls(), "no ghost index row — the scrubbed response carries no session id")
 }

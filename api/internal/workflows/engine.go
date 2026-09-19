@@ -132,15 +132,26 @@ type NodeExecResponse struct {
 //
 // cleanupIntermediate, when non-nil, receives the sessionId of a
 // DISCARDED retryable response before the next attempt dispatches
-// (#1476): each attempt runs in a fresh session, and a preserved-mode
-// transient failure's session would otherwise survive as an unrecorded
-// orphan. It never runs for the final attempt — a failed fire keeps its
-// session for inspection (#1470) — and best-effort by contract: a
-// failed cleanup logs and the retry proceeds.
-func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string)) (*NodeExecResponse, error) {
+// (#1476) and reports whether the session is now GONE. Each attempt
+// runs in a fresh session, and a preserved-mode transient failure's
+// session would otherwise survive as an unrecorded orphan. It never
+// runs for the final attempt — a failed fire keeps its session for
+// inspection (#1470) — and best-effort by contract: a failed cleanup
+// logs (inside the delete path) and the retry proceeds.
+//
+// If the context dies during the post-cleanup backoff, the loop returns
+// the cleaned attempt's response as final — with its sessionId SCRUBBED
+// when the cleanup confirmed the delete: the #1471 existence contract
+// (sessionId ⟺ session exists) must hold on every returned response,
+// and the loop itself deleted the session. Returning the stale id would
+// make the engine ghost-record a deleted session (the async
+// session_index write is ctx-free and always lands). A FAILED cleanup
+// keeps the id — the session exists and deserves recording.
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
 	var err error
+	cleanedSession := ""
 	for a := 1; a <= attempts; a++ {
 		resp, err = ex.Execute(ctx, workspaceID, podIP, req)
 		if !retryableAgentdFailure(err, resp) {
@@ -148,11 +159,16 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 		}
 		if a < attempts {
 			if cleanupIntermediate != nil && resp != nil && resp.SessionID != "" {
-				cleanupIntermediate(ctx, resp.SessionID)
+				if cleanupIntermediate(ctx, resp.SessionID) {
+					cleanedSession = resp.SessionID
+				}
 			}
 			select {
 			case <-time.After(time.Duration(a) * 2 * time.Second):
 			case <-ctx.Done():
+				if cleanedSession != "" && resp != nil {
+					resp.SessionID = ""
+				}
 				return resp, err
 			}
 		}
@@ -864,10 +880,12 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// dispatch — each attempt runs in a fresh session, and a
 	// preserved-mode transient failure's session would otherwise leak
 	// as an unrecorded orphan. Best-effort; failure paths log inside.
-	cleanupIntermediate := func(ctx context.Context, sessionID string) {
-		if s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID, deletePurposeRetryIntermediate) {
+	cleanupIntermediate := func(ctx context.Context, sessionID string) bool {
+		gone := s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID, deletePurposeRetryIntermediate)
+		if gone {
 			logger.Info("routine: cleaned superseded retry attempt session", "sessionId", sessionID, "triggerId", trigger.ID)
 		}
+		return gone
 	}
 	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate)
 	if err != nil {
