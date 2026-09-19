@@ -73,7 +73,9 @@ const smokeKubectlShim = `#!/usr/bin/env bash
 # reads answer base64("smoke-pwd"), the workspace pod resolves, the
 # in-pod registry exec answers 1417's hardcoded mock admission, and
 # the rest no-op. (Auth shapes pinned by us70-common's seed_session,
-# registry_admits, pod_of.)
+# registry_admits, pod_of.) Every invocation appends to
+# SMOKE_KC_TRACE when set (off unless a test arms it).
+printf '%s\n' "$*" >> "${SMOKE_KC_TRACE:-/dev/null}"
 for a in "$@"; do
   case "${a}" in
     jsonpath='{.status.phase}'*) printf '%s\n' "${SMOKE_PHASE_ANSWER:-Active}"; exit 0 ;;
@@ -83,6 +85,9 @@ for a in "$@"; do
     # unset (base64 -d of "" succeeds, so the || default never fires).
     jsonpath='{.status.secretsDelivery.spawnedRev}'*) printf '1:smoke:manifest\n'; exit 0 ;;
     jsonpath='{.spec.containers[0].name}'*) printf 'workspace\n'; exit 0 ;;
+    # The us-68 sidecar gate's combined both-lists probe (#1456): answer
+    # with the nightly's actual mode — an agentd native sidecar present.
+    jsonpath='{.spec.containers[*].name} {.spec.initContainers[*].name}'*) printf 'workspace agentd\n'; exit 0 ;;
     jsonpath='{.data.'*) printf 'c21va2UtcHdk\n'; exit 0 ;;
   esac
 done

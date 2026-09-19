@@ -155,6 +155,109 @@ func us68F8Step(t *testing.T) string {
 	return src[start : start+end]
 }
 
+// TestUS68CleanupDeletesSeededWorkspaces pins the trap-based hygiene
+// (nightly 35437562027 adjudication): the attachment step's two seeded
+// workspaces are deleted on EVERY exit path — sidecar skip, row death,
+// green completion. Pre-#1463 the job died at this step so nothing
+// downstream ever ran with those pods standing; now that the nightly
+// proceeds, the two leaked workspace pods were ≈ exactly the CPU margin
+// us-70's AC-1c batch was missing (FailedScheduling: Insufficient cpu,
+// 5 standing workspace pods on the 1-node kind runner).
+func TestUS68CleanupDeletesSeededWorkspaces(t *testing.T) {
+	src := mustRead(t, us68AttachmentsScript)
+	cleanup := regexp.MustCompile(`(?s)(?m)^cleanup\(\) \{.*?^\}`).FindString(src)
+	if cleanup == "" {
+		t.Fatal("us-68-attachments-e2e.sh must define cleanup() — the EXIT trap's hygiene lives there")
+	}
+	if !strings.Contains(src, "trap cleanup EXIT") {
+		t.Fatal("the cleanup trap must stay registered (trap cleanup EXIT)")
+	}
+	for _, pin := range []string{
+		`kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found >/dev/null 2>&1 || true`,
+		`kc -n "${NS}" delete workspace "${WS_B}" --ignore-not-found >/dev/null 2>&1 || true`,
+		// the port-forward teardown must survive the cleanup extension
+		`kill "${PF_PID}" 2>/dev/null || true`,
+	} {
+		if !strings.Contains(cleanup, pin) {
+			t.Fatalf("cleanup() must keep %q on every exit path — the seeded workspaces must not leak into downstream suites (nightly 35437562027 census)", pin)
+		}
+	}
+}
+
+// TestUS68Cleanup_Executes runs the script's REAL cleanup() against a
+// tracing fake kc: both seeded workspaces are deleted, and the
+// die-before-seed path (WS vars unset) must not explode under set -u.
+func TestUS68Cleanup_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us68AttachmentsScript)
+	cleanup := regexp.MustCompile(`(?s)(?m)^cleanup\(\) \{.*?^\}`).FindString(src)
+	if cleanup == "" {
+		t.Fatal("cleanup() not found — did the trap hygiene change shape?")
+	}
+
+	dir := t.TempDir()
+	trace := filepath.Join(dir, "kc-trace")
+	out, err := exec.Command(bash, "-c",
+		`set -u; NS=ns; WS_A=ws-a; WS_B=ws-b; PF_PID=
+kc() { printf '%s\n' "$*" >> '`+trace+`'; }
+`+cleanup+`
+cleanup`).CombinedOutput()
+	if err != nil {
+		t.Fatalf("cleanup() must run clean, got: %v\n%s", err, out)
+	}
+	raw, rerr := os.ReadFile(trace)
+	if rerr != nil {
+		t.Fatalf("kc trace unreadable: %v", rerr)
+	}
+	for _, want := range []string{"delete workspace ws-a --ignore-not-found", "delete workspace ws-b --ignore-not-found"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("cleanup() must issue %q, trace:\n%s", want, raw)
+		}
+	}
+
+	// Early-death path: WS_A/WS_B unset (a die before seeding) must not
+	// explode under set -u and must not invoke kc.
+	trace2 := filepath.Join(dir, "kc-trace2")
+	out, err = exec.Command(bash, "-c",
+		`set -u; NS=ns
+kc() { printf '%s\n' "$*" >> '`+trace2+`'; }
+`+cleanup+`
+cleanup; echo CLEAN-OK`).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "CLEAN-OK") {
+		t.Fatalf("cleanup() must tolerate unset WS_A/WS_B (die-before-seed), got: %v\n%s", err, out)
+	}
+	if _, serr := os.Stat(trace2); !os.IsNotExist(serr) {
+		t.Fatalf("cleanup() with no seeded workspaces must not touch the cluster")
+	}
+}
+
+// TestUS68CleanupExecuteSmoke runs the REAL script under the shared
+// ExecuteSmoke shims with the kubectl trace armed: the shim-driven row
+// death fires the EXIT trap, and both seeded workspaces must be deleted
+// by that trap (the seed-time pre-clean already accounts for one delete
+// each in the trace — the trap's delete is the SECOND).
+func TestUS68CleanupExecuteSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execution smokes spawn many shim processes")
+	}
+	traceFile := filepath.Join(t.TempDir(), "kc-trace")
+	combined, exitVal := runScriptUnderShims(t, us68AttachmentsScript, "Active",
+		map[string]string{"SMOKE_KC_TRACE": traceFile})
+	assertSmokeTraversal(t, us68AttachmentsScript, combined, exitVal, "✗", "all green")
+	raw, err := os.ReadFile(traceFile)
+	if err != nil {
+		t.Fatalf("kubectl trace unreadable — did the shim tracing break?: %v", err)
+	}
+	for _, want := range []string{
+		"delete workspace e2e0a000-0000-0000-0000-0000000000a1",
+		"delete workspace e2e0b000-0000-0000-0000-0000000000b2",
+	} {
+		if n := strings.Count(string(raw), want); n < 2 {
+			t.Fatalf("the EXIT trap must delete %s after the script's death (seed pre-clean + trap = ≥2 deletes, got %d); trace:\n%s", want, n, raw)
+		}
+	}
+}
+
 // TestUS68NightlyF8_ServiceLookupByName pins the #1456 F8 fix: the valkey
 // Service in local/postgres-redis.yaml carries NO metadata labels, so the
 // old `-l app=valkey` discovery matched nothing and F8 silently SKIPped
