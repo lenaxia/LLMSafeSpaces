@@ -27,7 +27,7 @@ func TestE2ENightlyConcurrencyGroup(t *testing.T) {
 
 	assert.Contains(t, src, "concurrency:", "the nightly must carry a concurrency group (schedule backup + platform dispatch must never double-run)")
 	assert.Contains(t, src, "group: e2e-nightly", "one shared group for BOTH entry paths (event-specific groups would not conflict)")
-	assert.Contains(t, src, "cancel-in-progress: true", "whichever run starts latest wins; the other is cancelled instead of overlapping")
+	assert.Contains(t, src, "cancel-in-progress: true", "whichever run starts latest wins; the other is canceled instead of overlapping")
 }
 
 // TestE2ENightlyScheduleBackupRetained pins the reliability backup: the

@@ -5,7 +5,7 @@ name: E2E Nightly (kind)
 # the ops workspace) dispatches this workflow on time at 06:00Z —
 # GitHub's scheduled runs have fired 4-6h late (11-run sample). One
 # concurrency group for both entry paths: whichever starts latest wins
-# and the other is cancelled, so a lagged backup never overlaps or
+# and the other is canceled, so a lagged backup never overlaps or
 # duplicates the on-time dispatch.
 concurrency:
   group: e2e-nightly
