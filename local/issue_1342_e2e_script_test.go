@@ -153,8 +153,11 @@ func TestIssue1342E2EScript_JqFiltersCompile(t *testing.T) {
 // smokes (Refs #1474/#1480/#1482); sequenced after #1478's harness_start
 // per orchestrator. The script's wait budgets ride the env knobs the
 // script now exposes (defaults unchanged — the knobs exist for smoke
-// speed only). Depth pin: the R2 row's wait ran, proving R1's rows and
-// R2's setup executed under the shims.
+// speed only). Depth pin scope, exactly as far as it reaches: under the
+// shims R1's first wait fails, so R1's inner block (bind/restart/repair
+// rows) is structurally SKIPPED — the pin proves R0 green, R1's first
+// wait row (fail path), and R2's setup executed; R1's deeper rows stay
+// covered by the structural needles in RowsAndAssertions.
 func TestIssue1342E2EScript_ExecuteSmoke(t *testing.T) {
 	if testing.Short() {
 		t.Skip("execution smoke spawns ~hundreds of shim processes")
