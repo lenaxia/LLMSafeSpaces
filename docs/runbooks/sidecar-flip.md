@@ -11,6 +11,7 @@
 3. Cluster ≥ 1.35 (native sidecars) — already the chart floor.
 4. **S5 overlay validation green** (`local/s5-overlay-validation.yml`) — design 0053: the stripped base + both mandatory overlay pins are now the ONLY mode; the flip rides on S5.2 (launch→ready), S5.5 (resume cost), and S5.6 (gVisor runsc leg — design 0051's open item).
 5. **US-70.1 deployed** (spawn-time env pull, #1164/design 0057) — the pre-70.1 sidecar boot deterministically lost env-class secrets (`pushInitialSpawnEnv` dialed the control socket before the workspace container existed); the pull closed that class.
+6. **#1455 workflow-node gate:** http-node `{{secrets.*}}` refs resolve from the relocated secrets-env coordinate (fixed — agentd's `loadSecretsEnv` shares `secretsEnvPathFromEnv()`; pinned by `TestUS4B_Enabled_SidecarPathEnv` on the controller side and the agentd handler tests on the reader side). Script nodes in sidecar mode fail LOUD with `script_env_unavailable` (the honest interim) — executing script nodes in the workspace container (Option B on #1455) is still an open design decision and a **flip blocker for script-bearing workflows**: assess it against this checklist before the default flips.
 
 **Flip:** set `controller.agentdSidecar.enabled: true` in the release values. New and recreated pods get the sidecar spec; existing running pods keep their old spec until restarted (D6.1 convergence).
 

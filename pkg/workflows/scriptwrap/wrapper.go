@@ -31,6 +31,11 @@ const (
 	LanguageNode Language = "node"
 )
 
+const (
+	pythonBin = "python3"
+	nodeBin   = "node"
+)
+
 const pythonWrapper = `import json, sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from handler import handler
@@ -60,12 +65,12 @@ func EnvCheck(language Language) error {
 	_ = os.RemoveAll(dir)
 	switch language {
 	case LanguagePython:
-		if _, err := exec.LookPath("python3"); err != nil {
-			return fmt.Errorf("python3 interpreter not found on PATH: %w", err)
+		if _, err := exec.LookPath(pythonBin); err != nil {
+			return fmt.Errorf("%s interpreter not found on PATH: %w", pythonBin, err)
 		}
 	case LanguageNode:
-		if _, err := exec.LookPath("node"); err != nil {
-			return fmt.Errorf("node interpreter not found on PATH: %w", err)
+		if _, err := exec.LookPath(nodeBin); err != nil {
+			return fmt.Errorf("%s interpreter not found on PATH: %w", nodeBin, err)
 		}
 	}
 	return nil
@@ -101,12 +106,12 @@ func Execute(ctx context.Context, language Language, handlerSource string, input
 		handlerFile = "handler.py"
 		wrapperFile = "_wrapper.py"
 		wrapperSource = pythonWrapper
-		command = "python3"
+		command = pythonBin
 	case LanguageNode:
 		handlerFile = "handler.js"
 		wrapperFile = "_wrapper.js"
 		wrapperSource = nodeWrapper
-		command = "node"
+		command = nodeBin
 	default:
 		return nil, "", -1, fmt.Errorf("unsupported language: %s", language)
 	}

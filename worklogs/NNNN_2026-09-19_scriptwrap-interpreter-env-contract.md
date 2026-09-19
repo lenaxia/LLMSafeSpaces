@@ -30,6 +30,12 @@ Investigate #1455 (script nodes fail `create temp dir: stat /tmp` in the scratch
 ### Docs (the per-mode contract)
 - epic-64 README script section: added "Execution container is mode-dependent (#1455)" paragraph — single-container = workspace sandbox (unchanged); sidecar = fails fast with `script_env_unavailable`; Option-B execution is the open design question; http/agent/condition status stated.
 
+### Review round 1 (blocking → resolved)
+- **Premature closure keyword**: `Fixes #1455` would auto-close the issue with its central Option-B decision open → PR body changed to "Partially addresses #1455 — Refs #1455".
+- **E2E gap**: added `local/issue-1455-scriptenv-e2e.sh` — one ADAPTIVE mode-contract row (never silently skipped): a python script-node workflow run must terminate as EITHER succeeded+marker (single-container: guards EnvCheck false positives in the real toolchain env — the reviewer's missing-case 2) OR failed with `script_env_unavailable` + sidecar-naming detail (sidecar mode — the reviewer's missing-case 1, unhappy half); any other terminal shape fails the row; polling bounded. Companion `local/issue_1455_e2e_script_test.go` pins bash syntax + row assertions (1452 pattern). The http-node `{{secrets.*}}` live row was deliberately not written: the e2e harness provides no cluster-reachable echo receiver and no bound-secret fixture; the join is covered piecewise — controller wiring pinned by the EXISTING `TestUS4B_Enabled_SidecarPathEnv` (us4b_mount_relocations_test.go:138), agentd reader pinned by this PR's handler tests. Stated in the PR body and review reply.
+- **Minor findings fixed**: interpreter binaries now shared constants (`pythonBin`/`nodeBin`) between `Execute` and `EnvCheck`; the failure detail attributes the sidecar cause CONDITIONALLY ("In sidecar mode … On a single-container pod this instead indicates a broken TMPDIR/PATH") — no unconditional misattribution.
+- **Flip-gate runbook**: `docs/runbooks/sidecar-flip.md` prerequisite 6 added — http secrets fixed (with pin references), script nodes loud-fail, Option-B open and a flip blocker for script-bearing workflows.
+
 ---
 
 ## Key Decisions
@@ -58,7 +64,9 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - RED witnessed on main: `TestLoadSecretsEnv_HonorsOverridePath`, `TestWorkflowExecute_HTTPNodeSecretsResolveFromOverridePath` (literal ref sent), `TestWorkflowExecute_ScriptEnvUnavailableLoudFailure` (got `script_failed` "create temp dir: stat …"), `TestWorkflowExecute_ScriptInterpreterMissingLoudFailure` (got `script_failed` "executable file not found"); scriptwrap EnvCheck tests compile-red.
 - `go test ./pkg/workflows/scriptwrap/ ./api/internal/workflows/` — ok (post-module-cache-wipe, GOPROXY=direct)
 - `go test -race ./cmd/workspace-agentd/` — ok (345s)
+- r1: targeted reruns — scriptwrap EnvCheck suite, agentd script/http handler suites, `./local/` companion pins — all ok
 - Mutation evidence: (A) loadSecretsEnv reverted to hardcoded path + (B) EnvCheck probe call removed → 4 handler/unit tests FAIL; (C) EnvCheck body stubbed to return nil → 2 scriptwrap tests FAIL; restores green.
+- `bash -n local/issue-1455-scriptenv-e2e.sh` — ok (also pinned by TestIssue1455E2EScript_BashSyntax)
 
 ---
 
@@ -77,4 +85,7 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - `cmd/workspace-agentd/us4b_paths.go` — consumer-list comment
 - `api/internal/workflows/engine_test.go` — script_env_unavailable non-retry guard
 - `design/stories/epic-64-triggers-workflows/README.md` — per-mode execution-container paragraph
+- `docs/runbooks/sidecar-flip.md` — flip-gate prerequisite 6 (#1455 workflow-node gate)
+- `local/issue-1455-scriptenv-e2e.sh` — r1: adaptive mode-contract e2e row
+- `local/issue_1455_e2e_script_test.go` — r1: structural pins for the e2e script
 - `worklogs/NNNN_2026-09-19_scriptwrap-interpreter-env-contract.md` — this worklog

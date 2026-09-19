@@ -194,7 +194,7 @@ func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExe
 	// construction: an environment does not heal in 2s).
 	if envErr := scriptwrap.EnvCheck(lang); envErr != nil {
 		writeWorkflowError(w, http.StatusOK, "script_env_unavailable",
-			fmt.Sprintf("script node execution environment unavailable in this container: %v. Known cause: sidecar-mode agentd runs in a scratch container without /tmp or interpreters — script nodes require the workspace container environment (epic-64 script contract; #1455)", envErr))
+			fmt.Sprintf("script node execution environment unavailable in this container: %v. In sidecar mode (agentdSidecar.enabled) agentd serves workflow nodes from a scratch container without /tmp or interpreters — script nodes require the workspace container environment (epic-64 script contract; #1455). On a single-container pod this instead indicates a broken TMPDIR/PATH in the workspace container.", envErr))
 		return
 	}
 	output, stderr, exitCode, err := scriptwrap.Execute(ctx, lang, data.Handler, input)
