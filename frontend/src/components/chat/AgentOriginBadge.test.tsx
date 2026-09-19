@@ -32,3 +32,23 @@ describe("AgentOriginBadge", () => {
     expect(getByTestId("agent-origin-badge").textContent).not.toContain("workspace");
   });
 });
+
+  // #1465 owner report: the badge TRUNCATED the origin session ID
+  // (nowrap + ellipsis via `truncate`) instead of wrapping, hiding the
+  // return address. The fix, pinned here: the ID renders in full inside
+  // its own break-all element (house convention for monospace IDs —
+  // TriggersPage/ApiKeysTab), carries the full ID as title for
+  // hover-copy, and must never regain the truncation utility — a
+  // removed-overflow regression fails these assertions.
+  it("renders the full session ID in a wrapping element with a hover title", () => {
+    const fullId = "ses_f4990c383ffe6Jr3rKx1nyKwtx"; // realistic 31-char platform ID
+    const { getByTestId } = render(<AgentOriginBadge origin={{ fromSession: fullId }} />);
+    const idEl = getByTestId("agent-origin-session-id");
+    expect(idEl.textContent).toBe(fullId);
+    expect(idEl.getAttribute("title")).toBe(fullId);
+    expect(idEl.className).toContain("break-all");
+    expect(idEl.className).not.toContain("truncate");
+    // The full ID must be present in the rendered badge text — no
+    // ellipsis substitution at the DOM level.
+    expect(getByTestId("agent-origin-badge").textContent).toContain(fullId);
+  });
