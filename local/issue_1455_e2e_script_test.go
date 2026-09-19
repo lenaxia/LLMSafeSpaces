@@ -79,24 +79,28 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 	}
 }
 
-// TestIssue1455E2EScript_WorkspaceIDCanonical pins the R0-fatal class
-// round 3 caught: a WS_BASE whose first group is not 8 hex chars makes
-// ws_id produce a non-canonical UUID that PostgreSQL rejects at the
-// seed_workspace_metadata INSERT — the script died at R0 on every
-// cluster. Simulating ws_id (base[:32] + 4-digit suffix) for every
-// suffix proves the default constructs canonical 8-4-4-4-12 UUIDs.
+// TestIssue1455E2EScript_WorkspaceIDCanonical pins the script's
+// UNCONDITIONAL WS_BASE (r2-of-#1478: the lib sets its own WS_BASE at
+// source time, so a :- default here is dead code — the unconditional
+// literal is the only LIVE per-script prefix): ws_id (base[:32] +
+// 4-digit suffix) must construct canonical 8-4-4-4-12 UUIDs or
+// PostgreSQL rejects the seed insert.
 func TestIssue1455E2EScript_WorkspaceIDCanonical(t *testing.T) {
 	raw, err := os.ReadFile(issue1455Script)
 	require.NoError(t, err)
-	m := regexp.MustCompile(`WS_BASE="\$\{WS_BASE:-([0-9a-f-]+)\}"`).FindStringSubmatch(string(raw))
-	require.NotNil(t, m, "WS_BASE default not found — the script's shape drifted")
-	base := m[1]
+	// Assert ALL matches, not just the first: bash honors the LAST
+	// assignment, so a shadowing second line must not slip past the pin.
+	matches := regexp.MustCompile(`(?m)^WS_BASE="([0-9a-f-]+)"$`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, matches, "unconditional WS_BASE assignment not found — the script's shape drifted (a :- default is dead post-source: the lib shadows it)")
 
-	suffixes := []string{"0001", "0002", "9999", "1234"}
-	for _, sfx := range suffixes {
-		id := base[:32] + sfx
-		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, id,
-			"ws_id(%q) output must be a canonical UUID or PostgreSQL rejects the seed insert (the r3 R0-fatal class)", base)
+	for _, m := range matches {
+		base := m[1]
+		suffixes := []string{"0001", "0002", "9999", "1234"}
+		for _, sfx := range suffixes {
+			id := base[:32] + sfx
+			assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`, id,
+				"ws_id(%q) output must be a canonical UUID or PostgreSQL rejects the seed insert (the r3 R0-fatal class)", base)
+		}
 	}
 }
 
