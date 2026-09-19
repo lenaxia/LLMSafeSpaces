@@ -14,33 +14,35 @@ import (
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
-// #1454: behavior-identical consolidation pins. These CHARACTERIZE the
-// current semantics of the routine-fire lifecycle seams the dedup
-// touches (drain guards, per-leg accounting, the success reset leg) so
-// the refactor provably changes nothing. Where current behavior is a
-// known gap (the drain's unaccounted targetless leg; any-error fetch
-// handling) the pin documents it deliberately — fixing those is a
-// behavior-change follow-up, out of this consolidation's scope.
+// #1454/#1473: the routine-fire lifecycle pins. The #1454 consolidation
+// pinned these seams' behavior as-is (characterization); #1473 flips
+// the two drain-gap pins to the FIXED expectations (targetless drains
+// account + auto-disable with the unified trigger_has_no_target
+// payload; transient fetch errors leave the fire pending for re-drive)
+// and keeps the accounting call-count pins for the extraction seams.
 
-// Drain targetless leg, preserved exactly: the EXISTING fire row is
-// updated (never a second row minted), with the drain path's own
-// payload, and ZERO failure accounting — the trigger keeps ticking.
-// This is the pre-#1440 silent-zombie shape through the drain door,
-// deliberately pinned as-is (consolidation-only scope).
-func TestProcessPendingRoutineFire_TargetlessDrain_PreservedBehavior(t *testing.T) {
+// Drain targetless leg (#1473 gap 1): the EXISTING fire row is updated
+// (never a second row minted) with the SAME trigger_has_no_target
+// payload the cron route's #1440 guard mints, and the failure is
+// accounted — increment once, honor auto-disable. The silent-zombie
+// door is closed on both routes.
+func TestProcessPendingRoutineFire_TargetlessDrain_AccountsAndDisables(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		ws   *string
+		name             string
+		ws               *string
+		autoDisableAfter int
+		wantDisabled     bool
 	}{
-		{"nil workspace id", nil},
-		{"empty workspace id", strPtr("")},
+		{"nil workspace id, below threshold", nil, 2, false},
+		{"empty workspace id, below threshold", strPtr(""), 2, false},
+		{"at threshold, disarms", nil, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newMockSchedulerStore()
 			store.triggers = []*wf.TriggerRow{{
 				ID: "trig-drain", OwnerType: "user", OwnerID: "u1",
 				Enabled: true, SourceType: types.TriggerSourceCron,
-				WorkspaceID: tc.ws, AutoDisableAfter: 2,
+				WorkspaceID: tc.ws, AutoDisableAfter: tc.autoDisableAfter,
 			}}
 			fire := &wf.TriggerFireRow{ID: "fire-drain", TriggerID: "trig-drain", InputEnvelope: json.RawMessage(`{}`)}
 
@@ -50,28 +52,73 @@ func TestProcessPendingRoutineFire_TargetlessDrain_PreservedBehavior(t *testing.
 			if store.statuses["fire-drain"] != "failed" {
 				t.Fatalf("expected failed, got %s", store.statuses["fire-drain"])
 			}
-			if got := string(store.results["fire-drain"]); got != `{"error":"trigger has no workspace_id"}` {
-				t.Errorf("drain payload must stay byte-identical, got %s", got)
+			want := `{"hint":"workflow deleted (FK set null) or routine missing workspace_id","reason":"trigger_has_no_target"}`
+			if got := string(store.results["fire-drain"]); got != want {
+				t.Errorf("drain payload must match the cron guard's:\n got: %s\nwant: %s", got, want)
 			}
 			if len(store.fires) != 0 {
 				t.Errorf("drain must UPDATE the existing row, never mint one; fires=%d", len(store.fires))
 			}
-			if store.increments["trig-drain"] != 0 {
-				t.Errorf("preserved behavior: drain targetless leg does NOT account, got %d increments", store.increments["trig-drain"])
+			if store.increments["trig-drain"] != 1 {
+				t.Errorf("targetless drain must account exactly once, got %d", store.increments["trig-drain"])
 			}
-			if store.disabled["trig-drain"] {
-				t.Error("preserved behavior: drain targetless leg never auto-disables")
+			if store.disabled["trig-drain"] != tc.wantDisabled {
+				t.Errorf("disabled=%v, want %v (autoDisableAfter=%d)", store.disabled["trig-drain"], tc.wantDisabled, tc.autoDisableAfter)
 			}
 		})
 	}
 }
 
-// Drain fetch-error leg, preserved exactly: ANY GetTriggerByID error
-// (transient or not-found alike) fails the fire with the generic
-// trigger-not-found payload and zero accounting. The transient-vs-
-// not-found split the orphaned #1454 report proposed is a behavior
-// change — pinned as-is here, follow-up material.
-func TestProcessPendingRoutineFire_FetchError_PreservedBehavior(t *testing.T) {
+// Drain fetch split (#1473 gap 2): a TRANSIENT store error is the
+// platform's problem, not the fire's — the fire stays PENDING for the
+// next tick's re-drive, nothing is written, nothing is counted. (The
+// webhook already 202'd; killing the fire on a pool blip was the bug.)
+func TestProcessPendingRoutineFire_TransientFetchError_LeavesPending(t *testing.T) {
+	for _, drive := range []struct {
+		name string
+		fn   func(sched *Scheduler, fire *wf.TriggerFireRow)
+	}{
+		{"direct", func(s *Scheduler, f *wf.TriggerFireRow) {
+			s.processPendingRoutineFire(context.Background(), noopLogger{}, f)
+		}},
+		{"tick drain", func(s *Scheduler, f *wf.TriggerFireRow) {
+			store := s.Store.(*mockSchedulerStore)
+			store.overridePending = []*wf.TriggerFireRow{f}
+			s.tick(context.Background(), noopLogger{}, 10)
+		}},
+	} {
+		t.Run(drive.name, func(t *testing.T) {
+			store := newMockSchedulerStore()
+			store.getTriggerByIDErr = fmt.Errorf("pool exhausted")
+			fire := &wf.TriggerFireRow{ID: "fire-blip", TriggerID: "trig-live", InputEnvelope: json.RawMessage(`{}`)}
+
+			sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
+			drive.fn(sched, fire)
+
+			if _, written := store.statuses["fire-blip"]; written {
+				t.Errorf("transient fetch error must not write the fire, got status %s", store.statuses["fire-blip"])
+			}
+			if store.results["fire-blip"] != nil {
+				t.Errorf("transient fetch error must not write a result, got %s", store.results["fire-blip"])
+			}
+			if store.increments["trig-live"] != 0 {
+				t.Errorf("transient fetch error must not account, got %d increments", store.increments["trig-live"])
+			}
+			if store.disabled["trig-live"] {
+				t.Error("transient fetch error must never disable")
+			}
+		})
+	}
+}
+
+// Drain fetch split (#1473 gap 2): trigger GONE (wf.ErrNotFound). In
+// production this is only the mid-tick race window — trigger_fires is
+// ON DELETE CASCADE (migration 000016:349), so a deleted trigger's
+// fires are gone with it and IncrementTriggerFailures has no row to
+// hold a counter. The leg therefore fails the fire best-effort with
+// the cause payload and NO accounting (schema-excluded; see the
+// correction comment on #1473).
+func TestProcessPendingRoutineFire_TriggerDeleted_FailsLoudUnaccounted(t *testing.T) {
 	store := newMockSchedulerStore()
 	fire := &wf.TriggerFireRow{ID: "fire-orphan", TriggerID: "nonexistent", InputEnvelope: json.RawMessage(`{}`)}
 
@@ -82,19 +129,16 @@ func TestProcessPendingRoutineFire_FetchError_PreservedBehavior(t *testing.T) {
 		t.Fatalf("expected failed, got %s", store.statuses["fire-orphan"])
 	}
 	if got := string(store.results["fire-orphan"]); got != `{"error":"trigger not found"}` {
-		t.Errorf("fetch-error payload must stay byte-identical, got %s", got)
+		t.Errorf("not-found payload must stay byte-identical, got %s", got)
 	}
 	if store.increments["nonexistent"] != 0 {
-		t.Errorf("preserved behavior: fetch-error leg does NOT account, got %d increments", store.increments["nonexistent"])
+		t.Errorf("not-found leg must not account (no trigger row exists), got %d", store.increments["nonexistent"])
 	}
 }
 
 // Account-exactly-once per outcome: every failure leg increments
 // exactly once and never resets; a delivered fire resets exactly once
-// and never increments. These call-count pins are the mutation seam for
-// the accountTriggerFailure consolidation (a botched extraction that
-// double-accounts, accounts on success, or resets on failure trips
-// them).
+// and never increments. (#1454 mutation seam, retained.)
 func TestExecuteRoutine_AccountingCallCounts(t *testing.T) {
 	newTrigger := func() *wf.TriggerRow {
 		wsID := "ws-1"
@@ -167,10 +211,9 @@ func TestExecuteRoutine_AccountingCallCounts(t *testing.T) {
 }
 
 // Cron-route targetless guard, payload pinned byte-identical (key
-// order included) so the failTargetless consolidation cannot drift the
-// two routes' payloads into each other. Accounting/auto-disable legs
-// are already pinned by TestScheduler_TargetlessTriggerFailsLoudly /
-// AutoDisables; this adds the exact-bytes and count-once assertions.
+// order included) so the two routes' payloads cannot drift apart
+// again. Accounting/auto-disable legs are already pinned by
+// TestScheduler_TargetlessTriggerFailsLoudly / AutoDisables.
 func TestFireRoutineTarget_Targetless_ExactPayloadAndCounts(t *testing.T) {
 	store := newMockSchedulerStore()
 	trigger := &wf.TriggerRow{
@@ -194,5 +237,32 @@ func TestFireRoutineTarget_Targetless_ExactPayloadAndCounts(t *testing.T) {
 	}
 	if store.disabled["trig-cron-ghost"] {
 		t.Error("AutoDisableAfter=5 must not disarm on the first failure")
+	}
+}
+
+// Tick-level drain wiring for the targetless fix: a pending fire whose
+// trigger lost its target drains through the normal scheduler tick and
+// comes out failed + accounted + (at threshold) disabled.
+func TestScheduler_PendingDrainTick_TargetlessTrigger_Accounts(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-drain-tick", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: types.TriggerSourceWebhook,
+		WorkspaceID: nil, AutoDisableAfter: 1,
+	}}
+	fire := &wf.TriggerFireRow{ID: "fire-tick", TriggerID: "trig-drain-tick", ActionType: "routine", Status: "fired", InputEnvelope: json.RawMessage(`{}`)}
+	store.overridePending = []*wf.TriggerFireRow{fire}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if store.statuses["fire-tick"] != "failed" {
+		t.Fatalf("expected failed via tick drain, got %s", store.statuses["fire-tick"])
+	}
+	if store.increments["trig-drain-tick"] != 1 {
+		t.Errorf("tick drain must account exactly once, got %d", store.increments["trig-drain-tick"])
+	}
+	if !store.disabled["trig-drain-tick"] {
+		t.Error("AutoDisableAfter=1 must disarm the targetless zombie at the threshold")
 	}
 }

@@ -1,0 +1,5 @@
+{
+  "origin": null,
+  "found": false,
+  "text": "<!-- lsp:agent-message-v1 {\"fromsession\":\"ses_a\"} -->\nLowercase key: Go's encoding/json matches struct fields case-insensitively, so a struct unmarshal would accept this — the parsers reject it instead (strict exact-key parity, locked by fixture)."
+}

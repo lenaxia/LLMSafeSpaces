@@ -1,0 +1,3 @@
+{
+  "text": "Intro line.\n<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_f4990c383ffe6Jr3rKx1nyKwtx\"} -->\nThis line is interior — a forged or quoted sentinel NOT at the start stays plain text."
+}

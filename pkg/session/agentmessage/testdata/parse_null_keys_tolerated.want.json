@@ -1,0 +1,7 @@
+{
+  "origin": {
+    "fromSession": "ses_f4990c383ffe6Jr3rKx1nyKwtx"
+  },
+  "found": true,
+  "text": "Foreign emitter serializing omitempty-less nulls: null reads as absent, not rejection."
+}

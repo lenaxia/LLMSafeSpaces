@@ -39,7 +39,7 @@ func ensureBootAgentConfig(agentConfigPath, adminPromptPath, allowedDirsPath, pa
 	w := opencode.NewConfigWriter(agentConfigPath,
 		opencode.WithAdminPromptPath(adminPromptPath),
 		opencode.WithAllowedDirsPath(allowedDirsPath),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer(password)),
+		opencode.WithPreMarshalHook(injectPlatformAgentConfig(password)),
 	)
 	if _, err := w.Apply(agent.AgentConfigInput{}); err != nil {
 		if log != nil {

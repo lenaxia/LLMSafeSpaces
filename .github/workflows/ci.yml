@@ -558,6 +558,51 @@ jobs:
       - name: ABI contract tests
         run: go test -timeout 120s -race ./pkg/abi/...
 
+  origin-plugin-pin:
+    name: Origin plugin freeze pin (pinned opencode + plugin + stub MCP)
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.docs_only != 'true'
+    # #1465: the tool.execute.before hook contract is load-bearing
+    # platform surface (the origin-injection plugin mutates outgoing MCP
+    # tool arguments through it). This job pins it EMPIRICALLY against
+    # the pinned opencode binary: the plugin's from_session_id must
+    # arrive on the wire carrying the calling session's ID, and must
+    # NOT arrive without the plugin (the wire carries no native caller
+    # identity). A harness bump that changes the hook surface fails
+    # here instead of silently dropping attribution (send_message also
+    # fails loud agentd-side — belt and braces).
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The pin must test the version PRODUCTION runs: the delivery
+      # artifact pins 1.18.15 (runtimes/opencode/Dockerfile ARG
+      # OPENCODE_VERSION) while the shared integration-test const still
+      # defaults to 1.18.10 — fetch the Dockerfile's version explicitly
+      # so a hook-surface change on any .11–.15 (or a future bump) is
+      # caught HERE, not in production.
+      - name: Fetch the pinned opencode binary (Dockerfile pin)
+        run: |
+          version="$(grep -oP 'ARG OPENCODE_VERSION=\K[0-9.]+' runtimes/opencode/Dockerfile | head -1)"
+          echo "Pinned OPENCODE_VERSION: ${version}"
+          mkdir -p /tmp/opencode-pin && cd /tmp/opencode-pin
+          curl -fsSL --retry 5 \
+            "https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-linux-x64.tar.gz" \
+            -o oc.tar.gz
+          tar -xzf oc.tar.gz opencode
+          echo "OPENCODE_BINARY=/tmp/opencode-pin/opencode" >> "$GITHUB_ENV"
+
+      - name: Run the origin-plugin harness pin (freeze leg)
+        run: go test -tags=integration -timeout 600s -count=1 -run TestOriginPlugin ./pkg/agent/opencode/
+
+      - name: Run the origin e2e (real opencode + real agentd dispatch)
+        run: go test -tags=integration -timeout 600s -count=1 -run TestOriginE2E ./cmd/workspace-agentd/
+
   sdk-contract:
     name: SDK Contract Tests
     runs-on: ubuntu-latest

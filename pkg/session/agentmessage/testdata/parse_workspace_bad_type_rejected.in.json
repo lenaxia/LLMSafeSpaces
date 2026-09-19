@@ -1,0 +1,3 @@
+{
+  "text": "<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_a\",\"workspace\":123} -->\nA non-string workspace value rejects the sentinel (type-strict known keys), never silently drops the field."
+}

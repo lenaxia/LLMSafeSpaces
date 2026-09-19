@@ -181,7 +181,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "create_session",
-						Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
+						Description: "Create a NEW top-level agent session in this workspace — a peer of yours — and hand it a starting prompt, fire-and-forget: returns the session_id immediately while the first turn runs in the background. The result does NOT come back to you — create_session never returns the session's output to this thread. Use it ONLY when: (1) the task is independent and you will NOT depend on its result (true fire-and-forget — launch it and move on), or (2) the task will require HUMAN input or is intended for human consumption — the session appears in the workspace's session list, where a person can open it, answer its questions, and steer it. NOT for fully autonomous work whose outcome you need (implementing a user story, an investigation, any question you need answered): use the task tool instead — it blocks and returns the result to this thread. The new session is a full agent sharing this workspace's files and tools — coordinate via files, not assumptions, and make the prompt self-contained (it does not inherit this conversation's context). Include the returned session_id in the child's prompt when you can: a session that knows its own ID can attribute its send_message traffic without looking it up. Track it later with session_list / session_read / session_metadata. Delivery is not retried: if the agent restarts mid-turn the prompt is lost — re-send by reading the session and continuing it.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -193,12 +193,13 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "send_message",
-						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing is returned to you. Read the target later with session_read if you need its response. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
+						Description: "Send a text message to another session in this workspace (IDs from session_list / session_metadata), fire-and-forget: the message is delivered and the target session's reply — if any — stays in THAT session; nothing returns to you. Read the target later with session_read if you need its response. Every delivered message carries your origin as a return address (visible to the recipient as \"message from session …\") so they know who to reply to — reply via send_message to that origin. The origin is metadata, not authentication: claiming another session's ID grants nothing (all sessions share one credential) — it exists so the receiving thread knows where to direct its response. The platform stamps your session ID automatically; pass from_session_id (your own session, findable via session_metadata — your title identifies you) ONLY as a fallback when the result says the platform could not inject it. Use to steer or follow up on sessions you created (create_session), to hand work to an idle session, or to answer a question another session's agent asked you in its transcript. Busy targets queue the message server-side and deliver it the moment their current turn ends (status says delivering_after_current_turn). Sending to your OWN current session schedules the message as your next turn after this one completes — a self follow-up, not mid-turn injection — and the message must be self-contained either way: the target does not inherit this conversation's context. Delivery is not retried: if the workspace restarts while a message waits or before it lands, it is lost — re-send. Not for: questions you need answered in THIS thread (use the task tool, which blocks and returns the result), or starting a new session (create_session).",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"session_id": map[string]any{"type": "string", "description": "The target session (from session_list / session_metadata)"},
-								"message":    map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
+								"session_id":      map[string]any{"type": "string", "description": "The target session (from session_list / session_metadata)"},
+								"message":         map[string]any{"type": "string", "description": "The message text — self-contained: the target does not inherit this conversation's context"},
+								"from_session_id": map[string]any{"type": "string", "description": "Optional fallback: YOUR own session ID, used only when the platform could not inject it automatically (the result tells you). Find yours via session_metadata — your title identifies you. Lets the recipient reply to you."},
 							},
 							"required": []string{"session_id", "message"},
 						},
@@ -413,7 +414,16 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 	case "send_message":
 		sessionID, _ := args["session_id"].(string)
 		message, _ := args["message"].(string)
-		return mcpSendMessage(ctx, password, sessionID, message)
+		// Hybrid origin (#1469 ruling): lsp_injected_session is the
+		// platform plugin's harness-attested injection (never
+		// schema-advertised, never model-supplied by construction);
+		// from_session_id is the optional self-declared fallback the
+		// model may supply when injection is absent. mcpSendMessage
+		// prefers injection, validates by-ID either way, and labels
+		// the mode in the sentinel and the result.
+		injected, _ := args["lsp_injected_session"].(string)
+		declared, _ := args["from_session_id"].(string)
+		return mcpSendMessage(ctx, password, sessionID, message, injected, declared)
 	case "abort_session":
 		sessionID, _ := args["session_id"].(string)
 		return mcpAbortSession(ctx, password, sessionID)
@@ -630,17 +640,36 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 	})
 }
 
-// injectAgentdMCPServer returns the pre-marshal hook that stamps the
-// platform's llmsafespaces MCP entry into agent-config.json. The entry
-// carries the Basic credential because /v1/mcp enforces auth (#847); an
-// empty password yields a DISABLED entry — an enabled-but-credential-less
-// entry would just 401 on every JSON-RPC call, so disabling keeps
-// opencode from retrying a provably unusable server. In production the
-// password is never empty here: the credential-setup init script installs
-// it before invoking materialize (this hook's only pre-boot caller), and
-// even a failed read self-heals — ensureBootAgentConfig unconditionally
-// re-stamps a credentialed entry before opencode starts.
-func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
+// platformPluginPath is the origin-injection plugin's in-pod path: the
+// opencode overlay image volume is mounted read-only at /opencode, and
+// the plugin ships inside it at /plugins (design 0053 §4.2, #1469) —
+// version-coupled to the pinned binary by construction.
+const platformPluginPath = "/opencode/plugins/llmsafespaces-origin.js"
+
+// platformPluginSpec is the config `plugin:` entry form: a file:// URL
+// imports in place from the read-only mount (no install, no user-space
+// dependence — verified against the pinned harness, #1469).
+const platformPluginSpec = "file://" + platformPluginPath
+
+// injectPlatformAgentConfig returns the pre-marshal hook that stamps
+// BOTH platform entries into agent-config.json:
+//
+//   - the llmsafespaces MCP server entry (Basic credential because
+//     /v1/mcp enforces auth, #847; an empty password yields a DISABLED
+//     entry — an enabled-but-credential-less entry would just 401 on
+//     every JSON-RPC call, so disabling keeps opencode from retrying a
+//     provably unusable server).
+//   - the origin-injection plugin (#1465): appended to the plugin
+//     array, CONCAT + DEDUP — user-staged plugins are preserved (the
+//     writer re-emits them via pluginRaw; the harness would dedup on
+//     its own, but this file is rebuilt whole, so the merge is ours).
+//
+// In production the password is never empty here: the credential-setup
+// init script installs it before invoking materialize (this hook's only
+// pre-boot caller), and even a failed read self-heals —
+// ensureBootAgentConfig unconditionally re-stamps a credentialed entry
+// before opencode starts.
+func injectPlatformAgentConfig(password string) func(map[string]json.RawMessage) {
 	return func(cfg map[string]json.RawMessage) {
 		mcpEntry := map[string]any{
 			"type": "remote",
@@ -662,13 +691,39 @@ func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
 				mcpMap["llmsafespaces"] = entryJSON
 				merged, _ := json.Marshal(mcpMap)
 				cfg["mcp"] = merged
-				return
+			} else {
+				mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
+				merged, _ := json.Marshal(mcpMap)
+				cfg["mcp"] = merged
 			}
+		} else {
+			mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
+			merged, _ := json.Marshal(mcpMap)
+			cfg["mcp"] = merged
 		}
-		mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
-		merged, _ := json.Marshal(mcpMap)
-		cfg["mcp"] = merged
+
+		injectPlatformPlugin(cfg)
 	}
+}
+
+// injectPlatformPlugin appends the origin-injection plugin to the
+// config's plugin array, preserving user entries and deduping ours.
+func injectPlatformPlugin(cfg map[string]json.RawMessage) {
+	var plugins []string
+	if existing, ok := cfg["plugin"]; ok {
+		_ = json.Unmarshal(existing, &plugins)
+	}
+	for _, p := range plugins {
+		if p == platformPluginSpec {
+			return
+		}
+	}
+	plugins = append(plugins, platformPluginSpec)
+	merged, err := json.Marshal(plugins)
+	if err != nil {
+		return
+	}
+	cfg["plugin"] = merged
 }
 
 // mcpSecretsResync implements the secrets_resync MCP tool (US-70.3

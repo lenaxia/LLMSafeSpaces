@@ -1,0 +1,1 @@
+"<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_f499ee9e6ffe52BJ8jxc2TEQQJ\",\"mode\":\"injected\"} -->\nLine one.\n\nLine two after a blank line.\n\n[llmsafespaces:attachment path=\"/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt\" name=\"notes.txt\"]\n"

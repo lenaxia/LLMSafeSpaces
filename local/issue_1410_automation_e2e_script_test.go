@@ -12,10 +12,13 @@ package local_test
 // the assertions so rows cannot be silently dropped.
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -87,6 +90,14 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R9d: narrowing capture under last_result rejected`,        // reverse-direction violation asserted
 		`*"memoryMode 'last_result' requires captureMode 'full'"*`, // the shared constraint error asserted
 		`R5_WS="00000000-0000-4000-8000-000000000001"`,             // R8's workspaceId source defined (was unbound → set -u abort)
+		// R10 — drain-targetless via trigger patch (#1473): the drain
+		// twin of R4d (retarget clears workspace_id while a webhook
+		// routine fire pends; NULLIF store semantics).
+		`R10: drain-targetless fire failed with trigger_has_no_target`, // row's ok assertion
+		`*"trigger_has_no_target"*`,                                    // unified payload asserted
+		`"workspaceId":""`,                                             // the retarget patch spelled
+		`consecutiveFailures`,                                          // accounting asserted
+		`lost the tick race twice`,                                     // retry guard present
 		// R8 — org-scope CRUD resolves the resource segment (#1449).
 		`ownerEmail:"e2e-automation@example.invalid"`, // org created; API-key user becomes admin
 		`R8a: org trigger GET resolves the trigger`,   // the shadowing 404'd here
@@ -113,4 +124,112 @@ func TestIssue1410E2EWorkflowRegistered(t *testing.T) {
 	src := string(raw)
 	assert.True(t, strings.Contains(src, "local/issue-1410-1412-automation-e2e.sh"),
 		"the automation e2e script must be registered in the nightly workflow")
+}
+
+// TestIssue1410E2EScript_ExecuteSmoke runs the script end-to-end under
+// curl/sleep/kubectl shims and asserts it TRAVERSES to the final gate
+// (die "N row(s) failed") instead of aborting on an unbound variable,
+// a failed substitution, or a missing command. Source-text needles
+// cannot catch runtime aborts — this smoke is what would have caught
+// the r3/r4 harness defects (verdict capture, api_status subshell
+// death) before review did. The shim surface is deliberately generic:
+// rows whose assertions need specific responses note_fail, which is
+// fine — reaching the verdict line is the property under test.
+func TestIssue1410E2EScript_ExecuteSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execution smoke spawns ~hundreds of shim processes")
+	}
+	shimDir := t.TempDir()
+
+	curlShim := `#!/usr/bin/env bash
+# Deterministic response surface: -w expansions honored like real curl.
+method="GET"; wfmt=""; path=""
+prev=""
+for a in "$@"; do
+  case "${prev}" in
+    -X) method="${a}" ;;
+    -w) wfmt="${a}" ;;
+  esac
+  case "${a}" in http://*) path="${a}" ;; esac
+  prev="${a}"
+done
+body='{"id":"smoke","trigger":{"id":"smoke"},"name":"x","enabled":false,"nextFireAt":"2026-10-01T03:00:00Z","consecutiveFailures":1,"fires":[],"runs":[]}'
+code=200
+case "${path}" in
+  */livez) body="ok" ;;
+  */hooks/*) code=202 ;;
+  */rotate-secret) body='{"webhookSecret":"whsec_smoke","webhookUrl":"/api/v1/hooks/smoke"}' ;;
+  *)
+    [[ "${method}" == "POST" ]] && code=201
+    ;;
+esac
+if [[ -n "${wfmt}" ]]; then
+  # The script passes -w '\n%{http_code}' as literal backslash-n (real
+  # curl expands it); match the literal, emit a real newline.
+  if [[ "${wfmt}" == '\n%{http_code}' ]]; then
+    printf '%s\n%s' "${body}" "${code}"
+  elif [[ "${wfmt}" == *'%{http_code}'* ]]; then
+    printf '%s' "${code}"
+  else
+    printf '%s' "${body}"
+  fi
+else
+  printf '%s' "${body}"
+fi
+exit 0
+`
+	sleepShim := "#!/usr/bin/env bash\nexit 0\n"
+	kubectlShim := "#!/usr/bin/env bash\nexit 0\n"
+
+	for name, body := range map[string]string{
+		"curl": curlShim, "sleep": sleepShim, "kubectl": kubectlShim,
+	} {
+		p := filepath.Join(shimDir, name)
+		require.NoError(t, os.WriteFile(p, []byte(body), 0o755))
+	}
+
+	cmd := exec.Command("bash", issue1410Script)
+	cmd.Env = append(os.Environ(), "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		combined := out.String()
+		// The generic shim cannot satisfy row-specific assertions, so
+		// failures accumulate and the final gate must fire.
+		if err == nil {
+			t.Fatalf("script must exit non-zero under the generic shim (silent pass?)\n%s", tailOf(combined))
+		}
+		if !strings.Contains(combined, "row(s) failed") {
+			t.Fatalf("script never reached the final verdict gate — aborted mid-row:\n%s", tailOf(combined))
+		}
+		for _, banned := range []string{"unbound variable", "command not found", "permission denied", "substitution"} {
+			if strings.Contains(combined, banned) {
+				t.Fatalf("runtime abort signature %q found:\n%s", banned, tailOf(combined))
+			}
+		}
+		// Credential hygiene: the rotate-secret response carries the
+		// one-time webhook secret; nothing may echo it to the log
+		// (r5 finding 3's class — pinned here so it cannot regress).
+		if strings.Contains(combined, "whsec_") {
+			t.Fatalf("webhook secret material leaked into script output:\n%s", tailOf(combined))
+		}
+	case <-time.After(180 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatalf("script did not terminate within 180s (hung poll loop?)\n%s", tailOf(out.String()))
+	}
+}
+
+func tailOf(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > 25 {
+		lines = lines[len(lines)-25:]
+	}
+	return strings.Join(lines, "\n")
 }

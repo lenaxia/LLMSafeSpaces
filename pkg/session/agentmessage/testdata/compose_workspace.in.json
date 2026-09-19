@@ -1,0 +1,8 @@
+{
+  "message": "Cross-workspace send (future capability #1260 — v1 senders never set workspace).",
+  "origin": {
+    "fromSession": "ses_f4990c383ffe6Jr3rKx1nyKwtx",
+    "workspace": "d8bed486-2eec-4db6-a8ff-e11ba404a055",
+    "mode": "injected"
+  }
+}

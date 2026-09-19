@@ -131,6 +131,38 @@ func validateSessionID(sessionID string) error {
 	return nil
 }
 
+// SessionExists is the by-ID existence probe: GET /session/{id} — 2xx
+// means the session exists, 404 means it does not (live-proven on the
+// pinned 1.18.15: GET /session/{unknown} → 404 {"name":"NotFoundError"}),
+// anything else is an error (indeterminate, never a silent false).
+// Status-only by design: no body is parsed, so a corrupted 200 cannot
+// turn existence into a phantom result. Used by send_message's origin
+// validation (#1465) — by-ID beats session-LIST membership there: the
+// #1452 bug class leaves routine sessions live and readable by ID
+// while never appearing in the list.
+func (c *Client) SessionExists(ctx context.Context, sessionID string) (bool, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return false, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/session/"+sessionID, nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort drain
+	switch {
+	case resp.StatusCode < 300:
+		return true, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	default:
+		return false, c.statusError("GET /session/"+sessionID, resp)
+	}
+}
+
 // SessionCreate creates a session; title may be empty (omitted — the
 // agent auto-titles).
 func (c *Client) SessionCreate(ctx context.Context, title string) (string, error) {

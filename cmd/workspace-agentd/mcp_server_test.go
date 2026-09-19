@@ -131,9 +131,45 @@ func TestMCPHandler_ToolsCall_SessionRead_MissingSessionID(t *testing.T) {
 	assert.True(t, result["isError"].(bool))
 }
 
+// The plugin half of the platform config injection (#1465): the
+// origin-injection plugin rides agent-config.json, preserving
+// user-staged plugins and never duplicating itself across rebuilds.
+func TestInjectPlatformPlugin_AppendsAndPreserves(t *testing.T) {
+	cfg := map[string]json.RawMessage{
+		"plugin": json.RawMessage(`["./user-plugin.ts"]`),
+	}
+	injectPlatformAgentConfig(mcpTestPassword)(cfg)
+
+	var plugins []string
+	require.NoError(t, json.Unmarshal(cfg["plugin"], &plugins))
+	assert.Equal(t, []string{"./user-plugin.ts", "file:///opencode/plugins/llmsafespaces-origin.js"}, plugins,
+		"user plugins are preserved, the platform entry appended")
+}
+
+func TestInjectPlatformPlugin_DedupsAcrossRebuilds(t *testing.T) {
+	cfg := map[string]json.RawMessage{
+		"plugin": json.RawMessage(`["file:///opencode/plugins/llmsafespaces-origin.js"]`),
+	}
+	injectPlatformAgentConfig(mcpTestPassword)(cfg)
+
+	var plugins []string
+	require.NoError(t, json.Unmarshal(cfg["plugin"], &plugins))
+	assert.Equal(t, []string{"file:///opencode/plugins/llmsafespaces-origin.js"}, plugins,
+		"a rebuild must not duplicate the platform entry")
+}
+
+func TestInjectPlatformPlugin_EmptyConfigCreatesArray(t *testing.T) {
+	cfg := map[string]json.RawMessage{}
+	injectPlatformAgentConfig(mcpTestPassword)(cfg)
+
+	var plugins []string
+	require.NoError(t, json.Unmarshal(cfg["plugin"], &plugins))
+	assert.Equal(t, []string{"file:///opencode/plugins/llmsafespaces-origin.js"}, plugins)
+}
+
 func TestInjectAgentdMCPServer_EmptyConfig(t *testing.T) {
 	cfg := map[string]json.RawMessage{}
-	injectAgentdMCPServer(mcpTestPassword)(cfg)
+	injectPlatformAgentConfig(mcpTestPassword)(cfg)
 
 	mcpRaw, ok := cfg["mcp"]
 	require.True(t, ok, "mcp section should be present")
@@ -164,7 +200,7 @@ func TestInjectAgentdMCPServer_ExistingMCP(t *testing.T) {
 		"mcp": existingJSON,
 	}
 
-	injectAgentdMCPServer(mcpTestPassword)(cfg)
+	injectPlatformAgentConfig(mcpTestPassword)(cfg)
 
 	var mcpMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
@@ -406,7 +442,7 @@ func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 // gated /v1/mcp, so opencode would pointlessly retry an unusable server.
 func TestInjectAgentdMCPServer_EmptyPassword_Disabled(t *testing.T) {
 	cfg := map[string]json.RawMessage{}
-	injectAgentdMCPServer("")(cfg)
+	injectPlatformAgentConfig("")(cfg)
 
 	var mcpMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
@@ -425,7 +461,7 @@ func TestInjectAgentdMCPServer_EmptyPassword_Disabled(t *testing.T) {
 func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
 	const pw = "coupling-test-pw"
 	cfg := map[string]json.RawMessage{}
-	injectAgentdMCPServer(pw)(cfg)
+	injectPlatformAgentConfig(pw)(cfg)
 
 	var mcpMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))

@@ -46,15 +46,21 @@ trap cleanup EXIT
 curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
     || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
 
-api() { # method path [body] -> response body; status in ${api_status}
+api() { # method path [body] -> body on stdout; api_status + api_body globals
+    # No-subshell contract: capture-style callers must use
+    # `api M P B; var="${api_body}"` — `var=$(api ...)` runs in a
+    # subshell and the status side-channel dies with it (set -u then
+    # aborts on the stale variable; see the 1410 harness fix, #1474 r4).
     local method="$1" path="$2" body="${3:-}"
     local args=(-s -m 20 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
         -H "Content-Type: application/json" -w '\n%{http_code}' \
         "http://127.0.0.1:${PORTFWD_PORT}${path}")
     [[ -n "${body}" ]] && args+=(-d "${body}")
-    local out; out=$(curl "${args[@]}")
+    local out
+    out=$(curl "${args[@]}") || out=$'\n000'
     api_status="${out##*$'\n'}"
-    printf '%s' "${out%$'\n'*}"
+    api_body="${out%$'\n'*}"
+    printf '%s' "${api_body}"
 }
 
 sessions_json() { # -> the platform session list for the row workspace
@@ -96,8 +102,9 @@ signed_fire() {
 # make_routine_trigger <name> <preserve> -> trigger id (echoed), 201 enforced
 make_routine_trigger() {
     local name="$1" preserve="$2" resp
-    resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg n "${name}" --arg p "${preserve}" --arg w "${WS}" \
-        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"Reply with exactly the single word: indexed",captureMode:"full",preserveSession:$p}')")
+    api POST /api/v1/me/triggers "$(jq -nc --arg n "${name}" --arg p "${preserve}" --arg w "${WS}" \
+        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"Reply with exactly the single word: indexed",captureMode:"full",preserveSession:$p}')" >/dev/null
+    resp="${api_body}"
     [[ "${api_status}" == "201" ]] || die "routine trigger create (${name}) failed: ${api_status} ${resp}"
     created_triggers+=("$(printf '%s' "${resp}" | jq -r '.id')")
     printf '%s' "${resp}" | jq -r '.id'
@@ -112,7 +119,8 @@ ok "workspace Active"
 log "R1 — PreserveAlways routine fire surfaces in the platform session list"
 
 R1_ID=$(make_routine_trigger "e2e-1452-preserve-always" "always")
-r1_rot=$(api POST "/api/v1/me/triggers/${R1_ID}/rotate-secret")
+api POST "/api/v1/me/triggers/${R1_ID}/rotate-secret" >/dev/null
+r1_rot="${api_body}"
 R1_SECRET=$(printf '%s' "${r1_rot}" | jq -r '.webhookSecret // empty')
 R1_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r1_rot}" | jq -r '.webhookUrl // empty')"
 [[ -n "${R1_SECRET}" && "${R1_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]] \
@@ -159,7 +167,8 @@ log "R2 — PreserveNever routine fire adds no platform session row"
 
 r2_before=$(sessions_json | jq 'length')
 R2_ID=$(make_routine_trigger "e2e-1452-preserve-never" "never")
-r2_rot=$(api POST "/api/v1/me/triggers/${R2_ID}/rotate-secret")
+api POST "/api/v1/me/triggers/${R2_ID}/rotate-secret" >/dev/null
+r2_rot="${api_body}"
 R2_SECRET=$(printf '%s' "${r2_rot}" | jq -r '.webhookSecret // empty')
 R2_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r2_rot}" | jq -r '.webhookUrl // empty')"
 [[ -n "${R2_SECRET}" && "${R2_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]] \

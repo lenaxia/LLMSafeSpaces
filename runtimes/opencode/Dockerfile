@@ -20,8 +20,18 @@
 # same CI job family that stamps agentd's; the controller resolves them
 # at startup (controller/internal/workspace/opencode_pins.go).
 #
-# NOTE: do not add anything executable to this image. One file, one
-# sha256 — the integrity contract (design 0053 §3, agentd precedent).
+# NOTE (amended #1469; design 0053 §4.2): the artifact's BINARY
+# integrity contract is unchanged — ONE executable, one per-arch
+# sha256, verified by the supervisor before spawn. Alongside the
+# binary the artifact carries NON-executable platform files, each
+# digest-pinned by the image digest itself (the #1416 CA-bundle
+# precedent): the first-party opencode plugins under /plugins. Plugins
+# are version-coupled to the binary by necessity — their hook contract
+# (tool.execute.before) is a harness-internal surface, so shipping a
+# plugin facing a different harness risks silent no-op instead of loud
+# failure. The CI origin-plugin-pin freeze job gates that coupling on
+# every bump. Never add a second EXECUTABLE; plugins are data consumed
+# by the pinned binary itself.
 
 # Override to use a different release: --build-arg OPENCODE_VERSION=<version>
 # Pinned to 1.18.15 (Aug 2026) — validated against the proxy code in
@@ -78,6 +88,14 @@ RUN set -eux; \
 FROM scratch
 
 COPY --from=fetch --chmod=755 /out/opencode /usr/local/bin/opencode
+
+# Platform first-party plugins (design 0053 §4.2, #1465): the
+# origin-injection plugin hooks tool.execute.before and stamps the
+# calling session's ID onto llmsafespaces send_message calls. Mounted
+# read-only with the image volume at /opencode/plugins; referenced by
+# file:// from agent-config.json (injectPlatformAgentConfig). Data,
+# not executables — see the NOTE above.
+COPY --chmod=644 runtimes/opencode/plugins/llmsafespaces-origin.js /plugins/llmsafespaces-origin.js
 
 # Not a runnable image by itself (no entrypoint) — it is consumed only as
 # an image volume mounted read-only at /opencode in workspace pods.
