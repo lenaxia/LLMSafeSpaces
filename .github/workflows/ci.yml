@@ -1841,7 +1841,9 @@ jobs:
         if: matrix.platform == 'linux/amd64'
         run: |
           docker buildx build --load -f runtimes/opencode/Dockerfile -t lsp-opencode-mode-pin:ci . >/dev/null
-          cid=$(docker create lsp-opencode-mode-pin:ci)
+          # FROM scratch, no entrypoint: docker create needs an explicit
+          # command token even though it is never executed.
+          cid=$(docker create lsp-opencode-mode-pin:ci true)
           docker export "$cid" -o /tmp/oc-fs.tar
           docker rm "$cid" >/dev/null
           dmode=$(tar -tvf /tmp/oc-fs.tar | awk '$NF == "plugins/" || $NF == "plugins" {print $1}' | head -1)
