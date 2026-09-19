@@ -1059,9 +1059,11 @@ jobs:
       # Resolve a build version for CI image builds. This workflow runs
       # on branch pushes, PRs, and dispatches (no tag trigger —
       # release.yml owns tag events, see the trigger comment above):
-      # non-tag refs carry the short commit sha; a dispatch pinned to a
-      # released ref carries that ref's version — so no CI image reports
-      # a bare "dev" or "unknown" as its binary version.
+      # non-tag refs carry the short commit sha. A workflow_dispatch run
+      # may be pinned to ANY ref incl. a released tag — the version step
+      # below still resolves it (release-version refs carry their
+      # version; prerelease refs fall to the sha form) — so no CI image
+      # reports a bare "dev" or "unknown" as its binary version.
       - id: v
         env:
           GITHUB_REF_NAME: ${{ github.ref_name }}
