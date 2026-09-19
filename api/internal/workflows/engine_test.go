@@ -2372,7 +2372,7 @@ func TestExecuteWithRetry_ScriptEnvUnavailableNotRetried(t *testing.T) {
 	}{
 		{resp: &NodeExecResponse{ErrorCode: "script_env_unavailable", Detail: "script node execution environment unavailable in this container: no writable temp dir"}},
 	}}
-	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{})
+	resp, _ := executeWithRetry(context.Background(), ex, "ws", "ip", &NodeExecRequest{}, nil)
 	assert.Equal(t, 1, ex.calls, "script_env_unavailable must not retry")
 	assert.Equal(t, "script_env_unavailable", resp.ErrorCode)
 }
