@@ -113,6 +113,13 @@ type NodeExecResponse struct {
 	Branch    string          `json:"branch,omitempty"`
 	ErrorCode string          `json:"errorCode,omitempty"`
 	Detail    string          `json:"detail,omitempty"`
+	// SessionID is the first-class session identity (#1470): set by
+	// agentd iff a session still exists when the node finished — on
+	// failure envelopes too, so the engine can origin-record and index
+	// exactly the sessions that survived. Absent on old agentd (the
+	// engine falls back to parsing the output payload) and on
+	// transport errors (no response object at all).
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 // executeWithRetry runs an agentd node-execution with a bounded retry
@@ -843,26 +850,33 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
 		resultStatus = "failed"
+		// #1470 residual: a transport failure carries no response
+		// object, so a session agentd created mid-attempt is
+		// unreachable here — the error envelope only exists on the
+		// 200-with-errorCode leg below.
 	} else if agentResp.ErrorCode != "" {
 		errMsg, _ := json.Marshal(map[string]string{"error": agentResp.Detail, "code": agentResp.ErrorCode})
 		resultData = errMsg
 		resultStatus = "failed"
+		// #1470: a failed fire whose session SURVIVED (PreserveOnFailure
+		// semantics — keep on failure; PreserveAlways likewise; agentd
+		// tears ephemerals down and omits the id) is exactly the session
+		// an operator wants to inspect, so it gets the same origin +
+		// index treatment as a delivered fire's session.
+		if agentResp.SessionID != "" {
+			s.recordRoutineSessionArtifacts(ctx, logger, workspaceID, trigger, fireID, agentResp.SessionID)
+		}
 	} else {
 		resultStatus = "delivered"
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
 		}
 
-		// Extract session_id from agent output. agentd always includes
-		// session_id in the result; for PreserveNever it's set to "" by
-		// agentd after deleting the ephemeral session.
-		var sessionID string
-		var agentOutput map[string]any
-		if json.Unmarshal(agentResp.Output, &agentOutput) == nil {
-			if id, ok := agentOutput["session_id"].(string); ok {
-				sessionID = id
-			}
-		}
+		// Session identity: the #1470 first-class envelope field first
+		// (immune to output drift), the output payload as the old-agentd
+		// fallback. For PreserveNever it's "" — agentd deletes the
+		// ephemeral session (and reports a teardown failure's leak).
+		sessionID := routineSessionID(agentResp)
 
 		// PreserveOnFailure: delete session on success.
 		sessionDeleted := false
@@ -875,21 +889,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// when the session still exists (not deleted by PreserveOnFailure
 		// success or PreserveNever ephemeral cleanup).
 		if sessionID != "" && !sessionDeleted {
-			if err := s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
-				SessionID:   sessionID,
-				WorkspaceID: workspaceID,
-				Origin:      types.SessionOriginRoutine,
-				TriggerID:   &trigger.ID,
-				FireID:      &fireID,
-				Title:       trigger.Name,
-				CreatedAt:   time.Now().UTC(),
-			}); err != nil {
-				logger.Error(err, "routine: failed to record session origin", "sessionId", sessionID, "triggerId", trigger.ID)
-			}
-			// #1452: the same session must also exist in the sidebar's
-			// session_index — the platform session list serves only that
-			// index, and no adapter route runs for a routine fire.
-			s.indexPreservedSession(ctx, logger, workspaceID, sessionID, trigger.Name)
+			s.recordRoutineSessionArtifacts(ctx, logger, workspaceID, trigger, fireID, sessionID)
 		}
 	}
 
@@ -902,6 +902,44 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	}
 
 	logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
+}
+
+// routineSessionID resolves a routine fire's session identity (#1470):
+// the first-class envelope field when agentd set it (immune to output
+// drift, present on failure envelopes too), else the output payload's
+// session_id (the old-agentd wire, where agentd always stamped it on
+// delivery and cleared it for deleted ephemerals).
+func routineSessionID(resp *NodeExecResponse) string {
+	if resp.SessionID != "" {
+		return resp.SessionID
+	}
+	var agentOutput map[string]any
+	if json.Unmarshal(resp.Output, &agentOutput) == nil {
+		if id, ok := agentOutput["session_id"].(string); ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// recordRoutineSessionArtifacts writes the origin row (sidebar badge +
+// trigger linkage) and the session_index row (platform list
+// discoverability, #1452) for a routine session that exists after its
+// fire — delivered or failed. Both writes are best-effort: the fire's
+// outcome is already decided.
+func (s *Scheduler) recordRoutineSessionArtifacts(ctx context.Context, logger Logger, workspaceID string, trigger *wf.TriggerRow, fireID, sessionID string) {
+	if err := s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+		SessionID:   sessionID,
+		WorkspaceID: workspaceID,
+		Origin:      types.SessionOriginRoutine,
+		TriggerID:   &trigger.ID,
+		FireID:      &fireID,
+		Title:       trigger.Name,
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		logger.Error(err, "routine: failed to record session origin", "sessionId", sessionID, "triggerId", trigger.ID)
+	}
+	s.indexPreservedSession(ctx, logger, workspaceID, sessionID, trigger.Name)
 }
 
 // indexPreservedSession writes a preserved routine session into the

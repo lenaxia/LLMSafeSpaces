@@ -137,15 +137,20 @@ type mockAgentd struct {
 	errors    map[string]error
 	errCodes  map[string]string
 	sentSpecs map[string]json.RawMessage
+	// sessionIDs stamps the #1470 first-class envelope field onto the
+	// response for the given node (empty map = field never set, the
+	// old-agentd shape).
+	sessionIDs map[string]string
 }
 
 func newMockAgentd() *mockAgentd {
 	return &mockAgentd{
-		outputs:   make(map[string]json.RawMessage),
-		branches:  make(map[string]string),
-		errors:    make(map[string]error),
-		errCodes:  make(map[string]string),
-		sentSpecs: make(map[string]json.RawMessage),
+		outputs:    make(map[string]json.RawMessage),
+		branches:   make(map[string]string),
+		errors:     make(map[string]error),
+		errCodes:   make(map[string]string),
+		sentSpecs:  make(map[string]json.RawMessage),
+		sessionIDs: make(map[string]string),
 	}
 }
 
@@ -160,6 +165,9 @@ func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecReques
 	if code, ok := m.errCodes[req.NodeID]; ok {
 		resp.ErrorCode = code
 		resp.Detail = "simulated error"
+	}
+	if sid, ok := m.sessionIDs[req.NodeID]; ok {
+		resp.SessionID = sid
 	}
 	if br, ok := m.branches[req.NodeID]; ok {
 		resp.Branch = br
