@@ -63,3 +63,11 @@ None.
 2. **Residual accepted + documented** (reviewer option c): the MAIN-push CI run of a release commit still pushes sha-<commit> unsigned; if that run lands AFTER the release workflow's signed sha-<commit> push (queue timing), the tag flips to the unattested same-commit build. Attestation-only delta (same commit), practically unreachable under the digest-pin discipline (#2539's fetch flow is digest-GET), and unfixable at CI time (CI cannot know a commit will be released). Recorded here per the review's demand; revisit only if a consumer pins sha- tags of released commits.
 3. **Trigger-retention rationale corrected**: the original "branch-protection side effects" claim was unvalidated (tags aren't branch-protected — r1 caught it). The REAL trade-off was sha/ts publication for tag commits — moot since release.yml publishes those; hence dropping the trigger outright (also saves a duplicate 14-job build per release).
 4. **Comment-blind pin fixed**: activeLines counts non-comment line-anchored matches; mutation-verified (commenting one semver line → pin FAILS; restored).
+
+## r2 — spelling-proof pins (all four mutations caught)
+
+The reviewer evaded the line-grep trigger pin with BOTH alternative YAML spellings (list form, equivalent glob) and found the silent-loss direction unpinned (release.yml's trigger deletable, all pins green) plus a raw-imagetools push evading the metadata-action pins. Fixes, each mutation-verified locally (mutate → pin FAILS → restore):
+1. Structural `on:`-block parsing (yaml.v3) — flow map, block list, and bare-string tag filters all normalize; version-likeness = v-prefix + glob metachar (covers v*.*.* AND v[0-9]*.… equivalents).
+2. TestReleaseWorkflow_FiresOnVersionTags — the trigger itself pinned (deleting it fails loudly).
+3. TestMergeJobs_NoRawVersionTagPushes — Contains-level guard against raw `-t …:X.Y.Z` / docker push of version-looking tags in ci.yml run steps (release.yml's own per-arch pattern was the evasion vector).
+All four reviewer mutations reproduce FAIL on the new pins; restored tree green.
