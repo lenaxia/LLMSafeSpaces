@@ -112,6 +112,7 @@ type ConfigWriter struct {
 	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
 	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
+	pluginRaw       json.RawMessage  // existing "plugin" string-array from loadExisting (user-staged plugins); re-emitted verbatim. Non-array shapes are NOT captured
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
 	injectedDirs    []string         // external_directory keys the writer last injected (or recovered from a prior render); stripped from modeRaw when the AllowedDirs source changes so replace/clear are authoritative over prior renders
 	adminPromptPath string           // path to admin-prompt file; "" = skip
@@ -151,6 +152,7 @@ func (w *ConfigWriter) loadExisting() {
 		Agent    json.RawMessage `json:"agent,omitempty"`
 		Mode     json.RawMessage `json:"mode,omitempty"`
 		MCP      json.RawMessage `json:"mcp,omitempty"`
+		Plugin   json.RawMessage `json:"plugin,omitempty"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return
@@ -173,6 +175,18 @@ func (w *ConfigWriter) loadExisting() {
 		var mcpMap map[string]json.RawMessage
 		if json.Unmarshal(cfg.MCP, &mcpMap) == nil && mcpMap != nil {
 			w.mcpRaw = cfg.MCP
+		}
+	}
+
+	// Preserve the on-disk "plugin" section (user-staged plugins) the
+	// same way as "mcp": without capture, any rebuild would silently
+	// delete the user's plugins. Only a JSON array of strings is
+	// captured — other shapes are dropped, never round-tripped into
+	// the output.
+	if len(cfg.Plugin) > 0 {
+		var plugins []string
+		if json.Unmarshal(cfg.Plugin, &plugins) == nil && plugins != nil {
+			w.pluginRaw = cfg.Plugin
 		}
 	}
 
@@ -634,6 +648,14 @@ func (w *ConfigWriter) rebuildLocked() error {
 		cfg["mcp"] = mcpJSON
 	} else if len(w.mcpRaw) > 0 {
 		cfg["mcp"] = w.mcpRaw
+	}
+
+	// Re-emit the captured user plugin section verbatim. The pre-marshal
+	// hook may then APPEND platform entries to it (concat + dedup — the
+	// harness merges config plugin arrays the same way, but our file is
+	// rebuilt whole, so the merge happens here).
+	if len(w.pluginRaw) > 0 {
+		cfg["plugin"] = w.pluginRaw
 	}
 
 	// preMarshalHook lets the caller (agentd) inject entries that this

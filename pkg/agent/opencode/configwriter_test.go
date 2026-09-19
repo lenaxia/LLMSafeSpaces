@@ -14,6 +14,8 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 )
 
 // ConfigWriter is the SINGLE writer of agent-config.json. All four
@@ -77,6 +79,49 @@ func TestNewConfigWriter_LoadsExistingFile(t *testing.T) {
 	require.NotNil(t, w.providerRaw, "provider source must be loaded from existing file")
 	assert.Equal(t, "openai/gpt-4o", w.model, "model source must be loaded from existing file")
 	assert.Nil(t, w.relay, "relay source must be nil at boot")
+}
+
+// User-staged plugin entries must survive every rebuild (#1465 wiring:
+// the platform hook appends its own entry to the re-emitted array —
+// the writer's job is to keep the user's bytes intact).
+func TestConfigWriter_PreservesUserPluginSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	existing := `{
+		"$schema": "https://opencode.ai/config.json",
+		"plugin": ["./user-plugin.ts", "opencode-foo@1.2.3"]
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
+
+	w := newTestWriter(t, path)
+	_, err := w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		Plugin []string `json:"plugin"`
+	}
+	require.NoError(t, json.Unmarshal(data, &cfg))
+	assert.Equal(t, []string{"./user-plugin.ts", "opencode-foo@1.2.3"}, cfg.Plugin,
+		"a rebuild must round-trip the user plugin array verbatim")
+}
+
+// A malformed plugin section (non-array) is dropped, never propagated.
+func TestConfigWriter_DropsMalformedPluginSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	existing := `{"plugin": {"not": "an array"}}`
+	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
+
+	w := newTestWriter(t, path)
+	_, err := w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), `"plugin"`,
+		"a non-array plugin section must be dropped, not round-tripped")
 }
 
 func TestNewConfigWriter_MissingFile(t *testing.T) {

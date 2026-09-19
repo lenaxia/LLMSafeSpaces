@@ -575,3 +575,59 @@ func TestSeam_Abort_InvalidID(t *testing.T) {
 	})
 	assert.Error(t, c.Abort(context.Background(), "../x"))
 }
+
+// --- SessionExists (issue #1465 origin validation) -------------------------
+
+// The by-ID existence probe: GET /session/{id} — 2xx exists, 404 not
+// (live-proven on pinned 1.18.15: GET /session/{unknown} → 404
+// {"name":"NotFoundError"}), anything else an error. By-ID beats
+// session-list membership for origin validation: the #1452 bug class
+// has live sessions readable by ID while never appearing in the LIST.
+func TestSeam_SessionExists(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		want      bool
+		wantError bool
+	}{
+		{"known session is 200", http.StatusOK, true, false},
+		{"unknown session is 404", http.StatusNotFound, false, false},
+		{"server error is indeterminate", http.StatusInternalServerError, false, true},
+		{"bad gateway is indeterminate", http.StatusBadGateway, false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+			})
+			got, err := c.SessionExists(context.Background(), "ses_1")
+			if tc.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSeam_SessionExists_ExactWire(t *testing.T) {
+	var method, path string
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	})
+	got, err := c.SessionExists(context.Background(), "ses_1")
+	require.NoError(t, err)
+	assert.True(t, got)
+	assert.Equal(t, http.MethodGet, method)
+	assert.Equal(t, "/session/ses_1", path)
+}
+
+func TestSeam_SessionExists_InvalidID(t *testing.T) {
+	c := newSeamServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no wire call for an invalid id")
+	})
+	_, err := c.SessionExists(context.Background(), "../x")
+	assert.Error(t, err)
+}

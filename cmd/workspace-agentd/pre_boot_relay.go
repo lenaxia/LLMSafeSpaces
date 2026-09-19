@@ -282,7 +282,7 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath, password s
 	writer := opencode.NewConfigWriter(agentConfigPath,
 		opencode.WithAdminPromptPath(effectiveAdminPromptPath()),
 		opencode.WithAllowedDirsPath(effectiveAllowedDirsPath()),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer(password)),
+		opencode.WithPreMarshalHook(injectPlatformAgentConfig(password)),
 	)
 	if _, err := writer.Apply(agent.AgentConfigInput{
 		Relay: &agent.RelayState{

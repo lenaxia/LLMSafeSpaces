@@ -1,0 +1,3 @@
+{
+  "text": "<!-- lsp:agent-message-v1 {\"fromSession\":broken json -->\nMalformed payload never breaks the message."
+}

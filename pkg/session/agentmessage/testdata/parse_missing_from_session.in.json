@@ -1,0 +1,3 @@
+{
+  "text": "<!-- lsp:agent-message-v1 {\"workspace\":\"d8bed486-2eec-4db6-a8ff-e11ba404a055\"} -->\nA sentinel without fromSession is malformed (the field is mandatory) — plain text."
+}
