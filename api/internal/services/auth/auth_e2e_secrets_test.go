@@ -283,6 +283,9 @@ func (m *fullMockDB) DeleteSessionTree(context.Context, string, string) error { 
 func (m *fullMockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }
+func (m *fullMockDB) UpsertSessionMessageCount(context.Context, string, string, int) error {
+	return nil
+}
 func (m *fullMockDB) UpsertSessionTitle(context.Context, string, string, string) error { return nil }
 func (m *fullMockDB) UpsertSessionParent(context.Context, string, string, string) error {
 	return nil

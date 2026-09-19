@@ -51,6 +51,10 @@ func (r *recordingSessionIndex) UpsertParent(_ context.Context, _, sessionID, pa
 	r.parents[sessionID] = parentID
 	return nil
 }
+func (r *recordingSessionIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
 func (r *recordingSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error { return nil }
 func (r *recordingSessionIndex) UpsertContextUsed(_ context.Context, _, _ string, _ int64) error {
 	return nil

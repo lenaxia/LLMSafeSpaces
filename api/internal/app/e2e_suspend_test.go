@@ -237,6 +237,9 @@ func (d *recordingDB) UpsertSessionMessage(context.Context, string, string, time
 	return nil
 }
 func (d *recordingDB) UpsertSessionTitle(context.Context, string, string, string) error { return nil }
+func (d *recordingDB) UpsertSessionMessageCount(context.Context, string, string, int) error {
+	return nil
+}
 func (d *recordingDB) UpsertSessionParent(context.Context, string, string, string) error {
 	return nil
 }

@@ -1161,6 +1161,23 @@ func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, ses
 	return err
 }
 
+// UpsertSessionMessageCount sets a session's message_count ABSOLUTELY
+// from the harness-walked ground truth (#1481, the #754 fold-in) — the
+// rebuild that repairs the duplicate-event double-count the incremental
+// RecordMessage path accumulates. The DISTINCT guard makes converged
+// workspaces write-free: the 30s reconcile pass only touches rows
+// whose count actually drifted.
+func (s *Service) UpsertSessionMessageCount(ctx context.Context, workspaceID, sessionID string, count int) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO session_index (workspace_id, session_id, message_count, updated_at)
+		 VALUES ($1, $2, $3, NOW())
+		 ON CONFLICT (workspace_id, session_id) DO UPDATE SET
+		   message_count = EXCLUDED.message_count,
+		   updated_at = NOW()
+		 WHERE session_index.message_count IS DISTINCT FROM EXCLUDED.message_count`, workspaceID, sessionID, count)
+	return err
+}
+
 // UpsertSessionParent records (or refreshes) the parent_session_id for a
 // session. Used to mirror opencode subagent (subtask) parent links into the
 // sidebar's session_index so the UI can render the hierarchy without

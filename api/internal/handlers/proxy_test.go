@@ -913,6 +913,10 @@ func (r *recordingDeleteSessionIndex) DeleteSession(_ context.Context, workspace
 	return nil
 }
 
+func (r *recordingDeleteSessionIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
 func (r *recordingDeleteSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -938,6 +942,10 @@ func (f *failingDeleteSessionIndex) DeleteByWorkspace(_ context.Context, _ strin
 func (f *failingDeleteSessionIndex) DeleteSession(_ context.Context, _, _ string) error {
 	return fmt.Errorf("db connection lost")
 }
+func (f *failingDeleteSessionIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
 func (f *failingDeleteSessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
 }
@@ -1197,6 +1205,10 @@ func (r *recordingActivitySessionIndex) DeleteSession(_ context.Context, workspa
 	r.mu.Unlock()
 	return nil
 }
+func (r *recordingActivitySessionIndex) RebuildMessageCount(_ context.Context, _, _ string, _ int) error {
+	return nil
+}
+
 func (r *recordingActivitySessionIndex) UpdateLastSeen(_ context.Context, _, _ string) error {
 	return nil
 }

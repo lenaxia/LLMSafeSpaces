@@ -351,6 +351,9 @@ func (m *apiKeyAwareDB) DeleteSessionTree(context.Context, string, string) error
 func (m *apiKeyAwareDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }
+func (m *apiKeyAwareDB) UpsertSessionMessageCount(context.Context, string, string, int) error {
+	return nil
+}
 func (m *apiKeyAwareDB) UpsertSessionTitle(context.Context, string, string, string) error {
 	return nil
 }

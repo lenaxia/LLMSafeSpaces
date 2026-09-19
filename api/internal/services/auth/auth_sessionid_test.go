@@ -164,6 +164,10 @@ func (m *mockDB) DeleteSessionTree(context.Context, string, string) error { retu
 func (m *mockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
 	return nil
 }
+func (m *mockDB) UpsertSessionMessageCount(context.Context, string, string, int) error {
+	return nil
+}
+
 func (m *mockDB) UpsertSessionTitle(context.Context, string, string, string) error { return nil }
 func (m *mockDB) UpsertSessionParent(context.Context, string, string, string) error {
 	return nil
