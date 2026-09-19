@@ -129,19 +129,53 @@ type NodeExecResponse struct {
 // language) are NOT retried — only shapes that historically recover
 // within seconds (#1441: a single provider blip consumed
 // consecutiveFailures and could auto-disable a healthy trigger).
-func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+//
+// cleanupIntermediate, when non-nil, receives the sessionId of a
+// DISCARDED retryable response before the next attempt dispatches
+// (#1476) and reports whether the session is now GONE. Each attempt
+// runs in a fresh session, and a preserved-mode transient failure's
+// session would otherwise survive as an unrecorded orphan. It never
+// runs for the final attempt — a failed fire keeps its session for
+// inspection (#1470) — and best-effort by contract: a failed cleanup
+// logs (inside the delete path) and the retry proceeds.
+//
+// If the context dies during the post-cleanup backoff, the loop returns
+// the cleaned attempt's response as final — with its sessionId SCRUBBED
+// when the cleanup confirmed the delete: the #1471 existence contract
+// (sessionId ⟺ session exists) must hold on every returned response,
+// and the loop itself deleted the session. Returning the stale id would
+// make the engine ghost-record a deleted session (the async
+// session_index write is ctx-free and always lands). A cleanup whose
+// delete was not CONFIRMED keeps the id — the session is presumed to
+// exist and deserves recording (a lost delete response may leave it
+// gone; presuming existence is the fail-safe direction — the narrow
+// accepted mirror of confirmed-gone semantics).
+func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP string, req *NodeExecRequest, cleanupIntermediate func(ctx context.Context, sessionID string) (gone bool)) (*NodeExecResponse, error) {
 	const attempts = 3
 	var resp *NodeExecResponse
 	var err error
+	cleanedSession := ""
 	for a := 1; a <= attempts; a++ {
 		resp, err = ex.Execute(ctx, workspaceID, podIP, req)
 		if !retryableAgentdFailure(err, resp) {
 			return resp, err
 		}
 		if a < attempts {
+			if cleanupIntermediate != nil && resp != nil && resp.SessionID != "" {
+				if cleanupIntermediate(ctx, resp.SessionID) {
+					cleanedSession = resp.SessionID
+				}
+			}
 			select {
 			case <-time.After(time.Duration(a) * 2 * time.Second):
 			case <-ctx.Done():
+				// Scrub only THIS response's session (a prior attempt's
+				// confirmed delete must not scrub a later attempt's
+				// live survivor — F1′): the id comparison IS the
+				// invariant.
+				if resp != nil && cleanedSession != "" && cleanedSession == resp.SessionID {
+					resp.SessionID = ""
+				}
 				return resp, err
 			}
 		}
@@ -814,7 +848,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// #1458: the pre-script leg rides the same bounded transient
 		// retry as the agent leg — a provider-blip-shaped 500/502/503 on
 		// this leg must not fail the fire either.
-		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq)
+		scriptResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, scriptReq, nil)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
@@ -845,7 +879,18 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	// #1441: transient upstream 5xx (model-provider blips surfacing as
 	// "opencode returned 5xx") must not fail a fire or burn
 	// auto-disable budget — bounded retry with backoff before giving up.
-	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq)
+	// #1476: a superseded attempt's session is cleaned before the next
+	// dispatch — each attempt runs in a fresh session, and a
+	// preserved-mode transient failure's session would otherwise leak
+	// as an unrecorded orphan. Best-effort; failure paths log inside.
+	cleanupIntermediate := func(ctx context.Context, sessionID string) bool {
+		gone := s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID, deletePurposeRetryIntermediate)
+		if gone {
+			logger.Info("routine: cleaned superseded retry attempt session", "sessionId", sessionID, "triggerId", trigger.ID)
+		}
+		return gone
+	}
+	agentResp, err := executeWithRetry(ctx, s.AgentdClient, workspaceID, podIP, agentReq, cleanupIntermediate)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
@@ -881,7 +926,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// PreserveOnFailure: delete session on success.
 		sessionDeleted := false
 		if trigger.PreserveSession == types.PreserveOnFailure && sessionID != "" {
-			sessionDeleted = s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID)
+			sessionDeleted = s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID, deletePurposePreserveOnFailure)
 		}
 
 		// Record session origin so the sidebar can show the "routine"
@@ -1077,12 +1122,20 @@ func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessag
 
 func agentdExecPort() int { return 4097 }
 
+// Purpose labels for the shared authorized session-delete path — the
+// delete is caller-neutral; every log line names its caller so an
+// operator debugging one class never chases the other's code path.
+const (
+	deletePurposePreserveOnFailure = "preserve_on_failure_success"
+	deletePurposeRetryIntermediate = "retry_intermediate_cleanup"
+)
+
 // deleteRoutineSession deletes a finished routine's opencode session via
 // agentd's authenticated /v1/workflow/session/delete and reports whether the
 // session was deleted. Non-2xx responses are logged — before #762's caller
 // fix the 401s were silently swallowed and PreserveOnFailure sessions were
 // never deleted.
-func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP string, port int, sessionID string) bool {
+func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP string, port int, sessionID, purpose string) bool {
 	if logger == nil {
 		logger = noopLogger{}
 	}
@@ -1093,37 +1146,38 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 	deleteReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, port, sessionID), nil)
 	if err != nil {
-		logger.Error(err, "routine: invalid delete-session URL for PreserveOnFailure", "sessionId", sessionID)
+		logger.Error(err, "routine: invalid delete-session URL", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	deleteReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
 
 	resp, err := httpClient().Do(deleteReq)
 	if err != nil {
-		logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID)
+		logger.Error(err, "routine: session delete request failed", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		logger.Error(fmt.Errorf("agentd returned %d", resp.StatusCode), "routine: delete session for PreserveOnFailure failed", "sessionId", sessionID)
+		logger.Error(fmt.Errorf("agentd returned %d", resp.StatusCode), "routine: session delete failed", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	return true
 }
 
 // deleteRoutineSessionAuthorized resolves the workspace password and calls
-// deleteRoutineSession for the Scheduler's PreserveOnFailure path.
-func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID string) bool {
+// deleteRoutineSession for the Scheduler's session-delete paths
+// (PreserveOnFailure success cleanup, superseded retry-attempt cleanup).
+func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
 	if s.PasswordProvider == nil {
-		logger.Error(fmt.Errorf("no PasswordProvider configured"), "routine: cannot delete session for PreserveOnFailure", "sessionId", sessionID)
+		logger.Error(fmt.Errorf("no PasswordProvider configured"), "routine: cannot delete session", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	password, err := s.PasswordProvider.WorkspacePassword(ctx, workspaceID)
 	if err != nil {
-		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID)
+		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
 		return false
 	}
-	return deleteRoutineSession(ctx, logger, password, podIP, s.agentdPort(), sessionID)
+	return deleteRoutineSession(ctx, logger, password, podIP, s.agentdPort(), sessionID, purpose)
 }
 
 // agentdPort returns the configured override or the production default.
