@@ -712,7 +712,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 }
 
 func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
-	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+	if _, ok := routineTargetWorkspace(trigger); !ok {
 		// #1440: a trigger with NO reachable target must never tick
 		// silently. The common route here is a workflow-targeted trigger
 		// whose workflow was DELETED — the workflow_id FK is ON DELETE
@@ -727,9 +727,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 			InputEnvelope: envelopeJSON, ActionType: "routine", ActionResult: errPayload,
 			Status: "failed", FiredAt: now, CompletedAt: &completed,
 		})
-		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-			_ = s.Store.DisableTrigger(ctx, trigger.ID)
-		}
+		s.accountTriggerFailure(ctx, trigger)
 		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no target (workflow deleted or workspace missing); failed fire recorded", "triggerId", trigger.ID)
 		return
 	}
@@ -766,9 +764,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		resultData = errMsg
 		resultStatus = "failed"
 		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
-		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-			_ = s.Store.DisableTrigger(ctx, trigger.ID)
-		}
+		s.accountTriggerFailure(ctx, trigger)
 		return
 	}
 
@@ -821,9 +817,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			resultData = errMsg
 			resultStatus = "failed"
 			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
-			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-				_ = s.Store.DisableTrigger(ctx, trigger.ID)
-			}
+			s.accountTriggerFailure(ctx, trigger)
 			return
 		}
 		if scriptResp.Output != nil {
@@ -906,9 +900,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 	_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
 
 	if resultStatus == "failed" {
-		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
-			_ = s.Store.DisableTrigger(ctx, trigger.ID)
-		}
+		s.accountTriggerFailure(ctx, trigger)
 	} else {
 		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
 	}
@@ -938,6 +930,30 @@ func (s *Scheduler) indexPreservedSession(ctx context.Context, logger Logger, wo
 		logger.Error(err, "routine: failed to index session title", "sessionId", sessionID, "workspaceID", workspaceID)
 	}
 	s.SessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now().UTC())
+}
+
+// accountTriggerFailure is the single failure-accounting primitive for
+// routine fires: one failed fire increments once, and a trigger at its
+// auto-disable threshold is disarmed. The four inline copies this
+// replaced had already drifted twice (#1440's silent zombie, #1441's
+// accounting) — #1454 consolidated them so the next change happens in
+// one place.
+func (s *Scheduler) accountTriggerFailure(ctx context.Context, trigger *wf.TriggerRow) {
+	if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+		_ = s.Store.DisableTrigger(ctx, trigger.ID)
+	}
+}
+
+// routineTargetWorkspace returns the routine's execution target. A
+// routine trigger without a workspace ID has no reachable target — the
+// #1440 zombie class; both entry routes (cron fire and pending-drain)
+// validate through this one predicate so the check cannot drift again.
+// executeRoutine's dereference relies on this contract.
+func routineTargetWorkspace(trigger *wf.TriggerRow) (string, bool) {
+	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+		return "", false
+	}
+	return *trigger.WorkspaceID, true
 }
 
 // routinePrevResultPayload is the {{.prevResult}} injection payload: the
@@ -1091,12 +1107,24 @@ func httpClient() *http.Client {
 func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger, fire *wf.TriggerFireRow) {
 	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
 	if err != nil {
+		// Preserved behavior, pinned by
+		// TestProcessPendingRoutineFire_FetchError_PreservedBehavior:
+		// ANY fetch error fails the fire unaccounted. Splitting transient
+		// errors (leave pending, re-driven next tick) from wf.ErrNotFound
+		// — mirroring fireWorkflowTarget — is a behavior-change
+		// follow-up, deliberately out of this consolidation's scope.
 		logger.Error(err, "routine: failed to get trigger for pending fire", "fireId", fire.ID)
 		errMsg, _ := json.Marshal(map[string]string{"error": "trigger not found"})
 		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
 		return
 	}
-	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+	if _, ok := routineTargetWorkspace(trigger); !ok {
+		// Preserved behavior, pinned by
+		// TestProcessPendingRoutineFire_TargetlessDrain_PreservedBehavior:
+		// the drain route updates the existing row with its own payload
+		// and does NOT account — unlike the cron route's guard in
+		// fireRoutineTarget (#1440: counts + auto-disables). Closing
+		// that gap is a behavior-change follow-up, out of scope here.
 		logger.Error(fmt.Errorf("no workspace"), "routine: trigger has no workspace", "triggerId", trigger.ID)
 		errMsg, _ := json.Marshal(map[string]string{"error": "trigger has no workspace_id"})
 		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
