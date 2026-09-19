@@ -30,9 +30,16 @@ Investigate #1455 (script nodes fail `create temp dir: stat /tmp` in the scratch
 ### Docs (the per-mode contract)
 - epic-64 README script section: added "Execution container is mode-dependent (#1455)" paragraph — single-container = workspace sandbox (unchanged); sidecar = fails fast with `script_env_unavailable`; Option-B execution is the open design question; http/agent/condition status stated.
 
-### Review round 1 (blocking → resolved)
+### Review round 2 (4 blocking e2e findings → all resolved)
+- **R0 abort**: the script never called `harness_start` — `seed_workspace` hard-requires its OWNER_ID; fixed, and `harness_start` added to the structural pins so the regression cannot recur silently.
+- **Unwired**: the script is now a step in `e2e-nightly.yml` (after the 1452 rows; 1452's same-commit wiring precedent).
+- **False premise corrected**: the nightly installs `controller.agentdSidecar.enabled=true` (e2e-nightly.yml:181) — the header's "pre-flip clusters lack sidecar mode" was wrong. Reframed: R1b (the loud-failure contract) is the EXPECTED nightly arm; R1a covers single-container pool/dev clusters. Rule-7 lesson recorded: the premise shipped unvalidated.
+- **http-secrets live row written** (omission justification was contradicted by the harness — `bind_env` exists in us70-common, the 1417 script self-provisions an in-cluster HTTP upstream): R2 binds `WT1455_PROBE_TOKEN` via the convenience endpoint, waits for materialization (`secrets_converged` + `wait_env_present`, the faults-e2e helper shape inlined with attribution), then runs an http node against an in-cluster header-echo Deployment/Service (1417 pattern): the echoed Authorization header must carry the resolved value (R2a — exercises the fixed `loadSecretsEnv`→`secretsEnvPathFromEnv` join against the relocated sidecar coordinate), and an unbound ref must stay literal (R2b — the documented pass-through semantics). Echo upstream cleaned up in the EXIT trap.
+- **Non-blocking reviewer notes accepted as-is** (recorded): R1's `"sidecar"` needle matches the detail's conditional-attribution sentence (static text — a single-container TMPDIR break would also match; the conditional sentence hedges and full mode-assertion needs pod-spec access the API-only harness avoids); failed runs surface `errorCode: node_failed` at the run row with `script_env_unavailable` in the detail text — the script substring-matches accordingly.
+
+### Review round 1 (blocking → resolved; the e2e half superseded by r2)
 - **Premature closure keyword**: `Fixes #1455` would auto-close the issue with its central Option-B decision open → PR body changed to "Partially addresses #1455 — Refs #1455".
-- **E2E gap**: added `local/issue-1455-scriptenv-e2e.sh` — one ADAPTIVE mode-contract row (never silently skipped): a python script-node workflow run must terminate as EITHER succeeded+marker (single-container: guards EnvCheck false positives in the real toolchain env — the reviewer's missing-case 2) OR failed with `script_env_unavailable` + sidecar-naming detail (sidecar mode — the reviewer's missing-case 1, unhappy half); any other terminal shape fails the row; polling bounded. Companion `local/issue_1455_e2e_script_test.go` pins bash syntax + row assertions (1452 pattern). The http-node `{{secrets.*}}` live row was deliberately not written: the e2e harness provides no cluster-reachable echo receiver and no bound-secret fixture; the join is covered piecewise — controller wiring pinned by the EXISTING `TestUS4B_Enabled_SidecarPathEnv` (us4b_mount_relocations_test.go:138), agentd reader pinned by this PR's handler tests. Stated in the PR body and review reply.
+- **E2E gap (r1 attempt)**: added the adaptive mode-contract row + companion structural pins. The http-node live row was omitted with a justification r2 disproved (harness HAS `bind_env` + the 1417 in-cluster upstream pattern) — the r2 section above records the corrected live row.
 - **Minor findings fixed**: interpreter binaries now shared constants (`pythonBin`/`nodeBin`) between `Execute` and `EnvCheck`; the failure detail attributes the sidecar cause CONDITIONALLY ("In sidecar mode … On a single-container pod this instead indicates a broken TMPDIR/PATH") — no unconditional misattribution.
 - **Flip-gate runbook**: `docs/runbooks/sidecar-flip.md` prerequisite 6 added — http secrets fixed (with pin references), script nodes loud-fail, Option-B open and a flip blocker for script-bearing workflows.
 
@@ -65,6 +72,7 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - `go test ./pkg/workflows/scriptwrap/ ./api/internal/workflows/` — ok (post-module-cache-wipe, GOPROXY=direct)
 - `go test -race ./cmd/workspace-agentd/` — ok (345s)
 - r1: targeted reruns — scriptwrap EnvCheck suite, agentd script/http handler suites, `./local/` companion pins — all ok
+- r2: `bash -n` + `TestIssue1455` companion pins (updated for harness_start + R2 needles) — ok; nightly wiring greps verified (`issue-1455-scriptenv-e2e.sh` present in e2e-nightly.yml)
 - Mutation evidence: (A) loadSecretsEnv reverted to hardcoded path + (B) EnvCheck probe call removed → 4 handler/unit tests FAIL; (C) EnvCheck body stubbed to return nil → 2 scriptwrap tests FAIL; restores green.
 - `bash -n local/issue-1455-scriptenv-e2e.sh` — ok (also pinned by TestIssue1455E2EScript_BashSyntax)
 
@@ -86,6 +94,7 @@ None. (Note: verification was interrupted by a pod OOM ~03:15Z and resumed post-
 - `api/internal/workflows/engine_test.go` — script_env_unavailable non-retry guard
 - `design/stories/epic-64-triggers-workflows/README.md` — per-mode execution-container paragraph
 - `docs/runbooks/sidecar-flip.md` — flip-gate prerequisite 6 (#1455 workflow-node gate)
-- `local/issue-1455-scriptenv-e2e.sh` — r1: adaptive mode-contract e2e row
-- `local/issue_1455_e2e_script_test.go` — r1: structural pins for the e2e script
+- `local/issue-1455-scriptenv-e2e.sh` — adaptive mode-contract e2e row (r2: harness_start, corrected nightly-sidecar premise, R2 http-secrets live row)
+- `local/issue_1455_e2e_script_test.go` — structural pins for the e2e script (r2: harness_start + R2 needles)
+- `.github/workflows/e2e-nightly.yml` — r2: scriptenv rows wired into the nightly (after the 1452 rows)
 - `worklogs/NNNN_2026-09-19_scriptwrap-interpreter-env-contract.md` — this worklog

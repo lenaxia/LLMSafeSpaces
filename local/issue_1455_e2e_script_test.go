@@ -38,7 +38,10 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 	src := string(raw)
 
 	for _, needle := range []string{
-		// Shared plumbing: a real workspace pod behind the API.
+		// Shared plumbing: harness init (r2 review: seed_workspace
+		// hard-requires harness_start's OWNER_ID — omitting it aborts
+		// at R0) and a real workspace pod behind the API.
+		`harness_start`,
 		`seed_workspace "${WS}"`,
 		`wait_phase "${WS}" Active 360`,
 		// The script node under contract: python handler with a marker output.
@@ -53,8 +56,16 @@ func TestIssue1455E2EScript_RowsAndAssertions(t *testing.T) {
 		`R1: terminal shape outside the mode contract`,
 		// Terminal-state polling is bounded (no hang on a stuck run).
 		`run never reached a terminal state within`,
-		// Cleanup so the nightly owner's workflow list stays clean.
+		// R2 — http-node secrets live join: bind + materialize + echo.
+		`bind_env "${WS}" "WT1455_PROBE_TOKEN" "sekret-1455-e2e"`,
+		`secrets_converged "${WS}" 300`,
+		`wait_env_present "${WS}" "WT1455_PROBE_TOKEN=sekret-1455-e2e" 300`,
+		`Bearer {{secrets.WT1455_PROBE_TOKEN}}`,
+		`R2a: http-node {{secrets.*}} resolved from the materialized secrets-env coordinate`,
+		`R2b: unbound ref stayed literal (documented pass-through semantics)`,
+		// Cleanup so the nightly owner's workflow list + cluster stay clean.
 		`trap cleanup EXIT`,
+		`delete deployment/echo-1455 service/echo-1455 configmap/echo-1455-config`,
 	} {
 		assert.Contains(t, src, needle, "the e2e script must keep its row assertions (dropping one silently drops the row)")
 	}
