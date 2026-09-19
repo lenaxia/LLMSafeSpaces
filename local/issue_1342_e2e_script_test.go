@@ -148,3 +148,30 @@ func TestIssue1342E2EScript_JqFiltersCompile(t *testing.T) {
 		}
 	}
 }
+
+// TestIssue1342E2EScript_ExecuteSmoke — same class as the repo-wide
+// smokes (Refs #1474/#1480/#1482); sequenced after #1478's harness_start
+// per orchestrator. The script's wait budgets ride the env knobs the
+// script now exposes (defaults unchanged — the knobs exist for smoke
+// speed only). Depth pin scope, exactly as far as it reaches: under the
+// shims R1's first wait fails, so R1's inner block (bind/restart/repair
+// rows) is structurally SKIPPED — the pin proves R0 green, R1's first
+// wait row (fail path), and R2's setup executed; R1's deeper rows stay
+// covered by the structural needles in RowsAndAssertions.
+func TestIssue1342E2EScript_ExecuteSmoke(t *testing.T) {
+	if testing.Short() {
+		t.Skip("execution smoke spawns ~hundreds of shim processes")
+	}
+	knobs := map[string]string{
+		"LLM_MODEL":      "litellm/smoke-model",
+		"R1_TOOL_WAIT_S": "1", "R1_RESTART_WAIT_S": "1", "R1_ORPHAN_WAIT_S": "1",
+		"R2_TOOL_WAIT_S": "1", "R2_RESPAWN_WAIT_S": "1", "R2_REPAIR_WAIT_S": "1",
+		"R1_SLEEP_S": "1",
+	}
+	combined, exitVal := runScriptUnderShims(t, "issue-1342-graceful-restart-e2e.sh", "Active", knobs)
+	assertSmokeTraversal(t, "issue-1342-graceful-restart-e2e.sh", combined, exitVal,
+		"failure(s)", "")
+	if !strings.Contains(combined, "R2: tool never reached running state") {
+		t.Fatalf("died before the pinned R2 depth — a shared lib or shim rule regression moved the death point:\n%s", smokeTail(combined))
+	}
+}
