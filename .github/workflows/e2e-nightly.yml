@@ -1,5 +1,16 @@
 name: E2E Nightly (kind)
 
+# Never double-run: the schedule below stays as the reliability backup,
+# and a platform cron trigger (the "nightly-e2e-dispatcher" routine in
+# the ops workspace) dispatches this workflow on time at 06:00Z —
+# GitHub's scheduled runs have fired 4-6h late (11-run sample). One
+# concurrency group for both entry paths: whichever starts latest wins
+# and the other is canceled, so a lagged backup never overlaps or
+# duplicates the on-time dispatch.
+concurrency:
+  group: e2e-nightly
+  cancel-in-progress: true
+
 on:
   schedule:
     # Run at 06:00 UTC daily (10pm PST)
