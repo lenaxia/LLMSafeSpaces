@@ -20,6 +20,7 @@ import { useSessionTitle } from "../hooks/useSessionTitle";
 import { useMessageQueue } from "../hooks/useMessageQueue";
 import { useComposerAttachments } from "../hooks/useComposerAttachments";
 import { parseAttachments } from "../lib/attachments";
+import { parseAgentMessage } from "../lib/agentMessage";
 import { wsLog } from "../lib/wsLog";
 import { extractUserMessageTexts } from "../lib/composerHistory";
 import { ChatView } from "../components/chat/ChatView";
@@ -59,7 +60,10 @@ function messageIdentityKey(m: Message): string {
   const text = m.parts
     .map((p) => {
       if ("text" in p && typeof p.text === "string") {
-        return m.role === "user" ? parseAttachments(p.text).text : p.text;
+        // User text is sentinel-stipped (#1465) then manifest-stripped
+        // (Epic 68 D11) before keying: server-side decorations never
+        // change the identity key.
+        return m.role === "user" ? parseAttachments(parseAgentMessage(p.text).text).text : p.text;
       }
       return "";
     })

@@ -1,0 +1,5 @@
+{
+  "origin": null,
+  "found": false,
+  "text": "<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_a\",\"mode\":7} -->\nA non-string mode rejects the sentinel (type-strict known keys)."
+}

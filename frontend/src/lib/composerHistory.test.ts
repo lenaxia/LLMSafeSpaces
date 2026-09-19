@@ -19,6 +19,18 @@ describe("extractUserMessageTexts", () => {
     expect(extractUserMessageTexts([userMsg("u1", "hello world")])).toEqual(["hello world"]);
   });
 
+  it("strips the agent-message sentinel from agent-originated user messages (#1469 review r1)", () => {
+    const sentineled =
+      '<!-- lsp:agent-message-v1 {"fromSession":"ses_f499ee9e6ffe52BJ8jxc2TEQQJ"} -->\nStatus: PR open.';
+    expect(extractUserMessageTexts([userMsg("u1", sentineled)])).toEqual(["Status: PR open."]);
+  });
+
+  it("still pushes prose when a sentineled message also carries an attachment manifest", () => {
+    const text =
+      '<!-- lsp:agent-message-v1 {"fromSession":"ses_a"} -->\nSee the notes.\n\n[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt" name="notes.txt"]\n';
+    expect(extractUserMessageTexts([userMsg("u1", text)])).toEqual(["See the notes."]);
+  });
+
   it("filters out assistant messages", () => {
     const msgs: Message[] = [
       userMsg("u1", "question"),

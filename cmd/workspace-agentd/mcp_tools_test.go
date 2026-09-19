@@ -223,6 +223,17 @@ func (f *fakeAgent) handler(t *testing.T) http.HandlerFunc {
 			}}]}`))
 		case r.Method == http.MethodGet && strings.Contains(path, "/message"):
 			_, _ = w.Write([]byte(`[{"info":{"role":"assistant","tokens":{"input":84,"cache":{"read":916,"write":0}}}}]`))
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/session/"):
+			// By-ID get (the SessionExists probe): unknown IDs return
+			// the live-proven 404 NotFoundError shape.
+			id := strings.TrimPrefix(path, "/session/")
+			title, ok := f.titles[id]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"name":"NotFoundError","data":{"message":"Session not found: ` + id + `"}}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "title": title})
 		default:
 			t.Errorf("fakeAgent: unexpected %s %s", r.Method, path)
 			w.WriteHeader(http.StatusNotFound)
@@ -1115,22 +1126,39 @@ func TestMCPCallWithModel_ReadCapTOCTOU(t *testing.T) {
 }
 
 // --- send_message ---------------------------------------------------------
+//
+// Origin attribution contract (#1465): the caller's session ID arrives
+// as an INJECTED from_session_id argument (the platform's opencode
+// plugin stamps it from the harness's tool context — the LLM never
+// supplies it; the tools/list schema does not advertise it). agentd
+// validates it by ID (SessionExists — the #1452-immune probe), stamps
+// the agent-message-v1 sentinel, and echoes origin in the result.
+// Missing/invalid origin refuses delivery outright: every delivered
+// agent message carries attribution.
 
 func TestMCPSendMessage_IdleTarget(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("target")
+	caller := f.newSession("caller")
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "please continue")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "please continue", caller, "")
 	require.NoError(t, err)
 	assert.Contains(t, out, `"delivering"`)
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
+	assert.Contains(t, out, `"origin_mode":"injected"`)
 
 	require.Eventually(t, func() bool {
 		bodies := f.sentFor(s1)
 		return len(bodies) == 1
 	}, 5*time.Second, 50*time.Millisecond, "detached delivery must land")
 	parts := f.sentFor(s1)[0]["parts"].([]any)
-	assert.Equal(t, "please continue", parts[0].(map[string]any)["text"])
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "),
+		"delivered text must open with the sentinel, got %q", delivered)
+	assert.Contains(t, delivered, `"fromSession":"`+caller+`"`)
+	assert.Contains(t, delivered, `"mode":"injected"`)
+	assert.True(t, strings.HasSuffix(delivered, "\nplease continue"), "payload follows the sentinel line")
 	_, hasModel := f.sentFor(s1)[0]["model"]
 	assert.False(t, hasModel, "no model override — the target runs its own default")
 }
@@ -1138,12 +1166,14 @@ func TestMCPSendMessage_IdleTarget(t *testing.T) {
 func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("busy-target")
+	caller := f.newSession("caller")
 	f.busySet[s1] = true
 	withAgentServer(t, f.handler(t))
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "next: run the tests", caller, "")
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
 
 	// While the target stays busy, the detached POST blocks server-side
 	// — it must ARRIVE (sentinel) but never DELIVER (the L2 test proves
@@ -1167,15 +1197,18 @@ func TestMCPSendMessage_BusyTargetQueues(t *testing.T) {
 	}, 7*time.Second, 50*time.Millisecond, "delivery lands once the turn ends (boundary)")
 	f.awaitMsgDone(t, s1, 1)
 	parts := f.sentFor(s1)[0]["parts"].([]any)
-	assert.Equal(t, "next: run the tests", parts[0].(map[string]any)["text"])
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "))
+	assert.True(t, strings.HasSuffix(delivered, "\nnext: run the tests"))
 }
 
 func TestMCPSendMessage_UnknownSession(t *testing.T) {
 	f := newFakeAgent()
+	caller := f.newSession("caller")
 	f.newSession("real")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "ses_absent", "hi")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "ses_absent", "hi", caller, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -1183,11 +1216,206 @@ func TestMCPSendMessage_UnknownSession(t *testing.T) {
 func TestMCPSendMessage_MissingArgs(t *testing.T) {
 	f := newFakeAgent()
 	withAgentServer(t, f.handler(t))
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, "", "hi")
-	require.Error(t, err)
-	_, err = mcpSendMessage(context.Background(), mcpTestPassword, "ses_1", "   ")
-	require.Error(t, err)
+	for _, tc := range []struct {
+		name, target, message, injected, declared string
+	}{
+		{"no target", "", "hi", "ses_2", ""},
+		{"blank message", "ses_1", "   ", "ses_2", ""},
+		{"no origin at all", "ses_1", "hi", "", ""},
+		{"blank injected only", "ses_1", "hi", "  ", ""},
+		{"blank declared only", "ses_1", "hi", "", "  "},
+	} {
+		_, err := mcpSendMessage(context.Background(), mcpTestPassword, tc.target, tc.message, tc.injected, tc.declared)
+		require.Error(t, err, tc.name)
+	}
 	assert.Empty(t, f.sentBodies, "no delivery without valid args")
+	assert.Empty(t, f.msgArrived, "no wire traffic at all without valid args")
+}
+
+// The ALWAYS-ATTRIBUTED invariant: with NEITHER an injected origin
+// NOR a self-declared one there is nothing to attribute — the only
+// refusal left (#1469 hybrid ruling). With from_session_id
+// schema-visible the model can always self-declare, so a degraded pod
+// self-reports instead of breaking.
+func TestMCPSendMessage_NoOriginAtAllRefusesDelivery(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "from_session_id")
+	assert.Contains(t, err.Error(), "plugin", "the error must name the platform-side cause")
+	assert.Empty(t, f.msgArrived, "nothing may reach the wire — delivery without attribution is forbidden")
+}
+
+// The degraded-pod fallback: no injection (plugin absent), the model
+// supplied from_session_id — accepted, validated, and labeled
+// self-declared in BOTH the result and the sentinel.
+func TestMCPSendMessage_SelfDeclaredFallback(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "fallback hi", "", caller)
+	require.NoError(t, err)
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
+	assert.Contains(t, out, `"origin_mode":"self-declared"`)
+
+	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 5*time.Second, 50*time.Millisecond)
+	f.awaitMsgDone(t, s1, 1)
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "))
+	assert.Contains(t, delivered, `"fromSession":"`+caller+`"`)
+	assert.Contains(t, delivered, `"mode":"self-declared"`)
+}
+
+func TestMCPSendMessage_SelfDeclaredUnknownIDRefusesDelivery(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "", "ses_ghost")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ses_ghost")
+	assert.Empty(t, f.msgArrived, "an unattributable origin must never deliver")
+}
+
+// Injection is the platform's attestation and wins over any
+// model-supplied value — the mode label must reflect the trustworthy
+// source, and the model's copy never downgrades it.
+func TestMCPSendMessage_InjectionWinsOverDeclared(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	caller := f.newSession("caller")
+	decoy := f.newSession("decoy")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, decoy)
+	require.NoError(t, err)
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, caller))
+	assert.Contains(t, out, `"origin_mode":"injected"`)
+	assert.NotContains(t, out, decoy)
+}
+
+func TestMCPSendMessage_OriginUnknownIDRefusesDelivery(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	withAgentServer(t, f.handler(t))
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", "ses_ghost", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ses_ghost")
+	assert.Empty(t, f.msgArrived, "an unattributable origin must never deliver")
+}
+
+func TestMCPSendMessage_OriginProbeIndeterminateRefusesDelivery(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	caller := f.newSession("caller")
+	inner := f.handler(t)
+	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Fail ONLY the bare by-ID GET; everything else serves normally.
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/session/") &&
+			!strings.Contains(strings.TrimPrefix(r.URL.Path, "/session/"), "/") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		inner(w, r)
+	})
+
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hi", caller, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+	assert.Empty(t, f.msgArrived)
+}
+
+// Self-send (from == target): no special case — the sentinel carries
+// the caller's own ID and delivery schedules as the next turn.
+func TestMCPSendMessage_SelfSend(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("self")
+	f.busySet[s1] = true // the caller's own turn is running the tool
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "follow-up after this turn", s1, "")
+	require.NoError(t, err)
+	assert.Contains(t, out, "delivering_after_current_turn")
+	assert.Contains(t, out, fmt.Sprintf(`"origin":%q`, s1))
+	assert.Contains(t, out, `"origin_mode":"injected"`)
+
+	f.mu.Lock()
+	f.busySet[s1] = false
+	f.mu.Unlock()
+	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 7*time.Second, 50*time.Millisecond)
+	f.awaitMsgDone(t, s1, 1)
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "))
+	assert.Contains(t, delivered, `"fromSession":"`+s1+`"`)
+}
+
+// A re-sent message whose payload already carries a sentinel (copied
+// from a prior hop) must never double-sentinel: compose strips the
+// leading line and stamps exactly one, carrying the CURRENT origin.
+func TestMCPSendMessage_ResendNeverDoubleSentinels(t *testing.T) {
+	f := newFakeAgent()
+	s1 := f.newSession("target")
+	caller := f.newSession("caller")
+	withAgentServer(t, f.handler(t))
+
+	preSentineled := "<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_priorhop\"} -->\nforwarded payload"
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, preSentineled, caller, "")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 5*time.Second, 50*time.Millisecond)
+	f.awaitMsgDone(t, s1, 1)
+
+	parts := f.sentFor(s1)[0]["parts"].([]any)
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.Equal(t, 1, strings.Count(delivered, "<!-- lsp:agent-message-v1 "),
+		"exactly one sentinel line, never stacked")
+	assert.Contains(t, delivered, `"fromSession":"`+caller+`"`)
+	assert.NotContains(t, delivered, "ses_priorhop", "the current origin replaces the prior hop's")
+	assert.True(t, strings.HasSuffix(delivered, "\nforwarded payload"))
+}
+
+// The model-facing schema advertises ONLY the self-declared fallback
+// (#1469 hybrid ruling): from_session_id is optional, lsp_injected_session
+// (the platform plugin's harness-attested key) must stay invisible —
+// an advertised attestation key invites spoofing the mode label.
+func TestMCPSendMessage_SchemaAdvertisesFallbackOnly(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	tools := resp.Result.(map[string]any)["tools"].([]any)
+	var schema map[string]any
+	for _, tool := range tools {
+		tt := tool.(map[string]any)
+		if tt["name"] == "send_message" {
+			schema = tt["inputSchema"].(map[string]any)
+		}
+	}
+	require.NotNil(t, schema, "send_message must be advertised")
+	props := schema["properties"].(map[string]any)
+	assert.ElementsMatch(t, []string{"session_id", "message", "from_session_id"}, mcpSchemaKeys(props),
+		"only the self-declared fallback is advertised")
+	assert.ElementsMatch(t, []string{"session_id", "message"}, schema["required"].([]any),
+		"from_session_id is optional — injection needs no model help")
+}
+
+func mcpSchemaKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 // Full-stack JSON-RPC: the busy path returns immediately with the
@@ -1198,9 +1426,14 @@ func TestMCPHandler_SendMessageFullStack(t *testing.T) {
 	f.busySet[s1] = true
 	withAgentServer(t, f.handler(t))
 
+	caller := f.newSession("caller")
 	params, _ := json.Marshal(map[string]any{
-		"name":      "send_message",
-		"arguments": map[string]any{"session_id": s1, "message": "pivot to the fallback design"},
+		"name": "send_message",
+		"arguments": map[string]any{
+			"session_id":           s1,
+			"message":              "pivot to the fallback design",
+			"lsp_injected_session": caller, // the plugin's injection, as it arrives on the wire
+		},
 	})
 	req := mcpRequest{JSONRPC: "2.0", ID: 11, Method: "tools/call", Params: params}
 	body, _ := json.Marshal(req)
@@ -1213,7 +1446,10 @@ func TestMCPHandler_SendMessageFullStack(t *testing.T) {
 	result := resp.Result.(map[string]any)
 	assert.Nil(t, result["isError"], "%v", result)
 	content := result["content"].([]any)
-	assert.Contains(t, content[0].(map[string]any)["text"], "delivering_after_current_turn")
+	text := content[0].(map[string]any)["text"].(string)
+	assert.Contains(t, text, "delivering_after_current_turn")
+	assert.Contains(t, text, fmt.Sprintf(`"origin":%q`, caller))
+	assert.Contains(t, text, `"origin_mode":"injected"`)
 	// End the fake busy turn so the blocked POST delivers at the boundary.
 	f.mu.Lock()
 	f.busySet[s1] = false
@@ -1223,7 +1459,9 @@ func TestMCPHandler_SendMessageFullStack(t *testing.T) {
 	}, 7*time.Second, 50*time.Millisecond)
 	f.awaitMsgDone(t, s1, 1)
 	parts := f.sentFor(s1)[0]["parts"].([]any)
-	assert.Equal(t, "pivot to the fallback design", parts[0].(map[string]any)["text"])
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.True(t, strings.HasPrefix(delivered, "<!-- lsp:agent-message-v1 "))
+	assert.True(t, strings.HasSuffix(delivered, "\npivot to the fallback design"))
 }
 
 // --- abort_session --------------------------------------------------------
@@ -1282,6 +1520,7 @@ func TestMCPHandler_AbortSessionFullStack(t *testing.T) {
 func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("retrying")
+	caller := f.newSession("caller")
 	withAgentServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/session/status" {
 			fmt.Fprintf(w, `{"%s":{"type":"retry","attempt":2}}`, s1)
@@ -1290,7 +1529,7 @@ func TestMCPSendMessage_RetryStatusTreatedAsBusy(t *testing.T) {
 		f.handler(t)(w, r)
 	})
 
-	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please")
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "hold please", caller, "")
 	require.NoError(t, err)
 	assert.Contains(t, out, "delivering_after_current_turn")
 	require.Eventually(t, func() bool { return len(f.sentFor(s1)) == 1 }, 7*time.Second, 25*time.Millisecond)
@@ -1305,9 +1544,10 @@ func TestMCPSendMessage_AbortDropsQueued(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("busy-abort")
 	f.busySet[s1] = true
+	caller := f.newSession("caller")
 	withAgentServer(t, f.handler(t))
 
-	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "will be dropped")
+	_, err := mcpSendMessage(context.Background(), mcpTestPassword, s1, "will be dropped", caller, "")
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		f.mu.Lock()

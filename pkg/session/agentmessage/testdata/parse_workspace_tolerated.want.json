@@ -1,0 +1,8 @@
+{
+  "origin": {
+    "fromSession": "ses_f498e56f6ffeuEl39QI9ix3z3c",
+    "workspace": "d8bed486-2eec-4db6-a8ff-e11ba404a055"
+  },
+  "found": true,
+  "text": "Forward compat: a v1 parser tolerates workspace appearing (v1 senders never emit it)."
+}

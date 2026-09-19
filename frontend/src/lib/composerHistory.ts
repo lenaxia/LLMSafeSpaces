@@ -1,5 +1,6 @@
 import type { Message } from "../api/types";
 import { parseAttachments } from "./attachments";
+import { parseAgentMessage } from "./agentMessage";
 
 /**
  * Extract the plain text of every user message in `messages`, in
@@ -31,7 +32,11 @@ export function extractUserMessageTexts(messages: Message[]): string[] {
         text += part.text;
       }
     }
-    const prose = parseAttachments(text).text;
+    // #1465: agent-originated messages are role=user but carry the
+    // provenance sentinel — strip it so Up-arrow never re-inserts the
+    // machine marker into the composer. Attachment manifests are
+    // stripped for the same reason (they never round-trip as prose).
+    const prose = parseAttachments(parseAgentMessage(text).text).text;
     if (prose.trim().length > 0) {
       out.push(prose);
     }

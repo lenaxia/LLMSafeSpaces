@@ -1,0 +1,5 @@
+{
+  "origin": null,
+  "found": false,
+  "text": "<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_a\"} --> junk -->\nGreedy terminator match: trailing content after the closing --> makes the line not-a-sentinel."
+}

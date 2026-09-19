@@ -1,0 +1,1 @@
+"<!-- lsp:agent-message-v1 {\"fromSession\":\"ses_f4990c442ffei8kVvWzcN9qMHU\",\"mode\":\"self-declared\"} -->\nRe-sent: the payload already carries a sentinel from a prior hop — compose must strip it and stamp exactly one."

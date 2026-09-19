@@ -10,7 +10,9 @@ import { getEnv } from "../../env";
 import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
 import { parseAttachments } from "../../lib/attachments";
+import { parseAgentMessage } from "../../lib/agentMessage";
 import { AttachmentChips } from "./AttachmentChips";
+import { AgentOriginBadge } from "./AgentOriginBadge";
 import { LazyDetails } from "../ui/LazyDetails";
 import type { MessagePart as MessagePartType } from "../../api/types";
 
@@ -357,9 +359,14 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
     if (isUser) {
       // Epic 68 D11: user bubbles strip the trailing attachment manifest
       // block and render chips instead. Interior forged lines stay text.
-      const { text: stripped, attachments } = parseAttachments(part.text);
+      // #1465: a leading agent-message sentinel is stripped and replaced
+      // by a provenance badge — the bubble stays user-side (the role the
+      // message arrives as) but is clearly marked as agent-originated.
+      const { origin, text: withoutOrigin } = parseAgentMessage(part.text);
+      const { text: stripped, attachments } = parseAttachments(withoutOrigin);
       return (
         <div>
+          {origin && <AgentOriginBadge origin={origin} />}
           {stripped && <p className="whitespace-pre-wrap text-sm">{stripped}</p>}
           {attachments && <AttachmentChips attachments={attachments} />}
         </div>

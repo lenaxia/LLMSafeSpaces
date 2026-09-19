@@ -9,7 +9,7 @@ package main
 // Workspace resolution (the mechanism this file's names document): the
 // platform MCP server IS agentd's in-pod /v1/mcp endpoint — the entry
 // injected into agent-config.json as "llmsafespaces" points at
-// http://127.0.0.1:<AgentdPort>/v1/mcp (injectAgentdMCPServer), gated
+// http://127.0.0.1:<AgentdPort>/v1/mcp (injectPlatformAgentConfig), gated
 // by the workspace password (#847). Tools therefore execute INSIDE the
 // workspace they serve: secrets_resync resolves its workspace by pod
 // identity (WORKSPACE_ID / the pod itself), exactly like dev_preview_url,

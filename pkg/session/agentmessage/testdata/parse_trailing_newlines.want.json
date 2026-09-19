@@ -1,0 +1,7 @@
+{
+  "origin": {
+    "fromSession": "ses_f4965f03dffetQIEh2NbI526fv"
+  },
+  "found": true,
+  "text": "Trailing newlines after the message survive the strip.\n\n"
+}

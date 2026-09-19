@@ -430,7 +430,7 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 	builtin, hasBuiltin := mcp["llmsafespaces"].(map[string]any)
 	require.True(t, hasBuiltin,
 		"mcp.llmsafespaces must be present — the pre-boot writer must call "+
-			"injectAgentdMCPServer via the preMarshalHook option")
+			"injectPlatformAgentConfig via the preMarshalHook option")
 
 	// #847: the injected entry must carry the Basic credential derived from
 	// the password passed to applyRelayConfigPreBoot — /v1/mcp rejects

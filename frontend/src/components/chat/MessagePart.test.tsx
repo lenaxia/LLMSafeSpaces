@@ -38,6 +38,39 @@ describe("MessagePart", () => {
     expect(p.tagName).toBe("P");
   });
 
+  it("renders an agent-origin user message with a provenance badge and stripped sentinel (#1465)", () => {
+    render(
+      <MessagePart
+        part={{
+          type: "text",
+          text: '<!-- lsp:agent-message-v1 {"fromSession":"ses_f499ee9e6ffe52BJ8jxc2TEQQJ"} -->\nStatus: PR open.',
+        }}
+        isUser={true}
+      />,
+    );
+    expect(screen.getByTestId("agent-origin-badge").textContent).toContain(
+      "message from session ses_f499ee9e6ffe52BJ8jxc2TEQQJ",
+    );
+    expect(screen.getByText("Status: PR open.")).toBeInTheDocument();
+    expect(screen.queryByText(/lsp:agent-message-v1/)).not.toBeInTheDocument();
+  });
+
+  it("renders badge + text + attachment chips together when both decorations ride one message", () => {
+    render(
+      <MessagePart
+        part={{
+          type: "text",
+          text:
+            '<!-- lsp:agent-message-v1 {"fromSession":"ses_a"} -->\nSee the notes.\n\n[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt" name="notes.txt"]\n',
+        }}
+        isUser={true}
+      />,
+    );
+    expect(screen.getByTestId("agent-origin-badge")).toBeInTheDocument();
+    expect(screen.getByText("See the notes.")).toBeInTheDocument();
+    expect(screen.getByTestId("history-attachment-chip").textContent).toContain("notes.txt");
+  });
+
   it("renders assistant text as markdown", () => {
     render(<MessagePart part={{ type: "text", text: "**bold**" }} isUser={false} />);
     expect(screen.getByText("bold")).toBeInTheDocument();

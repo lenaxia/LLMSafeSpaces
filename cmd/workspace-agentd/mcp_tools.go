@@ -23,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/session/agentmessage"
 )
 
 // titleMaxLength bounds session titles and workspace names handed to
@@ -599,11 +600,32 @@ func resolveSingleBusySession(ctx context.Context, client *opencode.Client) (str
 // session — nothing returns to the caller (the same philosophy as
 // create_session; the task tool is the blocking/returns-result path).
 //
+// Origin attribution (#1465, #1469 hybrid ruling): the origin is
+// ALWAYS attributed and the mode is VISIBLE. Two sources, in priority:
+//
+//   - INJECTED: the platform's opencode plugin (tool.execute.before)
+//     stamps lsp_injected_session with the harness's own session
+//     identity — the model never supplies it and the schema does not
+//     advertise it. Sentinel/result mode: "injected".
+//   - SELF-DECLARED: absent injection (plugin missing/drifted/no-op —
+//     a degraded pod), the optional from_session_id argument the model
+//     supplied is used, validated by-ID. Sentinel/result mode:
+//     "self-declared".
+//
+// Neither source present → tool error, no delivery (the only refusal
+// left; with from_session_id schema-visible the model can always
+// self-declare, so a degraded pod self-reports rather than breaks).
+// Both sources validate by-ID (SessionExists — immune to the #1452
+// list-visibility gap). The sentinel is provenance metadata, NOT
+// authentication — every session shares the pod credential, so the
+// origin is a return address; the mode makes the degree of platform
+// attestation visible, nothing more.
+//
 // Busy targets queue the message server-side and deliver it when their
 // current turn ends (live-proven run-at-boundary semantics — the same
 // POST shape that powers compact's scheduling), so delivery is detached
 // either way and the tool reports which case applies.
-func mcpSendMessage(ctx context.Context, password, sessionID, message string) (string, error) {
+func mcpSendMessage(ctx context.Context, password, sessionID, message, injectedSession, declaredSession string) (string, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return "", fmt.Errorf("session_id is required")
@@ -612,24 +634,36 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 	if message == "" {
 		return "", fmt.Errorf("message is required")
 	}
+	origin, mode := "", ""
+	switch {
+	case strings.TrimSpace(injectedSession) != "":
+		origin, mode = strings.TrimSpace(injectedSession), agentmessage.ModeInjected
+	case strings.TrimSpace(declaredSession) != "":
+		origin, mode = strings.TrimSpace(declaredSession), agentmessage.ModeSelfDeclared
+	default:
+		return "", fmt.Errorf("no origin: the platform could not inject your session ID (plugin absent or outdated) and from_session_id was not provided — pass from_session_id (find your session via session_metadata; your title identifies you) or report the missing plugin to the platform")
+	}
 
 	client := seamClientWithPassword(password)
 
-	// Reject unknown IDs up front rather than failing silently in the
-	// detached delivery (the caller cannot see the goroutine's error).
-	sessions, err := client.SessionList(ctx)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve the target session: %w", err)
-	}
-	known := false
-	for _, s := range sessions {
-		if s.ID == sessionID {
-			known = true
-			break
+	// Validate BOTH ends by ID (unknown IDs fail loudly here rather
+	// than silently in the detached delivery; the by-ID probe is
+	// immune to the #1452 list-visibility gap).
+	for _, id := range []string{sessionID, origin} {
+		exists, err := client.SessionExists(ctx, id)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve session %s: %w", id, err)
+		}
+		if !exists {
+			return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)", id)
 		}
 	}
-	if !known {
-		return "", fmt.Errorf("session %s not found in this workspace (IDs from session_list)", sessionID)
+
+	// Stamp the origin sentinel (idempotent: a payload that already
+	// carries a leading sentinel from a prior hop is stripped first).
+	composed, err := agentmessage.Compose(message, agentmessage.Origin{FromSession: origin, Mode: mode})
+	if err != nil {
+		return "", fmt.Errorf("failed to stamp message origin: %w", err)
 	}
 
 	busy, err := client.GetSessionStatuses(ctx)
@@ -658,15 +692,17 @@ func mcpSendMessage(ctx context.Context, password, sessionID, message string) (s
 	// constraint — found by CI's race detector, PR #1382 r5).
 	logger := log
 	go func() {
-		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, message, "", nil); err != nil {
+		if _, err := client.SessionSend(context.WithoutCancel(ctx), sessionID, composed, "", nil); err != nil {
 			logger.Warn("send_message: background delivery failed",
 				zap.String("sessionID", sessionID), zap.Error(err))
 		}
 	}()
 
 	out, _ := json.Marshal(map[string]string{
-		"status":     status,
-		"session_id": sessionID,
+		"status":      status,
+		"session_id":  sessionID,
+		"origin":      origin,
+		"origin_mode": mode,
 	})
 	return string(out), nil
 }
