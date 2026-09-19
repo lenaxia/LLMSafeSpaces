@@ -83,7 +83,7 @@ Reviewer reproductions closed (each re-verified by local mutation → FAIL → r
 CORRECTION (r4, append-only): the r3 entry above claimed the evasions were "re-verified locally" — only ?-glob, literal, and -rc1 were; the bare '*' / '*.*.*' filter and crane/skopeo forms were NOT covered by my checks (the r4 reviewer reproduced them passing). r4 closes them: the v-prefix gate is dropped (any *?[ filter selects), crane/skopeo markers added.
 
 r4 also records two accepted residuals:
-- File-scoped pins: a NEW workflow file with a tag trigger + semver emission leaves all pins green (sub-agent mutation-verified). Audited today: no other workflow triggers on tags or emits version tags (base-image.yml = CalVer on the BASE image; image-build.yml = dispatch-only — its docker/build-push step sets push:false, so it never emits registry tags at all). Accepted + documented here; a repo-wide rule is the recurrence fix (Rule 12 signal).
+- File-scoped pins: a NEW workflow file with a tag trigger + semver emission leaves all pins green (sub-agent mutation-verified). Audited today: no other workflow triggers on tags or emits version tags (base-image.yml = CalVer, the SOLE pusher of the lenaxia/llmsafespaces/base path — ci.yml's build-base job uses the same image name but validates with push:false and never pushes; image-build.yml = dispatch-only, pushing workspace images under a different repo entirely — lenaxia/llmsafespaces-images/ws — sharing no tag namespace with ci.yml's images). Accepted + documented here; a repo-wide rule is the recurrence fix (Rule 12 signal).
 - Comment at the *.*.* claim corrected in-code (comments now match behavior exactly).
 
 ## r5 — the two three-round stragglers + two new evasions closed
@@ -104,7 +104,11 @@ r4 also records two accepted residuals:
 - ci.yml prepare's rewritten comment said "branch pushes and dispatches only" — PRs also trigger (my own rewrite error): the enumeration now reads branch pushes, PRs, and dispatches.
 - release.yml's SBOM comment still justified its no-v-prefix format by CI's metadata-action behavior (deleted by this PR) — now justified from release.yml's own version resolution (tag semver payload; its own type=semver strips the v-prefix).
 
-## r8 — the two one-clause edits
+## r8 — the two one-clause edits (corrected in r9 — the worklog half transplanted base-image.yml's separator onto image-build.yml; see r9)
 
-- worklog:86 corrected: image-build.yml shares the SAME image paths — its separation is push:false on its build step (never emits registry tags), not a different image/namespace. (The r6 "precision fix" replaced one inaccuracy with another; the reviewer byte-checked the paths.)
-- ci.yml dispatch comment: a dispatch may be pinned to ANY ref (incl. prerelease tags — v0.34.6-rc1 matches the release-version regex but is not "released"); wording now says release-version refs carry their version and others fall to the sha form.
+- ci.yml dispatch comment: a dispatch may be pinned to ANY ref; release-version refs (strict ^v\d+.\d+.\d+$) carry their version — all others (branches, PRs, prerelease tags like v0.34.6-rc1, which do NOT match that regex) fall to the sha form.
+
+## r9 — worklog:86 rewritten from the FILES
+
+- image-build.yml: dispatch-only; raw shell buildx with --push, tagging lenaxia/llmsafespaces-images/ws — a DIFFERENT repo. It does emit registry tags; its separation is the namespace, not push:false (which appears nowhere in that file).
+- base-image.yml vs ci.yml build-base is the byte-same-path case (lenaxia/llmsafespaces/base): separated because build-base validates with push:false and never pushes; base-image.yml is that path's sole CalVer pusher.
