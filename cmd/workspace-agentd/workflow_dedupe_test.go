@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +42,12 @@ import (
 // session_not_found leg, 5xx the script_failed leg (#1470 envelope
 // tests). garbageBody returns a 200 the strict decode must reject
 // (script_output_invalid). failDeletes makes the teardown DELETE fail
-// (the leaked-ephemeral reality #1470's envelope contract reports).
+// (the leaked-ephemeral reality #1470's envelope contract reports);
+// deleteStatus narrows that to an exact status (404 = already gone).
+// blockMessages parks the message POST for 2s — outliving a short
+// dispatch timeout so the script_timeout leg's teardown runs under a
+// dead context (#1470 WithoutCancel pin); the sleep precedes the mutex
+// so teardown DELETEs never queue behind it.
 type dedupeHarness struct {
 	mu            sync.Mutex
 	nextSession   int
@@ -52,6 +58,8 @@ type dedupeHarness struct {
 	messageStatus int
 	garbageBody   bool
 	failDeletes   bool
+	deleteStatus  int
+	blockMessages bool
 	srv           *httptest.Server
 }
 
@@ -65,6 +73,9 @@ func newDedupeHarness(t *testing.T) *dedupeHarness {
 	t.Helper()
 	h := &dedupeHarness{}
 	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.blockMessages && r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message") {
+			time.Sleep(2 * time.Second)
+		}
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		switch {
@@ -99,6 +110,10 @@ func newDedupeHarness(t *testing.T) *dedupeHarness {
 			_, _ = w.Write([]byte(`{"info":{"id":"msg_asst_1","agent":"build","tokens":{"input":1,"output":2,"total":3}},"parts":[{"type":"text","text":"done"}]}`))
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/session/"):
 			h.deletedSess = append(h.deletedSess, strings.TrimPrefix(r.URL.Path, "/session/"))
+			if h.deleteStatus != 0 {
+				w.WriteHeader(h.deleteStatus)
+				return
+			}
 			if h.failDeletes {
 				w.WriteHeader(http.StatusInternalServerError)
 				return

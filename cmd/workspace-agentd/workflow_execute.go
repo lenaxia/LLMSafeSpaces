@@ -172,8 +172,16 @@ func workflowDeleteSessionHandler(workspacePassword string, extraAuth ...string)
 			writeWorkflowError(w, http.StatusBadRequest, "missing_session_id", "sessionId query parameter required")
 			return
 		}
-		deleteOpencodeSession(r.Context(), workspacePassword, sessionID)
-		w.WriteHeader(http.StatusNoContent)
+		// #1470 existence contract, route form: 204 = the session is gone
+		// (deleted or already missing); 502 = it SURVIVED the delete —
+		// the engine's PreserveOnFailure leg records survivors, so a
+		// blanket 204 would hide exactly the leak it needs to surface.
+		if deleteOpencodeSession(r.Context(), workspacePassword, sessionID) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeWorkflowError(w, http.StatusBadGateway, "session_delete_failed",
+			fmt.Sprintf("session %s still exists after delete attempt", sessionID))
 	}
 }
 
@@ -499,11 +507,10 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	}
 
 	result := map[string]any{
-		"response":   strings.Join(texts, "\n"),
-		"session_id": sessionID,
-		"tokens":     msgResp.Info.Tokens,
-		"prompt":     prompt,
-		"parts":      msgResp.Parts,
+		"response": strings.Join(texts, "\n"),
+		"tokens":   msgResp.Info.Tokens,
+		"prompt":   prompt,
+		"parts":    msgResp.Parts,
 	}
 
 	if data.EnforceStructuredOutput && len(data.OutputSchema) > 0 {
@@ -734,9 +741,12 @@ func parseCreatedSessionID(r io.Reader) (string, error) {
 }
 
 // deleteOpencodeSession deletes a finished routine's opencode session and
-// reports whether the session is gone (2xx). Callers that must report
-// the REALITY of a surviving session (#1470's envelope contract) use
-// the return; fire-and-forget callers may ignore it.
+// reports whether the session is GONE: a 2xx confirmed the delete, a 404
+// means it never existed at delete time (already gone — reporting a
+// survivor would mint a phantom, #1470's existence contract). Any other
+// outcome (transport error, opencode 5xx) means the session must be
+// treated as still alive. Callers that must report the REALITY of a
+// surviving session use the return; fire-and-forget callers may ignore it.
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool {
 	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("%s/session/%s", getAgentAddr(), sessionID), nil)
@@ -751,5 +761,5 @@ func deleteOpencodeSession(ctx context.Context, password, sessionID string) bool
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	return (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound
 }

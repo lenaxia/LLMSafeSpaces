@@ -153,3 +153,28 @@ func TestExecuteRoutine_Delivered_OldAgentdOutputParseBackCompat(t *testing.T) {
 	require.Len(t, store.sessionOrigins, 1, "output-payload session_id must keep working (old-agentd skew)")
 	require.Equal(t, "ses_old1", index.titleCalls()[0].sessionID)
 }
+
+// TestExecuteRoutine_FailedFire_LeakedEphemeral_RecordsReality pins the
+// reality-contract positive: agentd reports a session ONLY when it
+// exists — a PreserveNever fire whose teardown failed (leak) reports
+// the id, and the engine records it so the leak stays discoverable for
+// cleanup instead of rotting invisible.
+func TestExecuteRoutine_FailedFire_LeakedEphemeral_RecordsReality(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-agent"] = "script_failed"
+	agentd.sessionIDs["routine-agent"] = "ses_leak1" // ephemeral whose teardown failed
+	index := &recordingSessionIndex{}
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-f7", Name: "Chores", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
+	fire := &wf.TriggerFireRow{ID: "fire-f7", TriggerID: "trig-f7", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		SessionIndex: index}
+
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	require.Equal(t, "failed", store.statuses["fire-f7"])
+	require.Len(t, store.sessionOrigins, 1, "a leaked ephemeral exists — the envelope says so and the engine records reality")
+	require.Len(t, index.titleCalls(), 1)
+}

@@ -14,8 +14,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -157,3 +159,100 @@ func TestExecAgentNode_SuccessEnvelope_EphemeralOmitsSession(t *testing.T) {
 
 const agentSpecPreserved = `{"agent":"build","prompt":"summarize {{.topic}}","session":"new"}`
 const agentSpecStructuredBad = `{"agent":"build","prompt":"summarize {{.topic}}","session":"new","enforceStructuredOutput":true,"outputSchema":{"type":"object","properties":{"x":{"type":"number"}},"required":["x"]}}`
+
+// dispatchAgentNodeTimeout drives the real handler with an explicit
+// dispatch timeout (#1470: the script_timeout leg).
+func dispatchAgentNodeTimeout(t *testing.T, nodeID, workflowID, runID, spec, timeout string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := fmt.Sprintf(`{"nodeId":%q,"nodeType":"agent","spec":%s,"input":{"topic":"kv"},"workflowId":%q,"runId":%q,"timeout":%q}`,
+		nodeID, spec, workflowID, runID, timeout)
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	return w
+}
+
+// TestExecAgentNode_TimeoutLeg_TearsDownEphemeralUnderDeadContext pins
+// the WithoutCancel teardown (#1470 round-1 finding 2): the dispatch
+// context dies at 300ms while the message POST parks for 2s — the
+// ephemeral cleanup DELETE must STILL land (reverting WithoutCancel
+// makes it fail instantly on the canceled context and this test fails).
+func TestExecAgentNode_TimeoutLeg_TearsDownEphemeralUnderDeadContext(t *testing.T) {
+	h := newDedupeHarness(t)
+	h.blockMessages = true
+	pointAgentAddrAt(t, h.srv.URL)
+
+	w := dispatchAgentNodeTimeout(t, "n1", "wf-1", "run-1", agentSpecEphemeral, "300ms")
+	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+
+	out := decodeEnvelope(t, w)
+	require.Equal(t, "script_timeout", out.ErrorCode)
+	require.Empty(t, out.SessionID, "the ephemeral session must be torn down despite the dead context")
+	require.Equal(t, []string{"ses_1"}, h.deletes(), "the cleanup DELETE must outlive the dispatch deadline")
+}
+
+func TestExecAgentNode_TimeoutLeg_PreservedSessionRidesEnvelope(t *testing.T) {
+	h := newDedupeHarness(t)
+	h.blockMessages = true
+	pointAgentAddrAt(t, h.srv.URL)
+
+	w := dispatchAgentNodeTimeout(t, "n1", "wf-1", "run-1", agentSpecPreserved, "300ms")
+	require.Equal(t, http.StatusGatewayTimeout, w.Code)
+
+	out := decodeEnvelope(t, w)
+	require.Equal(t, "script_timeout", out.ErrorCode)
+	require.Equal(t, "ses_1", out.SessionID, "a preserved session survives a timeout and is reported")
+	require.Empty(t, h.deletes())
+}
+
+// TestExecAgentNode_FailureEnvelope_Delete404_CountsAsGone pins the
+// round-1 finding-1 fix: opencode's DELETE 404 means the session is
+// already gone — the envelope must NOT mint a phantom survivor.
+func TestExecAgentNode_FailureEnvelope_Delete404_CountsAsGone(t *testing.T) {
+	h := newDedupeHarness(t)
+	h.messageStatus = http.StatusInternalServerError
+	h.deleteStatus = http.StatusNotFound
+	pointAgentAddrAt(t, h.srv.URL)
+
+	w := dispatchAgentNode(t, "n1", "wf-1", "run-1", agentSpecEphemeral)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	out := decodeEnvelope(t, w)
+	require.Equal(t, "script_failed", out.ErrorCode)
+	require.Empty(t, out.SessionID, "404 on DELETE = already gone; no phantom survivor")
+}
+
+func TestExecAgentNode_SuccessEnvelope_Delete404_NoPhantomLeak(t *testing.T) {
+	h := newDedupeHarness(t)
+	h.deleteStatus = http.StatusNotFound
+	pointAgentAddrAt(t, h.srv.URL)
+
+	w := dispatchAgentNode(t, "n1", "wf-1", "run-1", agentSpecEphemeral)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	out := decodeEnvelope(t, w)
+	require.Empty(t, out.ErrorCode)
+	require.Empty(t, out.SessionID, "a 404 delete is GONE — the success envelope reports no survivor")
+	require.Equal(t, "", out.Output["session_id"], "payload matches the envelope (no phantom leak)")
+}
+
+// TestWorkflowDeleteSessionRoute_PropagatesReality pins the route form
+// of the existence contract: 204 only when the session is gone; a
+// failed delete answers 502 so the engine's PreserveOnFailure leg can
+// record the survivor instead of trusting a blanket 204.
+func TestWorkflowDeleteSessionRoute_PropagatesReality(t *testing.T) {
+	h := newDedupeHarness(t)
+	pointAgentAddrAt(t, h.srv.URL)
+
+	doDelete := func() int {
+		req := authedReq(http.MethodDelete, "/v1/workflow/session/delete?sessionId=ses_1", testAuthPassword, nil)
+		w := httptest.NewRecorder()
+		workflowDeleteSessionHandler(testAuthPassword)(w, req)
+		return w.Code
+	}
+
+	require.Equal(t, http.StatusNoContent, doDelete(), "successful delete → 204 (gone)")
+
+	h.failDeletes = true
+	require.Equal(t, http.StatusBadGateway, doDelete(), "failed delete → 502 (session survives)")
+}
