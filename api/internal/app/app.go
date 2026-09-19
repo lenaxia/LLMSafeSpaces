@@ -656,6 +656,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			AgentdClient:     newWorkflowAgentdExecutor(proxyHandler),
 			Logger:           engineLogger,
 			PasswordProvider: proxyHandler,
+			// #1452: preserved routine sessions land in the sidebar's
+			// session_index at fire completion — the routine path never
+			// rides the adapter routes that otherwise populate it.
+			SessionIndex: sessionIndexSvc,
 		}
 		// Wire pod-IP resolver so resync notifies can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
