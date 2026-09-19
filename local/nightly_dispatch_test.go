@@ -4,14 +4,17 @@
 package local_test
 
 // nightly_dispatch_test.go — structural pins for the nightly e2e
-// dispatch architecture: a platform cron trigger (the
-// "nightly-e2e-dispatcher" routine in the ops workspace) dispatches
-// e2e-nightly.yml on time at 06:00Z because GitHub's own schedule has
-// fired 4-6h late (11-run sample); the GitHub schedule STAYS as the
-// reliability backup. The concurrency group makes the two entry paths
-// mutually exclusive (whichever starts latest wins). The pins assert
-// on the PARSED YAML document — substring checks would pass on a
-// commented-out block and never prove parseability (r1 review F3).
+// schedule contract: the 2:17am Pacific (09:17 UTC) off-peak
+// odd-minute slot (top-of-
+// hour 06:00 UTC was a documented high-contention window where this
+// workflow's scheduled runs fired 4-6h late — 11-run sample; the
+// platform-trigger dispatch experiment that briefly ran here was
+// decommissioned in favor of the schedule fix). The concurrency group
+// stays as source-agnostic double-run protection (schedule, manual
+// dispatch, any future dispatch source — whichever starts latest
+// wins). The pins assert on the PARSED YAML document — substring
+// checks would pass on a commented-out block and never prove
+// parseability (#1485 r1 review F3).
 
 import (
 	"os"
@@ -64,18 +67,18 @@ func TestE2ENightlyConcurrencyGroup(t *testing.T) {
 		"whichever run starts latest wins; the other is canceled instead of overlapping")
 }
 
-// TestE2ENightlyScheduleBackupRetained pins the reliability backup and
-// the dispatcher's entry path: neither leg of the contract can be
-// silently dropped once the platform dispatch becomes primary.
-func TestE2ENightlyScheduleBackupRetained(t *testing.T) {
+// TestE2ENightlyScheduleSlotRetained pins the schedule slot and the
+// manual entry path: neither leg of the contract can be silently
+// changed or dropped.
+func TestE2ENightlyScheduleSlotRetained(t *testing.T) {
 	onBlock := nightlyOnBlock(t)
 	_, hasDispatch := onBlock["workflow_dispatch"]
-	assert.True(t, hasDispatch, "workflow_dispatch must remain — it is the dispatcher routine's entry path")
+	assert.True(t, hasDispatch, "workflow_dispatch must remain — the manual entry path")
 
 	schedule, ok := onBlock["schedule"].([]any)
 	require.True(t, ok, "the GitHub schedule leg stays as the reliability backup")
-	require.Len(t, schedule, 1, "exactly one schedule entry — the 06:00Z backup slot")
+	require.Len(t, schedule, 1, "exactly one schedule entry — the off-peak slot")
 	entry, ok := schedule[0].(map[string]any)
 	require.True(t, ok, "schedule entries must be cron mappings")
-	assert.Equal(t, "0 6 * * *", entry["cron"], "the 06:00Z backup slot is the contract")
+	assert.Equal(t, "17 9 * * *", entry["cron"], "the 2:17am Pacific (09:17 UTC) odd-minute off-peak slot is the contract (top-of-hour slots are high-contention)")
 }
