@@ -64,15 +64,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-api() { # method path [body] -> response body; status in ${api_status}
+api() { # method path [body] -> body on stdout; api_status + api_body globals
+    # No-subshell contract (the #1474 r4 harness fix, applied here:
+    # this script carried the same never-executable api_status death):
+    # capture-style callers must use `api M P B; var="${api_body}"`.
     local method="$1" path="$2" body="${3:-}"
     local args=(-s -m 20 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
         -H "Content-Type: application/json" -w '\n%{http_code}' \
         "http://127.0.0.1:${PORTFWD_PORT}${path}")
     [[ -n "${body}" ]] && args+=(-d "${body}")
-    local out; out=$(curl "${args[@]}")
+    local out
+    out=$(curl "${args[@]}") || out=$'\n000'
     api_status="${out##*$'\n'}"
-    printf '%s' "${out%$'\n'*}"
+    api_body="${out%$'\n'*}"
+    printf '%s' "${api_body}"
 }
 
 # wait_run <run-id> <timeout_s> — poll to a terminal state; sets run_row.
@@ -80,7 +85,8 @@ wait_run() {
     local rid="$1" timeout_s="$2" i run_json
     run_row=""
     for ((i = 0; i < timeout_s; i += 6)); do
-        run_json=$(api GET "/api/v1/me/runs/${rid}")
+        api GET "/api/v1/me/runs/${rid}"
+        run_json="${api_body}"
         run_row="${run_json}"
         run_status=$(printf '%s' "${run_json}" | jq -r '.status // empty')
         [[ "${run_status}" == "succeeded" || "${run_status}" == "failed" ]] && return 0
@@ -114,14 +120,16 @@ log "R1 — script-node mode contract (execute OR fail loud, nothing between)"
 
 WF_BODY=$(jq -nc --arg w "${WS}" '{name:"e2e-1455-scriptenv",targetWorkspaceId:$w,
     specYaml:"{\"nodes\":[{\"id\":\"s1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {\\\"marker\\\": \\\"e2e-1455-scriptenv-ran\\\"}\\n\"}}],\"edges\":[]}"}')
-WF_RESP=$(api POST /api/v1/me/workflows "${WF_BODY}")
+api POST /api/v1/me/workflows "${WF_BODY}"
+WF_RESP="${api_body}"
 if [[ "${api_status}" != "201" ]]; then
     die "R1 setup: workflow create failed: ${api_status} ${WF_RESP}"
 fi
 WF_ID=$(printf '%s' "${WF_RESP}" | jq -r '.id')
 created_workflows+=("${WF_ID}")
 
-RUN_RESP=$(api POST "/api/v1/me/workflows/${WF_ID}/runs" '{"input":{}}')
+api POST "/api/v1/me/workflows/${WF_ID}/runs" '{"input":{}}'
+RUN_RESP="${api_body}"
 [[ "${api_status}" == "201" || "${api_status}" == "202" ]] \
     || die "R1 setup: run create failed: ${api_status} ${RUN_RESP}"
 RUN_ID=$(printf '%s' "${RUN_RESP}" | jq -r '.id // empty')
@@ -225,14 +233,16 @@ wait_env_present "${WS}" "WT1455_PROBE_TOKEN=sekret-1455-e2e" 300 \
 
 R2_BODY=$(jq -nc --arg w "${WS}" --arg url "http://echo-1455.llmsafespaces.svc/echo" '{name:"e2e-1455-http-secrets",targetWorkspaceId:$w,
     specYaml:("{\"nodes\":[{\"id\":\"h1\",\"type\":\"http\",\"data\":{\"method\":\"GET\",\"url\":\"" + $url + "\",\"headers\":{\"Authorization\":\"Bearer {{secrets.WT1455_PROBE_TOKEN}}\",\"X-Probe\":\"{{secrets.WT1455_ABSENT_VAR}}\"}}}],\"edges\":[]}")}')
-R2_RESP=$(api POST /api/v1/me/workflows "${R2_BODY}")
+api POST /api/v1/me/workflows "${R2_BODY}"
+R2_RESP="${api_body}"
 if [[ "${api_status}" != "201" ]]; then
     die "R2 setup: workflow create failed: ${api_status} ${R2_RESP}"
 fi
 R2_WF=$(printf '%s' "${R2_RESP}" | jq -r '.id')
 created_workflows+=("${R2_WF}")
 
-R2_RUN=$(api POST "/api/v1/me/workflows/${R2_WF}/runs" '{"input":{}}')
+api POST "/api/v1/me/workflows/${R2_WF}/runs" '{"input":{}}'
+R2_RUN="${api_body}"
 [[ "${api_status}" == "201" || "${api_status}" == "202" ]] \
     || die "R2 setup: run create failed: ${api_status} ${R2_RUN}"
 R2_RUN_ID=$(printf '%s' "${R2_RUN}" | jq -r '.id // empty')
