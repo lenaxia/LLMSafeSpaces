@@ -48,6 +48,21 @@ WS_A="e2e0a000-0000-0000-0000-0000000000a1"
 WS_B="e2e0b000-0000-0000-0000-0000000000b2"
 
 cleanup() {
+    # Delete the seeded workspaces on EVERY exit path (sidecar skip, row
+    # death, green completion): pre-#1463 the job died at this step so
+    # nothing downstream ever ran with these pods standing; now that the
+    # nightly proceeds, two leaked workspace pods were ≈ exactly the CPU
+    # margin us-70's AC-1c batch was missing (nightly 35437562027:
+    # FailedScheduling Insufficient cpu, 5 standing workspace pods on the
+    # 1-node kind runner). --wait=false is the fire-and-forget part:
+    # kubectl's default --wait=true blocks on finalizers, and a wedged
+    # finalizer must never stall the EXIT trap.
+    if [[ -n "${WS_A:-}" ]]; then
+        kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    fi
+    if [[ -n "${WS_B:-}" ]]; then
+        kc -n "${NS}" delete workspace "${WS_B}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    fi
     if [[ -n "${PF_PID:-}" ]]; then
         kill "${PF_PID}" 2>/dev/null || true
         wait "${PF_PID}" 2>/dev/null || true
@@ -116,7 +131,7 @@ exec_ws() { # ws cmd...
 
 seed_workspace() { # ws user_id
     local ws="$1" user_id="$2"
-    kc -n "${NS}" delete workspace "${ws}" --ignore-not-found >/dev/null 2>&1 || true
+    kc -n "${NS}" delete workspace "${ws}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     cat <<EOF | kc -n "${NS}" apply -f - >/dev/null
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace

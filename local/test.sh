@@ -37,7 +37,7 @@ NS="${NS:-llmsafespaces}"
 # The workspace CRD name MUST be a UUID: the API's workspace lookup casts the
 # name to Postgres uuid type (workspaces.id is uuid), and the platform's
 # design uses uuid.New() as the CRD name on every API-created workspace
-# (workspace_service.go:407). Using a human-readable name here causes
+# (workspace_service.go:410). Using a human-readable name here causes
 # 'invalid input syntax for type uuid' 500s on every API call that touches
 # the workspace.
 WORKSPACE_NAME="${WORKSPACE_NAME:-e2e00000-0000-0000-0000-000000000001}"
@@ -675,7 +675,12 @@ case "${CREATE_SB_CODE}" in
         DISPOSABLE_SB=$(python3 -c "
 import json, sys
 d = json.load(open('/tmp/llmsafespaces-create-sb.json'))
-print(d.get('name') or d.get('metadata', {}).get('name', ''))
+# The CR id (uuid.New()) — NOT the display name: a display-name DELETE
+# targets a workspace that does not exist and the pod leaks through the
+# rest of the job (nightly 35437562027 census pod 77cf2232-…). An
+# id-less response yields empty and dies loudly at the guard below —
+# never a silent display-name fallback.
+print(d.get('id') or '')
 ")
         [[ -n "${DISPOSABLE_SB}" ]] || die "could not extract created workspace name"
         ok "created disposable workspace via API: ${DISPOSABLE_SB}"
@@ -695,6 +700,14 @@ case "${DELETE_SB_CODE}" in
     204) ok "DELETE workspace returned 204" ;;
     *)   warn "DELETE workspace returned ${DELETE_SB_CODE} (workspace CRD may still exist)" ;;
 esac
+
+# Belt-and-braces: whatever the API DELETE returned, remove the CR via
+# kubectl too — the API delete can warn-and-leak (async, or the display-
+# name era), and Test 13 only cleans WORKSPACE_NAME. Same hygiene pattern
+# as Test 13, --wait=false included: a wedged finalizer must never stall
+# the suite (nightly 35437562027: the disposable pod stood through the
+# rest of the job).
+kc -n "${NS}" delete workspace "${DISPOSABLE_SB}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 
 # 8b — Session history continuity across suspend/resume.
 # After Test 7 the workspace is Active again, but the workspace pod is gone
