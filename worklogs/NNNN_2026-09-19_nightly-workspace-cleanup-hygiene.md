@@ -11,16 +11,16 @@
 Every workspace pod standing when a nightly step ends is CPU margin stolen from every later step. Run 35437562027's failure census (5 Running workspace pods + system pods on one kind node; AC-1c's pod `FailedScheduling: Insufficient cpu` for 4m8s) showed two harness-owned leaks:
 
 1. `local/us-68-attachments-e2e.sh` exits 0 (sidecar skip AND green completion) without deleting WS_A/WS_B — pre-existing, but only load-bearing since #1463 let the job proceed past this step.
-2. `local/test.sh` Test 8a's disposable sandbox (census pod `77cf2232-…`, Running 6m28s at failure): the create-response extraction read the DISPLAY name (`d.get('name')` → "disposable-e2e") instead of the CR id (uuid.New() per the API create contract, `pkg/types.WorkspaceResponse` has both `id` and `name`), so `DELETE /api/v1/workspaces/disposable-e2e` targeted nothing; the non-204 path only warns.
+2. `local/test.sh` Test 8a's disposable sandbox (census pod `77cf2232-…`, Running 6m28s at failure): the create-response extraction read the DISPLAY name (`d.get('name')` → "disposable-e2e") instead of the CR id (uuid.New() per the API create contract, `pkg/types.Workspace` has both `id` and `name`), so `DELETE /api/v1/workspaces/disposable-e2e` targeted nothing; the non-204 path only warns.
 
 ---
 
 ## Work Completed
 
-- `local/us-68-attachments-e2e.sh`: `cleanup()` (the existing EXIT trap) now deletes WS_A/WS_B `--ignore-not-found`, guarded `|| true`, fire-and-forget on purpose (CR deletion starts pod teardown immediately; a `--wait` would hang the trap on a wedged finalizer). `${WS_A:-}` guards keep the die-before-seed path `set -u`-safe. Port-forward teardown unchanged.
-- `local/test.sh`: extraction now prefers `d.get('id')` (CR id) with the old fields as fallbacks; a kubectl backstop delete of `${DISPOSABLE_SB}` follows the API DELETE attempt (same hygiene pattern as Test 13's WORKSPACE_NAME cleanup).
+- `local/us-68-attachments-e2e.sh`: `cleanup()` (the existing EXIT trap) now deletes WS_A/WS_B `--ignore-not-found --wait=false`, guarded `|| true` — `--wait=false` is the fire-and-forget part: kubectl's DEFAULT `--wait=true` blocks on finalizers, and a wedged finalizer must never stall the EXIT trap (review r1's blocking catch — my first draft omitted the flag while claiming fire-and-forget). The seed-time pre-clean got `--wait=false` too (same hang class, pre-existing). `${WS_A:-}` guards keep the die-before-seed path `set -u`-safe. Port-forward teardown unchanged.
+- `local/test.sh`: extraction yields `d.get('id')` only (an id-less response yields empty and dies loudly at the existing guard — the display-name and dead `metadata.name` fallbacks dropped, review r1's non-blocking note adopted); a kubectl backstop delete (`--wait=false`) of `${DISPOSABLE_SB}` follows the API DELETE attempt (same hygiene pattern as Test 13's WORKSPACE_NAME cleanup).
 - ExecuteSmoke: the shared kubectl shim (`e2e_smoke_helpers_test.go`) now (a) appends every invocation to `$SMOKE_KC_TRACE` when set (inert otherwise), (b) answers the us-68 sidecar gate's combined both-lists jsonpath with `workspace agentd` — the nightly's actual mode — so the attachments smoke now traverses the SIDECAR path (dies at the D1 clean-fail assertion under the shims, a semantic row death per the smoke philosophy) instead of falling through to E11.
-- Pins (TDD red→green): structural (cleanup trap contents; extraction/backstop presence + ordering), executable (real `cleanup()` against a tracing fake kc, incl. the unset-vars early-death path; the real extraction against a `WorkspaceResponse`-shaped fixture), and `TestUS68CleanupExecuteSmoke` — the REAL script under the shared shims with the trace armed: the EXIT trap must fire the deletes after the shim-driven death (≥2 deletes per workspace in the trace: seed pre-clean + trap).
+- Pins (TDD red→green): structural (cleanup trap contents; extraction/backstop presence + ordering), executable (real `cleanup()` against a tracing fake kc, incl. the unset-vars early-death path; the real extraction against a `types.Workspace`-shaped fixture, incl. the id-less loud-die case), and `TestUS68CleanupExecuteSmoke` — the REAL script under the shared shims with the trace armed: the EXIT trap must fire the deletes after the shim-driven death (≥2 deletes per workspace in the trace: seed pre-clean + trap).
 
 ## Key Decisions
 
@@ -32,7 +32,7 @@ Every workspace pod standing when a nightly step ends is CPU margin stolen from 
 ### Assumptions stated and validated (Rule 7)
 
 - Workspace CR deletion promptly starts pod teardown (frees node CPU requests) — controller finalizer behavior, consistent with the census (e2e00000-0001 terminating within seconds of Test-13's delete, gone by census time).
-- `WorkspaceResponse` carries `id` (CR name) distinct from `name` (display) — verified at `pkg/types/workspace.go:13-14`; the 77cf2232 census pod matches the uuid.New() create contract (test.sh:39 comment).
+- `types.Workspace` carries `id` (CR name) distinct from `name` (display) — verified at `pkg/types/workspace.go:12-14` (returned by `CreateWorkspace`, `api/internal/services/workspace/workspace_service.go`); the 77cf2232 census pod matches the uuid.New() create contract (test.sh:39 comment).
 - No other script consumes the shim's previously-empty answer for the combined jsonpath — grep: only `us-68-attachments-e2e.sh` uses that jsonpath (introduced by #1463).
 
 ---

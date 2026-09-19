@@ -677,8 +677,10 @@ import json, sys
 d = json.load(open('/tmp/llmsafespaces-create-sb.json'))
 # The CR id (uuid.New()) — NOT the display name: a display-name DELETE
 # targets a workspace that does not exist and the pod leaks through the
-# rest of the job (nightly 35437562027 census pod 77cf2232-…).
-print(d.get('id') or d.get('metadata', {}).get('name', '') or d.get('name', ''))
+# rest of the job (nightly 35437562027 census pod 77cf2232-…). An
+# id-less response yields empty and dies loudly at the guard below —
+# never a silent display-name fallback.
+print(d.get('id') or '')
 ")
         [[ -n "${DISPOSABLE_SB}" ]] || die "could not extract created workspace name"
         ok "created disposable workspace via API: ${DISPOSABLE_SB}"
@@ -702,9 +704,10 @@ esac
 # Belt-and-braces: whatever the API DELETE returned, remove the CR via
 # kubectl too — the API delete can warn-and-leak (async, or the display-
 # name era), and Test 13 only cleans WORKSPACE_NAME. Same hygiene pattern
-# as Test 13 (nightly 35437562027: the disposable pod stood through the
+# as Test 13, --wait=false included: a wedged finalizer must never stall
+# the suite (nightly 35437562027: the disposable pod stood through the
 # rest of the job).
-kc -n "${NS}" delete workspace "${DISPOSABLE_SB}" --ignore-not-found >/dev/null 2>&1 || true
+kc -n "${NS}" delete workspace "${DISPOSABLE_SB}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 
 # 8b — Session history continuity across suspend/resume.
 # After Test 7 the workspace is Active again, but the workspace pod is gone

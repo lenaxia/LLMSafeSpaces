@@ -173,13 +173,22 @@ func TestUS68CleanupDeletesSeededWorkspaces(t *testing.T) {
 		t.Fatal("the cleanup trap must stay registered (trap cleanup EXIT)")
 	}
 	for _, pin := range []string{
-		`kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found >/dev/null 2>&1 || true`,
-		`kc -n "${NS}" delete workspace "${WS_B}" --ignore-not-found >/dev/null 2>&1 || true`,
+		`kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found --wait=false >/dev/null 2>&1 || true`,
+		`kc -n "${NS}" delete workspace "${WS_B}" --ignore-not-found --wait=false >/dev/null 2>&1 || true`,
 		// the port-forward teardown must survive the cleanup extension
 		`kill "${PF_PID}" 2>/dev/null || true`,
 	} {
 		if !strings.Contains(cleanup, pin) {
 			t.Fatalf("cleanup() must keep %q on every exit path — the seeded workspaces must not leak into downstream suites (nightly 35437562027 census)", pin)
+		}
+	}
+	// kubectl delete defaults to --wait=true (blocks on finalizers); a
+	// wedged finalizer must never stall the EXIT trap (review r1).
+	for _, pin := range []string{
+		`kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found --wait=false`,
+	} {
+		if !strings.Contains(cleanup, pin) {
+			t.Fatalf("cleanup() deletes must be --wait=false — kubectl's default --wait=true hangs the trap on a wedged finalizer")
 		}
 	}
 }
@@ -209,7 +218,7 @@ cleanup`).CombinedOutput()
 	if rerr != nil {
 		t.Fatalf("kc trace unreadable: %v", rerr)
 	}
-	for _, want := range []string{"delete workspace ws-a --ignore-not-found", "delete workspace ws-b --ignore-not-found"} {
+	for _, want := range []string{"delete workspace ws-a --ignore-not-found --wait=false", "delete workspace ws-b --ignore-not-found --wait=false"} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("cleanup() must issue %q, trace:\n%s", want, raw)
 		}
