@@ -105,7 +105,7 @@ Fixes:
 - `api/internal/workflows/engine_test.go` — mock parity: `wf.ErrNotFound` on miss, `getTriggerByIDErr` injection
 - `local/issue-1417-templating-e2e.sh`, `local/issue1452-routine-session-index-e2e.sh` — sister-script `api()` no-subshell fix (Rule 5, r4 review)
 - `local/issue_1410_automation_e2e_script_test.go` — R10 needles + `TestIssue1410E2EScript_ExecuteSmoke` (harness-execution smoke)
-- `worklogs/NNNN_2026-09-19_drain-accounting-fetch-split.md` — this worklog
+- `worklogs/1002_2026-09-19_drain-accounting-fetch-split.md` — this worklog
 
 ## Review Round 5 (conversion-mechanics defects — three, all mine, all fixed)
 
