@@ -69,7 +69,7 @@ None.
 
 - `.github/workflows/e2e-nightly.yml` — concurrency group (cancel-in-progress); schedule + dispatch retained
 - `local/nightly_dispatch_test.go` — structural pins (new)
-- `worklogs/NNNN_2026-09-19_nightly-dispatch-concurrency.md` — this worklog
+- `worklogs/1008_2026-09-19_nightly-dispatch-concurrency.md` — this worklog
 
 ---
 
