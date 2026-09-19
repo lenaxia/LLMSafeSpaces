@@ -1,4 +1,4 @@
-# Worklog: Repo-wide ExecuteSmoke closure — 7 nightly harness scripts under shared shokes — Refs #1474/#1480
+# Worklog: Repo-wide ExecuteSmoke closure — 7 nightly harness scripts under shared shims — Refs #1474/#1480
 
 **Date:** 2026-09-19
 **Session:** Orchestrator-assigned residual lane on branch `fix/execute-smoke-repo-wide` (worktree wt-1453): extend #1480's shared execution-smoke machinery to the remaining nightly-registered harness scripts (1342 sequenced after #1478 — excluded here).
@@ -67,3 +67,7 @@ None. Not reported as blockers: us-70-secret-delivery's deep chaos legs (suspend
 - `local/e2e_smoke_helpers_test.go` — two new kubectl shim rules
 - `local/e2e_smoke_repo_wide_test.go` — new: the 7-script table smoke
 - `worklogs/NNNN_2026-09-19_execute-smoke-repo-wide.md` — this worklog
+
+## Review Round 1 (depth not pinned — three mutations proved it; fixed)
+
+The reviewer mutation-tested my suite: (1) breaking wait_phase's comparison in the SHARED lib (5 of 7 rows depend on it) left the suite green; (2) deleting either new kubectl shim rule left it green; (3) test.sh's empty green marker accepted any exit-0. Root cause: any-depth ✗ deaths. Fix: a depthMarker table column pinning each script's deterministic pre-death boundary (for revisions, the death line itself — an earlier "REV-1 setup" marker sat BEFORE the spawnedRev shim-rule dependency and still passed mutation 2). Mutation-verified locally after the fix: wait_phase break → 1455 row FAIL; spawnedRev-rule deletion → revisions row FAIL; containers-rule deletion → dev-preview row FAIL. test.sh's empty green marker replaced by the "Workspace reached phase=Active" depth pin (its pvcName death stays covered by ✗+exit). Non-blocking noted: banned-signature phrases could false-positive on future legitimate log lines — left as-is per the reviewer's "if it ever bites". Worklog title typo fixed (shokes→shims).

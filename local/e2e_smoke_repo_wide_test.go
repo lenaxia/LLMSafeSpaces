@@ -17,6 +17,7 @@ package local_test
 // applying the already-ruled no-subshell contract.
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -24,27 +25,37 @@ func TestHarnessExecuteSmoke_RepoWide(t *testing.T) {
 	if testing.Short() {
 		t.Skip("execution smokes spawn ~hundreds of shim processes")
 	}
+	// depthMarker pins HOW FAR each script executes before its shim-
+	// driven row death (the r1 review's finding: any-depth ✗ deaths
+	// accepted regressions — a broken shared lib or a deleted shim rule
+	// moved the death earlier and the suite stayed green). Each marker
+	// is the last deterministic pre-death row boundary observed under
+	// the shims; combined with the ✗/green gate it proves rows ran.
 	tests := []struct {
 		name        string
 		script      string
 		phase       string
+		depthMarker string
 		greenMarker string
 		extraEnv    map[string]string
 	}{
-		{"test.sh", "test.sh", "Active", "", nil},
-		{"us-68 attachments", "us-68-attachments-e2e.sh", "Active", "all green", nil},
-		{"us-70 secret delivery", "us-70-secret-delivery-e2e.sh", "Active", "all rows green", map[string]string{
+		{"test.sh", "test.sh", "Active", "Workspace reached phase=Active", "", nil},
+		{"us-68 attachments", "us-68-attachments-e2e.sh", "Active", "both workspaces Active", "all green", nil},
+		{"us-70 secret delivery", "us-70-secret-delivery-e2e.sh", "Active", "AC-1 — cold create", "all rows green", map[string]string{
 			"SUSPEND_SECONDS": "1", "RESUME_SCALE": "1", "RESUME_SCALE_TIMEOUT_S": "5", "RECONCILE_INTERVAL_S": "1",
 		}},
-		{"1455 scriptenv", "issue-1455-scriptenv-e2e.sh", "Active", "all rows green", nil},
-		{"us-70 revisions", "us-70-revisions-e2e.sh", "Active", "revisions suite complete", nil},
-		{"dev-preview tunnel", "dev-preview-tunnel-e2e.sh", "Active", "ALL LEGS GREEN", nil},
-		{"us-63 v2 behavior", "us-63-v2-behavior-e2e.sh", "Active", "all V2 behavioral assertions PASSED", nil},
+		{"1455 scriptenv", "issue-1455-scriptenv-e2e.sh", "Active", "R2 — http-node", "all rows green", nil},
+		{"us-70 revisions", "us-70-revisions-e2e.sh", "Active", "minted an empty token", "revisions suite complete", nil},
+		{"dev-preview tunnel", "dev-preview-tunnel-e2e.sh", "Active", "#1333-A: bare port", "ALL LEGS GREEN", nil},
+		{"us-63 v2 behavior", "us-63-v2-behavior-e2e.sh", "Active", "starting long turn", "all V2 behavioral assertions PASSED", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			combined, exitVal := runScriptUnderShims(t, tt.script, tt.phase, tt.extraEnv)
 			assertSmokeTraversal(t, tt.script, combined, exitVal, "✗", tt.greenMarker)
+			if !strings.Contains(combined, tt.depthMarker) {
+				t.Fatalf("%s died before its pinned traversal depth (%q) — a shared lib or shim rule regression moved the death point:\n%s", tt.script, tt.depthMarker, smokeTail(combined))
+			}
 		})
 	}
 }
