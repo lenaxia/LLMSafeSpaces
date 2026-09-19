@@ -984,7 +984,7 @@ func TestDeleteRoutineSession_SendsAuth(t *testing.T) {
 	defer srv.Close()
 	host, port := testServerAddr(t, srv)
 
-	ok := deleteRoutineSession(context.Background(), noopLogger{}, "pw-9", host, port, "ses_1")
+	ok := deleteRoutineSession(context.Background(), noopLogger{}, "pw-9", host, port, "ses_1", deletePurposePreserveOnFailure)
 	require.True(t, ok)
 	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw-9"))
 	require.Equal(t, expected, gotAuth)
@@ -999,7 +999,7 @@ func TestDeleteRoutineSession_401IsNotDeleted(t *testing.T) {
 	defer srv.Close()
 	host, port := testServerAddr(t, srv)
 
-	ok := deleteRoutineSession(context.Background(), capturingLogger, "pw-9", host, port, "ses_1")
+	ok := deleteRoutineSession(context.Background(), capturingLogger, "pw-9", host, port, "ses_1", deletePurposePreserveOnFailure)
 	require.False(t, ok, "401 must not count as deleted")
 	require.NotEmpty(t, logged, "non-2xx delete responses must be logged, not silently swallowed")
 }

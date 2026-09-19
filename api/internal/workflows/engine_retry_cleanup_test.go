@@ -188,9 +188,16 @@ func TestExecuteRoutine_RetryIntermediateCleanedViaAuthorizedDelete(t *testing.T
 // TestExecuteRoutine_RetryIntermediateCleanupFails_StillDelivers: a
 // 502 from the delete route (session survived, #1471 contract) must
 // not break the retry — the fire still delivers and records its final
-// session; the leaked intermediate is logged, not fatal.
+// session; the leaked intermediate is logged, not fatal. The route hit
+// is recorded so the test distinguishes "cleanup attempted and 502'd"
+// from "cleanup never wired".
 func TestExecuteRoutine_RetryIntermediateCleanupFails_StillDelivers(t *testing.T) {
+	var deleteHits []string
+	var deleteMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deleteMu.Lock()
+		deleteHits = append(deleteHits, r.URL.Query().Get("sessionId"))
+		deleteMu.Unlock()
 		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer srv.Close()
@@ -214,6 +221,7 @@ func TestExecuteRoutine_RetryIntermediateCleanupFails_StillDelivers(t *testing.T
 	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
 
 	require.Equal(t, "delivered", store.statuses["fire-rl2"], "cleanup failure must never fail the fire")
+	require.Equal(t, []string{"ses_leak"}, deleteHits, "the cleanup WAS attempted — the 502 is a failed delete, not missing wiring")
 	require.Len(t, store.sessionOrigins, 1)
 	require.Equal(t, "ses_final", index.titleCalls()[0].sessionID)
 }
