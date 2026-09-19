@@ -56,7 +56,7 @@ None.
 - `local/issue-1342-graceful-restart-e2e.sh` — WS_BASE 8-hex
 - `local/issue_1452_e2e_script_test.go` — mirrored canonicality pin
 - `local/issue_1342_e2e_script_test.go` — mirrored canonicality pin
-- `worklogs/NNNN_2026-09-19_e2e-wsbase-uuid-canonicality.md` — this worklog
+- `worklogs/1005_2026-09-19_e2e-wsbase-uuid-canonicality.md` — this worklog
 
 ---
 
