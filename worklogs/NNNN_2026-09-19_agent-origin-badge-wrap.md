@@ -77,4 +77,8 @@ Fix: testid restored to the component; ALL verification re-run fresh on the fina
 
 The code was approved-correct at r4; r5's blocker was the record: line 17 still said 31-char (now 30); the r2/r3 sections' worklog-half "fixed" claims were false at head (now annotated in place); the three coexisting Tests-Run sections are now explicitly ordered (original → r3 → r4/r5 authoritative); the PR body's 31-char fixed via `gh pr edit`. Optional pin adopted: the vitest layer now asserts `agent-origin-label` exists (the testid whose absence broke r3 — previously guarded only at the e2e layer).
 
-Authoritative verification (this section supersedes all prior test-run records): vitest 7/7; Playwright agent-origin 4/4; copy-based mutations A and B fail BOTH layers (observed); restored green; full suite 172/1897; tsc + eslint clean; CI Frontend job green at head.
+Authoritative verification (this section supersedes all prior test-run records): vitest 6/6 (the r5 commit message and thread comment said "7/7" — false, born of counting the new assertion path instead of the test count; the suite has 6 tests); Playwright agent-origin 4/4; copy-based mutations A and B fail BOTH layers (observed); restored green; full suite 172/1897; tsc + eslint clean; CI Frontend job green at head.
+
+## Review Round 6 (the last word — "7/7")
+
+My r5 "authoritative" record itself contained a false count ("vitest 7/7" — the suite has 6 tests; I counted the added assertion path, not tests). Corrected above. No code change; the reviewer verified everything else true.
