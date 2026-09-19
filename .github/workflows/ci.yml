@@ -1859,9 +1859,10 @@ jobs:
           [ -n "$dmode" ] || { echo "::error::/plugins missing from the image"; exit 1; }
           [ -n "$fmode" ] || { echo "::error::plugin file missing from the image"; exit 1; }
           # uid 1000 (opencode) is NOT the owner: traversal needs the
-          # OTHER-execute bit — mode char 9. (A glob like drwx*x*x*x* is
-          # unsatisfiable: it demands more x's than a 9-char mode has.)
-          other_x=$(printf '%s' "$dmode" | cut -c9)
+          # OTHER-execute bit. The tar mode string is 10 chars (type
+          # char + 9 mode bits) — other-execute is char 10. (A glob like
+          # drwx*x*x*x* is unsatisfiable; cut -c9 reads other-READ.)
+          other_x=$(printf '%s' "$dmode" | cut -c10)
           if [ "$other_x" != "x" ]; then
             echo "::error::/plugins mode $dmode lacks the other-execute (traversal) bit — BuildKit applied the file --chmod to the implicitly created parent dir (2026-09-19 incident); the plugin import fails silently for uid 1000"; exit 1
           fi
