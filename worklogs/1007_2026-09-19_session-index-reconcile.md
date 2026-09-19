@@ -86,7 +86,7 @@ None.
 - `api/internal/server/router.go` (reconcile piggyback)
 - `sdks/openapi.yaml`
 - `frontend/src/hooks/useMessageHistory.ts`, `components/chat/ChatHistoryErrorBanner.tsx` (+ tests), `pages/ChatPage.tsx` (+ historyError test rows, hookcount pin), `tests/e2e/session-gone.spec.ts` (new)
-- `worklogs/NNNN_2026-09-19_session-index-reconcile.md` (this file)
+- `worklogs/1007_2026-09-19_session-index-reconcile.md` (this file)
 
 ---
 
