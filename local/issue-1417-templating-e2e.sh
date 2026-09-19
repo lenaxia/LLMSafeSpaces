@@ -47,15 +47,21 @@ cleanup() {
 }
 trap cleanup EXIT
 
-api() { # method path [body] -> response body; status in ${api_status}
+api() { # method path [body] -> body on stdout; api_status + api_body globals
+    # No-subshell contract: capture-style callers must use
+    # `api M P B; var="${api_body}"` — `var=$(api ...)` runs in a
+    # subshell and the status side-channel dies with it (set -u then
+    # aborts on the stale variable; see the 1410 harness fix, #1474 r4).
     local method="$1" path="$2" body="${3:-}"
-    local args=(-s -m 30 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
+    local args=(-s -m 20 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
         -H "Content-Type: application/json" -w '\n%{http_code}' \
         "http://127.0.0.1:${PORTFWD_PORT}${path}")
     [[ -n "${body}" ]] && args+=(-d "${body}")
-    local out; out=$(curl "${args[@]}")
+    local out
+    out=$(curl "${args[@]}") || out=$'\n000'
     api_status="${out##*$'\n'}"
-    printf '%s' "${out%$'\n'*}"
+    api_body="${out%$'\n'*}"
+    printf '%s' "${api_body}"
 }
 
 # --- mock LLM upstream: echoes the last user message verbatim -----------
@@ -155,19 +161,22 @@ SPEC=$(jq -nc --arg model "${SLUG}/${MODEL}" '{
 }')
 WF_BODY=$(jq -nc --arg spec "${SPEC}" --arg ws "${WS}" \
   '{name:"e2e-1417-templating", specYaml: $spec, targetWorkspaceId: $ws}')
-wf_resp=$(api POST /api/v1/me/workflows "${WF_BODY}")
+api POST /api/v1/me/workflows "${WF_BODY}"
+wf_resp="${api_body}"
 [[ "${api_status}" == "201" ]] || die "workflow create failed: ${api_status} ${wf_resp}"
 WF=$(printf '%s' "${wf_resp}" | jq -r '.id')
 CREATED_WF="${WF}"
 
-run_resp=$(api POST "/api/v1/me/workflows/${WF}/runs" \
-    '{"input":{"body":{"topic":"e2e-nested-topic"}}}')
+api POST "/api/v1/me/workflows/${WF}/runs" \
+    '{"input":{"body":{"topic":"e2e-nested-topic"}}}'
+run_resp="${api_body}"
 [[ "${api_status}" == "202" ]] || die "run start failed: ${api_status} ${run_resp}"
 RUN=$(printf '%s' "${run_resp}" | jq -r '.id')
 
 status=""
 for ((i = 0; i < RUN_WAIT_S; i += 6)); do
-    run_json=$(api GET "/api/v1/me/runs/${RUN}")
+    api GET "/api/v1/me/runs/${RUN}"
+    run_json="${api_body}"
     status=$(printf '%s' "${run_json}" | jq -r '.status // empty')
     [[ "${status}" == "succeeded" || "${status}" == "failed" ]] && break
     sleep 6
@@ -194,7 +203,8 @@ fi
 # -----------------------------------------------------------------------------
 log "#1446 — fire result observability rows"
 
-FTR_RESP=$(api POST /api/v1/me/triggers '{"name":"e2e-1417-fires","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"prompt":"ACK","captureMode":"full","autoDisableAfter":10}')
+api POST /api/v1/me/triggers '{"name":"e2e-1417-fires","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"prompt":"ACK","captureMode":"full","autoDisableAfter":10}'
+FTR_RESP="${api_body}"
 if [[ "${api_status}" == "201" ]]; then
     FTR_ID=$(printf '%s' "${FTR_RESP}" | jq -r '.id')
     created_triggers+=("${FTR_ID}")
@@ -209,7 +219,8 @@ fi
 # the 1410 script's lane. Here: assert the RESULT field round-trips on
 # the fires endpoint for the created trigger (empty list = field absent
 # is fine; the shape assertion runs on whatever rows exist) + guard.
-fires_json=$(api GET "/api/v1/me/triggers/${FTR_ID:-none}/fires")
+api GET "/api/v1/me/triggers/${FTR_ID:-none}/fires"
+fires_json="${api_body}"
 if [[ "${api_status}" == "200" ]] && printf '%s' "${fires_json}" | jq -e '.fires' >/dev/null 2>&1; then
     ok "T3: fires endpoint answers for the owner (rows: $(printf '%s' "${fires_json}" | jq '.fires | length'))"
 else
@@ -218,7 +229,8 @@ fi
 
 # Unhappy: a foreign/nonexistent trigger UUID must 404 — the ownership
 # guard (GetTrigger owner-scoped) blocks cross-tenant fire reads.
-foreign=$(api GET "/api/v1/me/triggers/00000000-0000-4000-8000-000000000099/fires")
+api GET "/api/v1/me/triggers/00000000-0000-4000-8000-000000000099/fires"
+foreign="${api_body}"
 if [[ "${api_status}" == "404" ]]; then
     ok "T4: foreign trigger UUID 404s (ownership guard)"
 else
@@ -227,12 +239,14 @@ fi
 
 # T5 (happy, #1446): a captureMode-full ROUTINE fire's captured output
 # reaches the caller via .result — real content, not liveness.
-CAP_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS}" \
-    '{name:"e2e-1417-capfull",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"E2E-CAPTURED-MARKER reply ACK",captureMode:"full",autoDisableAfter:10}')")
+api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS}" \
+    '{name:"e2e-1417-capfull",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"E2E-CAPTURED-MARKER reply ACK",captureMode:"full",autoDisableAfter:10}')"
+CAP_TR_RESP="${api_body}"
 [[ "${api_status}" == "201" ]] || note_fail "T5 setup: capture trigger create ${api_status} ${CAP_TR_RESP:0:120}"
 CAP_ID=$(printf '%s' "${CAP_TR_RESP}" | jq -r '.id // empty')
 [[ -n "${CAP_ID}" ]] && created_triggers+=("${CAP_ID}")
-CAP_ROT=$(api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret")
+api POST "/api/v1/me/triggers/${CAP_ID}/rotate-secret"
+CAP_ROT="${api_body}"
 CAP_SECRET=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookSecret // empty')
 CAP_URL=$(printf '%s' "${CAP_ROT}" | jq -r '.webhookUrl // empty')
 cap_payload='{"marker":"cap-full-e2e"}'
@@ -244,7 +258,8 @@ if [[ -n "${CAP_URL}" && -n "${CAP_SECRET}" ]]; then
     # NOTE: delivered through the port-forward (in-cluster path, no CF).
     cap_result=""
     for ((i = 0; i < 60; i += 6)); do
-        cap_fires=$(api GET "/api/v1/me/triggers/${CAP_ID}/fires")
+        api GET "/api/v1/me/triggers/${CAP_ID}/fires"
+        cap_fires="${api_body}"
         cap_status_one=$(printf '%s' "${cap_fires}" | jq -r '.fires[0].status // empty')
         [[ "${cap_status_one}" == "delivered" || "${cap_status_one}" == "failed" ]] && break
         sleep 6
@@ -263,14 +278,16 @@ fi
 # .result — delete the target workspace first, then deliver.
 WS2="$(ws_id 18)"
 seed_workspace "${WS2}" >/dev/null 2>&1 || true
-FAIL_TR_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS2}" \
-    '{name:"e2e-1417-failcause",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"ACK",captureMode:"full",autoDisableAfter:50}')")
+api POST /api/v1/me/triggers "$(jq -nc --arg ws "${WS2}" \
+    '{name:"e2e-1417-failcause",sourceType:"webhook",sourceConfig:{method:"POST"},workspaceId:$ws,prompt:"ACK",captureMode:"full",autoDisableAfter:50}')"
+FAIL_TR_RESP="${api_body}"
 FAIL_ID=$(printf '%s' "${FAIL_TR_RESP}" | jq -r '.id // empty')
 [[ -n "${FAIL_ID}" ]] && created_triggers+=("${FAIL_ID}")
 kc delete workspace "${WS2}" --ignore-not-found >/dev/null 2>&1 || true
 # give the controller a beat to tear the pod down
 sleep 10
-FAIL_ROT=$(api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret")
+api POST "/api/v1/me/triggers/${FAIL_ID}/rotate-secret"
+FAIL_ROT="${api_body}"
 FAIL_SECRET=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookSecret // empty')
 FAIL_URL=$(printf '%s' "${FAIL_ROT}" | jq -r '.webhookUrl // empty')
 fail_payload='{"x":1}'
@@ -281,7 +298,8 @@ if [[ -n "${FAIL_URL}" && -n "${FAIL_SECRET}" ]]; then
         -d "${fail_payload}" --max-time 20 || true
     fail_result=""
     for ((i = 0; i < 60; i += 6)); do
-        fail_fires=$(api GET "/api/v1/me/triggers/${FAIL_ID}/fires")
+        api GET "/api/v1/me/triggers/${FAIL_ID}/fires"
+        fail_fires="${api_body}"
         fail_status_one=$(printf '%s' "${fail_fires}" | jq -r '.fires[0].status // empty')
         [[ "${fail_status_one}" == "failed" ]] && break
         sleep 6

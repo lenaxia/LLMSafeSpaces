@@ -65,22 +65,33 @@ trap cleanup EXIT
 curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
     || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
 
-api() { # method path [body] -> response body; status in ${api_status}
+# api runs one request. The BODY goes to stdout (pipe-friendly); the
+# status lands in api_status and the body in api_body — plain globals,
+# so they survive ONLY when api is called in the CURRENT shell (direct
+# call or >/dev/null). Capture-style callers MUST use
+#     api METHOD PATH [BODY]; var="${api_body}"
+# — `var=$(api ...)` runs in a subshell and the side-channels die with
+# it (the r4 review finding: under set -u the stale api_status aborted
+# the script at R1a; no row had ever executed).
+api() { # method path [body] -> body on stdout; api_status + api_body globals
     local method="$1" path="$2" body="${3:-}"
     local args=(-s -m 20 -X "${method}" -H "Authorization: Bearer ${API_KEY}" \
         -H "Content-Type: application/json" -w '\n%{http_code}' \
         "http://127.0.0.1:${PORTFWD_PORT}${path}")
     [[ -n "${body}" ]] && args+=(-d "${body}")
-    local out; out=$(curl "${args[@]}")
+    local out
+    out=$(curl "${args[@]}") || out=$'\n000'
     api_status="${out##*$'\n'}"
-    printf '%s' "${out%$'\n'*}"
+    api_body="${out%$'\n'*}"
+    printf '%s' "${api_body}"
 }
 
 create_trigger() { # name expr -> trigger id (echoed), 201 enforced
     local name="$1" expr="$2" body resp
     body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${GHOST_WF}" \
         '{name:$n,sourceType:"cron",sourceConfig:{expr:$e,tz:"UTC"},workflowId:$w}')
-    resp=$(api POST /api/v1/me/triggers "${body}")
+    api POST /api/v1/me/triggers "${body}"
+    resp="${api_body}"
     [[ "${api_status}" == "201" ]] || die "trigger create (${name}) failed: ${api_status} ${resp}"
     local id; id=$(printf '%s' "${resp}" | jq -r '.id')
     created_triggers+=("${id}")
@@ -97,8 +108,9 @@ slot_hm() { # rfc3339 -> "HH:MM" (UTC)
 
 # --- R1: create-path validation + first-occurrence slot (#1411) ----------
 
-r1_resp=$(api POST /api/v1/me/triggers \
-    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${GHOST_WF}"'"}')
+api POST /api/v1/me/triggers \
+    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${GHOST_WF}"'"}'
+r1_resp="${api_body}"
 if [[ "${api_status}" == "400" ]]; then ok "R1a: invalid cron expr rejected (400)"; else
     note_fail "R1a: invalid cron expr returned ${api_status}, expected 400 (${r1_resp})"
 fi
@@ -168,14 +180,16 @@ fi
 # SET NULLs the trigger's workflow_id (migration 000020 FK), so the
 # scheduler sees a targetless row — which must ALSO fail loudly
 # (trigger_has_no_target) and auto-disable, not tick silently.
-R4D_WF=$(api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
+api POST /api/v1/me/workflows "$(jq -nc '{name:"e2e-r4d-target",
     specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
-    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')")
+    targetWorkspaceId:"00000000-0000-0000-0000-000000000001"}')"
+R4D_WF="${api_body}"
 [[ "${api_status}" == "201" ]] || die "R4d setup: workflow create failed: ${api_status} ${R4D_WF}"
 R4D_WF_ID=$(printf '%s' "${R4D_WF}" | jq -r '.id')
 created_workflows+=("${R4D_WF_ID}")
 R4D_BODY=$(jq -nc --arg w "${R4D_WF_ID}"   '{name:"e2e-r4d-ghost",sourceType:"cron",sourceConfig:{expr:"* * * * *",tz:"UTC"},workflowId:$w,autoDisableAfter:2}')
-R4D_RESP=$(api POST /api/v1/me/triggers "${R4D_BODY}")
+api POST /api/v1/me/triggers "${R4D_BODY}"
+R4D_RESP="${api_body}"
 [[ "${api_status}" == "201" ]] || die "R4d setup: trigger create failed: ${api_status} ${R4D_RESP}"
 R4D_ID=$(printf '%s' "${R4D_RESP}" | jq -r '.id')
 created_triggers+=("${R4D_ID}")
@@ -191,7 +205,8 @@ if [[ "${r4d_status}" == "false" ]]; then
 else
     note_fail "R4d: targetless trigger still enabled — silent zombie regression (#1440)"
 fi
-r4d_result=$(api GET "/api/v1/me/triggers/${R4D_ID}/fires"     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
+api GET "/api/v1/me/triggers/${R4D_ID}/fires"     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1
+r4d_result="${api_body}"
 if [[ "${r4d_result}" == *"trigger_has_no_target"* ]]; then
     ok "R4d: failed fire carries the targetless payload"
 else
@@ -208,7 +223,8 @@ R5_WS="00000000-0000-4000-8000-000000000001"
 R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",
     inputSchema:{type:"object",required:["topic"],properties:{topic:{type:"string"}}},
     specYaml:"{\"nodes\":[{\"id\":\"n1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {}\"}}],\"edges\":[]}"}')
-R5_RESP=$(api POST /api/v1/me/workflows "${R5_BODY}")
+api POST /api/v1/me/workflows "${R5_BODY}"
+R5_RESP="${api_body}"
 if [[ "${api_status}" != "201" ]]; then
     note_fail "R5 setup: workflow create failed: ${api_status} ${R5_RESP}"
 else
@@ -224,7 +240,8 @@ else
 
     # Conforming input passes VALIDATION and fails later (dummy target
     # workspace) — any non-schema rejection proves validation let it through.
-    r5b_resp=$(api POST "/api/v1/me/workflows/${R5_ID}/runs" '{"input":{"topic":"ship"}}')
+    api POST "/api/v1/me/workflows/${R5_ID}/runs" '{"input":{"topic":"ship"}}'
+    r5b_resp="${api_body}"
     if [[ "${r5b_resp}" != *"inputSchema"* ]]; then
         ok "R5b: conforming input passed schema validation (status ${api_status}: $(printf '%s' "${r5b_resp}" | jq -r '.error // empty' | head -c 60))"
     else
@@ -238,7 +255,8 @@ fi
 # failed, stand one up standalone so the input-mapping rows still run.
 R6_WF="${R5_ID:-}"
 if [[ -z "${R6_WF}" ]]; then
-    r6_wf_resp=$(api POST /api/v1/me/workflows "${R5_BODY}")
+    api POST /api/v1/me/workflows "${R5_BODY}"
+    r6_wf_resp="${api_body}"
     if [[ "${api_status}" == "201" ]]; then
         R6_WF=$(printf '%s' "${r6_wf_resp}" | jq -r '.id')
         created_workflows+=("${R6_WF}")
@@ -250,8 +268,9 @@ else
     # R6a — wiring guard: envelope-mode cron wiring (no input, no
     # inputFrom) to a workflow whose schema requires non-envelope fields
     # is rejected with 400 at create.
-    r6a_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
-        '{name:"e2e-r6a-guard",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w}')")
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6a-guard",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w}')"
+    r6a_resp="${api_body}"
     r6a_id=$(printf '%s' "${r6a_resp}" | jq -r '.id // empty')
     [[ -n "${r6a_id}" ]] && created_triggers+=("${r6a_id}")
     if [[ "${api_status}" == "400" ]]; then
@@ -261,8 +280,9 @@ else
     fi
 
     # R6b — mapped-mode static input is schema-validated at create.
-    r6b_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
-        '{name:"e2e-r6b-mapped-bad",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{}}')")
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6b-mapped-bad",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{}}')"
+    r6b_resp="${api_body}"
     r6b_id=$(printf '%s' "${r6b_resp}" | jq -r '.id // empty')
     [[ -n "${r6b_id}" ]] && created_triggers+=("${r6b_id}")
     if [[ "${api_status}" == "400" ]]; then
@@ -270,8 +290,9 @@ else
     else
         note_fail "R6b: mapped input {} returned ${api_status}, expected 400 (${r6b_resp})"
     fi
-    r6b_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
-        '{name:"e2e-r6b-mapped-ok",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{topic:"nightly"}}')")
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6b-mapped-ok",sourceType:"cron",sourceConfig:{expr:"0 5 1 * *",tz:"UTC"},workflowId:$w,inputFrom:"mapped",input:{topic:"nightly"}}')"
+    r6b_resp="${api_body}"
     if [[ "${api_status}" == "201" ]]; then
         ok "R6b: mapped input {topic:\"nightly\"} accepted (201)"
         created_triggers+=("$(printf '%s' "${r6b_resp}" | jq -r '.id')")
@@ -281,14 +302,16 @@ else
 
     # R6c — webhook body mode: inputFrom "body" makes the posted payload
     # the run input (top level), schema-validated at fire time.
-    r6c_resp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
-        '{name:"e2e-r6c-body",sourceType:"webhook",sourceConfig:{},workflowId:$w,inputFrom:"body"}')")
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R6_WF}" \
+        '{name:"e2e-r6c-body",sourceType:"webhook",sourceConfig:{},workflowId:$w,inputFrom:"body"}')"
+    r6c_resp="${api_body}"
     if [[ "${api_status}" != "201" ]]; then
         note_fail "R6c setup: webhook trigger create failed: ${api_status} ${r6c_resp}"
     else
         R6_HOOK=$(printf '%s' "${r6c_resp}" | jq -r '.trigger.id')
         created_triggers+=("${R6_HOOK}")
-        r6c_rot=$(api POST "/api/v1/me/triggers/${R6_HOOK}/rotate-secret")
+        api POST "/api/v1/me/triggers/${R6_HOOK}/rotate-secret"
+        r6c_rot="${api_body}"
         R6_SECRET=$(printf '%s' "${r6c_rot}" | jq -r '.webhookSecret // empty')
         R6_HOOK_URL="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${r6c_rot}" | jq -r '.webhookUrl // empty')"
         if [[ -n "${R6_SECRET}" && "${R6_HOOK_URL}" != "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
@@ -407,16 +430,18 @@ fi
 # envelope-shape invariant); update must enforce the same on the
 # post-patch MERGED view. Monthly expr + dummy workspace: the trigger
 # never fires during the run (rows are API-only).
-R9_CREATE_BAD=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
-    '{name:"e2e-r9-create-bad",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,memoryMode:"last_result"}')")
+api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+    '{name:"e2e-r9-create-bad",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,memoryMode:"last_result"}')"
+R9_CREATE_BAD="${api_body}"
 if [[ "${api_status}" == "400" && "${R9_CREATE_BAD}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]]; then
     ok "R9a: create rejects last_result without full (400, constraint error)"
 else
     note_fail "R9a: create returned ${api_status} (${R9_CREATE_BAD})"
 fi
 
-R9_RESP=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
-    '{name:"e2e-r9-flip",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,prompt:"r9"}')")
+api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" \
+    '{name:"e2e-r9-flip",sourceType:"cron",sourceConfig:{expr:"0 3 1 * *",tz:"UTC"},workspaceId:$w,prompt:"r9"}')"
+R9_RESP="${api_body}"
 if [[ "${api_status}" == "201" ]]; then
     R9_ID=$(printf '%s' "${R9_RESP}" | jq -r '.id')
     created_triggers+=("${R9_ID}")
@@ -424,7 +449,8 @@ else
     die "R9 setup: routine trigger create failed: ${api_status} ${R9_RESP}"
 fi
 
-R9_FLIP=$(api PUT "/api/v1/me/triggers/${R9_ID}" '{"memoryMode":"last_result"}')
+api PUT "/api/v1/me/triggers/${R9_ID}" '{"memoryMode":"last_result"}'
+R9_FLIP="${api_body}"
 if [[ "${api_status}" == "400" && "${R9_FLIP}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]] \
     && [[ "$(trigger_field "${R9_ID}" memoryMode)" == "none" ]]; then
     ok "R9b: flip to last_result without full rejected (400), stored memoryMode unchanged"
@@ -441,7 +467,8 @@ else
     note_fail "R9c: compliant flip returned ${api_status}, memoryMode='$(trigger_field "${R9_ID}" memoryMode)' captureMode='$(trigger_field "${R9_ID}" captureMode)'"
 fi
 
-R9_NARROW=$(api PUT "/api/v1/me/triggers/${R9_ID}" '{"captureMode":"errors_only"}')
+api PUT "/api/v1/me/triggers/${R9_ID}" '{"captureMode":"errors_only"}'
+R9_NARROW="${api_body}"
 if [[ "${api_status}" == "400" && "${R9_NARROW}" == *"memoryMode 'last_result' requires captureMode 'full'"* ]]; then
     ok "R9d: narrowing capture under last_result rejected (400)"
 else
@@ -456,34 +483,37 @@ fi
 # failed fire with the unified trigger_has_no_target payload, failure
 # accounted, auto-disable at threshold. Pure API; the dummy workspace
 # never activates.
-# Contract: the function's ONLY stdout is the final verdict code and it
-# always returns 0 — the caller captures the code safely under
-# set -euo pipefail (a non-zero return or stdout pollution would abort
-# the script or poison the retry logic, the r3 review's finding).
-# Verdicts: 0 = assertions passed; 1 = lost the tick race (retryable);
-# 2 = setup/delivery failure (fatal for the row); 3 = assertion failure
-# (already note_fail'd inside — note_fail writes stderr, never stdout).
-r10_attempt() { # suffix -> verdict code on stdout
+# Contract: r10_attempt runs in the CURRENT shell (never captured in a
+# subshell — bookkeeping like note_fail and the cleanup arrays must
+# propagate to the parent), always returns 0 (set -e safe), and sets
+# the r10_verdict global: 0 = assertions passed; 1 = lost the tick race
+# (retryable); 2 = setup/delivery failure (fatal for the row); 3 =
+# assertion failure (already note_fail'd — stderr + the parent's
+# failures counter). The caller prints the pass line from the case.
+r10_attempt() { # suffix -> sets r10_verdict
     local suffix="$1" tresp tsec turl tcode patch_resp fire_result cf enabled
     local wf_resp wf_id trig_id rot
-    wf_resp=$(api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r10-wf-${suffix}" \
-        '{name:$n,specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",targetWorkspaceId:$w}')")
-    [[ "${api_status}" == "201" ]] || { warn "R10 setup: workflow create failed: ${api_status} ${wf_resp}"; echo 2; return 0; }
+    api POST /api/v1/me/workflows "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r10-wf-${suffix}" \
+        '{name:$n,specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",targetWorkspaceId:$w}')"
+    wf_resp="${api_body}"
+    [[ "${api_status}" == "201" ]] || { warn "R10 setup: workflow create failed: ${api_status} ${wf_resp}"; r10_verdict=2; return 0; }
     wf_id=$(printf '%s' "${wf_resp}" | jq -r '.id')
     created_workflows+=("${wf_id}")
 
-    tresp=$(api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r10-${suffix}" \
-        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"r10",autoDisableAfter:1}')")
-    [[ "${api_status}" == "201" ]] || { warn "R10 setup: trigger create failed: ${api_status} ${tresp}"; echo 2; return 0; }
+    api POST /api/v1/me/triggers "$(jq -nc --arg w "${R5_WS}" --arg n "e2e-r10-${suffix}" \
+        '{name:$n,sourceType:"webhook",sourceConfig:{},workspaceId:$w,prompt:"r10",autoDisableAfter:1}')"
+    tresp="${api_body}"
+    [[ "${api_status}" == "201" ]] || { warn "R10 setup: trigger create failed: ${api_status} ${tresp}"; r10_verdict=2; return 0; }
     trig_id=$(printf '%s' "${tresp}" | jq -r '.trigger.id')
     created_triggers+=("${trig_id}")
 
-    rot=$(api POST "/api/v1/me/triggers/${trig_id}/rotate-secret")
+    api POST "/api/v1/me/triggers/${trig_id}/rotate-secret"
+    rot="${api_body}"
     tsec=$(printf '%s' "${rot}" | jq -r '.webhookSecret // empty')
     turl="http://127.0.0.1:${PORTFWD_PORT}$(printf '%s' "${rot}" | jq -r '.webhookUrl // empty')"
     if [[ -z "${tsec}" || "${turl}" == "http://127.0.0.1:${PORTFWD_PORT}" ]]; then
         warn "R10 setup: rotate-secret incomplete: ${rot}"
-        echo 2; return 0
+        r10_verdict=2; return 0
     fi
 
     tcode=$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST \
@@ -491,12 +521,13 @@ r10_attempt() { # suffix -> verdict code on stdout
         -H "X-Hub-Signature-256: sha256=$(printf '%s' '{"topic":"r10"}' \
             | openssl dgst -sha256 -hmac "${tsec}" | awk '{print $NF}')" \
         -d '{"topic":"r10"}' "${turl}" || echo 000)
-    [[ "${tcode}" == "202" ]] || { warn "R10: delivery returned ${tcode}, expected 202"; echo 2; return 0; }
+    [[ "${tcode}" == "202" ]] || { warn "R10: delivery returned ${tcode}, expected 202"; r10_verdict=2; return 0; }
 
     # Retarget BEFORE the next tick drains the pending fire.
-    patch_resp=$(api PUT "/api/v1/me/triggers/${trig_id}" \
-        '{"workflowId":"'"${wf_id}"'","workspaceId":""}')
-    [[ "${api_status}" == "200" ]] || { warn "R10: retarget patch returned ${api_status} ${patch_resp}"; echo 2; return 0; }
+    api PUT "/api/v1/me/triggers/${trig_id}" \
+        '{"workflowId":"'"${wf_id}"'","workspaceId":""}'
+    patch_resp="${api_body}"
+    [[ "${api_status}" == "200" ]] || { warn "R10: retarget patch returned ${api_status} ${patch_resp}"; r10_verdict=2; return 0; }
 
     fire_result=""
     for _ in $(seq 1 30); do
@@ -507,25 +538,25 @@ r10_attempt() { # suffix -> verdict code on stdout
     done
     if [[ "${fire_result}" == *"workspace activation failed"* ]]; then
         warn "R10: lost the tick race (attempt ${suffix}) — fire drained before the retarget patch"
-        echo 1; return 0
+        r10_verdict=1; return 0
     fi
     if [[ "${fire_result}" != *"trigger_has_no_target"* ]]; then
         note_fail "R10: drained fire missing trigger_has_no_target: '${fire_result}'"
-        echo 3; return 0
+        r10_verdict=3; return 0
     fi
     cf=$(trigger_field "${trig_id}" consecutiveFailures)
     enabled=$(trigger_field "${trig_id}" enabled)
     if [[ "${cf}" -ge 1 ]] && [[ "${enabled}" == "false" ]]; then
-        echo 0; return 0
+        r10_verdict=0; return 0
     fi
     note_fail "R10: accounting wrong: consecutiveFailures='${cf}' enabled='${enabled}'"
-    echo 3
+    r10_verdict=3
     return 0
 }
 
 r10_verdict=""
 for sfx in a b; do
-    r10_verdict=$(r10_attempt "${sfx}")
+    r10_attempt "${sfx}"
     [[ "${r10_verdict}" != "1" ]] && break
 done
 case "${r10_verdict}" in
@@ -540,7 +571,8 @@ esac
 # on /orgs/:id/triggers/:triggerId the org id used to shadow the trigger
 # id (every org GET/PUT/DELETE/fires 404'd). The API-key user creates the
 # org and becomes its admin, then exercises the fixed routes end to end.
-R8_ORG_RESP=$(api POST /api/v1/orgs "$(jq -nc '{name:"E2E Automation Org",slug:"e2e-automation-org",ownerEmail:"e2e-automation@example.invalid"}')")
+api POST /api/v1/orgs "$(jq -nc '{name:"E2E Automation Org",slug:"e2e-automation-org",ownerEmail:"e2e-automation@example.invalid"}')"
+R8_ORG_RESP="${api_body}"
 if [[ "${api_status}" != "201" ]]; then
     note_fail "R8 setup: org create failed: ${api_status} ${R8_ORG_RESP}"
 else
@@ -548,13 +580,15 @@ else
     if [[ -z "${R8_ORG}" ]]; then
         note_fail "R8 setup: org id missing from create response: ${R8_ORG_RESP}"
     else
-        R8_TRESP=$(api POST "/api/v1/orgs/${R8_ORG}/triggers" "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-org-trigger",sourceType:"cron",sourceConfig:{expr:"0 8 1 * *",tz:"UTC"},workspaceId:$w}')")
+        api POST "/api/v1/orgs/${R8_ORG}/triggers" "$(jq -nc --arg w "${R5_WS}" '{name:"e2e-org-trigger",sourceType:"cron",sourceConfig:{expr:"0 8 1 * *",tz:"UTC"},workspaceId:$w}')"
+        R8_TRESP="${api_body}"
         if [[ "${api_status}" != "201" ]]; then
             note_fail "R8 setup: org trigger create failed: ${api_status} ${R8_TRESP}"
         else
             R8_ID=$(printf '%s' "${R8_TRESP}" | jq -r '.id')
             # GET must resolve the TRIGGER (the #1449 shadowing 404'd here).
-            r8_get=$(api GET "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}")
+            api GET "/api/v1/orgs/${R8_ORG}/triggers/${R8_ID}"
+            r8_get="${api_body}"
             if [[ "${api_status}" == "200" ]] && [[ "$(printf '%s' "${r8_get}" | jq -r '.name // empty')" == "e2e-org-trigger" ]]; then
                 ok "R8a: org trigger GET resolves the trigger (not the shadowed org id)"
             else

@@ -70,6 +70,18 @@ None.
 
 R3 blocking finding: the R10 harness could not execute its contract — (1) `verdict=$(fn)` takes the function's exit status → `return 1/2` aborted the whole script under `set -e`; (2) `ok` writes stdout, captured into the verdict variable → pass line swallowed; (3) polluted verdict forced arithmetic on a message → attempt "b" always double-executed after success; (4) the retry/verdict branches were unreachable in all worlds and a twice-lost race silently passed. **Fix**: verdict-by-stdout contract — the attempt function's ONLY stdout is the verdict code, it always `return 0`, all diagnostics via `warn`/`note_fail` (stderr), `ok` printed by the caller from the `case`. Verified by isolated bash simulation of all six verdict sequences (1 1 / 1 0 / 2 / 3 / 0 / 9) under `set -euo pipefail`: correct branch per sequence, no abort, retry works, unexpected codes guarded. (The first simulation run exposed a stub bug — subshell state mutation — fixed before trusting results; recorded as its own lesson in method.)
 
+## Review Round 4 (the harness could never execute — two system findings, both fixed)
+
+R4 blocking findings, both empirically reproduced by the reviewers and confirmed by me:
+1. **`api()`'s status side-channel died in every caller's subshell** — `api_status` is a plain assignment, but every status-reading call captured stdout via `resp=$(api ...)`, so the variable never existed at top level; under `set -u` the script aborted at R1a. **No row of the harness had ever executed** (the current `api()` shape landed after the last nightly run).
+2. **R10 verdict-3 bookkeeping died in the attempt subshell** — `note_fail`'s `failures` increment and the cleanup-array appends never reached the parent, so the row's core assertions could not gate the nightly (same silent-pass class as r3-D4).
+
+Fixes:
+- **`api()` no-subshell contract**: sets `api_status`+`api_body` globals AND prints the body (pipe callers keep working); every capture call site (24 across the 1410 script) mechanically converted to `api M P B; var="${api_body}"` (depth-counting transformer over nested `$(jq ...)`; 4 body-only pipe captures left as-is deliberately); curl transport failure guarded (`|| out=$'\n000'`).
+- **R10 direct call**: `r10_attempt` runs in the current shell (always `return 0`, verdict via the `r10_verdict` global, no stdout) — `note_fail`/cleanup arrays propagate; re-verified by isolated simulation of all six verdict sequences (failures counter and array counts proven to reach the parent).
+- **Sister scripts fixed in the same pass (Rule 5, reviewer-directed)**: `issue-1417-templating-e2e.sh` (12 sites) and `issue1452-routine-session-index-e2e.sh` (4 sites) shared the identical `api()` defect; same contract applied, pin tests green.
+- **Execution smoke added** (reviewer's strongly-recommended missing case): `TestIssue1410E2EScript_ExecuteSmoke` runs the real script under curl/sleep/kubectl shims and asserts it traverses to the final verdict gate (`die "N row(s) failed"`, exit 1) with no unbound-variable/command-not-found abort signatures. This smoke is what would have caught r3-D1–D4 and r4's api() death before review did — and it caught TWO real bugs during its own construction (the shim's literal-`\n` -w mishandling, and immediately flagged the first transformation attempt's traversal failure). 9s runtime, skipped under `-short`.
+
 ## Tests Run (original verification, pre-directive)
 
 - RED-first: 6 subtests failing pre-implementation (targetless ×3, transient ×2, tick-level ×1).
@@ -91,4 +103,6 @@ R3 blocking finding: the R10 harness could not execute its contract — (1) `ver
 - `api/internal/workflows/engine.go` — processPendingRoutineFire fetch-split + targetless accounting/payload; fireWorkflowTarget ×2 → accountTriggerFailure
 - `api/internal/workflows/engine_fire_lifecycle_test.go` — pins flipped to fixed expectations + tick-level test
 - `api/internal/workflows/engine_test.go` — mock parity: `wf.ErrNotFound` on miss, `getTriggerByIDErr` injection
+- `local/issue-1417-templating-e2e.sh`, `local/issue1452-routine-session-index-e2e.sh` — sister-script `api()` no-subshell fix (Rule 5, r4 review)
+- `local/issue_1410_automation_e2e_script_test.go` — R10 needles + `TestIssue1410E2EScript_ExecuteSmoke` (harness-execution smoke)
 - `worklogs/NNNN_2026-09-19_drain-accounting-fetch-split.md` — this worklog
