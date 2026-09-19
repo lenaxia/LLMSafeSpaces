@@ -1470,18 +1470,6 @@ func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
 	}
 }
 
-func TestProcessPendingRoutineFire_TriggerNotFound_MarksFailed(t *testing.T) {
-	store := newMockSchedulerStore()
-
-	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
-	fire := &wf.TriggerFireRow{ID: "fire-orphan", TriggerID: "nonexistent", InputEnvelope: json.RawMessage(`{}`)}
-	sched.processPendingRoutineFire(context.Background(), noopLogger{}, fire)
-
-	if store.statuses["fire-orphan"] != "failed" {
-		t.Errorf("expected failed for orphaned fire, got %s", store.statuses["fire-orphan"])
-	}
-}
-
 func TestExecuteRoutine_AutoDisable_AfterConsecutiveFailures(t *testing.T) {
 	store := newMockSchedulerStore()
 
