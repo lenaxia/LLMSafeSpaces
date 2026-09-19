@@ -55,7 +55,7 @@ None.
 
 ## Tests Run
 
-- `go test -count=1 -run "TestExecuteWithRetry_|TestExecuteRoutine_RetryIntermediate" ./api/internal/workflows/` — ok (red-first: the signature change failed compile pre-implementation); the retry-cleanup file carries 12 tests at the final head (r1's 7 → +no-session pin r2 → +timeout-composition Option A → +3 F1 pins r3)
+- `go test -count=1 -run "TestExecuteWithRetry_|TestExecuteRoutine_RetryIntermediate" ./api/internal/workflows/` — ok (red-first: the signature change failed compile pre-implementation); the retry-cleanup file carries 13 tests at the final head (r1's 7 → +no-session pin r2 → +timeout-composition Option A → +3 F1 pins r3 → +F1′ multi-attempt pin r4)
 - `go test -timeout 300s -count=1 ./api/internal/workflows/` (full package, no race — memory directive; CI runs race) — ok 64.4s, includes the #1472 accounting pins and all #1464/#1471 routine suites
 - `go vet` clean; gofmt clean
 - Mutation-resistance: cleanup invoked unconditionally (ignoring `a < attempts`) fails `FinalAttemptFailureNotCleaned`; removing the nil-guard fails `NilCleanupNoPanic`; dropping the callback wiring at the agent leg fails `RetryIntermediateCleanedViaAuthorizedDelete` (delete route never sees the intermediate); a cleanup failure path is pinned non-fatal by `CleanupFails_StillDelivers`.
@@ -73,7 +73,7 @@ None.
 ## Files Modified
 
 - `api/internal/workflows/engine.go` — `executeWithRetry` cleanup param + invocation; `cleanupIntermediate` wiring in `executeRoutine` (script leg passes nil)
-- `api/internal/workflows/engine_retry_cleanup_test.go` — new (12 tests at the final head + sequenceAgentd executor)
+- `api/internal/workflows/engine_retry_cleanup_test.go` — new (13 tests at the final head + sequenceAgentd executor)
 - `api/internal/workflows/engine_test.go` — 10 existing retry-wiring callers updated with the explicit nil param (mechanical)
 - `cmd/workspace-agentd/workflow_execute.go` — agent-node timeout leg 504→200+errorCode (Option A, orchestrator-ruled; script/http-node legs untouched per guardrail)
 - `cmd/workspace-agentd/workflow_session_error_envelope_test.go` — timeout pins updated to the 200 envelope + the script-node 504 guardrail pin

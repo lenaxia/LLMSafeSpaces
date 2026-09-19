@@ -379,3 +379,32 @@ func TestExecuteRoutine_CtxCanceledAfterCleanup_NoGhostRecord(t *testing.T) {
 	require.Empty(t, store.sessionOrigins, "no ghost origin for the deleted session")
 	require.Empty(t, index.titleCalls(), "no ghost index row — the scrubbed response carries no session id")
 }
+
+// TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_MultiAttempt is
+// the round-4 F1′ pin: attempt 1's confirmed delete (S1 gone) must not
+// scrub attempt 2's LIVE survivor when its own cleanup failed (the
+// honest-502 shape) and the context dies during attempt 2's backoff —
+// the returned response keeps S2's id so the engine records the real
+// survivor, never orphans it.
+func TestExecuteWithRetry_CtxCanceledAfterFailedCleanup_MultiAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ex := &sequenceAgentd{steps: []seqStep{
+		{resp: retryableFailure("ses_s1")},
+		{resp: retryableFailure("ses_s2")},
+	}}
+	gone := map[string]bool{"ses_s1": true, "ses_s2": false}
+	cleanup := func(_ context.Context, sessionID string) bool {
+		if sessionID == "ses_s2" {
+			cancel()
+		}
+		return gone[sessionID]
+	}
+
+	resp, err := executeWithRetry(ctx, ex, "ws-1", "10.0.0.1", &NodeExecRequest{NodeID: "n1"}, cleanup)
+
+	require.NoError(t, err)
+	require.Equal(t, "ses_s2", resp.SessionID,
+		"a prior attempt's confirmed delete must not scrub THIS live survivor — the engine must record it")
+	require.Equal(t, "script_failed", resp.ErrorCode)
+}

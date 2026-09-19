@@ -166,7 +166,11 @@ func executeWithRetry(ctx context.Context, ex AgentdExecutor, workspaceID, podIP
 			select {
 			case <-time.After(time.Duration(a) * 2 * time.Second):
 			case <-ctx.Done():
-				if cleanedSession != "" && resp != nil {
+				// Scrub only THIS response's session (a prior attempt's
+				// confirmed delete must not scrub a later attempt's
+				// live survivor — F1′): the id comparison IS the
+				// invariant.
+				if resp != nil && cleanedSession != "" && cleanedSession == resp.SessionID {
 					resp.SessionID = ""
 				}
 				return resp, err
