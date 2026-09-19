@@ -70,7 +70,7 @@ None.
 - `local/issue_1417_templating_e2e_script_test.go` — + ExecuteSmoke
 - `local/issue_1452_e2e_script_test.go` — + ExecuteSmoke (pins the resurrection)
 - `local/issue1452-routine-session-index-e2e.sh` — + `harness_start` (dead-on-arrival fix)
-- `worklogs/NNNN_2026-09-19_sister-script-execution-smokes.md` — this worklog
+- `worklogs/1003_2026-09-19_sister-script-execution-smokes.md` — this worklog
 
 ## Review Round 1 (my resurrection was one gate short — fixed)
 
