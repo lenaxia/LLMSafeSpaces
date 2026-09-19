@@ -183,7 +183,7 @@ func (a *Adapter) GetSession(ctx context.Context, userID, workspaceID, sessionID
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort drain
 	if resp.StatusCode >= 400 {
-		return nil, a.httpError("GET /session/"+sessionID, resp)
+		return nil, a.httpSessionError("GET /session/"+sessionID, resp)
 	}
 	raw, err := readBody(resp, 64*1024)
 	if err != nil {
@@ -493,7 +493,7 @@ func (a *Adapter) getHistoryV1(ctx context.Context, userID, workspaceID, session
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort drain
 	if resp.StatusCode >= 400 {
-		return nil, a.httpError("GET /session/"+sessionID+"/message", resp)
+		return nil, a.httpSessionError("GET /session/"+sessionID+"/message", resp)
 	}
 	// Stream-decode the history body instead of buffering it. This
 	// avoids the silent-truncation failure mode when the upstream body

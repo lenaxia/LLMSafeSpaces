@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	agent "github.com/lenaxia/llmsafespaces/pkg/agent"
 )
 
 // v2TestServer is a minimal httptest.Server that records the last request
@@ -441,5 +444,23 @@ func TestMessagesV2_WireDriftCorruption(t *testing.T) {
 			require.Error(t, err, "a corrupted 200 must never parse as a message list")
 			assert.Empty(t, msgs, "no misparsed messages escape the client")
 		})
+	}
+}
+
+// #1340: the V2 wire's session-not-found must classify into the shared
+// agent.ErrSessionNotFound — callers must not care which wire produced
+// the verdict. The composite's MESSAGE is byte-pinned to the
+// pre-#1340 string: callers may log or match it, and "byte-stable"
+// was a claim the r1 review proved false by execution — now it is a
+// guarantee the test enforces, not a coincidence.
+func TestV2SessionNotFound_ClassifiesShared(t *testing.T) {
+	if !errors.Is(ErrV2SessionNotFound, agent.ErrSessionNotFound) {
+		t.Fatalf("ErrV2SessionNotFound must wrap agent.ErrSessionNotFound, got: %v", ErrV2SessionNotFound)
+	}
+	if got := ErrV2SessionNotFound.Error(); got != "agent V2: session not found" {
+		t.Fatalf("V2 composite message drifted: %q", got)
+	}
+	if !errors.Is(fmt.Errorf("wrap: %w", ErrV2SessionNotFound), agent.ErrSessionNotFound) {
+		t.Fatal("classification must survive wrapping")
 	}
 }

@@ -9,6 +9,7 @@ import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
 import { useMessageHistory } from "../hooks/useMessageHistory";
 import { ChatHistoryErrorBanner } from "../components/chat/ChatHistoryErrorBanner";
+import { isSessionGoneError } from "../hooks/useMessageHistory";
 import { useActivateWorkspace } from "../hooks/useActivateWorkspace";
 import { useChatStream } from "../hooks/useChatStream";
 import { useEventStream } from "../hooks/useEventStream";
@@ -367,6 +368,16 @@ export function ChatPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useMessageHistory(activeWorkspaceId, sessionId);
+
+  // #1340: a typed session_gone verdict (agent-deleted session) means the
+  // sidebar row is a stale ghost — the API already reaped it server-side,
+  // so invalidating the sessions list drops it on the refetch. Coalesced:
+  // the effect only fires on the gone-transition, not every render.
+  useEffect(() => {
+    if (historyError !== null && isSessionGoneError(historyError)) {
+      queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+    }
+  }, [historyError, queryClient, workspaceId]);
 
   // Newest-first user-message texts for Composer history navigation.
   // Built from the loaded `history` only — localMessages/sessionErrors

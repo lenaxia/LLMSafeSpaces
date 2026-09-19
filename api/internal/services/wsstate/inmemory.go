@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Compile-time assertion that InMemoryStore implements Store.
@@ -56,6 +57,16 @@ type InMemoryStore struct {
 	// parentBackfilled: workspace ID -> backfill marker.
 	parentBackfilled   map[string]struct{}
 	parentBackfilledMu sync.RWMutex
+
+	// reconcileMisses: workspace ID -> session ID -> consecutive-absent
+	// counter (#1340 S5b convergence). Whole-map replace on write.
+	reconcileMisses   map[string]map[string]int
+	reconcileMissesMu sync.RWMutex
+
+	// reconcileTurn: workspace ID -> turn-claim expiry (#1340). An
+	// expired entry is an unclaimed window.
+	reconcileTurn   map[string]time.Time
+	reconcileTurnMu sync.Mutex
 }
 
 // NewInMemoryStore returns a Store backed by process-local maps. The
@@ -274,6 +285,54 @@ func (s *InMemoryStore) DeleteParentBackfilled(ctx context.Context, workspaceID 
 	delete(s.parentBackfilled, workspaceID)
 }
 
+// --- Session-index reconciliation counters (#1340) ---
+
+func (s *InMemoryStore) GetReconcileMisses(_ context.Context, workspaceID string) map[string]int {
+	s.reconcileMissesMu.RLock()
+	defer s.reconcileMissesMu.RUnlock()
+	counters, ok := s.reconcileMisses[workspaceID]
+	if !ok || len(counters) == 0 {
+		// Nil for absent (Redis-parity: no key reads nil).
+		return nil
+	}
+	out := make(map[string]int, len(counters))
+	for k, v := range counters {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *InMemoryStore) ClaimReconcileTurn(_ context.Context, workspaceID string, cadence time.Duration) bool {
+	s.reconcileTurnMu.Lock()
+	defer s.reconcileTurnMu.Unlock()
+	now := time.Now()
+	if s.reconcileTurn == nil {
+		s.reconcileTurn = map[string]time.Time{}
+	}
+	if exp, ok := s.reconcileTurn[workspaceID]; ok && now.Before(exp) {
+		return false
+	}
+	s.reconcileTurn[workspaceID] = now.Add(cadence)
+	return true
+}
+
+func (s *InMemoryStore) SetReconcileMisses(_ context.Context, workspaceID string, misses map[string]int) {
+	s.reconcileMissesMu.Lock()
+	defer s.reconcileMissesMu.Unlock()
+	if len(misses) == 0 {
+		delete(s.reconcileMisses, workspaceID)
+		return
+	}
+	if s.reconcileMisses == nil {
+		s.reconcileMisses = map[string]map[string]int{}
+	}
+	cp := make(map[string]int, len(misses))
+	for k, v := range misses {
+		cp[k] = v
+	}
+	s.reconcileMisses[workspaceID] = cp
+}
+
 // --- Bulk invalidation ---
 
 func (s *InMemoryStore) InvalidateAll(ctx context.Context, workspaceID string) {
@@ -296,4 +355,8 @@ func (s *InMemoryStore) InvalidateAll(ctx context.Context, workspaceID string) {
 	s.InvalidatePassword(ctx, workspaceID)
 	s.InvalidateWorkspaceConfig(ctx, workspaceID)
 	s.DeleteParentBackfilled(ctx, workspaceID)
+	s.SetReconcileMisses(ctx, workspaceID, nil)
+	s.reconcileTurnMu.Lock()
+	delete(s.reconcileTurn, workspaceID)
+	s.reconcileTurnMu.Unlock()
 }

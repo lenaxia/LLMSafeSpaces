@@ -30,6 +30,26 @@ describe("ChatHistoryErrorBanner", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("renders the session_gone variant for the typed 410 (#1340) — no Retry, no fetch-failure framing", () => {
+    const err = new ApiClientError(410, {
+      code: "session_gone",
+      error: "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list.",
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={() => {}} />);
+    const banner = screen.getByTestId("session-gone-banner");
+    expect(banner).toBeInTheDocument();
+    expect(screen.getByText("Session no longer exists")).toBeInTheDocument();
+    expect(screen.queryByText("Chat history unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps the generic banner for a body-less 410 (only the code discriminator switches)", () => {
+    const err = new ApiClientError(410, { error: "gone without a code" });
+    render(<ChatHistoryErrorBanner error={err} onRetry={() => {}} />);
+    expect(screen.queryByTestId("session-gone-banner")).not.toBeInTheDocument();
+    expect(screen.getByText("Chat history unavailable")).toBeInTheDocument();
+  });
+
   it("has role=alert so screen readers announce the failure", () => {
     render(<ChatHistoryErrorBanner error={new Error("x")} onRetry={vi.fn()} />);
     expect(screen.getByRole("alert")).toBeInTheDocument();

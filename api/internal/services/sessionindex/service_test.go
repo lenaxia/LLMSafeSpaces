@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -163,4 +165,140 @@ func TestStartStop_NilLogger_NoPanic(t *testing.T) {
 		assert.NoError(t, svc.Stop())
 	})
 	db.AssertCalled(t, "UpsertSessionMessage", mock.Anything, "ws-1", "sess-1", mock.AnythingOfType("time.Time"))
+}
+
+// PlanReconciliation is the #1340 convergence decision: which index rows
+// to delete now, which history-bearing absents are kept for operator
+// review (the triage message_count=0 safety guard), and the next
+// miss-counters. Pure — the orchestration lives in the proxy handler;
+// this matrix IS the S5b invariant.
+func TestPlanReconciliation(t *testing.T) {
+	row := func(id string, count int) types.SessionListItem {
+		return types.SessionListItem{ID: id, Title: id, MessageCount: count}
+	}
+	tests := []struct {
+		name       string
+		indexRows  []types.SessionListItem
+		harness    map[string]bool
+		harnessErr bool
+		prevMiss   map[string]int
+		threshold  int
+		wantRemove []string
+		wantKept   []string
+		wantMiss   map[string]int
+	}{
+		{
+			name:      "present rows keep, counters clear",
+			indexRows: []types.SessionListItem{row("ses_a", 0), row("ses_b", 5)},
+			harness:   map[string]bool{"ses_a": true, "ses_b": true},
+			wantMiss:  map[string]int{},
+		},
+		{
+			name:      "absent once increments, no removal",
+			indexRows: []types.SessionListItem{row("ses_ghost", 0)},
+			harness:   map[string]bool{},
+			prevMiss:  map[string]int{},
+			threshold: 2,
+			wantMiss:  map[string]int{"ses_ghost": 1},
+		},
+		{
+			name:       "absent twice removes count-zero rows (N=2, guard admits)",
+			indexRows:  []types.SessionListItem{row("ses_ghost", 0)},
+			harness:    map[string]bool{},
+			prevMiss:   map[string]int{"ses_ghost": 1},
+			threshold:  2,
+			wantRemove: []string{"ses_ghost"},
+			wantMiss:   map[string]int{},
+		},
+		{
+			name:      "absent history-bearing rows are KEPT for operator review (triage guard)",
+			indexRows: []types.SessionListItem{row("ses_vanished", 12)},
+			harness:   map[string]bool{},
+			prevMiss:  map[string]int{"ses_vanished": 1},
+			threshold: 2,
+			wantKept:  []string{"ses_vanished"},
+			wantMiss:  map[string]int{},
+		},
+		{
+			name:      "presence resets a prior miss",
+			indexRows: []types.SessionListItem{row("ses_flap", 0)},
+			harness:   map[string]bool{"ses_flap": true},
+			prevMiss:  map[string]int{"ses_flap": 1},
+			threshold: 2,
+			wantMiss:  map[string]int{},
+		},
+		{
+			name:       "harness error keeps everything, counters frozen",
+			indexRows:  []types.SessionListItem{row("ses_maybe", 0)},
+			harnessErr: true,
+			prevMiss:   map[string]int{"ses_maybe": 1},
+			threshold:  2,
+			wantMiss:   map[string]int{"ses_maybe": 1},
+		},
+		{
+			name:       "mixed: keep, reap, operator-keep, stale counters dropped",
+			indexRows:  []types.SessionListItem{row("ses_keep", 3), row("ses_gone", 0), row("ses_vanished", 7)},
+			harness:    map[string]bool{"ses_keep": true},
+			prevMiss:   map[string]int{"ses_gone": 1, "ses_vanished": 1, "ses_stale": 5},
+			threshold:  2,
+			wantRemove: []string{"ses_gone"},
+			wantKept:   []string{"ses_vanished"},
+			wantMiss:   map[string]int{},
+		},
+		{
+			name:       "threshold 1 removes on the first absence (documented edge)",
+			indexRows:  []types.SessionListItem{row("ses_fast", 0)},
+			harness:    map[string]bool{},
+			threshold:  1,
+			wantRemove: []string{"ses_fast"},
+			wantMiss:   map[string]int{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := func() (map[string]bool, error) {
+				if tc.harnessErr {
+					return nil, assert.AnError
+				}
+				return tc.harness, nil
+			}
+			remove, kept, misses := PlanReconciliation(tc.indexRows, lister, tc.prevMiss, tc.threshold, DefaultReapGuard)
+			assert.ElementsMatch(t, tc.wantRemove, remove)
+			assert.ElementsMatch(t, tc.wantKept, kept)
+			assert.Equal(t, tc.wantMiss, misses)
+		})
+	}
+}
+
+// #754 fold-in via #1340: write outcomes are QUERYABLE — the drop
+// branch (channel full) and DB failure each increment their counter.
+func TestSessionIndexEvents_DropAndDBErrorCounted(t *testing.T) {
+	// Leg A (drop): NO drainer — the queue fills deterministically, then
+	// one more push fires the eviction branch.
+	silent := New(&mocks.MockDatabaseService{}, nil)
+	beforeDrop := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("dropped_queue_full"))
+	for i := 0; i < 1024; i++ {
+		silent.RecordMessage("ws-1", "ses_x", "t", time.Now())
+	}
+	silent.RecordMessage("ws-1", "ses_overflow", "t", time.Now())
+	assert.Greater(t,
+		promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("dropped_queue_full")),
+		beforeDrop, "the channel-full eviction must be counted")
+
+	// Leg B (db_error): drainer running; the default upsert succeeds and
+	// the failing session's call errors once.
+	db := &mocks.MockDatabaseService{}
+	// Specific FIRST: testify matches the first declared expectation,
+	// so the wildcard default must come second.
+	db.On("UpsertSessionMessage", mock.Anything, "ws-1", "ses_err", mock.Anything).
+		Return(assert.AnError).Once()
+	db.On("UpsertSessionMessage", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+	svc := New(db, nil)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+	beforeDB := promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("db_error"))
+	svc.RecordMessage("ws-1", "ses_err", "t", time.Now())
+	assert.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(sessionIndexEvents.WithLabelValues("db_error")) > beforeDB
+	}, 3*time.Second, 25*time.Millisecond, "the upsert failure must be counted")
 }

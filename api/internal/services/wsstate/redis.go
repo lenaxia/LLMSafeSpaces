@@ -55,6 +55,13 @@ const DefaultPriorPhaseTTL = 24 * time.Hour
 // hours — backfill is idempotent, so re-running after TTL expiry is safe.
 const DefaultBackfilledTTL = 24 * time.Hour
 
+// DefaultReconcileMissesTTL is the TTL for session-index reconciliation
+// miss counters (#1340). 15 minutes — far longer than the 30s
+// reconciliation cadence (so counters persist across cadence gaps and
+// replica churn), short enough that abandoned counters decay instead of
+// accumulating for deleted workspaces.
+const DefaultReconcileMissesTTL = 15 * time.Minute
+
 // checkAndAddScript atomically checks the active-session set size and
 // adds the session ID if there's room. The atomicity is what makes this
 // safe across replicas: two concurrent calls cannot both observe
@@ -445,6 +452,10 @@ func (s *RedisStore) InvalidateAll(ctx context.Context, workspaceID string) {
 	s.InvalidatePassword(ctx, workspaceID)
 	s.InvalidateWorkspaceConfig(ctx, workspaceID)
 	s.DeleteParentBackfilled(ctx, workspaceID)
+	s.SetReconcileMisses(ctx, workspaceID, nil)
+	if err := s.client.Del(ctx, reconcileTurnKey(workspaceID)).Err(); err != nil && err != redis.Nil {
+		s.recordError("delete_reconcile_turn")
+	}
 }
 
 // --- Deleted-session tombstones (Redis-backed, US-45.3) ---
@@ -831,6 +842,77 @@ func (s *RedisStore) DeleteParentBackfilled(ctx context.Context, workspaceID str
 	const op = "delete_parent_backfilled"
 	start := time.Now()
 	if err := s.client.Del(ctx, backfilledCacheKey(workspaceID)).Err(); err != nil && err != redis.Nil {
+		s.recordError(op)
+		s.observeOp(op, "error", start)
+		return
+	}
+	s.observeOp(op, "ok", start)
+}
+
+// --- Session-index reconciliation counters (#1340, Redis-backed) ---
+
+func reconcileMissesKey(workspaceID string) string {
+	return fmt.Sprintf("ws:{%s}:reconcile-misses", workspaceID)
+}
+
+func (s *RedisStore) ClaimReconcileTurn(ctx context.Context, workspaceID string, cadence time.Duration) bool {
+	const op = "claim_reconcile_turn"
+	start := time.Now()
+	ok, err := s.client.SetNX(ctx, reconcileTurnKey(workspaceID), "1", cadence).Result()
+	if err != nil {
+		// Redis unavailable: fail OPEN (allow the pass) — the counters
+		// are best-effort and the pass itself is idempotent; blocking
+		// convergence on a cache outage would invert the S5b priority.
+		s.recordError(op)
+		s.observeOp(op, "error", start)
+		return true
+	}
+	s.observeOp(op, "ok", start)
+	return ok
+}
+
+func reconcileTurnKey(workspaceID string) string {
+	return fmt.Sprintf("ws:{%s}:reconcile-turn", workspaceID)
+}
+
+func (s *RedisStore) GetReconcileMisses(ctx context.Context, workspaceID string) map[string]int {
+	const op = "get_reconcile_misses"
+	start := time.Now()
+	raw, err := s.client.Get(ctx, reconcileMissesKey(workspaceID)).Bytes()
+	if err != nil {
+		if err != redis.Nil {
+			s.recordError(op)
+			s.observeOp(op, "error", start)
+		}
+		return nil
+	}
+	var misses map[string]int
+	if err := json.Unmarshal(raw, &misses); err != nil || misses == nil {
+		s.observeOp(op, "ok", start)
+		return nil
+	}
+	s.observeOp(op, "ok", start)
+	return misses
+}
+
+func (s *RedisStore) SetReconcileMisses(ctx context.Context, workspaceID string, misses map[string]int) {
+	const op = "set_reconcile_misses"
+	start := time.Now()
+	if len(misses) == 0 {
+		if err := s.client.Del(ctx, reconcileMissesKey(workspaceID)).Err(); err != nil && err != redis.Nil {
+			s.recordError(op)
+			s.observeOp(op, "error", start)
+		}
+		s.observeOp(op, "ok", start)
+		return
+	}
+	payload, err := json.Marshal(misses)
+	if err != nil {
+		s.recordError(op)
+		s.observeOp(op, "error", start)
+		return
+	}
+	if err := s.client.Set(ctx, reconcileMissesKey(workspaceID), payload, DefaultReconcileMissesTTL).Err(); err != nil {
 		s.recordError(op)
 		s.observeOp(op, "error", start)
 		return

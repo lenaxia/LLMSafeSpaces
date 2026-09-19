@@ -125,6 +125,23 @@ describe("ChatPage — message history error banner (#490)", () => {
     expect(screen.queryByText(/^undefined$/)).not.toBeInTheDocument();
   });
 
+  it("renders the session_gone gone-state for the typed 410 (#1340) — never a fetch-failure banner", async () => {
+    getHistoryPageMock.mockRejectedValue(
+      new ApiClientError(410, {
+        code: "session_gone",
+        error: "This session no longer exists on the agent — it may have been deleted. It has been removed from your session list.",
+      }),
+    );
+
+    renderChat("/chat/ws-1/sess-1");
+
+    await waitFor(() => expect(screen.getByTestId("session-gone-banner")).toBeInTheDocument());
+    expect(screen.getByText("Session no longer exists")).toBeInTheDocument();
+    // The generic fetch-failure framing must NOT appear for a gone verdict.
+    expect(screen.queryByText("Chat history unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
   it("does NOT render the banner on the happy path (success with messages)", async () => {
     getHistoryPageMock.mockResolvedValue({
       messages: [
