@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -139,4 +141,37 @@ func TestSessionIndexReconcile_EmptyIndexSkipsHarnessCall(t *testing.T) {
 	h, idx := reconcileTestHandler(t, map[string]bool{}, nil) // lister would reap everything
 	runReconcile(t, h, "ws-1")
 	assert.Empty(t, idx.deletedTree)
+}
+
+// r4: the pass's delete-failure leg — the pass CONTINUES (no abort,
+// later deletions still run) and every disposition is counted.
+func TestSessionIndexReconcile_DeleteFailedContinuesAndCounts(t *testing.T) {
+	h, idx := reconcileTestHandler(t, map[string]bool{"ses_alive": true}, nil)
+	idx.seedRow("ws-1", "ses_alive")          // present
+	idx.seedRowCounted("ws-1", "ses_dies", 0) // guard-admitted ghost
+	idx.seedRowCounted("ws-1", "ses_kept", 9) // history-bearing ghost
+	h.state().SetReconcileMisses(context.Background(), "ws-1", map[string]int{
+		"ses_dies": 1, "ses_kept": 1,
+	})
+
+	reapedBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped"))
+	keptBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("kept_for_operator"))
+	failedBefore := promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("delete_failed"))
+
+	idx.failDelete = true
+	runReconcile(t, h, "ws-1")
+
+	assert.Empty(t, idx.deletedTree, "the failing delete removed nothing")
+	// The pass continued through the failure: the kept_for_operator
+	// disposition was still recorded in the SAME pass.
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("delete_failed")), failedBefore,
+		"the delete failure must be counted")
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("kept_for_operator")), keptBefore,
+		"the pass must continue past a failed deletion")
+
+	// Recover: the same pass next window reaps cleanly and counts it.
+	idx.failDelete = false
+	runReconcile(t, h, "ws-1")
+	assert.True(t, idx.deletedTree["ws-1/ses_dies"], "a later pass must still reap")
+	assert.Greater(t, promtestutil.ToFloat64(sessionindex.ReconcileOutcomeForTest("reaped")), reapedBefore)
 }

@@ -36,6 +36,11 @@ func ReconcileOutcome(outcome string) {
 	reconcileOutcomes.WithLabelValues(outcome).Inc()
 }
 
+// ReconcileOutcomeForTest reads a disposition counter (test assertions).
+func ReconcileOutcomeForTest(outcome string) prometheus.Counter {
+	return reconcileOutcomes.WithLabelValues(outcome)
+}
+
 // Service manages the session_index table with non-blocking writes.
 type Service struct {
 	db     interfaces.DatabaseService

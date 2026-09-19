@@ -159,6 +159,11 @@ func (h *ProxyHandler) runSessionIndexReconciliation(workspaceID string) {
 	for _, id := range remove {
 		if err := h.sessionIndex.DeleteSession(ctx, workspaceID, id); err != nil {
 			sessionindex.ReconcileOutcome("delete_failed")
+			// Pin the counter at threshold: a failed delete retries on
+			// the NEXT pass, not two passes later (the plan moved the
+			// row to remove without persisting its miss state).
+			next[id] = reconcileMissThreshold
+			h.state().SetReconcileMisses(ctx, workspaceID, next)
 			h.logger.Warn("session reconcile: ghost delete failed", "workspaceID", workspaceID, "sessionID", id, "error", err.Error())
 			continue
 		}
