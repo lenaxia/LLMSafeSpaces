@@ -629,15 +629,21 @@ if [[ "${PRE_N}" -gt 0 ]]; then
     printf '%s\n' "${PRE_SWEPT}" \
         | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
         || die "AC-13 pre-wave sweep: workspace delete failed"
-    PRE_LEFT=""
+    # Only a SUCCESSFUL get that lists none of the range counts as
+    # verified: a failed get (transient apiserver/etcd blip — the class
+    # kc_apply_retry exists for) must never read as "verified gone"
+    # (review r1 finding 2).
+    PRE_LEFT="unverified"
     for _ in $(seq 1 30); do
-        PRE_LEFT=$( { kc get workspace -o name 2>/dev/null || true; } \
-            | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
-        if [[ -z "${PRE_LEFT}" ]]; then break; fi
+        if PRE_GET=$(kc get workspace -o name 2>/dev/null); then
+            PRE_LEFT=$(printf '%s\n' "${PRE_GET}" \
+                | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
+            if [[ -z "${PRE_LEFT}" ]]; then break; fi
+        fi
         sleep 2
     done
     if [[ -n "${PRE_LEFT}" ]]; then
-        die "AC-13 pre-wave sweep: workspaces failed to terminate within 60s: ${PRE_LEFT}"
+        die "AC-13 pre-wave sweep: workspaces failed to terminate (or verify) within 60s: ${PRE_LEFT}"
     fi
 fi
 ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted and verified gone"
@@ -878,20 +884,26 @@ if (( SCALE > 0 )); then
         printf '%s\n' "${POST_SWEPT}" \
             | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
             || die "AC-13 post-wave sweep: workspace delete failed"
-        POST_LEFT=""
+        POST_LEFT="unverified"
         for _ in $(seq 1 60); do
-            POST_LEFT=$( { kc get workspace -o name 2>/dev/null || true; } \
-                | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
-            if [[ -z "${POST_LEFT}" ]]; then break; fi
+            if POST_GET=$(kc get workspace -o name 2>/dev/null); then
+                POST_LEFT=$(printf '%s\n' "${POST_GET}" \
+                    | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
+                if [[ -z "${POST_LEFT}" ]]; then break; fi
+            fi
             sleep 2
         done
-        if [[ -n "${POST_LEFT}" ]]; then
-            warn "AC-13 post-wave sweep: workspaces failed to terminate within 120s (continuing — the row's assertions are done): ${POST_LEFT}"
-        fi
+        # The ok line's verdict must reflect the verification (review r1
+        # finding 1): an unconditional "verified gone" after a timeout
+        # warn is the same fiction class this PR fixes.
         # grep -c . (r28): wc -l undercounts by one — command
         # substitution strips the trailing newline and printf '%s' adds
         # none (run 34309009157: 20 deleted, logged "19").
-        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+), verified gone"
+        if [[ -z "${POST_LEFT}" ]]; then
+            ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+), verified gone"
+        else
+            warn "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+); termination NOT verified within 120s: ${POST_LEFT}"
+        fi
     fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
