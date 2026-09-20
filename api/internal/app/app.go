@@ -646,6 +646,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				wfStore: wfStore,
 			},
 			Logger: engineLogger,
+			// #1476 DAG adoption: the node-retry cleanup shares the
+			// scheduler's authorized-delete wiring (password + default
+			// mux port; the honest 204/502 route).
+			PasswordProvider: proxyHandler,
 		}
 		wfScheduler = &apiwf.Scheduler{
 			Store: wfStore,
