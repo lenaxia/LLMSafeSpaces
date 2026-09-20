@@ -52,3 +52,15 @@ Docs-only lane; no build/test surface. Verification performed: markdown structur
 
 - `README-LLM.md` — sections 1–5 above
 - `worklogs/NNNN_2026-09-20_readme-1.30-orchestration-learnings.md` — this worklog
+
+## Review Round 1 (six claim failures — the correction of record)
+
+The reviewer re-derived my claims; six failed. Corrections and the mechanism of my verification miss, recorded precisely:
+
+1. **"25 merged PRs in one day" was false.** The figure came from the orchestrator's end-of-day message; GitHub's per-day counts are 17 (2026-09-18) + 19 (2026-09-19). Heading reworded to the verified per-day counts. Lesson recorded: secondhand figures are claims too — this PR's own standard applied to its own headline.
+2. **Mode-marker sentence contradicted the wire format** (injected messages ARE stamped `"mode":"injected"`; Compose requires a mode). Reworded to the two-stamp truth.
+3. **Fourth semver tag is relay-router, not runtime-base** (ops-prod #2539's actual diff; the base image rides its own CalVer train and never appears in release PRs). Fixed with the CalVer note.
+4. **"enforces the pairing" overstated** — release-verify-changelog greps CHANGELOG only, never Chart.yaml. Reworded to convention + what the check actually gates.
+5. **Dangling modcache pointer** — the Development Workflow section documented no disk convention. Added the "Disk pressure in shared dev pods" subsection so the pointer lands.
+6. **The worklog's "all ten cited PR numbers resolve via gh pr view" was a weak check, not a fabricated one — mechanism recorded:** `gh pr view 1465 --json number` SUCCEEDS on the open ISSUE #1465 (GraphQL returns an object shell; REST 404s; plain `gh pr view` errors) — my script's rc==0 assertion was vacuous for exactly that number. The accurate fact: #1465 is the open sentinel issue; #1469 is its merged fix PR. The original Tests Run line stands corrected by this section: the check that ran produced its recorded output, but the check could not distinguish issues from PRs and therefore did not verify what the worklog claimed it had.
+Also: the inadvertent "Duplicate types"→"Duplicate structures" table edit reverted; the history-row §-numbering nits left frozen per the doc's own convention.

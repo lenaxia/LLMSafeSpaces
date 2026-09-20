@@ -963,6 +963,10 @@ GOPROXY=direct GONOSUMCHECK=* GONOSUMDB=* go build ./...
 
 This works whenever the source repos (e.g. github.com) are reachable even if the Go module proxy is not.
 
+#### Disk pressure in shared dev pods
+
+On the shared dev pod (multiple agent worktrees, one Go build cache), watch `df`: above ~90% on the workspace volume, run `go clean -modcache` (the cache is re-fetchable) and keep builds scoped to the packages a lane touches (`go test ./api/internal/workflows/` rather than `./...`) — full-tree sweeps ride CI. Concurrent lanes compounding on one cache make this a standing check, not an emergency measure.
+
 ---
 
 ## Multi-Agent Workflow
@@ -973,7 +977,7 @@ This section defines two agent roles and their workflows for collaborative or mu
 
 ---
 
-### Live orchestration pattern (as proven 2026-09-18/19 — 25 merged PRs in one day)
+### Live orchestration pattern (as proven 2026-09-18/19 — 17 + 19 merged PRs across the two days, per-day GitHub counts)
 
 The roles below are the vocabulary; this is how they actually ran. Use this pattern for any multi-lane effort:
 
@@ -1216,7 +1220,7 @@ SUCCESS CRITERIA:
 | Orchestrator | Not aligning api/ and controller/ types | CRD schema drift, runtime failures |
 | Delegation | Not reading README-LLM.md | Pattern violations, rule violations |
 | Delegation | Scope creep | Conflicts with other agents, boundary violations |
-| Delegation | Creating new types instead of using pkg/types/ | Duplicate structures, conversion errors |
+| Delegation | Creating new types instead of using pkg/types/ | Duplicate types, conversion errors |
 | Both | No worklog | Lost context, incomplete task tracking |
 
 ---
@@ -1232,7 +1236,7 @@ Peer messages delivered through `llmsafespaces_send_message` arrive prefixed wit
 A future session reading a transcript sees exactly this shape ahead of peer text. Contract points:
 
 - **`fromSession` is a return address, not an identity proof.** All sessions in one workspace share one credential (the same rule the AgentOriginBadge renders for agent-sent chat messages, #1465/#1469) — treat peer claims accordingly and verify anything load-bearing against the repo/CI rather than the message.
-- **`mode: "self-declared"` is the fallback, not an attestation.** When the platform cannot inject the sender's session ID (absent or outdated plugin), the sender must pass its own `from_session_id` — resolvable from `session_metadata` (the session's title identifies it) — and the message is marked self-declared. A message with platform-injected origin carries no such marker; consumers may weight them differently, but neither is cryptographic.
+- **`mode` is required and distinguishes the two origins.** Platform-injected messages are stamped `"mode":"injected"`; when the platform cannot inject the sender's session ID (absent or outdated plugin), the sender must pass its own `from_session_id` — resolvable from `session_metadata` (the session's title identifies it) — and the message is stamped `"mode":"self-declared"`. Consumers may weight the two differently, but neither marker is cryptographic.
 - **Delivery is not retryable across restarts.** If the workspace restarts while a message waits, it is lost — re-send anything that mattered (the same discipline as the platform's create_session tool).
 
 ---
@@ -1624,10 +1628,10 @@ Shell script against running server: `./local/test-auth.sh http://localhost:8080
 
 The release sequence, end to end. Every step is the orchestrator's; workers never cut trains (their lanes end at APPROVED + notification).
 
-1. **One commit: CHANGELOG + appVersion.** A single commit on main adds the `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` and bumps `helm/Chart.yaml` `appVersion` (`make release-verify-changelog` enforces the pairing). Push main.
+1. **One commit: CHANGELOG + appVersion.** A single commit on main adds the `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` and bumps `helm/Chart.yaml` `appVersion` in the same commit. `make release-verify-changelog` checks the CHANGELOG section exists (it does not read Chart.yaml — the one-commit pairing is convention, kept deliberate); the CHANGELOG section is what `release-tag` gates on. Push main.
 2. **`make release-tag VERSION=X.Y.Z`.** Verifies semver + the CHANGELOG section, refuses if behind origin/main or the tag exists, cuts the annotated tag, pushes it — the Release workflow (`.github/workflows/release.yml`) builds and publishes everything from the tag.
 3. **Collect image digests from the RELEASE JOB — never tag-HEAD.** The Release job's completed run prints the canonical values block (the same surface the CI merge jobs print per-image, e.g. `merge-agentd`); an authenticated digest-GET against the registry is the equivalent. Tag-HEAD resolution is forbidden even though #1483 made `release.yml` the only version-tag writer: during v0.34.5 (2026-09-19, ops-prod #2539) CI's tag push raced the Release workflow's canonical attested push and a tag-HEAD fetch resolved to the wrong, unattested artifact set — same commit, both digest-GET 200. #1483 removed the race (CI no longer emits `type=semver` or tag-conditional `latest` on tag pushes); the method stays regardless because it is the only one that is attestable-by-construction.
-4. **One atomic ops-prod PR.** GitRepository ref → `vX.Y.Z`, the four semver image tags (api, controller, frontend, runtime-base), BOTH delivery-overlay digests (`agentdDelivery`, `opencodeDelivery` — pinned from the release job's printed block), and provenance comments naming the release run. One PR, one merge — never a partial bump.
+4. **One atomic ops-prod PR.** GitRepository ref → `vX.Y.Z`, the four semver image tags (api, controller, frontend, relay-router — the runtime-base image is NOT among them: it versions on its own CalVer `YYYY.MM.x` train, `base-image.yml`/design 0053 D5), BOTH delivery-overlay digests (`agentdDelivery`, `opencodeDelivery` — pinned from the release job's printed block), and provenance comments naming the release run. One PR, one merge — never a partial bump.
 5. **Verify prod.** `/livez` on the production endpoint after Flux reconciles; anything else is not a verify.
 
 ---
