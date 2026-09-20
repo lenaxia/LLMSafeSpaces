@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.6] - 2026-09-20
+
+### Fixes — activating the v0.34.5 origin-provenance feature (#1488, #1489)
+
+- **opencode overlay /plugins directory was untraversable (PR #1488)**:
+  BuildKit applies `COPY --chmod` to implicitly created parent directories,
+  so the 644 intended for the plugin file landed on /plugins itself — no
+  non-root process could traverse it, the origin plugin silently no-loaded
+  on every v0.34.5 pod, and send_message ran in self-declared fallback
+  mode. Fixed to 755 with three pin layers: source allowlist (repolint),
+  built-image tar-header checks in CI, and the incident documented as the
+  motivating case. Pods activate injected-mode on the next recreate.
+- **Origin badge truncates long session IDs (PR #1489)**: the provenance
+  badge ellipsized the session ID; it now renders in full (break-all
+  span, house convention) with a hover title for copying. Pinned by a
+  real-browser layout row that fails on both truncation mutations.
+
+### Fixes — release pipeline integrity (#1483)
+
+- **CI manifest jobs no longer emit semver tags (PR #1483)**: the release
+  commit's own main-CI manifest pushes raced the Release workflow onto
+  the same appVersion tag (the v0.34.5 bump incident), making tag-based
+  digest fetches unreliable. ci.yml now emits no version tags at all —
+  release.yml is the sole semver writer — enforced by spelling-proof
+  structural pins including raw-push tool markers.
+
+### Fixes — session index ground truth (#1487)
+
+- **message_count rebuilt from harness truth (PR #1487)**: the reconcile
+  pass now folds in bounded count walks (page-capped, with a truncation
+  sentinel so a floor is NEVER persisted as ground truth), writes
+  absolutely on drift, and stays write-free when converged — closing the
+  drifted-count class the index could never self-heal.
+
+### Fixes — workflow-run retry hygiene (#1492)
+
+- **DAG node-retry intermediates cleaned (PR #1492)**: the #1476
+  superseded-attempt cleanup is adopted by the workflow-run executor —
+  every non-final failed attempt's session is torn down over the honest
+  204/502 route, with author-pinned sessions (spec sessionId) explicitly
+  never cleaned.
+
+### Fixes — nightly harness reliability (#1482, #1484, #1486)
+
+- **ExecuteSmoke corpus completed (PRs #1482/#1484)**: all ten
+  nightly-registered harness scripts now must execute under shim
+  traversal to pinned depths — the never-executable class that hid three
+  corpses and a dead api() is structurally closed.
+- **Harness workspaces cleaned on every exit path (PR #1486)**: the
+  attachments and test.sh harnesses leaked standing workspace pods into
+  downstream suites (≈ exactly the CPU margin us-70 lacked — nightly
+  35437562027's AC-1c exhaustion). Live-verified on the next run: census
+  5 → 3, AC-1c passes.
+
+### Changes — nightly schedule (#1485, #1491)
+
+- **Nightly moved to 09:17 UTC (2:17am Pacific), off-peak odd-minute
+  (PR #1491)**: GitHub's scheduler fired the old 06:00 UTC top-of-hour
+  slot 4–6h late on an 11-run sample. A concurrency group (PR #1485)
+  guards against any double-trigger. First run on the new slot delivered
+  results in the owner's morning window as designed.
+
 ## [0.34.5] - 2026-09-19
 
 ### Features — agent-to-agent messaging provenance (#1465, PR #1469)
