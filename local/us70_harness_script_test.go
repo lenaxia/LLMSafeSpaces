@@ -462,6 +462,55 @@ func TestUS70AC1D_MockEgressLeverInNightly(t *testing.T) {
 	if !strings.Contains(src, "AC-1d") {
 		t.Fatal("the --set must carry the why-comment naming AC-1d so the lever is not 'cleaned up' as unused")
 	}
+
+	// EXECUTABLE (r1's critical catch): the helm-install step body must
+	// parse into ONE helm invocation carrying the lever. A backslash
+	// continuation interrupted by a comment line amputates every flag
+	// after it — the orphaned fragment exits 127 and the lever +
+	// api.extraEnv[0] + --wait are silently lost. bash -n, YAML parsing,
+	// and substring pins are ALL blind to this; executing the real step
+	// body against a fake helm is not.
+	stepAt := strings.Index(src, "Helm install LLMSafeSpaces")
+	if stepAt < 0 {
+		t.Fatal("helm-install step not found in e2e-nightly.yml")
+	}
+	step := src[stepAt:]
+	if end := strings.Index(step, "\n      - name: "); end >= 0 {
+		step = step[:end]
+	}
+	runAt := strings.Index(step, "run: |")
+	if runAt < 0 {
+		t.Fatal("helm-install step has no run: | block")
+	}
+	body := regexp.MustCompile(`(?m)^ {10}`).ReplaceAllString(step[runAt+len("run: |"):], "")
+	body = regexp.MustCompile(`\$\{\{ env\.([A-Z_]+) \}\}`).ReplaceAllString(body, "synthetic-$1")
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "helm-args")
+	fake := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > " + shQuote(argsFile) + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "set -euo pipefail; export PATH=" + shQuote(dir) + ":$PATH NS=llmsafespaces IMAGE_TAG=ci\n" + body
+	out, err := exec.Command("bash", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the helm-install step body must execute cleanly under bash -e — a broken backslash continuation makes the next flag a fresh command (exit %v):\n%s", err, out)
+	}
+	argsRaw, rerr := os.ReadFile(argsFile)
+	if rerr != nil {
+		t.Fatalf("helm was never invoked — the step body no longer calls helm: %v", rerr)
+	}
+	for _, want := range []string{
+		// The lever (AC-1d).
+		"networkPolicy.allowRelayRouterEgress=true",
+		// The flags a mid-continuation comment amputates first.
+		"api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s",
+		"--wait",
+	} {
+		if !strings.Contains(string(argsRaw), want) {
+			t.Fatalf("helm must receive %q — a continuation break silently drops it (captured argv: %s)", want, argsRaw)
+		}
+	}
 }
 
 func TestUS70PoolWorkflow_Pins(t *testing.T) {
