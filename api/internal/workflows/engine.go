@@ -1186,19 +1186,19 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 	deleteReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, port, sessionID), nil)
 	if err != nil {
-		logger.Error(err, "routine: invalid delete-session URL", "sessionId", sessionID, "purpose", purpose)
+		logger.Error(err, "session delete: invalid URL", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	deleteReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
 
 	resp, err := httpClient().Do(deleteReq)
 	if err != nil {
-		logger.Error(err, "routine: session delete request failed", "sessionId", sessionID, "purpose", purpose)
+		logger.Error(err, "session delete: request failed", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		logger.Error(fmt.Errorf("agentd returned %d", resp.StatusCode), "routine: session delete failed", "sessionId", sessionID, "purpose", purpose)
+		logger.Error(fmt.Errorf("agentd returned %d", resp.StatusCode), "session delete: failed", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	return true
@@ -1217,12 +1217,12 @@ func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger L
 // carries the purpose label.
 func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, port int, workspaceID, podIP, sessionID, purpose string) bool {
 	if pp == nil {
-		logger.Error(fmt.Errorf("no PasswordProvider configured"), "routine: cannot delete session", "sessionId", sessionID, "purpose", purpose)
+		logger.Error(fmt.Errorf("no PasswordProvider configured"), "session delete: no password provider configured", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
 	password, err := pp.WorkspacePassword(ctx, workspaceID)
 	if err != nil {
-		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
+		logger.Error(err, "session delete: resolve workspace password failed", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
 		return false
 	}
 	return deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose)

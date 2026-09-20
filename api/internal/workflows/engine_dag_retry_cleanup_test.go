@@ -34,7 +34,9 @@ func dagCleanupHarness(t *testing.T, deleteStatus int) (*mockStore, *Reconciler,
 	var cleaned []string
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/v1/workflow/session/delete", r.URL.Path)
+		if r.URL.Path != "/v1/workflow/session/delete" { // goroutine-safe: FailNow is not
+			t.Errorf("delete route hit unexpected path %s", r.URL.Path)
+		}
 		mu.Lock()
 		cleaned = append(cleaned, r.URL.Query().Get("sessionId"))
 		mu.Unlock()
@@ -72,7 +74,7 @@ func TestExecuteNode_SupersededAttemptSessionCleaned(t *testing.T) {
 	store, rec, cleaned := dagCleanupHarness(t, http.StatusNoContent)
 	ex := &sequenceAgentd{steps: []seqStep{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500", SessionID: "ses_dag_mid"}},
-		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`)}},
+		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`), SessionID: "ses_dag_final"}},
 	}}
 	rec.AgentdClient = ex
 	store.addRun("run-dag1", "wf-dag", "ws-1", dagAgentSpec("new", 2), json.RawMessage(`{}`), "")
@@ -80,7 +82,8 @@ func TestExecuteNode_SupersededAttemptSessionCleaned(t *testing.T) {
 	runEngine(t, rec, store)
 
 	require.Equal(t, types.RunStatusSucceeded, store.statuses["run-dag1"])
-	require.Equal(t, []string{"ses_dag_mid"}, *cleaned, "the superseded attempt's session must reach the delete route")
+	require.Equal(t, []string{"ses_dag_mid"}, *cleaned,
+		"the superseded attempt's session is cleaned; the FINAL SUCCESS session survives — nothing records DAG sessions, it is the author's only artifact")
 }
 
 // TestExecuteNode_DeterministicErrorIntermediateAlsoCleaned pins the
@@ -160,18 +163,22 @@ func TestExecuteNode_EphemeralNoSessionNoop(t *testing.T) {
 // (embedded use, older construction sites) keep today's behavior —
 // no cleanup, run outcome unaffected.
 func TestExecuteNode_NilPasswordProviderSkipsCleanup(t *testing.T) {
-	store := newMockStore()
-	ex := &sequenceAgentd{steps: []seqStep{
+	// A live delete route is wired so the test DISCRIMINATES: removing
+	// the call-site nil-gate becomes observable as a route hit, not
+	// just an unchanged outcome (deleteSessionAuthorized's internal
+	// nil check would otherwise swallow the mutation silently).
+	store, rec, cleaned := dagCleanupHarness(t, http.StatusNoContent)
+	rec.PasswordProvider = nil // unwired: the delete route must never be reached
+	rec.AgentdClient = &sequenceAgentd{steps: []seqStep{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500", SessionID: "ses_np"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`)}},
 	}}
-	rec := &Reconciler{Store: store, AgentdClient: ex, Activator: &mockActivator{}, Logger: noopLogger{}}
-	rec.canceledRuns = make(map[string]struct{})
 	store.addRun("run-dag6", "wf-dag", "ws-1", dagAgentSpec("new", 2), json.RawMessage(`{}`), "")
 
 	runEngine(t, rec, store)
 
 	require.Equal(t, types.RunStatusSucceeded, store.statuses["run-dag6"], "no cleanup wiring, no outcome change")
+	require.Empty(t, *cleaned, "an unwired reconciler must never reach the delete route")
 }
 
 // TestExecuteNode_CleanupFailureRetriesAnyway: a 502 delete (session

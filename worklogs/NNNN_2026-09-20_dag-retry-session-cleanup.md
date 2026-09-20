@@ -63,7 +63,14 @@ None.
 - `go test -run "TestExecuteNode_" ./api/internal/workflows/` — ok (7 new red-first rows + the existing identity/retry-stability pins)
 - Full package `./api/internal/workflows/` + `./api/internal/app/` — ok 75.5s (all #1464/#1471/#1476/#1477/#1481 suites; race deferred to CI per memory directive)
 - `go build ./...` — exit 0 (GOPROXY=direct; caches cold post-refresh, first builds slow as briefed)
-- Mutation checks: dropping the cleanup call fails rows 1/2/7; removing the pinned gate fails row 4; cleaning on the final attempt fails row 3; unwiring the provider fails row 6's outcome-neutral twin (row 5).
+- Mutation checks: dropping the cleanup call fails rows 1/2/7; removing the pinned gate fails row 4; cleaning on the final attempt fails row 3. (The original claim that row 6 discriminated the nil-gate via "row 5's twin" was INACCURATE — r1 review caught it: row 5's step carries no session id, and the internal nil-check swallowed the mutation. Fixed in r1: row 6 now wires a live delete route and asserts zero hits.)
+
+### Review round 1 (CHANGES_REQUESTED → addressed)
+
+- Final-SUCCESS session survival pinned: row 1's success step now carries `SessionID: ses_dag_final`; `cleaned == [ses_dag_mid]` only — a regression that deletes the final success session (the author's only artifact, nothing records DAG sessions) now fails the row.
+- T6 made discriminating: a live delete route is wired; the nil-provider reconciler must record ZERO route hits (gate removal is observable, not swallowed by the internal nil-check).
+- Stale `routine:` prefixes on the shared delete path neutralized to `session delete: …` — the structured `purpose` label carries the true attribution (the #1477 contract's actual requirement; the same misleading-attribution class that round treated as blocking).
+- Handler-goroutine `require.Equal` → `t.Errorf` (FailNow off the test goroutine; the noted non-blocker, fixed while in the file).
 
 ---
 
