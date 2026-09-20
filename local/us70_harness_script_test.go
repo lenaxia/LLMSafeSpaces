@@ -442,6 +442,77 @@ func extractSingle(t *testing.T, src string, re *regexp.Regexp, what string) str
 	return m[1]
 }
 
+// TestUS70AC1D_MockEgressLeverInNightly pins nightly run 35513961442's
+// triage: AC-1d's mock-llm is reachable from workspace pods ONLY when
+// the helm install admits it — the mock pod carries relay-router labels
+// to ride the podSelector egress allow rendered by
+// networkPolicy.allowRelayRouterEgress (local/us-70-secret-delivery-e2e.sh's
+// mock manifest documents exactly this). The pool sets the lever and its
+// AC-1d passes (run 35509103926: workspace=200, PASS); the nightly set
+// NEITHER lever and AC-1d timed out on every destination form (run
+// 35513961442: workspace=000000 ×3 "Connection timed out", plain-pod=200,
+// DNS resolving — the RFC1918 default egress block, values.yaml
+// blockedEgressCIDRs 10.0.0.0/8, doing its designed job). R1–R9
+// arbitration was blocked three consecutive nightlies behind this row.
+func TestUS70AC1D_MockEgressLeverInNightly(t *testing.T) {
+	src := mustRead(t, us70NightlyWorkflow)
+	if !strings.Contains(src, "--set networkPolicy.allowRelayRouterEgress=true") {
+		t.Fatal("the nightly helm install must set networkPolicy.allowRelayRouterEgress=true — AC-1d's mock-llm rides that podSelector egress allow (same lever the pool sets); without it the row times out on every destination form and gates every downstream suite")
+	}
+	if !strings.Contains(src, "AC-1d") {
+		t.Fatal("the --set must carry the why-comment naming AC-1d so the lever is not 'cleaned up' as unused")
+	}
+
+	// EXECUTABLE (r1's critical catch): the helm-install step body must
+	// parse into ONE helm invocation carrying the lever. A backslash
+	// continuation interrupted by a comment line amputates every flag
+	// after it — the orphaned fragment exits 127 and the lever +
+	// api.extraEnv[0] + --wait are silently lost. bash -n, YAML parsing,
+	// and substring pins are ALL blind to this; executing the real step
+	// body against a fake helm is not.
+	stepAt := strings.Index(src, "Helm install LLMSafeSpaces")
+	if stepAt < 0 {
+		t.Fatal("helm-install step not found in e2e-nightly.yml")
+	}
+	step := src[stepAt:]
+	if end := strings.Index(step, "\n      - name: "); end >= 0 {
+		step = step[:end]
+	}
+	runAt := strings.Index(step, "run: |")
+	if runAt < 0 {
+		t.Fatal("helm-install step has no run: | block")
+	}
+	body := regexp.MustCompile(`(?m)^ {10}`).ReplaceAllString(step[runAt+len("run: |"):], "")
+	body = regexp.MustCompile(`\$\{\{ env\.([A-Z_]+) \}\}`).ReplaceAllString(body, "synthetic-$1")
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "helm-args")
+	fake := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" > " + shQuote(argsFile) + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "helm"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "set -euo pipefail; export PATH=" + shQuote(dir) + ":$PATH NS=llmsafespaces IMAGE_TAG=ci\n" + body
+	out, err := exec.Command("bash", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the helm-install step body must execute cleanly under bash -e — a broken backslash continuation makes the next flag a fresh command (exit %v):\n%s", err, out)
+	}
+	argsRaw, rerr := os.ReadFile(argsFile)
+	if rerr != nil {
+		t.Fatalf("helm was never invoked — the step body no longer calls helm: %v", rerr)
+	}
+	for _, want := range []string{
+		// The lever (AC-1d).
+		"networkPolicy.allowRelayRouterEgress=true",
+		// The flags a mid-continuation comment amputates first.
+		"api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s",
+		"--wait",
+	} {
+		if !strings.Contains(string(argsRaw), want) {
+			t.Fatalf("helm must receive %q — a continuation break silently drops it (captured argv: %s)", want, argsRaw)
+		}
+	}
+}
+
 func TestUS70PoolWorkflow_Pins(t *testing.T) {
 	src := mustRead(t, us70PoolWorkflow)
 	for _, pin := range []string{

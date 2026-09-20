@@ -172,6 +172,13 @@ func TestUS68CleanupDeletesSeededWorkspaces(t *testing.T) {
 	if !strings.Contains(src, "trap cleanup EXIT") {
 		t.Fatal("the cleanup trap must stay registered (trap cleanup EXIT)")
 	}
+	// Anchored to an UNCOMMENTED line start: a commented-out
+	// `# trap cleanup EXIT` satisfies a substring pin (the #1486 merge
+	// verification caught exactly this class) — the hardening from the
+	// ea6146ac adjudication.
+	if !regexp.MustCompile(`(?m)^trap cleanup EXIT$`).MatchString(src) {
+		t.Fatal("trap cleanup EXIT must exist as a real, uncommented line — a commented trap would silently disable the hygiene while passing a substring pin")
+	}
 	for _, pin := range []string{
 		`kc -n "${NS}" delete workspace "${WS_A}" --ignore-not-found --wait=false >/dev/null 2>&1 || true`,
 		`kc -n "${NS}" delete workspace "${WS_B}" --ignore-not-found --wait=false >/dev/null 2>&1 || true`,
