@@ -304,6 +304,14 @@ type Reconciler struct {
 	Logger           Logger
 	MaxConcurrent    int
 	TickInterval     time.Duration
+	// PasswordProvider resolves the per-workspace agentd Basic-auth
+	// password for the node-retry session cleanup (#1476 DAG adoption).
+	// Nil → cleanup skipped (unwired/embedded reconcilers keep today's
+	// behavior).
+	PasswordProvider apiinterfaces.WorkspacePasswordProvider
+	// AgentdPort overrides the agentd user-mux port for the cleanup
+	// delete. Zero → default (4097); mirrors the Scheduler's field.
+	AgentdPort int
 
 	cancelMu     sync.Mutex
 	canceledRuns map[string]struct{}
@@ -441,6 +449,19 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 		maxAttempts = 1
 	}
 
+	// #1476 DAG adoption: a superseded attempt's fresh session is an
+	// orphan by the node's own retry policy — cleaned via the #1477
+	// authorized-delete pattern, with ONE gate the routine path doesn't
+	// need: spec-PINNED sessions (data.sessionId) are shared across
+	// attempts by authorial intent and are never cleaned. A spec that
+	// doesn't parse as agent data pins nothing (script/condition nodes
+	// never carry envelope sessions anyway).
+	pinnedSession := false
+	if node.Type == types.NodeTypeAgent {
+		var data wf.AgentNodeData
+		pinnedSession = json.Unmarshal(node.Data, &data) == nil && data.SessionID != ""
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		nodeRunID := uuid.New().String()
@@ -481,6 +502,15 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 		}
 
 		if attempt < maxAttempts {
+			// Node retries are UNCONDITIONAL (author-set maxAttempts),
+			// so EVERY non-final failed attempt is superseded — its
+			// envelope session (present only when one survived: fresh
+			// "new"-mode sessions, or an ephemeral whose teardown
+			// failed) is an orphan. Best-effort; failures log inside
+			// the delete path and the retry proceeds.
+			if resp != nil && resp.SessionID != "" && !pinnedSession && r.PasswordProvider != nil {
+				deleteSessionAuthorized(ctx, logger, r.PasswordProvider, r.agentdPort(), run.WorkspaceID, podIP, resp.SessionID, deletePurposeNodeRetry)
+			}
 			select {
 			case <-time.After(time.Duration(attempt) * time.Second):
 			case <-ctx.Done():
@@ -489,6 +519,15 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 		}
 	}
 	return nil, "", lastErr
+}
+
+// agentdPort returns the reconciler's configured override or the
+// production default (mirrors the Scheduler's field).
+func (r *Reconciler) agentdPort() int {
+	if r.AgentdPort != 0 {
+		return r.AgentdPort
+	}
+	return agentdExecPort()
 }
 
 func (r *Reconciler) failRun(ctx context.Context, logger Logger, run *wf.WorkflowRunRow, errorCode, detail string) {
@@ -1128,6 +1167,7 @@ func agentdExecPort() int { return 4097 }
 const (
 	deletePurposePreserveOnFailure = "preserve_on_failure_success"
 	deletePurposeRetryIntermediate = "retry_intermediate_cleanup"
+	deletePurposeNodeRetry         = "dag_node_retry_cleanup"
 )
 
 // deleteRoutineSession deletes a finished routine's opencode session via
@@ -1168,16 +1208,24 @@ func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP st
 // deleteRoutineSession for the Scheduler's session-delete paths
 // (PreserveOnFailure success cleanup, superseded retry-attempt cleanup).
 func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID, purpose string) bool {
-	if s.PasswordProvider == nil {
+	return deleteSessionAuthorized(ctx, logger, s.PasswordProvider, s.agentdPort(), workspaceID, podIP, sessionID, purpose)
+}
+
+// deleteSessionAuthorized is the caller-neutral authorized-delete core
+// shared by the routine scheduler and the DAG reconciler's retry
+// cleanup (#1476 DAG adoption): nil provider → skipped; every log line
+// carries the purpose label.
+func deleteSessionAuthorized(ctx context.Context, logger Logger, pp apiinterfaces.WorkspacePasswordProvider, port int, workspaceID, podIP, sessionID, purpose string) bool {
+	if pp == nil {
 		logger.Error(fmt.Errorf("no PasswordProvider configured"), "routine: cannot delete session", "sessionId", sessionID, "purpose", purpose)
 		return false
 	}
-	password, err := s.PasswordProvider.WorkspacePassword(ctx, workspaceID)
+	password, err := pp.WorkspacePassword(ctx, workspaceID)
 	if err != nil {
 		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID, "purpose", purpose)
 		return false
 	}
-	return deleteRoutineSession(ctx, logger, password, podIP, s.agentdPort(), sessionID, purpose)
+	return deleteRoutineSession(ctx, logger, password, podIP, port, sessionID, purpose)
 }
 
 // agentdPort returns the configured override or the production default.
