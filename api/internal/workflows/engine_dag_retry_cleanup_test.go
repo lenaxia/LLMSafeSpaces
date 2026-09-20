@@ -14,6 +14,7 @@ package workflows
 // across attempts by authorial intent — never cleaned.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -163,22 +164,36 @@ func TestExecuteNode_EphemeralNoSessionNoop(t *testing.T) {
 // (embedded use, older construction sites) keep today's behavior —
 // no cleanup, run outcome unaffected.
 func TestExecuteNode_NilPasswordProviderSkipsCleanup(t *testing.T) {
-	// A live delete route is wired so the test DISCRIMINATES: removing
-	// the call-site nil-gate becomes observable as a route hit, not
-	// just an unchanged outcome (deleteSessionAuthorized's internal
-	// nil check would otherwise swallow the mutation silently).
+	// The call-site nil-gate is a NOISE guard, and its removal's only
+	// observable is the LOG: deleteSessionAuthorized's internal nil
+	// check returns before any dial, so a route hit is structurally
+	// impossible either way (r2's mutation receipts). With the gate, an
+	// unwired reconciler logs NOTHING; without it, every superseded
+	// attempt emits "session delete: no password provider configured".
+	// The discriminating pin is the captured Error log + zero route
+	// hits + unchanged outcome.
 	store, rec, cleaned := dagCleanupHarness(t, http.StatusNoContent)
-	rec.PasswordProvider = nil // unwired: the delete route must never be reached
+	var errLogs []string
+	red := &errorOnlyLogger{errs: &errLogs} // Info excluded: the run-success line is not the observable
+	rec.PasswordProvider = nil
 	rec.AgentdClient = &sequenceAgentd{steps: []seqStep{
 		{resp: &NodeExecResponse{ErrorCode: "script_failed", Detail: "opencode returned 500", SessionID: "ses_np"}},
 		{resp: &NodeExecResponse{Output: json.RawMessage(`{"ok":1}`)}},
 	}}
 	store.addRun("run-dag6", "wf-dag", "ws-1", dagAgentSpec("new", 2), json.RawMessage(`{}`), "")
 
-	runEngine(t, rec, store)
+	// Drive executeRun with the capturing logger (runEngine hardcodes
+	// noopLogger — the observable lives in the logger executeNode
+	// receives).
+	ctx := context.Background()
+	runs, _ := store.ClaimQueuedRuns(ctx, 10)
+	for _, run := range runs {
+		rec.executeRun(ctx, red, run)
+	}
 
 	require.Equal(t, types.RunStatusSucceeded, store.statuses["run-dag6"], "no cleanup wiring, no outcome change")
 	require.Empty(t, *cleaned, "an unwired reconciler must never reach the delete route")
+	require.Empty(t, errLogs, "the gate suppresses the per-attempt no-provider error log — its removal surfaces HERE, not as a route hit")
 }
 
 // TestExecuteNode_CleanupFailureRetriesAnyway: a 502 delete (session
@@ -198,3 +213,10 @@ func TestExecuteNode_CleanupFailureRetriesAnyway(t *testing.T) {
 	require.Equal(t, types.RunStatusSucceeded, store.statuses["run-dag7"], "cleanup failure must never fail the node")
 	require.Equal(t, []string{"ses_leak_dag"}, *cleaned, "the cleanup was attempted — best-effort, not silent")
 }
+
+// errorOnlyLogger captures Error lines only (the noise-guard observable);
+// Info is the run's normal chatter and is not under assertion.
+type errorOnlyLogger struct{ errs *[]string }
+
+func (e *errorOnlyLogger) Info(string, ...any)                 {}
+func (e *errorOnlyLogger) Error(_ error, msg string, _ ...any) { *e.errs = append(*e.errs, msg) }

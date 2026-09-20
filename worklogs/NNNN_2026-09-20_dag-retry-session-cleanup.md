@@ -68,7 +68,7 @@ None.
 ### Review round 1 (CHANGES_REQUESTED → addressed)
 
 - Final-SUCCESS session survival pinned: row 1's success step now carries `SessionID: ses_dag_final`; `cleaned == [ses_dag_mid]` only — a regression that deletes the final success session (the author's only artifact, nothing records DAG sessions) now fails the row.
-- T6 made discriminating: a live delete route is wired; the nil-provider reconciler must record ZERO route hits (gate removal is observable, not swallowed by the internal nil-check).
+- T6 round-1 remedy attempted (live route + zero-hit assertion) — **structurally unsatisfiable as worded**: r2's mutation receipts proved a route hit with a nil provider is impossible (the internal nil-check returns before any dial), making the round-1 fix a false observability claim. Corrected in r2: the call-site gate is a NOISE guard whose removal's only observable is the per-attempt "no password provider" Error LOG — pinned via an error-only capturing logger driven through executeRun (runEngine hardcodes noopLogger); the zero-route-hit + unchanged-outcome assertions remain. Mutation-verified both directions THIS time (gate removed → the log assertion fails; restored → green).
 - Stale `routine:` prefixes on the shared delete path neutralized to `session delete: …` — the structured `purpose` label carries the true attribution (the #1477 contract's actual requirement; the same misleading-attribution class that round treated as blocking).
 - Handler-goroutine `require.Equal` → `t.Errorf` (FailNow off the test goroutine; the noted non-blocker, fixed while in the file).
 
