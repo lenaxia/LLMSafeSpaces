@@ -56,4 +56,4 @@ None.
 - `.github/workflows/e2e-nightly.yml` — the egress lever + why-comment.
 - `local/us70_harness_script_test.go` — the lever pin.
 - `local/us68_attachments_script_test.go` — trap-pin hardening (line-start anchor).
-- `worklogs/NNNN_2026-09-20_nightly-ac1d-egress-lever.md` — this worklog.
+- `worklogs/1017_2026-09-20_nightly-ac1d-egress-lever.md` — this worklog.
