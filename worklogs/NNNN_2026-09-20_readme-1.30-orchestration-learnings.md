@@ -68,3 +68,7 @@ Also: the inadvertent "Duplicate types"→"Duplicate structures" table edit reve
 ## Review Round 2 (the correction's correction)
 
 Finding: my r1 item-6 mechanism claim ("gh pr view --json number SUCCEEDS on issues") was itself environment-dependent — true on this pod's gh/token (reproduced pipe-free, twice), false in the reviewer's CI gh (exit 1, GraphQL error). My original RC=0 shell observation had ALSO been tainted by a pipe ($? after `head`), though the pipe-free re-run did genuinely return 0 here. The worklog now records the environment-dependent truth and drops the absolute claim; the load-bearing fact (the original check was the wrong instrument for an issue number) was never in dispute. PR-body stale figures fixed. Durable rule added to my own practice: mechanism claims about tool behavior carry their environment or they carry nothing.
+
+## Review Round 3 (the third record)
+
+Finding: my r2 worklog sentence "PR-body stale figures fixed." was itself inaccurate — the live body still carried the r0 "all ten cited PR refs resolve" claim and the stale +71/−7. Both now actually fixed (per-kind ref verification wording; diff figures restated from the final tree: +74/−6). Pattern across r1-r3 of this lane: each correction round shipped before its own claims were re-verified against the live artifacts — the exact failure the doc's new rules name. The rule that should have been applied from the start of this arc: a correction is a claim; verify it like one, against the live surface it describes.
