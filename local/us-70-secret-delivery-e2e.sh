@@ -614,7 +614,13 @@ fi
 # script wrote nothing and its commit message claimed otherwise; this
 # time the diff is the proof). Guarded assignment: a transient kc
 # failure must not kill the leg (same class as r13's diagnostics).
-PRE_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
+if ! PRE_GET=$(kc get workspace -o name 2>/dev/null); then
+    # r2: a failed SELECTION get must be loud (a silent empty here would
+    # pre-clear the sweep as done while ids 90-92 stand) — but non-killing
+    # (the r26 guard's intent: a transient blip must not kill the leg).
+    warn "AC-13 pre-wave sweep: selection get failed — cannot confirm the 90-92 range is clear"
+fi
+PRE_SWEPT=$(printf '%s\n' "${PRE_GET:-}" \
     | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
 PRE_N=$(printf '%s' "${PRE_SWEPT}" | grep -c . || true)
 if [[ "${PRE_N}" -gt 0 ]]; then
@@ -645,8 +651,12 @@ if [[ "${PRE_N}" -gt 0 ]]; then
     if [[ -n "${PRE_LEFT}" ]]; then
         die "AC-13 pre-wave sweep: workspaces failed to terminate (or verify) within 60s: ${PRE_LEFT}"
     fi
+    ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted and verified gone"
+else
+    # r2: verified-gone is only claimable when the delete+verify actually
+    # ran; the unswept path states what it is, nothing more.
+    ok "AC-13 — pre-wave sweep: nothing to sweep (ids 90-92 already absent)"
 fi
-ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted and verified gone"
 
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 

@@ -567,18 +567,28 @@ func TestUS70Sweeps_ExecutableKubectlWithVerifiedOutcome(t *testing.T) {
 func TestUS70PreWaveSweep_Executes(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us70DeliveryScript)
-	block := regexp.MustCompile(`(?s)(?m)^PRE_N=\$\(printf.*?^ok "AC-13 — pre-wave sweep[^\n]*`).FindString(src)
+	block := regexp.MustCompile(`(?s)(?m)^if ! PRE_GET=\$\(kc get workspace.*?ok "AC-13 — pre-wave sweep: nothing to sweep[^\n]*\nfi\n`).FindString(src)
 	if block == "" {
 		t.Fatal("pre-wave sweep block not found — did the sweep change shape?")
 	}
 
 	dir := t.TempDir()
 	trace := filepath.Join(dir, "trace")
+	counter := filepath.Join(dir, "count")
 	fake := "#!/usr/bin/env bash\n" +
 		"printf '%s\\n' \"$*\" >> \"" + trace + "\"\n" +
 		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
-		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && { [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}; break; }; done\n" +
-		"for a in \"$@\"; do [[ \"$a\" == \"workspace\" ]] && { if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000090\\nworkspace/e2e5d000-0000-4000-8000-000000000091\\n'; fi; exit 0; }; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && {\n" +
+		"  [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}\n" +
+		"  n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
+		"  if [[ \"$n\" -eq 0 ]]; then\n" +
+		"    [[ \"${FAKE_SEL_EMPTY:-}\" != \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000090\\nworkspace/e2e5d000-0000-4000-8000-000000000091\\n'\n" +
+		"    exit 0\n" +
+		"  fi\n" +
+		"  [[ -n \"${FAKE_GET_EXIT_AFTER:-}\" ]] && exit ${FAKE_GET_EXIT_AFTER}\n" +
+		"  [[ \"${FAKE_STUCK:-}\" == \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000090\\n'\n" +
+		"  exit 0\n" +
+		"}; done\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
@@ -588,10 +598,9 @@ func TestUS70PreWaveSweep_Executes(t *testing.T) {
 	}
 
 	run := func(env string) (string, error) {
+		os.Remove(counter)
 		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH CTX=kind-x NS=ns\n" + env +
-			`PRE_SWEPT='workspace/e2e5d000-0000-4000-8000-000000000090
-workspace/e2e5d000-0000-4000-8000-000000000091'
-die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
+			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
 ok() { printf 'OK %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*" >&2; }
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
@@ -606,13 +615,33 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		if err != nil {
 			t.Fatalf("clean sweep must complete, got: %v\n%s", err, out)
 		}
-		if !strings.Contains(out, "verified gone") {
+		if !strings.Contains(out, "deleted and verified gone") {
 			t.Fatalf("the ok line must state verified termination, got: %q", out)
 		}
 		raw, _ := os.ReadFile(trace)
 		if !strings.Contains(string(raw), "delete --wait=false") ||
 			!strings.Contains(string(raw), "e2e5d000-0000-4000-8000-000000000090") {
 			t.Fatalf("kubectl itself must receive the delete with --wait=false (xargs cannot exec the kc function), trace:\n%s", raw)
+		}
+	})
+
+	t.Run("nothing to sweep states exactly that (r2: no fiction verified-gone)", func(t *testing.T) {
+		out, err := run("export FAKE_SEL_EMPTY=1\n")
+		if err != nil {
+			t.Fatalf("the unswept path must complete, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "nothing to sweep") || strings.Contains(out, "verified gone") {
+			t.Fatalf("the unswept path must never claim verification, got: %q", out)
+		}
+	})
+
+	t.Run("selection get failure warns, non-killing (r26 intent, loud)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a selection-get blip must warn and continue, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "selection get failed") || !strings.Contains(out, "nothing to sweep") {
+			t.Fatalf("a failed selection must be loud and honest, got: %q", out)
 		}
 	})
 
@@ -636,13 +665,13 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		}
 	})
 
-	t.Run("failed get never counts as verified (r1 finding 2)", func(t *testing.T) {
-		out, err := run("export FAKE_GET_EXIT=1\n")
+	t.Run("failed verify get never counts as verified (r1 finding 2)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT_AFTER=1\n")
 		if err == nil {
-			t.Fatalf("a get that never succeeds must die, not report verified, got: %q", out)
+			t.Fatalf("a verify-get that never succeeds must die, not report verified, got: %q", out)
 		}
-		if !strings.Contains(out, "failed to terminate") || strings.Contains(out, "verified gone") {
-			t.Fatalf("a failed get must read as UNVERIFIED, got: %q", out)
+		if !strings.Contains(out, "failed to terminate") || strings.Contains(out, "deleted and verified gone") {
+			t.Fatalf("a failed verify-get must read as UNVERIFIED, got: %q", out)
 		}
 	})
 }
@@ -661,7 +690,8 @@ func TestUS70PostWaveSweep_Executes(t *testing.T) {
 
 	dir := t.TempDir()
 	fake := "#!/usr/bin/env bash\n" +
-		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit 0; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && { [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}; if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
 		"for a in \"$@\"; do [[ \"$a\" == \"workspace\" ]] && { if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
 		"exit 0\n"
 	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(fake), 0o755); err != nil {
@@ -700,6 +730,23 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		}
 		if !strings.Contains(out, "termination NOT verified") {
 			t.Fatalf("the warn must name the unverified termination, got: %q", out)
+		}
+	})
+
+	t.Run("failed delete dies loudly", func(t *testing.T) {
+		out, err := run("export FAKE_DELETE_EXIT=1\n")
+		if err == nil || !strings.Contains(out, "DIE") {
+			t.Fatalf("a failed post-wave delete must die, err=%v\n%s", err, out)
+		}
+	})
+
+	t.Run("failed verify get warns NOT verified (never fiction)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a verify-get blip warns and continues, got: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "verified gone") || !strings.Contains(out, "termination NOT verified") {
+			t.Fatalf("a failed verify-get must never print verified gone, got: %q", out)
 		}
 	})
 }
