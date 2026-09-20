@@ -2,8 +2,8 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.28
-**Last Updated:** 2026-08-30
+**Version:** 1.30
+**Last Updated:** 2026-09-20
 **Project Status:** Active Development
 
 ---
@@ -24,10 +24,11 @@
 12. [PR Review Guide](#pr-review-guide)
 13. [Common Commands](#common-commands)
 14. [Testing Requirements](#testing-requirements)
-15. [Multi-Tenant OIDC SSO](#multi-tenant-oidc-sso)
-16. [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha)
-17. [File Attachments (Epic 68)](#file-attachments-epic-68)
-18. [Task Model](#task-model)
+15. [Release Train](#release-train)
+16. [Multi-Tenant OIDC SSO](#multi-tenant-oidc-sso)
+17. [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha)
+18. [File Attachments (Epic 68)](#file-attachments-epic-68)
+19. [Task Model](#task-model)
 
 ---
 
@@ -972,6 +973,24 @@ This section defines two agent roles and their workflows for collaborative or mu
 
 ---
 
+### Live orchestration pattern (as proven 2026-09-18/19 — 25 merged PRs in one day)
+
+The roles below are the vocabulary; this is how they actually ran. Use this pattern for any multi-lane effort:
+
+**Topology — one workspace, one worktree per lane.** A single workspace pod hosts the orchestrator and every worker session. Each worker owns a sibling git worktree (`/workspace/wt-<issue>` on branch `fix|feat|docs/<issue>-<slug>` off `origin/main`); nobody works in the shared checkout. File-boundary collisions are prevented by hunk-mapping: before touching a shared file (the recurring case is `api/internal/workflows/engine.go`), workers exchange exact hunk locations over the coordination channel and agree keep-both resolutions for same-anchor insertions (the pattern that let #1462/#1464/#1472 land consecutively in one function cluster without a single force-push or rebase loss).
+
+**Coordination channel.** Intra-workspace coordination rides `llmsafespaces_send_message` (peer sessions addressed by session ID; loop the orchestrator for anything above lane scope). `COORDINATE.md`-style file claims and GitHub issue comments are demoted to the cases send_message cannot reach: cross-WORKSPACE agents (a peer in another workspace cannot receive it) and out-of-band workers reachable only through issues/PRs. Claim comments on the issue ("picking this up") remain mandatory for every lane.
+
+**Adjudication protocol.** Workers NEVER merge. The loop per lane: implement per the TDD/worklog rules → push branch → open PR (`Fixes`/`Refs` the issue) → iterate with the adversarial review workflow until it posts APPROVED (expect multiple rounds; reviewers mutation-test claims and their findings are usually empirically reproduced) → STOP at APPROVED and notify the orchestrator with the adjudication packet (PR+URL, final diff summary, validated assumptions, fail-open semantics chosen, test evidence with commands and pass counts, reviewer round count, residual concerns) → the orchestrator independently mutation-verifies (typically: revert the fix in a scratch copy, confirm the pins go red) and merges. Release trains, CHANGELOG, and chart bumps are the orchestrator's — never in a worker lane.
+
+**Structural lessons (both proven the hard way, 2026-09-19):**
+
+- **Idle sessions never self-wake.** A worker parked awaiting review does not notice a posted APPROVED or an orchestrator message arriving between its polls; a missed nightly window (run 35437562027's triage window passed unattended) was the direct cost. Orchestrators must treat wake-ups as their responsibility, and workers should end turns with explicit poll loops rather than assuming incoming messages will interrupt them.
+- **Long-poll turns die silently.** A worker asleep in a `sleep`-based poll when the pod hits its memory ceiling is killed mid-turn with no notification reaching it — the 2026-09-19 ~03:15Z OOM (concurrent `go test -race` builds across lanes at the 8.59G container limit) killed an idle agent turn outright. Two consequences: results-driven check-in beats schedule-driven ("wake me when done" is unreliable; "I will check at T" is not), and every worker turn should leave the tree resumable (`git status`-recoverable, nothing held only in memory).
+- **Shared-pod resource gates.** Before ANY heavy command (go test/build, golangci-lint), read `/sys/fs/cgroup/memory.current`; above ~7.2e9 defer to a light step or wait (post-OOM standing directive). Prefer targeted `-run '<pins>'` single-package runs while sibling lanes are active — full `-race` sweeps and local lint ride CI. Disk above ~90% → the `go clean -modcache` convention and scoped builds (see Development Workflow).
+
+---
+
 ### Agent Role 1: Orchestrator Agent
 
 **Purpose:** Coordinate multiple delegations to complete epics, stories, or complex multi-step tasks.
@@ -1197,8 +1216,24 @@ SUCCESS CRITERIA:
 | Orchestrator | Not aligning api/ and controller/ types | CRD schema drift, runtime failures |
 | Delegation | Not reading README-LLM.md | Pattern violations, rule violations |
 | Delegation | Scope creep | Conflicts with other agents, boundary violations |
-| Delegation | Creating new types instead of using pkg/types/ | Duplicate types, conversion errors |
+| Delegation | Creating new types instead of using pkg/types/ | Duplicate structures, conversion errors |
 | Both | No worklog | Lost context, incomplete task tracking |
+
+---
+
+### Inter-agent message contract (lsp:agent-message-v1)
+
+Peer messages delivered through `llmsafespaces_send_message` arrive prefixed with an HTML-comment sentinel that survives the chat transcript:
+
+```
+<!-- lsp:agent-message-v1 {"fromSession":"ses_…","mode":"self-declared"} -->
+```
+
+A future session reading a transcript sees exactly this shape ahead of peer text. Contract points:
+
+- **`fromSession` is a return address, not an identity proof.** All sessions in one workspace share one credential (the same rule the AgentOriginBadge renders for agent-sent chat messages, #1465/#1469) — treat peer claims accordingly and verify anything load-bearing against the repo/CI rather than the message.
+- **`mode: "self-declared"` is the fallback, not an attestation.** When the platform cannot inject the sender's session ID (absent or outdated plugin), the sender must pass its own `from_session_id` — resolvable from `session_metadata` (the session's title identifies it) — and the message is marked self-declared. A message with platform-injected origin carries no such marker; consumers may weight them differently, but neither is cryptographic.
+- **Delivery is not retryable across restarts.** If the workspace restarts while a message waits, it is lost — re-send anything that mattered (the same discipline as the platform's create_session tool).
 
 ---
 
@@ -1515,6 +1550,22 @@ git commit -m "Update generated DeepCopy code"
 
 `pkg/types/types.go` contains API transfer objects only — no generated deepcopy. Manual `DeepCopy` methods are implemented only where needed (types passed by pointer across goroutine boundaries).
 
+### Harness execution smokes (the never-executable class)
+
+**MANDATORY:** every nightly-registered harness script under `local/` must carry an ExecuteSmoke — the real script run under deterministic curl/kubectl/sleep shims (`local/e2e_smoke_helpers_test.go`), asserting it traverses to a **row verdict** (its own gate wording or the shared die marker) at a **pinned depth** (a deterministic pre-death boundary marker), with no runtime-abort signatures (unbound variable, command not found) and no `whsec_` webhook-secret leakage into output.
+
+Source-text needle tests cannot catch runtime deaths: over 2026-09-18/19 the class hid three never-executable harnesses — the automation e2e's `api()` status side-channel dying in every caller's subshell (found in the #1474 r4 review; the script had NEVER run a row), `issue1452` missing `harness_start` entirely (dead at R0 on every nightly, found while building #1480's smoke), and `issue-1455` carrying the same pre-fix `api()` (found in #1482's sweep). All eleven nightly-registered scripts (ten harness e2e scripts plus `test.sh` — the workflow's registration list, verified 2026-09-20) are covered as of #1480/#1482/#1484; a new harness script lands with its smoke or it does not land.
+
+Constructing a smoke is also the cheapest corpse hunt available — two of the three finds above came from trying to make the smoke traverse, not from analysis.
+
+### Mutation hygiene (how verification claims are made)
+
+Rules enforced by the #1489 review rounds (r3–r7) after two false verification records — treat them as standing:
+
+- **Mutations run against file COPIES, never `git checkout` of unstaged edits.** A mid-loop checkout silently reverts uncommitted work and every subsequent "restored green" claim describes a stale tree (the r4 breakage: a spec queried a testid its own component had just lost).
+- **Test counts are counted, not estimated.** "7/7" written for a 6-test suite — born of counting assertion paths — survived two rounds of "corrected" records before the reviewer's programmatic count ended it.
+- **Verification claims come only from runs on the final tree.** Evidence gathered before the last edit is stale by definition; if the claim is in the record, the run was on the committed state.
+
 ### Delivery fault harness (Epic 70, US-70.0)
 
 **Fault seam:** the API accepts `LLMSAFESPACES_FAULT_INJECTION` (comma-separated rules `COUNT:METHOD:PATH_PREFIX`, e.g. `5:POST:/internal/v1/pod-bootstrap`) — the first COUNT matching requests fail with a 500 carrying the marker body `{"error":"fault injection: METHOD PREFIX"}`, then matching traffic passes through. Unset/empty = the middleware is not registered (zero behavior change); a malformed rule fails API startup naming the rule. Counters are per-process and atomic (a rollout resets the budget). This is an e2e/chaos harness surface only — never set it in production. Helm: `api.e2eFaultInjection` (default `""`) renders the env when non-empty.
@@ -1566,6 +1617,18 @@ git commit -m "Update generated DeepCopy code"
 Go tests: `go test -race ./api/internal/server/... -run "TestRegister|TestLogin|TestCreateAPIKey|TestListAPIKeys|TestDeleteAPIKey|TestAPIKeyEndpoints"`
 
 Shell script against running server: `./local/test-auth.sh http://localhost:8080`
+
+---
+
+## Release Train
+
+The release sequence, end to end. Every step is the orchestrator's; workers never cut trains (their lanes end at APPROVED + notification).
+
+1. **One commit: CHANGELOG + appVersion.** A single commit on main adds the `## [X.Y.Z] - YYYY-MM-DD` section to `CHANGELOG.md` and bumps `helm/Chart.yaml` `appVersion` (`make release-verify-changelog` enforces the pairing). Push main.
+2. **`make release-tag VERSION=X.Y.Z`.** Verifies semver + the CHANGELOG section, refuses if behind origin/main or the tag exists, cuts the annotated tag, pushes it — the Release workflow (`.github/workflows/release.yml`) builds and publishes everything from the tag.
+3. **Collect image digests from the RELEASE JOB — never tag-HEAD.** The Release job's completed run prints the canonical values block (the same surface the CI merge jobs print per-image, e.g. `merge-agentd`); an authenticated digest-GET against the registry is the equivalent. Tag-HEAD resolution is forbidden even though #1483 made `release.yml` the only version-tag writer: during v0.34.5 (2026-09-19, ops-prod #2539) CI's tag push raced the Release workflow's canonical attested push and a tag-HEAD fetch resolved to the wrong, unattested artifact set — same commit, both digest-GET 200. #1483 removed the race (CI no longer emits `type=semver` or tag-conditional `latest` on tag pushes); the method stays regardless because it is the only one that is attestable-by-construction.
+4. **One atomic ops-prod PR.** GitRepository ref → `vX.Y.Z`, the four semver image tags (api, controller, frontend, runtime-base), BOTH delivery-overlay digests (`agentdDelivery`, `opencodeDelivery` — pinned from the release job's printed block), and provenance comments naming the release run. One PR, one merge — never a partial bump.
+5. **Verify prod.** `/livez` on the production endpoint after Flux reconciles; anything else is not a verify.
 
 ---
 
@@ -2167,6 +2230,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.30 | 2026-09-20 | Multi-Agent Workflow: the live orchestration pattern proven 2026-09-18/19 (one workspace + per-lane worktrees with hunk-mapped file boundaries; `llmsafespaces_send_message` as the coordination channel, claim files demoted to cross-workspace/GitHub-only reach; the never-merge adjudication protocol — workers iterate to APPROVED, notify with the packet, the orchestrator independently mutation-verifies and merges) plus its structural lessons with evidence (idle sessions never self-wake — the missed nightly 35437562027 triage window; long-poll turns die silently at the memory ceiling — the ~03:15Z 8.59G concurrent-build OOM; shared-pod gates: cgroup memory floor before heavy builds, targeted `-run` over full `-race` while sibling lanes are active, disk >90% conventions). New inter-agent message contract subsection (`lsp:agent-message-v1` sentinel, the `from_session_id` self-declared fallback via `session_metadata`, return-address-not-identity-proof; refs #1465/#1469). Testing Requirements: the ExecuteSmoke mandate for every nightly-registered harness script — the never-executable class hid three corpses; all eleven registered scripts covered (#1480/#1482/#1484) — and the mutation-hygiene rules from #1489 r3–r7 (file-copy mutations, counted-not-estimated test claims, final-tree-only verification). New Release Train section (one-commit CHANGELOG+appVersion → `make release-tag` → digests from the release job's canonical block or authenticated digest-GET, NEVER tag-HEAD per the v0.34.5 race — #1483 made release.yml the only version-tag writer but the method stays; one atomic ops-prod PR carrying GitRepository ref + four semver image tags + both delivery-overlay digests; prod `/livez` verify). |
 | 1.29 | 2026-09-01 | Epic 69 close-out synced into the doc: `/session-events` is now platform-events-only — session state (busy/streaming/queue, in-flight parts) streams via `/contract-events`, the agentd session-state authority's stamped-snapshot contract stream (design 0055; statusz grows `ledger_in_flight`; admin park/unpark/in-flight endpoints + the flip runbook `docs/runbooks/authority-flip.md`). Session-proxy row in the API Reference updated accordingly. |
 | 1.28 | 2026-08-30 | Design 0053 (platform overlay delivery) S2–S4 synced into the doc: the base is the OS — no platform binaries baked (agentd, redact-as-subcommand, entrypoints deleted, opencode unpinned from the image); both delivery artifacts (`agentdDelivery`, `opencodeDelivery`) are mandatory digest-pinned image volumes (Helm render gate + controller startup + buildPod fail-loud); the main container execs the pinned agentd directly (`--supervise` / `supervise-opencode`) with fail-closed self-verify (exit 81; opencode exit 83/84); the base ENV block (mise homes, PATH, git-credential env layer) is controller-injected (`platform_env.go`); opencode env exports live in the supervisor spawn seam (`opencodeChildEnv` — #942 containment holds); the base is content-versioned CalVer `YYYY.MM.x` (seed row `bookworm@2026.08.0` is the single source; `base-image.yml` publishes off the release train; factory stamps no ENTRYPOINT, `MinBaseVersion` and platform-train base-sync deleted). The former S3 merge gate — Epic 70 US-70.1 (sidecar env-class secret handoff, design 0057: spawn-time PULL with bounded wait + last-good cache) — landed first (#1164) and is reflected in §Relay Config Subsystem's volume table. |
 | 1.27 | 2026-08-30 | Added "Task Model" section §18 (design contract, not yet implemented): a platform-side background-LLM feature distinct from the workspace agent model. First consumer is workspace naming, replacing the frontend-only auto-rename hack (`ChatPage.tsx:599-613`) with a server-side OpenAI-compatible call triggered by session context. Precedence: user → org → platform default → workspace model fallback. Storage follows established patterns (Tier 2 instance setting, new `org_policies` key via CHECK-swap migration, new server-resolved `user_settings` key distinct from client-side `preferredModel`). Credential prerequisite marked **satisfied** (DEK cut landed: worklog 0673 + migration 000014; cleanup PR #734 + migration 000023); the remaining gate was **sessionless decryption** — since resolved by the server-side unwrap (`GetDEKServerSide` via `rootKeyProvider` on `user_keys.wrapped_dek`). (Section renumbered 17→18 and doc version 1.25→1.27 during rebase: §17 File Attachments and v1.26 landed via later PRs.) |
