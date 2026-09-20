@@ -94,7 +94,7 @@ The master KEK is the root of trust for at-rest encryption. The `rotate-kek` CLI
 - Redis connectivity for the post-rotation DEK cache flush (`--redis-url`, recommended).
 - A maintenance window is **not required** (zero-downtime rotation), but do it during low traffic.
 
-The full procedure — including the Helm rotation window that mounts both keys — is in [`helm/KEK-ROTATION.md`](../../helm/KEK-ROTATION.md). The condensed in-cluster flow:
+The full procedure — including the Helm rotation window that mounts both keys — is in [`helm/KEK-ROTATION.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/helm/KEK-ROTATION.md). The condensed in-cluster flow:
 
 ```bash
 # 1. Generate the new KEK
