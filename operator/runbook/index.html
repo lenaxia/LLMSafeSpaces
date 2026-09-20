@@ -1258,17 +1258,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#procedure_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Procedure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#resume-from" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1463,7 +1452,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#procedure_2" class="md-nav__link">
+  <a href="#procedure_1" class="md-nav__link">
     <span class="md-ellipsis">
       
         Procedure
@@ -1585,7 +1574,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#procedure_3" class="md-nav__link">
+  <a href="#procedure_2" class="md-nav__link">
     <span class="md-ellipsis">
       
         Procedure
@@ -2601,17 +2590,6 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#procedure_1" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Procedure
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
   <a href="#resume-from" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2806,7 +2784,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#procedure_2" class="md-nav__link">
+  <a href="#procedure_1" class="md-nav__link">
     <span class="md-ellipsis">
       
         Procedure
@@ -2928,7 +2906,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#procedure_3" class="md-nav__link">
+  <a href="#procedure_2" class="md-nav__link">
     <span class="md-ellipsis">
       
         Procedure
@@ -3064,51 +3042,62 @@
 <li>The <code>rotate-kek</code> binary (available in the API image, or build from <code>cmd/rotate-kek/</code>).</li>
 <li>The current (old) master KEK (the projected file mount).</li>
 <li>A new master KEK (<code>openssl rand -base64 48</code> — must be ≥32 bytes).</li>
-<li>Postgres connectivity from where you run the CLI.</li>
+<li>Postgres connectivity from where you run the CLI (<code>--database-url</code>, required).</li>
+<li>Redis connectivity for the post-rotation DEK cache flush (<code>--redis-url</code>, recommended).</li>
 <li>A maintenance window is <strong>not required</strong> (zero-downtime rotation), but do it during low traffic.</li>
 </ul>
-<h3 id="procedure_1">Procedure<a class="headerlink" href="#procedure_1" title="Permanent link">&para;</a></h3>
+<p>The full procedure — including the Helm rotation window that mounts both keys — is in <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/helm/KEK-ROTATION.md"><code>helm/KEK-ROTATION.md</code></a>. The condensed in-cluster flow:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># 1. Generate the new KEK</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">NEW_KEK</span><span class="o">=</span><span class="k">$(</span>openssl<span class="w"> </span>rand<span class="w"> </span>-base64<span class="w"> </span><span class="m">48</span><span class="k">)</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nb">echo</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$NEW_KEK</span><span class="s2">"</span><span class="w"> </span>&gt;<span class="w"> </span>/tmp/new-master-secret
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>chmod<span class="w"> </span><span class="m">0400</span><span class="w"> </span>/tmp/new-master-secret
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># 2. Dry-run from within the API pod</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">    </span>--old-master-key-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">    </span>--new-master-key-file<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span>--dry-run
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="c1"># 3. Copy the new KEK into the pod and apply</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>cp<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span>deploy/llmsafespaces-api:/tmp/new-master-secret
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="w">    </span>--old-master-key-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a><span class="w">    </span>--new-master-key-file<span class="w"> </span>/tmp/new-master-secret
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="c1"># 4. Update the credentials Secret with the new KEK</span>
-</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>patch<span class="w"> </span>secret<span class="w"> </span>llmsafespaces-credentials<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span>--type<span class="w"> </span>merge<span class="w"> </span>-p<span class="w"> </span><span class="s2">"{\"data\":{\"master-secret\":\"</span><span class="k">$(</span><span class="nb">echo</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$NEW_KEK</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>base64<span class="k">)</span><span class="s2">\"}}"</span>
-</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>
-</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a><span class="c1"># 5. Restart API pods to load the new KEK as primary</span>
-</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>restart<span class="w"> </span>deployment/llmsafespaces-api
-</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
-</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a>
-</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a><span class="c1"># 6. Clean up</span>
-</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>rm<span class="w"> </span>/tmp/new-master-secret
-</span><span id="__span-2-32"><a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span>rm<span class="w"> </span>/tmp/new-master-secret
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="c1"># 2. Copy the new KEK into the pod</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>cp<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">    </span>deploy/llmsafespaces-api:/tmp/new-master-secret
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># 3. Dry-run from within the API pod (no writes; reports per-table counts)</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="w">    </span>--redis-url<span class="w"> </span><span class="s2">"</span><span class="nv">$REDIS_URL</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="w">    </span>--dry-run
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a><span class="c1"># 4. Apply (drop --dry-run; --target-version 2 is the default)</span>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-24"><a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-25"><a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a><span class="w">    </span>--redis-url<span class="w"> </span><span class="s2">"</span><span class="nv">$REDIS_URL</span><span class="s2">"</span>
+</span><span id="__span-2-26"><a id="__codelineno-2-26" name="__codelineno-2-26" href="#__codelineno-2-26"></a>
+</span><span id="__span-2-27"><a id="__codelineno-2-27" name="__codelineno-2-27" href="#__codelineno-2-27"></a><span class="c1"># 5. Update the credentials Secret with the new KEK and redeploy</span>
+</span><span id="__span-2-28"><a id="__codelineno-2-28" name="__codelineno-2-28" href="#__codelineno-2-28"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>patch<span class="w"> </span>secret<span class="w"> </span>llmsafespaces-credentials<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-29"><a id="__codelineno-2-29" name="__codelineno-2-29" href="#__codelineno-2-29"></a><span class="w">    </span>--type<span class="w"> </span>merge<span class="w"> </span>-p<span class="w"> </span><span class="s2">"{\"data\":{\"master-secret\":\"</span><span class="k">$(</span><span class="nb">echo</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$NEW_KEK</span><span class="s2">"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>base64<span class="k">)</span><span class="s2">\"}}"</span>
+</span><span id="__span-2-30"><a id="__codelineno-2-30" name="__codelineno-2-30" href="#__codelineno-2-30"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>restart<span class="w"> </span>deployment/llmsafespaces-api
+</span><span id="__span-2-31"><a id="__codelineno-2-31" name="__codelineno-2-31" href="#__codelineno-2-31"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
+</span><span id="__span-2-32"><a id="__codelineno-2-32" name="__codelineno-2-32" href="#__codelineno-2-32"></a>
+</span><span id="__span-2-33"><a id="__codelineno-2-33" name="__codelineno-2-33" href="#__codelineno-2-33"></a><span class="c1"># 6. Clean up</span>
+</span><span id="__span-2-34"><a id="__codelineno-2-34" name="__codelineno-2-34" href="#__codelineno-2-34"></a>rm<span class="w"> </span>/tmp/new-master-secret
+</span><span id="__span-2-35"><a id="__codelineno-2-35" name="__codelineno-2-35" href="#__codelineno-2-35"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span>rm<span class="w"> </span>/tmp/new-master-secret
+</span></code></pre></div>
+<p><code>--database-url</code> / <code>--redis-url</code> take the same coordinates the API uses (from your Helm release's <code>postgresql.*</code> / <code>redis.*</code> values, plus the <code>postgres-password</code> / <code>redis-password</code> keys in the credentials Secret). For example:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nv">DATABASE_URL</span><span class="o">=</span><span class="s2">"postgres://llmsafespaces:</span><span class="k">$(</span>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>secret<span class="w"> </span>llmsafespaces-credentials<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.data.postgres-password}'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>base64<span class="w"> </span>-d<span class="k">)</span><span class="s2">@&lt;postgresql.host&gt;:&lt;postgresql.port&gt;/&lt;postgresql.database&gt;?sslmode=&lt;postgresql.sslMode&gt;"</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nv">REDIS_URL</span><span class="o">=</span><span class="s2">"redis://:&lt;redis-password&gt;@&lt;redis.host&gt;:&lt;redis.port&gt;"</span>
 </span></code></pre></div>
 <h3 id="resume-from">Resume-from<a class="headerlink" href="#resume-from" title="Permanent link">&para;</a></h3>
-<p>If the rotation is interrupted (network blip, CLI crash), use <code>--resume-from</code> to continue from the last completed table:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span>--old-master-key-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span>--new-master-key-file<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">    </span>--resume-from<span class="w"> </span>&lt;table-name&gt;
+<p>If the rotation is interrupted (network blip, CLI crash), re-run with <code>--resume-from &lt;last-row-id&gt;</code> — the CLI prints <code>last-row-id=&lt;id&gt;</code> per table on exit, plus the exact resume command. Resume per table with <code>--table</code>:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="nb">exec</span><span class="w"> </span>deploy/llmsafespaces-api<span class="w"> </span>--<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">    </span>/usr/local/bin/rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span>--old-master-file<span class="w"> </span>/var/run/secrets/llmsafespaces/master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span>--new-master-file<span class="w"> </span>/tmp/new-master-secret<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span>--database-url<span class="w"> </span><span class="s2">"</span><span class="nv">$DATABASE_URL</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span>--table<span class="w"> </span>api_keys<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span>--resume-from<span class="w"> </span>&lt;last-row-id&gt;
 </span></code></pre></div>
+<p>Resuming is idempotent: rows already re-wrapped are at the target <code>key_version</code> and are filtered out, so nothing is double-rotated.</p>
 <h3 id="verification_1">Verification<a class="headerlink" href="#verification_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>API pods start cleanly with the new KEK (no decrypt errors in logs).</li>
@@ -3129,25 +3118,25 @@
 <h2 id="responding-to-a-compromised-api-pod">Responding to a compromised API pod<a class="headerlink" href="#responding-to-a-compromised-api-pod" title="Permanent link">&para;</a></h2>
 <p>A confirmed RCE in an API pod means the attacker may have accessed: the master KEK (in process memory), active session DEKs (Redis cache), and the ability to impersonate users (JWT signing).</p>
 <h3 id="immediate-containment">Immediate containment<a class="headerlink" href="#immediate-containment" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># 1. Isolate the suspect pod (cordon its node to prevent new pods scheduling there)</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">NODE</span><span class="o">=</span><span class="k">$(</span>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pod<span class="w"> </span>&lt;suspect-pod&gt;<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.spec.nodeName}'</span><span class="k">)</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>kubectl<span class="w"> </span>cordon<span class="w"> </span><span class="s2">"</span><span class="nv">$NODE</span><span class="s2">"</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># 2. Delete the suspect pod (the Deployment replaces it)</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>delete<span class="w"> </span>pod<span class="w"> </span>&lt;suspect-pod&gt;
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># 3. Force-rotate the JWT secret (invalidates all sessions — see procedure above)</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="c1"># 4. Force-rotate the master KEK (re-wraps all credentials — see procedure above)</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># 1. Isolate the suspect pod (cordon its node to prevent new pods scheduling there)</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nv">NODE</span><span class="o">=</span><span class="k">$(</span>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pod<span class="w"> </span>&lt;suspect-pod&gt;<span class="w"> </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.spec.nodeName}'</span><span class="k">)</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>kubectl<span class="w"> </span>cordon<span class="w"> </span><span class="s2">"</span><span class="nv">$NODE</span><span class="s2">"</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="c1"># 2. Delete the suspect pod (the Deployment replaces it)</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>delete<span class="w"> </span>pod<span class="w"> </span>&lt;suspect-pod&gt;
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="c1"># 3. Force-rotate the JWT secret (invalidates all sessions — see procedure above)</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="c1"># 4. Force-rotate the master KEK (re-wraps all credentials — see procedure above)</span>
 </span></code></pre></div>
 <h3 id="investigation">Investigation<a class="headerlink" href="#investigation" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Pod logs (may be gone after deletion — retrieve from your log aggregator)</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>logs<span class="w"> </span>&lt;suspect-pod&gt;<span class="w"> </span>--previous
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Node investigation (if the escape reached the node)</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>kubectl<span class="w"> </span>debug<span class="w"> </span>node/<span class="s2">"</span><span class="nv">$NODE</span><span class="s2">"</span><span class="w"> </span>-it<span class="w"> </span>--image<span class="o">=</span>busybox
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="c1"># Check for unexpected CRD/Secret changes during the window</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>kubectl<span class="w"> </span>get<span class="w"> </span>events<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>--since<span class="o">=</span>2h<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span><span class="s2">"secret\|workspace"</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Pod logs (may be gone after deletion — retrieve from your log aggregator)</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>logs<span class="w"> </span>&lt;suspect-pod&gt;<span class="w"> </span>--previous
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1"># Node investigation (if the escape reached the node)</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>kubectl<span class="w"> </span>debug<span class="w"> </span>node/<span class="s2">"</span><span class="nv">$NODE</span><span class="s2">"</span><span class="w"> </span>-it<span class="w"> </span>--image<span class="o">=</span>busybox
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Check for unexpected CRD/Secret changes during the window</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>kubectl<span class="w"> </span>get<span class="w"> </span>events<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>--since<span class="o">=</span>2h<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-i<span class="w"> </span><span class="s2">"secret\|workspace"</span>
 </span></code></pre></div>
 <h3 id="full-remediation-checklist">Full remediation checklist<a class="headerlink" href="#full-remediation-checklist" title="Permanent link">&para;</a></h3>
 <ul class="task-list">
@@ -3169,12 +3158,12 @@
 <hr />
 <h2 id="verifying-image-signatures">Verifying image signatures<a class="headerlink" href="#verifying-image-signatures" title="Permanent link">&para;</a></h2>
 <p>All release images are signed with cosign keyless (OIDC). After a security incident or before deploying to a production cluster, verify the images haven't been tampered with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">for</span><span class="w"> </span>img<span class="w"> </span><span class="k">in</span><span class="w"> </span>api<span class="w"> </span>controller<span class="w"> </span>base<span class="w"> </span>frontend<span class="w"> </span>relay-router<span class="w"> </span>relay-proxy<span class="p">;</span><span class="w"> </span><span class="k">do</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"Verifying </span><span class="si">${</span><span class="nv">img</span><span class="si">}</span><span class="s2">..."</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>cosign<span class="w"> </span>verify<span class="w"> </span><span class="s2">"ghcr.io/lenaxia/llmsafespaces/</span><span class="si">${</span><span class="nv">img</span><span class="si">}</span><span class="s2">:0.5.1"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span>--certificate-identity-regexp<span class="w"> </span><span class="s2">"https://github.com/lenaxia/LLMSafeSpaces"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">    </span>--certificate-oidc-issuer<span class="w"> </span><span class="s2">"https://token.actions.githubusercontent.com"</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="k">done</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">for</span><span class="w"> </span>img<span class="w"> </span><span class="k">in</span><span class="w"> </span>api<span class="w"> </span>controller<span class="w"> </span>base<span class="w"> </span>frontend<span class="w"> </span>relay-router<span class="w"> </span>relay-proxy<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"Verifying </span><span class="si">${</span><span class="nv">img</span><span class="si">}</span><span class="s2">..."</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>cosign<span class="w"> </span>verify<span class="w"> </span><span class="s2">"ghcr.io/lenaxia/llmsafespaces/</span><span class="si">${</span><span class="nv">img</span><span class="si">}</span><span class="s2">:0.5.1"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span>--certificate-identity-regexp<span class="w"> </span><span class="s2">"https://github.com/lenaxia/LLMSafeSpaces"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span>--certificate-oidc-issuer<span class="w"> </span><span class="s2">"https://token.actions.githubusercontent.com"</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="k">done</span>
 </span></code></pre></div>
 <p>If any verification fails, the image was not built by the project's release workflow — do not deploy it. Pull a known-good version from the <a href="https://github.com/lenaxia/LLMSafeSpaces/releases">GitHub Releases page</a> instead.</p>
 <hr />
@@ -3187,38 +3176,38 @@
 <li>A backup of the PVC if one exists (Longhorn snapshots, cloud CSI snapshots).</li>
 </ul>
 <h3 id="procedure-restore-from-snapshot">Procedure: restore from snapshot<a class="headerlink" href="#procedure-restore-from-snapshot" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># 1. Suspend the workspace (deletes pod, retains PVC)</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/suspend"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># 2. Restore the PVC from snapshot (Longhorn example)</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="c1"># Via the Longhorn UI or:</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;EOF</span>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="s">apiVersion: snapshot.storage.k8s.io/v1</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="s">kind: VolumeSnapshot</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="s">metadata:</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="s">  name: restore-$WS</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="s">spec:</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="s">  volumeSnapshotClassName: longhorn</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="s">  source:</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="s">    volumeSnapshotContentName: &lt;snapshot-content&gt;</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="s">EOF</span>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="c1"># 3. Activate the workspace</span>
-</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># 1. Suspend the workspace (deletes pod, retains PVC)</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/suspend"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># 2. Restore the PVC from snapshot (Longhorn example)</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># Via the Longhorn UI or:</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>-<span class="w"> </span><span class="s">&lt;&lt;EOF</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="s">apiVersion: snapshot.storage.k8s.io/v1</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="s">kind: VolumeSnapshot</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="s">metadata:</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="s">  name: restore-$WS</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="s">spec:</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="s">  volumeSnapshotClassName: longhorn</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="s">  source:</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="s">    volumeSnapshotContentName: &lt;snapshot-content&gt;</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="s">EOF</span>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="c1"># 3. Activate the workspace</span>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
 </span></code></pre></div>
 <h3 id="procedure-reset-to-empty-no-snapshot">Procedure: reset to empty (no snapshot)<a class="headerlink" href="#procedure-reset-to-empty-no-snapshot" title="Permanent link">&para;</a></h3>
 <p>If no snapshot exists, reset the PVC to empty (data loss):</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># 1. Suspend the workspace</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/suspend"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># 2. Delete the PVC</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>kubectl<span class="w"> </span>delete<span class="w"> </span>pvc<span class="w"> </span>&lt;pvc-name&gt;<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1"># 3. Patch the Workspace CR to reset (or delete + recreate)</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1"># The controller recreates the PVC on next activate.</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="c1"># 4. Activate</span>
-</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># 1. Suspend the workspace</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/suspend"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="c1"># 2. Delete the PVC</span>
+</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>kubectl<span class="w"> </span>delete<span class="w"> </span>pvc<span class="w"> </span>&lt;pvc-name&gt;<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
+</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
+</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># 3. Patch the Workspace CR to reset (or delete + recreate)</span>
+</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># The controller recreates the PVC on next activate.</span>
+</span><span id="__span-9-9"><a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a>
+</span><span id="__span-9-10"><a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="c1"># 4. Activate</span>
+</span><span id="__span-9-11"><a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
 </span></code></pre></div>
 <h3 id="verification_2">Verification<a class="headerlink" href="#verification_2" title="Permanent link">&para;</a></h3>
 <ul>
@@ -3241,19 +3230,19 @@
 <li>API CPU/memory limits being hit.</li>
 <li>Adding capacity before a known traffic spike.</li>
 </ul>
-<h3 id="procedure_2">Procedure<a class="headerlink" href="#procedure_2" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Via Helm</span>
-</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>helm<span class="w"> </span>upgrade<span class="w"> </span>llmsafespaces<span class="w"> </span>./helm<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">    </span>--set<span class="w"> </span>api.replicaCount<span class="o">=</span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">    </span>-f<span class="w"> </span>llmsafespaces.yaml
-</span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>
-</span><span id="__span-9-7"><a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="c1"># Or via kubectl (immediate, not persisted across helm upgrade)</span>
-</span><span id="__span-9-8"><a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">4</span>
+<h3 id="procedure_1">Procedure<a class="headerlink" href="#procedure_1" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># Via Helm</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>helm<span class="w"> </span>upgrade<span class="w"> </span>llmsafespaces<span class="w"> </span>./helm<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">    </span>--set<span class="w"> </span>api.replicaCount<span class="o">=</span><span class="m">4</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">    </span>-f<span class="w"> </span>llmsafespaces.yaml
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="c1"># Or via kubectl (immediate, not persisted across helm upgrade)</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">4</span>
 </span></code></pre></div>
 <h3 id="verification_3">Verification<a class="headerlink" href="#verification_3" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-l<span class="w"> </span>app.kubernetes.io/component<span class="o">=</span>api
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>rollout<span class="w"> </span>status<span class="w"> </span>deployment/llmsafespaces-api
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-l<span class="w"> </span>app.kubernetes.io/component<span class="o">=</span>api
 </span></code></pre></div>
 <h3 id="scaling-considerations">Scaling considerations<a class="headerlink" href="#scaling-considerations" title="Permanent link">&para;</a></h3>
 <table>
@@ -3288,10 +3277,10 @@
 </table>
 <h3 id="scaling-the-controller">Scaling the controller<a class="headerlink" href="#scaling-the-controller" title="Permanent link">&para;</a></h3>
 <p>The controller defaults to 1 replica with leader election. Scaling it beyond 1 is supported (leader election ensures only one reconciler is active), but provides no throughput benefit — only HA. For HA:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">controller</span><span class="p">:</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">replicaCount</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">leaderElection</span><span class="p">:</span>
-</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="nt">controller</span><span class="p">:</span>
+</span><span id="__span-12-2"><a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="w">  </span><span class="nt">replicaCount</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</span><span id="__span-12-3"><a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">  </span><span class="nt">leaderElection</span><span class="p">:</span>
+</span><span id="__span-12-4"><a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </span></code></pre></div>
 <hr />
 <h2 id="database-maintenance-windows">Database maintenance windows<a class="headerlink" href="#database-maintenance-windows" title="Permanent link">&para;</a></h2>
@@ -3300,7 +3289,7 @@
 <ol>
 <li>Reduce API replicas to lower connection count:</li>
 </ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">1</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">1</span>
 </span></code></pre></div>
 <ol>
 <li>
@@ -3319,7 +3308,7 @@
 <p>Scale the API to 0 (or suspend all active workspaces first if you want pods gone too):</p>
 </li>
 </ol>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">0</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>scale<span class="w"> </span>deployment/llmsafespaces-api<span class="w"> </span>--replicas<span class="o">=</span><span class="m">0</span>
 </span></code></pre></div>
 <ol>
 <li>
@@ -3337,23 +3326,23 @@
 <h2 id="rotating-a-relay-vm-self-hosted-fleet">Rotating a relay VM (self-hosted fleet)<a class="headerlink" href="#rotating-a-relay-vm-self-hosted-fleet" title="Permanent link">&para;</a></h2>
 <p>The self-hosted InferenceRelay fleet (Epic 42) uses per-VM tokens. Each VM's token authenticates router→VM traffic; rotation = destroy + reprovision the VM, which generates a fresh token. (The Cloudflare Worker relay that previously required a separate cluster-side secret was removed in Epic 60 — Zen blocks CF Worker IPs.)</p>
 <p>Rotate when a VM returns sustained 429s, becomes unhealthy, or its token is suspected compromised.</p>
-<h3 id="procedure_3">Procedure<a class="headerlink" href="#procedure_3" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># 1. Check fleet status</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>curl<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/status"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>
-</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a><span class="c1"># 2. Rotate the specific VM</span>
-</span><span id="__span-14-5"><a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/rotate/</span><span class="nv">$VM_ID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-14-6"><a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
-</span><span id="__span-14-7"><a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a>
-</span><span id="__span-14-8"><a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a><span class="c1"># 3. Monitor provisioning</span>
-</span><span id="__span-14-9"><a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>curl<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/status"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
+<h3 id="procedure_2">Procedure<a class="headerlink" href="#procedure_2" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="c1"># 1. Check fleet status</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>curl<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/status"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>
+</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="c1"># 2. Rotate the specific VM</span>
+</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/rotate/</span><span class="nv">$VM_ID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">    </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
+</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>
+</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="c1"># 3. Monitor provisioning</span>
+</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a>curl<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/status"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
 </span></code></pre></div>
 <p>The router distributes traffic to healthy VMs during the rotation. If all VMs are down, the router falls back to direct upstream (rate-limited).</p>
 <h3 id="pauseresume-reconciliation">Pause/resume reconciliation<a class="headerlink" href="#pauseresume-reconciliation" title="Permanent link">&para;</a></h3>
 <p>For investigation without the controller interfering:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/pause"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="c1"># ... investigate ...</span>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/resume"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/pause"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="c1"># ... investigate ...</span>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/admin/relay/resume"</span><span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$ADMIN_TOKEN</span><span class="s2">"</span>
 </span></code></pre></div>
 <hr />
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
@@ -3385,7 +3374,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 23, 2026 17:14:52 UTC"><span class="timeago" datetime="2026-07-23T17:14:52+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 23, 2026 17:14:52 UTC">2026-07-23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="September 20, 2026 19:41:30 UTC"><span class="timeago" datetime="2026-09-20T19:41:30+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="September 20, 2026 19:41:30 UTC">2026-09-20</span>
   </span>
 
     
