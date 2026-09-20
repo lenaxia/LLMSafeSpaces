@@ -191,6 +191,13 @@ jobs:
             --set "controller.opencodeDelivery.binarySHA256Amd64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set "controller.opencodeDelivery.binarySHA256Arm64=${{ env.OPENCODE_BINARY_SHA }}" \
             --set controller.agentdSidecar.enabled=true \
+            # AC-1d (us-70 suite): the mock-llm pod carries relay-router
+            # labels and rides the podSelector egress allow this renders —
+            # the same lever the pool sets (us-70-delivery-pool.yml).
+            # Without it the default RFC1918 egress block times the row
+            # out on every destination form and gates every downstream
+            # suite (nightly 35513961442 vs pool run 35509103926).
+            --set networkPolicy.allowRelayRouterEgress=true \
             --set "api.extraEnv[0].name=LLMSAFESPACES_SECRETS_RECONCILE_INTERVAL,api.extraEnv[0].value=5s" \
             --wait --timeout 5m
 

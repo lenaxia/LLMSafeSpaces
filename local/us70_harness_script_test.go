@@ -442,6 +442,28 @@ func extractSingle(t *testing.T, src string, re *regexp.Regexp, what string) str
 	return m[1]
 }
 
+// TestUS70AC1D_MockEgressLeverInNightly pins nightly run 35513961442's
+// triage: AC-1d's mock-llm is reachable from workspace pods ONLY when
+// the helm install admits it — the mock pod carries relay-router labels
+// to ride the podSelector egress allow rendered by
+// networkPolicy.allowRelayRouterEgress (local/us-70-secret-delivery-e2e.sh's
+// mock manifest documents exactly this). The pool sets the lever and its
+// AC-1d passes (run 35509103926: workspace=200, PASS); the nightly set
+// NEITHER lever and AC-1d timed out on every destination form (run
+// 35513961442: workspace=000000 ×3 "Connection timed out", plain-pod=200,
+// DNS resolving — the RFC1918 default egress block, values.yaml
+// blockedEgressCIDRs 10.0.0.0/8, doing its designed job). R1–R9
+// arbitration was blocked three consecutive nightlies behind this row.
+func TestUS70AC1D_MockEgressLeverInNightly(t *testing.T) {
+	src := mustRead(t, us70NightlyWorkflow)
+	if !strings.Contains(src, "--set networkPolicy.allowRelayRouterEgress=true") {
+		t.Fatal("the nightly helm install must set networkPolicy.allowRelayRouterEgress=true — AC-1d's mock-llm rides that podSelector egress allow (same lever the pool sets); without it the row times out on every destination form and gates every downstream suite")
+	}
+	if !strings.Contains(src, "AC-1d") {
+		t.Fatal("the --set must carry the why-comment naming AC-1d so the lever is not 'cleaned up' as unused")
+	}
+}
+
 func TestUS70PoolWorkflow_Pins(t *testing.T) {
 	src := mustRead(t, us70PoolWorkflow)
 	for _, pin := range []string{
