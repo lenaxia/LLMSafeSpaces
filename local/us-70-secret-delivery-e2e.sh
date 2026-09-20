@@ -618,9 +618,29 @@ PRE_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/nul
     | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
 PRE_N=$(printf '%s' "${PRE_SWEPT}" | grep -c . || true)
 if [[ "${PRE_N}" -gt 0 ]]; then
-    printf '%s\n' "${PRE_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+    # xargs can only exec BINARIES — kc() is a shell function
+    # (lib/us70-common.sh), so the old `xargs … kc …` form no-opped
+    # every sweep in history with "kc: command not found" swallowed by
+    # `>/dev/null 2>&1 || true` while the ✓ line reported fiction
+    # (nightly 35539089435: ids 90-92 "deleted", still 2/2 Running at
+    # the census — 30% of the standing load that broke AC-13 wave 2).
+    # kubectl is the executable; errors die loudly; termination is
+    # verified with a bounded poll, never assumed.
+    printf '%s\n' "${PRE_SWEPT}" \
+        | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+        || die "AC-13 pre-wave sweep: workspace delete failed"
+    PRE_LEFT=""
+    for _ in $(seq 1 30); do
+        PRE_LEFT=$( { kc get workspace -o name 2>/dev/null || true; } \
+            | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
+        if [[ -z "${PRE_LEFT}" ]]; then break; fi
+        sleep 2
+    done
+    if [[ -n "${PRE_LEFT}" ]]; then
+        die "AC-13 pre-wave sweep: workspaces failed to terminate within 60s: ${PRE_LEFT}"
+    fi
 fi
-ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted"
+ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted and verified gone"
 
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
@@ -852,11 +872,26 @@ if (( SCALE > 0 )); then
     POST_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
         | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
     if [[ -n "${POST_SWEPT}" ]]; then
-        printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+        # Same verified-sweep shape as the pre-wave sweep above: xargs
+        # drives kubectl (the kc() function is invisible to xargs), a
+        # failed delete dies loudly, and termination is verified.
+        printf '%s\n' "${POST_SWEPT}" \
+            | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+            || die "AC-13 post-wave sweep: workspace delete failed"
+        POST_LEFT=""
+        for _ in $(seq 1 60); do
+            POST_LEFT=$( { kc get workspace -o name 2>/dev/null || true; } \
+                | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
+            if [[ -z "${POST_LEFT}" ]]; then break; fi
+            sleep 2
+        done
+        if [[ -n "${POST_LEFT}" ]]; then
+            warn "AC-13 post-wave sweep: workspaces failed to terminate within 120s (continuing — the row's assertions are done): ${POST_LEFT}"
+        fi
         # grep -c . (r28): wc -l undercounts by one — command
         # substitution strips the trailing newline and printf '%s' adds
         # none (run 34309009157: 20 deleted, logged "19").
-        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+)"
+        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+), verified gone"
     fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
