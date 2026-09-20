@@ -75,6 +75,12 @@ export const workspacesApi = {
     api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`, { signal: opts?.signal }),
   renameSession: (workspaceId: string, sessionId: string, title: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/title`, { title }),
+  // Typed session action (design 0055 M1 op 5): POSTs one member of the
+  // action union — e.g. {type:"action.compact"} for /compact. The pod's
+  // Act op executes under the session's single-flight lock; off-regime
+  // (authority flag off) the API answers 501 with a capability error.
+  sessionAction: (workspaceId: string, sessionId: string, action: Record<string, unknown>) =>
+    api.post<Record<string, unknown>>(`/workspaces/${workspaceId}/sessions/${sessionId}/actions`, action),
   markSessionSeen: (workspaceId: string, sessionId: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/seen`),
   renameWorkspace: (workspaceId: string, name: string) =>

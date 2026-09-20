@@ -1219,6 +1219,10 @@ export function ChatPage() {
             streaming={streaming}
             streamParts={sseStreamParts}
             disabled={!workspaceId || !sessionId || isSuspended}
+            sessionId={sessionId ?? undefined}
+            onNewSession={() => {
+              if (workspaceId) createSessionMutation.mutate(workspaceId);
+            }}
             onSend={handleSend}
             onAbort={() => {
               if (workspaceId && sessionId) {

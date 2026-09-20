@@ -7,6 +7,14 @@ import { cn } from "../../lib/utils";
 import { setUserSetting, useUserSetting } from "../../hooks/useUserSettings";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { getCursorLineInfo } from "../../lib/composerHistory";
+import { findAtToken, expandAtToken } from "../../lib/atToken";
+import { matchSlash, slashMatches } from "../../lib/composerCommands";
+import { SLASH_COMMANDS } from "./slashCommands";
+import type { SlashCommandContext } from "./slashCommands";
+import { InlinePopup } from "./InlinePopup";
+import { usePromptLibrary } from "../../hooks/usePromptLibrary";
+import { useQueryClient } from "@tanstack/react-query";
+import { CircleHelp } from "lucide-react";
 import { formatBytes } from "../../lib/format";
 import { ModelSelector } from "./ModelSelector";
 import { RoleSelector } from "./RoleSelector";
@@ -35,6 +43,10 @@ interface Props {
   onRemoveAttachment?: (id: string) => void;
   onRetryAttachment?: (id: string) => void;
   onDismissCapViolation?: () => void;
+  /** Active session — enables /compact and /rename (session-scoped commands). */
+  sessionId?: string;
+  /** New-session action for /new (page-owned navigation, the sidebar's mutation). */
+  onNewSession?: () => void;
 }
 
 /** Sentinel: no pending cursor move. */
@@ -137,6 +149,8 @@ export function Composer({
   onRemoveAttachment,
   onRetryAttachment,
   onDismissCapViolation,
+  sessionId,
+  onNewSession,
 }: Props) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -171,6 +185,89 @@ export function Composer({
   };
 
   const anyUploading = attachments.some((a) => a.status === "uploading");
+
+  // --- Slash commands + @-prompt recall (#1496) -------------------------
+  const queryClient = useQueryClient();
+  const { prompts } = usePromptLibrary();
+  const [caret, setCaret] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const [commandNotice, setCommandNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+  useEffect(() => {
+    if (!commandNotice) return;
+    const t = setTimeout(() => setCommandNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [commandNotice]);
+
+  // Palette state: active index + per-token dismissal so closing on one
+  // token does not suppress the next.
+  const [slashActive, setSlashActive] = useState(0);
+  const [slashDismissedWord, setSlashDismissedWord] = useState<string | null>(null);
+  const [atActive, setAtActive] = useState(0);
+  // Dismissal keys on the @ ANCHOR INDEX: extending the same token
+  // (typing more filter chars) stays dismissed; a fresh @ re-arms.
+  const [atDismissedAt, setAtDismissedAt] = useState<number | null>(null);
+  // Programmatic expansions must not re-open the @ popup (the prompt's
+  // own content may contain @ tokens): suppressed for one change.
+  const suppressAtRef = useRef(false);
+
+  const slashMatch = matchSlash(text);
+  const slashItems = slashMatch
+    ? SLASH_COMMANDS.filter((c) => slashMatches(c.id, slashMatch.word))
+    : [];
+  const slashOpen =
+    !composing && slashItems.length > 0 && slashDismissedWord !== (slashMatch?.word ?? "");
+
+  const atToken = !composing ? findAtToken(text, caret) : null;
+  const atItems = atToken
+    ? prompts.filter((p) =>
+        p.name.toLowerCase().includes(atToken.query.toLowerCase()),
+      )
+    : [];
+  const atOpen =
+    atToken !== null && prompts.length > 0 && atDismissedAt !== atToken.at;
+
+  const openOptionsDrawer = () => {
+    if (!drawerOpen) toggleDrawer();
+  };
+
+  const commandCtx: SlashCommandContext = {
+    workspaceId,
+    sessionId,
+    openOptionsDrawer,
+    openHelp: () => setHelpOpen(true),
+    onNewSession,
+    onAbort,
+    notify: (n) => setCommandNotice(n),
+    invalidateSessions: () => {
+      if (workspaceId) void queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+    },
+  };
+
+  const executeCommand = async (id: string, args: string) => {
+    const cmd = SLASH_COMMANDS.find((c) => c.id === id);
+    if (!cmd) return;
+    const unmet = cmd.requires?.(commandCtx) ?? null;
+    if (unmet) {
+      setCommandNotice({ kind: "error", text: `${cmd.label} ${unmet}.` });
+      return;
+    }
+    setText("");
+    setHelpOpen(false);
+    await cmd.run(args, commandCtx);
+  };
+
+  const selectPrompt = (index: number) => {
+    if (!atToken) return;
+    const prompt = atItems[index];
+    if (!prompt) return;
+    const out = expandAtToken(text, atToken, prompt.content);
+    suppressAtRef.current = true;
+    setText(out.text);
+    setAtDismissedAt(null);
+    pendingCursor.current = out.caret;
+    setNavTick((t) => t + 1);
+  };
 
   // History-browsing state. historyCursor === -1 means "not browsing".
   // 0..N-1 indexes into userMessageHistory (already newest-first).
@@ -277,6 +374,63 @@ export function Composer({
 
   const handleKeyDown = (e: KeyboardEvent) => {
     if (isIMEComposing(e)) return;
+
+    // Open palettes take precedence over history navigation and send:
+    // arrows move the active item, Enter selects/executes, Tab completes
+    // (slash only), Escape dismisses for the current token.
+    if (slashOpen && slashItems.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashActive((i) => (i + 1) % slashItems.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashActive((i) => (i - 1 + slashItems.length) % slashItems.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissedWord(slashMatch?.word ?? null);
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        const cmd = slashItems[Math.min(slashActive, slashItems.length - 1)];
+        if (cmd) setText(`/${cmd.id} `);
+        setSlashActive(0);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const cmd = slashItems[Math.min(slashActive, slashItems.length - 1)];
+        const m = matchSlash(text);
+        if (cmd) void executeCommand(cmd.id, m?.args ?? "");
+        return;
+      }
+    }
+    if (atOpen && atItems.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setAtActive((i) => (i + 1) % atItems.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setAtActive((i) => (i - 1 + atItems.length) % atItems.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (atToken) setAtDismissedAt(atToken.at);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        selectPrompt(Math.min(atActive, atItems.length - 1));
+        return;
+      }
+    }
 
     // History navigation (desktop only). Evaluated before send logic so
     // that ArrowUp/ArrowDown never collide with submit.
@@ -391,7 +545,87 @@ export function Composer({
         </div>
       )}
 
-      <div className="flex items-end gap-2">
+      {commandNotice && commandNotice.text && (
+        <div
+          role="status"
+          data-testid="command-notice"
+          aria-label={commandNotice.kind === "error" ? "command-error-notice" : "command-info-notice"}
+          className={commandNotice.kind === "error"
+            ? "mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
+            : "mb-2 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs text-muted-foreground"}
+        >
+          {commandNotice.text}
+        </div>
+      )}
+
+      {helpOpen && (
+        <div
+          data-testid="slash-help-overlay"
+          role="dialog"
+          aria-label="Composer commands"
+          className="mb-2 rounded-md border border-border bg-popover px-3 py-2"
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <span className="flex items-center gap-1 text-xs font-medium"><CircleHelp className="h-3.5 w-3.5" aria-hidden="true" /> Composer commands</span>
+            <button type="button" aria-label="Close command help" onClick={() => setHelpOpen(false)} className="text-xs text-muted-foreground hover:text-foreground">Close</button>
+          </div>
+          <ul className="text-xs">
+            {SLASH_COMMANDS.map((c) => (
+              <li key={c.id} className="flex gap-2 py-0.5">
+                <span className="w-20 shrink-0 font-mono">{c.label}</span>
+                <span className="text-muted-foreground">{c.hint}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="relative flex items-end gap-2">
+        {slashOpen && (
+          <InlinePopup
+            testId="slash-palette"
+            ariaLabel="Slash commands"
+            items={slashItems}
+            activeIndex={Math.min(slashActive, slashItems.length - 1)}
+            onActiveChange={setSlashActive}
+            onSelect={(cmd) => {
+              const m = matchSlash(text);
+              void executeCommand(cmd.id, m?.args ?? "");
+            }}
+            onDismiss={() => setSlashDismissedWord(slashMatch?.word ?? null)}
+            renderItem={(cmd, active) => (
+              <div className="flex flex-col" data-command={cmd.id}>
+                <span className="font-medium">{cmd.label}</span>
+                <span className="text-xs text-muted-foreground">{cmd.hint}</span>
+                {active && cmd.requires?.(commandCtx) && (
+                  <span className="text-[11px] text-yellow-600 dark:text-yellow-400">{cmd.requires(commandCtx)}</span>
+                )}
+              </div>
+            )}
+          />
+        )}
+        {atOpen && (
+          <InlinePopup
+            testId="at-recall-popup"
+            ariaLabel="Prompt recall"
+            items={atItems}
+            activeIndex={Math.min(atActive, atItems.length - 1)}
+            onActiveChange={setAtActive}
+            onSelect={(_prompt, i) => selectPrompt(i)}
+            onDismiss={() => {
+              if (atToken) setAtDismissedAt(atToken.at);
+            }}
+            emptyLabel={atToken ? `No prompt matches “${atToken.query}”` : undefined}
+            renderItem={(prompt, active) => (
+              <div className="flex flex-col" data-prompt={prompt.id}>
+                <span className={active ? "font-medium" : ""}>{prompt.name}</span>
+                <span className="max-w-[288px] truncate text-xs text-muted-foreground">
+                  {prompt.content.split("\n")[0]}
+                </span>
+              </div>
+            )}
+          />
+        )}
         {workspaceId && (
           <>
             <Button
@@ -429,9 +663,29 @@ export function Composer({
         <textarea
           ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value;
+            const pos = e.target.selectionStart;
+            // Consume the programmatic-expansion suppression exactly once.
+            if (suppressAtRef.current) {
+              suppressAtRef.current = false;
+            }
+            setText(next);
+            setCaret(pos);
+            const m = matchSlash(next);
+            if (slashDismissedWord !== null && m?.word !== slashDismissedWord) {
+              setSlashDismissedWord(null);
+            }
+            const tok = findAtToken(next, pos);
+            if (tok && atDismissedAt !== null && atDismissedAt !== tok.at) {
+              setAtDismissedAt(null);
+            }
+          }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
           onKeyDown={handleKeyDown}
           onInput={handleInput}
+          onSelect={(e) => setCaret((e.target as HTMLTextAreaElement).selectionStart)}
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
