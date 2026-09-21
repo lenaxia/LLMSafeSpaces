@@ -627,15 +627,23 @@ func (h *MCPServersHandler) Bind(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
 		return
 	}
-	// For user-scope binds, verify the caller owns the target workspace.
-	// Admin/org scopes are behind AdminGuard/OrgAdminGuard which already
-	// verifies authorization.
+	// Resolve the target workspace for EVERY scope (the parent-id audit,
+	// instance 7): user-scope additionally enforces ownership; org/admin
+	// arms previously skipped the check entirely — a ghost workspaceId
+	// reached the FK as an opaque 500. Existence for admin/org (the
+	// workspace need not belong to the acting admin); ownership for user.
 	if h.ownerType == types.MCPServerOwnerUser {
 		wsUserID, err := h.store.GetWorkspaceUserIDForMCP(c.Request.Context(), body.WorkspaceID)
 		if err != nil || wsUserID != c.GetString("userID") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 			return
 		}
+	} else if _, uerr := h.store.GetWorkspaceUserIDForMCP(c.Request.Context(), body.WorkspaceID); uerr != nil {
+		// Admin/org scopes: EXISTENCE only (the workspace need not
+		// belong to the acting admin); the owner-scoped lookup errors on
+		// a nonexistent row exactly as the user arm requires.
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+		return
 	}
 
 	// Enforce org policy quota: max_mcp_servers_per_workspace. The bound
@@ -787,6 +795,13 @@ func (h *MCPServersHandler) CreateAutoApply(c *gin.Context) {
 	serverID := c.Param("serverId")
 	if serverID == "" {
 		serverID = c.Param("id")
+	}
+	// The parent-id audit (instance 5): a ghost serverId previously
+	// reached the FK unvalidated (opaque 500). Resolve exactly as Bind
+	// does — same 404 convention (existence hiding per scope).
+	if !h.verifyServerOwnership(c, serverID, h.resolveOwnerID(c)) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
+		return
 	}
 	var body struct {
 		TargetType string  `json:"targetType" binding:"required"`

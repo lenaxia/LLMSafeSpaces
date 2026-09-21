@@ -452,6 +452,15 @@ func (h *AdminProviderCredentialsHandler) CreateAutoApply(c *gin.Context) {
 		return
 	}
 
+	// The parent-id audit (instance 6): a ghost credential id previously
+	// reached the FK unvalidated (opaque 500). Resolve exactly as the
+	// credential CRUD arms do — same 404 convention (the org twin already
+	// did this; the platform's own convention proves the fix shape).
+	if _, err := h.store.GetCredential(c.Request.Context(), "admin", "_platform", credID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "credential not found"})
+		return
+	}
+
 	var targetID *string
 	if req.TargetType != "all" {
 		if req.TargetID == "" {

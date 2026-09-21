@@ -33,7 +33,7 @@
 
 ### Assumptions stated and validated (Rule 7)
 
-- The FK map is complete for user-facing parents after three review passes: r1 added the workflow-update surface, r3 the run-override surface (greps covered `ADD CONSTRAINT` and inline `REFERENCES`; the run override lives in the REQUEST DTO, not a new column — found by trace, not grep). The first draft's completeness claim was false twice; the reviews enforced the PR's own bar.
+- The FK map is complete for user-facing parents after FOUR review passes: r1 the workflow-update surface, r3 the run-override (REQUEST DTO — found by trace, not grep), r4 the three auto-apply/bind org-arm surfaces (instances 5-7; the reviewer's independent FK sweep of 000001-000032 confirms no further instances). The completeness claim was false three times; each round's enforcement is recorded here as the audit's own history.
 - Existence-not-ownership for the WORKSPACE axis (org-owned workflows target user workspaces; the FK is unscoped). For the WORKFLOW axis (trigger targets), owner-scoping matches #1517's create check and closes #1519 half (b): a PATCHED cross-owner workflowId answers the same named 400 as a nonexistent one (no oracle); #1440's loud-fire design survives for STORED targets (deletion SET NULL, legacy rows).
 - The r1-recorded decision: update-path checks scope to PATCHED values — stored state is FK-anchored and deliberately unvalidated (mitigation path preserved).
 - Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.
