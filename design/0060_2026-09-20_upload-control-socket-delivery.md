@@ -85,10 +85,13 @@ One new method, closed params, closed error enum — Appendix-A discipline:
                                                   // /sandbox-runtime/staged-upload-files
               "size": 12345, "sha256": "<hex>",
               "target_name": "<sanitized-filename>" } }
-// response (success) — dest_avail_after is an A.1-legal additive field:
-// the supervisor's post-rename statfs reading, the export channel for
-// the §4.4 margin observation (agentd counts dest_margin_consumed from it)
-{ "v": 1, "id": 42, "result": { "applied": true, "path": "/workspace/uploads/<uuid>-<name>", "size": 12345, "dest_avail_after": 12345678901 } }
+// response (success) — two A.1-legal additive fields, both computed
+// supervisor-side (it owns the margin parameter): dest_avail_after is
+// the post-rename statfs reading (raw observability); margin_consumed
+// is the supervisor's own §4.4 flag (post-rename avail fell inside the
+// margin) — agentd counts dest_margin_consumed from the flag, never
+// inferring it from raw bytes
+{ "v": 1, "id": 42, "result": { "applied": true, "path": "/workspace/uploads/<uuid>-<name>", "size": 12345, "dest_avail_after": 12345678901, "margin_consumed": false } }
 // response (failure) — closed enum
 { "v": 1, "id": 42, "error": { "code": "staged_missing|checksum_mismatch|size_mismatch|dest_disk_full|dest_write_failed|target_rejected|busy", "message": "..." } }
 ```
@@ -99,7 +102,7 @@ One new method, closed params, closed error enum — Appendix-A discipline:
 
 ### 3.3 Synchronous ack, timeouts, and retry stance
 
-The control connection is held through the supervisor's copy (milliseconds–seconds for ≤25 MiB; tmpfs→PVC). agentd bounds the wait (`UPLOAD_APPLY_TIMEOUT`, default 60 s — generous for a ≤25 MiB bounded-window copy; it is independent of the API's 5-min body-stream timeout because the body is fully staged *before* the signal, so the two windows never compose). On timeout, agentd responds to the API with 504 (`upstream_apply_timeout`) and **leaves the staged object in place**: the supervisor may still complete it (the copy is idempotent per `upload_id` — if the target exists with matching size+sha256, it re-acks `applied` without rewriting). Orphaned staged objects that never complete are reclaimed by hygiene (§4.3). The client's retry creates a new `upload_id`; no dedupe is required (Epic 68 D19 retry semantics unchanged).
+The control connection is held through the supervisor's copy (milliseconds–seconds for ≤25 MiB; tmpfs→PVC). agentd bounds the wait (`UPLOAD_APPLY_TIMEOUT`, default 60 s — generous for a ≤25 MiB bounded-window copy; it is independent of the API's 5-min body-stream timeout because the body is fully staged *before* the signal, so the two windows never compose). On timeout, agentd responds to the API with 504 (`upstream_apply_timeout`) and **leaves the staged object in place**: the supervisor's in-flight copy may still complete it (its target is a fresh uuid — no conflict with anything), and hygiene reclaims whatever did not complete within TTL (§4.3). The client's retry creates a new `upload_id` (Epic 68 D19 retry semantics unchanged) — the same id is never re-signaled, so there is no re-apply path to make idempotent; a late-completing orphan is at worst a duplicate file — self-consistent (verified bytes, uuid-named) and harmless.
 
 ### 3.4 Atomicity across the boundary (the "temp+rename equivalence")
 
@@ -121,7 +124,7 @@ The one mid-stream hazard admission cannot pre-empt — the D14 adversary consum
 
 ### 4.1 R1 — Staging admission by reserved bytes (never evict credentials)
 
-The staging dir is `/sandbox-runtime/staged-upload-files/` on the shared ~96 MiB tmpfs. **Admission is reservation-before-acceptance**, using the size known up front (Content-Length, already bounded pre-read by the API at cap + 64 KiB envelope allowance, `uploads.go:183-184` — the safe direction for admission):
+The staging dir is `/sandbox-runtime/staged-upload-files/` on the shared ~96 MiB tmpfs. **Admission is reservation-before-acceptance** — which requires the size BEFORE the body streams, so the mechanism must be stated against the real wire: the client→API request carries a declared Content-Length (composer uploads are sized FormData), but the API→agentd forward is an `io.Pipe` body sent **chunked** (`uploads.go:341,371-383`) — agentd receives NO Content-Length and today learns sizes only mid-copy. The design therefore adds a second required API change: the upload hop carries **`X-LLS-Declared-Body-Bytes: <client Content-Length>`**, and the API rejects chunked client uploads (no declared length) with **411 Length Required** — the composer's FormData always declares, and silent cap+1 truncation mid-stream is exactly the non-clean failure the directive forbids. `newBytes` in both clauses is the declared body size (≥ the file size by the multipart envelope — the conservative direction for admission); the reservation reconciles DOWN to the actual staged size at rename completion.
 
 ```
 admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
@@ -133,8 +136,14 @@ admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
 // credentialUsage(): stat walk of the credential surfaces —
 //   staged-secret-files/, spawn-files-ledger.json, secrets-env,
 //   admin-prompt.md, rt/* (recomputed at every admission)
-// reservedUploads(): admitted-but-not-released upload reservations
-//   (released on ack, on error, on scrub — one mutex, defer-shaped)
+// reservedUploads(): admitted-but-not-released upload reservations —
+//   HELD UNTIL THE BYTES LEAVE THE TMPFS: released on ack (after the
+//   post-ack unlink), on abort (the error path unlinks the partial
+//   synchronously, then releases), or on scrub (crash orphans only —
+//   a crashed process holds no reservations; its staged bytes are
+//   walked orphans until the TTL/boot scrub reclaims them). One mutex,
+//   defer-shaped. Unlink-before-release is what makes the no-crash
+//   walked bound hold (§6.1).
 // (A) is the byte-weighted semaphore's enforcement point: the explicit
 //   upload budget (UPLOAD_STAGING_BUDGET, default 48 MiB on the 96 MiB
 //   volume, env-tunable) bounds aggregate upload residency regardless
@@ -180,7 +189,7 @@ The API's D16 disk-ratio gate (CRD-status-based) stays as the fast pre-filter. T
 
 - **Pre-copy:** `statfs(/workspace)` → reject `dest_disk_full` unless `avail > size + margin` (margin default 64 MiB — absorbs concurrent writers the stat cannot see).
 - **Pre-rename (gating):** `fsync` success **and** size+sha256 verification — both must hold before the file becomes visible.
-- **Post-rename (observability):** `statfs` re-check, reported to agentd in the ack's additive `dest_avail_after` field (§3.2) — a write that completed but consumed the margin renames (it succeeded — correctness first) but is counted `dest_margin_consumed` — the disk is never *silently* full.
+- **Post-rename (observability):** `statfs` re-check, computed supervisor-side (it owns the margin env) and reported in the ack's additive `margin_consumed` flag alongside the raw `dest_avail_after` (§3.2) — a write that completed but consumed the margin renames (it succeeded — correctness first) but is counted `dest_margin_consumed` — the disk is never *silently* full.
 
 The supervisor cannot read the CRD (and must not — it would need API credentials); `statfs` is the stronger signal anyway (ground truth vs cached ratio).
 
@@ -206,7 +215,7 @@ Metric surfaces, named against the code as it exists (agentd's counter is `works
 
 Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; all others → the existing 502 class with the specific reason in the body.
 
-**These statuses are client-visible only after the API forwarding change (§9, wiring PR):** today the API handler special-cases only agentd 201 and 413 and collapses every other status into a fixed `502 {"error":"workspace agent upload failed"}` with `reason=agentd_error` (`api/internal/handlers/uploads.go:241-245`) — nothing passes through, and the API reason enum cannot record the new classes. The wiring PR therefore (a) forwards agentd's 507/429/504 statuses and their reason bodies verbatim, and (b) widens the API-side reason enum (`staging_full`, `staging_busy`, `apply_timeout`, `apply_rejected`, keeping `agentd_error` for the true remainder). This is a required API change, not polish — §5.4 reflects it.
+**These statuses are client-visible only after the API forwarding change (§9, wiring PR):** today the API handler special-cases only agentd 201 and 413 and collapses every other status into a fixed `502 {"error":"workspace agent upload failed"}` with `reason=agentd_error` (`api/internal/handlers/uploads.go:241-245`) — nothing passes through, and the API reason enum cannot record the new classes. The wiring PR therefore (a) forwards agentd's 507/429/504 statuses and their reason bodies verbatim, and (b) widens the API-side reason enum (`staging_full`, `staging_busy`, `apply_timeout`, `apply_rejected`, `dest_disk_full`, keeping `agentd_error` for the true remainder — the write-time destination 507 gets its own value, never misrecorded as a staging outcome), and (c) adds the admission-input header + the 411 gate (§4.1). These are required API changes, not polish — §5.4 reflects them.
 
 ---
 
@@ -226,7 +235,7 @@ Multiple uploads: each has its own `upload_id`, staged object, and reservation; 
 
 ### 5.4 Rollout
 
-agentd + supervisor (both delivered in the one digest-pinned agentd artifact) **plus one required API handler change**: forwarding agentd's 507/429/504 statuses and reason bodies verbatim (today they collapse into a fixed 502 — `uploads.go:241-245`) and widening the API-side upload reason enum to record the new classes (§4.6). No CRD/Helm schema change (new env knobs are additive with defaults). The nightly's sidecar upload rows flip from assert-clean-fail to assert-delivery when this lands (Epic 68 E2/E10/E11 un-skip).
+agentd + supervisor (both delivered in the one digest-pinned agentd artifact) **plus required API handler changes**: (1) forwarding agentd's 507/429/504 statuses and reason bodies verbatim (today they collapse into a fixed 502 — `uploads.go:241-245`), (2) widening the API-side upload reason enum (§4.6), and (3) the admission-input header `X-LLS-Declared-Body-Bytes` on the agentd hop + the 411 gate on undeclared client bodies (§4.1 — the API→agentd forward is chunked; without this, reservation-before-acceptance has no input). No CRD/Helm schema change (new env knobs are additive with defaults). The nightly's sidecar upload rows flip from assert-clean-fail to assert-delivery when this lands (Epic 68 E2/E10/E11 un-skip).
 
 ---
 
@@ -238,8 +247,10 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 ### 6.1 Streaming residency (measured)
 
 **Invariant:** N concurrent near-cap (25 MiB) uploads at max admission concurrency → peak resident bytes on the credential-shared staging NEVER exceed the staging budget (default 48 MiB).
-**Mechanism:** reservation-before-acceptance (§4.1) — the bound holds by construction.
-**Proof:** a load driver fires `UPLOAD_STAGING_MAX_CONCURRENT + k` near-cap uploads concurrently; the test SAMPLES `workspace_agentd_upload_staging_bytes` and `..._reserved_bytes` at a tight interval for the storm's duration and pins `max(observed) ≤ budget` — a gauge pin, not a code-path assertion. Any excursion is a red test, not a post-hoc metric.
+**Mechanism:** reservation-before-acceptance (§4.1) with the unlink-before-release lifecycle — two bounds, stated separately because they hold separately:
+  - `reserved_bytes ≤ budget` ALWAYS, by construction (clause A) — including across the 504 path (a timed-out apply holds its reservation until the TTL scrub reclaims the object).
+  - `staging_bytes ≤ budget` in every no-crash lifecycle (reservations cover exactly the resident bytes; aborts unlink synchronously before release). The crash window is the one exception and it is bounded and transient: a crashed agentd leaves unreserved walked orphans ≤ what was reserved at crash (≤ budget), reclaimed within TTL; clause (B) meanwhile shrinks new admissions against the reduced `f_bavail`.
+**Proof:** a load driver fires `UPLOAD_STAGING_MAX_CONCURRENT + k` near-cap uploads concurrently (no crash injection in this row — §6.5 owns crash); the test SAMPLES `workspace_agentd_upload_staging_bytes` and `..._reserved_bytes` at a tight interval for the storm's duration and pins `max(observed staging) ≤ budget` AND `max(observed reserved) ≤ budget` — gauge pins, not code-path assertions. Any excursion is a red test, not a post-hoc metric.
 
 ### 6.2 Cross-feature isolation (the point of the design)
 
@@ -267,9 +278,9 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 ### 6.6 Ack-path throughput and latency characterization
 
-**Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/4×/8× concurrency across file sizes (1 KiB / 1 MiB / 25 MiB), and socket-server concurrency behavior at the count cap.
+**Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/2×/4× concurrency (the count cap's default IS 4 — higher concurrency is unreachable by design, so the matrix characterizes the CAP BOUNDARY instead: the 5th concurrent upload's 429 latency) across file sizes (1 KiB / 1 MiB / 10 MiB — 25 MiB is single-flight by clause (A), characterized at 1× only).
 **Mechanism:** §3.3's bounded wait; the supervisor's apply-concurrency choice (§8 item 3).
-**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×25 MiB ≤ 2× the single-upload p95 (catches accidental serialization without pinning hardware-specific absolute numbers).
+**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers).
 
 ---
 
@@ -279,7 +290,7 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 | Staging admission | budget math unit table (floor/usage/reserve boundaries); reject-before-first-byte ordering; 507 shapes |
 | Semaphore | concurrent admission never exceeds clause (A)'s budget (race test); 429 class |
 | Streaming | large-object memory flatness (allocation ceiling assertion on a ≥cap object); window bounded |
-| Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; idempotent re-apply on retry-after-timeout |
+| Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; the 504-tail orphan completes-or-is-reclaimed (both terminal states acceptable, never a partial) |
 | Hygiene | boot scrub clears staging; TTL sweeper reclaims + reconciles gauges; a `.tmp` is never signaled; agent-planted junk in the staging dir (D14) → admission shrinks via f_bavail, gauges reconciled by the sweeper |
 | Destination gates | statfs pre-write rejection; post-write verification; margin-consumed counter |
 | Protocol | `upload_apply` param validation (basename regex, sanitized target, closed error enum); unknown-param KEYS are IGNORED per 0051 A.1 forward-compatibility (pin tolerance — a rejecting implementation would be non-conformant) |
@@ -302,5 +313,5 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 1. **agentd staging leg** — staging dir, admission/semaphore, `.tmp`+rename staging, sha256, hygiene (boot+TTL), metrics, the 507/429 arms (sidecar context only).
 2. **supervisor `upload_apply`** — the socket method, destination gates, bounded-window copy+verify+rename, ack + closed errors.
-3. **API forwarding + wiring + observability + stress harness** — REQUIRED API handler change (forward agentd 507/429/504 + reason bodies; widen the API reason enum — §4.6), agentd→socket call with bounded wait, gauge/consumer surfaces, values-file knobs; the §6 stress harness (load driver, gauge sampler, fault-seam injection points, the §6.6 baseline table into the worklog) and the S/L invariant-matrix upload row family.
+3. **API forwarding + wiring + observability + stress harness** — REQUIRED API handler changes (forward agentd 507/429/504 + reason bodies; widen the API reason enum incl. dest_disk_full — §4.6; the X-LLS-Declared-Body-Bytes admission header + 411 gate — §4.1), agentd→socket call with bounded wait, gauge/consumer surfaces, values-file knobs; the §6 stress harness (load driver, gauge sampler, fault-seam injection points, the §6.6 baseline table into the worklog) and the S/L invariant-matrix upload row family.
 4. **E2E un-skip** — nightly rows flip (delivery rows + the §6.2 isolation row and §6.4/§6.5 fault rows join the nightly); Epic 68 docs updated (the as-built caveat at `uploads.go:25-27` and the README §File Attachments sidecar note both retire).

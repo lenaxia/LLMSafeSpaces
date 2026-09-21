@@ -49,7 +49,7 @@ None — design-doc lane; the doc carries the test plan (§6) the implementation
 
 ## Next Steps
 
-- Iterate the design PR with the reviewer to APPROVED; notify the orchestrator; implementation lanes split per §8 (agentd staging leg → supervisor upload_apply → wiring/observability → E2E un-skip).
+- Iterate the design PR with the reviewer to APPROVED; notify the orchestrator; implementation lanes split per §9 (agentd staging leg → supervisor upload_apply → API forwarding/wiring/stress harness → E2E un-skip).
 
 ---
 
@@ -82,3 +82,10 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - **The API "pass-through" claims were false**: the API handler collapses every non-201/413 agentd status into a fixed 502 (uploads.go:241-245) — my §4.6/§5.4 claimed reason strings pass through. Fixed: the design now specifies the REQUIRED API forwarding change (statuses + reason bodies verbatim; API reason enum widened) and §9's wiring PR is retitled accordingly ("API forwarding + wiring…", not "polish").
 - **UPLOAD_STAGING_BUDGET had no enforcement point** (and §4.2 still said "the fraction"): admission formalized as two clauses — (A) reservedUploads+newBytes ≤ budget (the semaphore's enforcement point; defaults admit one 25 MiB upload by reservation, a 3×15 MiB storm peaks at 45 MiB), (B) credentialUsage+floor+reservations ≤ f_bavail. §6.1's residency pin now holds by construction.
 - Minors: §4.7→§4.1.1 dangling ref; §8-Q2→item-3 cross-ref; D17→D19 (retry semantics); dest_margin_consumed given its export channel (additive A.1-legal dest_avail_after ack field; counter renamed to dest_outcomes covering rejections AND the success-path margin observation); Content-Length wording (cap+64 KiB envelope allowance, the safe direction); §6.2's unverifiable "V3" label replaced with the concrete row-family anchor.
+
+
+## Review round 3 (design doc) — 2 new blockers (mine, from r3) + 4 minors, all fixed
+
+- **The admission input did not exist on the wire**: the API→agentd forward is io.Pipe-chunked (no Content-Length; agentd learns sizes mid-copy today). Fixed with a second required API change: `X-LLS-Declared-Body-Bytes` on the hop (the client's declared multipart total — conservative upper bound, reservation reconciles down at completion) + a 411 gate on undeclared client bodies (clean rejection beats silent mid-stream truncation). §4.6/§5.4/§9.3 updated to three required API changes.
+- **§6.1's residency pin was falsified by my own 504/abort paths**: fixed by pinning the lifecycle (unlink-before-release; reservations held until bytes leave the tmpfs; 504 holds until TTL scrub) and stating the two bounds separately (reserved ≤ budget ALWAYS by construction; walked ≤ budget in every no-crash lifecycle; the crash window bounded + transient + TTL-reclaimed, with clause B shrinking new admissions meanwhile).
+- Minors: §6.6's matrix resized to the REACHABLE concurrency (1×/2×/4× + cap-boundary 429 characterization at the 5th; 25 MiB single-flight by clause A — the old 4×25/8× rows were unreachable under the doc's own defaults); the dead idempotent-re-apply machinery removed (retry creates a new id by D19 — never re-signaled; the 504 orphan completes-or-is-reclaimed, both terminal); `dest_disk_full` added to the widened API enum (never misrecorded as staging_full); the margin flag computed supervisor-side (it owns the margin env) as an explicit `margin_consumed` ack field.
