@@ -513,6 +513,251 @@ func TestUS70AC1D_MockEgressLeverInNightly(t *testing.T) {
 	}
 }
 
+// TestUS70AC13_NightlyScaleFitsRunner pins the 35539089435 adjudication:
+// the nightly runs AC-13 at a scale its runner can actually hold. The
+// nightly's job is regression detection on ITS envelope — scale fidelity
+// belongs to the pool's calibrated dind runner (scale 40). At
+// RESUME_SCALE=100 the row is infeasible-by-construction on the hosted
+// runner (~10 standing workspace pods is the observed single-node
+// ceiling; 100 concurrent ≈ 50+ CPU against ~4 allocatable) and blocks
+// every downstream suite when wave 2 fails to schedule.
+func TestUS70AC13_NightlyScaleFitsRunner(t *testing.T) {
+	src := mustRead(t, us70NightlyWorkflow)
+	if !strings.Contains(src, "RESUME_SCALE: 10") {
+		t.Fatal("the nightly must run AC-13 at RESUME_SCALE: 10 — the runner-appropriate scale (wave-capped boots of 5, concurrent-resume semantics intact); the pool retains scale fidelity")
+	}
+	if strings.Contains(src, "RESUME_SCALE: 100") {
+		t.Fatal("RESUME_SCALE: 100 is infeasible on the nightly's hosted runner — AC-13 dies at wave 2 on Insufficient cpu and gates every downstream suite (nightly 35539089435)")
+	}
+}
+
+// TestUS70Sweeps_ExecutableKubectlWithVerifiedOutcome pins the sweep
+// silent-failure fix structurally: xargs can only exec BINARIES, but kc()
+// is a bash function (lib/us70-common.sh) — `xargs … kc …` no-opped every
+// sweep in history with "kc: command not found" swallowed by
+// `>/dev/null 2>&1 || true`, while the ✓ lines reported fiction (nightly
+// 35539089435: ids 90-92 "deleted", still 2/2 Running at the census —
+// 30% of the standing load that broke AC-13 wave 2). The sweeps must
+// drive kubectl directly, fail loudly, and verify termination.
+func TestUS70Sweeps_ExecutableKubectlWithVerifiedOutcome(t *testing.T) {
+	src := mustRead(t, us70DeliveryScript)
+	if strings.Contains(src, "xargs -r -n 20 kc") {
+		t.Fatal("sweeps must not xargs the kc() shell FUNCTION — xargs execs binaries only; the function is invisible and the delete silently no-ops (nightly 35539089435)")
+	}
+	if strings.Contains(src, "delete --wait=false >/dev/null 2>&1 || true") {
+		t.Fatal("sweep deletes must not be `>/dev/null 2>&1 || true`-swallowed — a failed delete must die loudly, and termination must be verified, not assumed")
+	}
+	for _, pin := range []string{
+		`xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false`,
+		"failed to terminate",
+		"verified gone",
+	} {
+		if !strings.Contains(src, pin) {
+			t.Fatalf("the verified-sweep shape must keep %q", pin)
+		}
+	}
+}
+
+// TestUS70PreWaveSweep_Executes runs the script's REAL pre-wave sweep
+// block against a fake kubectl (kc defined as the production function
+// shape): a clean delete must verify-terminate and report honestly; a
+// failed delete must die loudly; a wedged termination must die naming
+// the leftovers. The old xargs-kc form no-ops here exactly as it did in
+// production (the fake kubectl never sees the delete).
+func TestUS70PreWaveSweep_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	block := regexp.MustCompile(`(?s)(?m)^PRE_SEL_FAILED=0\nif ! PRE_GET=\$\(kc get workspace.*?ok "AC-13 — pre-wave sweep: nothing to sweep[^\n]*\n\s*fi\nfi\n`).FindString(src)
+	if block == "" {
+		t.Fatal("pre-wave sweep block not found — did the sweep change shape?")
+	}
+
+	dir := t.TempDir()
+	trace := filepath.Join(dir, "trace")
+	counter := filepath.Join(dir, "count")
+	fake := "#!/usr/bin/env bash\n" +
+		"printf '%s\\n' \"$*\" >> \"" + trace + "\"\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && {\n" +
+		"  [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}\n" +
+		"  n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
+		"  if [[ \"$n\" -eq 0 ]]; then\n" +
+		"    [[ \"${FAKE_SEL_EMPTY:-}\" != \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000090\\nworkspace/e2e5d000-0000-4000-8000-000000000091\\n'\n" +
+		"    exit 0\n" +
+		"  fi\n" +
+		"  [[ -n \"${FAKE_GET_EXIT_AFTER:-}\" ]] && exit ${FAKE_GET_EXIT_AFTER}\n" +
+		"  [[ \"${FAKE_STUCK:-}\" == \"1\" ]] && printf 'workspace/e2e5d000-0000-4000-8000-000000000090\\n'\n" +
+		"  exit 0\n" +
+		"}; done\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(env string) (string, error) {
+		os.Remove(counter)
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH CTX=kind-x NS=ns\n" + env +
+			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
+ok() { printf 'OK %s\n' "$*"; }
+log() { printf 'LOG %s\n' "$*"; }
+warn() { printf 'WARN %s\n' "$*" >&2; }
+kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
+` + block
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("clean delete verifies gone", func(t *testing.T) {
+		os.Remove(trace)
+		out, err := run("")
+		if err != nil {
+			t.Fatalf("clean sweep must complete, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "deleted and verified gone") {
+			t.Fatalf("the ok line must state verified termination, got: %q", out)
+		}
+		raw, _ := os.ReadFile(trace)
+		if !strings.Contains(string(raw), "delete --wait=false") ||
+			!strings.Contains(string(raw), "e2e5d000-0000-4000-8000-000000000090") {
+			t.Fatalf("kubectl itself must receive the delete with --wait=false (xargs cannot exec the kc function), trace:\n%s", raw)
+		}
+	})
+
+	t.Run("nothing to sweep states exactly that (r2: no fiction verified-gone)", func(t *testing.T) {
+		out, err := run("export FAKE_SEL_EMPTY=1\n")
+		if err != nil {
+			t.Fatalf("the unswept path must complete, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "nothing to sweep") || strings.Contains(out, "verified gone") {
+			t.Fatalf("the unswept path must never claim verification, got: %q", out)
+		}
+	})
+
+	t.Run("selection get failure warns, non-killing, asserts NO state (r3)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a selection-get blip must warn and continue, got: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "selection get failed") {
+			t.Fatalf("a failed selection must be loud, got: %q", out)
+		}
+		if strings.Contains(out, "already absent") || strings.Contains(out, "nothing to sweep") {
+			t.Fatalf("a failed selection must not assert unobserved state (no 'already absent' / 'nothing to sweep' ✓), got: %q", out)
+		}
+		if !strings.Contains(out, "state unknown") {
+			t.Fatalf("the failed-selection path must state the range is unknown, got: %q", out)
+		}
+	})
+
+	t.Run("failed delete dies loudly", func(t *testing.T) {
+		out, err := run("export FAKE_DELETE_EXIT=1\n")
+		if err == nil {
+			t.Fatalf("a failed delete must die, got: %q", out)
+		}
+		if !strings.Contains(out, "DIE") {
+			t.Fatalf("the death must be loud, got: %q", out)
+		}
+	})
+
+	t.Run("wedged termination dies naming leftovers", func(t *testing.T) {
+		out, err := run("export FAKE_STUCK=1\n")
+		if err == nil {
+			t.Fatalf("a never-terminating workspace must die, got: %q", out)
+		}
+		if !strings.Contains(out, "failed to terminate") {
+			t.Fatalf("the death must name the termination failure, got: %q", out)
+		}
+	})
+
+	t.Run("failed verify get never counts as verified (r1 finding 2)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT_AFTER=1\n")
+		if err == nil {
+			t.Fatalf("a verify-get that never succeeds must die, not report verified, got: %q", out)
+		}
+		if !strings.Contains(out, "failed to terminate") || strings.Contains(out, "deleted and verified gone") {
+			t.Fatalf("a failed verify-get must read as UNVERIFIED, got: %q", out)
+		}
+	})
+}
+
+// TestUS70PostWaveSweep_Executes runs the REAL post-wave sweep block:
+// the ok verdict must reflect the verification — "verified gone" only
+// when a successful get observed the range empty (r1 finding 1: the
+// wedged path printed WARN + an unconditional "verified gone" ok).
+func TestUS70PostWaveSweep_Executes(t *testing.T) {
+	bash := requireBash(t)
+	src := mustRead(t, us70DeliveryScript)
+	block := regexp.MustCompile(`(?s)(?m)^    if \[\[ -n "\$\{POST_SWEPT\}" \]\]; then.*?^    fi\n`).FindString(src)
+	if block == "" {
+		t.Fatal("post-wave sweep block not found — did the sweep change shape?")
+	}
+
+	dir := t.TempDir()
+	fake := "#!/usr/bin/env bash\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"delete\" ]] && exit ${FAKE_DELETE_EXIT:-0}; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"get\" ]] && { [[ -n \"${FAKE_GET_EXIT:-}\" ]] && exit ${FAKE_GET_EXIT}; if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
+		"for a in \"$@\"; do [[ \"$a\" == \"workspace\" ]] && { if [[ \"${FAKE_STUCK:-}\" == \"1\" ]]; then printf 'workspace/e2e5d000-0000-4000-8000-000000000110\\n'; fi; exit 0; }; done\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "kubectl"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(env string) (string, error) {
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH CTX=kind-x NS=ns\n" + env +
+			`POST_SWEPT='workspace/e2e5d000-0000-4000-8000-000000000110'
+die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
+ok() { printf 'OK %s\n' "$*"; }
+warn() { printf 'WARN %s\n' "$*" >&2; }
+kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
+` + block
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("clean: verified gone", func(t *testing.T) {
+		out, err := run("")
+		if err != nil || !strings.Contains(out, "verified gone") {
+			t.Fatalf("clean post-wave sweep must report verified gone, err=%v\n%s", err, out)
+		}
+	})
+
+	t.Run("wedged: WARN, never a fiction ok (r1 finding 1)", func(t *testing.T) {
+		out, err := run("export FAKE_STUCK=1\n")
+		if err != nil {
+			t.Fatalf("the wedged post-wave path warns and continues (row assertions are done), got: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "verified gone") {
+			t.Fatalf("a wedged termination must NEVER print verified gone, got: %q", out)
+		}
+		if !strings.Contains(out, "termination NOT verified") {
+			t.Fatalf("the warn must name the unverified termination, got: %q", out)
+		}
+	})
+
+	t.Run("failed delete dies loudly", func(t *testing.T) {
+		out, err := run("export FAKE_DELETE_EXIT=1\n")
+		if err == nil || !strings.Contains(out, "DIE") {
+			t.Fatalf("a failed post-wave delete must die, err=%v\n%s", err, out)
+		}
+	})
+
+	t.Run("failed verify get warns NOT verified (never fiction)", func(t *testing.T) {
+		out, err := run("export FAKE_GET_EXIT=1\n")
+		if err != nil {
+			t.Fatalf("a verify-get blip warns and continues, got: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "verified gone") || !strings.Contains(out, "termination NOT verified") {
+			t.Fatalf("a failed verify-get must never print verified gone, got: %q", out)
+		}
+	})
+}
+
 func TestUS70PoolWorkflow_Pins(t *testing.T) {
 	src := mustRead(t, us70PoolWorkflow)
 	for _, pin := range []string{

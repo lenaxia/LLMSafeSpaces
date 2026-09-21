@@ -614,13 +614,60 @@ fi
 # script wrote nothing and its commit message claimed otherwise; this
 # time the diff is the proof). Guarded assignment: a transient kc
 # failure must not kill the leg (same class as r13's diagnostics).
-PRE_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
+PRE_SEL_FAILED=0
+if ! PRE_GET=$(kc get workspace -o name 2>/dev/null); then
+    # r2: a failed SELECTION get must be loud (a silent empty here would
+    # pre-clear the sweep as done while ids 90-92 stand) — but non-killing
+    # (the r26 guard's intent: a transient blip must not kill the leg).
+    # r3: the un-swept message below must not assert state ("already
+    # absent") this path never observed.
+    warn "AC-13 pre-wave sweep: selection get failed — cannot confirm the 90-92 range is clear"
+    PRE_SEL_FAILED=1
+fi
+PRE_SWEPT=$(printf '%s\n' "${PRE_GET:-}" \
     | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
 PRE_N=$(printf '%s' "${PRE_SWEPT}" | grep -c . || true)
 if [[ "${PRE_N}" -gt 0 ]]; then
-    printf '%s\n' "${PRE_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+    # xargs can only exec BINARIES — kc() is a shell function
+    # (lib/us70-common.sh), so the old `xargs … kc …` form no-opped
+    # every sweep in history with "kc: command not found" swallowed by
+    # `>/dev/null 2>&1 || true` while the ✓ line reported fiction
+    # (nightly 35539089435: ids 90-92 "deleted", still 2/2 Running at
+    # the census — 30% of the standing load that broke AC-13 wave 2).
+    # kubectl is the executable; errors die loudly; termination is
+    # verified with a bounded poll, never assumed.
+    printf '%s\n' "${PRE_SWEPT}" \
+        | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+        || die "AC-13 pre-wave sweep: workspace delete failed"
+    # Only a SUCCESSFUL get that lists none of the range counts as
+    # verified: a failed get (transient apiserver/etcd blip — the class
+    # kc_apply_retry exists for) must never read as "verified gone"
+    # (review r1 finding 2).
+    PRE_LEFT="unverified"
+    for _ in $(seq 1 30); do
+        if PRE_GET=$(kc get workspace -o name 2>/dev/null); then
+            PRE_LEFT=$(printf '%s\n' "${PRE_GET}" \
+                | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=90 && id<=92) print n}')
+            if [[ -z "${PRE_LEFT}" ]]; then break; fi
+        fi
+        sleep 2
+    done
+    if [[ -n "${PRE_LEFT}" ]]; then
+        die "AC-13 pre-wave sweep: workspaces failed to terminate (or verify) within 60s: ${PRE_LEFT}"
+    fi
+    ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted and verified gone"
+else
+    # r2: verified-gone is only claimable when the delete+verify actually
+    # ran; the unswept path states what it is, nothing more. r3: "already
+    # absent" is a state assertion — claimable only when a SUCCESSFUL
+    # selection get observed the range empty; the failed-get path says
+    # the state is unknown.
+    if [[ "${PRE_SEL_FAILED}" -eq 1 ]]; then
+        log "AC-13 pre-wave sweep: nothing swept; ids 90-92 state unknown (selection get failed)"
+    else
+        ok "AC-13 — pre-wave sweep: nothing to sweep (ids 90-92 already absent)"
+    fi
 fi
-ok "AC-13 — pre-wave sweep: ${PRE_N} single-use row workspace(s) (ids 90-92) deleted"
 
 log "AC-13 — ${RESUME_SCALE} concurrent resumes → all back within ${RESUME_SCALE_TIMEOUT_S}s, identical spawned_rev"
 
@@ -852,11 +899,32 @@ if (( SCALE > 0 )); then
     POST_SWEPT=$( { kc --context "${CTX}" -n "${NS}" get workspace -o name 2>/dev/null || true; } \
         | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
     if [[ -n "${POST_SWEPT}" ]]; then
-        printf '%s\n' "${POST_SWEPT}" | xargs -r -n 20 kc --context "${CTX}" -n "${NS}" delete --wait=false >/dev/null 2>&1 || true
+        # Same verified-sweep shape as the pre-wave sweep above: xargs
+        # drives kubectl (the kc() function is invisible to xargs), a
+        # failed delete dies loudly, and termination is verified.
+        printf '%s\n' "${POST_SWEPT}" \
+            | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+            || die "AC-13 post-wave sweep: workspace delete failed"
+        POST_LEFT="unverified"
+        for _ in $(seq 1 60); do
+            if POST_GET=$(kc get workspace -o name 2>/dev/null); then
+                POST_LEFT=$(printf '%s\n' "${POST_GET}" \
+                    | awk -F/ '{n=$2} n ~ /^e2e5d000-0000-4000-8000-[0-9]+$/ {id=substr(n, length(n)-3)+0; if (id>=101) print n}')
+                if [[ -z "${POST_LEFT}" ]]; then break; fi
+            fi
+            sleep 2
+        done
+        # The ok line's verdict must reflect the verification (review r1
+        # finding 1): an unconditional "verified gone" after a timeout
+        # warn is the same fiction class this PR fixes.
         # grep -c . (r28): wc -l undercounts by one — command
         # substitution strips the trailing newline and printf '%s' adds
         # none (run 34309009157: 20 deleted, logged "19").
-        ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+)"
+        if [[ -z "${POST_LEFT}" ]]; then
+            ok "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+), verified gone"
+        else
+            warn "AC-13 — post-wave sweep deleted: $(printf '%s\n' "${POST_SWEPT}" | grep -c .) wave workspace(s) (ids 101+); termination NOT verified within 120s: ${POST_LEFT}"
+        fi
     fi
 else
     warn "AC-13 SKIPPED (RESUME_SCALE=${RESUME_SCALE}; set >0 to run the scale leg)"
