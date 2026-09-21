@@ -147,7 +147,7 @@ The design §6.6 specifies p95, not median. At N≤4 samples the p95 IS the max 
 2. "median exactly 2×L1 — AT the boundary" was also false (median = x+2u < 2x+2u for x>0 — strictly BELOW). Corrected to "strictly below."
 3. The stale "regime-independent" comment (contradicting both the code and the worklog's own r6 correction) — removed.
 4. The pin comment saying "median" — fixed to "max(p95@N≤4)."
-5. **The behavioral guard test** (r8's ask): 7 table cases against the guard's sort -n | awk pipeline. NOTE (r10 correction): the r8 version validated a FROZEN copy of the pipeline — it would NOT have caught any script-side regression (the r7 max-labeled median mutant passed it green). The r9 fix made the extraction live.
+5. **The behavioral guard test** (r8's ask): 6 table cases against the guard's sort -n | awk pipeline. NOTE (r10 correction): the r8 version validated a FROZEN copy of the pipeline — it would NOT have caught any script-side regression (the r7 max-labeled median mutant passed it green). The r9 fix made the extraction live.
 
 ## Review Round 9 (live extraction + honest claims)
 
@@ -157,4 +157,4 @@ The r8 behavioral test validated a FROZEN copy of the pipeline — a script-side
 
 1. The worklog r8 section still claimed the test "would have caught" the defects — false (the r8 version validated a frozen copy that caught nothing script-side). Corrected: the r8 version would NOT have caught any regression; the r9 live extraction is what catches.
 2. The docstring had two sentence fragments jammed together from the r8→r9 edit ("the test that would / validates the SCRIPT'S OWN") — fixed to a clean sentence.
-3. All substantive findings from rounds 1-9 are closed and verified. The handler was sound from round 1; the harness took 9 rounds to reach assertion parity with the design's invariants — every round's findings were reproduced by execution and each fix was mutation-verified where applicable.
+3. All substantive findings from rounds 1-9 are closed and verified at HEAD as of the r9 commit; this r10 section covers the residual text corrections. The handler was sound from round 1; the harness took 9 rounds to reach assertion parity with the design's invariants — every round's findings were reproduced by execution and each fix was mutation-verified where applicable.
