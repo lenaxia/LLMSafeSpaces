@@ -635,3 +635,33 @@ async def test_async_abort_and_delete_are_no_content(client: AsyncLLMSafeSpaces)
     respx.delete(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1").respond(status_code=204)
     await client.sessions.abort("ws-1", "ses_1")
     await client.sessions.delete("ws-1", "ses_1")
+
+
+@respx.mock
+async def test_async_user_prompts_crud(client: AsyncLLMSafeSpaces):
+    create_route = respx.post(f"{BASE}/api/v1/me/prompts").respond(
+        status_code=201,
+        json={"prompt": {"id": "p1", "name": "Weekly summary", "content": "c"}},
+    )
+    list_route = respx.get(f"{BASE}/api/v1/me/prompts").respond(
+        json={"prompts": [{"id": "p1", "name": "Weekly summary", "content": "c"}]}
+    )
+    update_route = respx.put(f"{BASE}/api/v1/me/prompts/p1").respond(
+        json={"prompt": {"id": "p1", "name": "renamed", "content": "new"}}
+    )
+    delete_route = respx.delete(f"{BASE}/api/v1/me/prompts/p1").respond(status_code=204)
+
+    created = await client.user_prompts.create({"name": "Weekly summary", "content": "c"})
+    assert created["id"] == "p1"
+    assert create_route.called
+
+    listed = await client.user_prompts.list()
+    assert listed[0]["name"] == "Weekly summary"
+
+    updated = await client.user_prompts.update("p1", {"name": "renamed"})
+    assert updated["name"] == "renamed"
+    import json as _json
+    assert _json.loads(update_route.calls.last.request.content) == {"name": "renamed"}
+
+    await client.user_prompts.delete("p1")
+    assert delete_route.called
