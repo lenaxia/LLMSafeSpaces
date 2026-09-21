@@ -63,6 +63,22 @@ func validateWorkspaceTerminationGrace(grace int64) error {
 	return nil
 }
 
+// freeModelsFlags registers the free-tier catalog refresher flags
+// (hoisted from main purely for the funlen bound; defaults unchanged).
+func registerFreeModelsFlags() (enable bool, interval time.Duration) {
+	flag.BoolVar(&enable, "enable-free-models-refresher", true,
+		"Periodically fetch the opencode free-tier model catalog from models.dev "+
+			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
+			"this CM to pre-render their relay agent-config.json before opencode "+
+			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
+			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
+			"true; set false to disable and fall back to per-pod fetching.")
+	flag.DurationVar(&interval, "free-models-refresh-interval", 6*time.Hour,
+		"How often the free-models refresher fetches the catalog. The catalog "+
+			"changes ~weekly so hours-scale intervals are appropriate.")
+	return
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
@@ -162,35 +178,19 @@ func main() {
 	flag.Int64Var(&maxMemoryMiPerTenant, "max-memory-mi-per-tenant", 0,
 		"Maximum aggregate memory requests (MiB) per tenant (Epic 51 S51.2). "+
 			"0 means unlimited. Recommended: 16384 (16GiB) for multi-tenant.")
-	var enableFreeModelsRefresher bool
-	flag.BoolVar(&enableFreeModelsRefresher, "enable-free-models-refresher", true,
-		"Periodically fetch the opencode free-tier model catalog from models.dev "+
-			"and publish it as a ConfigMap in POD_NAMESPACE. Workspace pods consume "+
-			"this CM to pre-render their relay agent-config.json before opencode "+
-			"boots, eliminating the in-pod opencode-restart cycle that the legacy "+
-			"relay-injector goroutine imposed (~6-8s saved per cold start). Default "+
-			"true; set false to disable and fall back to per-pod fetching.")
-	var freeModelsRefreshInterval time.Duration
-	flag.DurationVar(&freeModelsRefreshInterval, "free-models-refresh-interval", 6*time.Hour,
-		"How often the free-models refresher fetches the catalog. The catalog "+
-			"changes ~weekly so 6h is generous; lower values are fine but "+
-			"increase load on models.dev.")
+	enableFreeModelsRefresher, freeModelsRefreshInterval := registerFreeModelsFlags()
 	var freeModelsAPIURL string
-	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "",
-		"Override URL for the free-models catalog. Empty defaults to "+
-			"https://models.dev/api.json. Useful for air-gapped clusters that "+
-			"mirror the catalog internally.")
+	flag.StringVar(&freeModelsAPIURL, "free-models-api-url", "https://models.dev/api.json",
+		"Source URL for the free-tier model catalog refresher (models.dev default).")
 	var agentdImage string
 	flag.StringVar(&agentdImage, "agentd-image", "",
-		"#863: digest-pinned agentd image (ghcr.io/.../agentd@sha256:...) delivered to "+
-			"workspace pods via a read-only image volume. Empty = legacy mode "+
-			"(binary baked into runtimes/base). Must be digest-pinned; the entrypoint "+
-			"verifies the binary's sha256 against the pins before exec.")
+		"Design 0053 §4.2: digest-pinned agentd image (ghcr.io/.../agentd@sha256:...) delivered to "+
+			"workspace pods via read-only image volumes. Required in sidecar mode (--agentd-sidecar); "+
+			"optional otherwise (single-container mode uses the baked binary). Must be digest-pinned.")
 	var agentdBinarySHA256AMD64 string
 	flag.StringVar(&agentdBinarySHA256AMD64, "agentd-binary-sha256-amd64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the amd64 workspace-agentd "+
-			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
-			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
 	var agentdBinarySHA256ARM64 string
 	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
