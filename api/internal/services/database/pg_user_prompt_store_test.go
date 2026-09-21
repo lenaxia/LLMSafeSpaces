@@ -18,6 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestListUserPrompts_WritesExpectedSQL pins the query shape INCLUDING
+// the ORDER BY updated_at DESC clause — the contract element the
+// consuming lane (#1496) depends on (handler passes the store's order
+// through untouched, so this IS the order pin).
 func TestListUserPrompts_WritesExpectedSQL(t *testing.T) {
 	svc, mock, cleanup := setupMockDB(t)
 	defer cleanup()
@@ -25,7 +29,7 @@ func TestListUserPrompts_WritesExpectedSQL(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "name", "content", "created_at", "updated_at"}).
 		AddRow("p1", "Weekly summary", "Summarize…", time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC), time.Date(2026, 9, 20, 11, 0, 0, 0, time.UTC))
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`SELECT id, name, content, created_at, updated_at FROM user_prompts WHERE user_id = $1`,
+		`ORDER BY updated_at DESC LIMIT 500`,
 	)).
 		WithArgs("u1").
 		WillReturnRows(rows)

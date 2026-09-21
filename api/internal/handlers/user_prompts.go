@@ -66,15 +66,19 @@ func (h *UserPromptsHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
-	if msg, ok := validateUserPromptName(req.Name); !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+	name, ok := validateUserPromptName(req.Name)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": name})
 		return
 	}
 	if !validUserPromptContent(req.Content) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be 1-65536 bytes"})
 		return
 	}
-	p, err := h.store.CreateUserPrompt(c.Request.Context(), userID, req.Name, req.Content)
+	// The TRIMMED name is what gets stored (the issue's contract):
+	// persisting the raw value would break the 100-rune ceiling and
+	// let " foo" and "foo" coexist under UNIQUE(user_id, name).
+	p, err := h.store.CreateUserPrompt(c.Request.Context(), userID, name, req.Content)
 	if errors.Is(err, database.ErrPromptNameTaken) {
 		c.JSON(http.StatusConflict, gin.H{"error": "prompt_name_taken"})
 		return
@@ -94,11 +98,14 @@ func (h *UserPromptsHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	var trimmedName *string
 	if req.Name != nil {
-		if msg, ok := validateUserPromptName(*req.Name); !ok {
-			c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		name, ok := validateUserPromptName(*req.Name)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": name})
 			return
 		}
+		trimmedName = &name
 	}
 	if req.Content != nil && !validUserPromptContent(*req.Content) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be 1-65536 bytes"})
@@ -108,7 +115,7 @@ func (h *UserPromptsHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
 		return
 	}
-	p, err := h.store.UpdateUserPrompt(c.Request.Context(), userID, id, req.Name, req.Content)
+	p, err := h.store.UpdateUserPrompt(c.Request.Context(), userID, id, trimmedName, req.Content)
 	if errors.Is(err, database.ErrPromptNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "prompt not found"})
 		return
@@ -140,7 +147,9 @@ func (h *UserPromptsHandler) Delete(c *gin.Context) {
 
 // validateUserPromptName trims and checks the display-label rules:
 // 1–100 runes, no control characters (display safety — labels cross
-// the UI).
+// the UI). On success it returns the TRIMMED name — that value is what
+// callers must persist (the ceiling and the UNIQUE(user_id, name) slot
+// both key on it); on failure it returns the error message.
 func validateUserPromptName(raw string) (string, bool) {
 	name := strings.TrimSpace(raw)
 	if name == "" {
@@ -154,7 +163,7 @@ func validateUserPromptName(raw string) (string, bool) {
 			return "name must not contain control characters", false
 		}
 	}
-	return "", true
+	return name, true
 }
 
 func validUserPromptContent(content string) bool {

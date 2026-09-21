@@ -241,3 +241,25 @@ func TestUserPrompts_StoreFailureIs500(t *testing.T) {
 	h.List(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+// TestUserPrompts_NameIsStoredTrimmed — the issue's contract ("name —
+// trimmed"): the STORED value is the trimmed one, so the 100-rune
+// ceiling holds on the persisted row and " foo" cannot coexist with
+// "foo" under UNIQUE(user_id, name).
+func TestUserPrompts_NameIsStoredTrimmed(t *testing.T) {
+	store := newStubUserPromptStore()
+	h := NewUserPromptsHandler(store)
+
+	c, w := userPromptCall("POST", "/", `{"name":"  Weekly summary  ","content":"x"}`)
+	h.Create(c)
+	require.Equal(t, http.StatusCreated, w.Code)
+	var created types.UserPromptResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	assert.Equal(t, "Weekly summary", created.Prompt.Name, "the trimmed name is what gets stored and returned")
+
+	// The trimmed name occupies the uniqueness slot: a raw "  Weekly summary  "
+	// create conflicts, not coexists.
+	c, w = userPromptCall("POST", "/", `{"name":" Weekly summary ","content":"y"}`)
+	h.Create(c)
+	assert.Equal(t, http.StatusConflict, w.Code)
+}

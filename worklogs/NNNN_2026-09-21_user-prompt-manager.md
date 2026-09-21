@@ -65,7 +65,15 @@ None.
 
 ---
 
-## Next Steps
+### Review round 1 (CHANGES_REQUESTED → addressed)
+
+- **Trimmed name PERSISTED (their finding 1):** `validateUserPromptName` now returns the trimmed name and Create/Update store THAT value — the 100-rune ceiling holds on the stored row and `" foo"`/`"foo"` cannot coexist under UNIQUE(user_id, name). Regression row: `NameIsStoredTrimmed` (create with padded name → stored/returned trimmed; padded duplicate → 409).
+- **Routes de-nested (their finding 2):** my scripted splice had landed the prompts block INSIDE the MCP-handler guard — the exact blind-splice class the incidents section warns about, now on the router too. Own nil-guarded block, outside any sibling resource's guard; comment states the invariant (a conditional MCP construction must never gate the unconditional prompts handler).
+- **updatedAt DESC pinned (their missing-#3):** at the layer that owns it — the store's sqlmock row now names the ORDER BY clause as THE order pin (the handler passes store order through; a handler-level order test would only test its own stub — noted and not written vacuously).
+- **Composed rows (their missing integration level):** `router_prompts_test.go` — real router → AuthMiddleware → handler → store stub over HTTP: the 401 gate on all four verbs + full CRUD on the wire (201 trimmed-name envelope, 200 list, 200 partial update, 409 duplicate, 204/404 delete).
+- **SDK freshness verified delivered:** `make -C sdks sdk-check` green ("SDK surface is current (spec valid + router parity holds)") — the typed-client generators remain unimplemented house-wide (US-14.3/14.4 placeholders), so spec+parity IS the freshness bar today.
+
+
 
 - Adversarial review loop until APPROVED; orchestrator merges.
 - The composer lane wires the real endpoint when this lands (their mock swap is one file).

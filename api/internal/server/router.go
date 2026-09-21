@@ -1871,17 +1871,20 @@ func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg Rou
 		orgMcp.GET("/:serverId/auto-apply", cfg.OrgMCPServersHandler.ListAutoApply)
 	}
 
-	if cfg.UserMCPServersHandler != nil {
-		// #1499: user-level saved prompts (owner-scoped CRUD).
-		if cfg.UserPromptsHandler != nil {
-			userPrompts := router.Group("/api/v1/me/prompts")
-			userPrompts.Use(services.GetAuth().AuthMiddleware())
-			userPrompts.GET("", cfg.UserPromptsHandler.List)
-			userPrompts.POST("", cfg.UserPromptsHandler.Create)
-			userPrompts.PUT("/:id", cfg.UserPromptsHandler.Update)
-			userPrompts.DELETE("/:id", cfg.UserPromptsHandler.Delete)
-		}
+	// #1499: user-level saved prompts (owner-scoped CRUD) — its own
+	// nil-guarded block, deliberately NOT nested in any sibling
+	// resource's guard (a conditional MCP construction must never
+	// gate an unconditionally-constructed prompts handler).
+	if cfg.UserPromptsHandler != nil {
+		userPrompts := router.Group("/api/v1/me/prompts")
+		userPrompts.Use(services.GetAuth().AuthMiddleware())
+		userPrompts.GET("", cfg.UserPromptsHandler.List)
+		userPrompts.POST("", cfg.UserPromptsHandler.Create)
+		userPrompts.PUT("/:id", cfg.UserPromptsHandler.Update)
+		userPrompts.DELETE("/:id", cfg.UserPromptsHandler.Delete)
+	}
 
+	if cfg.UserMCPServersHandler != nil {
 		userMcp := router.Group("/api/v1/me/mcp-servers")
 		userMcp.Use(services.GetAuth().AuthMiddleware())
 		userMcp.GET("", cfg.UserMCPServersHandler.UserList)
