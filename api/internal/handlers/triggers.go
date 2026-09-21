@@ -523,6 +523,20 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		if !h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput) {
 			return
 		}
+		// #1519: workflow-existence check on the POST-PATCH MERGED view —
+		// create's contract (triggers.go create arm), mirrored. The
+		// V-matrix's un-opted NotFound arm deliberately skips (V6's ghost
+		// tolerance); this check closes the hole: a retarget to a
+		// nonexistent workflow or a stored ghost (legacy cross-owner /
+		// pre-#1517 wiring) surfaced by ANY mapping-touching patch answers
+		// the named 400 here, never the store FK's opaque 500 or a silent
+		// persist that fires trigger_has_no_target at drain.
+		if mergedWorkflowID != "" {
+			if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, mergedWorkflowID); errors.Is(err, wf.ErrNotFound) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+				return
+			}
+		}
 	}
 
 	// #1442: the post-patch row must keep an execution target. The 0059
@@ -532,23 +546,6 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	if targetlessAfterPatch {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update would leave the trigger without an execution target — set workflowId or workspaceId"})
 		return
-	}
-
-	// #1519: workflow-existence pre-flight on retargeting patches —
-	// create's named 400 (triggers.go create arm), mirrored. Without
-	// this, a nonexistent target reaches the store FK (opaque 500) and
-	// a cross-owner target persists silently (the owner-scoped lookup
-	// is the same one create uses). Ordered after the V-matrix and the
-	// targetless guard: the V-matrix owns opted-in validation's
-	// specific errors; this owns the existence contract for every
-	// retarget. A patch that does NOT touch workflowId skips the check
-	// (an existing stored target's deletion is #1440's R4d drain-time
-	// case, not a PATCH-time error).
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, *req.WorkflowID); errors.Is(err, wf.ErrNotFound) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
-			return
-		}
 	}
 
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
@@ -652,9 +649,11 @@ func (h *TriggersHandler) validateTriggerInputMapping(c *gin.Context, ownerType,
 			return false
 		}
 		if errors.Is(err, wf.ErrNotFound) {
-			// Guard skipped — but the CREATE caller's workflow-existence
-			// check answers this 400 right after; only the UPDATE view
-			// persists onward to a loud fire-time ghost.
+			// V3/V6 guard skipped for un-opted wiring. Both callers now
+			// close the hole with their own #1519 existence check on the
+			// same merged view (the create arm at the pre-insert check,
+			// the update arm inside the touchesMapping block) — a ghost
+			// target 400s there before the store write.
 			return true
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workflow"})

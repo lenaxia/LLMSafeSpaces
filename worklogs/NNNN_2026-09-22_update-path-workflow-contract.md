@@ -36,3 +36,9 @@ Two pre-existing tests updated to seed their referenced workflows in the mock st
 - `api/internal/handlers/triggers.go` — the update-path guard
 - `api/internal/handlers/triggers_test.go` — 4-case matrix + 2 seeded workflows
 - `worklogs/NNNN_2026-09-22_update-path-workflow-contract.md`
+
+## Review Round 1 (the contract was too narrow — the ruling's merged-view scope adopted)
+
+The reviewer caught that my guard fired only on `req.WorkflowID != nil` — narrower than the issue's ruling, which places the check INSIDE the `touchesMapping` block on the POST-PATCH MERGED `mergedWorkflowID`. The divergence: a de-opt patch (`{"input": null}`) on a stored-ghost row (legacy cross-owner wiring) would silently persist — the exact half-(b) harm. Fixed: the check now uses the merged view inside the mapping block; a de-opt on a ghost 400s; a non-mapping patch on a ghost stays editable.
+
+Also this round: the stale V3 comment corrected ("only the UPDATE view persists onward" was false post-fix — both callers now close the hole); the test matrix expanded from 4 to 6 cases with persistence assertions on every arm (nothing-persisted on rejects, persisted on accepts); the R1d e2e row added to the nightly harness beside R1c; the dead `seedRoutineTriggerRowAt` scaffolding removed.

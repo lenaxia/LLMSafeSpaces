@@ -1625,89 +1625,102 @@ func TestTriggerUpdate_MemoryCaptureCrossConstraint_NotFound(t *testing.T) {
 // retargeting to a nonexistent workflowId reached the store FK (opaque
 // 500); PATCH to another owner's workflow persisted silently (the
 // owner-scoped existence check on create never ran on update). Both
-// now mirror create's contract: the named 400, owner-scoped.
+// now mirror create's contract: the named 400 on the POST-PATCH MERGED
+// view, owner-scoped, inside the touchesMapping block (the ruling's
+// placement — a de-opt patch on a stored ghost 400s too).
 func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
 	seedWS := "ws-1"
-	seedRoutineTriggerRow := func(id string) {
-		seedRoutineTriggerRowAt(t, id, seedWS)
-	}
-	_ = seedRoutineTriggerRow
 
-	t.Run("PATCH to nonexistent workflow → named 400 (create parity)", func(t *testing.T) {
-		store := newMockTriggerStore()
-		store.triggers["t-1519"] = &wf.TriggerRow{
-			ID: "t-1519", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
-			Name: "asym", Enabled: true, SourceType: types.TriggerSourceCron,
+	seedRow := func(id string, workflowID *string) *wf.TriggerRow {
+		row := &wf.TriggerRow{
+			ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+			Name: "c-" + id, Enabled: true, SourceType: types.TriggerSourceCron,
 			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
-			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+			Prompt:       "p", CaptureMode: types.CaptureFull,
 		}
+		if workflowID != nil {
+			row.WorkflowID = workflowID
+		} else {
+			row.WorkspaceID = &seedWS
+		}
+		return row
+	}
+	wsPtr := func(s string) *string { return &s }
+
+	t.Run("PATCH to nonexistent workflow → named 400, nothing persisted", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-a"] = seedRow("t-a", nil)
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 
-		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519",
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-a",
 			map[string]any{"workflowId": "00000000-0000-4000-8000-00000000dead"})
 		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
 		assert.Contains(t, w.Body.String(), "target workflow not found")
+		// Nothing persisted: the row still targets the workspace.
+		assert.Nil(t, store.triggers["t-a"].WorkflowID, "rejected retarget must not persist")
 	})
 
-	t.Run("PATCH to foreign-owner workflow → named 400 (owner-scoped)", func(t *testing.T) {
+	t.Run("PATCH to foreign-owner workflow → named 400, nothing persisted", func(t *testing.T) {
 		store := newMockTriggerStore()
-		store.triggers["t-1519x"] = &wf.TriggerRow{
-			ID: "t-1519x", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
-			Name: "asym-x", Enabled: true, SourceType: types.TriggerSourceCron,
-			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
-			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
-		}
-		// The workflow EXISTS but belongs to another owner — the
-		// owner-scoped GetWorkflow must answer NotFound.
+		store.triggers["t-b"] = seedRow("t-b", nil)
 		store.workflows["wf-foreign"] = &wf.WorkflowRow{
 			ID: "wf-foreign", OwnerType: types.WorkflowOwnerUser, OwnerID: "someone-else",
 		}
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 
-		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519x",
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-b",
 			map[string]any{"workflowId": "wf-foreign"})
 		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
 		assert.Contains(t, w.Body.String(), "target workflow not found")
+		assert.Nil(t, store.triggers["t-b"].WorkflowID, "rejected retarget must not persist")
 	})
 
-	t.Run("PATCH to existing own workflow → 200 (the happy arm)", func(t *testing.T) {
+	t.Run("PATCH to existing own workflow → 200, persisted", func(t *testing.T) {
 		store := newMockTriggerStore()
-		store.triggers["t-1519ok"] = &wf.TriggerRow{
-			ID: "t-1519ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
-			Name: "asym-ok", Enabled: true, SourceType: types.TriggerSourceCron,
-			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
-			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
-		}
+		store.triggers["t-c"] = seedRow("t-c", nil)
 		store.workflows["wf-mine"] = &wf.WorkflowRow{
 			ID: "wf-mine", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
 		}
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 
-		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519ok",
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-c",
 			map[string]any{"workflowId": "wf-mine"})
 		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+		require.NotNil(t, store.triggers["t-c"].WorkflowID, "accepted retarget must persist")
+		assert.Equal(t, "wf-mine", *store.triggers["t-c"].WorkflowID)
 	})
 
-	t.Run("PATCH NOT touching workflowId → no existence check (unrelated fields pass)", func(t *testing.T) {
+	t.Run("de-opt on stored ghost → 400 (the ruling's un-opted-V3 hole)", func(t *testing.T) {
+		// A legacy row wired to a cross-owner ghost (pre-#1517 FK is
+		// unscoped): the V-matrix's un-opted NotFound arm skips (returns
+		// true); the #1519 check on the MERGED view 400s — the ghost
+		// cannot silently persist onward to a loud drain fire.
 		store := newMockTriggerStore()
-		store.triggers["t-1519nt"] = &wf.TriggerRow{
-			ID: "t-1519nt", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
-			Name: "asym-nt", Enabled: true, SourceType: types.TriggerSourceCron,
-			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
-			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
-		}
+		store.triggers["t-ghost"] = seedRow("t-ghost", wsPtr("wf-ghost"))
+		// wf-ghost is NOT in the mock store — the owner-scoped GetWorkflow
+		// returns NotFound.
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 
-		// A prompt rename with no workflowId in the patch: no workflow
-		// lookup fires (the workflow may not even exist — #1440's R4d
-		// drain-time guard owns that case).
-		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519nt",
-			map[string]any{"prompt": "new prompt"})
-		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+		// De-opt: clear the static input (touchesMapping fires; the V3
+		// un-opted arm would have skipped; the #1519 merged-view check 400s).
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-ghost",
+			map[string]any{"input": nil})
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), "target workflow not found")
 	})
-}
 
-func seedRoutineTriggerRowAt(t *testing.T, id, wsID string) {
-	t.Helper()
-	// unused placeholder — the inline seeds above are self-contained
+	t.Run("non-mapping patch on stored ghost stays editable", func(t *testing.T) {
+		// #1442 round-2 parity: a prompt rename on a stored-ghost row
+		// does NOT trigger the existence check (touchesMapping false) —
+		// the incident population stays editable for repairs.
+		store := newMockTriggerStore()
+		store.triggers["t-ghost2"] = seedRow("t-ghost2", wsPtr("wf-ghost2"))
+		// wf-ghost2 is NOT in the mock store.
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-ghost2",
+			map[string]any{"prompt": "renamed"})
+		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+		assert.Equal(t, "renamed", store.triggers["t-ghost2"].Prompt)
+	})
 }

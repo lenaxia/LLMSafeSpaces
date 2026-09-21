@@ -151,6 +151,19 @@ else
     note_fail "R1c: ghost-workflow create returned ${api_status} (${r1c_resp}), expected 400 target workflow not found"
 fi
 
+# R1d — the update contract (#1519): PATCH retargeting to a nonexistent
+# workflow answers the same named 400 (create parity; the pre-fix path
+# hit the store FK with an opaque 500).
+R1D_ID=$(create_trigger "e2e-update-ghost-contract" "0 3 1 * *")
+api PUT "/api/v1/me/triggers/${R1D_ID}" \
+    '{"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
+r1d_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1d_resp}" == *"target workflow not found"* ]]; then
+    ok "R1d: ghost-workflow PATCH rejected with the named 400 (update contract)"
+else
+    note_fail "R1d: ghost-workflow PATCH returned ${api_status} (${r1d_resp}), expected 400 target workflow not found"
+fi
+
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
 r1_next=$(trigger_field "${R1_ID}" nextFireAt)
 if [[ -n "${r1_next}" ]] && [[ "$(date -u -d "${r1_next}" +%s)" -ge "$(date -u +%s)" ]]; then
