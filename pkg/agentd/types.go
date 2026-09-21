@@ -35,8 +35,10 @@ const (
 	// AllowedDirsPath is where the bootstrap subcommand writes the instance's
 	// allowedExternalDirectories setting (a JSON array of glob patterns). The
 	// AgentConfigWriter reads it once at init and merges each pattern into
-	// agent-config.json's mode.permissions.external_directory as an "allow"
-	// rule, so agents stop prompting for /tmp/* on every session. Lives on
+	// agent-config.json's TOP-LEVEL permission.external_directory (the
+	// LIVE key on pinned opencode — mode.permissions is inert) as an
+	// "allow" rule, so agents stop prompting for /tmp/* on every
+	// session. Lives on
 	// /sandbox-runtime tmpfs: survives container restart, wiped on pod
 	// death, no plaintext-on-PVC concern (it's a list of public path
 	// globs, not secrets).

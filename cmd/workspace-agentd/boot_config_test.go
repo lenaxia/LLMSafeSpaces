@@ -45,7 +45,7 @@ func TestEnsureBootAgentConfig_StampsPlatformBlocks(t *testing.T) {
 				Prompt string `json:"prompt"`
 			} `json:"build"`
 		} `json:"agent"`
-		// #1493: the LIVE permission shape on pinned opencode 1.18.15 is
+		// tier ruling: the LIVE permission shape on pinned opencode 1.18.15 is
 		// the TOP-LEVEL key (mode.permissions is inert).
 		Permission struct {
 			ExternalDirectory map[string]string `json:"external_directory"`

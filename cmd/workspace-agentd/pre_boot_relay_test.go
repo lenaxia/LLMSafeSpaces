@@ -413,7 +413,7 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 			"the pre-boot relay writer must load it from the admin-prompt source")
 
 	// 2. Allowed external directories must be present as allow-rules —
-	// in the TOP-LEVEL permission key (#1493: mode.permissions is inert
+	// in the TOP-LEVEL permission key (tier ruling: mode.permissions is inert
 	// on pinned opencode 1.18.15; the writer renders the live shape).
 	permBlock, ok := cfg["permission"].(map[string]any)
 	require.True(t, ok, "top-level permission block must be present (allowed-dirs source loaded)")

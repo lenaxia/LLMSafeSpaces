@@ -589,9 +589,10 @@ func TestAllowedDirs_MissingFile_NoModeBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
 
-	// #1493: the tier floor ALWAYS emits a mode block (empty allowedDirs
-	// no longer means no mode block). The prior no-mode-block pin is
-	// superseded: what still holds is that ONLY the floor renders — no
+	// tier ruling: the floor ALWAYS emits the top-level permission block
+	// (empty allowedDirs no longer means no permission section). The prior
+	// no-mode-block pin is superseded: what still holds is that ONLY the
+	// floor renders — no
 	// allowed-dirs noise — and no other sections are invented.
 	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "does-not-exist.json")))
 	require.NoError(t, w.Rebuild())
@@ -611,7 +612,7 @@ func TestAllowedDirs_MissingFile_NoModeBlock(t *testing.T) {
 }
 
 func TestAllowedDirs_BareStringExternalDirectory_ConvertedToFloorMap(t *testing.T) {
-	// #1493 semantics change: a bare-string external_directory ("allow")
+	// tier-ruling semantics change: a bare-string external_directory ("allow")
 	// would defeat every tier deny if preserved as-is. The writer now
 	// converts it to the map form with the floor — the string shape can
 	// only originate from agent self-tampering (the writer always
@@ -653,7 +654,7 @@ func TestAllowedDirs_EmptyDirs_NoExternalDirectoryNoise(t *testing.T) {
 	w := NewConfigWriter(path, WithAllowedDirsPath(filepath.Join(dir, "does-not-exist.json")))
 	require.NoError(t, w.Rebuild())
 
-	// #1493: the permission-tier floor is ALWAYS rendered (empty
+	// tier ruling: the permission-tier floor is ALWAYS rendered (empty
 	// allowedDirs no longer means a no-op external_directory — the
 	// floor is the platform boundary). The prior no-op pin is
 	// superseded; what still holds:

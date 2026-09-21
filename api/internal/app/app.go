@@ -1028,8 +1028,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Wire the instance settings reader so the bootstrap response carries
 		// workspace.allowedExternalDirectories (default ["/tmp/*"]) — agentd
 		// materializes it into /sandbox-runtime/allowed-dirs.json and the
-		// AgentConfigWriter injects mode.permissions.external_directory
-		// allow-rules so agents stop prompting for /tmp/* on every session.
+		// AgentConfigWriter injects allow-rules into the TOP-LEVEL
+		// permission.external_directory (the LIVE key on pinned opencode)
+		// so agents stop prompting for /tmp/* on every session.
 		podBootstrapHandler.SetSettingsReader(instanceSettings)
 		// User provider-credential bind/unbind routes are NOT under
 		// /api/v1/workspaces/:id (they live under /api/v1/provider-credentials/:id/bind/:workspaceId),

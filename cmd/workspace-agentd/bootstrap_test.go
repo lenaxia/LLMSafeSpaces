@@ -383,7 +383,7 @@ func TestAdminPromptPathDefault(t *testing.T) {
 // The bootstrap subcommand writes the instance's allowedExternalDirectories
 // setting to agentd.AllowedDirsPath as a JSON array, so the AgentConfigWriter
 // can merge each pattern into permission.external_directory (the LIVE
-// top-level key — #1493) as an
+// top-level key — the tier ruling) as an
 // "allow" rule. This is the boot-time delivery channel that stops agents
 // prompting for /tmp/* on every session.
 //
