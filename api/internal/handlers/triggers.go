@@ -534,6 +534,23 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		return
 	}
 
+	// #1519: workflow-existence pre-flight on retargeting patches —
+	// create's named 400 (triggers.go create arm), mirrored. Without
+	// this, a nonexistent target reaches the store FK (opaque 500) and
+	// a cross-owner target persists silently (the owner-scoped lookup
+	// is the same one create uses). Ordered after the V-matrix and the
+	// targetless guard: the V-matrix owns opted-in validation's
+	// specific errors; this owns the existence contract for every
+	// retarget. A patch that does NOT touch workflowId skips the check
+	// (an existing stored target's deletion is #1440's R4d drain-time
+	// case, not a PATCH-time error).
+	if req.WorkflowID != nil && *req.WorkflowID != "" {
+		if _, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, *req.WorkflowID); errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workflow not found"})
+			return
+		}
+	}
+
 	row, err := h.store.UpdateTrigger(c.Request.Context(), ownerType, ownerID, triggerID, upd)
 	if err != nil {
 		if errors.Is(err, wf.ErrNotFound) {

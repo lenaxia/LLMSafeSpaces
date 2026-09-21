@@ -1356,6 +1356,9 @@ func TestTriggerUpdate_TargetPresenceGuard(t *testing.T) {
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
 		id := created["id"].(string)
 
+		store.workflows["wf-9"] = &wf.WorkflowRow{
+			ID: "wf-9", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		}
 		w = doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workspaceId": "", "workflowId": "wf-9"})
 		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
 		row := store.triggers[id]
@@ -1415,6 +1418,11 @@ func TestTriggerUpdate_TargetlessRowRepairAccepted(t *testing.T) {
 		ID: id, OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
 		Name: "zombie2", Enabled: true, SourceType: types.TriggerSourceCron,
 		SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+	}
+	// The repair target must exist for the caller's owner scope (#1519's
+	// existence check fires on retargeting patches).
+	store.workflows["wf-repair"] = &wf.WorkflowRow{
+		ID: "wf-repair", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
 	}
 
 	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+id, map[string]any{"workflowId": "wf-repair"})
@@ -1611,4 +1619,95 @@ func TestTriggerUpdate_MemoryCaptureCrossConstraint_NotFound(t *testing.T) {
 	w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/nope",
 		map[string]any{"memoryMode": types.MemoryLastResult})
 	assert.Equal(t, 404, w.Code, "body: %s", w.Body.String())
+}
+
+// #1519: the update path's workflow-existence asymmetry — PATCH
+// retargeting to a nonexistent workflowId reached the store FK (opaque
+// 500); PATCH to another owner's workflow persisted silently (the
+// owner-scoped existence check on create never ran on update). Both
+// now mirror create's contract: the named 400, owner-scoped.
+func TestTriggerUpdate_WorkflowTargetContract(t *testing.T) {
+	seedWS := "ws-1"
+	seedRoutineTriggerRow := func(id string) {
+		seedRoutineTriggerRowAt(t, id, seedWS)
+	}
+	_ = seedRoutineTriggerRow
+
+	t.Run("PATCH to nonexistent workflow → named 400 (create parity)", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-1519"] = &wf.TriggerRow{
+			ID: "t-1519", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+			Name: "asym", Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+		}
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519",
+			map[string]any{"workflowId": "00000000-0000-4000-8000-00000000dead"})
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), "target workflow not found")
+	})
+
+	t.Run("PATCH to foreign-owner workflow → named 400 (owner-scoped)", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-1519x"] = &wf.TriggerRow{
+			ID: "t-1519x", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+			Name: "asym-x", Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+		}
+		// The workflow EXISTS but belongs to another owner — the
+		// owner-scoped GetWorkflow must answer NotFound.
+		store.workflows["wf-foreign"] = &wf.WorkflowRow{
+			ID: "wf-foreign", OwnerType: types.WorkflowOwnerUser, OwnerID: "someone-else",
+		}
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519x",
+			map[string]any{"workflowId": "wf-foreign"})
+		require.Equal(t, 400, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), "target workflow not found")
+	})
+
+	t.Run("PATCH to existing own workflow → 200 (the happy arm)", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-1519ok"] = &wf.TriggerRow{
+			ID: "t-1519ok", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+			Name: "asym-ok", Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+		}
+		store.workflows["wf-mine"] = &wf.WorkflowRow{
+			ID: "wf-mine", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+		}
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519ok",
+			map[string]any{"workflowId": "wf-mine"})
+		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	})
+
+	t.Run("PATCH NOT touching workflowId → no existence check (unrelated fields pass)", func(t *testing.T) {
+		store := newMockTriggerStore()
+		store.triggers["t-1519nt"] = &wf.TriggerRow{
+			ID: "t-1519nt", OwnerType: types.WorkflowOwnerUser, OwnerID: "test-user",
+			Name: "asym-nt", Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 3 1 * *","tz":"UTC"}`),
+			WorkspaceID:  &seedWS, Prompt: "p", CaptureMode: types.CaptureFull,
+		}
+		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
+
+		// A prompt rename with no workflowId in the patch: no workflow
+		// lookup fires (the workflow may not even exist — #1440's R4d
+		// drain-time guard owns that case).
+		w := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/t-1519nt",
+			map[string]any{"prompt": "new prompt"})
+		require.Equal(t, 200, w.Code, "body: %s", w.Body.String())
+	})
+}
+
+func seedRoutineTriggerRowAt(t *testing.T, id, wsID string) {
+	t.Helper()
+	// unused placeholder — the inline seeds above are self-contained
 }
