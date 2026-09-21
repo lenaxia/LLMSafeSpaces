@@ -151,3 +151,10 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 ## Review round 12 (design doc) — approved-pending one word
 
 - r12 verified clean of blocking findings; the sole residual was the PR body's revision label staleness ("(r11)" describing r12) — the body-staleness class's third recurrence. Label fixed to (r12); the review-history chain completed in the same edit. No doc changes this round: the design document itself has zero open findings.
+
+
+## Review round 13 — the half-landed r12 prescription + the §4.1 scoping (all landed, verified by grep this time)
+
+- CORRECTION OF THE ROUND-12 RECORD: the "review-history chain completed in the same edit" claim was FALSE — only the label landed; the chain link never did. Fourth body-staleness recurrence and a false worklog claim; both now actually landed (chain link: the "by-definition orphaned" boot-scrub absolute → scoped to full-pod death with the restart window; verified by grep in the body file before this record was written).
+- §4.1's junk absolute scoped: "never mid-stream ENOSPC FROM THAT JUNK — junk landing AFTER admission is the §3.5 abort case" (the caveat had lived only in this worklog's r1 record; now in the doc).
+- Body's forwarding sentence decompressed to match §4.6 exactly (only apply-ack 507s carry §3.2 codes; the 504 reason is upstream_apply_timeout).

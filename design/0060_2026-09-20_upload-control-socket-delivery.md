@@ -157,7 +157,10 @@ admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
 // (B) is the shared-capacity guard: admission against AVAILABLE bytes,
 //   not total — anything already consuming the tmpfs (including agent-
 //   planted junk, §4.1.1) reduces admission capacity. Junk therefore
-//   converts to clean pre-acceptance 507s, never mid-stream ENOSPC.
+//   converts to clean pre-acceptance 507s, never mid-stream ENOSPC
+//   FROM THAT JUNK — junk landing AFTER admission drives the staged
+//   write to mid-stream ENOSPC, which is the §3.5 abort case (clean
+//   stream failure, 507 staging write failed, tabled in §4.6).
 ```
 
 - `credentialUsage()` is recomputed at each admission (the credential surfaces are few and small); **credentials are never evicted and never blocked by uploads** — the floor plus the recomputed live usage guarantee headroom for credential staging at all times.
