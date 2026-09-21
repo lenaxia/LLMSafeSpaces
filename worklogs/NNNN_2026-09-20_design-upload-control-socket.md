@@ -134,3 +134,8 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - §4.3's false absolute corrected: the supervisor is the only CONTROL-PLANE component that can write the destination dir — the in-pod agent shares its uid (§4.1.1) and is the D14 adversary, not a hygiene authority.
 - §5.2: "no PVC `.tmp` survives" → "survives INDEFINITELY" (reclaimed at boot/TTL, not instantly).
 - Destination scrub's TTL pinned to the same `UPLOAD_STAGING_TTL`.
+
+
+## Review round 10 (design doc) — 1 minor ("one word from approval")
+
+- The r10 superlative still had a falsifier class: platform-init (PVC root RW, uid 1000) and workspace-setup (subPath RW) are boot-phase control-plane writers of the same directory. "STANDING" qualifier + boot-window carve-out clause added. PR body's revision label refreshed.
