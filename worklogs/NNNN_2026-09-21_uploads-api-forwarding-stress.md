@@ -91,3 +91,14 @@ The reviewer reproduced every defect by execution. All nine fixed in the harness
 9. **Concurrency absent**: SR-1 fires all six uploads concurrently (backgrounded with staggered starts); SR-2 likewise.
 
 The pin suite was hardened alongside (file-backed sampler needle, concurrent-fire needle, container-ID needle, stat -f needle + a NotContains for statf, terminal-outcome needles); three stale needles from the first draft's text cost several edit cycles (the recurring needle-alignment lesson: write needles FROM the final script text, never from the draft that produced them).
+
+## Review Round 2 (six more — the deepest catch: broken awk numerics)
+
+1. SR-A sent random bytes with a multipart content-type — the file-part LOCATOR 400s before the 411. The row now sends WELL-FRAMED multipart (boundary + file-part headers + 256 bytes + closing boundary) with no declared length — the exact shape the handler 411s (verified by the reviewer AND by TestUpload_DeclaredBodyGate_ChunkedClientBody_411).
+2. `98_560_614` in awk: gawk has no underscore digit separators — lexed as string "98" (unset-var concat), making the comparison lexicographic. AND the number was wrong (94 MiB = 98,566,144, not 98,560,614). Now `98566144` plain.
+3. The precondition read /workspace (GB-scale PVC) — vacuous. Now reads /sandbox-runtime (the 96 MiB tmpfs the clause-B admission actually conditions on).
+4. SR-2 hit a nonexistent route (/me/workspaces/:id/reload-secrets → 404, discarded). Correct route (/api/v1/workspaces/:id/reload-secrets); rev BEFORE captured; the "advanced" assertion now distinguishes advanced-vs-held (a no-op resync legitimately holds the rev).
+5. SR-5's terminal set omitted 502 (the API's transport mapping for a killed agentd) — inverted failure mode. Added; the .tmp assertion is TTL-honest (bounded ≤ kills, not zero — the default TTL is 15 min per §4.3).
+6. §6.6's "concurrency" was serial. Now: a genuinely concurrent wall-clock storm + the 5th-concurrent-429 boundary row.
+
+Two unit tests added (the r1-carried gaps): unparseable-body 507 (the Unmarshal failure branch — forwards verbatim, labels agentd_error) and the >4 KiB truncation pin (bounded read; the reason field at the body's END is cut → parse fails → agentd_error — the documented pairing).

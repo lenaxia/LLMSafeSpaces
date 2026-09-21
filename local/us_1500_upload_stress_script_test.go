@@ -46,15 +46,20 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`507 dest_disk_full`,
 		// §6.5 kills: partial-visibility + destination .tmp reclaim.
 		`ls /workspace/uploads/*.tmp`,
-		`destination .tmp reclaimed`,
+		`destination .tmp bounded`,
 		// §6.6 precondition + EXPLICIT skip-DOWN (never silent 3×).
 		`skip-DOWN to 3×, explicitly`,
-		`98_560_614`,
+		`98566144`,
 		// The loud-skip convention for not-yet-landed mechanisms.
 		`SKIP-DOWN`,
 		// The #1474-r4 no-subshell api() contract.
 		`api_status="${out##*$'\n'}"`,
 		`api_body="${out%$'\n'*}"`,
+		// SR-2: correct route (r2 finding 4: /me/workspaces/ → 404).
+		`/api/v1/workspaces/${WS}/reload-secrets`,
+		// SR-5: 502 in the terminal set (r2 finding 5: transport is
+		// terminal per design §6.5).
+		`"${st}" == "502"`,
 		// Cleanup.
 		`trap cleanup EXIT`,
 	} {

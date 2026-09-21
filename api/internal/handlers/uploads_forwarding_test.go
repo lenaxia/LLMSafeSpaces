@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -145,6 +146,47 @@ func TestUpload_DeclaredBodyGate_ChunkedClientBody_411(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "declared body length required")
 	assert.Contains(t, w.Body.String(), `"reason":"invalid_declared_length"`)
 	assert.Equal(t, 1.0, uploadMetricValue(t, "invalid_declared_length"))
+}
+
+func TestUpload_507UnparseableBody_ForwardsVerbatim_LabelsAgentdError(t *testing.T) {
+	resetUploadMetrics(t)
+	// The forwardedUploadReason json.Unmarshal failure branch (r2
+	// missing case): agentd's body is NOT valid JSON — the 507 still
+	// forwards byte-for-byte and the label degrades to agentd_error.
+	env, _ := newUploadEnvWithFakeAgentd(t, http.StatusInsufficientStorage, `not-json{garbage`)
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "x.txt", content: []byte("x")})
+	w := doUpload(env, body, ct)
+
+	assert.Equal(t, http.StatusInsufficientStorage, w.Code)
+	assert.Contains(t, w.Body.String(), "not-json{garbage", "unparseable body still forwards verbatim")
+	assert.Equal(t, 1.0, uploadMetricValue(t, "agentd_error"))
+}
+
+func TestUpload_ForwardedBody_TruncatedAt4KiB_CarriesTruncationMarker(t *testing.T) {
+	resetUploadMetrics(t)
+	// forwardedReasonBodyCap is 4 KiB: an agentd reason body beyond it
+	// truncates (a deliberate, documented deviation from verbatim —
+	// reason bodies are one-line envelopes, never file content; the
+	// frozen shapes are ~100 bytes). The truncation is pinned so a
+	// regression to unbounded reads fails here.
+	bigBody := `{"error":"` + strings.Repeat("x", 8192) + `","reason":"staging_full"}`
+	env, _ := newUploadEnvWithFakeAgentd(t, http.StatusInsufficientStorage, bigBody)
+	env.setupPassword(t, "test-password")
+	env.setupWorkspace(t, activeUploadWS())
+
+	body, ct := buildMultipart(t, uploadPartSpec{field: "file", filename: "x.txt", content: []byte("x")})
+	w := doUpload(env, body, ct)
+
+	assert.Equal(t, http.StatusInsufficientStorage, w.Code)
+	assert.LessOrEqual(t, w.Body.Len(), 4096+512, "body truncated at the 4KiB cap (+ envelope overhead)")
+	// The reason field sits at the body's END — truncation cuts it, the
+	// JSON parse fails on the fragment, and the label degrades to
+	// agentd_error. (Frozen envelopes are ~100 bytes; a >4KiB reason
+	// body is off-spec by construction — the pin documents the pair.)
+	assert.Equal(t, 1.0, uploadMetricValue(t, "agentd_error"))
 }
 
 func TestUpload_DeclaredHeaderForwardedToAgentd(t *testing.T) {

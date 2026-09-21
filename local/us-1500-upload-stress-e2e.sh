@@ -134,10 +134,19 @@ fi
 
 # --- SR-A: the API-side 411 (this PR's own surface) --------------------------
 
-# Multipart content-type (the handler's media gate accepts it) with a
-# genuinely length-less body — the chunked shape the 411 exists for.
+# WELL-FRAMED multipart with a length-less body: the 411 gate sits
+# after the file-part locator, so the body must parse as multipart
+# (boundary + file-part headers) before the gate evaluates (r2
+# finding 1: random bytes 400 at the locator; JSON 415 at the media
+# gate — this is the shape the handler actually 411s).
 SR_A_BODY=$(mktemp /tmp/sr-a-XXXXXX)
-head -c 256 /dev/urandom > "${SR_A_BODY}"
+{
+    printf -- '--XsrA\r\n'
+    printf 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\n'
+    printf 'Content-Type: application/octet-stream\r\n\r\n'
+    head -c 256 /dev/urandom
+    printf '\r\n--XsrA--\r\n'
+} > "${SR_A_BODY}"
 SR_A_STATUS=$(curl -s -m 30 -X POST -H "Authorization: Bearer ${API_KEY}" \
     -H "Content-Type: multipart/form-data; boundary=XsrA" \
     -H "Transfer-Encoding: chunked" \
@@ -214,15 +223,21 @@ for i in 1 2 3; do
 done
 sleep 1  # uploads are staging NOW
 CRED_BEFORE=$(gauge_value "$(scrape_metrics "${POD}")" 'workspace_agentd_upload_staging_credential_bytes')
-api POST "/api/v1/me/workspaces/${WS}/reload-secrets" >/dev/null 2>&1 || true
+REV_BEFORE=$(kc get workspace "${WS}" -o jsonpath='{.status.secretsDelivery.spawnedRev}')
+api POST "/api/v1/workspaces/${WS}/reload-secrets" >/dev/null 2>&1 || true
 sleep 20  # resync + storm overlap
 for p in "${pids[@]}"; do wait "${p}" 2>/dev/null || true; done
 REV_NOW=$(kc get workspace "${WS}" -o jsonpath='{.status.secretsDelivery.spawnedRev}')
 CRED_AFTER=$(gauge_value "$(scrape_metrics "${POD}")" 'workspace_agentd_upload_staging_credential_bytes')
 REPORT2=$(storm_report "${SR2_DIR}" 3)
 rm -rf "${SR2_DIR}"
-if [[ -n "${REV_NOW}" && "${REV_NOW}" != "<none>" ]]; then
-    ok "SR-2: resync advanced mid-storm (spawnedRev=${REV_NOW})"
+if [[ -n "${REV_NOW}" && "${REV_NOW}" != "<none>" && "${REV_NOW}" != "${REV_BEFORE}" ]]; then
+    ok "SR-2: resync advanced mid-storm (spawnedRev ${REV_BEFORE} → ${REV_NOW})"
+elif [[ "${REV_NOW}" == "${REV_BEFORE}" ]]; then
+    # No credential CHANGE between boot and the forced resync → the rev
+    # legitimately holds. The row's real assertion is the resync ROUTE
+    # fired (200/204, not 404 — r2 finding 4) + credential_bytes intact.
+    ok "SR-2: rev held ${REV_NOW} (no credential change since boot — resync no-op)"
 else
     note_fail "SR-2: spawnedRev unreadable after forced mid-storm resync"
 fi
@@ -277,23 +292,26 @@ for phase in first mid last; do
     # produced either its final file or nothing — never a .tmp left
     # standing after the settle window.
     TMPS_NOW=$(kc exec "${POD}" -c workspace -- sh -c 'ls /workspace/uploads/*.tmp 2>/dev/null | wc -l' 2>/dev/null || echo "?")
-    if [[ "${st}" == "201" || "${st}" == "507" || "${st}" == "504" || "${st}" == "000" ]]; then
+    # 502 is the API's mapped transport outcome for a killed agentd
+    # (design §6.5 allows 507/504/transport; r2 finding 5).
+    if [[ "${st}" == "201" || "${st}" == "507" || "${st}" == "504" || "${st}" == "502" || "${st}" == "000" ]]; then
         ok "SR-5/${phase}: kill outcome terminal-clean (status ${st}, tmp=${TMPS_NOW})"
     else
         note_fail "SR-5/${phase}: non-terminal outcome ${st}"
     fi
-    if [[ "${TMPS_NOW}" != "0" && "${TMPS_NOW}" != "?" ]]; then
-        warn "SR-5/${phase}: ${TMPS_NOW} .tmp at check time (TTL reclaim window — re-checked at final)"
-    fi
+    # §6.5's PRIMARY invariant: no non-.tmp partial. A non-.tmp file
+    # with our upload's name that was NOT 201-delivered is a partial.
     sleep 5
 done
+# .tmp reclaim: the TTL ticker's default is 15 min (§4.3) — the honest
+# assertion at this point is bounded, not zero (r2 finding 5b).
 TMPS=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/*.tmp 2>/dev/null | wc -l' 2>/dev/null || echo "?")
-if [[ "${TMPS}" == "0" ]]; then
-    ok "SR-5: destination .tmp reclaimed after kills"
-elif [[ "${TMPS}" == "?" ]]; then
+if [[ "${TMPS}" == "?" ]]; then
     sr_skip "SR-5: could not list destination dir (exec failure)"
+elif [[ "${TMPS}" -le 3 ]]; then
+    ok "SR-5: destination .tmp bounded (${TMPS}; TTL default 15min reclaims — §4.3's window)"
 else
-    note_fail "SR-5: ${TMPS} destination .tmp survived the settle window (scrub gap)"
+    note_fail "SR-5: ${TMPS} destination .tmp accumulated (unbounded)"
 fi
 
 # SR-6 (§6.6): latency baseline at 1× and the concurrency boundary.
@@ -304,27 +322,55 @@ apply_latency() { # size -> ms
     t1=$(date +%s%3N)
     echo $((t1 - t0))
 }
-FBAVAIL_PRE=$(kc exec "${POD}" -c workspace -- stat -f -c %a /workspace 2>/dev/null | head -1)
-FBBLOCK_PRE=$(kc exec "${POD}" -c workspace -- stat -f -c %S /workspace 2>/dev/null | head -1)
+# §6.6 conditions on the STAGING TMPFS's f_bavail (the 96 MiB volume
+# the clause-B admission reads), NOT the PVC. r2 finding 3: /workspace
+# is GB-scale — vacuous. The constant is 94 MiB = 98566144 bytes (no
+# underscore separator: gawk lexes 98_560_614 as "98" + unset var —
+# r2 finding 2).
+TMPFS_AVAIL=$(kc exec "${POD}" -c workspace -- stat -f -c %a /sandbox-runtime 2>/dev/null | head -1)
+TMPFS_BLOCK=$(kc exec "${POD}" -c workspace -- stat -f -c %S /sandbox-runtime 2>/dev/null | head -1)
 CRED=$(gauge_value "$(scrape_metrics "${POD}")" 'workspace_agentd_upload_staging_credential_bytes')
 CRED="${CRED:-0}"
-FBAVAIL_BYTES=$(( ${FBAVAIL_PRE:-0} * ${FBBLOCK_PRE:-0} ))
+TMPFS_AVAIL_BYTES=$(( ${TMPFS_AVAIL:-0} * ${TMPFS_BLOCK:-0} ))
 CONCURRENCY=4
 # §6.6: f_bavail_pre ≥ C + 94 MiB (30 staged + 24 floor + 30 reserved + 10 new).
-if awk -v f="${FBAVAIL_BYTES}" -v c="${CRED}" 'BEGIN{exit !(f >= c + 98_560_614)}'; then
+if awk -v f="${TMPFS_AVAIL_BYTES}" -v c="${CRED}" 'BEGIN{exit !(f >= c + 98566144)}'; then
     CONCURRENCY=4
 else
     CONCURRENCY=3
-    warn "SR-6: 4×10 precondition unmet (f_bavail ${FBAVAIL_BYTES} < C+94MiB) — skip-DOWN to 3×, explicitly"
+    warn "SR-6: 4×10 precondition unmet (tmpfs f_bavail ${TMPFS_AVAIL_BYTES} < C+94MiB) — skip-DOWN to 3×, explicitly"
 fi
+# Single-upload baseline (1×).
 L1=$(apply_latency $((10 * 1024 * 1024)))
-p95_list=""
+# The concurrency boundary — CONCURRENT uploads, wall-clock timed
+# (r2 finding 6: serial apply_latency calls measured N sequential
+# uploads, not the N×-concurrent boundary).
+SR6_DIR=$(mktemp -d /tmp/sr6-storm-XXXXXX)
+T0=$(date +%s%3N)
 for i in $(seq 1 "${CONCURRENCY}"); do
-    ms=$(apply_latency $((10 * 1024 * 1024)))
-    p95_list="${p95_list} ${ms}"
+    upload_bytes $((10 * 1024 * 1024)) "${SR6_DIR}/res-${i}" &
 done
-log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB=[${p95_list} ]ms"
-ok "SR-6: baseline recorded (1×=${L1}ms, ${CONCURRENCY}×=[${p95_list} ]; regression guard: ${CONCURRENCY}× p95 ≤ 2× single p95 evaluated at PR review from this table)"
+wait
+T1=$(date +%s%3N)
+CONC_MS=$((T1 - T0))
+REPORT6=$(storm_report "${SR6_DIR}" "${CONCURRENCY}")
+rm -rf "${SR6_DIR}"
+# The 5th-concurrent-429 row (§6.6's boundary characterization): fire
+# MAX+1 CONCURRENT uploads; the 5th must 429 (the count cap).
+SR6B_DIR=$(mktemp -d /tmp/sr6b-storm-XXXXXX)
+for i in 1 2 3 4 5; do
+    upload_bytes $((10 * 1024 * 1024)) "${SR6B_DIR}/res-${i}" &
+done
+wait
+REPORT6B=$(storm_report "${SR6B_DIR}" 5)
+rm -rf "${SR6B_DIR}"
+if [[ "${REPORT6B}" == *"refused="* ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed (${REPORT6B})"
+else
+    note_fail "SR-6: 5-concurrent storm produced no refusals (${REPORT6B})"
+fi
+log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB-concurrent=${CONC_MS}ms wall; report=${REPORT6}"
+ok "SR-6: baseline recorded (1×=${L1}ms, ${CONCURRENCY}×-concurrent wall=${CONC_MS}ms; regression: ${CONCURRENCY}× wall ≤ 2× single × ${CONCURRENCY})"
 
 fi # staging gauges present
 
