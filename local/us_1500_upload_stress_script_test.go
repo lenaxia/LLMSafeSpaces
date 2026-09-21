@@ -79,6 +79,7 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		// SR-6: per-upload median guard — the design's §6.6 quantity
 		// (r5: the wall-clock form was conditionally vacuous).
 		`SR6_GUARD=$((2 * L1))`,
+		`sort -n | awk`,
 		`SR6_P95`,
 		`ms-${i}`,
 		// SR-6B: the literal-429 construct + the precondition gate.

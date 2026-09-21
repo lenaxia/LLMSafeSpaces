@@ -407,7 +407,7 @@ for i in $(seq 1 "${CONCURRENCY}"); do
 done
 wait
 REPORT6=$(storm_report "${SR6_DIR}" "${CONCURRENCY}")
-SR6_P95=$(awk '{v[i++]=$1} END{asort(v); if (i==0){print 0} else if (i%2==1){print v[int(i/2)]} else {print int((v[i/2-1]+v[i/2])/2)}}' "${SR6_DIR}"/ms-* 2>/dev/null || echo 0)
+SR6_P95=$(cat "${SR6_DIR}"/ms-* 2>/dev/null | sort -n | awk '{v[NR]=$1} END{if (NR==0){print 0} else if (NR%2==1){print v[(NR+1)/2]} else {print int((v[NR/2]+v[NR/2+1])/2)}}')
 rm -rf "${SR6_DIR}"
 # The 5th-concurrent-429 row (§6.6's boundary characterization): fire
 # MAX+1 CONCURRENT uploads; the 5th must 429 (the count cap). Gated on
@@ -445,7 +445,7 @@ fi
 if [[ "${REPORT6}" != *"other=0"* || "${REPORT6}" != *"total=${CONCURRENCY}"* ]]; then
     note_fail "SR-6: latency storm not clean+complete (${REPORT6})"
 fi
-log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB-concurrent=${CONC_MS}ms wall; report=${REPORT6}"
+log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms (status ${L1_STATUS}); ${CONCURRENCY}x10MiB-concurrent per-upload median=${SR6_P95}ms; report=${REPORT6}"
 # Design §6.6's regression guard: per-upload p95 ≤ 2× the single-
 # upload p95 (r5: the wall-clock form was conditionally vacuous for
 # fast uploads — a serialized N×L1 storm passed when L1 ≤ 1s; the

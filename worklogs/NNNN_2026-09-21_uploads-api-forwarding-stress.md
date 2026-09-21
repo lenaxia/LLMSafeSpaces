@@ -130,3 +130,9 @@ The sharpest catch: the r4 wall-clock guard was conditionally vacuous — GUARD=
 3. **POST_KILL_LISTING exec-failure guard** (a transient kc-exec failure produced an empty listing → NEW_NON_TMP=0 → §6.5 false-pass).
 4. **Pins added** for every r4/r5 construct: SR5_PHASE_STATUSES/SR5_DELIVERED (the honest bound), POST_KILL_EXIT, SR6_GUARD=2×L1, SR6_P95, ms-N files, SR6B_HAS_429, the precondition gate. The stale CONC_MS/GUARD needle removed.
 5. **Evidence claims corrected**: the r4 worklog/commit said "trips for N≥3" — false for L1 ≤ 1s (this section corrects the record); the r4 PR comment claimed pins for the honest guard and literal-429 — the diff shows one awk needle added, two removed, none for the constructs (this round's pins close that).
+
+## Review Round 6 (the r5 fix was broken twice)
+
+1. **CONC_MS under set -u**: the variable was dead (replaced by per-upload timings) but the log line still referenced it — unbound variable → crash on the first enabled run. Fixed: the log now prints SR6_P95 + L1_STATUS.
+2. **asort is gawk-only**: Debian's mawk doesn't have it — the function call errored, the || echo 0 produced median=0, and the guard was vacuously passing. This bug was present from r5's introduction. Fixed: sort -n + awk line-counting (POSIX-portable; median verified for even and odd counts).
+The evidence-claim correction from r5 stands: the "regime-independent" claim was false — the guard was broken in every regime until this fix.
