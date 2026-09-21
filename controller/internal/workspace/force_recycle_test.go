@@ -188,3 +188,49 @@ func reconcilerWithInterceptor(t *testing.T, f interceptor.Funcs, objs ...runtim
 	r.Recorder = rec
 	return r, rec
 }
+
+// The suspended-refresh flow: RefreshWorkspaceCompute on a SUSPENDED
+// workspace stamps the marker and resumes through Creating — the
+// generation is observed in handleCreating (no pod to recycle, so no
+// bypass applies), and the marker must be CLEARED there, not left as
+// permanent annotation residue (r2 finding: the "cleared when honored"
+// invariant was false on this flow).
+func TestForce_SuspendedRefreshMarkerClearedAtCreatingObserve(t *testing.T) {
+	ws := makeWorkspace("ws-force-creating", "default", v1.WorkspacePhaseCreating)
+	ws.Spec.RestartGeneration = 5
+	ws.Status.ObservedRestartGeneration = 4
+	ws.Annotations = map[string]string{v1.AnnotationForceRecycle: "5"}
+	r, _ := reconcilerForDrain(t, ws)
+
+	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
+	assert.Equal(t, int64(5), updated.Status.ObservedRestartGeneration,
+		"the Creating gen-observe fires")
+	assert.NotContains(t, updated.Annotations, v1.AnnotationForceRecycle,
+		"the marker is cleared when Creating observes the generation — no permanent residue")
+}
+
+// The Failed-recovery flow: a generation bump on a FAILED workspace is
+// observed in handleFailed — same invariant: the marker must clear.
+func TestForce_FailedRecoveryClearsMarker(t *testing.T) {
+	ws := makeWorkspace("ws-force-failed", "default", v1.WorkspacePhaseFailed)
+	ws.Spec.RestartGeneration = 3
+	ws.Status.ObservedRestartGeneration = 2
+	ws.Annotations = map[string]string{v1.AnnotationForceRecycle: "3"}
+	r, _ := reconcilerForDrain(t, ws)
+
+	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhasePending, updated.Status.Phase,
+		"the Failed gen-bump transitions to Pending")
+	assert.Equal(t, int64(3), updated.Status.ObservedRestartGeneration,
+		"the Failed gen-observe fires")
+	assert.NotContains(t, updated.Annotations, v1.AnnotationForceRecycle,
+		"the marker is cleared when Failed-recovery observes the generation — no permanent residue")
+}

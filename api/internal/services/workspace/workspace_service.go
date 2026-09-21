@@ -945,10 +945,12 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 	crd.Spec.RestartGeneration++
 	// #1505: refresh-compute is the USER-consented force path (the UI
 	// warning is the consent). Stamp the generation-keyed force marker so
-	// handleActive's recycle bypasses the #761 session drain — on a
+	// the controller's recycle bypasses the #761 session drain — on a
 	// multi-agent pod with perpetually busy sessions the drain would
 	// never find quiet and the refresh would hang. In-flight turns die
-	// by design; the controller clears the marker when it honors it.
+	// by design. The controller clears the marker in the same reconcile
+	// that observes this generation — the Active recycle honors it; the
+	// Creating / Failed-recovery observes clear it as hygiene.
 	if crd.Annotations == nil {
 		crd.Annotations = map[string]string{}
 	}

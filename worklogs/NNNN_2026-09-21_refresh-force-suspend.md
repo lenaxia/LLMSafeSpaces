@@ -14,6 +14,12 @@ Refresh Compute (and the user suspend endpoint) must delete the pod immediately 
 
 ## Work Completed
 
+> **SUPERSEDED by the r2 rework below** — everything suspend-scoped in
+> this section (`"suspend"` marker value, SuspendWorkspaceForce, the
+> handleSuspending bypass, the 6-test matrix) was DROPPED post-#1510.
+> The r2 section is the current truth. This record stands unmodified
+> per the append-only rule.
+
 ### Force channel (annotation, transient, self-invalidating)
 - `AnnotationForceRecycle = "llmsafespaces.dev/force-recycle"` (`pkg/apis/llmsafespaces/v1/workspace_types.go`), documented in-code.
 - TWO path-scoped values, disjoint by construction: a generation number (`"42"`) applies to the refresh-compute recycle observing exactly that restartGeneration; `"suspend"` applies to one user-initiated suspend pass. A generation value can never force a suspend and vice versa (pinned: TestForce_MarkerValuesArePathScoped).
@@ -62,15 +68,21 @@ None.
 
 ## Files Modified
 
-- `pkg/apis/llmsafespaces/v1/workspace_types.go` (AnnotationForceRecycle)
-- `controller/internal/workspace/force_recycle.go` (new) + `force_recycle_test.go` (new, 6 tests)
-- `controller/internal/workspace/phase_active.go`, `phase_suspend.go` (the two drain sites)
-- `api/internal/services/workspace/workspace_service.go` (marker stamp + Force variant)
-- `api/internal/interfaces/interfaces.go`, `api/internal/mocks/workspace.go`
-- `api/internal/server/router.go` (route + contract comment), `router_workspace_test.go` (route pin)
-- `api/internal/server/mcp_router_integration_test.go` (mock)
-- `sdks/openapi.yaml` (description)
-- `worklogs/1032_2026-09-21_refresh-force-suspend.md` (this file)
+> r1 list superseded — interfaces.go, mocks/workspace.go,
+> mcp_router_integration_test.go, and phase_suspend.go are NO LONGER in
+> the diff (the dropped layer); the controller test count is 4 (r2) → 6
+> (r3). Current diff (r3):
+>
+> - `pkg/apis/llmsafespaces/v1/workspace_types.go` (AnnotationForceRecycle + three-site clear invariant)
+> - `controller/internal/workspace/force_recycle.go` (new) + `force_recycle_test.go` (new, 6 tests)
+> - `controller/internal/workspace/phase_active.go` (Active-recycle bypass + clear),
+>   `phase_creating.go` (gen-observe clear), `recovery.go` (Failed gen-observe clear)
+> - `api/internal/services/workspace/workspace_service.go` (refresh stamp; no Force variant),
+>   `workspace_refresh_test.go` (stamps/never-stamps pins)
+> - `api/internal/server/router.go` (refresh contract comment), `router_workspace_test.go` (route pin)
+> - `sdks/openapi.yaml` (refresh description)
+> - `local/issue-1505-refresh-busy-e2e.sh` + `local/issue_1505_script_test.go` (new)
+> - `worklogs/NNNN_2026-09-21_refresh-force-suspend.md` (this file — sentinel until the bot numbers it)
 
 ## r2 rework (post-#1510, post-r1) — the suspend-force layer is GONE
 
@@ -86,5 +98,11 @@ Kept + added:
 - NEW PIN: TestForce_ClearAnnotationFailureRequeuesWithoutDeletion — injected first-Update failure → Requeue (not RequeueAfter), pod KEPT, marker retained for the retry. Mutation-verified: ignoring the clear error fails the pin (red reproduced, then restored).
 - NEW ASSERTION: exactly one SessionDrainUserForced event on the forced pass; zero on the polite passes (r1's missing-test ask).
 - Inverted wiring pin: TestSuspendRoute_UsesSuspendWorkspace — /suspend routes to the single SuspendWorkspace, called once.
-- e2e row: local/issue-1505-refresh-busy-e2e.sh + 5 shape pins (busy-before-refresh ordering, Active-budget + NEW-pod + PVC-retained verdicts, fail-closed R2 with BOTH the negative drain-defer grep and the POSITIVE forced-bypass grep, WS_BASE isolation, and the reason-string↔controller-constant match pin that keeps the greps honest). Same static-delivery disposition as the #1507 row: standalone script, first recorded execution rides the #1456 wiring lane.
+- e2e row: local/issue-1505-refresh-busy-e2e.sh + 5 shape pins (busy-before-refresh ordering, Active-budget + NEW-pod + PVC-retained verdicts, fail-closed R2 with BOTH the negative drain-defer grep and the POSITIVE forced-bypass grep, WS_BASE isolation, and the reason-string↔controller-constant match pin that keeps the greps honest).
+
+## r3 — the three r2 findings
+
+- **Finding 1 (invariant false on suspended-refresh / Failed-recovery): FIXED IN CODE.** The generation is observed at THREE sites; the clear existed only at the Active recycle. Added the clear at the Creating gen-observe (phase_creating.go) and the Failed-recovery gen-observe (recovery.go, placed before the Status().Update so the clear's RV-sync holds), both gated on marker presence, both requeue-on-clear-failure (the phase_active shape). RED-first: TestForce_SuspendedRefreshMarkerClearedAtCreatingObserve and TestForce_FailedRecoveryClearsMarker both failed pre-fix (run recorded), green post-fix. The invariant comments at all three claim sites (workspace_types.go, force_recycle.go ×2, workspace_service.go) now state the three-site truth.
+- **Finding 4 (worklog self-numbered 1032, colliding with main's bot-assigned 1032_playwright-flake-investigation): FIXED.** My error — I kept the rebase-assigned number instead of the NNNN_ sentinel (the rule my own session notes carry). Renamed to NNNN_; the bot assigns at merge. Stale r1 artifacts (Files Modified list, 6-test count, r1 prose) corrected above under SUPERSEDED banners.
+- **Finding 2 (execution gate): CORRECTED, not claimed.** My r2 PR-body claim that this row shares "the same static-delivery disposition as the APPROVED #1507 row" was FALSE characterization — the #1507/#1510 approval closed its execution gate with a REVIEWER-side execution of the script UNMODIFIED on a real kind cluster ("exit 0"); the static part was only the nightly wiring. This row has ZERO recorded executions by anyone. The PR body is corrected; the closure path requested is the same reviewer-side execution the #1507 precedent set (their runner has docker/kind/kubectl), with the #1456 nightly-wiring lane as the post-merge durability follow-up either way.
 - Corrected the "polite drain" phrasing everywhere it mentioned suspend (openapi refresh description, router contract comment, force_recycle.go header, phase_active.go comment): the polite drain survives on the AUTOMATED recycle paths (restart-generation bumps, arch drift, password self-heal); suspend has no drain since #1510.

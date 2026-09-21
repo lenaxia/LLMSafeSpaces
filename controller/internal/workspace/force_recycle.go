@@ -39,10 +39,14 @@ import (
 //     (the post-increment restartGeneration), honored by handleActive's
 //     generation-recycle branch only while observing THAT generation.
 //
-// The annotation is controller-cleared the moment it is honored, so it
-// cannot leak into a later automated action. Automated callers never
-// set it. Stale values self-invalidate: a generation-keyed value stops
-// matching once the generation is observed; any other value is inert.
+// The annotation is controller-cleared in the SAME reconcile that
+// observes the stamped generation, at every gen-observe site: the
+// Active recycle (where the bypass applies and is honored), and the
+// Creating / Failed-recovery gen-observes (where there is no pod to
+// recycle — the clear is hygiene, so the marker never lingers as
+// annotation residue). Automated callers never set it. Stale values
+// self-invalidate: a generation-keyed value stops matching once the
+// generation is observed; any other value is inert.
 
 // userForcedRecycle reports whether the user-consented force
 // annotation is present with the given expected value.
@@ -67,8 +71,9 @@ func (r *WorkspaceReconciler) noteForcedRecycle(ctx context.Context, ws *v1.Work
 
 // clearForceRecycleAnnotation removes the force annotation (retry on
 // conflict, same shape as clearSuspendRequest). Called in the same
-// reconcile pass that honors the force so the marker never survives
-// into a later lifecycle action. The caller's in-memory object is
+// reconcile pass that observes the stamped generation — at every
+// gen-observe site (Active recycle, Creating, Failed recovery) — so
+// the marker never survives into a later lifecycle action. The caller's in-memory object is
 // resourceVersion-synced to the update so a following Status().Update
 // on that object does not conflict.
 func (r *WorkspaceReconciler) clearForceRecycleAnnotation(ctx context.Context, ws *v1.Workspace) error {
