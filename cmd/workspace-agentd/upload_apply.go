@@ -41,9 +41,11 @@ type uploadApplyEngine struct {
 	uploadsDir  string
 	destMargin  int64
 	ttl         time.Duration
-	// applyDeadline bounds the copy on the SUPERVISOR side too (r1
-	// finding 3): the socket's blanket 10s exchange deadline must not
-	// truncate a legitimate 10-60s apply — the method arms its own.
+	// applyDeadline is the supervisor-side copy bound (§6.3): the
+	// method arms it as BOTH the conn deadline and the Apply ctx
+	// deadline (checked per copy window) — the socket's blanket 10s
+	// exchange deadline must not truncate a legitimate 10-60s apply,
+	// and the client's 504 must bound the hold here too.
 	applyDeadline time.Duration
 
 	// applyMu serializes applies (§8 item 3's simplest choice): the
@@ -133,11 +135,13 @@ func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (m
 		return nil, &applyError{code: "target_rejected", msg: "target_name failed sanitization"}
 	}
 
-	// §4.4 ordering: the uploads dir must EXIST before anything stats or
-	// writes it — nothing else creates it in a sidecar pod (the single-
-	// container lazy mkdir rides the server path this subcommand exits
-	// before; the r1 review reproduced statfs(ENOENT) → avail=-1 →
-	// permanent dest_disk_full on every fresh workspace).
+	// §4.4 ordering — THE MKDIR IS LOAD-BEARING: the gate stats
+	// e.uploadsDir itself, and nothing else creates it in a sidecar pod
+	// (the single-container lazy mkdir rides the server path this
+	// subcommand exits before). Without the mkdir first, statfs returns
+	// ENOENT → avail −1 → permanent dest_disk_full on every fresh
+	// workspace (the r1 review's reproduction). Do not reorder.
+
 	//nolint:gosec // G301: 0755 is the design contract (epic-68 U1.1.11) — the uploads dir is traversable like /workspace itself
 	if err := os.MkdirAll(e.uploadsDir, 0o755); err != nil {
 		return nil, &applyError{code: "dest_write_failed", msg: "uploads dir unavailable"}
@@ -325,7 +329,14 @@ func (s *controlSocketServer) uploadApplyControlMethod(ctx context.Context, conn
 	if conn != nil {
 		_ = conn.SetDeadline(time.Now().Add(s.uploadApply.applyDeadline + 5*time.Second))
 	}
-	result, aerr := s.uploadApply.Apply(ctx, req.Params)
+	// §6.3 supervisor-side: the SAME bound bounds the copy itself — a
+	// real ctx deadline (checked per window in Apply), not only the conn
+	// deadline (which cannot interrupt file I/O). The pre-r2 wiring
+	// passed a never-cancelable conn ctx; this is the bound that makes
+	// "the apply timeout bounds the hold" true past the client's 504.
+	methodCtx, cancel := context.WithTimeout(ctx, s.uploadApply.applyDeadline+5*time.Second)
+	defer cancel()
+	result, aerr := s.uploadApply.Apply(methodCtx, req.Params)
 	if aerr != nil {
 		if aerr.code == "bad_request" {
 			return s.errResp(req.ID, "bad_request", aerr.msg)

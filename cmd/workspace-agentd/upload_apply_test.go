@@ -255,7 +255,15 @@ func TestDestinationScrub_BootAndTTL(t *testing.T) {
 // filesystem (the dir's parent), or every fresh workspace fails
 // dest_disk_full forever (the reviewer's reproduction).
 func TestUploadApply_FreshWorkspaceGateOrdering(t *testing.T) {
-	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
+	// The gate must be exercised against the PRODUCTION statfs (the
+	// r2 review proved the path-insensitive fixture fake made this pin
+	// hollow — it passed on the unfixed code): with destMargin=0 a
+	// statfs on the still-missing uploads dir (ENOENT → avail −1)
+	// fails the gate permanently on the pre-fix ordering; the mkdir
+	// must precede it.
+	e, _, uploads, _ := applyEngineFixture(t, 0)
+	e.statfs = statfsOf // production — path-sensitive, ENOENT-aware
+	e.destMargin = 0    // pure ENOENT sensitivity: no margin to mask it
 	// uploads dir deliberately NOT pre-created.
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
 	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))

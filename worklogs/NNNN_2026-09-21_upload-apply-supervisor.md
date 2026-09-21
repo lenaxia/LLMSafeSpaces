@@ -83,3 +83,11 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 - **HIGH — cancellation ignored / wedged copy poisons the method**: Apply takes ctx (checked per window; the single blocked-syscall residual documented) + the lock is TryLock — concurrent applies REJECT with the §3.2 busy enum (bounded queueing, the 429 semantics) instead of queueing past their deadlines. The dead enum member is live; pinned.
 - LOW: one engine instance shared by sweeper + server (the second constructor removed); the conn ctx now bounds every method.
 - Integration coverage (Rule 0): TestUploadApplySocketRoundTrip — the real server (dispatch/deadlines/error shaping) + the real PR-1 client + real staged object + real destination, the full hop in-process, success and closed-enum legs.
+
+
+## Review round 2 (2 HIGH + 3 MEDIUM, all fixed)
+
+- **The critical pin was hollow** (the reviewer proved it passes on the unfixed code — the fixture's fake statfs is path-insensitive): the fresh-workspace pin now runs the PRODUCTION statfsOf with margin 0 (pure ENOENT sensitivity). Mutation re-verified at this head: pre-fix ordering → pin FAILS; fixed → green.
+- **The ctx cancellation was inert in production** (connCtx never cancels mid-Apply; the conn deadline cannot interrupt file I/O): uploadApplyControlMethod now wraps Apply in context.WithTimeout(applyDeadline+slack) — a REAL per-window-checked bound that makes §6.3's "the apply timeout bounds the hold" true past the client's 504. The applyDeadline struct comment is true now.
+- **The gate comment obscured the load-bearing mkdir** (it claimed the statfs target "always exists" — the mkdir is what makes it exist): the comment now says THE MKDIR IS LOAD-BEARING, DO NOT REORDER; the commit message's wrong claim corrected here.
+- **The single-container boot scrub had the same user-data-loss hole** (bare *.tmp glob reclaiming <uuid>-backup.tmp finals at every boot — pre-existing, but this PR owns the domain): the single-container temp naming moved to the same structural staging- marker and its glob to staging-*.tmp; the existing scrub/squat tests updated and the uuid-prefixed-*.tmp-survives shape pinned in BOTH modes.
