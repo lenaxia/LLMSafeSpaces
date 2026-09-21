@@ -45,7 +45,7 @@ None.
 
 - APPROVED → merge → dispatch → the full R1–R9 arbitration (now on the ruled contract) + #1452/#1455/#1417/revisions/dev-preview.
 - Owner: confirm the V6 ghost-creatability overturn (flagged in the PR body); #1510's row wiring follows its merge.
-- Review-r1 robustness finding for a TRACKED follow-up (outside this lane, per review): `PUT /me/triggers/:id` with an un-opted ghost workflowId still reaches the FK as an opaque 500 (`failed to update trigger`) — the same never-an-opaque-500 class on the update route; filing requested from the orchestrator.
+- Review-r1 robustness finding for a TRACKED follow-up (outside this lane, per review; r2 sharpened BOTH halves): the UPDATE view has no workflow-existence check — (a) a nonexistent workflowId patch reaches the FK as an opaque 500 (`failed to update trigger`, triggers.go:543); (b) a CROSS-OWNER workflowId patch PERSISTS (the FK is satisfied — the row exists) and fires loud missing-workflow at fire time. The create contract closes neither; filing requested from the orchestrator.
 
 ## Files Modified
 

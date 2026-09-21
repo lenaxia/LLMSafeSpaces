@@ -939,7 +939,9 @@ func TestTriggerInputMapping_V2_BodyRequiresWebhook(t *testing.T) {
 
 // V3: an opted-in wiring must be able to reach its schema — a missing
 // target workflow cannot be validated at all (distinct from the fire-time
-// ghost, which stays loud for un-opted wiring).
+// ghost, still loud for wiring that persisted past this guard —
+// update-path rows and legacy triggers; un-opted ghost CREATES answer
+// the create contract's 400 instead).
 func TestTriggerInputMapping_V3_MissingWorkflowCannotValidate(t *testing.T) {
 	store := newMockTriggerStore()
 	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})

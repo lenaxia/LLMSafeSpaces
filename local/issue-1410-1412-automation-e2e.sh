@@ -20,10 +20,11 @@
 #        code kept firing at the OLD slot).
 #   R3 — no-op enable keeps the slot (#1410 review guard): enabled:true on
 #        an already-enabled trigger never reschedules an imminent fire.
-#   R4 — missing-workflow fires are loud (#1412): a workflow-targeted
-#        trigger whose DAG does not exist records a FAILED fire with a
-#        workflow-not-found payload and drives consecutiveFailures — the
-#        old code ticked silently forever.
+#   R4 — missing-workflow fires are loud (#1412): a trigger whose target
+#        workflow is deleted mid-life records a FAILED fire with the
+#        trigger_has_no_target payload (the FK SET NULLs — the only
+#        representable missing-workflow class at fire time) and drives
+#        consecutiveFailures — the old code ticked silently forever.
 #   R5 — run input obeys inputSchema (#1413): a workflow with a required
 #        field rejects non-conforming run input with 400 BEFORE queueing;
 #        conforming input progresses past schema validation.
