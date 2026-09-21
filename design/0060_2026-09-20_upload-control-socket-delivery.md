@@ -1,0 +1,329 @@
+# 0060 — Upload delivery in sidecar mode: stage-and-signal over the control socket
+
+**Status:** Proposed (2026-09-20) — design stage, holds for review; implementation lands in follow-up PRs (this document closes nothing)
+**Date:** 2026-09-20
+**Issues:** #1500 (uploads clean-fail on sidecar pods — the delivery leg) · #1497 (the investigation that established the disposition and the evidence base)
+**Depends on:** design 0051 Appendix A (control socket v1 — the signaling surface), US-4b/US-70.1 (the shared `/sandbox-runtime` tmpfs + the uid-ownership-by-construction principle), #1165 R2b (the staged-files precedent: canonical bytes + ledger, applied by the consumer), Epic 68 (uploads D1–D19; D2/D3 persistence contract, D16 gate order)
+**Composes with:** `refresh_files` (control protocol v1's existing staged-files apply method — the on-demand mid-lifecycle precedent this design generalizes), `scrubUploadTmpFiles`/`scrubUploadsAtBoot` (the orphan-hygiene class this design extends)
+**Supersedes:** nothing merged. The "until a control-socket write op exists — see worklog" caveat at `cmd/workspace-agentd/uploads.go:25-27` becomes obsolete and is removed by the implementation PR.
+
+---
+
+## 1. Problem
+
+### 1.1 Code truth (base @ `01481ffd`)
+
+Uploads must land on the workspace PVC: `UploadsPath = "/workspace/uploads"` (`pkg/agentd/types.go:67`, Epic 68 D2/D3 — uploads survive suspend/resume). In single-container mode agentd writes them directly (temp+rename, `cmd/workspace-agentd/uploads.go`), which is why uploads work there. In sidecar mode — what prod runs (verified on a live prod pod: `/agentd-config` RO tmpfs, the US-4b layout) — the `/v1/files` mux is served by the **sidecar** (uid 2000), whose `/workspace` mount is **read-only by design** (US-4b; `controller/internal/workspace/agentd_sidecar.go`). Every upload therefore clean-fails: staging write → `ENOSPC`/`EROFS`-class error → agentd 500 `storage unavailable` → API 502 `workspace agent upload failed` (#1497 chain). The nightly pins this exact behavior as as-built (`e2e-nightly.yml:357-361`).
+
+### 1.2 What already exists (the fix is a generalization, not an invention)
+
+| Precedent | Where | What it proves |
+|---|---|---|
+| Stage-and-pull for files | #1165 R2b: the sidecar's materializer stages file-class secrets (canonical bytes + `spawn-files-ledger.json` manifest) and the **supervisor applies them** — spawn-time via `preSpawn`, mid-lifecycle via the control-socket `refresh_files` method (`control_socket.go:277-290`, found by #1244) | uid-1000 writes by construction; mid-lifecycle on-demand apply already has a protocol shape |
+| Shared staging surface | `/sandbox-runtime` — one 96 MiB memory-medium emptyDir, **mounted RW in both containers** (sidecar: `agentd_sidecar.go:197`; workspace container: verified live) — already carries `staged-secret-files/`, `spawn-files-ledger.json`, `secrets-env`, `rt/*` | the budgeted staging surface the issue's directive names; cross-uid readability is established practice (0640/gid-1000, `LLMSAFESPACES_CROSS_UID_FILES`) |
+| Control socket v1 | design 0051 Appendix A: one JSON request/response per TCP connection on `127.0.0.1:4099` (pod-shared network namespace — the sidecar reaches the workspace container's PID 1); closed enums; additive methods (`refresh_files` was added under v1) | the synchronous ack channel; the capability-equivalence rule (A.4) that governs any new method |
+| Orphan hygiene | `scrubUploadTmpFiles` + `scrubUploadsAtBoot` (`uploads.go:276-303`) | the TTL/boot-scrub class to extend |
+| End-to-end streaming | API: `io.Pipe` + `cap+1` LimitReader, 25 MiB cap (`api/internal/handlers/uploads.go`) | the streaming contract the new leg must preserve |
+
+### 1.3 The owner's binding directive
+
+**Disk/memory safety are first-class: the design must be incapable of causing disk-full conditions.** The six concrete requirements (staging admission by reserved bytes; byte-weighted semaphore; streaming; crash/orphan hygiene with TTL+boot-scrub; D16 write-time re-check + post-write verification; full observability) are treated as normative — §4 addresses each by number.
+
+---
+
+## 2. Decision
+
+**Stage-and-signal** (not pull): the sidecar stages upload bytes on the shared tmpfs and signals the supervisor over the control socket; the supervisor streams them onto the PVC.
+
+The alternative considered — an HTTP pull leg (sidecar serves staged bytes, supervisor GETs them, the `spawn-files` transport generalized) — moves the same bytes over a second authenticated surface and keeps them in sidecar-private memory when a shared, budgeted, already-established staging surface exists. The control socket stays what it is (small JSON signals — "a file is ready, apply it"), `refresh_files`'s semantic is preserved verbatim for credentials, and the only new socket surface is one bounded, closed-param method (§3.2). Staging on the shared tmpfs is exactly what the directive budgets for (requirement 1 names it), and cross-uid file semantics there are established practice.
+
+What this is **not**: this leg adds no sidecar→PVC write path — every upload byte that lands on the PVC is written by the workspace container's supervisor, ownership by construction. (Not a blanket sidecar-PVC-write ban, which would be false as-built: the sidecar durably writes its Epic 69 sessionstate cursor + `ledger.wal` under the PVC `platform/` subPath, mounted RW in the sidecar only — `agentd_sidecar.go:204`. US-4b governs the credential stores and is untouched: the workspace container never gains a path to sidecar-private state, `/agentd-secrets` topology unchanged.) Single-container behavior is byte-identical (the direct-write path is unchanged; §5.1).
+
+---
+
+## 3. Architecture
+
+### 3.1 The upload sequence (sidecar mode, synchronous end-to-end)
+
+```
+client ── multipart (streamed) ──▶ API POST /workspaces/:id/uploads
+                                    │ D16 gates (phase→disk-ratio→cap)   [unchanged]
+                                    │ + declared-length gate: no Content-Length → 411 (§4.1)
+                                    ▼
+                     agentd (sidecar) :4097 /v1/files    [streamed, as today]
+                       1 admission: reserve bytes (§4.1–4.2) ── reject: 507/429;
+                         missing/invalid declared header → 411 (§4.1)
+                       2 stream body → /sandbox-runtime/staged-upload-files/<id>.tmp
+                         (chunked copy, sha256 on the fly, 0640/gid-1000;
+                         read capped at the declared value — over-read → 400)
+                       3 same-fs rename <id>.tmp → <id>    [staged-complete atomicity]
+                       4 control socket: upload_apply {id, size, sha256, target} (§3.2)
+                                    │ (connection held; bounded wait, §3.3)
+                                    ▼
+                     supervisor (workspace container, uid 1000, PID 1)
+                       5 write-time gates (§4.4): statfs(PVC) avail > size+margin
+                       6 stream <id> → /workspace/uploads/<uuid>-<sanitized>.tmp
+                         (bounded window, 0644 per U1.1.11) → fsync
+                       7 verify size + sha256 (integrity across the boundary)
+                         ── everything above gates the rename; below observes ──
+                       8 same-fs rename → <uuid>-<sanitized>              [visible-atomicity]
+                       9 post-write statfs verification (§4.4)
+                       ▸ ack {applied, path, size}
+                                    │
+                     agentd: delete staged <id>, release reservation (defer)
+                       ▸ 201 {path, name, size} ──▶ API 201 ──▶ client
+```
+
+Steps 1–9 are one synchronous client request. Every write is streamed with a bounded window (≤256 KiB chunks): at no point does any process hold more than the window in memory, on either side, at any file size — requirement 3's end-to-end streaming is preserved (the API→agentd leg already streams; agentd→tmpfs and tmpfs→PVC are bounded-window copies).
+
+### 3.2 Control protocol: the `upload_apply` method (additive under v1)
+
+One new method, closed params, closed error enum — Appendix-A discipline:
+
+```jsonc
+// request
+{ "v": 1, "id": 42, "method": "upload_apply",
+  "params": { "upload_id": "<uuid>",            // also the staged basename
+              "staged_name": "<uuid>",           // constrained: basename within
+                                                  // /sandbox-runtime/staged-upload-files
+              "size": 12345, "sha256": "<hex>",
+              "target_name": "<sanitized-filename>" } }
+// response (success) — two A.1-legal additive fields, both computed
+// supervisor-side (it owns the margin parameter): dest_avail_after is
+// the post-rename statfs reading (raw observability); margin_consumed
+// is the supervisor's own §4.4 flag (post-rename avail fell inside the
+// margin) — agentd counts dest_margin_consumed from the flag, never
+// inferring it from raw bytes
+{ "v": 1, "id": 42, "result": { "applied": true, "path": "/workspace/uploads/<uuid>-<name>", "size": 12345, "dest_avail_after": 12345678901, "margin_consumed": false } }
+// response (failure) — closed enum
+{ "v": 1, "id": 42, "error": { "code": "staged_missing|checksum_mismatch|size_mismatch|dest_disk_full|dest_write_failed|target_rejected|busy", "message": "..." } }
+```
+
+**A.4 capability-equivalence:** every capability `upload_apply` grants is strictly weaker than what the uid-1000 supervisor already holds — it instructs the supervisor to write a file *into its own RW `/workspace`* under a uuid-prefixed, sanitized name, from bytes already readable to it on the shared tmpfs. The params are a closed set: no arbitrary source paths (staged basename is validated `^[0-9a-f-]{36}$` under the fixed staging dir), no arbitrary destinations (target passes the same `sanitizeUploadFilename` as today, uuid-prefixed into the fixed uploads dir), no overwrite (uuid names make collisions meaningless). The socket's two standing invariants are untouched (no env values returned; no argv-shaped capability) — this method carries file metadata, not execution surface.
+
+**Why not extend `refresh_files`:** that method's contract is "apply the credential manifest" (idempotent batch-apply against a ledger). Uploads are per-object, best-effort-once, ack-in-line. Different lifecycle, different idempotency — one method each, both narrow.
+
+### 3.3 Synchronous ack, timeouts, and retry stance
+
+The control connection is held through the supervisor's copy (milliseconds–seconds for ≤25 MiB; tmpfs→PVC). agentd bounds the wait (`UPLOAD_APPLY_TIMEOUT`, default 60 s — generous for a ≤25 MiB bounded-window copy; it is independent of the API's 5-min body-stream timeout because the body is fully staged *before* the signal, so the two windows never compose). On timeout, agentd responds to the API with 504 (`upstream_apply_timeout`) and **leaves the staged object in place**: the supervisor's in-flight copy may still complete it (its target is a fresh uuid — no conflict with anything), and hygiene reclaims whatever did not complete within TTL (§4.3). The client's retry creates a new `upload_id` (Epic 68 D19 retry semantics unchanged) — the same id is never re-signaled, so there is no re-apply path to make idempotent; a late-completing orphan is at worst a duplicate file — self-consistent (verified bytes, uuid-named) and harmless.
+
+### 3.4 Atomicity across the boundary (the "temp+rename equivalence")
+
+Two same-filesystem renames bracket a cross-filesystem copy — that is the atomicity contract:
+
+1. **Staged side:** `<id>.tmp` → `<id>` on the tmpfs *before* the signal (a signal can only ever name a complete staged object; a crash mid-stage leaves a `.tmp` that hygiene reclaims and no signal ever references).
+2. **Destination side:** `<uuid>-<name>.tmp` → final on the PVC — the existing single-container temp-suffix contract, unchanged (`*.tmp` is exactly what `scrubUploadTmpFiles` globs, `uploads.go:277`); readers never see partial files (Epic 68 D3).
+3. **Integrity:** sha256 computed while staging, verified while writing (step 7) — corruption on either surface is a hard failure with a distinct error code, never a silent bad file.
+
+### 3.5 Flow control: implicit backpressure, no explicit window signaling
+
+The stress invariants (§6) shaped this decision explicitly. The chain is synchronous and streaming end-to-end — client → API pipe → agentd staging write → (later) supervisor copy — with a bounded window at each hop. TCP backpressure therefore *is* the flow control: if the tmpfs write or the PVC copy stalls, agentd stops reading, the API's `io.Pipe` fills its window and blocks, and the client's send stalls. There is no decoupled buffer anywhere in the chain, so there is nothing for an explicit window-credit protocol to protect — adding one would complicate the control protocol (§3.2) for no invariant it alone can uphold. This is a deliberate rejection, pinned by the backpressure invariant (§6.3): a stalled consumer must stall the producer with memory flat, and it does.
+
+The one mid-stream hazard admission cannot pre-empt — the D14 adversary consuming tmpfs capacity *after* admission, making the staged write hit `ENOSPC` mid-stream — is handled as a clean stream abort, in the §4.1 lifecycle order (unlink BEFORE release — the ordering §6.1's walked bound rests on): write error → **unlink the partial `.tmp` synchronously** → release the reservation → 507 `write_error`-class to the API. The crash backstop (§4.3's TTL/boot scrub) exists for a process that died before the unlink ran; in the live abort path it never has anything to reclaim. The client retries against a fresh admission that sees the reduced `f_bavail`.
+
+---
+
+## 4. Disk and memory safety (the binding directive, requirement by requirement)
+
+### 4.1 R1 — Staging admission by reserved bytes (never evict credentials)
+
+The staging dir is `/sandbox-runtime/staged-upload-files/` on the shared ~96 MiB tmpfs. **Admission is reservation-before-acceptance** — which requires the size BEFORE the body streams, so the mechanism must be stated against the real wire: the client→API request carries a declared Content-Length (composer uploads are sized FormData), but the API→agentd forward is an `io.Pipe` body sent **chunked** (`uploads.go:341,371-383`) — agentd receives NO Content-Length and today learns sizes only mid-copy. The design therefore adds a second required API change: the upload hop carries **`X-LLS-Declared-Body-Bytes: <client Content-Length>`**, and the API rejects chunked client uploads (no declared length) with **411 Length Required** — the composer's FormData always declares, and silent cap+1 truncation mid-stream is exactly the non-clean failure the directive forbids. `newBytes` in both clauses is the declared body size (≥ the file size by the multipart envelope — the conservative direction for admission); the reservation reconciles DOWN to the actual staged size at rename completion. The declared value is ALSO a hard read-cap on the staging side, and the header is mandatory there: agentd 411s a request with a missing/invalid `X-LLS-Declared-Body-Bytes` (the pod network namespace is shared and the workspace password is readable to the in-pod agent — D14 makes direct `:4097` calls adversary-reachable, so the API-side 411 cannot be the only gate), and caps its body read at the declared value with an over-read (body exceeds the declaration) rejected 400 `declared_length_exceeded` — a lying-small caller can therefore never stage unreserved bytes, and a lying-large caller merely over-reserves (the safe direction).
+
+```
+admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
+                 (B) credentialUsage()
+                     + UPLOAD_STAGING_CREDENTIAL_FLOOR   // default 24 MiB, env-tunable
+                     + reservedUploads() + newBytes
+                     ≤ statfs(tmpfs).f_bavail
+
+// credentialUsage(): stat walk of the credential surfaces —
+//   staged-secret-files/, spawn-files-ledger.json, secrets-env,
+//   admin-prompt.md, rt/* (recomputed at every admission)
+// reservedUploads(): admitted-but-not-released upload reservations —
+//   HELD UNTIL THE BYTES LEAVE THE TMPFS: released on ack (after the
+//   post-ack unlink), on abort (the error path unlinks the partial
+//   synchronously, then releases), or on scrub. The scrub arm's TWO
+//   jobs differ: for a LIVE 504 hold it releases the reservation it
+//   still carries (§4.3/§6.1); crash orphans hold no reservation (the
+//   process died) — there the scrub only unlinks bytes. One mutex,
+//   defer-shaped. Unlink-before-release is what makes the no-crash
+//   walked bound hold (§6.1).
+// (A) is the byte-weighted semaphore's enforcement point: the explicit
+//   upload budget (UPLOAD_STAGING_BUDGET, default 48 MiB on the 96 MiB
+//   volume, env-tunable) bounds aggregate upload residency regardless
+//   of free capacity — with the defaults, one 25 MiB (cap) upload at a
+//   time by reservation (a second 25 MiB needs 50 > 48; a 3rd 15 MiB
+//   upload in a storm admits at 45, the 4th at 60 > 48 refuses).
+// (B) is the shared-capacity guard: admission against AVAILABLE bytes,
+//   not total — anything already consuming the tmpfs (including agent-
+//   planted junk, §4.1.1) reduces admission capacity. Junk therefore
+//   converts to clean pre-acceptance 507s, never mid-stream ENOSPC
+//   FROM THAT JUNK — junk landing AFTER admission drives the staged
+//   write to mid-stream ENOSPC, which is the §3.5 abort case (clean
+//   stream failure, 507 staging write failed, tabled in §4.6).
+```
+
+- `credentialUsage()` is recomputed at each admission (the credential surfaces are few and small); **credentials are never evicted and never blocked by uploads** — the floor plus the recomputed live usage guarantee headroom for credential staging at all times.
+- **Available, not total** (clause B): admission against `f_bavail` makes every existing consumer of the tmpfs — including adversary-planted junk — count against uploads FIRST. The failure direction is the safe one for junk present at admission: a poisoned tmpfs yields clean 507 rejections before the first byte is staged (junk arriving after admission is the §3.5 clean-abort case, §4.1 comment above).
+- Staged uploads themselves are written 0640/gid-1000 and counted the moment they are admitted; a rejected upload is rejected **before its first byte is staged** (507, §4.6) — an upload can never half-fill the tmpfs it was refused by.
+
+### 4.1.1 The D14 adversary and the staging directory (honest boundary statement)
+
+The in-workspace agent (Epic 68 D14's designated in-pod adversary) shares **uid and gid with the supervisor** — POSIX permissions are therefore *not* a boundary anywhere on `/sandbox-runtime`, and 0640/gid-1000 is convention (consistency with the cross-uid file profile), not exclusion. The design's integrity rests on verification, not permissions:
+
+- **Tamper with a staged object** (bytes modified between stage and copy): caught by the supervisor's sha256+size verification → `checksum_mismatch`/`size_mismatch`, hard-fail, hygiene reclaims.
+- **Deletion** of a staged object: `staged_missing`, same hard-fail path.
+- **Junk planted in `staged-upload-files/`**: inflates the walked `staging_bytes` gauge (observability noise — the reserved-bytes gauge stays true because reservations are agentd-internal bookkeeping) and reduces admission capacity via `f_bavail` (the safe direction, above). The TTL sweeper removes anything older than the TTL, junk included.
+- **The staging directory itself** is created by agentd at boot (0750, gid-1000); the supervisor treats any pathname it is handed as untrusted input regardless (basename regex + fixed parent dir, §3.2).
+
+Memory-medium note: tmpfs pages count against pod memory; clause (A) bounds upload residency at `UPLOAD_STAGING_BUDGET` (default 48 MiB on the 96 MiB volume, env-tunable), so the pod's own memory limit is protected from upload-driven pressure by the same budget that protects credentials; clause (B) leaves credential surfaces their live usage plus the 24 MiB floor at all times.
+
+### 4.2 R2 — Byte-weighted concurrency semaphore
+
+Admission (4.1) is itself the byte-weighted semaphore: clause (A) bounds concurrent uploads' aggregate reservations at the explicit budget. A separate count cap (`UPLOAD_STAGING_MAX_CONCURRENT`, default 4) bounds simultaneous copies (fd/window pressure), rejecting with 429 (`staging_busy`) — clean, retryable, and distinct from budget exhaustion.
+
+### 4.3 R4 — Crash/partial hygiene
+
+Two reclaim paths, both extending the established `*.tmp`/boot-scrub class (`scrubUploadTmpFiles` globs `*.tmp`, `uploads.go:277` — requirement 4's own naming):
+
+- **Boot scrub:** `scrubUploadsAtBoot` gains the staging dir (sidecar boot: any `staged-upload-files/*` from the previous incarnation is by-definition unreferenced — the in-flight upload died with the process). One window needs stating precisely: the sidecar is a native sidecar (`RestartPolicy: Always`) and CAN restart while the supervisor is mid-copy of a completed staged object — that object is not an orphan. The outcome is benign either way by construction: if the supervisor already opened it, POSIX unlink-of-open-file semantics let the copy complete against the unlinked inode and verification passes (the lost ack degrades to §3.3's harmless duplicate tail); if not yet opened, the apply hard-fails `staged_missing` cleanly. The boot scrub is therefore safe-but-imprecise in that window; a refinement (skip objects younger than the apply timeout) is an implementation option, not a requirement.
+- **TTL sweeper:** a bounded ticker (default 10 min) removes staged objects older than `UPLOAD_STAGING_TTL` (default 15 min) — covers supervisor-crash, socket-timeout tail, and agentd-crash-then-rebooted windows. The sweeper also finalizes reservation bookkeeping for what it removes (gauge truth, §4.6).
+- `.tmp` files are never signaled, never acked, and reclaimed on sight — on BOTH surfaces. On the STAGING surface both paths above apply. On the DESTINATION surface there is a real pre-existing gap this design must close: today NOTHING scrubs `/workspace/uploads/*.tmp` in sidecar mode — the boot scrub's only live call site is the single-container server path (`main.go:182`, which sidecar pods never reach: the workspace container runs the `supervise-opencode` subcommand, dispatched earlier), and the sidecar's own call (`sidecar_mode.go:163`) is an RO-mount no-op by its own comment. The supervisor lane (§9.2) therefore adds the uid-1000 destination scrub: the existing `*.tmp` glob contract over `/workspace/uploads`, run at supervisor boot and on the same TTL ticker as the staging sweeper (reclaiming destination `.tmp` objects older than the same `UPLOAD_STAGING_TTL`) — the supervisor is the only STANDING control-plane component in a sidecar pod that can write that directory (the sidecar's mount is RO; the boot-phase init containers — platform-init mounts the PVC root RW, workspace-setup the subPath RW — exit before the supervisor serves anything and host no ticker; the in-pod agent shares the supervisor's uid — §4.1.1 — and is the D14 adversary, not a hygiene authority).
+
+### 4.4 R5 — Destination gates: write-time re-check (TOCTOU) + post-write verification
+
+The API's D16 disk-ratio gate (CRD-status-based) stays as the fast pre-filter. The **authoritative** gate is at the supervisor, at write time, against the real filesystem. Ordering is normative (and matches §3.1's steps):
+
+- **Pre-copy:** `statfs(/workspace)` → reject `dest_disk_full` unless `avail > size + margin` (margin default 64 MiB — absorbs concurrent writers the stat cannot see).
+- **Pre-rename (gating):** `fsync` success **and** size+sha256 verification — both must hold before the file becomes visible.
+- **Post-rename (observability):** `statfs` re-check, computed supervisor-side (it owns the margin env) and reported in the ack's additive `margin_consumed` flag alongside the raw `dest_avail_after` (§3.2) — a write that completed but consumed the margin renames (it succeeded — correctness first) but is counted `dest_margin_consumed` — the disk is never *silently* full.
+
+The supervisor cannot read the CRD (and must not — it would need API credentials); `statfs` is the stronger signal anyway (ground truth vs cached ratio).
+
+### 4.5 R3 — Streaming (restated)
+
+No component buffers an upload object in memory: API pipes (unchanged), agentd stages with a bounded window, the supervisor copies with a bounded window (≤256 KiB). sha256 is computed incrementally on both sides. There is no size at which memory behavior changes.
+
+### 4.6 R6 — Observability (pressure visible before it breaks; bytes in/out included)
+
+Metric surfaces, named against the code as it exists (agentd's counter is `workspace_agentd_file_uploads_total{workspace_id, outcome}` at `ops_metrics.go:100`, outcomes today `accepted/rejected_name/rejected_cap/write_error/unauthorized`; the API-side counter is `llmsafespaces_uploads_total{reason}` at `api/internal/services/metrics/metrics.go:516` with a CLOSED reason enum — `success/cap/phase/disk/agentd_error` — pinned exhaustively in `metrics.go:509-531`):
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `workspace_agentd_file_uploads_total{workspace_id, outcome}` | counter | EXISTING agentd counter; new outcomes: `rejected_staging_full`, `rejected_staging_busy`, `rejected_declared_invalid` (the 411), `rejected_declared_exceeded` (the 400 over-read — the D14-adversary traffic the read-cap exists to gate; pressure visible per R6), `apply_timeout`, `apply_rejected`, `checksum_mismatch`, `staging_scrubbed` (alongside `accepted`) |
+| `workspace_agentd_upload_staging_bytes` | gauge | staged-upload bytes on disk (walked truth, reconciled with reservations — §6.1's measured-residency pin reads THIS) |
+| `workspace_agentd_upload_staging_reserved_bytes` | gauge | admitted-not-released reservations |
+| `workspace_agentd_upload_staging_files` | gauge | staged object count |
+| `workspace_agentd_upload_staging_credential_bytes` | gauge | credential-surface usage (the input to admission — makes the floor policy auditable; §6.2's isolation proof reads THIS) |
+| `workspace_agentd_upload_bytes_total{direction}` | counter | cumulative upload bytes: `staged_in` (API→tmpfs) and `copied_out` (tmpfs→PVC, from the ack's verified size) — the issue's bytes-in/out class |
+| `workspace_agentd_upload_dest_outcomes_total{code}` | counter | supervisor-side destination outcomes, counted by agentd from the ack: rejections (`dest_disk_full`, integrity mismatches) AND the success-path margin observation (`dest_margin_consumed` — flagged when `dest_avail_after` fell inside the margin) |
+
+**Supervisor→agentd export mechanism:** the supervisor owns no Prometheus registry — its outcomes ride the `upload_apply` response (the closed error enum carries the class; the success result carries the verified size for `copied_out`). agentd is the single metrics authority for the leg; there is no second export path to keep true.
+
+Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; mid-stream staging write abort (§3.5, incl. adversary-induced ENOSPC) → **507** `staging write failed`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; undeclared client body → **411** (API-generated, reason `invalid_declared_length`); lying-small over-read → **400** `declared_length_exceeded` (direct-`:4097`-path only — via the API the declared bound always covers the piped part, §4.6 wiring note); apply ack failures — the §3.2 closed error enum's non-disk, non-timeout members (`staged_missing`, `checksum_mismatch`, `size_mismatch`, `dest_write_failed`, `target_rejected`; supervisor-side `busy` maps to 429 `staging_busy`) → **507** from agentd with the specific error code in the reason body, forwarded verbatim and labeled `apply_rejected` (the integrity mismatches §3.4 promises are "a hard failure with a distinct error code" therefore reach the client as themselves in the body, with the agentd-side counter carrying the fine-grained outcome); the true remainder (unexpected agentd statuses) → the existing fixed-502 class, unchanged.
+
+**Delivery points, stated honestly (they differ by status):** today the API handler special-cases only agentd 201 and 413 and collapses every other status into a fixed `502 {"error":"workspace agent upload failed"}` with `reason=agentd_error` (`api/internal/handlers/uploads.go:241-245`) — nothing passes through, and the API reason enum (`metrics.go:509-531`, exhaustively pinned) cannot record the new classes. The wiring PR therefore (a) forwards agentd's **507/429/504** statuses and their reason bodies verbatim — the 4xx admission-input rejections are deliberately NOT in this list, because their delivery points differ: the **411 is API-generated** (the API gates undeclared client bodies itself, §4.1) and needs no forwarding, while the **400 `declared_length_exceeded` is DIRECT-PATH-ONLY** (the API pipes only the `LimitReader`-bounded file part, `uploads.go:342`, so the declared bound — the client's full multipart Content-Length — always covers what the API sends; an over-read can only come from a direct `:4097` caller, the D14 adversary, for whom there is no API hop); and (b) widens the API-side reason enum with `staging_full`, `staging_busy`, `staging_write_error` (the §3.5 mid-stream abort — its own value, never misrecorded as `agentd_error`), `apply_timeout`, `apply_rejected`, `dest_disk_full`, and `invalid_declared_length` (labels the API-generated 411), keeping `agentd_error` for the true remainder. And (c) adds the admission-input header + the API-side 411 gate (§4.1). These are required API changes, not polish — §5.4 reflects them.
+
+---
+
+## 5. Modes, rollout, and edge behavior
+
+### 5.1 Single-container mode: unchanged
+
+The supervisor-mode agentd writes `/workspace/uploads` directly today, with the same temp+rename and cap discipline. The staging leg activates **only** when the upload handler runs in sidecar context (the same mode detection the muxes already use). No wire change, no behavior change, no new config required.
+
+### 5.2 Suspension/resume mid-upload
+
+An in-flight upload dies with the pod (tmpfs wiped — the staging surface is per-pod by design). The client sees a transport error and retries against the resumed pod. No PVC `.tmp` survives INDEFINITELY: the supervisor's rename happened or it didn't; a crashed `<name>.tmp` on `/workspace/uploads` is reclaimed (boot/TTL) by the destination scrub §4.3 adds to the supervisor (boot + TTL, the existing `*.tmp` glob — the temp suffix is chosen to match it exactly; without that addition nothing reclaims destination `.tmp` in sidecar mode today).
+
+### 5.3 Concurrency within one pod
+
+Multiple uploads: each has its own `upload_id`, staged object, and reservation; the supervisor applies them serially or concurrently (its choice — the copies are independent); `upload_apply` is safe to call concurrently (distinct targets by construction).
+
+### 5.4 Rollout
+
+agentd + supervisor (both delivered in the one digest-pinned agentd artifact) **plus required API handler changes**: (1) forwarding agentd's 507/429/504 statuses and reason bodies verbatim (today they collapse into a fixed 502 — `uploads.go:241-245`), (2) widening the API-side upload reason enum (§4.6), and (3) the admission-input header `X-LLS-Declared-Body-Bytes` on the agentd hop + the 411 gate on undeclared client bodies (§4.1 — the API→agentd forward is chunked; without this, reservation-before-acceptance has no input). No CRD/Helm schema change (new env knobs are additive with defaults). The nightly's sidecar upload rows flip from assert-clean-fail to assert-delivery when this lands (Epic 68 E2/E10/E11 un-skip).
+
+---
+
+
+## 6. Stress and adversarial load (first-class — the invariants the implementation must PROVE)
+
+Stress testing is a first-class deliverable of this lane (owner amendment, paired with the disk/memory constraint): every invariant the design claims must be specified here and **proven under adversarial load in implementation** — measured, not asserted. Each invariant names its mechanism, its proof method, and its acceptance signal. The proof harness follows the existing patterns: the `LLMSAFESPACES_FAULT_INJECTION` seam for kill/restart points, kind-e2e rows for cluster-level legs, and the S/L invariant-matrix row conventions — an upload row family joins that matrix (implementers propose the rows; reviewers concur per the amendment).
+
+### 6.1 Streaming residency (measured)
+
+**Invariant:** N concurrent near-cap (25 MiB) uploads at max admission concurrency → peak resident bytes on the credential-shared staging NEVER exceed the staging budget (default 48 MiB).
+**Mechanism:** reservation-before-acceptance (§4.1) with the unlink-before-release lifecycle — two bounds, stated separately because they hold separately:
+  - `reserved_bytes ≤ budget` ALWAYS, by construction (clause A) — including across the 504 path (a timed-out apply holds its reservation until the TTL scrub reclaims the object).
+  - `staging_bytes ≤ budget` in every no-crash lifecycle (reservations cover exactly the resident bytes; aborts unlink synchronously before release). The crash window is the one exception and it is bounded and transient: a crashed agentd leaves unreserved walked orphans ≤ what was reserved at crash (≤ budget), reclaimed within TTL; clause (B) meanwhile shrinks new admissions against the reduced `f_bavail`.
+**Proof:** a load driver fires `UPLOAD_STAGING_MAX_CONCURRENT + k` near-cap uploads concurrently (no crash injection in this row — §6.5 owns crash); the test SAMPLES `workspace_agentd_upload_staging_bytes` and `..._reserved_bytes` at a tight interval for the storm's duration and pins `max(observed staging) ≤ budget` AND `max(observed reserved) ≤ budget` — gauge pins, not code-path assertions. Any excursion is a red test, not a post-hoc metric.
+
+### 6.2 Cross-feature isolation (the point of the design)
+
+**Invariant:** a credential resync (secrets re-delivery: staged-secret-files rewrite + spawn-env refresh) executing DURING a max-concurrency upload storm completes unaffected — and conversely, uploads staged to the floor still 507 cleanly while credential delivery succeeds.
+**Mechanism:** the credential floor (§4.1) plus admission-against-`f_bavail` — upload pressure reduces upload admission first, never credential staging space.
+**Proof:** kind row: storm at max concurrency + forced resync mid-storm (bind a secret through the convenience endpoint, as the us-70 harness does); assert the resync's `spawnedRev` advances, spawn-files land, AND the storm's uploads either delivered or cleanly 507/429 — with `..._staging_credential_bytes` never regressing and the floor never breached. Invariant-matrix anchor: staging filled to the floor → uploads 507 while credential delivery still succeeds (the isolation row family this section proposes for the S/L matrix).
+
+### 6.3 Backpressure
+
+**Invariant:** a workspace-side consumer artificially slower than the receiver (throttled PVC copy, injected via the fault seam) → the window bounds hold at every hop; no unbounded buffering anywhere in the chain.
+**Mechanism:** the synchronous streaming chain itself — §3.5's implicit backpressure; this invariant is why the design REJECTS explicit window signaling (nothing is decoupled, so nothing can run away).
+**Proof:** throttle the supervisor's copy to a trickle; assert agentd's staging write rate follows (staged bytes grow at the copy's pace, not the client's), the API connection stays open within its stream timeout, and every process's RSS stays flat (allocation-ceiling assertion). The WEDGED-consumer extreme — the copy consumer alive but spinning without consuming (#1507's autopsy shape: a runaway opencode burning CPU while I/O stalls) — is the same row's limit case: the window stays bounded, the apply timeout bounds the hold, and the 504 tail plus hygiene reclaim the staged object; the row asserts those bounds hold with the consumer at zero throughput, not merely slow.
+
+### 6.4 Disk-margin enforcement at the edges (TOCTOU included)
+
+**Invariant:** (a) a pre-filled volume just under the critical line refuses uploads; (b) an accepted upload that would land exactly across the line is refused at the write-time re-check; (c) disk consumed by OTHER writers between accept and write → the write-time gate still refuses.
+**Mechanism:** API-side D16 ratio gate (fast pre-filter) + supervisor-side statfs `avail > size + margin` (authoritative, §4.4).
+**Proof:** kind rows with a sized dummy file filling the PVC to each edge (the harness computes fill from `status.diskUsedBytes`/`statfs`); the TOCTOU variant interleaves a concurrent non-upload writer (a script node writing a large file) between upload accept and apply — assert `dest_disk_full`, no partial, no margin consumption without its counter incrementing.
+
+### 6.5 Failure injection mid-stream
+
+**Invariant:** kill/restart of the sidecar or the consumer at multiple chunk boundaries (first, mid, last, pre-rename, post-rename-pre-ack) → no partial file EVER visible on either surface; orphans reclaimed by TTL/boot-scrub; credential staging intact throughout.
+**Mechanism:** per-side same-fs renames bracketing the copy (§3.4); the `.tmp`-never-signaled rule; hygiene (§4.3).
+**Proof:** the fault seam fires at each boundary (deterministic injection points in the staging write and the copy loop); after each: assert no non-`.tmp` artifact beyond the pre-existing set, `.tmp` objects reclaimed within TTL or at boot, `spawnedRev` unchanged, and the upload's client-visible outcome is a clean retryable error (507/504/transport), never a silent success.
+
+### 6.6 Ack-path throughput and latency characterization
+
+**Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/2×/4× concurrency (the count cap's default IS 4 — higher concurrency is unreachable by design, so the matrix characterizes the CAP BOUNDARY instead: the 5th concurrent upload's 429 latency) across file sizes (1 KiB / 1 MiB / 10 MiB — 25 MiB is single-flight by clause (A), characterized at 1× only).
+**Mechanism:** §3.3's bounded wait; the supervisor's apply-concurrency choice (§8 item 3).
+**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional at the WORST TIMING (first three fully staged, reservations still held — a staged-not-yet-acked upload counts BOTH as a reservation term AND as bytes f_bavail no longer has; that double-counting is the semantics of hold-until-bytes-leave, §4.1). The harness pins it by direct substitution, definition-free: measure `f_bavail_pre` and the credential walk `C` before the storm, then assert
+
+    f_bavail_pre − 30 MiB  ≥  C + 24 MiB + 30 MiB + 10 MiB
+    (equivalently:         f_bavail_pre ≥ C + 94 MiB)
+
+— the 4th admission's clause-(B) check (`C + floor + reservedUploads(30) + newBytes(10) ≤ f_bavail_now`) against the `f_bavail_now` the three staged objects have already reduced. On the 96 MiB volume this commits C + 94 of 96 — nearly the whole tmpfs, which is the honest cost of a 4×10 row on this hardware; if the assert fails, the harness skips DOWN to 3× with an explicit message (never silently measuring 3×).
+
+---
+
+## 7. Test plan (implementation lanes inherit this)
+| Class | Pin |
+|---|---|
+| Staging admission | budget math unit table (floor/usage/reserve boundaries, two-clause); reject-before-first-byte ordering; 507 shapes; the admission INPUT wire contract: X-LLS-Declared-Body-Bytes propagation, the 411 shape on undeclared bodies, and lying declarations both directions (declares small/sends large → over-read rejected 400 declared_length_exceeded at the declared cap — a DIRECT-`:4097`-path shape per §4.6's delivery-points note; via the API the shape is unreachable, which is itself pinned; declares large/sends small → over-reservation, the safe direction); missing/invalid declared header on a direct agentd call → 411 (the D14-reachable hop, §4.1); API path with no client Content-Length → API-generated 411, reason invalid_declared_length |
+| Semaphore | concurrent admission never exceeds clause (A)'s budget (race test); 429 class |
+| Streaming | large-object memory flatness (allocation ceiling assertion on a ≥cap object); window bounded |
+| Atomicity | crash-injected matrix: kill between every pair of steps 1–9 → no partial visible on either surface; the 504-tail orphan completes-or-is-reclaimed (both terminal states acceptable, never a partial) |
+| Hygiene | boot scrub clears staging; TTL sweeper reclaims + reconciles gauges; a `.tmp` is never signaled; agent-planted junk in the staging dir (D14) → admission shrinks via f_bavail, gauges reconciled by the sweeper; DESTINATION scrub: a crashed `<name>.tmp` on `/workspace/uploads` is reclaimed by the supervisor's boot/TTL scrub (§4.3 — the sidecar-mode gap this closes) |
+| Destination gates | statfs pre-write rejection; post-write verification; margin-consumed counter |
+| Protocol | `upload_apply` param validation (basename regex, sanitized target, closed error enum); unknown-param KEYS are IGNORED per 0051 A.1 forward-compatibility (pin tolerance — a rejecting implementation would be non-conformant) |
+| E2E (nightly, sidecar) | upload → file present, owned uid 1000, survives suspend/resume; concurrent uploads; disk-full simulation → 507 write-time; multi-tenant isolation rows (E2/E10/E11 un-skip) |
+| Regression | single-container path byte-identical (existing uploads tests untouched and green) |
+
+---
+
+## 8. Open questions (implementation-lane inputs, not blockers)
+
+1. **Defaults (resolved against the /analyze reconciliation on the issue):** staging budget 48 MiB on the 96 MiB volume, credential floor 24 MiB — admitting exactly one 25 MiB (cap) upload by reservation with ≥ 47 MiB of credential headroom; TTL 15 min, apply timeout 60 s, concurrency 4, chunk window 256 KiB. All env-tunable; the implementation PR pins them in the values file.
+2. **Admission-gate status codes (resolving the /analyze Q1):** 507 for the budget gate (storage-exhaustion semantics — the request cannot succeed as things stand), 429 for the count-cap gate (retryable-now semantics — concurrency, not capacity). Distinct reason strings either way; the alternative (507 for both) is defensible but collapses two different client recoveries into one code.
+3. **Supervisor apply concurrency (the /analyze Q2):** serial queue (simplest, bounded) vs parallel — implementation detail; the design is indifferent (targets are independent), and §6.6's characterization will expose an accidental serialization if one ships.
+4. **`statfs` margin accounting on shared PVCs:** Longhorn sizing semantics may make `avail` conservative; the margin default absorbs this, the counter makes deviations visible.
+5. **gVisor (the /analyze Q3):** one runsc-node pass of the §6.4/§6.5 kind rows — no new syscall classes are expected versus the shipped precedent (statfs/rename/fsync are already exercised), but the run is cheap insurance; fold into the epic-51 gVisor leg.
+
+---
+
+## 9. Implementation sequencing (post-approval, multi-PR)
+
+1. **agentd staging leg** — staging dir, admission/semaphore, `.tmp`+rename staging, sha256, hygiene (boot+TTL), metrics, the 507/429 arms (sidecar context only).
+2. **supervisor `upload_apply` + destination scrub** — the socket method, destination gates, bounded-window copy+verify+rename, ack + closed errors; AND the uid-1000 destination scrub (boot + TTL over `/workspace/uploads/*.tmp` at the same `UPLOAD_STAGING_TTL`, the existing glob — closing the sidecar-mode gap §4.3 names: today that dir has no reclaim path at all).
+3. **API forwarding + wiring + observability + stress harness** — REQUIRED API handler changes (forward agentd 507/429/504 + reason bodies; widen the API reason enum incl. dest_disk_full — §4.6; the X-LLS-Declared-Body-Bytes admission header + 411 gate — §4.1), agentd→socket call with bounded wait, gauge/consumer surfaces, values-file knobs; the §6 stress harness (load driver, gauge sampler, fault-seam injection points, the §6.6 baseline table into the worklog) and the S/L invariant-matrix upload row family.
+4. **E2E un-skip** — nightly rows flip (delivery rows + the §6.2 isolation row and §6.4/§6.5 fault rows join the nightly); Epic 68 docs updated (the as-built caveat at `uploads.go:25-27` and the README §File Attachments sidecar note both retire).
