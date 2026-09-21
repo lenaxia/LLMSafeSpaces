@@ -357,12 +357,11 @@ func TestUploadApplySocketRoundTrip(t *testing.T) {
 	}
 }
 
-// TestUploadApplySocket_BoundArms pins BOTH socket-level bound arms the
-// r1/r2 fixes exist for (each was deletable with the suite green — the
-// r3 review's empirical demonstration): a staged FIFO trickling past
-// the blanket 10s exchange deadline must still ack (the re-arm arm),
-// and a trickle past applyDeadline itself must abort dest_write_failed
-// (the WithTimeout arm).
+// TestUploadApplySocket_BoundArms pins the WithTimeout wrap and the
+// fresh ack arm (a FIFO trickle past the supervisor bound aborts
+// dest_write_failed within it). The r1 SetDeadline re-arm's slow-
+// SUCCESS leg past the blanket 10s is pinned by its sibling below —
+// TestUploadApplySocket_SlowSuccessPastBlanketDeadline.
 func TestUploadApplySocket_BoundArms(t *testing.T) {
 	// A FIFO staged "object" we feed slowly: the supervisor's copy loop
 	// blocks on reads until we write, exactly like a slow copy.
@@ -406,10 +405,8 @@ func TestUploadApplySocket_BoundArms(t *testing.T) {
 		_, _ = io.WriteString(w, "lo")
 	}()
 
-	// Arm 2: the trickle (held write end) outlives applyDeadline — the
-	// ctx window check must abort dest_write_failed well under the test
-	// budget. (Arm 1 — past the blanket 10s — shares the mechanism; its
-	// full-duration leg is the slow variant below.)
+	// The abort arm: the trickle outlives the supervisor bound — the ctx
+	// window check must abort dest_write_failed well under the budget.
 	// The CLIENT bounds itself generously (10s) — the supervisor-side
 	// bound (applyDeadline + slack = 6.5s) is what must fire here.
 	cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -473,5 +470,62 @@ func TestUploadApply_RenameFailureArm(t *testing.T) {
 	entries, _ := os.ReadDir(uploads)
 	if len(entries) != 0 {
 		t.Fatalf("rename failure left %d artifacts", len(entries))
+	}
+}
+
+// TestUploadApplySocket_SlowSuccessPastBlanketDeadline pins the FRESH
+// ACK ARM (r4: the conn arms were jointly deletable with the suite
+// green; the r1 re-arm proved redundant and was removed — the fresh
+// post-Apply arm is the sole ack-delivery bound): an apply that
+// COMPLETES past the socket's blanket 10s exchange deadline, under an
+// applyDeadline that permits it, must still deliver its ack. Deleting
+// the fresh arm fails this leg — the production 10-65s band is exactly
+// this shape.
+func TestUploadApplySocket_SlowSuccessPastBlanketDeadline(t *testing.T) {
+	if testing.Short() {
+		t.Skip("11s socket trickle")
+	}
+	fifoDir := t.TempDir()
+	fifoPath := filepath.Join(fifoDir, testUploadID)
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		t.Skipf("fifo unavailable: %v", err)
+	}
+
+	e, _, _, _ := applyEngineFixture(t, 1<<40)
+	e.stagingRoot = fifoDir
+	e.applyDeadline = 30 * time.Second // permits the 11s trickle; the blanket 10s does not
+
+	srv, err := newControlSocketServer("127.0.0.1:0", &managedProcAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.uploadApply = e
+	go srv.serve()
+	defer func() { _ = srv.close() }()
+	c := newControlClient(srv.ln.Addr().String())
+
+	go func() {
+		//nolint:gosec // G304: test fixture path
+		w, werr := os.OpenFile(fifoPath, os.O_WRONLY, 0)
+		if werr != nil {
+			return
+		}
+		defer func() { _ = w.Close() }()
+		_, _ = io.WriteString(w, "hel")
+		time.Sleep(11 * time.Second) // past the blanket 10s, inside applyDeadline
+		_, _ = io.WriteString(w, "lo")
+	}()
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer ccancel()
+	res, aerr := c.UploadApply(cctx, uploadApplyRequest{
+		UploadID: testUploadID, StagedName: testUploadID,
+		Size: 5, SHA256: applyTestDigest(t, "hello"), TargetName: "notes.txt",
+	})
+	if aerr != nil {
+		t.Fatalf("a slow-but-in-budget apply must deliver its ack (the re-arm arm), got %+v", aerr)
+	}
+	if !res.Applied {
+		t.Fatalf("ack: %+v", res)
 	}
 }

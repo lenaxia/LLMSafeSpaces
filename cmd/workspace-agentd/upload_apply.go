@@ -324,13 +324,11 @@ func (s *controlSocketServer) uploadApplyControlMethod(ctx context.Context, conn
 	if s.uploadApply == nil {
 		return s.errResp(req.ID, "internal", "upload_apply engine unwired")
 	}
-	// The blanket 10s exchange deadline must not truncate a legitimate
-	// 10-60s apply (r1 finding 3): arm the method's own bound (the same
-	// UPLOAD_APPLY_TIMEOUT_MS knob the client side reads) with slack for
-	// the ack write.
-	if conn != nil {
-		_ = conn.SetDeadline(time.Now().Add(s.uploadApply.applyDeadline + 5*time.Second))
-	}
+	// r4: the r1 SetDeadline re-arm was REDUNDANT with the fresh post-
+	// Apply arm below (the reviewer proved the fresh arm alone carries
+	// ack delivery — the re-arm was individually deletable, and carried
+	// no unique duty once the response got its own arm). Removed: the
+	// copy bound is the WithTimeout ctx; the ack bound is the fresh arm.
 	// §6.3 supervisor-side: the SAME bound bounds the copy itself — a
 	// real ctx deadline (checked per window in Apply), not only the conn
 	// deadline (which cannot interrupt file I/O). The pre-r2 wiring

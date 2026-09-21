@@ -98,3 +98,8 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 - The gate comment was half-corrected (still claimed the statfs target "always exists" — contradicting the load-bearing-mkdir comment 30 lines away): now states the dir exists BECAUSE of the mkdir (the dir-as-probe rationale, reorder warning in one place).
 - **The two bound arms were deletable with the suite green** (the reviewer demonstrated it): pinned by TestUploadApplySocket_BoundArms — a FIFO-fed staged object trickling past the supervisor bound aborts dest_write_failed within the bound, nothing visible. Writing it exposed a REAL fourth bug the arms hid: a copy consuming the whole bound wrote its terminal response to a deadline-dead conn (client EOF instead of the class) — the ack now gets a FRESH 2s arm after Apply completes. The single-blocked-read residual is documented in the test (the trickle design exists precisely because a hard-blocked read is uninterruptible).
 - The thin spots pinned: multi-chunk hash continuity (>256 KiB through the window loop), failing-statfs fail-closed (dest_disk_full), the rename-failure arm (dest_write_failed, tmp reclaimed).
+
+
+## Review round 4 (1 MEDIUM: the unpinned/jointly-deletable re-arm + a false comment)
+
+- The reviewer's mutations showed the fresh 2s ack arm ALONE carries ack delivery — the r1 SetDeadline re-arm was individually deletable and carried no unique duty once the response got its own arm. Honest remedy: the redundant arm REMOVED (simpler code beats doubly-armed redundancy), the fresh arm is now the sole ack bound, and its slow-success pin (trickle completing past the blanket 10s under a permitting applyDeadline) is mutation-verified red when the arm is deleted. The test comments state which arm carries what — no dangling references.
