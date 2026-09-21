@@ -56,7 +56,7 @@ None — design-doc lane; the doc carries the test plan (§6) the implementation
 ## Files Modified
 
 - `design/0060_2026-09-20_upload-control-socket-delivery.md` — the design (new)
-- `worklogs/NNNN_2026-09-20_design-upload-control-socket.md` — this worklog
+- `worklogs/1026_2026-09-20_design-upload-control-socket.md` — this worklog
 
 
 ---
