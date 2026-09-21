@@ -74,7 +74,7 @@ None. The knob-plumbing gap (above) and the SR-3 fault-seam dependency (skip-DOW
 - `local/us_1500_upload_stress_script_test.go` — new: structural pins
 - `local/e2e_smoke_repo_wide_test.go` — smoke row
 - `.github/workflows/e2e-nightly.yml` — harness registration
-- `worklogs/NNNN_2026-09-21_uploads-api-forwarding-stress.md` — this worklog
+- `worklogs/1033_2026-09-21_uploads-api-forwarding-stress.md` — this worklog
 
 ## Review Round 1 (nine harness defects — all fixed; the handler was already sound)
 
