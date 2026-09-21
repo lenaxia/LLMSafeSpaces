@@ -53,4 +53,4 @@ None.
 - `.github/workflows/e2e-nightly.yml` — RESUME_SCALE 10 + comments.
 - `local/us-70-secret-delivery-e2e.sh` — both sweeps verified, executable-driven, loud.
 - `local/us70_harness_script_test.go` — the three new pin tests.
-- `worklogs/NNNN_2026-09-20_nightly-ac13-scale-and-sweep.md` — this worklog.
+- `worklogs/1019_2026-09-20_nightly-ac13-scale-and-sweep.md` — this worklog.
