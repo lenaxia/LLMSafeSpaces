@@ -1,0 +1,132 @@
+# 0060 — Credential-plane closure: the complete disposition of agent-reachable credentials
+
+**Status:** DESIGN — holds for review (security-sensitive). No implementation in this lane.
+**Closes as design-for:** #820 (disposition-complete), #823, #825 — the three siblings the owner's "completely and securely" directive binds together.
+**Builds on:** [0058](0058_2026-09-15_relay-only-key-delivery.md) (adopted unchanged as Part A), [0051](0051_2026-08-18_agentd-uid-separation.md), [0057](0057_2026-08-30_secret-delivery-v2.md), the 2026-08-27 decision record on #820 (D1–D3 fixed), the enforcement-tiers WIP (`feat/opencode-permission-tiers` @ `e0f7ef23`), #821 (egress), the #1500 design-precedent bar.
+
+---
+
+## 1. Problem: the directive and the gap this doc closes
+
+The owner's binding directive on #820 is **"completely and securely."** The orchestrator's plan comment (Phase 2, this lane) translates that into a definition of complete:
+
+> the design must answer the credential plane **as a whole**, not just the provider-key file — explicit disposition of all three siblings (#820 raw keys at rest, #823 agent-readable control token on :4096, #825 enforcement) with either a fix or a documented residual-and-rationale; threat model must include prompt-injected exfiltration over the existing egress paths (gh, API, git) not just file reads; and the #1500 adversarial proof bar applies (probes that PROVE the agent cannot recover the key through every documented surface, including indirect ones).
+
+Design 0058 is the provider-key half and is adopted as-is (Part A). What no existing document does is stand over the **entire plane**: every credential that exists in uid-1000-reachable space, every channel it could leave through, and a proof that the dispositions hold. That whole is this doc's scope.
+
+## 2. The credential-plane inventory (re-verified on main @ `cfad436d`, 2026-09-21)
+
+| # | Credential | Surfaces in uid-1000-reachable space (evidence) | Legitimate in-pod consumers | Disposition |
+|---|---|---|---|---|
+| C1 | LLM provider API keys (platform-staged, BYO-key) | S1 `agent-config.json` (`format.go:71`), S2 `auth.json` (`client.go:261`, mode 0660), S3 batch files (`bootstrap.go:86`, `resync_secrets.go:177`) — full inventory and mode-by-mode analysis in 0058 §1.2 | opencode itself | **FIX — 0058** (relay-only; zero key bytes in uid-1000 space, agentd memory, or PVC) |
+| C2 | The opencode server control token (`OPENCODE_SERVER_PASSWORD`) — #823 | (a) `/sandbox-cfg/password` 0600 uid 1000 (`pkg/agentd/types.go:25`, bootstrap write); (b) opencode process env via `opencodeChildEnv` (`managed_process.go:560`) and the spawn-env PULL (`spawn_env_pull.go:24,71`) → readable through `/proc/<pid>/environ` by any same-uid process | opencode server (verifier); agentd loopback + seam clients (presenters); **the agent-facing MCP path needs none of it** (tools route through agentd's muxes, which hold the credential themselves) | **FIX (surfaces) + documented residual (session-takeover class)** — Part B |
+| C3 | The agentd admin token (`AGENTD_ADMIN_TOKEN`, distinct when configured) | env-var form on the agentd container (`pod_builder.go:118`) → same-uid `/proc/1/environ` read in single-container mode; **file form already exists** (`AGENTD_ADMIN_TOKEN_FILE` → `/sandbox-cfg/admin-token`, `pod_builder.go:116`) | agentd only (control-plane mux auth) | **FIX (delivery hygiene)** — Part C |
+| C4 | User-owned credentials: git PAT (`git-credentials` file + `store` helper, #1087), SSH keys (`.ssh` symlinks), env-secrets (`secrets-env`, incl. `GH_TOKEN`-class values) | `/home/sandbox/.git-credentials` (symlink → `/sandbox-runtime/rt/git-credentials`), `rt/secrets` tree, `secrets-env` 0640 CROSS_UID (`pkg/agentd/secrets/secrets.go:50`) | the user's own git/ssh/tool workflows — **the user is the security principal**; the agent acts with the user's authority by design (design 0051 §3) | **PRESENCE ACCEPTED BY DESIGN; exfil bounded externally** — Part D + threat model §5 |
+| C5 | Platform API credentials (`lsp_` API keys, JWTs, master KEK material) | **None in-pod** — verified: the workspace container's outbound auth surface is agentd's muxes (Basic = C2/C3); the agent never holds platform-API material; the KEK exists only in trusted-plane processes (0058 §3 "does not address") | — | **Non-surface — stated, with the verification that makes it one** (the sweep re-proves it nightly) |
+
+**The plane's shape:** one class leaves the pod entirely (C1), two lose their at-rest/env surfaces but keep a bounded in-memory residual (C2, C3), one is present by principal-design and its *exfiltration* is the bounded quantity (C4), one is a verified non-surface (C5).
+
+## 3. What "the untrusted agent" means here (the trust line, one paragraph)
+
+The agent process — opencode plus every tool subprocess it spawns — runs as uid 1000 and executes arbitrary user-repo code. Anything uid 1000 can read is one prompt-injection away from exfiltration over any reachable egress. Unix permissions cannot draw a line *inside* uid 1000 (the 2026-08-14 verification's rejected option 3; re-affirmed by the tiers WIP's own framing: the deny tier is real enforcement for *tool-mediated* reads, while arbitrary code reads directly). Therefore the only structural fixes are **removal from uid-1000 space** (C1) and **surface minimization with in-memory-only residuals** (C2, C3); everything else is bounding the *sink* (#821) or accepting principal-owned presence (C4). Design 0051's uid-2000 sidecar is the boundary the platform already has; where a fix below needs a second uid, it uses that one, not a new one.
+
+## 4. Design
+
+### Part A — Provider keys: adopted from 0058, unchanged
+
+0058 §4 (StagingProvider envelope, `llm-relay` router with per-request resolve, ephemeral scoped tokens, token-only emission through the `AgentConfigWriter` seam, PVC scrub, mixed-fleet migration) is the C1 design. D1–D3 are fixed by the owner's decision record; this doc neither re-opens nor amends them. The single C1 item 0058 leaves to this doc: **the proof that C1's closure holds belongs to the plane-wide sweep (§6), not only 0058's `agent_readable_files_keyfree`** — the sweep subsumes and extends it.
+
+### Part B — The control token (#823): surface removal + the honest session residual
+
+**B1. File surface.** `/sandbox-cfg/password` exists so bootstrap, the supervisor, and (sidecar mode) consumers can read the workspace password. In sidecar mode the credential already has a better path: the controller wires it as a `secretKeyRef` env on the **uid-2000 sidecar** (`agentd_sidecar.go:342`) — the workspace container never needs the file. Disposition:
+
+- **Sidecar mode:** stop writing `/sandbox-cfg/password` into the shared emptyDir entirely; the sidecar's env-ref and the spawn-time pipe (B2) cover every consumer. The `/sandbox-cfg` emptyDir's remaining content (secrets batch, workspace-config) is already C1/C4-scoped.
+- **Single-container mode (today's fleet default):** the file's only reader that is *not* same-uid-by-necessity is... none — every consumer is uid 1000. The file is therefore irreducible *as a file* in this mode; B2 removes the need for the *env* copy, and the file itself becomes the one at-rest surface. Disposition: mode-gate the write to the minimum (bootstrap writes it 0600 as today), register it in the sweep as a canary, and document the residual: single-container mode cannot structurally hide C2 at-rest. **The structural closure of B1 is "run sidecar mode"** — which is where the platform is already heading (0051 migration state). The sweep runs in both modes and asserts the difference explicitly (§6), so the fleet's exposure is measured, not assumed.
+
+**B2. Env surface — FD-pipe delivery at spawn.** The password reaches opencode's *environment* through two paths: `opencodeChildEnv` (single-container supervisor) and the spawn-env PULL (sidecar mode, `spawn_env_pull.go`). Both become **an inherited pipe FD**: the spawning agentd side (uid 1000 supervisor or uid 2000 sidecar) writes the password to a pipe, passes the read end as fd 3 on the opencode exec, opencode reads it to memory at boot and closes the FD. `/proc/<pid>/environ` no longer carries it; `/proc/<pid>/fd/3` exists for milliseconds at boot and points at a pipe (reading another process's pipe-FD via procfs requires the same uid *and* timing the boot window). This is the 0057 spawn-pull seam's shape (deliver-by-descriptor, not deliver-by-env-value) — same machinery, one more descriptor class. The PULL protocol's `spawned_rev` verification is unaffected.
+
+**B3. The residual, stated honestly: operator-session takeover.** C2's *impact* (not just its secrecy) is what #823 filed: a holder of the token can drive `:4096` as the operator — continue their conversation, impersonate them to the model. B1/B2 remove the at-rest/env surfaces, but opencode (uid 1000) must hold the verifier in memory, and a same-uid agent can ptrace it. Within the current trust model that is the same line design 0051 §3 draws (same-uid compromise = pod compromise). The **structural** closure of operator-impersonation is authorization, not authentication: opencode has no session-scoped ACL ("this connection may only continue session X"), so *any* in-pod holder of *any* valid token is operator-equivalent. Disposition: **documented residual + named seam.** The seam is design 0055's end state — when the operator's interactive traffic terminates at agentd's session-state authority rather than at a bearer-token opencode, agentd becomes the policy point and C2's token degrades to an internal implementation detail no reading-of-which escalates anything. Until then, the enforcement tiers (Part D) deny-list `/proc`-typed reads and `/sandbox-cfg` paths for *tool-mediated* access, and the sweep proves the at-rest/env surfaces stay closed. **Upstream ask (owner decision, §8-Q2):** an opencode session-ACL feature request is cheap to file and would close B3 without waiting for 0055's full arc.
+
+### Part C — The admin token (#820-adjacent, same hygiene class)
+
+`AGENTD_ADMIN_TOKEN` distinct-mode already prefers file delivery (`AGENTD_ADMIN_TOKEN_FILE` → `/sandbox-cfg/admin-token`). Disposition: (1) audit every consumer to file-only (no env form anywhere it can be avoided; where the controller wires env today — `pod_builder.go:118` — switch to the existing file form unconditionally); (2) sidecar mode: the file lives in the sidecar's uid-2000 space; (3) single-container: same residual shape as B1 (one 0600 file, same-uid readable, swept as a canary). Residual mirrors B1's mode statement.
+
+### Part D — Enforcement (#825): the tiers are the floor, and this design says what they are and are not
+
+The parked enforcement-tiers lane (`feat/opencode-permission-tiers` @ `e0f7ef23`) renders a platform-baked `permission` tier set into the harness config: **deny** on `/dev|/etc|/home|/proc|/root|/run|/sys|/var` (with sorted carve-outs), **credential-name denies** (`.git-credentials`, `auth.json`, `.secrets`, `.ssh`), **deny** on the resolved secret targets (`rt/auth.json`, `rt/secrets*`), **ask** ambient for `/sandbox-cfg`, `/sandbox-runtime`, `/home/sandbox`, and pre-allows only for caches/config/workspace. Its investigation also proved the prior soft gating was silently inert for months — the protection this issue originally assumed did not exist.
+
+Disposition for #825: **the tiers are the enforcement floor, adopted as a dependency of this design** — but their honest scope is *tool-mediated* reads; arbitrary user-repo code opens files directly and no harness permission layer gates that (the 2026-08-14 verification's SEC-6 finding, unchanged). Therefore:
+
+- **Fix (definition):** every credential the tiers deny-list is *also* structurally removed or mode-separated by Parts A–C. The tiers are defense-in-depth and the tripwire/audit surface (ask-tier events feed detection), never the load-bearing secrecy mechanism. This inverts the original #825 framing (from "policy as the defense" to "policy as the alarm around a defense that is structural").
+- **Residual:** arbitrary-code reads of C4-class (user-owned) credentials remain possible; bounded by #821 egress and accepted in Part D2 below. Arbitrary-code reads of C2/C3 *files* in single-container mode remain possible (B1 residual).
+
+### Part D2 — User-owned credentials (C4): presence by principal-design
+
+git PATs, SSH keys, and env-secrets are the *user's own* material, delivered so the user's workflows work; the agent acts with the user's authority (design 0051 §3). Removing them from uid-1000 space would remove the product's git/ssh features. The design therefore accepts their presence and bounds their **exfiltration** (§5): to destinations the network policy permits (#821's allowlist mode, opt-in today), through channels the tiers' ask-tripwire observes (tool-mediated), with the honest statement that a determined same-uid agent with open egress can exfiltrate them — which is #821's problem, cross-referenced, and the reason #821 is co-prioritized (the 2026-08-27 staging comment's point 3 stands).
+
+## 5. Threat model: prompt-injected exfiltration, per channel (not just file reads)
+
+The attacker: user-repo code executed by a tool, or a prompt-injected instruction chain, inside uid 1000, aiming to move credential bytes to attacker-controlled ground.
+
+**Channels and what bounds each after this design:**
+
+| Channel | Pre-design exposure | Post-design bound |
+|---|---|---|
+| `cat`/open of at-rest files | C1 (S1–S3), C2 file, C3 file, C4 files | C1: **zero bytes exist** (0058). C2/C3: sidecar mode zero; single-container one 0600 file each (residual). C4: readable by design; tiers tripwire on tool-mediated reads |
+| `/proc/*/environ`, `ptrace`, procfs scraping | C2 env, C3 env, opencode memory | C2/C3 env surfaces **removed** (B2 pipe). Memory/ptrace of same-uid processes remains (the 0051 line); window narrowed from always-on env to boot-instant FD + process memory |
+| **egress: provider endpoints** | C1 key `POST`ed to `https://attacker.example` or the provider's own URL with stolen key | C1: nothing to send — the key does not exist in-pod; the scoped token is worthless off-pod (HMAC-bound to workspace+baseURL+models+TTL; 0058 D3) |
+| **egress: `gh` CLI / GitHub API** | C4 `GH_TOKEN`-class env-secrets + git PAT → `gh api`, gist/push exfil | Unchanged by this design — bounded by #821 allowlist + tiers ask-tripwire; **residual, co-owned with #821**. Post-0058 note: `agent-config.json`/`auth.json` no longer hold any `sk-`-class bytes for a confused channel to smuggle |
+| **egress: git push / clone to arbitrary remotes** | C4 PAT as bearer for pushes to the *user's* repos; anonymous push to attacker remotes for data the agent already holds | Data-theft of workspace files: #821's bound. Credential-theft: the PAT itself leaves via `git remote set-url https://user:PAT@host` style leaks → same C4 residual |
+| **egress: the relay router itself (prompt channel)** | (post-0058) encode secrets into prompts to the user's own provider | 0058's accepted residual, restated in-plane: scope = user's own providers; quota + size caps + anomaly alerts; not attacker-reachable by token theft |
+| `:4096` self-authentication (#823) | operator-session takeover with C2 | Off-pod worthless (localhost-only); in-pod: B1/B2 narrow acquisition to the boot-instant pipe or process memory; **impersonation impact residual B3** until the 0055 end-state or upstream session ACL |
+| Harness re-reads / config refresh / batch replay | S1 re-render on reload; S3 batch re-pull; `PUT /auth` restage | 0058's token-only emission makes every re-read surface carry the scoped token, never the key (its §4.5); the batch excludes llm-provider plaintext (its §4.6/§6) |
+
+**What this design kills; what it accepts (summary).** Kills: the at-rest provider-key plane; the env-form control/admin tokens; the "policy is the defense" framing. Accepts, each with its bound: platform traffic visibility (D1); exfil-through-relay prompt channel (quota/alerts); token-theft = quota burn, not credential loss; same-uid memory/ptrace (the 0051 line, narrowed); single-container B1 files (measured by the sweep); C4 presence + open-egress exfil until #821; operator-session impersonation by a same-uid memory-compromise until B3's seam lands.
+
+## 6. The proof: the credential-plane sweep (the #1500 bar)
+
+One artifact closes all three issues' verification: **`local/credential-plane-sweep.sh`** (nightly-wired, both fleet modes), extending 0058's `agent_readable_files_keyfree` from "provider-key bytes" to "the plane":
+
+1. **Canaries planted at the sources:** a distinctive provider key (staged via the real delivery path), the live workspace password, the admin token, a git PAT, a distinctive env-secret value.
+2. **Read probes (every documented surface, including indirect):** full uid-1000 filesystem sweep (every path in §2 plus the symlink *names* and *targets*), `/proc/*/environ` and `/proc/*/fd` across all pod processes, the harness config re-read (`GET /config` post-restart), the auth-store restage (`PUT /auth` observer), the batch file (both modes), the spawn-env PULL observer (asserts the password never appears as an env *value*, only as pipe traffic), and a `strings`-sweep of agentd/opencode memory via a debug endpoint gated behind the sweep's own canary flag (or, cheaper, a core-dump-less `/proc/<pid>/mem` read under the sweep's instrumentation).
+3. **Exfil probes (the egress half):** from inside the workspace, attempt to send each canary to (a) an attacker-domain HTTP sink, (b) the provider's real endpoint with the canary as a key, (c) `gh api` with the PAT, (d) a git push with the PAT embedded. Assertions: (a) blocked-or-alerted when #821 allowlist mode is on, *observed-and-reported* when it isn't (the probe documents the open-egress residual rather than pretending), (b) 401 (nothing valid to present), (c)/(d) succeed-with-PAT **by design for C4 — the run reports them as the documented C4 residual, not a failure**, unless allowlist mode is on.
+4. **Mode assertions:** sidecar-mode runs assert C2/C3 *file* absence too; single-container runs assert exactly the two 0600 residuals and no more.
+5. **Red-state mutation pins (the #1509 lesson — a completion claim is a testable assertion):** the sweep is itself mutation-tested — a deliberately re-leaked surface (test-only config flag that writes the provider-key canary into `agent-config.json`) must turn the sweep RED; the pin suite asserts the sweep catches each planted leak class. A green sweep without a demonstrated red state proves nothing.
+6. **C5 re-verification:** no `lsp_`-prefixed bytes anywhere in the sweep — the non-surface stays proven, not assumed.
+
+Exit criteria per issue: **#820** closes when the sweep is green in sidecar mode with zero C1 bytes and the documented-and-bounded residuals (this doc + 0058). **#823** closes at B1/B2 green with B3 filed as its named seam (and the upstream ask logged). **#825** closes when the tiers land and this doc's inversion (structural defense, policy as alarm) is reflected in its README section.
+
+## 7. Sequencing
+
+1. **Tiers land** (Phase 1, in flight) — the floor this design builds on; no dependency the other way.
+2. **0058's stories (Epic 72)** as sequenced there (#910 already shipped; StagingProvider → router resolve → controller staging → agentd token emission → lifecycle/policy gates → migration).
+3. **B2 FD-pipe + C file-only delivery** — small, independent of Epic 72; can ride any train after the tiers (they touch the same spawn seam, so land after tiers to avoid churn).
+4. **B1 sidecar-mode password-file removal** — after B2 (its consumers are gone then).
+5. **The sweep** — last, closes all three issues; ships with the mutation pins from day one.
+
+## 8. Assumptions (Rule 7 — stated, validated)
+
+| # | Assumption | Validation |
+|---|---|---|
+| A1 | 0058 remains the adopted C1 design (no re-opening of D1–D3) | This doc's charter (the orchestrator's plan comment); 0058 §2 |
+| A2 | The tiers WIP lands materially as @ `e0f7ef23` describes (deny/ask/allow + credential-name denies) | The parked branch's matcher-model pins + its unit suite green; if it reshapes, Part D's *inversion* statement is the invariant — tiers as alarm, never as the secrecy mechanism |
+| A3 | opencode can read a password from an inherited pipe FD at boot (B2) | opencode reads env/config at startup today; an FD read is plain stdin-adjacent code — **flagged to the implementer as a spike-first story**; fallback documented: stdin-passed one-shot value (spawn already owns stdin plumbing) |
+| A4 | `/proc/<pid>/environ` of same-uid processes is readable in-pod (the C2/C3 env-leak premise) | The #823 live evidence observed exactly this; procfs default mount options in the runtime image |
+| A5 | No platform-API credential reaches uid-1000 space (C5) | Verified by surface audit (§2); the sweep re-proves nightly |
+| A6 | The spawn-env PULL seam can carry an FD-class delivery (B2's transport) | 0057's PULL is an HTTP pull today — the FD is handed by the *spawning* process, not pulled; both modes spawn opencode from an agentd-side process (`managed_process.go` supervisor / sidecar exec). If the sidecar exec cannot pass FDs across the container boundary, B2 sidecar-mode falls back to: sidecar writes a 0600 uid-1000 file consumed-and-unlinked by the supervisor in the same boot instant (window-equivalent, file-transient) — **implementer spike decides, both accepted** |
+| A7 | `#1500`'s bar means adversarial probes + red-state pins, not just coverage claims | #1500's directive structure (first-class constraints the design must be *incapable* of violating) + this repo's #1509 lesson |
+
+## 9. Rejected alternatives
+
+- **chmod/deny-only (the original #820 option 3):** rejected with evidence (2026-08-14 verification; no root in pod; same-uid reads; policy gates tools not code). Survives only as the tiers' tripwire value.
+- **In-pod decrypt (agentd holds user DEK):** rejected by D3 — turns agentd into a loopback decrypt oracle adjacent to the attacker.
+- **opencode RBAC / two-token scheme on :4096:** rejected for now — the authorization layer doesn't exist upstream; building it in the proxy means agentd parsing/re-authorizing every opencode session op (a second authority arc ahead of 0055's). Replaced by B3's residual + seam + the upstream ask.
+- **Third uid in-pod (a uid-1001 "verifier" opencode):** rejected — opencode must read the user's workspace; a uid boundary there inverts the product (the agent couldn't read its own files). The sidecar's uid 2000 is the only sane second uid and it exists.
+- **Deleting C4 from the pod (make git/ssh platform-brokered):** rejected — removes the product's core workflows; the user principal owns them (0051 §3); their exfil bound is #821, not their existence.
+
+## 10. Open owner questions (non-blocking for the design; #1465-vehicle pattern)
+
+1. **Q1 — B3 upstream ask:** file the opencode session-ACL feature request now (cheap, parallel), or hold for the 0055 end-state only?
+2. **Q2 — single-container fleet posture:** B1's residual means the structural C2/C3 closure requires sidecar mode. Should the design add a milestone line "sidecar-mode default" (already the platform's trajectory) to #820's exit criteria, or does single-container green-with-measured-residuals suffice for closure? (Recommendation: the latter — the sweep measures it either way; making mode-default a *blocker* couples this issue to an unrelated migration.)
+3. **Q3 — sweep memory-probe depth:** the `/proc/<pid>/mem` instrumentation is the most invasive part of the sweep. Minimal bar (env+fd+filesystem+harness surfaces, memory accepted as residual) or full bar? (Recommendation: minimal for nightly, full as a manual/epic-exit run — the memory residual is the 0051 line and nightly-proving it adds runtime cost for a documented acceptance.)
+4. **Q4 — C4 exfil *reporting*:** when the sweep's (c)/(d) probes succeed with the PAT in allowlist-off mode, the run REPORTS the residual. Should that report gate (warn-only) or fail any pipeline? (Recommendation: warn-only + a rolling metric — it's #821's signal, not this design's failure.)
