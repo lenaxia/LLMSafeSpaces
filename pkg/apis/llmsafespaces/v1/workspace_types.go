@@ -23,6 +23,20 @@ const (
 	// user-perceived latency, not just the controller reconcile latency.
 	AnnotationRequestedAt = "llmsafespaces.dev/requested-at"
 
+	// AnnotationForceRecycle is the #1505 user-consent force marker for
+	// pod deletion. Set by the API ONLY on RefreshWorkspaceCompute (the
+	// one action whose UI warns the user that in-flight turns are cut) —
+	// never by automated suspend sources, and not by the suspend path at
+	// all since #1510 (#1507) made every suspend bounded-immediate.
+	// Value semantics: a generation number ("42") applies to the
+	// refresh-compute recycle observing exactly that restartGeneration;
+	// any other value is stale and inert. The controller clears the
+	// annotation in the same reconcile that observes the stamped
+	// generation — at every gen-observe site (Active recycle, Creating,
+	// Failed recovery) — so the force never leaks into a later
+	// automated lifecycle action.
+	AnnotationForceRecycle = "llmsafespaces.dev/force-recycle"
+
 	// AnnotationLastActivityAt stores the last user-activity timestamp
 	// (RFC3339). Written by the API service (activity tracker + activate
 	// flow); read by the controller for idle auto-suspend. Lives in

@@ -39,6 +39,15 @@ func (r *WorkspaceReconciler) handleFailed(ctx context.Context, workspace *v1.Wo
 		clearRecoveryState(workspace)
 		workspace.Status.RestartCount++
 		workspace.Status.ObservedRestartGeneration = workspace.Spec.RestartGeneration
+		// #1505: clear a refresh-stamped force marker at the observe
+		// site (Failed recovery recycles nothing — no bypass applies),
+		// BEFORE the status update so the clear's RV-sync holds for it.
+		if _, forced := workspace.Annotations[v1.AnnotationForceRecycle]; forced {
+			if err := r.clearForceRecycleAnnotation(ctx, workspace); err != nil {
+				logger.Error(err, "failed to clear force-recycle annotation; requeueing")
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
 		if err := r.Status().Update(ctx, workspace); err != nil {
 			recordStatusUpdateConflictOnError("handleFailed_gen_bump", err)
 			return ctrl.Result{}, err

@@ -705,6 +705,10 @@ func (s *Service) DeleteWorkspace(ctx context.Context, userID, workspaceID strin
 }
 
 // SuspendWorkspace transitions a workspace to Suspending phase.
+// Post-#1510 (#1507) all suspend sources share the same bounded
+// semantics: the controller deletes the pod unconditionally and the
+// pod's terminationGracePeriodSeconds is the graceful-termination
+// budget. There is no #761 drain on this path and no force variant.
 func (s *Service) SuspendWorkspace(ctx context.Context, userID, workspaceID string) error {
 	start := time.Now()
 	defer func() {
@@ -939,6 +943,18 @@ func (s *Service) RefreshWorkspaceCompute(ctx context.Context, userID, workspace
 
 	s.reapplyComputeDefaults(ctx, crd)
 	crd.Spec.RestartGeneration++
+	// #1505: refresh-compute is the USER-consented force path (the UI
+	// warning is the consent). Stamp the generation-keyed force marker so
+	// the controller's recycle bypasses the #761 session drain — on a
+	// multi-agent pod with perpetually busy sessions the drain would
+	// never find quiet and the refresh would hang. In-flight turns die
+	// by design. The controller clears the marker in the same reconcile
+	// that observes this generation — the Active recycle honors it; the
+	// Creating / Failed-recovery observes clear it as hygiene.
+	if crd.Annotations == nil {
+		crd.Annotations = map[string]string{}
+	}
+	crd.Annotations[v1.AnnotationForceRecycle] = strconv.FormatInt(crd.Spec.RestartGeneration, 10)
 
 	if _, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()

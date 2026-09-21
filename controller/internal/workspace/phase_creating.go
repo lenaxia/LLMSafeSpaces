@@ -62,6 +62,16 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		workspace.Status.RestartCount++
 		workspace.Status.ObservedRestartGeneration = workspace.Spec.RestartGeneration
 		restartGenBumped = true
+		// #1505: a suspended-refresh stamps the force marker and resumes
+		// through Creating — observed HERE, where there is no pod to
+		// recycle (no bypass applies). Clear the marker at the observe
+		// site so it never lingers as annotation residue.
+		if _, forced := workspace.Annotations[v1.AnnotationForceRecycle]; forced {
+			if err := r.clearForceRecycleAnnotation(ctx, workspace); err != nil {
+				logger.Error(err, "failed to clear force-recycle annotation; requeueing")
+				return ctrl.Result{Requeue: true}, nil
+			}
+		}
 		// Fall through to pod creation below.
 	}
 
