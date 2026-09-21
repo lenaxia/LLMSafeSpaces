@@ -101,6 +101,16 @@ func (s *StoreIntegrationSuite) TestWorkspaceExistsByID() {
 	exists, err = s.store.WorkspaceExistsByID(ctx, uuid.New().String())
 	s.Require().NoError(err)
 	s.False(exists, "a random id must not exist")
+
+	// Soft-deleted rows still exist to the FK — pin the deliberate
+	// unscoped semantics (a future AND deleted_at IS NULL refactor would
+	// 400 targets the FK accepts; nothing else would catch it).
+	softID := s.newWorkspaceID()
+	_, err = s.pool.Exec(ctx, "UPDATE workspaces SET deleted_at = now() WHERE id = $1", softID)
+	s.Require().NoError(err)
+	exists, err = s.store.WorkspaceExistsByID(ctx, softID)
+	s.Require().NoError(err)
+	s.True(exists, "a soft-deleted row still exists to the FK (the primitive matches FK semantics, not lifecycle)")
 }
 
 // --- Workflow CRUD ---------------------------------------------------------

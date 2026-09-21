@@ -518,11 +518,10 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 		}
 	}
 
-	// The post-patch MERGED targets — computed once for the V7 mapping
-	// rules below AND the parent-id existence checks further down.
-	// existing is nil for patches that touch no target-bearing field
-	// (then req carries no target either — both merge to empty and the
-	// checks no-op).
+	// The post-patch MERGED workflow target — feeds the V7 mapping rules
+	// below. existing is nil for patches that touch no target-bearing
+	// field (then the merge is empty). The parent-id existence checks
+	// further down read the PATCHED req values directly, not this merge.
 	mergedWorkflowID := ""
 	if existing != nil {
 		if existing.WorkflowID != nil {

@@ -372,23 +372,6 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID, workflowID
 		return
 	}
 
-	// The parent-id audit's UPDATE arm (review r1's third instance): a
-	// PATCHED targetWorkspaceId must exist — the FK previously answered
-	// nonexistent targets with the opaque-500 class. Scoped to the
-	// PATCHED value only (stored targets are FK-anchored); existence
-	// only, cross-owner is #1440's post-persist business.
-	if req.TargetWorkspaceID != nil && *req.TargetWorkspaceID != "" && h.wsExistencer != nil {
-		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.TargetWorkspaceID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
-			return
-		}
-		if !exists {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
-			return
-		}
-	}
-
 	upd := &wf.WorkflowUpdate{
 		Name: req.Name, Slug: req.Slug, Description: req.Description,
 		SpecYAML: req.SpecYAML,
@@ -476,6 +459,23 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID, workflowID
 			return
 		}
 		upd.SpecJSON = specJSON
+	}
+
+	// The parent-id audit's UPDATE arm (review r1's third instance): a
+	// PATCHED targetWorkspaceId must exist — the FK previously answered
+	// nonexistent targets with the opaque-500 class. Scoped to the
+	// PATCHED value only (stored targets are FK-anchored); existence
+	// only, cross-owner is #1440's post-persist business.
+	if req.TargetWorkspaceID != nil && *req.TargetWorkspaceID != "" && h.wsExistencer != nil {
+		exists, err := h.wsExistencer.WorkspaceExistsByID(c.Request.Context(), *req.TargetWorkspaceID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check target workspace"})
+			return
+		}
+		if !exists {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target workspace not found"})
+			return
+		}
 	}
 
 	row, err := h.store.UpdateWorkflow(c.Request.Context(), ownerType, ownerID, workflowID, upd)

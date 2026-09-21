@@ -174,6 +174,26 @@ else
     note_fail "R1c: ghost-workflow create returned ${api_status} (${r1c_resp}), expected 400 target workflow not found"
 fi
 
+# R1d — the UPDATE faces of the same contract (#1519): ghost-parent
+# PATCHes answer the named 400, never the opaque 500.
+api PUT "/api/v1/me/workflows/${REAL_WF_ID}" \
+    '{"targetWorkspaceId":"00000000-0000-4000-8000-000000000099"}'
+r1d_w_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1d_w_resp}" == *"target workspace not found"* ]]; then
+    ok "R1d: ghost targetWorkspaceId PATCH on the workflow rejected with the named 400"
+else
+    note_fail "R1d: ghost targetWorkspaceId workflow PATCH returned ${api_status} (${r1d_w_resp}), expected 400"
+fi
+R1D_ID=$(create_trigger "e2e-r1d-trigger" "0 3 1 * *")
+api PUT "/api/v1/me/triggers/${R1D_ID}" \
+    '{"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
+r1d_t_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1d_t_resp}" == *"target workflow not found"* ]]; then
+    ok "R1d: ghost workflowId PATCH on the trigger rejected with the named 400 (#1519)"
+else
+    note_fail "R1d: ghost workflowId trigger PATCH returned ${api_status} (${r1d_t_resp}), expected 400"
+fi
+
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
 r1_next=$(trigger_field "${R1_ID}" nextFireAt)
 if [[ -n "${r1_next}" ]] && [[ "$(date -u -d "${r1_next}" +%s)" -ge "$(date -u +%s)" ]]; then
