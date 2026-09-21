@@ -14,6 +14,8 @@ package local_test
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -121,6 +123,73 @@ func TestIssue1410E2EWorkflowRegistered(t *testing.T) {
 	src := string(raw)
 	assert.True(t, strings.Contains(src, "local/issue-1410-1412-automation-e2e.sh"),
 		"the automation e2e script must be registered in the nightly workflow")
+}
+
+// TestIssue1410E2E_BootstrapLivezRetries pins run-35586321658's class
+// fix: the bootstrap livez probe must RETRY (the us-68/harness_start
+// 10×1s shape), not one-shot. That run died at its very first command —
+// a single 2s curl — racing an API pod 32s old (us-70's closing AC-8
+// rows churn API replicas; the instant #1342 skip removed the
+// accidental settle window). Every other cascade script already retries
+// (harness_start's loop or us-70-revisions' wait_local_livez); this was
+// the class's sole one-shot.
+func TestIssue1410E2E_BootstrapLivezRetries(t *testing.T) {
+	raw, err := os.ReadFile(issue1410Script)
+	require.NoError(t, err)
+	src := string(raw)
+	assert.Contains(t, src,
+		"for _i in $(seq 1 10)", "the bootstrap must retry the livez probe")
+	i := strings.Index(src, "for _i in $(seq 1 10)")
+	require.Greater(t, i, 0)
+	window := src[i : i+400]
+	assert.Contains(t, window, "/livez", "the retry loop must probe livez")
+	assert.Contains(t, window, "&& break", "the loop must break on success")
+	// The retry loop must PRECEDE the fatal probe (a loop after the die
+	// would be dead code).
+	dieAt := strings.Index(src, "API /livez unreachable")
+	assert.Greater(t, dieAt, i, "the retry loop must run before the fatal livez die")
+}
+
+// TestIssue1410E2E_BootstrapLivezRetriesExecutes runs the REAL bootstrap
+// retry block against a counting fake curl: succeeds after transient
+// failures; dies loudly when livez never answers.
+func TestIssue1410E2E_BootstrapLivezRetriesExecutes(t *testing.T) {
+	bash := requireBash(t)
+	raw, err := os.ReadFile(issue1410Script)
+	require.NoError(t, err)
+	src := string(raw)
+	block := regexp.MustCompile(`(?s)(?m)^for _i in \$\(seq 1 10\); do.*?\|\| die "API /livez unreachable[^\n]*\n`).FindString(src)
+	require.NotEmpty(t, block, "bootstrap retry block (loop + confirming die) not found")
+
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "count")
+	fake := "#!/bin/sh\n" +
+		"n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
+		"if [ \"${FAKE_LIVEZ_FAIL_N:-0}\" -gt 0 ] && [ \"$n\" -lt \"${FAKE_LIVEZ_FAIL_N}\" ]; then exit 1; fi\n" +
+		"if [ \"${FAKE_LIVEZ_ALWAYS_FAIL:-0}\" = \"1\" ]; then exit 1; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte(fake), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+
+	run := func(env string) (string, error) {
+		os.Remove(counter)
+		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH PORTFWD_PORT=18086\n" + env +
+			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
+` + block + "\necho BOOT-OK"
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("transient failures then success", func(t *testing.T) {
+		out, err := run("export FAKE_LIVEZ_FAIL_N=4\n")
+		require.NoError(t, err, "the retry loop must absorb transient livez failures:\n%s", out)
+		assert.Contains(t, out, "BOOT-OK")
+	})
+	t.Run("never answers: dies loudly", func(t *testing.T) {
+		out, err := run("export FAKE_LIVEZ_ALWAYS_FAIL=1\n")
+		require.Error(t, err, "a never-answering livez must die, not hang")
+		assert.Contains(t, out, "DIE API /livez unreachable")
+	})
 }
 
 // TestIssue1410E2EScript_ExecuteSmoke runs the script end-to-end under

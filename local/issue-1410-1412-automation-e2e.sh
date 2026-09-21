@@ -62,6 +62,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Bootstrap livez with RETRY (the us-68/harness_start shape): us-70's
+# closing AC-8 rows churn API replicas, and this step starts immediately
+# after (the #1342 gate skips instantly) — a one-shot probe raced a
+# 32s-old API pod and died at the very first command (run 35586321658).
+for _i in $(seq 1 10); do
+    curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null 2>&1 && break
+    sleep 1
+done
 curl -sfm 2 "http://127.0.0.1:${PORTFWD_PORT}/livez" >/dev/null \
     || die "API /livez unreachable on ${PORTFWD_PORT} (is the e2e cluster port-forward up?)"
 
