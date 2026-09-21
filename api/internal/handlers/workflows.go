@@ -68,7 +68,7 @@ type WorkflowsHandler struct {
 	wsExistencer workspaceExistencer
 }
 
-// workspaceExistencer is the unscaled existence primitive the FK
+// workspaceExistencer is the unscoped existence primitive the FK
 // semantics define (implemented by (*workflows.Store).WorkspaceExistsByID,
 // pkg/workflows/store.go).
 type workspaceExistencer interface {

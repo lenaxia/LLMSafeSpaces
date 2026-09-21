@@ -22,6 +22,7 @@
 | `mcp_server_auto_apply.server_id` → mcp_servers (000012:109) | MCP auto-apply create (admin + org routes) | **BUG → FIXED (r4's instance 5)**: serverId resolved via verifyServerOwnership → 404, matching Bind's convention (`TestAutoApplyCreate_GhostServer_404` — red at pre-fix) |
 | `credential_auto_apply.credential_id` → provider_credentials (000001:1541) | admin credential auto-apply create | **BUG → FIXED (r4's instance 6; r5 made it REAL — the first attempt was a functional no-op)**: GetCredential returns (nil, nil) for not-found, so the check tests BOTH the error and the nil row, exactly as the admin CRUD arms and the org twin always did (`TestAdminProviderCredentials_AutoApply_GhostCredential_404` asserts the FK-bearing store is NEVER reached — red at the no-op head) |
 | org tables' `org_id` | org routes | path-resolved org (404s; R8e's fails-closed row covers live) |
+| `org_memberships.user_id` → users (000001:1616, CASCADE) | org member add (POST /orgs/:id/members, OrgAdminGuard) | **BUG → FIXED (r8's instance 8)**: UserExistsByID → named 404 "user not found" (both existing pre-checks swallowed not-found — GetOrgMember (nil,nil), GetUserOrgID ("",nil)); `TestOrgAddMember_GhostUser_Named404` + R1g live row |
 
 ## Implementation
 
@@ -36,7 +37,7 @@
 
 ### Assumptions stated and validated (Rule 7)
 
-- The FK map is complete for user-facing parents after EIGHT review passes: r1 the workflow-update surface, r3 the run-override (REQUEST DTO — found by trace, not grep), r4 the three auto-apply/bind org-arm surfaces (instances 5-7), r8 the org-member surface (instance 8 — the earlier 'no further instances' sweeps each proved incomplete). The completeness claim was false four times; each round's enforcement is recorded here as the audit's own history.
+- The FK map is complete for user-facing parents after NINE review passes: r1 the workflow-update surface, r3 the run-override (REQUEST DTO — found by trace, not grep), r4 the three auto-apply/bind org-arm surfaces (instances 5-7), r8 the org-member surface (instance 8 — the earlier 'no further instances' sweeps each proved incomplete). The completeness claim was false four times; each round's enforcement is recorded here as the audit's own history.
 - Existence-not-ownership for the WORKSPACE axis (org-owned workflows target user workspaces; the FK is unscoped). For the WORKFLOW axis (trigger targets), owner-scoping matches #1517's create check and closes #1519 half (b): a PATCHED cross-owner workflowId answers the same named 400 as a nonexistent one (no oracle); #1440's loud-fire design survives for STORED targets (deletion SET NULL, legacy rows).
 - The r1-recorded decision: update-path checks scope to PATCHED values — stored state is FK-anchored and deliberately unvalidated (mitigation path preserved).
 - Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.

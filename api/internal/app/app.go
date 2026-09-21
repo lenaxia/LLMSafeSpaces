@@ -623,7 +623,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		// Parent-id contract checks (the opaque-500 class audit): the
-		// same pool owns workspaces — the store's unscaled existence
+		// same pool owns workspaces — the store's unscoped existence
 		// primitive backs the target-workspace 400s on workflow create
 		// and trigger create/update.
 		userWorkflowsHandler.SetWorkspaceExistencer(wfStore)
