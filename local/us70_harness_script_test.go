@@ -794,12 +794,13 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 }
 
 // TestUS70MidSweep_CleansRowWorkspacesBeforeAC11 pins the run-35550849959
-// adjudication's row-local hygiene: the AC-17/AC-F/Chaos legs leave five
-// standing row workspaces (ids 1-5, census-verified) that were exactly
-// the margin AC-11's ws-010 lacked. The mid sweep removes them with the
-// SAME verified machinery (typed delete, loud failure, verified
-// termination, no unobserved-state claims) before AC-11 recreates its
-// own workspace. Leaks are leaks regardless of node headroom.
+// adjudication's row-local hygiene: five row workspaces stand at AC-11's
+// start (1=AC-1's, 2=AC-2's — reused by AC-17, 3=Chaos's, 4=AC-F's,
+// 5=AC-3's; census-verified) and were exactly the margin AC-11's ws-010
+// lacked. The mid sweep removes them with the SAME verified machinery
+// (typed delete, loud failure, verified termination, no
+// unobserved-state claims) before AC-11 recreates its own workspace.
+// Leaks are leaks regardless of node headroom.
 func TestUS70MidSweep_CleansRowWorkspacesBeforeAC11(t *testing.T) {
 	src := mustRead(t, us70DeliveryScript)
 	ac11 := strings.Index(src, "AC-11 — POST /v1/resync-secrets")
@@ -819,7 +820,7 @@ func TestUS70MidSweep_CleansRowWorkspacesBeforeAC11(t *testing.T) {
 		}
 	}
 	if !regexp.MustCompile(`id>=1 && id<=5`).MatchString(src[blockStart:ac11]) {
-		t.Fatal("the mid sweep must cover row workspaces ids 1-5 (the census set: AC-1's 0001, AC-2's 0002, AC-17/AC-F/Chaos's 0003-0005)")
+		t.Fatal("the mid sweep must cover row workspaces ids 1-5 (the census set: AC-1's 1, AC-2's 2, Chaos's 3, AC-F's 4, AC-3's 5)")
 	}
 }
 
@@ -920,6 +921,33 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 			t.Fatalf("a never-succeeding verify get must die unverified, err=%v\n%s", err, out)
 		}
 	})
+
+	// Boundary execution (r2 residual): the production MID awk itself is
+	// extract-and-executed against boundary ids — inclusion must be
+	// exactly {1..5}, never 0/6/90/101 (a drift like id>=0 or id<=6
+	// passes every block-level test but breaks here).
+	mid := regexp.MustCompile(`(?s)MID_SWEPT=\$\(printf[^\n]*\n\s*\| awk -F/ '(.*?)'\)`).FindStringSubmatch(src)
+	if mid == nil {
+		t.Fatal("mid sweep awk not found in the expected capture form")
+	}
+	for _, tc := range []struct {
+		id   int
+		want bool
+	}{
+		{0, false}, {1, true}, {2, true}, {5, true}, {6, false}, {90, false}, {101, false},
+	} {
+		name := fmt.Sprintf("e2e5d000-0000-4000-8000-%012d", tc.id)
+		cmd := exec.Command("awk", "-F/", mid[1])
+		cmd.Stdin = strings.NewReader("workspace/" + name + "\n")
+		o, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("mid awk execution failed: %v", err)
+		}
+		got := strings.TrimSpace(string(o)) != ""
+		if got != tc.want {
+			t.Fatalf("PRODUCTION mid awk for id %d: got %v want %v — the sweep range drifted", tc.id, got, tc.want)
+		}
+	}
 }
 
 func TestUS70PoolWorkflow_Pins(t *testing.T) {

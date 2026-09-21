@@ -1140,12 +1140,13 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Mid sweep (run 35550849959): the AC-17/AC-F/Chaos legs leave five
-# standing row workspaces (ids 1-5) that were exactly the margin AC-11's
-# ws-010 lacked on the nightly's node. AC-11 and the rows after it
-# re-seed what they need (seed_workspace pre-cleans), so removing 1-5
-# here is safe. Same verified machinery as the pre/post sweeps — leaks
-# are leaks regardless of node headroom.
+# Mid sweep (run 35550849959): five row workspaces stand at this point
+# (1=AC-1's, 2=AC-2's — reused by AC-17, 3=Chaos's, 4=AC-F's, 5=AC-3's)
+# and were exactly the margin AC-11's ws-010 lacked on the nightly's
+# node. AC-11 and the rows after it re-seed what they need
+# (seed_workspace pre-cleans), so removing 1-5 here is safe. Same
+# verified machinery as the pre/post sweeps — leaks are leaks regardless
+# of node headroom.
 MID_SEL_FAILED=0
 if ! MID_GET=$(kc get workspace -o name 2>/dev/null); then
     warn "AC-11 mid sweep: selection get failed — cannot confirm the 1-5 range is clear"
