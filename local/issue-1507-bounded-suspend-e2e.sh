@@ -131,6 +131,7 @@ else
 
     CTL=$(controller_pod)
     suspend_t0=$(date +%s)
+    suspend_elapsed=0
     curl -sfm 10 -X POST -H "Authorization: Bearer ${API_KEY}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WS}/suspend" >/dev/null \
         || note_fail "R1: suspend call failed"
@@ -145,10 +146,17 @@ else
     # Pod gone. Bounded: the phase flips when the controller issues the
     # deletion, but the pod OBJECT lingers in Terminating while kubelet
     # runs the grace window (default 40s) — grace + reconcile margin.
-    if wait_for "R1: pod object gone" $((R1_BUDGET_S + 120)) '! kc get pod "${POD}" >/dev/null 2>&1'; then
+    # The predicate is NotFound-AWARE: only an explicit NotFound counts
+    # as gone (a query error — API hiccup, auth — keeps waiting and
+    # surfaces as the timeout FAIL, never a false pass).
+    pod_gone() {
+        [[ "$(kc get pod "${POD}" -o jsonpath='{.metadata.name}' 2>&1)" == "" ]] \
+            && kc get pod "${POD}" 2>&1 | grep -q "NotFound"
+    }
+    if wait_for "R1: pod object gone" $((R1_BUDGET_S + 120)) 'pod_gone'; then
         ok "pod deleted (grace window drained)"
     else
-        note_fail "R1: pod ${POD} still exists past the grace window"
+        note_fail "R1: pod ${POD} still exists past the grace window (last query: $(kc get pod "${POD}" 2>&1 | head -1))"
     fi
 
     # PVC retained — suspend deletes compute, never data.
@@ -164,11 +172,17 @@ else
     # the row even without log access).
     if [[ -z "${CTL}" ]]; then
         note_fail "R2: controller pod not found — the AC1 log assertion cannot be skipped (fail-closed)"
-    elif kubectl --context "${CTX}" -n "${NS}" logs "${CTL}" --since=$((suspend_elapsed + 120))s 2>/dev/null \
-        | grep -q 'deferring pod deletion behind busy sessions.*"reason": "suspend"'; then
-        note_fail "R2: the suspend drain-defer line fired — the busy gate is back (AC1 violated)"
     else
-        ok "R2 PASS: no suspend drain-defer in the controller log (AC1)"
+        R2_LOGS="$(mktemp)"
+        if ! kubectl --context "${CTX}" -n "${NS}" logs "${CTL}" \
+                --since=$((suspend_elapsed + 120))s >"${R2_LOGS}" 2>"${R2_LOGS}.err"; then
+            note_fail "R2: controller log fetch failed: $(head -c 200 "${R2_LOGS}.err")"
+        elif grep -q 'deferring pod deletion behind busy sessions.*"reason": "suspend"' "${R2_LOGS}"; then
+            note_fail "R2: the suspend drain-defer line fired — the busy gate is back (AC1 violated)"
+        else
+            ok "R2 PASS: no suspend drain-defer in the controller log (AC1)"
+        fi
+        rm -f "${R2_LOGS}" "${R2_LOGS}.err"
     fi
 fi
 

@@ -96,3 +96,11 @@ None.
 - Pod-gone verdict BOUNDED: the phase flips at deletion-issue but the pod object lingers in Terminating while kubelet runs the 40s grace — the wait is now budget+120s, matching the semantics under test (the r5 instant-gone check would have false-failed every honest run).
 - R2 fail-closed: an undiscoverable controller pod is a FAIL, not a skip — the AC1 log assertion is a verdict, not decoration.
 - The 10-minute figure corrected to 60 minutes everywhere (drainStallBound = 60m, session_drain.go:91) — worklog, PR body, and the in-code comment; the unreachability argument is number-independent but the record must match the code.
+
+## r7 — the fail-open closes + the execution requirement
+
+- Pod-gone predicate NotFound-aware: only an explicit NotFound counts as gone (query errors keep waiting and surface as the timeout FAIL with the last query error inline).
+- R2 truly fail-closed: logs captured to a file first (fetch failure = FAIL with the error text), then the grep; no 2>/dev/null swallow anywhere in a verdict path.
+- suspend_elapsed initialized at 0 (the R2 fetch's --since never reads an unset var if the phase wait itself timed out).
+- Pins extended to the new verdict shapes (pod_gone/NotFound/log-fetch-failed markers).
+- The execution requirement (one recorded harness run) is OUTSIDE this pod's reach — no kubectl here; the row runs on the pool/nightly harness. Flagged to the orchestrator for adjudication: either the orchestrator executes it (the nightly harness is theirs) or accepts the static-delivery + post-merge-first-run scoping. The PR body's "delivered" wording is corrected to "landed, awaiting its first harness execution".

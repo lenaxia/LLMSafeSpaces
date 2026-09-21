@@ -77,6 +77,9 @@ func TestIssue1507Script_OutcomeAssertions(t *testing.T) {
 		`PVC ${PVC} retained`,
 		`R1: pod object gone`,
 		`still exists past the grace window`,
+		`pod_gone`,
+		`grep -q "NotFound"`,
+		`R2: controller log fetch failed`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Errorf("script must assert %q — a #1507 row without this verdict is decorative", marker)
