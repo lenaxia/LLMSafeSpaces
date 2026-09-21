@@ -169,10 +169,31 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		if reason == "" && healthResp.SpawnEnv.FilesDegraded {
 			reason = healthResp.SpawnEnv.FilesReason
 		}
+		// US-72.4 (design 0058 §4.5/§4.6): the relay-only liveness degrade
+		// rides the SAME SecretsDelivery surface the US-72.3 staging
+		// classification reads (classifyRelayStale / relayRouterRejection).
+		// Precedence: a relay reason WINS over a co-present spawn-env
+		// reason — token_expired/credential_stale/reject codes are
+		// class-critical (they select the escalation/rejection branch) and
+		// must not be masked, while every co-present spawn_env_* code maps
+		// to the same delivery class a relay_unreachable would (no
+		// classification is lost either way).
+		if healthResp.Relay != nil && healthResp.Relay.DegradedReason != "" {
+			reason = healthResp.Relay.DegradedReason
+		}
 		ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{
 			SpawnedRev:     healthResp.SpawnEnv.SpawnedRev,
 			DegradedReason: reason,
 			FilesRev:       healthResp.SpawnEnv.FilesRev,
+			RelayRevision:  relayRevisionOf(healthResp.Relay),
+		}
+	} else if healthResp.Relay != nil {
+		// Relay liveness without spawn-env evidence (a pre-US-70.1 runtime
+		// cannot happen post-US-72.4, but the surfaces are independent):
+		// still carry the relay slice — it is evidence from a live pod.
+		ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{
+			DegradedReason: healthResp.Relay.DegradedReason,
+			RelayRevision:  relayRevisionOf(healthResp.Relay),
 		}
 	}
 	// #1342 item 4 (L11): mirror the deferred-credential-apply state so
@@ -190,6 +211,15 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
 		v1.ReasonAgentHealthy, appendAgentWarnings(
 			fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds), healthResp.Warnings))
+}
+
+// relayRevisionOf extracts the applied relay revision from a relay
+// liveness slice (nil-safe).
+func relayRevisionOf(relay *agentd.RelayHealth) string {
+	if relay == nil {
+		return ""
+	}
+	return relay.AppliedRevision
 }
 
 // appendAgentWarnings suffixes agentd's boot-time degradation notices to a

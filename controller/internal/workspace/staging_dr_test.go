@@ -50,12 +50,14 @@ func newDREnv(t *testing.T, name string, degradedReason string, spawnedMatchesSt
 	stagedRev := ws.Annotations[relayStagedRevisionAnnotation]
 	require.NotEmpty(t, stagedRev)
 
-	// The agent reports a degrade; spawned_rev decides the lineage conjunct.
+	// The agent reports a degrade; the APPLIED RELAY REVISION decides the
+	// lineage conjunct (US-72.4: agentd reports the applied batch's relay
+	// revision; SpawnedRev alone — a pre-72.4 runtime — never satisfies it).
 	spawned := "some-other-revision"
 	if spawnedMatchesStaged {
 		spawned = stagedRev
 	}
-	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{SpawnedRev: spawned, DegradedReason: degradedReason}
+	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{RelayRevision: spawned, DegradedReason: degradedReason}
 	// One keypair for generation 2: the rotate hook publishes it to the pub
 	// Secret (the router's two-Secret update) and the receipt carries its
 	// RAW public key bytes (the real router returns
@@ -123,7 +125,7 @@ func TestDrWindowReconcileTerminates_AntiStormBoundIsClusterGlobal(t *testing.T)
 	router2 := &fakeRouterClient{}
 	r2 := stagingReconciler(t, src2, router2, nil, pub1, ws2, mustGet(t, env.r, relayTestNamespace, secrets.RelayMintKeyName))
 	require.NoError(t, r2.reconcileRelayStaging(context.Background(), ws2))
-	ws2.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{SpawnedRev: ws2.Annotations[relayStagedRevisionAnnotation], DegradedReason: "credential_stale"}
+	ws2.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{RelayRevision: ws2.Annotations[relayStagedRevisionAnnotation], DegradedReason: "credential_stale"}
 	require.NoError(t, r2.reconcileRelayStaging(context.Background(), ws2))
 
 	router2.mu.Lock()

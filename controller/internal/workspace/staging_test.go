@@ -489,7 +489,7 @@ func TestPubSealtimeGenerationValidated_ReceiptMismatchRefusesSeal(t *testing.T)
 	// rotate receipt names generation 3, but the pub Secret still says 2
 	// (torn rotation) — NOTHING may be sealed against the receipt.
 	ws.Status.SecretsDelivery = &v1.SecretsDeliveryStatus{
-		SpawnedRev:     ws.Annotations[relayStagedRevisionAnnotation],
+		RelayRevision:  ws.Annotations[relayStagedRevisionAnnotation],
 		DegradedReason: "credential_stale",
 	}
 	receiptPub, err := pubKeyForGeneration(t, 3)

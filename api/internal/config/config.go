@@ -275,6 +275,21 @@ type Config struct {
 		Classes  []string      `mapstructure:"classes"`
 	} `mapstructure:"canary"`
 
+	// RelayOnlyKeyDelivery (Epic 72 / US-72.4, design 0058 §4.5): when
+	// enabled, the API's batch builder (the one builder, US-70.2) emits
+	// llm-provider entries with the scoped relay token + router URL from
+	// the controller-staged handoff Secret (workspace-relay-<ws>) in the
+	// workspace namespace, instead of raw provider keys. Off by default
+	// (US-72.5 owns the flip); flag-off is byte-identical legacy batches
+	// (mixed fleet, W15). The SAME deployment flag the controller
+	// consumes (relayOnlyKeyDelivery.enabled in the chart).
+	//
+	// Wired via chart values → env:
+	//   LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED   ("true" | unset)
+	RelayOnlyKeyDelivery struct {
+		Enabled bool `mapstructure:"enabled"`
+	} `mapstructure:"relayOnlyKeyDelivery"`
+
 	// ImageFactory holds the image-factory config (design/0046).
 	// When GHDispatcher.APIToken is empty, image builds are disabled
 	// (POST /configs returns 503). When LLMExplainer.BaseURL is empty,
@@ -383,6 +398,9 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("kubernetes.inCluster", "LLMSAFESPACES_KUBERNETES_INCLUSTER")
 	_ = v.BindEnv("kubernetes.configPath", "LLMSAFESPACES_KUBERNETES_CONFIGPATH")
 	_ = v.BindEnv("server.inferenceRelayURL", "LLMSAFESPACES_SERVER_INFERENCERELAYURL")
+	// Epic 72 / US-72.4: relay-only batch emission flag (same chart flag
+	// the controller consumes).
+	_ = v.BindEnv("relayOnlyKeyDelivery.enabled", "LLMSAFESPACES_RELAYONLYKEYDELIVERY_ENABLED")
 
 	// Epic 57 US-57.1: KMS nested-key bindings.
 	bindKMSEnvVars(v)
