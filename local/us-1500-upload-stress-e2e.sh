@@ -407,9 +407,11 @@ for i in $(seq 1 "${CONCURRENCY}"); do
 done
 wait
 REPORT6=$(storm_report "${SR6_DIR}" "${CONCURRENCY}")
-# §6.6 specifies p95; at N≤4 samples the p95 IS the max — a
-# serialized storm's max is N×L1 >> 2×L1 in every regime (the median
-# at N=3 serial is exactly 2×L1: AT the guard boundary, not above).
+# §6.6 specifies p95; at N≤4 samples the p95 IS the max. The guard's
+# exact-invariance property: max ≤ 2×single ⟺ no job waited > single
+# after its own upload — precisely the serialization invariant. (The
+# r5 median was strictly BELOW the boundary at N=3 serial, never AT
+# it — the reason it could not fail.)
 SR6_P95=$(cat "${SR6_DIR}"/ms-* 2>/dev/null | sort -n | awk 'END{if (NR==0){print 0} else {print $1}}')
 rm -rf "${SR6_DIR}"
 # The 5th-concurrent-429 row (§6.6's boundary characterization): fire
@@ -449,11 +451,10 @@ if [[ "${REPORT6}" != *"other=0"* || "${REPORT6}" != *"total=${CONCURRENCY}"* ]]
     note_fail "SR-6: latency storm not clean+complete (${REPORT6})"
 fi
 log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms (status ${L1_STATUS}); ${CONCURRENCY}x10MiB-concurrent per-upload max(p95@N≤4)=${SR6_P95}ms; report=${REPORT6}"
-# Design §6.6's regression guard: per-upload p95 ≤ 2× the single-
-# upload p95 (r5: the wall-clock form was conditionally vacuous for
-# fast uploads — a serialized N×L1 storm passed when L1 ≤ 1s; the
-# per-upload median is regime-independent: serialization makes every
-# concurrent job's OWN latency ≈ its queue slot's cumulative wait).
+# Design §6.6's regression guard: per-upload p95(=max at N≤4) ≤ 2×
+# the single-upload p95. The guard's exact-invariance property: the
+# max exceeds 2×single precisely when some job waited longer than its
+# own upload — the serialization invariant, regardless of regime.
 SR6_GUARD=$((2 * L1))
 if [[ "${SR6_P95}" -le "${SR6_GUARD}" ]]; then
     ok "SR-6: regression guard (per-upload max(p95@N≤4) ${SR6_P95}ms ≤ 2×single ${L1}ms = ${SR6_GUARD}ms)"

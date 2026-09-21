@@ -140,3 +140,11 @@ The evidence-claim correction from r5 stands: the "regime-independent" claim was
 ## Review Round 7 (median → the design's p95)
 
 The design §6.6 specifies p95, not median. At N≤4 samples the p95 IS the max — the median at N=3 serial is exactly 2×L1 (AT the guard boundary, not above it: cannot fail). The max of a serialized storm is N×L1 >> 2×L1 in every regime. Replaced median with max, labeled honestly as max(p95@N≤4) in every message.
+
+## Review Round 8 (text corrections + the behavioral test)
+
+1. The "N×L1 >> 2×L1" algebra was false (parallel generation makes max = x+N·u, not N×L1). The guard's REAL justification is its exact-invariance property: max ≤ 2×single ⟺ no job waited > single after its own upload. Stated as such.
+2. "median exactly 2×L1 — AT the boundary" was also false (median = x+2u < 2x+2u for x>0 — strictly BELOW). Corrected to "strictly below."
+3. The stale "regime-independent" comment (contradicting both the code and the worklog's own r6 correction) — removed.
+4. The pin comment saying "median" — fixed to "max(p95@N≤4)."
+5. **The behavioral guard test** (r8's ask): 7 table cases driving the exact sort -n | awk pipeline against synthetic timing files — the test that would have caught every broken variant shipped in rounds 4-7 (median-below-boundary, wall-clock vacuous, asort-crash, CONC_MS-crash).

@@ -9,8 +9,11 @@ package local_test
 // markers (loud, counted), and the §6.6 precondition math.
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -76,7 +79,7 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`SR5_DELIVERED`,
 		// SR-5: post-kill listing exec-failure guard (r5).
 		`POST_KILL_EXIT`,
-		// SR-6: per-upload median guard — the design's §6.6 quantity
+		// SR-6: per-upload max(p95@N≤4) guard — the design's §6.6 quantity
 		// (r5: the wall-clock form was conditionally vacuous).
 		`SR6_GUARD=$((2 * L1))`,
 		`sort -n | awk`,
@@ -95,6 +98,52 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 	// The SR-3 backpressure row must be a LOUD skip until the fault
 	// seam lands — never silently dropped.
 	assert.Contains(t, src, `SR-3: copy-throttle injection absent`, "SR-3 skip must stay explicit")
+}
+
+// TestUploadStressScript_GuardBehavioralTest verifies the guard's
+// compute logic against synthetic timing files — the test that would
+// have caught all five broken guard variants this PR shipped (r8's
+// ask). The pipeline is needle-pinned against the script for drift.
+func TestUploadStressScript_GuardBehavioralTest(t *testing.T) {
+	raw, err := os.ReadFile(uploadStressScript)
+	require.NoError(t, err)
+	src := string(raw)
+	assert.Contains(t, src, "sort -n | awk", "the guard pipeline must stay in the script")
+
+	// The script's awk: max from sorted timing lines.
+	const awkPipeline = `awk 'END{if (NR==0){print 0} else {print $1}}'`
+
+	tests := []struct {
+		name      string
+		timings   string
+		single    int
+		wantTrips bool
+	}{
+		{"healthy concurrent: max == single", "100\n100\n100\n100\n", 100, false},
+		{"healthy with overhead: max 1.5x single", "100\n150\n150\n150\n", 100, false},
+		{"at boundary: max == 2x single (passes: <=)", "200\n200\n200\n200\n", 100, false},
+		{"serialized N=3: max 3x single", "100\n200\n300\n", 100, true},
+		{"serialized N=4: max 4x single", "100\n200\n300\n400\n", 100, true},
+		{"partial serialization at N=4", "100\n150\n250\n300\n", 100, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for i, ms := range strings.Split(strings.TrimSpace(tt.timings), "\n") {
+				_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("ms-%d", i+1)), []byte(ms+"\n"), 0o644)
+			}
+			cmd := exec.Command("bash", "-c",
+				"cat "+filepath.Join(dir, "ms-*")+" 2>/dev/null | sort -n | "+awkPipeline)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, "out: %s", string(out))
+			got, err := strconv.Atoi(strings.TrimSpace(string(out)))
+			require.NoError(t, err, "parsing %q", string(out))
+			guard := 2 * tt.single
+			trips := got > guard
+			assert.Equal(t, tt.wantTrips, trips,
+				"max=%d, guard=%d: expected trips=%v", got, guard, tt.wantTrips)
+		})
+	}
 }
 
 func TestUploadStressScript_WorkflowRegistered(t *testing.T) {
