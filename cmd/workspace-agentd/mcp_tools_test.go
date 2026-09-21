@@ -1333,8 +1333,10 @@ func TestMCPSendMessage_OriginProbeIndeterminateRefusesDelivery(t *testing.T) {
 	assert.Empty(t, f.msgArrived)
 }
 
-// Self-send (from == target): no special case — the sentinel carries
-// the caller's own ID and delivery schedules as the next turn.
+// Self-send (from == target): no DELIVERY special case — the result now
+// carries the #1525 warning (pinned by the SelfSendGuard rows below);
+// the sentinel still carries the caller's own ID and delivery schedules
+// as the next turn.
 func TestMCPSendMessage_SelfSend(t *testing.T) {
 	f := newFakeAgent()
 	s1 := f.newSession("self")
@@ -1972,4 +1974,56 @@ func TestMCPHandler_RotateWebhookSecretFullStack(t *testing.T) {
 	assert.Nil(t, result["isError"], "%v", result)
 	content := result["content"].([]any)
 	assert.Contains(t, content[0].(map[string]any)["text"], `"webhookSecret":"whs_l1"`)
+}
+
+// --- send_message self-send guard (#1525) ---------------------------------
+//
+// The orchestrator's 11-misfire evidence class: a caller addressing
+// send_message at its OWN session delivers silently (the message
+// boomerangs as the caller's next turn) with no send-time signal. The
+// guard: target==origin (injected OR declared) DELIVERS anyway
+// (legitimate self-notes exist — the issue's explicit not-a-refusal
+// ruling) but the result carries a LOUD warning field plus a
+// plain-language line in the result body.
+
+func TestMCPSendMessage_SelfSendGuard_WarnsButDelivers_Injected(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, caller, "self note: re-check the board", caller, "")
+	require.NoError(t, err, "self-send is a WARNING, never a refusal")
+	assert.Contains(t, out, `"warning"`, "the warning field must be present on self-send")
+	assert.Contains(t, out, "target is your own session", "the warning text names the condition")
+	assert.Contains(t, out, `"status":"delivering"`)
+
+	require.Eventually(t, func() bool {
+		return len(f.sentFor(caller)) == 1
+	}, 5*time.Second, 50*time.Millisecond, "self-send still delivers (the self-note use case)")
+	parts := f.sentFor(caller)[0]["parts"].([]any)
+	delivered := parts[0].(map[string]any)["text"].(string)
+	assert.Contains(t, delivered, "self note: re-check the board")
+}
+
+func TestMCPSendMessage_SelfSendGuard_WarnsButDelivers_Declared(t *testing.T) {
+	f := newFakeAgent()
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, caller, "note to self", "", caller)
+	require.NoError(t, err)
+	assert.Contains(t, out, `"warning"`)
+	assert.Contains(t, out, "target is your own session")
+	assert.Contains(t, out, `"origin_mode":"self-declared"`)
+}
+
+func TestMCPSendMessage_SelfSendGuard_AbsentOnNormalSend(t *testing.T) {
+	f := newFakeAgent()
+	target := f.newSession("worker")
+	caller := f.newSession("orchestrator")
+	withAgentServer(t, f.handler(t))
+
+	out, err := mcpSendMessage(context.Background(), mcpTestPassword, target, "status?", caller, "")
+	require.NoError(t, err)
+	assert.NotContains(t, out, `"warning"`, "a normal cross-session send carries NO warning — the guard must not fire")
 }
