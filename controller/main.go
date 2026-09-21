@@ -75,7 +75,8 @@ func registerFreeModelsFlags() (enable bool, interval time.Duration) {
 			"true; set false to disable and fall back to per-pod fetching.")
 	flag.DurationVar(&interval, "free-models-refresh-interval", 6*time.Hour,
 		"How often the free-models refresher fetches the catalog. The catalog "+
-			"changes ~weekly so hours-scale intervals are appropriate.")
+			"changes ~weekly so 6h is generous; lower values are fine but "+
+			"increase load on models.dev.")
 	return
 }
 
@@ -198,8 +199,7 @@ func main() {
 	var agentdBinarySHA256ARM64 string
 	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
-			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
-			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
+			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
 	var agentdSidecarEnabled bool
 	flag.BoolVar(&agentdSidecarEnabled, "agentd-sidecar", false,
 		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
