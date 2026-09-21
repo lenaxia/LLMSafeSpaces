@@ -613,11 +613,14 @@ func TestStagedUpload_CapExactWithEnvelopeAdmitted(t *testing.T) {
 // --- The production apply seam (the r1-review reproduction made permanent) ---
 
 // TestUploadApplyClient_LongCopyWithinBudgetSucceeds is the r2 review's
-// empirical reproduction, green: a 300ms copy under a 5s apply budget
-// (the production shape — 2s control-plane default, 60s apply timeout)
-// must SUCCEED. The r1 code died at the 2s conn deadline and misrouted
-// to abort+507; the r2 code's inverted min kept dying. The ctx deadline
-// IS the bound now.
+// empirical reproduction, green: a 2.5s copy under a 5s apply budget —
+// strictly BEYOND the 2s control-plane default, inside the apply
+// budget (the production shape: 2s default, 60s apply timeout) — must
+// SUCCEED. The r1 code died at the 2s conn deadline and misrouted to
+// abort+507; the r2 code's inverted min kept dying; the r3 parameter-
+// ization (300ms, which never crossed the bug's bound and passed
+// against the buggy code) is rejected — the delay must stay > the
+// default. The ctx deadline IS the bound now.
 func TestUploadApplyClient_LongCopyWithinBudgetSucceeds(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -631,8 +634,8 @@ func TestUploadApplyClient_LongCopyWithinBudgetSucceeds(t *testing.T) {
 		}
 		_, _ = io.ReadFull(conn, make([]byte, 1))
 		// The delay MUST exceed the 2s control-plane default (the bug's
-		// bound) while staying inside the 5s apply budget — a 300ms copy
-		// would pass against the buggy code too (r3's finding).
+		// bound) while staying inside the 5s apply budget — the r3-rejected
+		// 300ms parameterization passed against the buggy code too.
 		time.Sleep(2500 * time.Millisecond)
 		_ = json.NewEncoder(conn).Encode(map[string]any{
 			"v": 1, "id": 1,

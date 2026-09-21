@@ -105,3 +105,8 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 ## Review round 3 (1 finding: the toothless pin)
 
 - The reproduction pin's 300ms delay never crossed the 2s default it existed to exceed — it passed against the buggy code unchanged (the reviewer mutation-proved it twice). Fixed: the copy delay is 2.5s — beyond the bug's 2s bound, inside the 5s apply budget. Mutation-verified at this head: reverting to the inverted bound FAILS the pin; the fix passes (-count=2 stable, 5s runtime).
+
+
+## Review round 4 (1 finding: the stale doc comment)
+
+- The pin's doc comment still stated the r3-rejected 300ms parameterization (contradicting the code; inviting silent reintroduction). Corrected to the 2.5s truth with the parameterization rule stated IN the comment (delay > the default, < the budget). Worklog correction: the r2 section's "24 tests green" predates the flaky-pin discovery (5/5 coin-flip) — the stable count is post-r2's deterministic rewrite; the r2 section's own findings say so.
