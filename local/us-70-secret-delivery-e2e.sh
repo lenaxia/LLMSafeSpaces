@@ -637,7 +637,7 @@ if [[ "${PRE_N}" -gt 0 ]]; then
     # kubectl is the executable; errors die loudly; termination is
     # verified with a bounded poll, never assumed.
     printf '%s\n' "${PRE_SWEPT}" \
-        | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+        | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false workspace \
         || die "AC-13 pre-wave sweep: workspace delete failed"
     # Only a SUCCESSFUL get that lists none of the range counts as
     # verified: a failed get (transient apiserver/etcd blip — the class
@@ -903,7 +903,7 @@ if (( SCALE > 0 )); then
         # drives kubectl (the kc() function is invisible to xargs), a
         # failed delete dies loudly, and termination is verified.
         printf '%s\n' "${POST_SWEPT}" \
-            | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false \
+            | xargs -r -n 20 kubectl --context "${CTX}" -n "${NS}" delete --wait=false workspace \
             || die "AC-13 post-wave sweep: workspace delete failed"
         POST_LEFT="unverified"
         for _ in $(seq 1 60); do
