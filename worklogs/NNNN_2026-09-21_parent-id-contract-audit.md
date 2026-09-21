@@ -24,7 +24,7 @@
 
 - `pkg/workflows/store.go`: `WorkspaceExistsByID` — the UNSCALED existence primitive (the FKs' semantics; ownership NOT judged — cross-owner targets remain the fire-time loud class). Same pool, one COUNT.
 - `workflows.go` create: `targetWorkspaceId` pre-flight via `SetWorkspaceExistencer` (deferred injection, SetAudit pattern — nil skips, preserving legacy construction). Ordered after spec/schema validation.
-- `triggers.go`: create gains the workspaceId existence check beside the #1517 workflowId check; update (#1519) resolves the PATCHED workflowId (owner-scoped GetWorkflow) + workspaceId (existencer) → named 400s. **r1's scope correction: the first draft re-validated the post-patch MERGED view — that made legacy cross-owner rows unpatchable (blocking #1440's enabled:false mitigation); the checks now scope to PATCHED values only** (STORED targets stay FK-anchored and untouched), pinned by `TestTriggerUpdate_StoredTargetNotRevalidated`.
+- `triggers.go`: create gains the workspaceId existence check beside the #1517 workflowId check; update (#1519) resolves the PATCHED workflowId (owner-scoped GetWorkflow) + workspaceId (existencer) → named 400s (PATCHED-scope only — see r1's correction). **r1's scope correction: the first draft re-validated the post-patch MERGED view — that made legacy cross-owner rows unpatchable (blocking #1440's enabled:false mitigation); the checks now scope to PATCHED values only** (STORED targets stay FK-anchored and untouched), pinned by `TestTriggerUpdate_StoredTargetNotRevalidated`.
 - `workflows.go` update: **the third instance (r1)** — a PATCHED targetWorkspaceId resolves via the existencer → named 400.
 - Store integration: `TestWorkspaceExistsByID` (seeded row exists unscoped; random id does not) in the integration-tagged suite.
 - E2E unhappy rows: R1c covers BOTH ghost-parent CREATES (targetWorkspaceId on workflows; workflowId on triggers) and **R1d covers BOTH ghost-parent PATCHES** (workflow target; trigger workflowId — #1519's live face) so the arbitration run patrols the retired class on every surface. The workflow-update check sits just before the store call (r2's ordering fix — 404 and validation errors win first, matching create). The soft-deleted-row face of the existence primitive is pinned in the integration suite (unscoped semantics = FK semantics).
@@ -62,4 +62,7 @@ None.
 - `api/internal/app/app.go` — existencer wiring ×4.
 - `local/issue-1410-1412-automation-e2e.sh` — dummy workspace row seed + R4d retarget.
 - `api/internal/handlers/{workflows,triggers}_test.go` — the audit pins + fixture completions.
-- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.
+- `api/internal/handlers/mcp_servers.go` — instances 5 + 7 (auto-apply server resolution; every-scope bind workspace check).
+- `api/internal/handlers/admin_provider_credentials.go` — instance 6 (the (nil,nil)-aware credential resolution).
+- `api/internal/handlers/{mcp_servers,admin_provider_credentials}_test.go` — the instance 5/6/7 pins.
+- `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog (audit table complete through instance 7).
