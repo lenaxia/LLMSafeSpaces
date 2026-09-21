@@ -1255,3 +1255,48 @@ func TestWorkflowUpdate_MalformedSpecOutranksGhostTarget(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "spec", "the malformed spec must win over the ghost-target 400")
 	assert.NotContains(t, rec.Body.String(), "target workspace not found")
 }
+
+// TestWorkflowRun_ExistencerError_500 pins the run-path infra arm (the
+// fake's err field's third call site — r4/r5 carried this).
+func TestWorkflowRun_ExistencerError_500(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{err: errors.New("db down")})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.POST("/:id/runs", h.UserRunWorkflow)
+
+	w := httptest.NewRequest("POST", "/api/v1/me/workflows/wf-1/runs",
+		io.NopCloser(strings.NewReader(`{"input":{},"workspaceId":"00000000-0000-4000-8000-000000000001"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 500, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "failed to check target workspace")
+}
+
+// TestWorkflowUpdate_ExistencerError_500 pins the update-path infra arm.
+func TestWorkflowUpdate_ExistencerError_500(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user",
+		Name: "w1", SpecYAML: "nodes: []", SpecJSON: json.RawMessage(`{"nodes":[],"edges":[]}`)}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewUserWorkflowsHandler(store, &mockQuotaChecker{values: map[string]int{}})
+	h.SetWorkspaceExistencer(&fakeWorkspaceExistencer{err: errors.New("db down")})
+	g := r.Group("/api/v1/me/workflows")
+	g.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	g.PUT("/:id", h.UserUpdate)
+
+	w := httptest.NewRequest("PUT", "/api/v1/me/workflows/wf-1",
+		io.NopCloser(strings.NewReader(`{"targetWorkspaceId":"00000000-0000-4000-8000-000000000001"}`)))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 500, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "failed to check target workspace")
+}

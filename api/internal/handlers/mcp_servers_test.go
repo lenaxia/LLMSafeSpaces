@@ -785,3 +785,23 @@ func TestBind_AdminScope_GhostWorkspace_404(t *testing.T) {
 	require.Equal(t, 404, rec.Code, rec.Body.String())
 	assert.Contains(t, rec.Body.String(), "workspace not found")
 }
+
+// TestAutoApplyCreate_RealServer_Created pins instance 5's pass-arm: a
+// seeded real server reaches the store.
+func TestAutoApplyCreate_RealServer_Created(t *testing.T) {
+	store := &stubMCPStore{servers: []*secrets.MCPServerRow{{
+		ID: "srv-1", OwnerType: types.MCPServerOwnerUser, OwnerID: "user-1", Name: "s",
+	}}}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	r.POST("/servers/:serverId/auto-apply", h.CreateAutoApply)
+
+	w := httptest.NewRequest("POST", "/servers/srv-1/auto-apply",
+		strings.NewReader(`{"targetType":"all"}`))
+	w.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, w)
+	require.Equal(t, 201, rec.Code, rec.Body.String())
+}

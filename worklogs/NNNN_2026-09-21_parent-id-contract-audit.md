@@ -17,7 +17,10 @@
 | `workflow_runs.workspace_id` → workspaces (000016:261, plain FK) | run-create `workspaceId` OVERRIDE (REST + MCP workflow_run) | **BUG → FIXED (r3's fourth instance)**: named 400 on the user-supplied override; the workflow's STORED target stays FK-anchored and untouched |
 | `user_secret_bindings.workspace_id`/`secret_id` (000001) | secrets bind | **CORRECT**: workspace-scoped route resolves the parent (404 by construction; sessions of green live bind usage) |
 | `workspace_credential_bindings.*` (000001) | credential bind | **CORRECT + PINNED**: `TestUserProviderCredentials_Bind_OwnershipCheck` (404 ownership ⇒ existence) |
-| `mcp_server_bindings.*` (000012) | MCP bind | **CORRECT + PINNED**: `TestBind_RejectsForeignServer` + the workspace-ownership 404 at mcp_servers.go:636 |
+| `mcp_server_bindings.workspace_id`/`server_id` (000012) | MCP bind — USER arm | **CORRECT + PINNED**: `TestBind_RejectsForeignServer` + the workspace-ownership 404 (mcp_servers.go:636) |
+| `mcp_server_bindings.workspace_id` → workspaces (000012:83) | MCP bind — ORG/ADMIN arms | **BUG → FIXED (r4's instance 7)**: the workspace check now covers EVERY scope (user arm keeps ownership; org/admin get existence-only 404 — `TestBind_AdminScope_GhostWorkspace_404`; the stub gained the ErrNoRows knob matching the real store's contract) |
+| `mcp_server_auto_apply.server_id` → mcp_servers (000012:109) | MCP auto-apply create (admin + org routes) | **BUG → FIXED (r4's instance 5)**: serverId resolved via verifyServerOwnership → 404, matching Bind's convention (`TestAutoApplyCreate_GhostServer_404` — red at pre-fix) |
+| `credential_auto_apply.credential_id` → provider_credentials (000001:1541) | admin credential auto-apply create | **BUG → FIXED (r4's instance 6; r5 made it REAL — the first attempt was a functional no-op)**: GetCredential returns (nil, nil) for not-found, so the check tests BOTH the error and the nil row, exactly as the admin CRUD arms and the org twin always did (`TestAdminProviderCredentials_AutoApply_GhostCredential_404` asserts the FK-bearing store is NEVER reached — red at the no-op head) |
 | org tables' `org_id` | org routes | path-resolved org (404s; R8e's fails-closed row covers live) |
 
 ## Implementation
