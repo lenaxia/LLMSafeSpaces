@@ -7,7 +7,7 @@ import { cn } from "../../lib/utils";
 import { setUserSetting, useUserSetting } from "../../hooks/useUserSettings";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { getCursorLineInfo } from "../../lib/composerHistory";
-import { findAtToken, expandAtToken } from "../../lib/atToken";
+import { findPromptToken, expandPromptToken } from "../../lib/promptToken";
 import { matchSlash, slashMatches } from "../../lib/composerCommands";
 import { SLASH_COMMANDS } from "./slashCommands";
 import type { SlashCommandContext } from "./slashCommands";
@@ -186,7 +186,7 @@ export function Composer({
 
   const anyUploading = attachments.some((a) => a.status === "uploading");
 
-  // --- Slash commands + @-prompt recall (#1496) -------------------------
+  // --- Slash commands + #-prompt recall (#1496) -------------------------
   const queryClient = useQueryClient();
   const { prompts } = usePromptLibrary();
   const [caret, setCaret] = useState(0);
@@ -203,16 +203,16 @@ export function Composer({
   // token does not suppress the next.
   const [slashActive, setSlashActive] = useState(0);
   const [slashDismissedWord, setSlashDismissedWord] = useState<string | null>(null);
-  const [atActive, setAtActive] = useState(0);
-  // Dismissal keys on the @ ANCHOR INDEX: extending the same token
-  // (typing more filter chars) stays dismissed; a fresh @ re-arms.
-  const [atDismissedAt, setAtDismissedAt] = useState<number | null>(null);
-  // Programmatic expansions must not re-open the @ popup: prompt content
-  // may itself contain (or end with) an @token, and the caret lands
-  // right after it — a live token by the findAtToken rules. Suppression
-  // is keyed on the exact resulting text and consumed by any subsequent
-  // edit (onChange sees a different text and re-arms).
-  const [suppressAtForText, setSuppressAtForText] = useState<string | null>(null);
+  const [promptActive, setPromptActive] = useState(0);
+  // Dismissal keys on the # ANCHOR INDEX: extending the same token
+  // (typing more filter chars) stays dismissed; a fresh # re-arms.
+  const [promptDismissedAt, setPromptDismissedAt] = useState<number | null>(null);
+  // Programmatic expansions must not re-open the popup: prompt content
+  // may itself contain (or end with) a #token, and the caret lands
+  // right after it — a live token by the findPromptToken rules.
+  // Suppression is keyed on the exact resulting text and consumed by
+  // any subsequent edit (onChange sees a different text and re-arms).
+  const [suppressPromptForText, setSuppressPromptForText] = useState<string | null>(null);
 
   const slashMatch = matchSlash(text);
   const slashItems = slashMatch
@@ -221,17 +221,17 @@ export function Composer({
   const slashOpen =
     !composing && slashItems.length > 0 && slashDismissedWord !== (slashMatch?.word ?? "");
 
-  const atToken = !composing ? findAtToken(text, caret) : null;
-  const atItems = atToken
+  const promptToken = !composing ? findPromptToken(text, caret) : null;
+  const promptItems = promptToken
     ? prompts.filter((p) =>
-        p.name.toLowerCase().includes(atToken.query.toLowerCase()),
+        p.name.toLowerCase().includes(promptToken.query.toLowerCase()),
       )
     : [];
-  const atOpen =
-    atToken !== null &&
+  const promptRecallOpen =
+    promptToken !== null &&
     prompts.length > 0 &&
-    atDismissedAt !== atToken.at &&
-    suppressAtForText !== text;
+    promptDismissedAt !== promptToken.at &&
+    suppressPromptForText !== text;
 
   const openOptionsDrawer = () => {
     if (!drawerOpen) toggleDrawer();
@@ -272,14 +272,14 @@ export function Composer({
   };
 
   const selectPrompt = (index: number) => {
-    if (!atToken) return;
-    const prompt = atItems[index];
+    if (!promptToken) return;
+    const prompt = promptItems[index];
     if (!prompt) return;
-    const out = expandAtToken(text, atToken, prompt.content);
-    setSuppressAtForText(out.text);
+    const out = expandPromptToken(text, promptToken, prompt.content);
+    setSuppressPromptForText(out.text);
     setText(out.text);
     setCaret(out.caret);
-    setAtDismissedAt(null);
+    setPromptDismissedAt(null);
     pendingCursor.current = out.caret;
     setNavTick((t) => t + 1);
   };
@@ -429,25 +429,25 @@ export function Composer({
         return;
       }
     }
-    if (atOpen && atItems.length > 0) {
+    if (promptRecallOpen && promptItems.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setAtActive((i) => (i + 1) % atItems.length);
+        setPromptActive((i) => (i + 1) % promptItems.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setAtActive((i) => (i - 1 + atItems.length) % atItems.length);
+        setPromptActive((i) => (i - 1 + promptItems.length) % promptItems.length);
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (atToken) setAtDismissedAt(atToken.at);
+        if (promptToken) setPromptDismissedAt(promptToken.at);
         return;
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        selectPrompt(Math.min(atActive, atItems.length - 1));
+        selectPrompt(Math.min(promptActive, promptItems.length - 1));
         return;
       }
     }
@@ -624,18 +624,18 @@ export function Composer({
             )}
           />
         )}
-        {atOpen && (
+        {promptRecallOpen && (
           <InlinePopup
-            testId="at-recall-popup"
+            testId="prompt-recall-popup"
             ariaLabel="Prompt recall"
-            items={atItems}
-            activeIndex={Math.min(atActive, atItems.length - 1)}
-            onActiveChange={setAtActive}
+            items={promptItems}
+            activeIndex={Math.min(promptActive, promptItems.length - 1)}
+            onActiveChange={setPromptActive}
             onSelect={(_prompt, i) => selectPrompt(i)}
             onDismiss={() => {
-              if (atToken) setAtDismissedAt(atToken.at);
+              if (promptToken) setPromptDismissedAt(promptToken.at);
             }}
-            emptyLabel={atToken ? `No prompt matches “${atToken.query}”` : undefined}
+            emptyLabel={promptToken ? `No prompt matches “${promptToken.query}”` : undefined}
             renderItem={(prompt, active) => (
               <div className="flex flex-col" data-prompt={prompt.id}>
                 <span className={active ? "font-medium" : ""}>{prompt.name}</span>
@@ -686,8 +686,8 @@ export function Composer({
           onChange={(e) => {
             const next = e.target.value;
             const pos = e.target.selectionStart;
-            if (suppressAtForText !== null && suppressAtForText !== next) {
-              setSuppressAtForText(null);
+            if (suppressPromptForText !== null && suppressPromptForText !== next) {
+              setSuppressPromptForText(null);
             }
             setText(next);
             setCaret(pos);
@@ -695,9 +695,9 @@ export function Composer({
             if (slashDismissedWord !== null && m?.word !== slashDismissedWord) {
               setSlashDismissedWord(null);
             }
-            const tok = findAtToken(next, pos);
-            if (tok && atDismissedAt !== null && atDismissedAt !== tok.at) {
-              setAtDismissedAt(null);
+            const tok = findPromptToken(next, pos);
+            if (tok && promptDismissedAt !== null && promptDismissedAt !== tok.at) {
+              setPromptDismissedAt(null);
             }
           }}
           onCompositionStart={() => setComposing(true)}

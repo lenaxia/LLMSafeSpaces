@@ -1,12 +1,13 @@
 /**
- * E2E for the composer's slash commands and @-prompt recall (#1496).
+ * E2E for the composer's slash commands and #-prompt recall (#1496).
  *
  * Proves in a real browser: the slash palette opens/filters/executes
  * against the mocked API surface (compact action + rename title PUT are
  * asserted at the network boundary), unknown slashes stay literal, and
- * the @-recall popup filters/keyboard-navigates/expands against the
- * prompt-library contract endpoint (#1499's named envelope, mocked —
- * the sibling lane owns the backend).
+ * the #-recall popup filters/keyboard-navigates/expands against the
+ * prompt-library contract endpoint (#1499's named envelope, mocked at
+ * the network boundary — the backend is live (6ee54512); route mocks
+ * keep the rows hermetic).
  */
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { mockIdleContractStream } from "./helpers/contractStream";
@@ -84,7 +85,7 @@ async function openChat(page: Page) {
   return box;
 }
 
-test.describe("composer slash commands + @-prompt recall (#1496)", () => {
+test.describe("composer slash commands + #-prompt recall (#1496)", () => {
   test("slash palette opens, filters, and /compact routes the typed action", async ({ page }) => {
     const { compactCalls } = await setupAPIMocks(page);
     const box = await openChat(page);
@@ -123,12 +124,12 @@ test.describe("composer slash commands + @-prompt recall (#1496)", () => {
     await expect(page.getByText("/notacommand")).toBeVisible({ timeout: 10_000 });
   });
 
-  test("@ recall filters, keyboard-navigates, and expands inline", async ({ page }) => {
+  test("# recall filters, keyboard-navigates, and expands inline", async ({ page }) => {
     await setupAPIMocks(page);
     const box = await openChat(page);
 
-    await box.type("run @dep");
-    const popup = page.getByTestId("at-recall-popup");
+    await box.type("run #dep");
+    const popup = page.getByTestId("prompt-recall-popup");
     await expect(popup).toBeVisible();
     await expect(popup.locator('[data-prompt="p1"]')).toBeVisible();
     await expect(popup.locator('[data-prompt="p2"]')).toHaveCount(0); // filtered
@@ -137,29 +138,29 @@ test.describe("composer slash commands + @-prompt recall (#1496)", () => {
     await expect(popup).toHaveCount(0); // closed after expansion
   });
 
-  test("@ expansion content containing @ does not reopen the popup", async ({ page }) => {
+  test("# expansion content containing # does not reopen the popup", async ({ page }) => {
     await setupAPIMocks(page);
     // Re-register AFTER setup so this list wins (last route wins in PW).
     await page.route(`${API}/me/prompts`, (r: Route) =>
-      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prompts: [{ id: "p9", name: "chain", content: "first @second tail" }] }) }));
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prompts: [{ id: "p9", name: "chain", content: "first #second tail" }] }) }));
     const box = await openChat(page);
-    await box.type("@ch");
+    await box.type("x #ch");
     await box.press("Enter");
-    await expect(box).toHaveValue("first @second tail");
-    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    await expect(box).toHaveValue("x first #second tail");
+    await expect(page.getByTestId("prompt-recall-popup")).toHaveCount(0);
   });
 
-  test("expanding a prompt ENDING in an @token does not reopen the popup", async ({ page }) => {
+  test("expanding a prompt ENDING in a #token does not reopen the popup", async ({ page }) => {
     await setupAPIMocks(page);
     await page.route(`${API}/me/prompts`, (r: Route) =>
-      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prompts: [{ id: "p8", name: "ping", content: "now ping @deploy" }] }) }));
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ prompts: [{ id: "p8", name: "ping", content: "now ping #deploy" }] }) }));
     const box = await openChat(page);
-    await box.type("@pi");
+    await box.type("x #pi");
     await box.press("Enter");
-    await expect(box).toHaveValue("now ping @deploy");
-    // The expanded content's TRAILING @token is live by the token rules —
+    await expect(box).toHaveValue("x now ping #deploy");
+    // The expanded content's TRAILING #token is live by the token rules —
     // suppression must hold; a reopen here is the recursion bug.
-    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    await expect(page.getByTestId("prompt-recall-popup")).toHaveCount(0);
   });
 
   test("a failing prompt library never opens the popup and never crashes", async ({ page }) => {
@@ -167,27 +168,27 @@ test.describe("composer slash commands + @-prompt recall (#1496)", () => {
     await page.route(`${API}/me/prompts`, (r: Route) =>
       r.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "boom" }) }));
     const box = await openChat(page);
-    await box.type("@any");
-    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    await box.type("x #any");
+    await expect(page.getByTestId("prompt-recall-popup")).toHaveCount(0);
     // The composer still works for normal text.
     await box.fill("plain message");
     await box.press("Control+Enter");
     await expect(page.getByText("plain message")).toBeVisible({ timeout: 10_000 });
   });
 
-  test("Esc dismisses the popup; a fresh @ re-arms", async ({ page }) => {
+  test("Esc dismisses the popup; a fresh # re-arms", async ({ page }) => {
     await setupAPIMocks(page);
     const box = await openChat(page);
 
-    await box.type("@rev");
-    await expect(page.getByTestId("at-recall-popup")).toBeVisible();
+    await box.type("x #rev");
+    await expect(page.getByTestId("prompt-recall-popup")).toBeVisible();
     await box.press("Escape");
-    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    await expect(page.getByTestId("prompt-recall-popup")).toHaveCount(0);
     await box.press("End");
-    await box.type("iew-notes"); // same @ anchor: stays dismissed
-    await expect(page.getByTestId("at-recall-popup")).toHaveCount(0);
+    await box.type("iew-notes"); // same # anchor: stays dismissed
+    await expect(page.getByTestId("prompt-recall-popup")).toHaveCount(0);
     await box.fill("");
-    await box.type("again @re"); // fresh @ anchor: re-armed
-    await expect(page.getByTestId("at-recall-popup")).toBeVisible();
+    await box.type("again #re"); // fresh # anchor: re-armed
+    await expect(page.getByTestId("prompt-recall-popup")).toBeVisible();
   });
 });

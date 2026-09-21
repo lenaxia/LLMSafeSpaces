@@ -29,7 +29,13 @@ vi.mock("../../api/workspaces", () => ({
   },
 }));
 // Prompt library: irrelevant for slash tests; empty list.
-vi.mock("../../api/promptLibrary", () => ({ promptLibraryApi: { list: () => Promise.resolve([]) } }));
+// Live-swap re-seam: the real adapter against an empty named envelope.
+// ApiClientError is preserved via importOriginal — the compact row
+// constructs the real error class from this module.
+vi.mock("../../api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../api/client")>()),
+  api: { get: (path: string) => (path === "/me/prompts" ? Promise.resolve({ prompts: [] }) : Promise.reject(new Error(`unmocked api.get ${path}`))) },
+}));
 // useQueryClient only (real query machinery stays for usePromptLibrary);
 // the invalidate spy lets the dual-key rename pin observe cache calls.
 const invalidateQueries = vi.fn();
