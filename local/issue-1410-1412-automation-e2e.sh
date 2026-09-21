@@ -733,10 +733,27 @@ else
         api POST "/api/v1/orgs/${R8_ORG}/mcp-servers/ghost-server-id/bindings" \
             '{"workspaceId":"00000000-0000-4000-8000-000000000099"}'
         r1f2_resp="${api_body}"
-        if [[ "${api_status}" == "404" ]]; then
-            ok "R1f: org bind ghost surfaces fail closed 404 (instance 7's org face)"
+        # Status-only 404 cannot discriminate WHICH check fired — the
+        # server-ownership arm answers "MCP server not found" before the
+        # workspace arm is reached, so this row patrols instance 5's bind
+        # surface (the server resolution), not instance 7. Instance 7's
+        # workspace-existence arm is unit-pinned (the harness would need a
+        # REAL org MCP server for the live face).
+        if [[ "${api_status}" == "404" && "${r1f2_resp}" == *"MCP server not found"* ]]; then
+            ok "R1f: org bind ghost serverId answers the named 404 (instance 5's bind face)"
         else
-            note_fail "R1f: org bind ghost returned ${api_status} (${r1f2_resp}), expected 404"
+            note_fail "R1f: org bind ghost returned ${api_status} (${r1f2_resp}), expected 404 MCP server not found"
+        fi
+        # R1g — the eighth instance (review r8): a ghost userId on
+        # POST /orgs/:id/members previously hit the FK as an opaque 500;
+        # the contract is the named 404.
+        api POST "/api/v1/orgs/${R8_ORG}/members" \
+            '{"userId":"deadbeef-0000-4000-8000-000000000000","role":"member"}'
+        r1g_resp="${api_body}"
+        if [[ "${api_status}" == "404" && "${r1g_resp}" == *"user not found"* ]]; then
+            ok "R1g: org member add with ghost userId answers the named 404 (instance 8)"
+        else
+            note_fail "R1g: org member ghost returned ${api_status} (${r1g_resp}), expected 404"
         fi
         api DELETE "/api/v1/orgs/${R8_ORG}" >/dev/null 2>&1 || true
     fi

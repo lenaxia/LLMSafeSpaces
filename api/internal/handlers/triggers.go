@@ -392,6 +392,24 @@ func (h *TriggersHandler) get(c *gin.Context, ownerType, ownerID, triggerID stri
 	c.JSON(http.StatusOK, triggerRowToResponse(row))
 }
 
+// validateUpdateMapping runs the 0059 V7 wiring/mapping rules for
+// patches that touch the mapping surface. Extracted from update() —
+// the function exceeded the repo's gocyclo ceiling.
+func (h *TriggersHandler) validateUpdateMapping(c *gin.Context, ownerType, ownerID string, existing *wf.TriggerRow, req *types.UpdateTriggerRequest, mergedWorkflowID string) bool {
+	mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
+	if req.InputFrom != nil {
+		mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
+	}
+	mergedInput := existing.Input
+	if req.Input != nil {
+		// Present key (including JSON null, which clears the static
+		// document) replaces; absent key keeps — discriminated here so
+		// the store keeps its plain CASE WHEN NULL THEN keep shape.
+		mergedInput = req.Input
+	}
+	return h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput)
+}
+
 func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID string) {
 	var req types.UpdateTriggerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -539,18 +557,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID, triggerID s
 	// envelope) re-expose the wiring and re-trip V6; a rename, enable flip,
 	// or schedule change re-runs nothing.
 	if touchesMapping {
-		mergedInputFrom := wf.NormalizeTriggerInputFrom(existing.InputFrom)
-		if req.InputFrom != nil {
-			mergedInputFrom = wf.NormalizeTriggerInputFrom(*req.InputFrom)
-		}
-		mergedInput := existing.Input
-		if req.Input != nil {
-			// Present key (including JSON null, which clears the static
-			// document) replaces; absent key keeps — discriminated here so
-			// the store keeps its plain CASE WHEN NULL THEN keep shape.
-			mergedInput = req.Input
-		}
-		if !h.validateTriggerInputMapping(c, ownerType, ownerID, existing.SourceType, mergedWorkflowID, mergedInputFrom, mergedInput) {
+		if !h.validateUpdateMapping(c, ownerType, ownerID, existing, &req, mergedWorkflowID) {
 			return
 		}
 	}

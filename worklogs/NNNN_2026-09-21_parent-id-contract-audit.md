@@ -36,7 +36,7 @@
 
 ### Assumptions stated and validated (Rule 7)
 
-- The FK map is complete for user-facing parents after FOUR review passes: r1 the workflow-update surface, r3 the run-override (REQUEST DTO — found by trace, not grep), r4 the three auto-apply/bind org-arm surfaces (instances 5-7; the reviewer's independent FK sweep of 000001-000032 confirms no further instances). The completeness claim was false three times; each round's enforcement is recorded here as the audit's own history.
+- The FK map is complete for user-facing parents after EIGHT review passes: r1 the workflow-update surface, r3 the run-override (REQUEST DTO — found by trace, not grep), r4 the three auto-apply/bind org-arm surfaces (instances 5-7), r8 the org-member surface (instance 8 — the earlier 'no further instances' sweeps each proved incomplete). The completeness claim was false four times; each round's enforcement is recorded here as the audit's own history.
 - Existence-not-ownership for the WORKSPACE axis (org-owned workflows target user workspaces; the FK is unscoped). For the WORKFLOW axis (trigger targets), owner-scoping matches #1517's create check and closes #1519 half (b): a PATCHED cross-owner workflowId answers the same named 400 as a nonexistent one (no oracle); #1440's loud-fire design survives for STORED targets (deletion SET NULL, legacy rows).
 - The r1-recorded decision: update-path checks scope to PATCHED values — stored state is FK-anchored and deliberately unvalidated (mitigation path preserved).
 - Nil-existencer skip semantics keep every legacy construction site working — verified by the untouched suites.
@@ -65,8 +65,8 @@ None.
 - `api/internal/handlers/mcp_servers.go` — instance 5 (auto-apply server resolution) + instance 7 (every-scope bind workspace check).
 - `api/internal/handlers/admin_provider_credentials.go` — instance 6 (the (nil,nil)-aware credential resolution).
 - `api/internal/app/app.go` — existencer wiring ×4.
-- `local/issue-1410-1412-automation-e2e.sh` — the dummy workspace row seed; R4d retarget; R1c/R1d/R1e live rows.
-- `local/issue_1410_automation_e2e_script_test.go` — the R1c/R1d/R1e ledger needles + R1/R4 harness pins.
+- `local/issue-1410-1412-automation-e2e.sh` — the dummy workspace row seed; R4d retarget; R1c/R1d/R1e/R1f/R1g live rows.
+- `local/issue_1410_automation_e2e_script_test.go` — the R1c–R1g ledger needles + R1/R4 harness pins.
 - `api/internal/handlers/{workflows,triggers,mcp_servers,admin_provider_credentials}_test.go` — the audit pins (all seven instances + infra arms + pass arms).
 - `pkg/workflows/store_integration_test.go` — WorkspaceExistsByID against real PG (incl. the soft-deleted face).
 - `worklogs/NNNN_2026-09-21_parent-id-contract-audit.md` — this worklog.

@@ -52,7 +52,8 @@ func TestIssue1410E2EScript_RowsAndAssertions(t *testing.T) {
 		`R1d: ghost workflowId PATCH on the trigger rejected with the named 400 (#1519)`, // the #1519 update face, live-API
 		`R1e: ghost workspaceId run override rejected with the named 400`,                // the run-override face (instance 4), live-API
 		`R1f: org auto-apply ghost serverId answers the named 404`,                       // instance 5's reachable face, live-API
-		`R1f: org bind ghost surfaces fail closed 404`,                                   // instance 7's reachable face, live-API
+		`R1f: org bind ghost serverId answers the named 404`,
+		`R1g: org member add with ghost userId answers the named 404`, // instance 8, live-API                                   // instance 7's reachable face, live-API
 		// R2 — reschedule moves the slot immediately (#1410).
 		`"sourceConfig":{"expr":"0 4 1 * *","tz":"UTC"}`,     // the new schedule
 		`03:00" ]] && [[ "$(slot_hm "${r2_new}")" == "04:00`, // old→new slot asserted
