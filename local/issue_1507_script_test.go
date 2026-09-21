@@ -12,6 +12,7 @@ package local
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -94,5 +95,63 @@ func TestIssue1507Script_WorkspaceIsolation(t *testing.T) {
 	src := mustRead1507(t)
 	if !strings.Contains(src, `WS_BASE="e2e15070-`) {
 		t.Error("script must set its own WS_BASE unconditionally (per-script isolation)")
+	}
+}
+
+// The pod-gone predicate is pipefail-sensitive: kc exits 1 on
+// NotFound, and a naive pipeline returns kc's status, not grep's. This
+// pin executes the predicate's EXACT source form (extracted from the
+// script, not copied) against a mock kc across the three cases — the
+// r7 bug class the string pins structurally cannot catch.
+func TestIssue1507Script_PodGonePredicateMockTable(t *testing.T) {
+	src := mustRead1507(t)
+	const marker = `pod_gone() {`
+	i := strings.Index(src, marker)
+	if i < 0 {
+		t.Fatal("pod_gone function not found in the script")
+	}
+	// Extract the function body up to the closing brace at column 4.
+	closer := "\n    }"
+	end := strings.Index(src[i:], closer)
+	if end < 0 {
+		t.Fatal("pod_gone body end not found")
+	}
+	fn := src[i : i+end+len(closer)]
+
+	cases := []struct {
+		name string
+		mock string
+		want bool
+	}{
+		{"pod exists → not gone", `#!/usr/bin/env bash
+printf "NAME ws-test
+"
+`, false},
+		{"NotFound → gone", `#!/usr/bin/env bash
+echo "Error from server (NotFound): pods "ws-test" not found" >&2
+exit 1
+`, true},
+		{"query error → not gone (fail-closed)", `#!/usr/bin/env bash
+echo "connection refused" >&2
+exit 1
+`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "kc"), []byte(tc.mock), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := "set -euo pipefail\nPOD=\"ws-test\"\nexport PATH=\"" + dir + ":$PATH\"\n" + fn +
+				"\nif pod_gone; then echo GONE; else echo NOTGONE; fi\n"
+			out, err := exec.Command("bash", "-c", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("predicate run failed: %v: %s", err, out)
+			}
+			got := strings.TrimSpace(string(out)) == "GONE"
+			if got != tc.want {
+				t.Errorf("pod_gone = %v, want %v (output: %q)", got, tc.want, string(out))
+			}
+		})
 	}
 }

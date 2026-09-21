@@ -104,3 +104,9 @@ None.
 - suspend_elapsed initialized at 0 (the R2 fetch's --since never reads an unset var if the phase wait itself timed out).
 - Pins extended to the new verdict shapes (pod_gone/NotFound/log-fetch-failed markers).
 - The execution requirement (one recorded harness run) is OUTSIDE this pod's reach — no kubectl here; the row runs on the pool/nightly harness. Flagged to the orchestrator for adjudication: either the orchestrator executes it (the nightly harness is theirs) or accepts the static-delivery + post-merge-first-run scoping. The PR body's "delivered" wording is corrected to "landed, awaiting its first harness execution".
+
+## r8 — the predicate actually works now (and the r7 claims corrected)
+
+- r7's pod_gone was DOUBLY broken (reviewer-verified empirically, both bugs): the 2>&1 sat INSIDE the command substitution so the NotFound error text made the empty-check unreachable, and pipefail made the confirmation clause return kc's exit 1 rather than grep's 0 — a universal false-fail. The r7 worklog line "only an explicit NotFound counts as gone" was FALSE as written (no case counted). Corrected: the pipefail-safe capture-or-true form; the r7 record stands corrected by this entry (append-only).
+- NEW PIN: TestIssue1507Script_PodGonePredicateMockTable — executes the predicate's EXACT extracted source (not a copy) against a mock kc across the three cases (exists→false, NotFound→true, query-error→false), the bash-level harness the reviewer asked for; all three pass under the script's own set -euo pipefail.
+- The recorded-harness-execution finding: the orchestrator disposition (ruling (c) with (b)'s scoping) is on the PR record — the execution lands as the #1456 worker's first wiring artifact post-merge.

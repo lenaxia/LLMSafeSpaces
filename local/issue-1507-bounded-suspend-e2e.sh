@@ -150,8 +150,9 @@ else
     # as gone (a query error — API hiccup, auth — keeps waiting and
     # surfaces as the timeout FAIL, never a false pass).
     pod_gone() {
-        [[ "$(kc get pod "${POD}" -o jsonpath='{.metadata.name}' 2>&1)" == "" ]] \
-            && kc get pod "${POD}" 2>&1 | grep -q "NotFound"
+        # Pipefail-safe: kc's exit-1 on NotFound must not poison the
+        # pipeline — capture-or-true, then grep the combined output.
+        { kc get pod "${POD}" 2>&1 || true; } | grep -q "NotFound"
     }
     if wait_for "R1: pod object gone" $((R1_BUDGET_S + 120)) 'pod_gone'; then
         ok "pod deleted (grace window drained)"
