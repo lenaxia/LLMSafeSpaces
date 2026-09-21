@@ -149,6 +149,7 @@ type WorkspaceService interface {
 	ListWorkspaces(ctx context.Context, userID string, opts types.ListOptions) (*types.WorkspaceListResult, error)
 	DeleteWorkspace(ctx context.Context, userID, workspaceID string) error
 	SuspendWorkspace(ctx context.Context, userID, workspaceID string) error
+	SuspendWorkspaceForce(ctx context.Context, userID, workspaceID string) error
 	RestartWorkspace(ctx context.Context, userID, workspaceID string) error
 	RefreshWorkspaceCompute(ctx context.Context, userID, workspaceID string) (*types.RefreshWorkspaceResult, error)
 	GetWorkspaceStatus(ctx context.Context, userID, workspaceID string) (*types.WorkspaceStatusResult, error)

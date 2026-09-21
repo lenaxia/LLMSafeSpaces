@@ -114,6 +114,8 @@ func TestWorkspaceRoutes_Exist(t *testing.T) {
 				Return(assert.AnError).Maybe()
 			svc.workspace.On("SuspendWorkspace", mock.Anything, mock.Anything, mock.Anything).
 				Return(assert.AnError).Maybe()
+			svc.workspace.On("SuspendWorkspaceForce", mock.Anything, mock.Anything, mock.Anything).
+				Return(assert.AnError).Maybe()
 			svc.workspace.On("GetWorkspaceStatus", mock.Anything, mock.Anything, mock.Anything).
 				Return(nil, assert.AnError).Maybe()
 			svc.workspace.On("SetCredentials", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
@@ -188,4 +190,25 @@ func TestRefreshComputeRoute_ServiceError_Propagated(t *testing.T) {
 
 	assert.NotEqual(t, http.StatusAccepted, w.Code)
 	assert.NotEqual(t, http.StatusNotFound, w.Code)
+}
+
+// #1505 wiring pin: the USER suspend endpoint must route to the FORCE
+// variant (the UI warning is the consent); it must never silently fall
+// back to the polite drain path.
+func TestSuspendRoute_UsesForceVariant(t *testing.T) {
+	router, svc := newRouterFixture(t)
+	svc.workspace.On("SuspendWorkspaceForce", mock.Anything, "test-user", "ws-1").
+		Return(nil).Once()
+	svc.workspace.On("SuspendWorkspace", mock.Anything, mock.Anything, mock.Anything).
+		Return(nil) // if called instead, the assertion below fails
+
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/suspend", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	svc.workspace.AssertNumberOfCalls(t, "SuspendWorkspaceForce", 1)
+	svc.workspace.AssertNotCalled(t, "SuspendWorkspace",
+		"the user suspend endpoint is the CONSENTED force path (#1505)")
 }

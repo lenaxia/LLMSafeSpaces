@@ -399,6 +399,11 @@ paths:
     post:
       tags: [workspaces]
       summary: Refresh workspace compute (re-sync resource defaults and rebuild pod for latest image version)
+      description: |
+        User-consented FORCE path (#1505): the pod is deleted immediately —
+        the #761 session drain is bypassed and any in-flight agent turns are
+        cut. The client UI warns the user before this action; that warning is
+        the consent. Automated suspend paths keep the polite drain.
       operationId: refreshWorkspaceCompute
       parameters:
         - $ref: "#/components/parameters/WorkspaceId"
