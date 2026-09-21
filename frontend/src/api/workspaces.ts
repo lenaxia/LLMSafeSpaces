@@ -15,6 +15,13 @@ export interface EnsureSessionResponse {
 }
 
 // D6 (#998): one persisted hung-session escalation record.
+/**
+ * One member of the typed session-action union (design 0055 M1 op 5).
+ * v1 surface: compact. New members land here as the union grows —
+ * never as a discriminator field.
+ */
+export type SessionAction = { compact: Record<string, never> };
+
 export interface SessionAlert {
   id: string;
   workspaceId: string;
@@ -75,6 +82,16 @@ export const workspacesApi = {
     api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`, { signal: opts?.signal }),
   renameSession: (workspaceId: string, sessionId: string, title: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/title`, { title }),
+  // Typed session action (design 0055 M1 op 5): POSTs exactly ONE
+  // member of the protojson action union (sdks/openapi.yaml: "Discriminated
+  // union — exactly one member per request") — e.g. {compact:{}}. A
+  // discriminator `type` field is NOT part of the wire contract: the
+  // protojson decoder discards it and the oneof stays unset → guaranteed
+  // "action.unknown" 501. The pod's Act op executes under the session's
+  // single-flight lock; off-regime (authority flag off) the API answers
+  // 501 with the capability detail.
+  sessionAction: (workspaceId: string, sessionId: string, action: SessionAction) =>
+    api.post<Record<string, unknown>>(`/workspaces/${workspaceId}/sessions/${sessionId}/actions`, action),
   markSessionSeen: (workspaceId: string, sessionId: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/seen`),
   renameWorkspace: (workspaceId: string, name: string) =>

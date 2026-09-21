@@ -1219,6 +1219,12 @@ export function ChatPage() {
             streaming={streaming}
             streamParts={sseStreamParts}
             disabled={!workspaceId || !sessionId || isSuspended}
+            sessionId={sessionId ?? undefined}
+            onNewSession={() => {
+              // Pending guard mirrors the auto-create path: a rapid
+              // double-invoke must not mint duplicate "New chat"s.
+              if (workspaceId && !createSessionMutation.isPending) createSessionMutation.mutate(workspaceId);
+            }}
             onSend={handleSend}
             onAbort={() => {
               if (workspaceId && sessionId) {

@@ -35,6 +35,10 @@ interface Props {
   disabled: boolean;
   onSend: (text: string, files: string[]) => void;
   onAbort: () => void;
+  /** Active session id — threaded to Composer for /compact and /rename. */
+  sessionId?: string;
+  /** New-session action — threaded to Composer for /new. */
+  onNewSession?: () => void;
   prompts?: React.ReactNode;
   onLoadEarlier?: () => void;
   hasOlderMessages?: boolean;
@@ -93,7 +97,7 @@ function partitionStreamPartsByMessage(streamParts: StreamingPart[]): Array<{ ke
   return order.map((key) => ({ key, parts: groups.get(key)! }));
 }
 
-export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, userMessageHistory, viewOnly = false, viewOnlyMessage, workspaceId, orgId, attachments, capViolation, onAddFiles, onRemoveAttachment, onRetryAttachment, onDismissCapViolation }: Props) {
+export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, sessionId, onNewSession, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, userMessageHistory, viewOnly = false, viewOnlyMessage, workspaceId, orgId, attachments, capViolation, onAddFiles, onRemoveAttachment, onRetryAttachment, onDismissCapViolation }: Props) {
   const isMobile = useIsMobile();
   const streamedBubbles = partitionStreamPartsByMessage(streamParts);
   const hasStreamedContent = streamedBubbles.length > 0;
@@ -141,6 +145,8 @@ export function ChatView({ messages, streaming, streamParts, disabled, onSend, o
           )}
 
           <Composer
+            sessionId={sessionId}
+            onNewSession={onNewSession}
             onSend={onSend}
             onAbort={onAbort}
             disabled={disabled}
