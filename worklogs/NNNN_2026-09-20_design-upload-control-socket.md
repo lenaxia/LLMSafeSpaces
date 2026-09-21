@@ -73,6 +73,12 @@ None — design-doc lane; the doc carries the test plan (§6) the implementation
 
 Stress testing is now a first-class section (§6) with six invariants, each naming mechanism + proof method + acceptance signal: (6.1) measured streaming residency via gauge pin under max-concurrency near-cap storms; (6.2) credential resync DURING an upload storm completes unaffected (the cross-feature isolation the design exists for — V3 of the invariant matrix); (6.3) backpressure with throttled consumer (window bounds, flat RSS); (6.4) disk-margin edges incl. the TOCTOU interleave; (6.5) mid-stream kills at chunk boundaries (atomicity + reclamation + credential intactness); (6.6) ack-path throughput/latency characterization with a relative regression guard. §3.5 added: the flow-control decision the stress spec SHAPED — implicit TCP backpressure via the synchronous streaming chain, explicit window signaling deliberately REJECTED (nothing is decoupled, so nothing can run away), with the mid-stream-ENOSPC abort class specified. Defaults reconciled with the /analyze proposal on the issue (48 MiB budget / 24 MiB floor — one 25 MiB upload by reservation, ≥47 MiB credential headroom); Q1 (507 vs 429) and Q3 (gVisor run) absorbed into §8.
 
-## Tests Run (r1/r2)
+## Verification (r1/r2 rounds)
 
 Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are the implementation lanes' inherited contract.
+
+## Review round 2 (design doc) — 2 new blockers + 5 minors, all introduced by my r2 edits, all fixed
+
+- **The API "pass-through" claims were false**: the API handler collapses every non-201/413 agentd status into a fixed 502 (uploads.go:241-245) — my §4.6/§5.4 claimed reason strings pass through. Fixed: the design now specifies the REQUIRED API forwarding change (statuses + reason bodies verbatim; API reason enum widened) and §9's wiring PR is retitled accordingly ("API forwarding + wiring…", not "polish").
+- **UPLOAD_STAGING_BUDGET had no enforcement point** (and §4.2 still said "the fraction"): admission formalized as two clauses — (A) reservedUploads+newBytes ≤ budget (the semaphore's enforcement point; defaults admit one 25 MiB upload by reservation, a 3×15 MiB storm peaks at 45 MiB), (B) credentialUsage+floor+reservations ≤ f_bavail. §6.1's residency pin now holds by construction.
+- Minors: §4.7→§4.1.1 dangling ref; §8-Q2→item-3 cross-ref; D17→D19 (retry semantics); dest_margin_consumed given its export channel (additive A.1-legal dest_avail_after ack field; counter renamed to dest_outcomes covering rejections AND the success-path margin observation); Content-Length wording (cap+64 KiB envelope allowance, the safe direction); §6.2's unverifiable "V3" label replaced with the concrete row-family anchor.
