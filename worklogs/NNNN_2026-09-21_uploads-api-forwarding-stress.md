@@ -148,3 +148,7 @@ The design §6.6 specifies p95, not median. At N≤4 samples the p95 IS the max 
 3. The stale "regime-independent" comment (contradicting both the code and the worklog's own r6 correction) — removed.
 4. The pin comment saying "median" — fixed to "max(p95@N≤4)."
 5. **The behavioral guard test** (r8's ask): 7 table cases driving the exact sort -n | awk pipeline against synthetic timing files — the test that would have caught every broken variant shipped in rounds 4-7 (median-below-boundary, wall-clock vacuous, asort-crash, CONC_MS-crash).
+
+## Review Round 9 (live extraction + honest claims)
+
+The r8 behavioral test validated a FROZEN copy of the pipeline — a script-side regression (the r7 max-labeled median mutant) passed it green. Fixed: the pipeline is now EXTRACTED from the script at test runtime (from "sort -n | awk" to the "}}'" terminator). Mutation-verified: changing the script's awk from max to median fails the test; restoring passes. The comment claims are honest (no more "would have caught" — it DOES catch, now).

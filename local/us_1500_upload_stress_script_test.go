@@ -102,16 +102,26 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 
 // TestUploadStressScript_GuardBehavioralTest verifies the guard's
 // compute logic against synthetic timing files — the test that would
-// have caught all five broken guard variants this PR shipped (r8's
-// ask). The pipeline is needle-pinned against the script for drift.
+// validates the SCRIPT'S OWN pipeline, extracted at test runtime —
+// a script-side regression (the r7 max-labeled median mutant) fails
+// here, which a frozen-copy test cannot catch.
 func TestUploadStressScript_GuardBehavioralTest(t *testing.T) {
 	raw, err := os.ReadFile(uploadStressScript)
 	require.NoError(t, err)
 	src := string(raw)
 	assert.Contains(t, src, "sort -n | awk", "the guard pipeline must stay in the script")
 
-	// The script's awk: max from sorted timing lines.
-	const awkPipeline = `awk 'END{if (NR==0){print 0} else {print $1}}'`
+	// Extract the LIVE pipeline from the script (r9 finding: a frozen
+	// copy ships green through a script-side regression — the r7 max-
+	// labeled median mutant passes the frozen test).
+	awkIdx := strings.Index(src, "sort -n | awk")
+	require.Greater(t, awkIdx, 0, "guard pipeline not found in script")
+	bodyEnd := strings.Index(src[awkIdx:], "}}'")
+	require.Greater(t, bodyEnd, 0, "guard awk body terminator not found")
+	awkWithSort := src[awkIdx : awkIdx+bodyEnd+3]
+	// Strip the leading sort (the test pipes into the awk part only).
+	barIdx := strings.Index(awkWithSort, "|")
+	awkOnly := strings.TrimSpace(awkWithSort[barIdx+1:])
 
 	tests := []struct {
 		name      string
@@ -133,7 +143,7 @@ func TestUploadStressScript_GuardBehavioralTest(t *testing.T) {
 				_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("ms-%d", i+1)), []byte(ms+"\n"), 0o644)
 			}
 			cmd := exec.Command("bash", "-c",
-				"cat "+filepath.Join(dir, "ms-*")+" 2>/dev/null | sort -n | "+awkPipeline)
+				"cat "+filepath.Join(dir, "ms-*")+" 2>/dev/null | sort -n | "+awkOnly)
 			out, err := cmd.CombinedOutput()
 			require.NoError(t, err, "out: %s", string(out))
 			got, err := strconv.Atoi(strings.TrimSpace(string(out)))
