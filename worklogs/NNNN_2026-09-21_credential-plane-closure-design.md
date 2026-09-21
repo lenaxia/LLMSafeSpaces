@@ -37,7 +37,7 @@ The doc's §8 table (A1–A7) is the canonical list; two are explicitly spike-fi
 
 ## Blockers
 
-None. FIVE owner questions outstanding (§10 after r1 added Q5) — all non-blocking, all with recommendations.
+None. §10 is now a DECISION RECORD: the orchestrator ruled all five questions mid-review (R1 file the FOUR-ask upstream bundle now — session-ACL + FD-delivery + LANDLOCK + the #1465 MCP caller-session identity draft; R2 honor #823's recorded default-flip gate; R3 minimal-bar nightly/full-bar epic-exit; R4 warn-only + metric; R5 (a)+(b) — ask filed AND spawn-env payload redaction interim shipped). The doc's in-body pointers updated to cite the rulings; B2's interim (R5b) is an implementation-story, not design.
 
 ### Review round 1 (CHANGES_REQUESTED → addressed)
 
