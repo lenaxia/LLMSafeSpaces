@@ -136,3 +136,7 @@ The sharpest catch: the r4 wall-clock guard was conditionally vacuous — GUARD=
 1. **CONC_MS under set -u**: the variable was dead (replaced by per-upload timings) but the log line still referenced it — unbound variable → crash on the first enabled run. Fixed: the log now prints SR6_P95 + L1_STATUS.
 2. **asort is gawk-only**: Debian's mawk doesn't have it — the function call errored, the || echo 0 produced median=0, and the guard was vacuously passing. This bug was present from r5's introduction. Fixed: sort -n + awk line-counting (POSIX-portable; median verified for even and odd counts).
 The evidence-claim correction from r5 stands: the "regime-independent" claim was false — the guard was broken in every regime until this fix.
+
+## Review Round 7 (median → the design's p95)
+
+The design §6.6 specifies p95, not median. At N≤4 samples the p95 IS the max — the median at N=3 serial is exactly 2×L1 (AT the guard boundary, not above it: cannot fail). The max of a serialized storm is N×L1 >> 2×L1 in every regime. Replaced median with max, labeled honestly as max(p95@N≤4) in every message.

@@ -80,6 +80,7 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		// (r5: the wall-clock form was conditionally vacuous).
 		`SR6_GUARD=$((2 * L1))`,
 		`sort -n | awk`,
+		`max(p95@N`,
 		`SR6_P95`,
 		`ms-${i}`,
 		// SR-6B: the literal-429 construct + the precondition gate.
