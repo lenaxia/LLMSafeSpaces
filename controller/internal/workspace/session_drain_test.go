@@ -193,16 +193,6 @@ func makeRestartGenDrainWorkspace(t *testing.T, name string) (*v1.Workspace, *co
 	return ws, pod, makePasswordSecret(ws.Name, "default")
 }
 
-// makeSuspendingWorkspace builds a Suspending workspace plus its running pod.
-func makeSuspendingWorkspace(name string) (*v1.Workspace, *corev1.Pod) {
-	ws := makeWorkspace(name, "default", v1.WorkspacePhaseSuspending)
-	ws.Status.PodIP = "127.0.0.1"
-	ws.Status.PodName = podName(name, string(ws.UID))
-	ws.Status.PodNamespace = "default"
-	pod := makeRunningPod(podName(name, string(ws.UID)), "default", "127.0.0.1")
-	return ws, pod
-}
-
 func busyStatusz(contextUsed int64) agentd.StatuszResponse {
 	return agentd.StatuszResponse{
 		Healthy:             true,
