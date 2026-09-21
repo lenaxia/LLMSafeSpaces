@@ -50,13 +50,17 @@ import (
 )
 
 const (
-	defaultStagingBudget               = int64(48 << 20)
-	defaultCredentialFloor             = int64(24 << 20)
-	defaultStagingTTL                  = 15 * time.Minute
-	defaultMaxConcurrent               = 4
-	defaultApplyTimeout                = 60 * time.Second
-	stagingChunkWindow                 = 256 << 10
-	stagingFilePerm        os.FileMode = 0o640
+	defaultStagingBudget   = int64(48 << 20)
+	defaultCredentialFloor = int64(24 << 20)
+	defaultStagingTTL      = 15 * time.Minute
+	defaultMaxConcurrent   = 4
+	defaultApplyTimeout    = 60 * time.Second
+	// stagingEnvelopeAllowance mirrors the API's uploadEnvelopeAllowance
+	// (api/internal/handlers/uploads.go) — the multipart envelope the
+	// client's Content-Length carries over the raw file bytes.
+	stagingEnvelopeAllowance             = int64(64 << 10)
+	stagingChunkWindow                   = 256 << 10
+	stagingFilePerm          os.FileMode = 0o640
 )
 
 // errDeclaredExceeded is the 400-class over-read: the body exceeded the
@@ -506,7 +510,14 @@ func handleStagedUpload(w http.ResponseWriter, r *http.Request, cfg fileUploadCo
 		writeUploadErrorClass(w, http.StatusLengthRequired, "declared body length required", "invalid_declared_length", "")
 		return
 	}
-	if declared > cfg.maxBytes {
+	// The declared value the API forwards is the CLIENT's multipart
+	// Content-Length — envelope-inclusive (boundary + part headers), so a
+	// file at exactly the cap legitimately declares cap + envelope. The
+	// API pre-gates at cap + the same allowance (api uploads.go's
+	// uploadEnvelopeAllowance, mirrored here); direct callers declare
+	// raw-body sizes where the allowance is merely generous — the budget
+	// clauses still bind.
+	if declared > cfg.maxBytes+stagingEnvelopeAllowance {
 		pkgOpsMetrics.RecordUploadOutcome(wsID, uploadOutcomeRejectedCap)
 		writeUploadError(w, http.StatusRequestEntityTooLarge, "file exceeds size cap")
 		return

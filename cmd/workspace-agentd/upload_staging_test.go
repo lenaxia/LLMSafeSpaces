@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -556,9 +557,25 @@ func TestStagedUpload_ApplyDestDiskFull507(t *testing.T) {
 
 func TestStagedUpload_DeclaredOverCap413(t *testing.T) {
 	_, _, h, _ := stagingHandlerFixture(t, 1<<30, 1<<40)
+	// The declared value is envelope-inclusive: cap + allowance passes
+	// (a cap-exact file's multipart total), cap + allowance + 1 rejects.
+	over := int64(25<<20) + (64 << 10) + 1
 	w := httptest.NewRecorder()
-	h(w, stagingRequest(t, "hello", "26843546")) // > 25 MiB cap
+	h(w, stagingRequest(t, "hello", strconv.FormatInt(over, 10)))
 	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("declared > cap must 413 pre-admission, got %d", w.Code)
+		t.Fatalf("declared > cap+allowance must 413 pre-admission, got %d", w.Code)
+	}
+}
+
+func TestStagedUpload_CapExactWithEnvelopeAdmitted(t *testing.T) {
+	// A file at exactly the cap declares cap + envelope on the API hop —
+	// must NOT 413 at agentd (the envelope allowance mirrors the API's
+	// pre-read gate).
+	_, _, h, _ := stagingHandlerFixture(t, 1<<30, 1<<40)
+	exact := int64(25<<20) + (64 << 10) // cap + allowance exactly — the multipart total of a cap-exact file
+	w := httptest.NewRecorder()
+	h(w, stagingRequest(t, "hello", strconv.FormatInt(exact, 10)))
+	if w.Code == http.StatusRequestEntityTooLarge {
+		t.Fatalf("cap-exact file with envelope must pass the agentd gate (the divergence worker 2's cross-check caught), got %d", w.Code)
 	}
 }
