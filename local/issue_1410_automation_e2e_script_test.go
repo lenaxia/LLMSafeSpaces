@@ -14,8 +14,6 @@ package local_test
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -125,71 +123,33 @@ func TestIssue1410E2EWorkflowRegistered(t *testing.T) {
 		"the automation e2e script must be registered in the nightly workflow")
 }
 
-// TestIssue1410E2E_BootstrapLivezRetries pins run-35586321658's class
-// fix: the bootstrap livez probe must RETRY (the us-68/harness_start
-// 10×1s shape), not one-shot. That run died at its very first command —
-// a single 2s curl — racing an API pod 32s old (us-70's closing AC-8
-// rows churn API replicas; the instant #1342 skip removed the
-// accidental settle window). Every other cascade script already retries
-// (harness_start's loop or us-70-revisions' wait_local_livez); this was
-// the class's sole one-shot.
-func TestIssue1410E2E_BootstrapLivezRetries(t *testing.T) {
+// TestIssue1410E2E_HarnessStartFirst pins run-35586321658's TRUE root
+// cause (review r1's refutation of the livez-race theory): the step
+// died in 18ms — ECONNREFUSED on a dead local port, because the script
+// never established its port-forward AT ALL and its rows' Bearer
+// ${API_KEY} was never seeded. Every row depends on harness_start (the
+// #1452/#1417 pinned pattern): it establishes the forward, runs the
+// 10×1s livez retry gate, and seeds the session user + API key.
+func TestIssue1410E2E_HarnessStartFirst(t *testing.T) {
 	raw, err := os.ReadFile(issue1410Script)
 	require.NoError(t, err)
 	src := string(raw)
-	assert.Contains(t, src,
-		"for _i in $(seq 1 10)", "the bootstrap must retry the livez probe")
-	i := strings.Index(src, "for _i in $(seq 1 10)")
-	require.Greater(t, i, 0)
-	window := src[i : i+400]
-	assert.Contains(t, window, "/livez", "the retry loop must probe livez")
-	assert.Contains(t, window, "&& break", "the loop must break on success")
-	// The retry loop must PRECEDE the fatal probe (a loop after the die
-	// would be dead code).
-	dieAt := strings.Index(src, "API /livez unreachable")
-	assert.Greater(t, dieAt, i, "the retry loop must run before the fatal livez die")
-}
-
-// TestIssue1410E2E_BootstrapLivezRetriesExecutes runs the REAL bootstrap
-// retry block against a counting fake curl: succeeds after transient
-// failures; dies loudly when livez never answers.
-func TestIssue1410E2E_BootstrapLivezRetriesExecutes(t *testing.T) {
-	bash := requireBash(t)
-	raw, err := os.ReadFile(issue1410Script)
-	require.NoError(t, err)
-	src := string(raw)
-	block := regexp.MustCompile(`(?s)(?m)^for _i in \$\(seq 1 10\); do.*?\|\| die "API /livez unreachable[^\n]*\n`).FindString(src)
-	require.NotEmpty(t, block, "bootstrap retry block (loop + confirming die) not found")
-
-	dir := t.TempDir()
-	counter := filepath.Join(dir, "count")
-	fake := "#!/bin/sh\n" +
-		"n=$(cat \"" + counter + "\" 2>/dev/null || echo 0); echo $((n+1)) > \"" + counter + "\"\n" +
-		"if [ \"${FAKE_LIVEZ_FAIL_N:-0}\" -gt 0 ] && [ \"$n\" -lt \"${FAKE_LIVEZ_FAIL_N}\" ]; then exit 1; fi\n" +
-		"if [ \"${FAKE_LIVEZ_ALWAYS_FAIL:-0}\" = \"1\" ]; then exit 1; fi\n" +
-		"exit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "curl"), []byte(fake), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
-
-	run := func(env string) (string, error) {
-		os.Remove(counter)
-		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH PORTFWD_PORT=18086\n" + env +
-			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
-` + block + "\necho BOOT-OK"
-		out, err := exec.Command(bash, "-c", script).CombinedOutput()
-		return string(out), err
+	callIdx := strings.Index(src, "\nharness_start")
+	require.GreaterOrEqual(t, callIdx, 0, "the script must call harness_start — nothing else establishes its port-forward or seeds the API_KEY its rows authenticate with (run 35586321658: 18ms ECONNREFUSED, forwardless)")
+	livezIdx := strings.Index(src, "/livez")
+	if livezIdx >= 0 {
+		assert.Less(t, callIdx, livezIdx, "harness_start must precede any standalone /livez probe (it establishes the forward)")
 	}
-
-	t.Run("transient failures then success", func(t *testing.T) {
-		out, err := run("export FAKE_LIVEZ_FAIL_N=4\n")
-		require.NoError(t, err, "the retry loop must absorb transient livez failures:\n%s", out)
-		assert.Contains(t, out, "BOOT-OK")
-	})
-	t.Run("never answers: dies loudly", func(t *testing.T) {
-		out, err := run("export FAKE_LIVEZ_ALWAYS_FAIL=1\n")
-		require.Error(t, err, "a never-answering livez must die, not hang")
-		assert.Contains(t, out, "DIE API /livez unreachable")
-	})
+	// The first authenticated row call must come AFTER harness_start —
+	// before it, API_KEY is unbound (set -u abort).
+	apiIdx := strings.Index(src, "api GET")
+	if apiIdx >= 0 {
+		assert.Less(t, callIdx, apiIdx, "harness_start must precede the first api call — the rows' Bearer ${API_KEY} is seeded there")
+	}
+	// The cleanup's DELETE calls also ride ${API_KEY}: the trap may fire
+	// before harness_start completes, and ${API_KEY:-} guarding is the
+	// lib's convention — pin that the trap tolerates the empty case.
+	assert.Contains(t, src, "${API_KEY:-}", "the EXIT-trap cleanup must tolerate an unset API_KEY (die-before-bootstrap)")
 }
 
 // TestIssue1410E2EScript_ExecuteSmoke runs the script end-to-end under
