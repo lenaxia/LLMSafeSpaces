@@ -86,18 +86,15 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// single-container boot path in main.go).
 	ensureOpencodeBootLayers(log)
 
-	// Design 0060 §4.3/§9.2 — the uid-1000 destination scrub: close the
-	// sidecar-mode gap where NOTHING reclaimed /workspace/uploads/*.tmp
-	// (the only other live scrub call is the single-container server
-	// path this subcommand exits before; the sidecar's own call is an
-	// RO no-op). Boot arm + the TTL sweeper on the shared knob.
-	{
-		engine := uploadApplyEngineFromEnv()
-		if n := engine.scrubDestination(0); n > 0 {
-			log.Info("upload destination scrub: reclaimed crashed .tmp files", zap.Int("count", n))
-		}
-		engine.startDestinationSweeper(context.Background(), 10*time.Minute)
+	// Design 0060 §4.3/§9.2 — the uid-1000 destination scrub (close the
+	// sidecar-mode gap where NOTHING reclaimed crashed temps) + the
+	// upload_apply engine, ONE instance shared by the sweeper and the
+	// control server (r1 finding 6).
+	uploadEngine := uploadApplyEngineFromEnv()
+	if n := uploadEngine.scrubDestination(0); n > 0 {
+		log.Info("upload destination scrub: reclaimed crashed temps", zap.Int("count", n))
 	}
+	uploadEngine.startDestinationSweeper(context.Background(), 10*time.Minute)
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -127,7 +124,7 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	if addr == "" {
 		addr = fmt.Sprintf("127.0.0.1:%d", ControlSocketPort)
 	}
-	srv, err := newSupervisorControlServer(addr, adapter)
+	srv, err := newSupervisorControlServer(addr, adapter, uploadEngine)
 	if err != nil {
 		log.Error("FATAL: control socket listen failed", zap.String("addr", addr), zap.Error(err))
 		return 1
@@ -186,13 +183,13 @@ func newSupervisorProcess(ctx context.Context) (*managedProcess, *managedProcAda
 // workspace container's (0050 finding) — served over the socket for the
 // sidecar's statusz/pressure/ops-metrics surfaces. Extracted so the
 // wiring is pinnable by test.
-func newSupervisorControlServer(addr string, adapter *managedProcAdapter) (*controlSocketServer, error) {
+func newSupervisorControlServer(addr string, adapter *managedProcAdapter, uploadEngine *uploadApplyEngine) (*controlSocketServer, error) {
 	srv, err := newControlSocketServer(addr, adapter)
 	if err != nil {
 		return nil, err
 	}
 	srv.metricsSource = newWorkspaceCgroupReader().read
-	srv.uploadApply = uploadApplyEngineFromEnv()
+	srv.uploadApply = uploadEngine
 	return srv, nil
 }
 

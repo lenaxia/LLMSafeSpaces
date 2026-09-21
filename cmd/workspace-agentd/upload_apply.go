@@ -16,10 +16,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -39,6 +41,10 @@ type uploadApplyEngine struct {
 	uploadsDir  string
 	destMargin  int64
 	ttl         time.Duration
+	// applyDeadline bounds the copy on the SUPERVISOR side too (r1
+	// finding 3): the socket's blanket 10s exchange deadline must not
+	// truncate a legitimate 10-60s apply — the method arms its own.
+	applyDeadline time.Duration
 
 	// applyMu serializes applies (§8 item 3's simplest choice): the
 	// copies are independent (uuid targets), but a bounded serial queue
@@ -66,6 +72,12 @@ func uploadApplyEngineFromEnv() *uploadApplyEngine {
 	if v := os.Getenv("LLMSAFESPACES_UPLOADS_STAGING_PATH"); v != "" {
 		e.stagingRoot = v
 	}
+	e.applyDeadline = defaultApplyTimeout
+	if v := os.Getenv("UPLOAD_APPLY_TIMEOUT_MS"); v != "" {
+		if ms, err := strconv.ParseInt(v, 10, 64); err == nil && ms > 0 {
+			e.applyDeadline = time.Duration(ms) * time.Millisecond
+		}
+	}
 	if v := os.Getenv("UPLOAD_DEST_MARGIN"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			e.destMargin = n
@@ -92,7 +104,11 @@ func (e *applyError) Error() string { return e.code + ": " + e.msg }
 // Apply validates the closed-param set, gates, streams, verifies, and
 // renames. On success the result carries the §3.2 additive ack fields
 // (both computed supervisor-side — it owns the margin parameter).
-func (e *uploadApplyEngine) Apply(params map[string]any) (map[string]any, *applyError) {
+// Apply validates, gates, streams, verifies, and renames. ctx bounds
+// the hold (§6.3): the copy loop checks it each window; a hard-blocked
+// single write syscall is the documented residual (no portable per-fd
+// deadline) — the bounded queue (TryLock busy) keeps the method live.
+func (e *uploadApplyEngine) Apply(ctx context.Context, params map[string]any) (map[string]any, *applyError) {
 	id, _ := params["upload_id"].(string)
 	staged, _ := params["staged_name"].(string)
 	sizeF, _ := params["size"].(float64)
@@ -117,7 +133,30 @@ func (e *uploadApplyEngine) Apply(params map[string]any) (map[string]any, *apply
 		return nil, &applyError{code: "target_rejected", msg: "target_name failed sanitization"}
 	}
 
-	e.applyMu.Lock()
+	// §4.4 ordering: the uploads dir must EXIST before anything stats or
+	// writes it — nothing else creates it in a sidecar pod (the single-
+	// container lazy mkdir rides the server path this subcommand exits
+	// before; the r1 review reproduced statfs(ENOENT) → avail=-1 →
+	// permanent dest_disk_full on every fresh workspace).
+	//nolint:gosec // G301: 0755 is the design contract (epic-68 U1.1.11) — the uploads dir is traversable like /workspace itself
+	if err := os.MkdirAll(e.uploadsDir, 0o755); err != nil {
+		return nil, &applyError{code: "dest_write_failed", msg: "uploads dir unavailable"}
+	}
+
+	finalName := id + "-" + sanitized
+	finalPath := filepath.Join(e.uploadsDir, finalName)
+	// The temp marker is STRUCTURALLY unambiguous (r1 finding 2): finals
+	// always start with the upload uuid (uuid regex); temps start with
+	// the literal "staging-" prefix — a user upload named *.tmp lands as
+	// <uuid>-name.tmp (a final) and can never match the scrub class.
+	tmpPath := filepath.Join(e.uploadsDir, "staging-"+finalName+".tmp")
+
+	// §4.5: bounded concurrency with the §3.2 busy enum — concurrent
+	// applies REJECT (the 429 semantics agentd maps) rather than queue
+	// behind a held mutex past their deadlines.
+	if !e.applyMu.TryLock() {
+		return nil, &applyError{code: "busy", msg: "an apply is in flight"}
+	}
 	defer e.applyMu.Unlock()
 
 	stagedPath := filepath.Join(e.stagingRoot, staged)
@@ -128,17 +167,11 @@ func (e *uploadApplyEngine) Apply(params map[string]any) (map[string]any, *apply
 	defer func() { _ = f.Close() }()
 
 	// §4.4 pre-copy gate: the authoritative write-time check (statfs is
-	// ground truth; the CRD ratio was only the fast pre-filter).
+	// ground truth; the CRD ratio was only the fast pre-filter). The
+	// statfs target is the FILESYSTEM — the uploads dir's parent (the
+	// mount root, which always exists); avail is per-filesystem.
 	if !e.destAvailAtLeast(size + e.destMargin) {
 		return nil, &applyError{code: "dest_disk_full", msg: "destination avail below size + margin"}
-	}
-
-	finalName := id + "-" + sanitized
-	finalPath := filepath.Join(e.uploadsDir, finalName)
-	tmpPath := filepath.Join(e.uploadsDir, finalName+".tmp")
-	//nolint:gosec // G301: 0755 is the design contract (epic-68 U1.1.11) — the uploads dir is traversable like /workspace itself
-	if err := os.MkdirAll(e.uploadsDir, 0o755); err != nil {
-		return nil, &applyError{code: "dest_write_failed", msg: "uploads dir unavailable"}
 	}
 
 	hash := sha256.New()
@@ -156,6 +189,9 @@ func (e *uploadApplyEngine) Apply(params map[string]any) (map[string]any, *apply
 	buf := make([]byte, stagingChunkWindow)
 	var written int64
 	for {
+		if err := ctx.Err(); err != nil {
+			return abort(&applyError{code: "dest_write_failed", msg: "canceled: " + err.Error()})
+		}
 		n, rerr := f.Read(buf)
 		if n > 0 {
 			written += int64(n)
@@ -237,7 +273,10 @@ func (e *uploadApplyEngine) scrubDestination(ttl time.Duration) int {
 	}
 	removed := 0
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".tmp" {
+		// The scrub class is the STRUCTURAL temp marker ("staging-*" +
+		// ".tmp") — a uuid prefix is impossible for it, so a user upload
+		// literally named *.tmp (a legitimate final) is never reclaimed.
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "staging-") || filepath.Ext(entry.Name()) != ".tmp" {
 			continue
 		}
 		if ttl > 0 {
@@ -275,11 +314,18 @@ func (e *uploadApplyEngine) startDestinationSweeper(ctx context.Context, interva
 // uploadApplyControlMethod adapts the engine to the control socket's
 // dispatch: params in, result or the closed error out (A.1: unknown
 // param KEYS were already ignored by the decoder).
-func (s *controlSocketServer) uploadApplyControlMethod(req controlRequest) controlResponse {
+func (s *controlSocketServer) uploadApplyControlMethod(ctx context.Context, conn net.Conn, req controlRequest) controlResponse {
 	if s.uploadApply == nil {
 		return s.errResp(req.ID, "internal", "upload_apply engine unwired")
 	}
-	result, aerr := s.uploadApply.Apply(req.Params)
+	// The blanket 10s exchange deadline must not truncate a legitimate
+	// 10-60s apply (r1 finding 3): arm the method's own bound (the same
+	// UPLOAD_APPLY_TIMEOUT_MS knob the client side reads) with slack for
+	// the ack write.
+	if conn != nil {
+		_ = conn.SetDeadline(time.Now().Add(s.uploadApply.applyDeadline + 5*time.Second))
+	}
+	result, aerr := s.uploadApply.Apply(ctx, req.Params)
 	if aerr != nil {
 		if aerr.code == "bad_request" {
 			return s.errResp(req.ID, "bad_request", aerr.msg)

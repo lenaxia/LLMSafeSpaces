@@ -71,3 +71,15 @@ None. PR 4 (e2e un-skip) follows once PR 3 lands.
 - `cmd/workspace-agentd/upload_staging.go` — statfsT moved to production (both files share the alias)
 - `cmd/workspace-agentd/upload_staging_test.go` — the alias's test-side duplicate removed
 - `worklogs/NNNN_2026-09-21_upload-apply-supervisor.md` — this worklog
+
+
+---
+
+## Review round 1 (4 findings incl. 1 critical + 2 high, all fixed)
+
+- **CRITICAL — gate before MkdirAll**: statfs(uploadsDir) ran while the dir didn't exist (nothing creates it in a sidecar pod) → ENOENT → avail −1 → PERMANENT dest_disk_full on every fresh workspace (the reviewer reproduced it; my design-lane validation missed that the dir is single-container-lazy). Fixed: MkdirAll first; the gate stats the FILESYSTEM (the dir's parent — the mount root, which always exists). Pinned by TestUploadApply_FreshWorkspaceGateOrdering.
+- **HIGH — .tmp-named user finals deleted by the sweeper**: SanitizeFilename permits .tmp names, so `<uuid>-backup.tmp` is a legitimate final indistinguishable from a crashed temp by extension. Fixed with a STRUCTURAL marker: temps are `staging-<uuid>-<name>.tmp` — finals always begin with the upload uuid (uuid regex), so a final can never match the `staging-*.tmp` class. Pinned (the uuid-prefixed .tmp final survives boot AND TTL scrubs).
+- **HIGH — the server's blanket 10s deadline truncated 10-60s applies** (EOF → misclassified transport → mid-copy unlink): upload_apply now re-arms the connection deadline to its own bound (+ack slack) from the shared UPLOAD_APPLY_TIMEOUT_MS knob.
+- **HIGH — cancellation ignored / wedged copy poisons the method**: Apply takes ctx (checked per window; the single blocked-syscall residual documented) + the lock is TryLock — concurrent applies REJECT with the §3.2 busy enum (bounded queueing, the 429 semantics) instead of queueing past their deadlines. The dead enum member is live; pinned.
+- LOW: one engine instance shared by sweeper + server (the second constructor removed); the conn ctx now bounds every method.
+- Integration coverage (Rule 0): TestUploadApplySocketRoundTrip — the real server (dispatch/deadlines/error shaping) + the real PR-1 client + real staged object + real destination, the full hop in-process, success and closed-enum legs.

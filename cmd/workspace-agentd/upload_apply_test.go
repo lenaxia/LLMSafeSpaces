@@ -8,6 +8,7 @@ package main
 // atomicity, the additive ack fields, and the destination scrub.
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
@@ -84,7 +85,7 @@ func TestUploadApply_HappyPath(t *testing.T) {
 	digest := applyTestDigest(t, content)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, content)
 
-	res, aerr := e.Apply(applyParams(map[string]any{"sha256": digest, "size": float64(len(content))}))
+	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": digest, "size": float64(len(content))}))
 	if aerr != nil {
 		t.Fatalf("apply: %+v", aerr)
 	}
@@ -124,7 +125,7 @@ func TestUploadApply_ParamValidation(t *testing.T) {
 		{"slash target", applyParams(map[string]any{"target_name": "a/b.txt"}), "target_rejected"},
 	}
 	for _, tc := range cases {
-		_, aerr := e.Apply(tc.params)
+		_, aerr := e.Apply(context.Background(), tc.params)
 		if aerr == nil || aerr.code != tc.code {
 			t.Fatalf("%s: expected %q, got %+v", tc.name, tc.code, aerr)
 		}
@@ -133,7 +134,7 @@ func TestUploadApply_ParamValidation(t *testing.T) {
 
 func TestUploadApply_StagedMissing(t *testing.T) {
 	e, _, _, _ := applyEngineFixture(t, 1<<40)
-	_, aerr := e.Apply(applyParams(nil))
+	_, aerr := e.Apply(context.Background(), applyParams(nil))
 	if aerr == nil || aerr.code != "staged_missing" {
 		t.Fatalf("got %+v", aerr)
 	}
@@ -142,7 +143,7 @@ func TestUploadApply_StagedMissing(t *testing.T) {
 func TestUploadApply_ChecksumMismatchLeavesNothingVisible(t *testing.T) {
 	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
-	_, aerr := e.Apply(applyParams(map[string]any{"sha256": applyTestDigest(t, "tampered")}))
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "tampered")}))
 	if aerr == nil || aerr.code != "checksum_mismatch" {
 		t.Fatalf("got %+v", aerr)
 	}
@@ -156,7 +157,7 @@ func TestUploadApply_ChecksumMismatchLeavesNothingVisible(t *testing.T) {
 func TestUploadApply_SizeMismatch(t *testing.T) {
 	e, _, _, _ := applyEngineFixture(t, 1<<40)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
-	_, aerr := e.Apply(applyParams(map[string]any{"sha256": applyTestDigest(t, "hello"), "size": float64(4)}))
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello"), "size": float64(4)}))
 	if aerr == nil || aerr.code != "size_mismatch" {
 		t.Fatalf("got %+v", aerr)
 	}
@@ -167,7 +168,7 @@ func TestUploadApply_DestDiskFullWriteTime(t *testing.T) {
 	// time → dest_disk_full, staged object untouched.
 	e, staging, _, _ := applyEngineFixture(t, 10<<20) // 10 MiB avail, 64 MiB margin
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
-	_, aerr := e.Apply(applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
 	if aerr == nil || aerr.code != "dest_disk_full" {
 		t.Fatalf("got %+v", aerr)
 	}
@@ -188,7 +189,7 @@ func TestUploadApply_MarginConsumedFlag(t *testing.T) {
 		cell.v = 1 << 20 // another writer fills the volume post-gate
 		return os.Rename(oldpath, newpath)
 	}
-	res, aerr := e.Apply(applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
 	if aerr != nil {
 		t.Fatalf("apply (the write succeeded — correctness first): %+v", aerr)
 	}
@@ -203,7 +204,7 @@ func TestUploadApply_UnknownParamKeysIgnored(t *testing.T) {
 	e, _, _, _ := applyEngineFixture(t, 1<<40)
 	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
 	params := applyParams(map[string]any{"sha256": applyTestDigest(t, "hello"), "future_field": "whatever"})
-	res, aerr := e.Apply(params)
+	res, aerr := e.Apply(context.Background(), params)
 	if aerr != nil || res["applied"] != true {
 		t.Fatalf("unknown keys must not reject: %+v", aerr)
 	}
@@ -214,10 +215,11 @@ func TestDestinationScrub_BootAndTTL(t *testing.T) {
 	if err := os.MkdirAll(uploads, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	crashed := filepath.Join(uploads, "old-id-notes.txt.tmp")
+	crashed := filepath.Join(uploads, "staging-old-id-notes.txt.tmp")
 	freshFinal := filepath.Join(uploads, "new-id-notes.txt")
-	freshTmp := filepath.Join(uploads, "newer-id-notes.txt.tmp")
-	for _, p := range []string{crashed, freshFinal, freshTmp} {
+	userTmpNamedFinal := filepath.Join(uploads, "11111111-2222-4333-8444-555555555555-backup.tmp")
+	freshTmp := filepath.Join(uploads, "staging-newer-id-notes.txt.tmp")
+	for _, p := range []string{crashed, freshFinal, userTmpNamedFinal, freshTmp} {
 		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -236,10 +238,111 @@ func TestDestinationScrub_BootAndTTL(t *testing.T) {
 	if _, err := os.Stat(freshFinal); err != nil {
 		t.Fatalf("final objects are never scrubbed: %v", err)
 	}
+	if _, err := os.Stat(userTmpNamedFinal); err != nil {
+		t.Fatalf("a user upload literally named *.tmp is a FINAL (uuid-prefixed) — never scrubbed: %v", err)
+	}
 	if n := e.scrubDestination(0); n != 1 {
-		t.Fatalf("boot scrub removes the fresh .tmp too, got %d", n)
+		t.Fatalf("boot scrub removes only the staging- class temp, got %d", n)
 	}
 	if _, err := os.Stat(crashed); err == nil {
 		t.Fatal("boot scrub must have removed everything .tmp")
+	}
+}
+
+// TestUploadApply_FreshWorkspaceGateOrdering is the r1 critical pin:
+// the uploads dir does NOT exist yet (nothing creates it in a sidecar
+// pod) — the mkdir must precede the gate, and the gate must stat the
+// filesystem (the dir's parent), or every fresh workspace fails
+// dest_disk_full forever (the reviewer's reproduction).
+func TestUploadApply_FreshWorkspaceGateOrdering(t *testing.T) {
+	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
+	// uploads dir deliberately NOT pre-created.
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
+	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr != nil {
+		t.Fatalf("fresh-workspace apply must succeed (mkdir-before-gate), got %+v", aerr)
+	}
+	if path, _ := res["path"].(string); path == "" {
+		t.Fatalf("result: %+v", res)
+	}
+	if _, err := os.Stat(uploads); err != nil {
+		t.Fatalf("the uploads dir must exist post-apply: %v", err)
+	}
+}
+
+// TestUploadApply_BusyRejection: a held apply lock rejects with the
+// §3.2 busy enum (bounded queueing — the 429 semantics agentd maps).
+func TestUploadApply_BusyRejection(t *testing.T) {
+	e, _, _, _ := applyEngineFixture(t, 1<<40)
+	e.applyMu.Lock()
+	defer e.applyMu.Unlock()
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
+	_, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr == nil || aerr.code != "busy" {
+		t.Fatalf("expected busy, got %+v", aerr)
+	}
+}
+
+// TestUploadApply_CtxCancellationBoundsTheHold (§6.3): a canceled ctx
+// aborts the copy mid-stream, leaving nothing visible and releasing
+// the lock for the next apply.
+func TestUploadApply_CtxCancellationBoundsTheHold(t *testing.T) {
+	e, _, uploads, _ := applyEngineFixture(t, 1<<40)
+	_ = stageTestObject(t, e.stagingRoot, testUploadID, "hello")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already dead — the loop's first window must abort
+	_, aerr := e.Apply(ctx, applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr == nil {
+		t.Fatal("a canceled ctx must abort the apply")
+	}
+	entries, _ := os.ReadDir(uploads)
+	if len(entries) != 0 {
+		t.Fatalf("canceled apply left %d artifacts", len(entries))
+	}
+	// The lock is free: a live apply succeeds.
+	res, aerr := e.Apply(context.Background(), applyParams(map[string]any{"sha256": applyTestDigest(t, "hello")}))
+	if aerr != nil || res["applied"] != true {
+		t.Fatalf("post-cancel apply must succeed, got %+v", aerr)
+	}
+}
+
+// TestUploadApplySocketRoundTrip is the integration pin (Rule 0): the
+// REAL control-socket server (dispatch, deadline handling, error
+// shaping) + the REAL PR-1 client + a real staged object + a real
+// destination dir — the full hop in-process.
+func TestUploadApplySocketRoundTrip(t *testing.T) {
+	e, staging, uploads, _ := applyEngineFixture(t, 1<<40)
+	_ = stageTestObject(t, staging, testUploadID, "hello")
+
+	srv, err := newControlSocketServer("127.0.0.1:0", &managedProcAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.uploadApply = e
+	go srv.serve()
+	defer func() { _ = srv.close() }()
+
+	c := newControlClient(srv.ln.Addr().String())
+	res, aerr := c.UploadApply(context.Background(), uploadApplyRequest{
+		UploadID: testUploadID, StagedName: testUploadID,
+		Size: 5, SHA256: applyTestDigest(t, "hello"), TargetName: "notes.txt",
+	})
+	if aerr != nil {
+		t.Fatalf("round trip: %+v", aerr)
+	}
+	if !res.Applied || res.Path == "" {
+		t.Fatalf("ack: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(uploads, testUploadID+"-notes.txt")); err != nil {
+		t.Fatalf("destination object must exist: %v", err)
+	}
+
+	// The closed-enum error leg rides the wire too.
+	_, aerr = c.UploadApply(context.Background(), uploadApplyRequest{
+		UploadID: "99999999-9999-4999-8999-999999999999", StagedName: "99999999-9999-4999-8999-999999999999",
+		Size: 5, SHA256: applyTestDigest(t, "hello"), TargetName: "notes.txt",
+	})
+	if aerr == nil || aerr.Code != "staged_missing" {
+		t.Fatalf("error leg: %+v", aerr)
 	}
 }

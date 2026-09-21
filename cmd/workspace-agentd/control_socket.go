@@ -153,6 +153,12 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
+	// The connection's lifetime bounds every method's ctx (§6.3: apply
+	// holds must be cancellable); per-method deadline extensions arm
+	// their own (upload_apply re-arms for its long-held copy).
+	connCtx, connCancel := context.WithCancel(context.Background())
+	defer connCancel()
+
 	var req controlRequest
 	dec := json.NewDecoder(conn)
 	if err := dec.Decode(&req); err != nil {
@@ -196,7 +202,7 @@ func (s *controlSocketServer) handleConn(conn net.Conn) {
 	case "metrics":
 		writeJSON(conn, s.metrics(req.ID))
 	case "upload_apply":
-		writeJSON(conn, s.uploadApplyControlMethod(req))
+		writeJSON(conn, s.uploadApplyControlMethod(connCtx, conn, req))
 	default:
 		writeJSON(conn, s.errResp(req.ID, "method_unknown",
 			fmt.Sprintf("method %q is not part of control protocol v1", req.Method)))
