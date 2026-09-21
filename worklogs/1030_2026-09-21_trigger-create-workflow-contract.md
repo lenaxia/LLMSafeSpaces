@@ -54,4 +54,4 @@ None.
 - `api/internal/handlers/pod_automation_test.go` — unified-store seed in two fixtures.
 - `local/issue-1410-1412-automation-e2e.sh` — REAL_WF + R4 reshape + header/R5_WS hoist.
 - `local/issue_1410_automation_e2e_script_test.go` — row pins updated; harness-start pin hardened.
-- `worklogs/NNNN_2026-09-21_trigger-create-workflow-contract.md` — this worklog.
+- `worklogs/1030_2026-09-21_trigger-create-workflow-contract.md` — this worklog.
