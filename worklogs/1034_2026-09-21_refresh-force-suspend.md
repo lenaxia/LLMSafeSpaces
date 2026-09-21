@@ -86,7 +86,7 @@ None.
 > - `api/internal/server/router.go` (refresh contract comment), `router_workspace_test.go` (route pin)
 > - `sdks/openapi.yaml` (refresh description)
 > - `local/issue-1505-refresh-busy-e2e.sh` + `local/issue_1505_script_test.go` (new)
-> - `worklogs/NNNN_2026-09-21_refresh-force-suspend.md` (this file — sentinel until the bot numbers it)
+> - `worklogs/1034_2026-09-21_refresh-force-suspend.md` (this file — sentinel until the bot numbers it)
 
 ## r2 rework (post-#1510, post-r1) — the suspend-force layer is GONE
 
