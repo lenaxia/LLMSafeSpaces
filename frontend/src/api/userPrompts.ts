@@ -6,7 +6,7 @@ import { api } from "./client";
 // #1499: the user-prompt library adapter (named distinctly from
 // prompts.ts — the platform/org prompt-POLICY surface, a different
 // concept that owns the bare "prompts" noun here). The composer
-// @-recall lane (#1496) consumes the same list contract via its own
+// #-recall lane (#1496) consumes the same list contract via its own
 // adapter.
 export interface UserPrompt {
   id: string;

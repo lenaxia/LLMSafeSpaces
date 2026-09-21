@@ -4,7 +4,7 @@
 import { api } from "./client";
 
 /**
- * User prompt library — the @-recall surface (#1496 part 2). The list
+ * User prompt library — the #-recall surface (#1496 part 2). The list
  * endpoint is the sibling lane's contract (manager + CRUD backend);
  * this adapter codes to the contract published on issue #1499:
  *   GET /me/prompts → 200 {"prompts":[{id,name,content,createdAt,updatedAt}]}

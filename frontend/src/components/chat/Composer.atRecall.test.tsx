@@ -134,7 +134,10 @@ describe("Composer #-prompt recall (#1496 part 2; symbol moved @→# pre-release
     // Completing the same dismissed token stays dismissed.
     await userEvent.type(screen.getByRole("textbox"), "loy");
     expect(screen.queryByTestId("prompt-recall-popup")).toBeNull();
-    // A DIFFERENT token re-arms recall.
+    // A DIFFERENT ANCHOR re-arms recall: dismissal keys on the # anchor
+    // INDEX, so the re-arm fixture must anchor elsewhere ("x #dep"
+    // anchors at 2; "yz #rev" anchors at 3 — a same-anchor "y #rev"
+    // would stay dismissed and this row would fail).
     await userEvent.clear(box);
     await userEvent.type(box, "yz #rev");
     await waitFor(() => expect(screen.getByTestId("prompt-recall-popup")).toBeTruthy());

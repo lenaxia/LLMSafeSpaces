@@ -46,7 +46,10 @@ describe("findPromptToken", () => {
   });
 
   it("does NOT open on a bare # after a newline (heading on a later line)", () => {
-    expect(findPromptToken("para\\n\\n#", 7)).toBeNull();
+    // REAL newlines (a literal \\n pair is a vacuous pin — r1's
+    // mutation proof); caret right after the # — the newline branch of
+    // the line-start rule. Deleting the rule flips this to a token.
+    expect(findPromptToken("para\n\n#", 7)).toBeNull();
   });
 
   it("a bare # mid-sentence still opens (not a heading shape)", () => {

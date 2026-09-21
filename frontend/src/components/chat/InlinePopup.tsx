@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils";
 
 /**
  * InlinePopup — the shared palette machinery for the composer's slash
- * commands and @-prompt recall (#1496). One component family: a
+ * commands and #-prompt recall (#1496). One component family: a
  * keyboard-driven listbox rendered above the textarea. Keys arrive on
  * the focused textarea and are routed here by the composer's key
  * handler; this component renders, tracks the active item, scrolls it

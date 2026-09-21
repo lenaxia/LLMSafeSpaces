@@ -186,7 +186,7 @@ export function Composer({
 
   const anyUploading = attachments.some((a) => a.status === "uploading");
 
-  // --- Slash commands + @-prompt recall (#1496) -------------------------
+  // --- Slash commands + #-prompt recall (#1496) -------------------------
   const queryClient = useQueryClient();
   const { prompts } = usePromptLibrary();
   const [caret, setCaret] = useState(0);

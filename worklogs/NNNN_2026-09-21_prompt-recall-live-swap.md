@@ -21,7 +21,7 @@
   - **Markdown headings (my call, rationale in-code):** bare `#` at line start never opens (a heading's first keystroke); `#word` at line start does (explicit intent); bare mid-sentence `#` still opens.
   - **Code-ish:** `C#`/`a#b` suppressed by the word-boundary rule (pinned); `#include`-shape opens — same class as the old `@`-mid-text, Esc exists.
   - **Recursion guard retargeted:** content ending in a `#token` leaves a live token at the new caret; suppression keyed-on-text pinned in vitest + the jsdom fast-loop row + Playwright.
-  - Escape dismissal keys on the ANCHOR INDEX — the re-arm fixture uses a different anchor ("x #dep" and "y #rev" share anchor 2; row documents it).
+  - Escape dismissal keys on the ANCHOR INDEX — the re-arm fixture is "yz #rev" (anchor 3) against "x #dep" (anchor 2): a same-anchor "y #rev" would stay dismissed and the row would fail (r1 caught my PR body claiming the fixture was "y #rev" — the exact regression the description would have invited; corrected in-row and here).
   - PromptsTab copy: "recall them in the composer with #".
 
 ---
@@ -35,9 +35,15 @@
 
 None.
 
+### Review round 1 (CHANGES_REQUESTED → addressed)
+
+- **The vacuous newline pin:** my "para\n\n#" row used a LITERAL backslash-n pair — the caret sat before the #, the scan never saw it, and the assertion held for the wrong reason; the reviewer's mutation proof (rule deleted → only the text-start row failed) was correct. Fixed with REAL newline inputs in both the bare-# row and the line-start-#dep row, then **mutation-verified my own fix** (rule deleted → 2 rows fail; restored → green).
+- The PR-body/worklog fixture misdescription corrected (above), the in-row comment added.
+- Stale `@` references swept from comments and copy.
+
 ## Tests Run
 
-- vitest: 27 files / 435 tests green (re-seamed suites, promptToken 15-row collision matrix, promptLibrary pin 3, PromptsTab 7)
+- vitest: 27 files / 435 tests green (re-seamed suites, promptToken 15-row collision matrix incl. the fixed newline pins, promptLibrary pin 3, PromptsTab 7)
 - `npx tsc --noEmit` clean
 - `npx playwright test tests/e2e/composer-slash-at.spec.ts` — 8/8 (live dev server)
 

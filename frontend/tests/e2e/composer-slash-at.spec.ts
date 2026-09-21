@@ -1,10 +1,10 @@
 /**
- * E2E for the composer's slash commands and @-prompt recall (#1496).
+ * E2E for the composer's slash commands and #-prompt recall (#1496).
  *
  * Proves in a real browser: the slash palette opens/filters/executes
  * against the mocked API surface (compact action + rename title PUT are
  * asserted at the network boundary), unknown slashes stay literal, and
- * the @-recall popup filters/keyboard-navigates/expands against the
+ * the #-recall popup filters/keyboard-navigates/expands against the
  * prompt-library contract endpoint (#1499's named envelope, mocked —
  * the sibling lane owns the backend).
  */
@@ -84,7 +84,7 @@ async function openChat(page: Page) {
   return box;
 }
 
-test.describe("composer slash commands + @-prompt recall (#1496)", () => {
+test.describe("composer slash commands + #-prompt recall (#1496)", () => {
   test("slash palette opens, filters, and /compact routes the typed action", async ({ page }) => {
     const { compactCalls } = await setupAPIMocks(page);
     const box = await openChat(page);
