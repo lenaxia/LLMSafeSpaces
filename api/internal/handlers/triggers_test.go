@@ -220,6 +220,9 @@ func doTriggerRequest(t *testing.T, r *gin.Engine, method, path string, body any
 
 func TestTriggerCreate_Cron(t *testing.T) {
 	store := newMockTriggerStore()
+	// The create path resolves workflowId at the handler (the 35597973572
+	// contract ruling) — the happy-path target must exist.
+	store.workflows["wf_123"] = &wf.WorkflowRow{ID: "wf_123", OwnerType: "user", OwnerID: "test-user"}
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	encrypt := &mockEncryptor{}
 	r := setupTriggerRouter(t, store, quota, encrypt)
@@ -241,6 +244,7 @@ func TestTriggerCreate_Cron(t *testing.T) {
 
 func TestTriggerCreate_Webhook(t *testing.T) {
 	store := newMockTriggerStore()
+	store.workflows["wf_123"] = &wf.WorkflowRow{ID: "wf_123", OwnerType: "user", OwnerID: "test-user"}
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	encrypt := &mockEncryptor{}
 	r := setupTriggerRouter(t, store, quota, encrypt)
@@ -434,6 +438,51 @@ func TestTriggerList(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	triggers := resp["triggers"].([]any)
 	assert.Len(t, triggers, 2)
+}
+
+// TestTriggerCreate_NonexistentWorkflow_Named400 pins run 35597973572's
+// arbitration finding + the adjudicated contract ruling: a user-supplied
+// nonexistent workflowId must answer a NAMED 400 at the handler — it
+// previously fell through to the store insert and surfaced as an opaque
+// 500 (FK shape, 4.5ms). The wording mirrors the in-family update-path
+// precedent ("target workflow not found"); the FK remains the integrity
+// anchor (ON DELETE SET NULL — the #1440 valid-then-deleted loud path).
+func TestTriggerCreate_NonexistentWorkflow_Named400(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name":         "ghost-target",
+		"sourceType":   "cron",
+		"sourceConfig": map[string]any{"expr": "0 3 1 * *", "tz": "UTC"},
+		"workflowId":   "deadbeef-0000-4000-8000-000000000000",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "target workflow not found")
+	// Nothing may be stored on the rejected path.
+	assert.Empty(t, store.triggers)
+}
+
+// TestTriggerCreate_CronValidationErrorOutranksWorkflowCheck pins the
+// validation ORDER: the cron expr is validated before the workflow
+// existence check, so an invalid expr answers the cron error even with
+// a ghost workflowId (R1a's contract).
+func TestTriggerCreate_CronValidationErrorOutranksWorkflowCheck(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name":         "bad-cron-ghost-wf",
+		"sourceType":   "cron",
+		"sourceConfig": map[string]any{"expr": "not-a-cron", "tz": "UTC"},
+		"workflowId":   "deadbeef-0000-4000-8000-000000000000",
+	})
+	require.Equal(t, 400, w.Code)
+	assert.Contains(t, w.Body.String(), "invalid cron expr")
 }
 
 func TestTriggerCreate_StoreError(t *testing.T) {
@@ -890,7 +939,9 @@ func TestTriggerInputMapping_V2_BodyRequiresWebhook(t *testing.T) {
 
 // V3: an opted-in wiring must be able to reach its schema — a missing
 // target workflow cannot be validated at all (distinct from the fire-time
-// ghost, which stays loud for un-opted wiring).
+// ghost, still loud for wiring that persisted past this guard —
+// update-path rows and legacy triggers; un-opted ghost CREATES answer
+// the create contract's 400 instead).
 func TestTriggerInputMapping_V3_MissingWorkflowCannotValidate(t *testing.T) {
 	store := newMockTriggerStore()
 	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
@@ -983,7 +1034,10 @@ func TestTriggerInputMapping_InvalidInputFrom(t *testing.T) {
 // V6: new un-opted wiring against a schema requiring non-envelope
 // properties is the #1425 mis-wiring — 400 naming the violation and the
 // three remedies. Wiring whose schema only requires envelope keys passes;
-// a ghost workflow skips the guard (the #1412 R4 fixture stays creatable).
+// a nonexistent workflowId is rejected at the create contract (the
+// 35597973572 ruling — the old "ghost stays creatable" arm only ever held
+// in this mock: the real DB's workflow_id FK answered those creates with
+// an opaque 500, so the R4 fixture was never creatable in production).
 func TestTriggerInputMapping_V6_WiringGuard(t *testing.T) {
 	store := newMockTriggerStore()
 	seedWorkflowWithSchema(t, store, "wf-topic", schemaRequiringTopic)
@@ -1026,12 +1080,15 @@ func TestTriggerInputMapping_V6_WiringGuard(t *testing.T) {
 	})
 	require.Equal(t, 201, w.Code, w.Body.String())
 
-	// Ghost: missing workflow + un-opted → guard skipped, still creatable.
+	// Ghost: missing workflow → the create contract rejects with the
+	// named 400 (the 35597973572 ruling; previously creatable only in
+	// this FK-less mock).
 	w = doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "ghost-ok", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 2 * * *"}, "workflowId": "wf-gone",
 	})
-	require.Equal(t, 201, w.Code, w.Body.String())
+	require.Equal(t, 400, w.Code, w.Body.String())
+	assert.Contains(t, w.Body.String(), "target workflow not found")
 
 	// Opt-in suppresses the guard: static input satisfies the schema via
 	// the overlay, so the wiring is creatable.
@@ -1114,6 +1171,7 @@ func TestTriggerInputMapping_V7_UpdateScope(t *testing.T) {
 // trigger trips V2 against the stored (immutable) source type.
 func TestTriggerInputMapping_V7_BodyOnCronUpdateRejected(t *testing.T) {
 	store := newMockTriggerStore()
+	store.workflows["wf-any"] = &wf.WorkflowRow{ID: "wf-any", OwnerType: "user", OwnerID: "test-user"}
 	r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
@@ -1239,6 +1297,7 @@ func TestTriggerFires_CapturedSuccessVisible(t *testing.T) {
 func TestTriggerUpdate_TargetPresenceGuard(t *testing.T) {
 	newRouterWithDAGTrigger := func(t *testing.T) (*gin.Engine, *mockTriggerStore, string) {
 		store := newMockTriggerStore()
+		store.workflows["wf-1"] = &wf.WorkflowRow{ID: "wf-1", OwnerType: "user", OwnerID: "test-user"}
 		r := setupTriggerRouter(t, store, &mockQuotaChecker{values: map[string]int{}}, &mockEncryptor{})
 		w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 			"name": "dag", "sourceType": "cron",

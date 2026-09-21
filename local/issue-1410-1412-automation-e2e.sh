@@ -2,8 +2,12 @@
 # Issues #1410/#1411/#1412/#1413/#1425/#1419 — automation trigger +
 # workflow-run e2e rows for the defects the 2026-09-17 live session proved
 # broken. Rows are API-only (no LLM turns, no workspace pods): the
-# cron/trigger surfaces under test resolve server-side. R1-R4 point at a
-# deliberately nonexistent workflow; R5/R6 use a REAL schema-authored
+# cron/trigger surfaces under test resolve server-side. Creates ride a
+# REAL workflow (the 35597973572 contract: nonexistent-workflowId creates
+# answer a named 400 at the handler — the old ghost-creates were only ever
+# creatable in FK-less mocks); R4's missing-workflow coverage fires via
+# create-valid → delete-workflow (the #1440-loud FK-SET-NULL path, same
+# mechanism as R4d). R5/R6 use REAL schema-authored
 # workflow whose targetWorkspaceId is the dummy workspace, so runs queue
 # but no pod ever executes a DAG node.
 #
@@ -16,10 +20,11 @@
 #        code kept firing at the OLD slot).
 #   R3 — no-op enable keeps the slot (#1410 review guard): enabled:true on
 #        an already-enabled trigger never reschedules an imminent fire.
-#   R4 — missing-workflow fires are loud (#1412): a workflow-targeted
-#        trigger whose DAG does not exist records a FAILED fire with a
-#        workflow-not-found payload and drives consecutiveFailures — the
-#        old code ticked silently forever.
+#   R4 — missing-workflow fires are loud (#1412): a trigger whose target
+#        workflow is deleted mid-life records a FAILED fire with the
+#        trigger_has_no_target payload (the FK SET NULLs — the only
+#        representable missing-workflow class at fire time) and drives
+#        consecutiveFailures — the old code ticked silently forever.
 #   R5 — run input obeys inputSchema (#1413): a workflow with a required
 #        field rejects non-conforming run input with 400 BEFORE queueing;
 #        conforming input progresses past schema validation.
@@ -42,7 +47,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/us70-common.sh
 source "${SCRIPT_DIR}/lib/us70-common.sh"
 
-GHOST_WF="deadbeef-0000-4000-8000-000000000000"
+# The dummy workspace UUID the rows' workflows target (R5's
+# targetWorkspaceId; hoisted — the shared R1-R4 workflow uses it too).
+R5_WS="00000000-0000-4000-8000-000000000001"
 R4_WAIT_S="${R4_WAIT_S:-150}"
 failures=0
 note_fail() { failures=$((failures + 1)); warn "FAIL: $*"; }
@@ -95,7 +102,7 @@ api() { # method path [body] -> body on stdout; api_status + api_body globals
 
 create_trigger() { # name expr -> trigger id (echoed), 201 enforced
     local name="$1" expr="$2" body resp
-    body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${GHOST_WF}" \
+    body=$(jq -nc --arg n "${name}" --arg e "${expr}" --arg w "${REAL_WF_ID}" \
         '{name:$n,sourceType:"cron",sourceConfig:{expr:$e,tz:"UTC"},workflowId:$w}')
     api POST /api/v1/me/triggers "${body}" >/dev/null
     resp="${api_body}"
@@ -115,11 +122,33 @@ slot_hm() { # rfc3339 -> "HH:MM" (UTC)
 
 # --- R1: create-path validation + first-occurrence slot (#1411) ----------
 
+# The shared real workflow every create below targets (R4d's specYaml
+# shape; the 35597973572 ruling made ghost-workflow creates a named 400).
+REAL_WF=$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-real-target",
+    specYaml:"{\"nodes\":[{\"id\":\"n\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input): return {}\"}}],\"edges\":[]}",
+    targetWorkspaceId:$ws}')
+api POST /api/v1/me/workflows "${REAL_WF}"
+REAL_WF_RESP="${api_body}"
+[[ "${api_status}" == "201" ]] || die "R1 setup: shared workflow create failed: ${api_status} ${REAL_WF_RESP}"
+REAL_WF_ID=$(printf '%s' "${REAL_WF_RESP}" | jq -r '.id')
+created_workflows+=("${REAL_WF_ID}")
+
 api POST /api/v1/me/triggers \
-    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${GHOST_WF}"'"}'
+    '{"name":"e2e-bad-cron","sourceType":"cron","sourceConfig":{"expr":"not-a-cron","tz":"UTC"},"workflowId":"'"${REAL_WF_ID}"'"}'
 r1_resp="${api_body}"
 if [[ "${api_status}" == "400" ]]; then ok "R1a: invalid cron expr rejected (400)"; else
     note_fail "R1a: invalid cron expr returned ${api_status}, expected 400 (${r1_resp})"
+fi
+
+# R1c — the create contract (35597973572 ruling): a nonexistent
+# workflowId answers the named 400, never the pre-fix opaque 500.
+api POST /api/v1/me/triggers \
+    '{"name":"e2e-ghost-wf-contract","sourceType":"cron","sourceConfig":{"expr":"0 3 1 * *","tz":"UTC"},"workflowId":"deadbeef-0000-4000-8000-000000000000"}'
+r1c_resp="${api_body}"
+if [[ "${api_status}" == "400" && "${r1c_resp}" == *"target workflow not found"* ]]; then
+    ok "R1c: nonexistent workflowId rejected with the named 400 (create contract)"
+else
+    note_fail "R1c: ghost-workflow create returned ${api_status} (${r1c_resp}), expected 400 target workflow not found"
 fi
 
 R1_ID=$(create_trigger "e2e-first-slot" "0 3 1 * *")
@@ -155,8 +184,13 @@ else
 fi
 
 # --- R4: missing workflow → failed fire, failure counter (#1412) ----------
+# Reshaped per the 35597973572 ruling: ghost-workflow CREATES are a named
+# 400 now, so missing-workflow FIRE coverage rides the #1440 path —
+# create against the real workflow, DELETE it (FK SET NULL → targetless),
+# and the imminent slot must fire LOUD.
 
-R4_ID=$(create_trigger "e2e-ghost-workflow" "* * * * *")
+R4_ID=$(create_trigger "e2e-deleted-workflow" "* * * * *")
+api DELETE "/api/v1/me/workflows/${REAL_WF_ID}" >/dev/null   # FK SET NULL
 r4_failed=0
 for _ in $(seq 1 75); do
     sleep 2
@@ -165,14 +199,14 @@ for _ in $(seq 1 75); do
     fi
 done
 if [[ "${r4_failed}" -ne 1 ]]; then
-    note_fail "R4a: no failed fire within ${R4_WAIT_S}s for the ghost-workflow trigger"
+    note_fail "R4a: no failed fire within ${R4_WAIT_S}s for the deleted-workflow trigger"
 else
     ok "R4a: failed fire recorded for missing workflow"
 fi
 r4_result=$(api GET "/api/v1/me/triggers/${R4_ID}/fires" \
     | jq -r '.fires[] | select(.status=="failed") | .actionResult // empty' | head -1)
-if [[ "${r4_result}" == *"workflow not found"* ]]; then
-    ok "R4b: failed fire carries workflow-not-found payload"
+if [[ "${r4_result}" == *"trigger_has_no_target"* ]]; then
+    ok "R4b: failed fire carries the targetless payload (deleted workflow, FK SET NULL)"
 else
     note_fail "R4b: failed fire payload wrong: '${r4_result}'"
 fi
@@ -226,8 +260,7 @@ fi
 # targetWorkspaceId, R8's routine workspaceId). It was previously
 # referenced by R8 without ever being defined — set -u aborted the
 # script there on every nightly run.
-R5_WS="00000000-0000-4000-8000-000000000001"
-R5_BODY=$(jq -nc '{name:"e2e-schema-run",targetWorkspaceId:"00000000-0000-4000-8000-000000000001",
+R5_BODY=$(jq -nc --arg ws "${R5_WS}" '{name:"e2e-schema-run",targetWorkspaceId:$ws,
     inputSchema:{type:"object",required:["topic"],properties:{topic:{type:"string"}}},
     specYaml:"{\"nodes\":[{\"id\":\"n1\",\"type\":\"script\",\"data\":{\"language\":\"python\",\"handler\":\"def handler(input):\\n    return {}\"}}],\"edges\":[]}"}')
 api POST /api/v1/me/workflows "${R5_BODY}"
