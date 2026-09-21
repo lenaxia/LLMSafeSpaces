@@ -158,3 +158,10 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - CORRECTION OF THE ROUND-12 RECORD: the "review-history chain completed in the same edit" claim was FALSE — only the label landed; the chain link never did. Fourth body-staleness recurrence and a false worklog claim; both now actually landed (chain link: the "by-definition orphaned" boot-scrub absolute → scoped to full-pod death with the restart window; verified by grep in the body file before this record was written).
 - §4.1's junk absolute scoped: "never mid-stream ENOSPC FROM THAT JUNK — junk landing AFTER admission is the §3.5 abort case" (the caveat had lived only in this worklog's r1 record; now in the doc).
 - Body's forwarding sentence decompressed to match §4.6 exactly (only apply-ack 507s carry §3.2 codes; the 504 reason is upstream_apply_timeout).
+
+
+## Review round 14 — fifth body-staleness recurrence closed (label + line-9 highlight), §4.1 bullet aligned
+
+- The r13 body edit added the chain/history lines but left the §4 highlight's unscoped absolute and the (r12) label — stale within the very edit announcing the scoping. Both fixed (highlight now carries the scoped phrasing verbatim; label r13).
+- The §4.1 "Available, not total" bullet's last sentence tightened to the same scoped truth (pre-admission junk → 507s; post-admission → §3.5 abort).
+- Lesson generalized: EVERY body sentence overlapping a scoped doc claim must be re-visited in the same edit that scopes the doc — the body is a summary OF the doc, not a parallel text.

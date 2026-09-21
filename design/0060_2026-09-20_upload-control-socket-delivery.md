@@ -164,7 +164,7 @@ admit(newBytes) ⟺ (A) reservedUploads() + newBytes ≤ UPLOAD_STAGING_BUDGET
 ```
 
 - `credentialUsage()` is recomputed at each admission (the credential surfaces are few and small); **credentials are never evicted and never blocked by uploads** — the floor plus the recomputed live usage guarantee headroom for credential staging at all times.
-- **Available, not total** (clause B): admission against `f_bavail` makes every existing consumer of the tmpfs — including adversary-planted junk — count against uploads FIRST. The failure direction is the safe one: a poisoned tmpfs yields clean 507 rejections before the first byte is staged.
+- **Available, not total** (clause B): admission against `f_bavail` makes every existing consumer of the tmpfs — including adversary-planted junk — count against uploads FIRST. The failure direction is the safe one for junk present at admission: a poisoned tmpfs yields clean 507 rejections before the first byte is staged (junk arriving after admission is the §3.5 clean-abort case, §4.1 comment above).
 - Staged uploads themselves are written 0640/gid-1000 and counted the moment they are admitted; a rejected upload is rejected **before its first byte is staged** (507, §4.6) — an upload can never half-fill the tmpfs it was refused by.
 
 ### 4.1.1 The D14 adversary and the staging directory (honest boundary statement)
