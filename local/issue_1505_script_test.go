@@ -67,7 +67,8 @@ func TestIssue1505Script_OutcomeAssertions(t *testing.T) {
 	src := mustRead1505(t)
 	for _, marker := range []string{
 		`wait_phase "${WS}" Active`,
-		`podName unchanged`,
+		`restartCount ${OLD_RC} → ${NEW_RC}`,
+		`restartCount did not bump`,
 		`PVC ${PVC} retained`,
 		`deferring pod deletion behind busy sessions.*"reason": "restart_generation"`,
 		`bypassing session drain.*restart_generation_user_forced`,

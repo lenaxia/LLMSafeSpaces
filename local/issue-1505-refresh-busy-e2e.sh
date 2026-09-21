@@ -101,9 +101,11 @@ log "setup — seed workspace, wait Active"
 seed_workspace "${WS}"
 wait_phase "${WS}" Active 240 || die "setup: workspace never Active"
 OLD_POD=$(kc get workspace "${WS}" -o jsonpath='{.status.podName}')
+OLD_RC=$(kc get workspace "${WS}" -o jsonpath='{.status.restartCount}' 2>/dev/null || echo 0)
+[[ "${OLD_RC}" =~ ^[0-9]+$ ]] || OLD_RC=0 # absent field reads as empty-with-exit-0
 PVC="workspace-${WS}"
 [[ -n "${OLD_POD}" ]] || die "setup: no podName on the CR"
-ok "workspace Active, pod ${OLD_POD}"
+ok "workspace Active, pod ${OLD_POD} (restartCount ${OLD_RC})"
 
 # -----------------------------------------------------------------------------
 log "R1 — busy-refresh: in-flight turn + Refresh Compute → recycled within ${R1_BUDGET_S}s"
@@ -138,13 +140,17 @@ else
         note_fail "R1: not Active within ${R1_BUDGET_S}s — the drain gate is back or the wiring diverged"
     fi
 
-    # The replacement must be a NEW pod (the old one was force-deleted,
-    # not in-place restarted).
-    NEW_POD=$(kc get workspace "${WS}" -o jsonpath='{.status.podName}')
-    if [[ -n "${NEW_POD}" && "${NEW_POD}" != "${OLD_POD}" ]]; then
-        ok "pod replaced: ${OLD_POD} → ${NEW_POD}"
+    # The recycle must be PROVEN. podName() is deterministic per
+    # workspace UID (constants.go: workspaceName + uid[:8]) — the
+    # replacement pod carries the SAME NAME, so a name comparison can
+    # never distinguish recycle from no-op. restartCount is the
+    # identity that actually changes (bumped on every pod
+    # replacement): assert the bump.
+    NEW_RC=$(kc get workspace "${WS}" -o jsonpath='{.status.restartCount}' 2>/dev/null || echo -1)
+    if [[ "${NEW_RC}" =~ ^[0-9]+$ ]] && (( NEW_RC > OLD_RC )); then
+        ok "pod recycled: restartCount ${OLD_RC} → ${NEW_RC}"
     else
-        note_fail "R1: podName unchanged (${OLD_POD} → ${NEW_POD:-<empty>}) — the recycle never happened"
+        note_fail "R1: restartCount did not bump (${OLD_RC} → ${NEW_RC}) — the recycle never happened"
     fi
 
     # PVC retained — refresh deletes compute, never data.
