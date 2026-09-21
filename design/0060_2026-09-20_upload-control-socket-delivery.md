@@ -52,9 +52,10 @@ client ── multipart (streamed) ──▶ API POST /workspaces/:id/uploads
                                     ▼
                      agentd (sidecar) :4097 /v1/files    [streamed, as today]
                        1 admission: reserve bytes (§4.1–4.2) ── reject: 507/429;
-                         missing/invalid declared header → 411; over-read → 400 (§4.6)
+                         missing/invalid declared header → 411 (§4.6)
                        2 stream body → /sandbox-runtime/staged-upload-files/<id>.tmp
-                         (chunked copy, sha256 on the fly, 0640/gid-1000)
+                         (chunked copy, sha256 on the fly, 0640/gid-1000;
+                         read capped at the declared value — over-read → 400)
                        3 same-fs rename <id>.tmp → <id>    [staged-complete atomicity]
                        4 control socket: upload_apply {id, size, sha256, target} (§3.2)
                                     │ (connection held; bounded wait, §3.3)
@@ -206,7 +207,7 @@ Metric surfaces, named against the code as it exists (agentd's counter is `works
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `workspace_agentd_file_uploads_total{workspace_id, outcome}` | counter | EXISTING agentd counter; new outcomes: `rejected_staging_full`, `rejected_staging_busy`, `apply_timeout`, `apply_rejected`, `checksum_mismatch`, `staging_scrubbed` (alongside `accepted`) |
+| `workspace_agentd_file_uploads_total{workspace_id, outcome}` | counter | EXISTING agentd counter; new outcomes: `rejected_staging_full`, `rejected_staging_busy`, `rejected_declared_invalid` (the 411), `rejected_declared_exceeded` (the 400 over-read — the D14-adversary traffic the read-cap exists to gate; pressure visible per R6), `apply_timeout`, `apply_rejected`, `checksum_mismatch`, `staging_scrubbed` (alongside `accepted`) |
 | `workspace_agentd_upload_staging_bytes` | gauge | staged-upload bytes on disk (walked truth, reconciled with reservations — §6.1's measured-residency pin reads THIS) |
 | `workspace_agentd_upload_staging_reserved_bytes` | gauge | admitted-not-released reservations |
 | `workspace_agentd_upload_staging_files` | gauge | staged object count |
@@ -216,7 +217,7 @@ Metric surfaces, named against the code as it exists (agentd's counter is `works
 
 **Supervisor→agentd export mechanism:** the supervisor owns no Prometheus registry — its outcomes ride the `upload_apply` response (the closed error enum carries the class; the success result carries the verified size for `copied_out`). agentd is the single metrics authority for the leg; there is no second export path to keep true.
 
-Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; mid-stream staging write abort (§3.5, incl. adversary-induced ENOSPC) → **507** `staging write failed`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; undeclared client body → **411** (API-generated, reason `invalid_declared_length`); lying-small over-read → **400** `declared_length_exceeded` (direct-`:4097`-path only — via the API the declared bound always covers the piped part, §4.6 wiring note); the true remainder (unexpected agentd statuses) → the existing fixed-502 class, unchanged.
+Rejection semantics (client-actionable, per the directive): staging budget → **507** `staging budget exhausted — retry after in-flight uploads settle or free tmpfs`; concurrency (count cap) → **429** `staging busy`; mid-stream staging write abort (§3.5, incl. adversary-induced ENOSPC) → **507** `staging write failed`; destination disk (write-time) → **507** `workspace disk is full (write-time check)`; apply timeout → **504**; undeclared client body → **411** (API-generated, reason `invalid_declared_length`); lying-small over-read → **400** `declared_length_exceeded` (direct-`:4097`-path only — via the API the declared bound always covers the piped part, §4.6 wiring note); apply ack failures — the §3.2 closed error enum's non-disk, non-timeout members (`staged_missing`, `checksum_mismatch`, `size_mismatch`, `dest_write_failed`, `target_rejected`; supervisor-side `busy` maps to 429 `staging_busy`) → **507** from agentd with the specific error code in the reason body, forwarded verbatim and labeled `apply_rejected` (the integrity mismatches §3.4 promises are "a hard failure with a distinct error code" therefore reach the client as themselves in the body, with the agentd-side counter carrying the fine-grained outcome); the true remainder (unexpected agentd statuses) → the existing fixed-502 class, unchanged.
 
 **Delivery points, stated honestly (they differ by status):** today the API handler special-cases only agentd 201 and 413 and collapses every other status into a fixed `502 {"error":"workspace agent upload failed"}` with `reason=agentd_error` (`api/internal/handlers/uploads.go:241-245`) — nothing passes through, and the API reason enum (`metrics.go:509-531`, exhaustively pinned) cannot record the new classes. The wiring PR therefore (a) forwards agentd's **507/429/504** statuses and their reason bodies verbatim — the 4xx admission-input rejections are deliberately NOT in this list, because their delivery points differ: the **411 is API-generated** (the API gates undeclared client bodies itself, §4.1) and needs no forwarding, while the **400 `declared_length_exceeded` is DIRECT-PATH-ONLY** (the API pipes only the `LimitReader`-bounded file part, `uploads.go:342`, so the declared bound — the client's full multipart Content-Length — always covers what the API sends; an over-read can only come from a direct `:4097` caller, the D14 adversary, for whom there is no API hop); and (b) widens the API-side reason enum with `staging_full`, `staging_busy`, `staging_write_error` (the §3.5 mid-stream abort — its own value, never misrecorded as `agentd_error`), `apply_timeout`, `apply_rejected`, `dest_disk_full`, and `invalid_declared_length` (labels the API-generated 411), keeping `agentd_error` for the true remainder. And (c) adds the admission-input header + the API-side 411 gate (§4.1). These are required API changes, not polish — §5.4 reflects them.
 
@@ -265,7 +266,7 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 **Invariant:** a workspace-side consumer artificially slower than the receiver (throttled PVC copy, injected via the fault seam) → the window bounds hold at every hop; no unbounded buffering anywhere in the chain.
 **Mechanism:** the synchronous streaming chain itself — §3.5's implicit backpressure; this invariant is why the design REJECTS explicit window signaling (nothing is decoupled, so nothing can run away).
-**Proof:** throttle the supervisor's copy to a trickle; assert agentd's staging write rate follows (staged bytes grow at the copy's pace, not the client's), the API connection stays open within its stream timeout, and every process's RSS stays flat (allocation-ceiling assertion).
+**Proof:** throttle the supervisor's copy to a trickle; assert agentd's staging write rate follows (staged bytes grow at the copy's pace, not the client's), the API connection stays open within its stream timeout, and every process's RSS stays flat (allocation-ceiling assertion). The WEDGED-consumer extreme — the copy consumer alive but spinning without consuming (#1507's autopsy shape: a runaway opencode burning CPU while I/O stalls) — is the same row's limit case: the window stays bounded, the apply timeout bounds the hold, and the 504 tail plus hygiene reclaim the staged object; the row asserts those bounds hold with the consumer at zero throughput, not merely slow.
 
 ### 6.4 Disk-margin enforcement at the edges (TOCTOU included)
 
@@ -283,7 +284,12 @@ Stress testing is a first-class deliverable of this lane (owner amendment, paire
 
 **Invariant-class:** the ack path (held control connection + copy + verify + ack) is characterized under load — p50/p95/p99 apply-latency at 1×/2×/4× concurrency (the count cap's default IS 4 — higher concurrency is unreachable by design, so the matrix characterizes the CAP BOUNDARY instead: the 5th concurrent upload's 429 latency) across file sizes (1 KiB / 1 MiB / 10 MiB — 25 MiB is single-flight by clause (A), characterized at 1× only).
 **Mechanism:** §3.3's bounded wait; the supervisor's apply-concurrency choice (§8 item 3).
-**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional at the WORST TIMING (first three fully staged when the 4th admits). The harness pins it by direct substitution, definition-free: measure `f_bavail_pre` and the credential walk `C` before the storm, then assert `f_bavail_pre − 30 MiB ≥ C + 24 MiB + 10 MiB` (the 4th admission's clause-(B) check against the f_bavail the three staged objects have already reduced). On the 96 MiB volume this consumes nearly the whole tmpfs margin — if the assert fails, the harness skips DOWN to 3× with an explicit message (never silently measuring 3×).
+**Proof:** numbers recorded in the implementation worklog as a baseline table (regressions detectable across releases), plus a regression guard: apply-latency p95 at 4×10 MiB ≤ 2× the single-upload 10 MiB p95 (catches accidental serialization without pinning hardware-specific absolute numbers). Harness precondition: the 4×10 row is clause-(B)-conditional at the WORST TIMING (first three fully staged, reservations still held — a staged-not-yet-acked upload counts BOTH as a reservation term AND as bytes f_bavail no longer has; that double-counting is the semantics of hold-until-bytes-leave, §4.1). The harness pins it by direct substitution, definition-free: measure `f_bavail_pre` and the credential walk `C` before the storm, then assert
+
+    f_bavail_pre − 30 MiB  ≥  C + 24 MiB + 30 MiB + 10 MiB
+    (equivalently:         f_bavail_pre ≥ C + 94 MiB)
+
+— the 4th admission's clause-(B) check (`C + floor + reservedUploads(30) + newBytes(10) ≤ f_bavail_now`) against the `f_bavail_now` the three staged objects have already reduced. On the 96 MiB volume this commits C + 94 of 96 — nearly the whole tmpfs, which is the honest cost of a 4×10 row on this hardware; if the assert fails, the harness skips DOWN to 3× with an explicit message (never silently measuring 3×).
 
 ---
 

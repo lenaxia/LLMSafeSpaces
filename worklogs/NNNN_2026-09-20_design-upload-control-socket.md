@@ -112,3 +112,12 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - Landed for real: the enum gains staging_write_error + invalid_declared_length (§4.6(b)); the 411/400 delivery story is honest per the reviewer's sharpening — the 411 is API-GENERATED (no forwarding needed), the 400 declared_length_exceeded is DIRECT-`:9097`-PATH-ONLY (the API pipes only the LimitReader-bounded part, so the declared bound always covers the API hop; only the D14 direct caller can over-read) — the forwarding list stays 507/429/504 by design, and §4.6's table row + §7's pins state the real delivery points.
 - §6.6's precondition is now definition-free and executable: assert `f_bavail_pre − 30 MiB ≥ C + 24 MiB + 10 MiB` measured pre-storm (the literal worst-timing clause-(B) substitution; the old C+U arithmetic double-counted against f_bavail's own exclusions three different ways).
 - §3.1's diagram step 1 shows the 411/400 admission arms.
+
+
+## Review round 7 (design doc) — 2 blockers + 2 minors + 1 nit
+
+- **§6.6's precondition was 30 MiB weak (third recurrence of this exact defect)**: the correct worst-timing substitution includes BOTH the staged bytes (reducing f_bavail) AND the still-held reservations (the clause-B term) — hold-until-bytes-leave double-counts by design. Now pinned as `f_bavail_pre ≥ C + 94 MiB`, with the double-counting named as the semantics. My round-6 record's "all fixed" header and "literal substitution" claim were false — the new standard is re-derive-the-arithmetic, not re-read-the-sentence (the grep lesson needed its numeric twin).
+- **The ack-failure class had no pinned delivery**: now mapped — agentd 507 with the §3.2 error code in the reason body, forwarded verbatim, labeled `apply_rejected` (integrity mismatches reach the client as themselves; fine granularity lives in the agentd counter); supervisor `busy` maps to 429 `staging_busy`.
+- Minors: agentd counter gains `rejected_declared_invalid`/`rejected_declared_exceeded` (the D14-visible admission-input traffic — R6's visibility for exactly the adversarial class the read-cap gates); the round-6 record's `:9097` typo corrected here (the port is 4097).
+- Nit: the diagram's 400 arm moved to step 2 (mid-read detection, matching §4.1).
+- Context fold-in: §6.3 gained the WEDGED-consumer extreme (alive-but-spinning, #1507's autopsy shape) as the backpressure row's limit case — window bounded, apply timeout bounding the hold, 504 tail + hygiene reclaiming.
