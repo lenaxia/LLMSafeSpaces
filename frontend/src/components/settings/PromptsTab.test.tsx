@@ -94,7 +94,28 @@ describe("PromptsTab", () => {
     await waitFor(() => expect(screen.getByText("Renamed")).toBeTruthy());
   });
 
+  it("surfaces a list failure as the error banner", async () => {
+    mockList.mockRejectedValue(new Error("boom"));
+    renderTab();
+    await waitFor(() => expect(screen.getByText("boom")).toBeTruthy());
+  });
+
+  it("surfaces a delete failure and keeps the row", async () => {
+    mockList.mockResolvedValue({ prompts: [P1] });
+    mockDelete.mockRejectedValue(new Error("delete boom"));
+    renderTab();
+    await waitFor(() => expect(screen.getByText("Weekly summary")).toBeTruthy());
+
+    fireEvent.click(screen.getByLabelText("Delete Weekly summary"));
+    fireEvent.click(screen.getByText("Delete", { selector: "button.bg-destructive" }));
+    await waitFor(() => expect(mockDelete).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("Weekly summary")).toBeTruthy());
+  });
+
   it("deletes only after confirmation", async () => {
+    // clearAllMocks does NOT clear a prior test's mockRejectedValue —
+    // pin this test's own resolution explicitly.
+    mockDelete.mockResolvedValue(undefined);
     mockList.mockResolvedValue({ prompts: [P1] });
     renderTab();
     await waitFor(() => expect(screen.getByText("Weekly summary")).toBeTruthy());
@@ -104,6 +125,8 @@ describe("PromptsTab", () => {
     fireEvent.click(screen.getByText("Delete", { selector: "button.bg-destructive" }));
 
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("p1"));
-    await waitFor(() => expect(screen.queryByText("Weekly summary")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByTestId("prompt-row-p1")).toBeNull(),
+    );
   });
 });

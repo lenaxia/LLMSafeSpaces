@@ -263,3 +263,34 @@ func TestUserPrompts_NameIsStoredTrimmed(t *testing.T) {
 	h.Create(c)
 	assert.Equal(t, http.StatusConflict, w.Code)
 }
+
+// TestUserPrompts_OwnerScoping — the header's claim, now a row: a
+// different context user cannot touch user-1's prompt (404, never
+// read/write); the row stays in user-1's list.
+func TestUserPrompts_OwnerScoping(t *testing.T) {
+	store := newStubUserPromptStore()
+	h := NewUserPromptsHandler(store)
+
+	c, _ := userPromptCall("POST", "/", `{"name":"mine","content":"x"}`)
+	h.Create(c)
+	id := store.byName["user-1/mine"]
+
+	otherC, otherW := userPromptCall("PUT", "/", `{"name":"hijack"}`)
+	otherC.Set("userID", "user-2")
+	otherC.Params = gin.Params{{Key: "id", Value: id}}
+	h.Update(otherC)
+	assert.Equal(t, http.StatusNotFound, otherW.Code, "user-2 gets 404, not access")
+
+	delC, delW := userPromptCall("DELETE", "/", "")
+	delC.Set("userID", "user-2")
+	delC.Params = gin.Params{{Key: "id", Value: id}}
+	h.Delete(delC)
+	assert.Equal(t, http.StatusNotFound, delW.Code)
+
+	listC, listW := userPromptCall("GET", "/", "")
+	listC.Set("userID", "user-2")
+	h.List(listC)
+	var list types.UserPromptListResponse
+	require.NoError(t, json.Unmarshal(listW.Body.Bytes(), &list))
+	assert.Empty(t, list.Prompts, "user-2's list never includes user-1's row")
+}

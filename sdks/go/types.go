@@ -458,3 +458,25 @@ type McpAutoApplyRule struct {
 	TargetType string  `json:"targetType"`
 	TargetID   *string `json:"targetId,omitempty"`
 }
+
+// UserPrompt is one saved prompt row (#1499).
+type UserPrompt struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
+}
+
+// CreateUserPromptRequest is the POST /me/prompts body.
+type CreateUserPromptRequest struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+// UpdateUserPromptRequest is the partial PUT body — nil fields keep
+// the stored value.
+type UpdateUserPromptRequest struct {
+	Name    *string `json:"name,omitempty"`
+	Content *string `json:"content,omitempty"`
+}

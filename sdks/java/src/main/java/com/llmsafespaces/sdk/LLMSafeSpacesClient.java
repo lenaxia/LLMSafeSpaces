@@ -40,6 +40,7 @@ public class LLMSafeSpacesClient {
     public final AdminProviderCredentialsService adminProviderCredentials;
     public final WorkflowsService workflows;
     public final TriggersService triggers;
+    public final UserPromptsService userPrompts;
     public final McpServersService mcpServers;
     public final AdminMcpServersService adminMcpServers;
     public final OrgMcpServersService orgMcpServers;
@@ -66,6 +67,7 @@ public class LLMSafeSpacesClient {
         this.adminProviderCredentials = new AdminProviderCredentialsService(this);
         this.workflows = new WorkflowsService(this);
         this.triggers = new TriggersService(this);
+        this.userPrompts = new UserPromptsService(this);
         this.mcpServers = new McpServersService(this);
         this.adminMcpServers = new AdminMcpServersService(this);
         this.orgMcpServers = new OrgMcpServersService(this);

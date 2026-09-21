@@ -41,6 +41,7 @@ type Client struct {
 	Workflows                *WorkflowsService
 	Triggers                 *TriggersService
 	McpServers               *McpServersService
+	UserPrompts              *UserPromptsService
 	AdminMcpServers          *AdminMcpServersService
 	OrgMcpServers            *OrgMcpServersService
 }
@@ -90,6 +91,7 @@ func New(baseURL string, opts ...Option) *Client {
 	c.Workflows = &WorkflowsService{c: c}
 	c.Triggers = &TriggersService{c: c}
 	c.McpServers = &McpServersService{c: c}
+	c.UserPrompts = &UserPromptsService{c: c}
 	c.AdminMcpServers = &AdminMcpServersService{c: c}
 	c.OrgMcpServers = &OrgMcpServersService{c: c}
 	return c

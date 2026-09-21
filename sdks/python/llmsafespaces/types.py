@@ -378,3 +378,23 @@ class UpdateMcpServerRequest(TypedDict, total=False):
 class McpAutoApplyRule(TypedDict, total=False):
     targetType: str
     targetId: str
+
+
+class UserPrompt(TypedDict, total=False):
+    """One saved prompt row (#1499) — the caller's prompt library."""
+
+    id: str
+    name: str
+    content: str
+    createdAt: str
+    updatedAt: str
+
+
+class CreateUserPromptRequest(TypedDict):
+    name: str
+    content: str
+
+
+class UpdateUserPromptRequest(TypedDict, total=False):
+    name: str
+    content: str

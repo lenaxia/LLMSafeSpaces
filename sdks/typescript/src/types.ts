@@ -421,3 +421,22 @@ export interface McpAutoApplyRule {
   targetType: string;
   targetId?: string;
 }
+
+/** One saved prompt row (#1499) — the caller's prompt library. */
+export interface UserPrompt {
+  id: string;
+  name: string;
+  content: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CreateUserPromptRequest {
+  name: string;
+  content: string;
+}
+
+export interface UpdateUserPromptRequest {
+  name?: string;
+  content?: string;
+}

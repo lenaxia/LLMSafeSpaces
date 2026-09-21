@@ -344,6 +344,39 @@ class LLMSafeSpacesClientTest {
         }
     }
 
+    // ─── #1499: User prompt library ─────────────────────────────────────────
+
+    @Test
+    void userPromptsList_unwrapsNamedEnvelope() throws Exception {
+        String json = """
+            {"prompts":[{"id":"p1","name":"Weekly summary","content":"c"}]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.userPrompts.list();
+            assertEquals(1, result.size());
+            assertEquals("p1", result.get(0).get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void userPromptsCreate_unwrapsPromptEnvelope() throws Exception {
+        String json = """
+            {"prompt":{"id":"p1","name":"Weekly summary","content":"c"}}""";
+        var server = startMockServer(201, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var created = client.userPrompts.create("Weekly summary", "c");
+            assertEquals("p1", created.get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
     @Test
     void triggersList_returnsList() throws Exception {
         String json = """

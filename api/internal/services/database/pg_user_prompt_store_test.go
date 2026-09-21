@@ -28,8 +28,10 @@ func TestListUserPrompts_WritesExpectedSQL(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{"id", "name", "content", "created_at", "updated_at"}).
 		AddRow("p1", "Weekly summary", "Summarize…", time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC), time.Date(2026, 9, 20, 11, 0, 0, 0, time.UTC))
+	// Anchored FULL-query pin: column shape + WHERE + ORDER BY in one
+	// expectation (r2: the clause-only pin let a column rename through).
 	mock.ExpectQuery(regexp.QuoteMeta(
-		`ORDER BY updated_at DESC LIMIT 500`,
+		`SELECT id, name, content, created_at, updated_at FROM user_prompts WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 500`,
 	)).
 		WithArgs("u1").
 		WillReturnRows(rows)

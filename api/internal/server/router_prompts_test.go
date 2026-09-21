@@ -73,6 +73,9 @@ func (s *routerPromptStore) UpdateUserPrompt(_ context.Context, userID, id strin
 		return nil, database.ErrPromptNotFound
 	}
 	if name != nil {
+		if other, taken := s.byName[userID+"/"+*name]; taken && other != id {
+			return nil, database.ErrPromptNameTaken
+		}
 		delete(s.byName, userID+"/"+p.Name)
 		p.Name = *name
 		s.byName[userID+"/"+p.Name] = id
@@ -187,6 +190,16 @@ func TestPromptsRoutes_CRUDOverHTTP(t *testing.T) {
 	rec = doReq(t, router, http.MethodPost, "/api/v1/me/prompts",
 		`{"name":"Weekly summary","content":"dup"}`, true)
 	assert.Equal(t, http.StatusConflict, rec.Code, "the trimmed-name uniqueness surfaces over HTTP")
+
+	// Rename to another existing name also conflicts over HTTP.
+	rec = doReq(t, router, http.MethodPost, "/api/v1/me/prompts",
+		`{"name":"other","content":"y"}`, true)
+	require.Equal(t, http.StatusCreated, rec.Code)
+	var second types.UserPromptResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &second))
+	rec = doReq(t, router, http.MethodPut, "/api/v1/me/prompts/"+created.Prompt.ID,
+		`{"name":"other"}`, true)
+	assert.Equal(t, http.StatusConflict, rec.Code, "rename onto a taken name is a 409")
 
 	rec = doReq(t, router, http.MethodDelete, "/api/v1/me/prompts/"+created.Prompt.ID, "", true)
 	assert.Equal(t, http.StatusNoContent, rec.Code)
