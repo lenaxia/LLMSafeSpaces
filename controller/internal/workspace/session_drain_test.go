@@ -179,14 +179,18 @@ func hasEvent(events []string, reason string) bool {
 	return false
 }
 
-// makeSuspendingWorkspace builds a Suspending workspace plus its running pod.
-func makeSuspendingWorkspace(name string) (*v1.Workspace, *corev1.Pod) {
-	ws := makeWorkspace(name, "default", v1.WorkspacePhaseSuspending)
+// makeRestartGenDrainWorkspace builds the Active + unobserved-generation
+// shape plus pod and password Secret — the drain machinery's remaining
+// live path post-#1507 (the SUSPEND path no longer consults the drain;
+// the machinery tests below ride the restart-generation recycle).
+func makeRestartGenDrainWorkspace(t *testing.T, name string) (*v1.Workspace, *corev1.Pod, *corev1.Secret) {
+	t.Helper()
+	ws := makeWorkspace(name, "default", v1.WorkspacePhaseActive)
+	ws.Spec.RestartGeneration = 2
+	ws.Status.ObservedRestartGeneration = 1
 	ws.Status.PodIP = "127.0.0.1"
-	ws.Status.PodName = podName(name, string(ws.UID))
-	ws.Status.PodNamespace = "default"
-	pod := makeRunningPod(podName(name, string(ws.UID)), "default", "127.0.0.1")
-	return ws, pod
+	pod := makeRunningPod(podName(ws.Name, string(ws.UID)), "default", "127.0.0.1")
+	return ws, pod, makePasswordSecret(ws.Name, "default")
 }
 
 func busyStatusz(contextUsed int64) agentd.StatuszResponse {
@@ -231,8 +235,8 @@ func podExists(t *testing.T, r *WorkspaceReconciler, name string) bool {
 func TestDrain_IdleAgentProceedsImmediately(t *testing.T) {
 	stub := &statuszStub{resp: idleStatusz()}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-idle")
-	r, rec := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-idle")
+	r, rec := reconcilerForDrain(t, ws, pod, pwSec)
 
 	result, err := r.Reconcile(context.Background(), reqFor("ws-drain-idle", "default"))
 	require.NoError(t, err)
@@ -241,7 +245,7 @@ func TestDrain_IdleAgentProceedsImmediately(t *testing.T) {
 	assert.False(t, podExists(t, r, pod.Name), "pod must be deleted when sessions are idle")
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-drain-idle", Namespace: "default"}, updated))
-	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase)
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase, "restart-gen recycle proceeds to Creating")
 
 	events := eventsFrom(rec)
 	assert.False(t, hasEvent(events, "SessionDrainDeferred"), "no defer event expected")
@@ -252,16 +256,16 @@ func TestDrain_IdleAgentProceedsImmediately(t *testing.T) {
 	r.drainStatesMu.Unlock()
 }
 
-// TestDrain_BusyAgentDefersDeletion: busy sessions → pod survives, phase
-// stays Suspending, requeue is the drain poll interval, one defer event and
-// one deferred metric increment are emitted.
+// TestDrain_BusyAgentDefersDeletion (restart-gen path): busy sessions → pod
+// survives, phase stays Active, requeue is the drain poll interval, one
+// defer event and one deferred metric increment are emitted.
 func TestDrain_BusyAgentDefersDeletion(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-busy")
-	r, rec := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-busy")
+	r, rec := reconcilerForDrain(t, ws, pod, pwSec)
 
-	before := counterValue(t, metrics.WorkspaceDrainDeferredTotal, drainReasonSuspend)
+	before := counterValue(t, metrics.WorkspaceDrainDeferredTotal, drainReasonRestartGeneration)
 
 	result, err := r.Reconcile(context.Background(), reqFor("ws-drain-busy", "default"))
 	require.NoError(t, err)
@@ -270,7 +274,7 @@ func TestDrain_BusyAgentDefersDeletion(t *testing.T) {
 	assert.True(t, podExists(t, r, pod.Name), "pod must survive while sessions are busy")
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-drain-busy", Namespace: "default"}, updated))
-	assert.Equal(t, v1.WorkspacePhaseSuspending, updated.Status.Phase, "phase must stay Suspending while draining")
+	assert.Equal(t, v1.WorkspacePhaseActive, updated.Status.Phase, "phase must stay Active while the restart-gen drain defers")
 
 	events := eventsFrom(rec)
 	assert.True(t, hasEvent(events, "SessionDrainDeferred"), "defer event expected, got %v", events)
@@ -281,7 +285,7 @@ func TestDrain_BusyAgentDefersDeletion(t *testing.T) {
 	assert.Equal(t, drainPollInterval, result.RequeueAfter)
 	assert.True(t, podExists(t, r, pod.Name))
 
-	after := counterValue(t, metrics.WorkspaceDrainDeferredTotal, drainReasonSuspend)
+	after := counterValue(t, metrics.WorkspaceDrainDeferredTotal, drainReasonRestartGeneration)
 	assert.Equal(t, before+1, after, "deferred metric increments once per drain window, not per poll")
 	assert.Len(t, eventsFrom(rec), 0, "subsequent polls must not re-emit the defer event")
 }
@@ -291,8 +295,8 @@ func TestDrain_BusyAgentDefersDeletion(t *testing.T) {
 func TestDrain_BusyThenIdle_ProceedsOnNextPoll(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-flip")
-	r, _ := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-flip")
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	_, err := r.Reconcile(context.Background(), reqFor("ws-drain-flip", "default"))
 	require.NoError(t, err)
@@ -306,7 +310,7 @@ func TestDrain_BusyThenIdle_ProceedsOnNextPoll(t *testing.T) {
 
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-drain-flip", Namespace: "default"}, updated))
-	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase)
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase)
 }
 
 // TestDrain_ProgressExtendsWindow: observable progress (growing ContextUsed
@@ -316,8 +320,8 @@ func TestDrain_BusyThenIdle_ProceedsOnNextPoll(t *testing.T) {
 func TestDrain_ProgressExtendsWindow(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-progress")
-	r, _ := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-progress")
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	_, err := r.Reconcile(context.Background(), reqFor("ws-drain-progress", "default"))
 	require.NoError(t, err)
@@ -349,10 +353,10 @@ func TestDrain_ProgressExtendsWindow(t *testing.T) {
 func TestDrain_StalledBeyondBoundForces(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-stall")
-	r, rec := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-stall")
+	r, rec := reconcilerForDrain(t, ws, pod, pwSec)
 
-	before := counterValue(t, metrics.WorkspaceDrainForcedTotal, drainReasonSuspend)
+	before := counterValue(t, metrics.WorkspaceDrainForcedTotal, drainReasonRestartGeneration)
 
 	_, err := r.Reconcile(context.Background(), reqFor("ws-drain-stall", "default"))
 	require.NoError(t, err)
@@ -373,10 +377,10 @@ func TestDrain_StalledBeyondBoundForces(t *testing.T) {
 
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-drain-stall", Namespace: "default"}, updated))
-	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase)
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase)
 
 	assert.True(t, hasEvent(eventsFrom(rec), "SessionDrainForced"), "force event expected")
-	after := counterValue(t, metrics.WorkspaceDrainForcedTotal, drainReasonSuspend)
+	after := counterValue(t, metrics.WorkspaceDrainForcedTotal, drainReasonRestartGeneration)
 	assert.Equal(t, before+1, after)
 }
 
@@ -384,10 +388,10 @@ func TestDrain_StalledBeyondBoundForces(t *testing.T) {
 // block a deletion — the drain fails open with an event and metric.
 func TestDrain_UnreachableAgentFailsOpen(t *testing.T) {
 	startClosedPort(t)
-	ws, pod := makeSuspendingWorkspace("ws-drain-dead")
-	r, rec := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-dead")
+	r, rec := reconcilerForDrain(t, ws, pod, pwSec)
 
-	before := counterValue(t, metrics.WorkspaceDrainFailedOpenTotal, drainReasonSuspend)
+	before := counterValue(t, metrics.WorkspaceDrainFailedOpenTotal, drainReasonRestartGeneration)
 
 	result, err := r.Reconcile(context.Background(), reqFor("ws-drain-dead", "default"))
 	require.NoError(t, err)
@@ -396,10 +400,10 @@ func TestDrain_UnreachableAgentFailsOpen(t *testing.T) {
 
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: "ws-drain-dead", Namespace: "default"}, updated))
-	assert.Equal(t, v1.WorkspacePhaseSuspended, updated.Status.Phase)
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase)
 
 	assert.True(t, hasEvent(eventsFrom(rec), "SessionDrainFailedOpen"), "fail-open event expected")
-	after := counterValue(t, metrics.WorkspaceDrainFailedOpenTotal, drainReasonSuspend)
+	after := counterValue(t, metrics.WorkspaceDrainFailedOpenTotal, drainReasonRestartGeneration)
 	assert.Equal(t, before+1, after)
 }
 
@@ -408,8 +412,8 @@ func TestDrain_UnreachableAgentFailsOpen(t *testing.T) {
 func TestDrain_UnhealthyStatuszFailsOpen(t *testing.T) {
 	stub := &statuszStub{resp: agentd.StatuszResponse{Healthy: false, SessionsActive: 1}}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-unhealthy")
-	r, _ := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-unhealthy")
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	result, err := r.Reconcile(context.Background(), reqFor("ws-drain-unhealthy", "default"))
 	require.NoError(t, err)
@@ -422,9 +426,9 @@ func TestDrain_UnhealthyStatuszFailsOpen(t *testing.T) {
 func TestDrain_EmptyPodIPSkipsConsult(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-noip")
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-noip")
 	ws.Status.PodIP = ""
-	r, _ := reconcilerForDrain(t, ws, pod)
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	result, err := r.Reconcile(context.Background(), reqFor("ws-drain-noip", "default"))
 	require.NoError(t, err)
@@ -435,10 +439,15 @@ func TestDrain_EmptyPodIPSkipsConsult(t *testing.T) {
 
 // --- Per-path integration ---
 
-// TestDrain_SuspendRequestFlowDefers: a full user-suspend flow (Spec.Suspend
-// → Suspending → drain) keeps the pod alive while busy and completes once
-// idle.
-func TestDrain_SuspendRequestFlowDefers(t *testing.T) {
+// TestDrain_SuspendRequestFlowBounded (#1507 rewrites the #761 pin): a
+// full user-suspend flow (Spec.Suspend → Suspending → pod deletion) with
+// BUSY sessions completes in one Suspending pass — the busy-session
+// deferral is GONE from the suspend path (incident 2026-09-21: a wedged
+// opencode flapping busy forever hung Suspending 1h+). The bounded
+// graceful termination rides the pod's terminationGracePeriodSeconds.
+// Machinery-level pins live in phase_suspend_1507_test.go; this pin
+// covers the Spec.Suspend handshake end to end.
+func TestDrain_SuspendRequestFlowBounded(t *testing.T) {
 	stub := &statuszStub{resp: busyStatusz(100)}
 	startStatuszAgent(t, stub)
 	ws := makeWorkspace("ws-drain-suspend-flow", "default", v1.WorkspacePhaseActive)
@@ -452,16 +461,13 @@ func TestDrain_SuspendRequestFlowDefers(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
 	require.NoError(t, err)
 
-	// Second reconcile: handleSuspending drains — busy → defer.
+	// Second reconcile: handleSuspending — busy sessions are not
+	// consulted; the pod is deleted and the request acknowledged.
 	result, err := r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
 	require.NoError(t, err)
-	assert.Equal(t, drainPollInterval, result.RequeueAfter)
-	assert.True(t, podExists(t, r, pod.Name), "suspend must not delete the pod mid-turn")
-
-	stub.set(idleStatusz())
-	_, err = r.Reconcile(context.Background(), reqFor(ws.Name, "default"))
-	require.NoError(t, err)
-	assert.False(t, podExists(t, r, pod.Name))
+	assert.NotEqual(t, drainPollInterval, result.RequeueAfter, "#1507: no busy-session deferral on suspend")
+	assert.False(t, podExists(t, r, pod.Name), "#1507: suspend deletes the pod despite busy sessions")
+	assert.Zero(t, stub.statuszCalls(), "#1507: the suspend path never consults statusz")
 
 	updated := &v1.Workspace{}
 	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: ws.Name, Namespace: "default"}, updated))
@@ -655,8 +661,8 @@ func TestDrain_BusySetChangeIsProgress(t *testing.T) {
 
 	stub := &statuszStub{resp: first}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-churn")
-	r, _ := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-churn")
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	_, err := r.Reconcile(context.Background(), reqFor("ws-drain-churn", "default"))
 	require.NoError(t, err)
@@ -684,8 +690,8 @@ func TestDrain_PodRecreationResetsWindow(t *testing.T) {
 
 	stub := &statuszStub{resp: snap}
 	startStatuszAgent(t, stub)
-	ws, pod := makeSuspendingWorkspace("ws-drain-recreated")
-	r, _ := reconcilerForDrain(t, ws, pod)
+	ws, pod, pwSec := makeRestartGenDrainWorkspace(t, "ws-drain-recreated")
+	r, _ := reconcilerForDrain(t, ws, pod, pwSec)
 
 	_, err := r.Reconcile(context.Background(), reqFor("ws-drain-recreated", "default"))
 	require.NoError(t, err)
