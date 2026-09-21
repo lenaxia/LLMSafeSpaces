@@ -465,7 +465,6 @@ func newMCPRouterFixture(t *testing.T) *mcpFixture {
 		Resumed: mcpTestWSID,
 	}, nil).Maybe()
 	ws.On("SuspendWorkspace", mock.Anything, mcpTestUserID, mcpTestWSID).Return(nil).Maybe()
-	ws.On("SuspendWorkspaceForce", mock.Anything, mcpTestUserID, mcpTestWSID).Return(nil).Maybe()
 	ws.On("RefreshWorkspaceCompute", mock.Anything, mcpTestUserID, mcpTestWSID).Return(&types.RefreshWorkspaceResult{
 		RestartGeneration: 2,
 	}, nil).Maybe()

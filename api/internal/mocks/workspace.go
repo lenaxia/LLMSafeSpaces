@@ -59,11 +59,6 @@ func (m *MockWorkspaceService) DeleteWorkspace(ctx context.Context, userID, work
 	return m.Called(ctx, userID, workspaceID).Error(0)
 }
 
-func (m *MockWorkspaceService) SuspendWorkspaceForce(ctx context.Context, userID, workspaceID string) error {
-	m.Called(ctx, userID, workspaceID)
-	return nil
-}
-
 func (m *MockWorkspaceService) SuspendWorkspace(ctx context.Context, userID, workspaceID string) error {
 	return m.Called(ctx, userID, workspaceID).Error(0)
 }

@@ -70,4 +70,21 @@ None.
 - `api/internal/server/router.go` (route + contract comment), `router_workspace_test.go` (route pin)
 - `api/internal/server/mcp_router_integration_test.go` (mock)
 - `sdks/openapi.yaml` (description)
-- `worklogs/NNNN_2026-09-21_refresh-force-suspend.md` (this file)
+- `worklogs/1032_2026-09-21_refresh-force-suspend.md` (this file)
+
+## r2 rework (post-#1510, post-r1) — the suspend-force layer is GONE
+
+Adjudication: #1510 (#1507) merged as squash ee787444 — suspend is bounded-immediate for EVERY caller (the pod's termination grace is the graceful window; there is no drain on the suspend path at all). A suspend force marker atop that is vestigial by construction, and r1's findings 1/2 (MCP tool silently inheriting force; the UI suspend consent premise being false — no dialog exists) independently kill the route flip. Orchestrator GO: drop the layer, keep the refresh machinery.
+
+Dropped (resolves r1 findings 1, 2, 3, and 4 by removal):
+- `SuspendWorkspaceForce` + the `suspendWorkspace(ctx, ..., force)` plumbing + the `"suspend"` marker stamp (service), the `/suspend` route flip + the "CONSented" typo comment (router), the interface method, the error-swallowing mock (r1 finding 3 — removed rather than fixed), the MCP integration-test stub line (r1 finding 1 — the MCP tool now shares the single bounded SuspendWorkspace path like every caller), and `ForceValueSuspend` + the suspend doc halves (controller, types).
+- Rebase: phase_suspend.go resolves to main's #1510 shape — the branch's `"suspend"` bypass sat on a drain call that no longer exists. The three suspend-side controller tests (forced-suspend-immediate / automated-suspend-drains / cross-value-isolation) were RED post-rebase (run recorded) — suspend semantics are owned by phase_suspend_1507_test.go now; the matrix drops to refresh-scoped pins.
+- r1 finding 4 (suspend-then-refresh marker overwrite): unconstructible — only refresh stamps.
+
+Kept + added:
+- The generation-keyed refresh marker end-to-end: API stamp → handleActive exact-generation bypass → same-pass clear (RV-synced) → SessionDrainUserForced event.
+- NEW PIN: TestForce_ClearAnnotationFailureRequeuesWithoutDeletion — injected first-Update failure → Requeue (not RequeueAfter), pod KEPT, marker retained for the retry. Mutation-verified: ignoring the clear error fails the pin (red reproduced, then restored).
+- NEW ASSERTION: exactly one SessionDrainUserForced event on the forced pass; zero on the polite passes (r1's missing-test ask).
+- Inverted wiring pin: TestSuspendRoute_UsesSuspendWorkspace — /suspend routes to the single SuspendWorkspace, called once.
+- e2e row: local/issue-1505-refresh-busy-e2e.sh + 5 shape pins (busy-before-refresh ordering, Active-budget + NEW-pod + PVC-retained verdicts, fail-closed R2 with BOTH the negative drain-defer grep and the POSITIVE forced-bypass grep, WS_BASE isolation, and the reason-string↔controller-constant match pin that keeps the greps honest). Same static-delivery disposition as the #1507 row: standalone script, first recorded execution rides the #1456 wiring lane.
+- Corrected the "polite drain" phrasing everywhere it mentioned suspend (openapi refresh description, router contract comment, force_recycle.go header, phase_active.go comment): the polite drain survives on the AUTOMATED recycle paths (restart-generation bumps, arch drift, password self-heal); suspend has no drain since #1510.

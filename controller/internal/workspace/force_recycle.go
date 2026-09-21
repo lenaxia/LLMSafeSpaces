@@ -24,11 +24,13 @@ import (
 // user-initiated Refresh Compute action never finds quiet — the owner's
 // live repro: refresh hangs in the drain forever.
 //
-// Owner decision (#1505): the USER-INITIATED refresh/suspend action IS
+// Owner decision (#1505): the USER-INITIATED Refresh Compute action IS
 // the force path — the UI warning shown before the action is the
 // consent. The drain stays for every automated path (org suspension,
 // idle auto-suspend, max-active eviction, spec-timeout) where no
 // warning precedes the deletion and surprise data-loss is unacceptable.
+// (The suspend path needs no force since #1510/#1507: handleSuspending
+// deletes the pod unconditionally, bounded by the termination grace.)
 //
 // Mechanism: the API stamps a transient annotation on the Workspace
 // when — and only when — it serves a user-consented action:
@@ -36,18 +38,11 @@ import (
 //   - RefreshWorkspaceCompute: AnnotationForceRecycle = "<generation>"
 //     (the post-increment restartGeneration), honored by handleActive's
 //     generation-recycle branch only while observing THAT generation.
-//   - The user suspend endpoint: AnnotationForceRecycle = "suspend",
-//     honored once by handleSuspending.
 //
 // The annotation is controller-cleared the moment it is honored, so it
-// cannot leak into a later automated suspend. Automated callers never
+// cannot leak into a later automated action. Automated callers never
 // set it. Stale values self-invalidate: a generation-keyed value stops
-// matching once the generation is observed; a "suspend" value without a
-// pending Spec.Suspend request is inert.
-
-// ForceValueSuspend is the annotation value for the user-initiated
-// suspend action.
-const ForceValueSuspend = "suspend"
+// matching once the generation is observed; any other value is inert.
 
 // userForcedRecycle reports whether the user-consented force
 // annotation is present with the given expected value.

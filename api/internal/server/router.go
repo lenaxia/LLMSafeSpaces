@@ -1349,9 +1349,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		// #1505: the user-facing suspend is the CONSented force path —
-		// the UI warned the user before the action.
-		if err := wsSvc.SuspendWorkspaceForce(c.Request.Context(), userID, c.Param("id")); err != nil {
+		if err := wsSvc.SuspendWorkspace(c.Request.Context(), userID, c.Param("id")); err != nil {
 			respondWithError(c, err)
 			return
 		}
@@ -1393,8 +1391,9 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 	// pod is deleted immediately even with busy in-flight turns. The UI's
 	// pre-action warning ("in-flight work is lost") is the consent; the
 	// server-side counterpart is this comment + the SessionDrainUserForced
-	// event the controller emits. Automated suspend paths do NOT set the
-	// marker and keep the polite drain.
+	// event the controller emits. Automated generation bumpers do NOT set
+	// the marker and keep the polite drain. (The suspend endpoint shares
+	// the single bounded-grace SuspendWorkspace path — #1510/#1507.)
 	idGroup.POST("/refresh-compute", func(c *gin.Context) {
 		userID := authSvc.GetUserID(c)
 		if userID == "" {

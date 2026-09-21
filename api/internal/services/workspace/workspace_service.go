@@ -704,24 +704,12 @@ func (s *Service) DeleteWorkspace(ctx context.Context, userID, workspaceID strin
 	return nil
 }
 
-// SuspendWorkspace transitions a workspace to Suspending phase. This is
-// the POLITE path: the #761 session drain applies (automated callers —
-// org suspension, idle auto-suspend, max-active eviction — and any
-// non-consented API use). User-consented suspension goes through
-// SuspendWorkspaceForce.
+// SuspendWorkspace transitions a workspace to Suspending phase.
+// Post-#1510 (#1507) all suspend sources share the same bounded
+// semantics: the controller deletes the pod unconditionally and the
+// pod's terminationGracePeriodSeconds is the graceful-termination
+// budget. There is no #761 drain on this path and no force variant.
 func (s *Service) SuspendWorkspace(ctx context.Context, userID, workspaceID string) error {
-	return s.suspendWorkspace(ctx, userID, workspaceID, false)
-}
-
-// SuspendWorkspaceForce is the #1505 user-consented suspend: the UI
-// warned the user, so the session drain is bypassed (the force marker
-// makes handleSuspending delete the pod immediately; in-flight turns
-// die by design). Only the user-facing suspend endpoint may call this.
-func (s *Service) SuspendWorkspaceForce(ctx context.Context, userID, workspaceID string) error {
-	return s.suspendWorkspace(ctx, userID, workspaceID, true)
-}
-
-func (s *Service) suspendWorkspace(ctx context.Context, userID, workspaceID string, force bool) error {
 	start := time.Now()
 	defer func() {
 		if s.metricsService != nil {
@@ -763,14 +751,6 @@ func (s *Service) suspendWorkspace(ctx context.Context, userID, workspaceID stri
 	// (unspecified) so pre-migration workspaces are not auto-resumed.
 	suspendTrue := true
 	crd.Spec.Suspend = &suspendTrue
-	if force {
-		// #1505: user-consented force — annotation honored once by
-		// handleSuspending (which clears it in the same pass).
-		if crd.Annotations == nil {
-			crd.Annotations = map[string]string{}
-		}
-		crd.Annotations[v1.AnnotationForceRecycle] = "suspend"
-	}
 	if _, err := func() (*v1.Workspace, error) {
 		wsClient, wErr := s.workspaceCRDClient()
 		if wErr != nil {

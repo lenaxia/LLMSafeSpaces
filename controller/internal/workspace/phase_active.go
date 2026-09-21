@@ -81,7 +81,8 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		// stamps AnnotationForceRecycle with the generation it bumped. That
 		// exact-generation match bypasses the drain: in-flight turns die by
 		// design, the warning was the consent. Automated generation bumpers
-		// never set the annotation and keep the polite drain.
+		// never set the annotation and keep the polite drain. (Suspend needs
+		// no marker: since #1510/#1507 handleSuspending never drains.)
 		forcedGen := forcedGenerationValue(workspace.Spec.RestartGeneration)
 		if userForcedRecycle(workspace, forcedGen) {
 			r.noteForcedRecycle(ctx, workspace, drainReasonRestartGeneration+"_user_forced")

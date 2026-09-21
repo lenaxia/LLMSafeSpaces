@@ -354,28 +354,11 @@ func TestRefreshWorkspaceCompute_StampsForceMarkerKeyedToGeneration(t *testing.T
 	f.ws.AssertExpectations(t)
 }
 
-// #1505: the USER suspend endpoint takes the force variant (UI warned →
-// consent); automated callers (neutralize, max-active) keep the polite
-// service and must NOT stamp the marker.
-func TestSuspendWorkspace_ForceVariantStampsMarker(t *testing.T) {
-	f := newDefaultsFixture(t, nil)
-	ctx := context.Background()
-
-	crd := crdWorkspace("ws-1", "default", "user1", "10Gi")
-	crd.Status.Phase = v1.WorkspacePhaseActive
-	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
-	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
-	f.ws.On("Update", mock.Anything, mock.MatchedBy(func(ws *v1.Workspace) bool {
-		return ws.Spec.Suspend != nil && *ws.Spec.Suspend &&
-			ws.Annotations[v1.AnnotationForceRecycle] == "suspend"
-	})).Return(crd, nil)
-
-	err := f.svc.SuspendWorkspaceForce(ctx, "user1", "ws-1")
-	assert.NoError(t, err)
-	f.ws.AssertExpectations(t)
-}
-
-func TestSuspendWorkspace_PlainVariantStampsNoMarker(t *testing.T) {
+// #1505 rework: the suspend-force variant is GONE (post-#1510 every
+// suspend shares the single bounded SuspendWorkspace path). This pin
+// guards the invariant that survived: suspend NEVER stamps the force
+// marker — only RefreshWorkspaceCompute does.
+func TestSuspendWorkspace_NeverStampsForceMarker(t *testing.T) {
 	f := newDefaultsFixture(t, nil)
 	ctx := context.Background()
 
