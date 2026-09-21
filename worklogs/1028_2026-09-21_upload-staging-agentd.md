@@ -72,7 +72,7 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 - `cmd/workspace-agentd/server.go` — deps fields + call-site wiring
 - `cmd/workspace-agentd/sidecar_mode.go` — the sidecar wiring (stager/scrub/sweeper/apply)
 - `cmd/workspace-agentd/uploads_test.go` — call sites updated for the new signature (nil stager)
-- `worklogs/NNNN_2026-09-21_upload-staging-agentd.md` — this worklog
+- `worklogs/1028_2026-09-21_upload-staging-agentd.md` — this worklog
 
 
 ---
