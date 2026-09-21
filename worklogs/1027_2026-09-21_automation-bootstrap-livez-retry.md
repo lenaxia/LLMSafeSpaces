@@ -36,4 +36,4 @@ None.
 
 - `local/issue-1410-1412-automation-e2e.sh` — `harness_start` as the first statement (supersedes the r1 retry loop, fully removed); EXIT-trap `${API_KEY:-}` guards; why-comment.
 - `local/issue_1410_automation_e2e_script_test.go` — `TestIssue1410E2E_HarnessStartFirst` (replaces the r1 loop-pin family).
-- `worklogs/NNNN_2026-09-21_automation-bootstrap-livez-retry.md` — this worklog (Rule 7.5 correction recorded).
+- `worklogs/1027_2026-09-21_automation-bootstrap-livez-retry.md` — this worklog (Rule 7.5 correction recorded).
