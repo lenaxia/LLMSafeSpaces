@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -87,21 +88,32 @@ func (c *controlClient) nextID() int64 { return c.nextIDAtomic.Add(1) }
 
 // call performs one request/response round trip.
 func (c *controlClient) call(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
-	return c.callTimeout(ctx, method, params, c.timeout)
+	res, err, _ := c.callDeadline(ctx, method, params, c.timeout)
+	return res, err
 }
 
-// callTimeout is call with an explicit per-invocation deadline — the
-// long-held upload_apply connection bounds ITSELF by the design-0060
-// apply timeout (seconds-scale for a ≤25 MiB copy), not the 2s
-// control-plane default.
-func (c *controlClient) callTimeout(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
+// callDeadline is call with an explicit per-invocation deadline. The
+// third return reports whether the armed deadline is what failed (a
+// net timeout on the deadline THIS call set — os.ErrDeadlineExceeded on
+// the round trip) — the deterministic signal UploadApply's §3.3
+// timeout classification rests on: no clock race between the conn arm
+// and the ctx timer, because the two are the same arm when derived.
+func (c *controlClient) callDeadline(ctx context.Context, method string, params map[string]any, timeout time.Duration) (map[string]any, error, bool) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "tcp", c.addr)
 	if err != nil {
-		return nil, fmt.Errorf("control socket: dial %s: %w", c.addr, err)
+		return nil, fmt.Errorf("control socket: dial %s: %w", c.addr, err), false
 	}
 	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(timeout))
+	res, err := c.roundTrip(conn, method, params)
+	deadlineFired := err != nil && errors.Is(err, os.ErrDeadlineExceeded)
+	return res, err, deadlineFired
+}
+
+// roundTrip is the encode/decode half of a call (post-dial,
+// post-deadline), split out so callDeadline can classify the failure.
+func (c *controlClient) roundTrip(conn net.Conn, method string, params map[string]any) (map[string]any, error) {
 
 	id := c.nextID()
 	req := struct {
@@ -251,15 +263,16 @@ func (c *controlClient) RefreshFiles(ctx context.Context) (*RefreshFilesResult, 
 // (the caller's timeout class maps to 504).
 func (c *controlClient) UploadApply(ctx context.Context, req uploadApplyRequest) (*uploadApplyResult, *uploadApplyError) {
 	// The connection is held through the supervisor's copy (design 0060
-	// §3.3) — bound it by the caller's ctx deadline (the apply timeout),
-	// not the 2s control-plane default.
+	// §3.3) — the caller's ctx deadline (the apply timeout) IS the bound;
+	// the 2s control-plane default does not apply to this one long-held
+	// call. Only a deadline-less ctx falls back to the default.
 	timeout := c.timeout
+	ctxDerived := false
 	if dl, ok := ctx.Deadline(); ok {
-		if d := time.Until(dl); d > 0 && d < timeout {
-			timeout = d
-		}
+		timeout = time.Until(dl)
+		ctxDerived = true
 	}
-	res, err := c.callTimeout(ctx, "upload_apply", map[string]any{
+	res, err, deadlineFired := c.callDeadline(ctx, "upload_apply", map[string]any{
 		"upload_id":   req.UploadID,
 		"staged_name": req.StagedName,
 		"size":        req.Size,
@@ -267,9 +280,19 @@ func (c *controlClient) UploadApply(ctx context.Context, req uploadApplyRequest)
 		"target_name": req.TargetName,
 	}, timeout)
 	if err != nil {
-		// The §3.3 timeout class is defined by the CALLER'S clock: if the
-		// apply ctx expired, the failure is a timeout regardless of the
-		// surface error (conn i/o timeout, dial stall, anything).
+		// Deterministic §3.3 classification, no clock race: a deadline
+		// expiry on a deadline WE derived from the apply ctx is the
+		// timeout class by construction (the conn deadline and the apply
+		// budget are the same clock arm); a live ctx with a transport
+		// failure is an ordinary transport error; the supervisor's
+		// closed enum rides the wire error.
+		if ctxDerived && deadlineFired {
+			cause := ctx.Err()
+			if cause == nil {
+				cause = context.DeadlineExceeded // the conn arm fired a hair early
+			}
+			return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: cause}
+		}
 		if ctx.Err() != nil {
 			return nil, &uploadApplyError{Code: "transport", Message: err.Error(), cause: ctx.Err()}
 		}

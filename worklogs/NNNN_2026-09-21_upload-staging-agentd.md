@@ -92,3 +92,11 @@ None. PR 2 (supervisor `upload_apply` + destination scrub) next.
 
 - `go test -run 'TestStaging|TestStagedUpload|TestUploadApplyClient'` — 24 tests green (the production client seam now has its own wire tests).
 - Full `./cmd/workspace-agentd/` — ok (274s); golangci-lint 0 issues.
+
+
+## Review round 2 (3 findings + 3 minors, all fixed)
+
+- **BLOCKING — the bounded-wait fix was inverted** (min instead of the ctx-as-bound; the reviewer reproduced a 3s copy within a 5s budget dying at the 2s conn deadline): UploadApply now takes the ctx deadline AS the bound (only deadline-less ctx falls back to the 2s default). The r1 flaky pin (a coin-flip clock race between the conn arm and the ctx timer) replaced with deterministic classification: callDeadline reports whether ITS OWN armed deadline fired (os.ErrDeadlineExceeded on the round trip) — when that arm was ctx-derived, it IS the timeout class by construction. Two pins: the reviewer's reproduction (300ms copy / 5s budget → SUCCESS) and the beyond-budget arm (→ timeout class), both -count=5 stable.
+- **Dest-outcome rejections were dead code**: the dest_disk_full/checksum/size rejection path now counts on workspace_agentd_upload_dest_outcomes_total (the metric's own advertised contract).
+- **§7's race test** (concurrent admission never exceeds clause A): added TestStagingAdmission_ConcurrentNeverExceedsBudget (N goroutines racing Admit at a tight budget; max observed reserved ≤ budget).
+- Minors: staging_scrubbed moved onto the injected seam (RecordScrubbed); the boot ensureStagingDir error logs loudly (rides to the request-time 507 seam); the envelope-allowance comment now states the direct-path cap honestly moved to maxBytes+64KiB.

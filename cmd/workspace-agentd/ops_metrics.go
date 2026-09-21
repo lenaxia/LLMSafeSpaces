@@ -210,6 +210,14 @@ func (m *opsMetrics) RecordUploadBytes(direction string, n int64) {
 	m.uploadBytesTotal.WithLabelValues(uploadWorkspaceID(), direction).Add(float64(n))
 }
 
+// RecordScrubbed counts staging-scrub reclaims through the stager's
+// injected seam (design 0060 §4.6 staging_scrubbed).
+func (m *opsMetrics) RecordScrubbed(files int) {
+	if files > 0 {
+		m.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeStagingScrubbed)
+	}
+}
+
 // RecordDestOutcome counts a supervisor-side destination outcome
 // (design 0060 §4.6): rejections by code and the success-path
 // dest_margin_consumed observation (from the ack's flag).

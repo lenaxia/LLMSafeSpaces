@@ -302,8 +302,13 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	stager := newUploadStager(stagingConfigFromEnv(), pkgOpsMetrics)
 	// §4.1.1: establish the dir contract (0750, gid-1000 by process
 	// inheritance) BEFORE the boot scrub so the scrub observes the same
-	// surface the API will write into.
-	_ = stager.ensureStagingDir()
+	// surface the API will write into. A failure logs loudly and rides
+	// (the per-request MkdirAll in stageStream surfaces it as a clean
+	// 507 — nothing is silently swallowed, just deferred to the seam
+	// that can answer the client).
+	if err := stager.ensureStagingDir(); err != nil {
+		log.Error("upload staging: boot dir establish failed", zap.Error(err))
+	}
 	stager.scrubStagingDir(0, time.Time{})
 	// The sweeper rides the process lifetime (buildSidecarDeps has no
 	// shutdown context; the goroutine is a ticker that dies with the

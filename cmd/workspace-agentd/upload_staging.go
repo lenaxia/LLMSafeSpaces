@@ -206,12 +206,14 @@ type uploadStager struct {
 type stagingMetrics interface {
 	RecordStagingGauges(stagedBytes, reservedBytes, credentialBytes int64, files int)
 	RecordUploadBytes(direction string, n int64)
+	RecordScrubbed(files int)
 }
 
 type noopStagingMetrics struct{}
 
 func (noopStagingMetrics) RecordStagingGauges(int64, int64, int64, int) {}
 func (noopStagingMetrics) RecordUploadBytes(string, int64)              {}
+func (noopStagingMetrics) RecordScrubbed(int)                           {}
 
 // ensureStagingDir establishes the §4.1.1 contract at boot: 0750 dir,
 // gid 1000 by process inheritance (the sidecar runs uid 2000 / gid
@@ -476,8 +478,9 @@ func (s *uploadStager) scrubStagingDir(ttl time.Duration, now time.Time) int {
 		}
 	}
 	if removed > 0 {
-		// §4.6 staging_scrubbed: scrub activity is observable.
-		pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeStagingScrubbed)
+		// §4.6 staging_scrubbed: scrub activity is observable through
+		// the injected seam (the stager's own DI, not the global).
+		s.metrics.RecordScrubbed(removed)
 	}
 	return removed
 }
@@ -596,6 +599,12 @@ func handleStagedUpload(w http.ResponseWriter, r *http.Request, cfg fileUploadCo
 		stager.abortStaged(id)
 		outcome, status, human, reason := mapApplyError(aerr)
 		pkgOpsMetrics.RecordUploadOutcome(wsID, outcome)
+		// §4.6: destination-side rejections count on the dest-outcomes
+		// surface too (the metric's own contract: rejections AND the
+		// success-path margin observation).
+		if reason == "dest_disk_full" || aerr.Code == "checksum_mismatch" || aerr.Code == "size_mismatch" {
+			pkgOpsMetrics.RecordDestOutcome(aerr.Code)
+		}
 		writeUploadErrorClass(w, status, human, reason, aerr.Code)
 		return
 	}

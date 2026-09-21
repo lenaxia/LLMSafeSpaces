@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -71,6 +72,8 @@ func (m *recordingStagingMetrics) RecordUploadBytes(direction string, n int64) {
 		m.outBytes += n
 	}
 }
+
+func (m *recordingStagingMetrics) RecordScrubbed(files int) {}
 
 // statfsT is the platform statfs alias (tests build f_bavail directly).
 type statfsT = syscall.Statfs_t
@@ -609,24 +612,59 @@ func TestStagedUpload_CapExactWithEnvelopeAdmitted(t *testing.T) {
 
 // --- The production apply seam (the r1-review reproduction made permanent) ---
 
-// TestUploadApplyClient_BoundedByContextDeadline drives the REAL
-// control client against a socket server that delays past the caller's
-// ctx deadline: the failure must classify as the §3.3 timeout
-// (cause = DeadlineExceeded), never the 2s control-plane default's
-// i/o-timeout-as-apply_rejected misroute.
-func TestUploadApplyClient_BoundedByContextDeadline(t *testing.T) {
+// TestUploadApplyClient_LongCopyWithinBudgetSucceeds is the r2 review's
+// empirical reproduction, green: a 300ms copy under a 5s apply budget
+// (the production shape — 2s control-plane default, 60s apply timeout)
+// must SUCCEED. The r1 code died at the 2s conn deadline and misrouted
+// to abort+507; the r2 code's inverted min kept dying. The ctx deadline
+// IS the bound now.
+func TestUploadApplyClient_LongCopyWithinBudgetSucceeds(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-
 	go func() {
 		conn, aerr := ln.Accept()
 		if aerr != nil {
 			return
 		}
-		time.Sleep(3 * time.Second) // outlive the caller's 150ms deadline
+		_, _ = io.ReadFull(conn, make([]byte, 1))
+		time.Sleep(300 * time.Millisecond) // a copy slower than the 2s default
+		_ = json.NewEncoder(conn).Encode(map[string]any{
+			"v": 1, "id": 1,
+			"result": map[string]any{"applied": true, "path": "/workspace/uploads/x-n", "size": 1},
+		})
+		_ = conn.Close()
+	}()
+
+	c := newControlClient(ln.Addr().String()) // 2s default — must NOT bound this call
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, aerr := c.UploadApply(ctx, uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
+	if aerr != nil {
+		t.Fatalf("a copy within the apply budget must succeed, got %+v", aerr)
+	}
+	if res == nil || !res.Applied {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
+// TestUploadApplyClient_BeyondBudgetIsTheTimeoutClass: the copy
+// outlives the apply budget → the failure classifies deterministically
+// as §3.3 timeout (the conn arm IS the ctx arm — no clock race).
+func TestUploadApplyClient_BeyondBudgetIsTheTimeoutClass(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		time.Sleep(2 * time.Second) // outlive the 150ms budget decisively
 		_ = conn.Close()
 	}()
 
@@ -638,10 +676,10 @@ func TestUploadApplyClient_BoundedByContextDeadline(t *testing.T) {
 		t.Fatal("expected the timeout class")
 	}
 	if !isApplyTimeout(aerr) {
-		t.Fatalf("ctx-expired apply must classify as timeout (§3.3), got code=%q err=%v", aerr.Code, aerr)
+		t.Fatalf("beyond-budget apply must classify as timeout (§3.3), got code=%q err=%v", aerr.Code, aerr)
 	}
 	if !errors.Is(aerr, context.DeadlineExceeded) {
-		t.Fatalf("the cause must be the ctx deadline, got %v", aerr.Unwrap())
+		t.Fatalf("the cause must be the deadline, got %v", aerr.Unwrap())
 	}
 }
 
@@ -670,5 +708,31 @@ func TestUploadApplyClient_ClosedEnumErrorMapping(t *testing.T) {
 	_, aerr := c.UploadApply(context.Background(), uploadApplyRequest{UploadID: "id", StagedName: "id", Size: 1, SHA256: "x", TargetName: "n"})
 	if aerr == nil || aerr.Code != "checksum_mismatch" {
 		t.Fatalf("closed-enum mapping: got %+v", aerr)
+	}
+}
+
+// TestStagingAdmission_ConcurrentNeverExceedsBudget is the §7
+// semaphore race pin: N goroutines racing Admit under a tight budget —
+// the reserved total can never exceed clause (A)'s bound.
+func TestStagingAdmission_ConcurrentNeverExceedsBudget(t *testing.T) {
+	cfg := testStagingConfig(t, 100, 0, 64)
+	cfg.statfs = fakeStatfs{avail: 1 << 30}.statfs
+	s := newUploadStager(cfg, nil)
+
+	const racers = 32
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = s.Admit(fmt.Sprintf("racer-%d", i), 7) // 32×7=224 ≫ 100: most must lose
+		}(i)
+	}
+	wg.Wait()
+	if got := s.ReservedBytes(); got > 100 {
+		t.Fatalf("racing admissions exceeded the budget: reserved=%d > 100", got)
+	}
+	if got := len(s.reservations); got > 64 {
+		t.Fatalf("concurrency cap exceeded: %d", got)
 	}
 }
