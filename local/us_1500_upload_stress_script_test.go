@@ -101,10 +101,9 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 }
 
 // TestUploadStressScript_GuardBehavioralTest verifies the guard's
-// compute logic against synthetic timing files — the test that would
-// validates the SCRIPT'S OWN pipeline, extracted at test runtime —
-// a script-side regression (the r7 max-labeled median mutant) fails
-// here, which a frozen-copy test cannot catch.
+// compute logic against synthetic timing files, driving the SCRIPT'S
+// OWN pipeline extracted at test runtime — a script-side regression
+// (the r7 max-labeled median mutant) fails here.
 func TestUploadStressScript_GuardBehavioralTest(t *testing.T) {
 	raw, err := os.ReadFile(uploadStressScript)
 	require.NoError(t, err)
