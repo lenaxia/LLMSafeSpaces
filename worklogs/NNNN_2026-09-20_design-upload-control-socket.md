@@ -146,3 +146,8 @@ Docs-only lane; no runtime tests. §7's test-plan rows and §6's proof specs are
 - **"The sidecar never writes the PVC" was false as-built**: Epic 69's sessionstate cursor + ledger.wal are durably written by the sidecar under the PVC platform/ subPath (RW, sidecar-only — agentd_sidecar.go:204). US-4b governs the credential STORES, not a PVC-write ban. §2 now scopes the claim to what this design guarantees (no NEW sidecar→PVC write path from this leg) and names the platform/ carve-out — the efficacy-vs-existence lesson applied to a sentence eleven rounds of review (mine included) repeated without tracing the mount table.
 - **The boot-scrub "by-definition orphaned" absolute overreached in the sidecar-restart window** (native sidecar can restart while the supervisor mid-copies a completed staged object): scoped to full-pod death, with the benign outcomes stated (unlink-of-open-file completes the copy; not-yet-open → clean staged_missing) and the age-gate refinement marked optional.
 - PR body review-history count refreshed (11+ rounds, false-absolute chain represented).
+
+
+## Review round 12 (design doc) — approved-pending one word
+
+- r12 verified clean of blocking findings; the sole residual was the PR body's revision label staleness ("(r11)" describing r12) — the body-staleness class's third recurrence. Label fixed to (r12); the review-history chain completed in the same edit. No doc changes this round: the design document itself has zero open findings.
