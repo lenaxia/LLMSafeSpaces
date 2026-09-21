@@ -57,9 +57,22 @@ func TestUploadStressScript_RowsAndAssertions(t *testing.T) {
 		`api_body="${out%$'\n'*}"`,
 		// SR-2: correct route (r2 finding 4: /me/workspaces/ → 404).
 		`/api/v1/workspaces/${WS}/reload-secrets`,
-		// SR-5: 502 in the terminal set (r2 finding 5: transport is
-		// terminal per design §6.5).
+		// SR-5: 502 in the terminal set (r2 finding 5) + the §6.5
+		// PRIMARY invariant (r3 finding 3: non-.tmp listing comparison).
 		`"${st}" == "502"`,
+		`PRE_KILL_LISTING`,
+		`POST_KILL_LISTING`,
+		`comm -13`,
+		`non-.tmp partials`,
+		// SR-2: the route-FIRED check (r3 finding 2).
+		`reload-secrets returned ${api_status}, expected 200`,
+		// SR-6: refused COUNT parsed + the regression guard AS AN
+		// ASSERTION (r3 findings 1+4).
+		`sed -n 's/.*refused=\([0-9]*\).*/\1/p'`,
+		`${SR6B_REFUSED}" -ge 1`,
+		`CONC_MS}" -le "${GUARD}`,
+		// storm_report completeness (r3 finding 5).
+		`total=%d`,
 		// Cleanup.
 		`trap cleanup EXIT`,
 	} {

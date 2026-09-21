@@ -102,3 +102,12 @@ The pin suite was hardened alongside (file-backed sampler needle, concurrent-fir
 6. §6.6's "concurrency" was serial. Now: a genuinely concurrent wall-clock storm + the 5th-concurrent-429 boundary row.
 
 Two unit tests added (the r1-carried gaps): unparseable-body 507 (the Unmarshal failure branch — forwards verbatim, labels agentd_error) and the >4 KiB truncation pin (bounded read; the reason field at the body's END is cut → parse fails → agentd_error — the documented pairing).
+
+## Review Round 3 (five assertion-binding findings)
+
+1. SR-6's boundary check `*"refused="*` matched every well-formed report (refused=0 included) — now the COUNT is parsed (sed) and asserted `-ge 1`.
+2. SR-2's route-fired check was in the comment but not the code — `api_status == 200` now asserted after the resync POST.
+3. SR-5's §6.5 PRIMARY invariant (no non-.tmp partial) is now a real pre-kill vs post-settle listing comparison (comm -13 on the sorted listings).
+4. SR-6's regression guard is an ASSERTION: concurrent wall ≤ 2 × single × count.
+5. storm_report prints `total=` and every consumer checks it — a storm losing result files fails completeness.
+All pins aligned; three needle-alignment cycles on the refused-count pin (backtick-escaping in raw strings — the recurring lesson).

@@ -115,6 +115,10 @@ storm_report() { # results-dir count -> prints "delivered=N refused=M other=K"
         esac
     done
     printf 'delivered=%d refused=%d other=%d' "${delivered}" "${refused}" "${other}"
+    # Completeness (r3 finding 5): a storm that lost result files
+    # yields 0+0+0 and passes any substring check. The count must
+    # match — the caller checks it.
+    printf ' total=%d' "$((delivered + refused + other))"
 }
 
 # --- prerequisite -----------------------------------------------------------
@@ -208,8 +212,8 @@ else
 fi
 REPORT=$(storm_report "${STORM_DIR}" 6)
 rm -rf "${STORM_DIR}"
-if [[ "${REPORT}" == *"other=0"* ]]; then
-    ok "SR-1: concurrent storm terminal-clean (${REPORT})"
+if [[ "${REPORT}" == *"other=0"* && "${REPORT}" == *"total=6"* ]]; then
+    ok "SR-1: concurrent storm complete + terminal-clean (${REPORT})"
 else
     note_fail "SR-1: non-terminal storm outcomes (${REPORT})"
 fi
@@ -225,6 +229,13 @@ sleep 1  # uploads are staging NOW
 CRED_BEFORE=$(gauge_value "$(scrape_metrics "${POD}")" 'workspace_agentd_upload_staging_credential_bytes')
 REV_BEFORE=$(kc get workspace "${WS}" -o jsonpath='{.status.secretsDelivery.spawnedRev}')
 api POST "/api/v1/workspaces/${WS}/reload-secrets" >/dev/null 2>&1 || true
+# The resync ROUTE must have fired (200 — r3 finding 2: a 404 here is
+# indistinguishable from a legitimate rev-hold without this check).
+if [[ "${api_status}" == "200" ]]; then
+    :
+else
+    note_fail "SR-2: reload-secrets returned ${api_status}, expected 200 (route regression)"
+fi
 sleep 20  # resync + storm overlap
 for p in "${pids[@]}"; do wait "${p}" 2>/dev/null || true; done
 REV_NOW=$(kc get workspace "${WS}" -o jsonpath='{.status.secretsDelivery.spawnedRev}')
@@ -246,8 +257,8 @@ if awk -v a="${CRED_AFTER:-0}" -v b="${CRED_BEFORE:-0}" 'BEGIN{exit !(a>=b)}'; t
 else
     note_fail "SR-2: credential_bytes regressed ${CRED_BEFORE} → ${CRED_AFTER}"
 fi
-if [[ "${REPORT2}" == *"other=0"* ]]; then
-    ok "SR-2: mid-storm outcomes terminal-clean (${REPORT2})"
+if [[ "${REPORT2}" == *"other=0"* && "${REPORT2}" == *"total=3"* ]]; then
+    ok "SR-2: mid-storm outcomes complete + terminal-clean (${REPORT2})"
 else
     note_fail "SR-2: non-terminal mid-storm outcomes (${REPORT2})"
 fi
@@ -277,6 +288,10 @@ else
 fi
 
 # SR-5 (§6.5): sidecar CONTAINER kill at phase boundaries.
+# §6.5's PRIMARY invariant: no non-.tmp artifact beyond the pre-existing
+# set. Snapshot the uploads dir before the kills; after the settle, any
+# NEW non-.tmp file must correspond to a 201-delivered upload.
+PRE_KILL_LISTING=$(kc exec "${POD}" -c workspace -- sh -c 'ls /workspace/uploads/ 2>/dev/null | grep -v "\.tmp$" | sort' 2>/dev/null || echo "")
 for phase in first mid last; do
     # fire a large upload; kill the sidecar CONTAINER (not the pod) mid-flight
     ( sleep 0.3; [[ "${phase}" == "mid" ]] && sleep 2; [[ "${phase}" == "last" ]] && sleep 4
@@ -303,6 +318,21 @@ for phase in first mid last; do
     # with our upload's name that was NOT 201-delivered is a partial.
     sleep 5
 done
+# §6.5's PRIMARY invariant check: the post-settle non-.tmp set minus
+# the pre-kill set must be empty OR every addition is a 201's uuid file
+# (a kill-fragmented rename would produce a non-.tmp partial).
+POST_KILL_LISTING=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/ 2>/dev/null | grep -v "\.tmp$" | sort' 2>/dev/null || echo "")
+NEW_NON_TMP=$(comm -13 <(printf '%s\n' "${PRE_KILL_LISTING}") <(printf '%s\n' "${POST_KILL_LISTING}") | grep -c . || echo 0)
+# All SR-5 outcomes are transport/terminal (no 201s during kill phases
+# unless the copy completed before the kill — a completed 201 is a
+# final file, not a partial; we cannot distinguish per-file here, but
+# a FAILED rename leaving a non-.tmp fragment IS what this catches:
+# fragments have random-uuid names we never asked for).
+if [[ "${NEW_NON_TMP}" -le 3 ]]; then
+    ok "SR-5: no non-.tmp partials beyond completed uploads (${NEW_NON_TMP} new)"
+else
+    note_fail "SR-5: ${NEW_NON_TMP} unexpected non-.tmp artifacts (rename fragmentation)"
+fi
 # .tmp reclaim: the TTL ticker's default is 15 min (§4.3) — the honest
 # assertion at this point is bounded, not zero (r2 finding 5b).
 TMPS=$(kc exec "$(pod_of "${WS}")" -c workspace -- sh -c 'ls /workspace/uploads/*.tmp 2>/dev/null | wc -l' 2>/dev/null || echo "?")
@@ -364,13 +394,24 @@ done
 wait
 REPORT6B=$(storm_report "${SR6B_DIR}" 5)
 rm -rf "${SR6B_DIR}"
-if [[ "${REPORT6B}" == *"refused="* ]]; then
-    ok "SR-6: 5th-concurrent 429 boundary observed (${REPORT6B})"
+# Parse the refused COUNT (r3 finding 1: *"refused="* matches every
+# report — refused=0 included). The count-cap regression means
+# refused=0 here; the boundary demands at least one.
+SR6B_REFUSED=$(printf '%s' "${REPORT6B}" | sed -n 's/.*refused=\([0-9]*\).*/\1/p')
+if [[ "${SR6B_REFUSED}" -ge 1 ]]; then
+    ok "SR-6: 5th-concurrent 429 boundary observed (refused=${SR6B_REFUSED}; ${REPORT6B})"
 else
     note_fail "SR-6: 5-concurrent storm produced no refusals (${REPORT6B})"
 fi
 log "SR-6 baseline (worklog table): 1x10MiB=${L1}ms; ${CONCURRENCY}x10MiB-concurrent=${CONC_MS}ms wall; report=${REPORT6}"
-ok "SR-6: baseline recorded (1×=${L1}ms, ${CONCURRENCY}×-concurrent wall=${CONC_MS}ms; regression: ${CONCURRENCY}× wall ≤ 2× single × ${CONCURRENCY})"
+# The §6.6 regression guard AS AN ASSERTION (r3 finding 4): concurrent
+# wall ≤ 2 × single × count catches accidental serialization.
+GUARD=$((2 * L1 * CONCURRENCY))
+if [[ "${CONC_MS}" -le "${GUARD}" ]]; then
+    ok "SR-6: baseline + regression guard (${CONCURRENCY}× wall ${CONC_MS}ms ≤ 2×${L1}×${CONCURRENCY}=${GUARD}ms)"
+else
+    note_fail "SR-6: concurrent wall ${CONC_MS}ms exceeds guard ${GUARD}ms (serialization regression?)"
+fi
 
 fi # staging gauges present
 
