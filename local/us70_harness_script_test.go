@@ -567,7 +567,7 @@ func TestUS70Sweeps_ExecutableKubectlWithVerifiedOutcome(t *testing.T) {
 func TestUS70PreWaveSweep_Executes(t *testing.T) {
 	bash := requireBash(t)
 	src := mustRead(t, us70DeliveryScript)
-	block := regexp.MustCompile(`(?s)(?m)^if ! PRE_GET=\$\(kc get workspace.*?ok "AC-13 — pre-wave sweep: nothing to sweep[^\n]*\nfi\n`).FindString(src)
+	block := regexp.MustCompile(`(?s)(?m)^PRE_SEL_FAILED=0\nif ! PRE_GET=\$\(kc get workspace.*?ok "AC-13 — pre-wave sweep: nothing to sweep[^\n]*\n\s*fi\nfi\n`).FindString(src)
 	if block == "" {
 		t.Fatal("pre-wave sweep block not found — did the sweep change shape?")
 	}
@@ -602,6 +602,7 @@ func TestUS70PreWaveSweep_Executes(t *testing.T) {
 		script := "set -u; export PATH=" + shQuote(dir) + ":$PATH CTX=kind-x NS=ns\n" + env +
 			`die() { printf 'DIE %s\n' "$*" >&2; exit 1; }
 ok() { printf 'OK %s\n' "$*"; }
+log() { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*" >&2; }
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 ` + block
@@ -635,13 +636,19 @@ kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 		}
 	})
 
-	t.Run("selection get failure warns, non-killing (r26 intent, loud)", func(t *testing.T) {
+	t.Run("selection get failure warns, non-killing, asserts NO state (r3)", func(t *testing.T) {
 		out, err := run("export FAKE_GET_EXIT=1\n")
 		if err != nil {
 			t.Fatalf("a selection-get blip must warn and continue, got: %v\n%s", err, out)
 		}
-		if !strings.Contains(out, "selection get failed") || !strings.Contains(out, "nothing to sweep") {
-			t.Fatalf("a failed selection must be loud and honest, got: %q", out)
+		if !strings.Contains(out, "selection get failed") {
+			t.Fatalf("a failed selection must be loud, got: %q", out)
+		}
+		if strings.Contains(out, "already absent") || strings.Contains(out, "nothing to sweep") {
+			t.Fatalf("a failed selection must not assert unobserved state (no 'already absent' / 'nothing to sweep' ✓), got: %q", out)
+		}
+		if !strings.Contains(out, "state unknown") {
+			t.Fatalf("the failed-selection path must state the range is unknown, got: %q", out)
 		}
 	})
 
